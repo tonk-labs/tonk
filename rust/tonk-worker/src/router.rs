@@ -1604,8 +1604,7 @@ pub mod tests {
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let body = "\
-attribute!: &person-name
+        let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -1623,7 +1622,7 @@ concept!: &person
   with:
     name: person-name
     age:  person-age
-";
+"#;
 
         let response = app
             .oneshot(
@@ -1664,13 +1663,12 @@ concept!: &person
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let body = "\
-attribute!: &person-name
+        let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
   description: The person's name
-";
+"#;
 
         let response = app
             .oneshot(
@@ -1746,13 +1744,12 @@ attribute!: &person-name
         let repo = key.as_str();
 
         // First transaction: define `person-name` only.
-        let first = "\
-attribute!: &person-name
+        let first = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
   description: The person's name
-";
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -1770,8 +1767,7 @@ attribute!: &person-name
         // Second transaction: define `person-age` and a concept
         // `person` whose `with.name` references the *previously*
         // declared `person-name`.
-        let second = "\
-attribute!: &person-age
+        let second = r#"attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
   cardinality: one
@@ -1782,7 +1778,7 @@ concept!: &person
   with:
     name: person-name
     age:  person-age
-";
+"#;
         let response = app
             .oneshot(
                 Request::builder()
@@ -1824,8 +1820,7 @@ concept!: &person
 
         // Define schema + assert an Alice with a bookmark
         // binding so we know her entity.
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -1836,8 +1831,8 @@ concept!: &person
     name: person-name
 
 person!: &alice
-  name: \"Alice\"
-";
+  name: "Alice"
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -1921,8 +1916,7 @@ person!: &alice
 
         // Define a `person` concept and assert one Alice so the
         // query has something to match.
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -1933,8 +1927,8 @@ concept!: &person
     name: person-name
 
 person!: &alice
-  name: \"Alice\"
-";
+  name: "Alice"
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -2028,8 +2022,7 @@ person!: &alice
         let repo = key.as_str();
 
         // Setup: schema + Alice with age 28.
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2047,9 +2040,9 @@ concept!: &person
     age:  person-age
 
 person!: &alice
-  name: \"Alice\"
+  name: "Alice"
   age:  28
-";
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -2070,14 +2063,13 @@ person!: &alice
         let alice_uri = setup_resp.commits.entities.get("alice").cloned().unwrap();
 
         // --- Path 1: query-bound `?alice` then assert.
-        let update_via_query = "\
-person:
+        let update_via_query = r#"person:
   this: ?alice
-  name: \"Alice\"
+  name: "Alice"
 person!:
   this: ?alice
   age:  29
-";
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -2202,8 +2194,7 @@ person!:
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2221,19 +2212,18 @@ concept!: &person
     age:  person-age
 
 person!: &alice
-  name: \"Alice\"
+  name: "Alice"
   age:  28
-";
+"#;
         let body_bytes = post_yaml(&app, repo, setup).await;
         let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let alice_v1 = setup_resp.commits.entities.get("alice").cloned().unwrap();
 
         // Same anchor name, different body → new entity.
-        let rebind = "\
-person!: &alice
-  name: \"Alice\"
+        let rebind = r#"person!: &alice
+  name: "Alice"
   age:  29
-";
+"#;
         let body_bytes = post_yaml(&app, repo, rebind).await;
         let rebind_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let alice_v2 = rebind_resp.commits.entities.get("alice").cloned().unwrap();
@@ -2246,11 +2236,10 @@ person!: &alice
         // through the same in-doc declarations / branch-side
         // attribute lookup. Test cross-doc bookmark resolution
         // by referencing `.person-name` from a follow-up doc.
-        let follow_up = "\
-person:
+        let follow_up = r#"person:
   this: ?p
   name: ?n
-";
+"#;
         let body_bytes = post_yaml(&app, repo, follow_up).await;
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         // Both entities should still match the `person` concept
@@ -2274,8 +2263,7 @@ person:
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2284,7 +2272,7 @@ attribute!: &person-name
 concept!: &person
   with:
     name: person-name
-";
+"#;
         let _ = post_yaml(&app, repo, setup).await;
 
         // First commit: anonymous head, body-derived entity.
@@ -2331,8 +2319,7 @@ concept!: &person
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2348,7 +2335,7 @@ concept!: &person
   with:
     name: person-name
     age:  person-age
-";
+"#;
         let _ = post_yaml(&app, repo, setup).await;
 
         // Single head introduces `?carol` and writes both fields.
@@ -2356,12 +2343,11 @@ concept!: &person
         // `this: ?carol` would collapse to one expression at the
         // YAML mapping-key level — that's a parser-side detail,
         // not a semantic limit of variable scope.)
-        let doc = "\
-person!:
+        let doc = r#"person!:
   this: ?carol
-  name: \"Carol\"
+  name: "Carol"
   age:  31
-";
+"#;
         let body_bytes = post_yaml(&app, repo, doc).await;
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let carol_uri = resp
@@ -2394,8 +2380,7 @@ person!:
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let setup = "\
-attribute!: &tagged-name
+        let setup = r#"attribute!: &tagged-name
   the:         io.gozala.tagged/name
   as:          text
   cardinality: one
@@ -2413,9 +2398,9 @@ concept!: &tagged
     tag:  tagged-tag
 
 tagged!: &dave
-  name: \"Dave\"
-  tag:  \"engineer\"
-";
+  name: "Dave"
+  tag:  "engineer"
+"#;
         let body_bytes = post_yaml(&app, repo, setup).await;
         let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let dave_uri = setup_resp.commits.entities.get("dave").cloned().unwrap();
@@ -2455,8 +2440,7 @@ tagged!: &dave
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2474,9 +2458,9 @@ concept!: &person
     age:  person-age
 
 person!: &erin
-  name: \"Erin\"
+  name: "Erin"
   age:  41
-";
+"#;
         let body_bytes = post_yaml(&app, repo, setup).await;
         let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let erin_uri = setup_resp.commits.entities.get("erin").cloned().unwrap();
@@ -2516,8 +2500,7 @@ person!: &erin
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2528,18 +2511,17 @@ concept!: &person
     name: person-name
 
 person!: &frank
-  name: \"Frank\"
-";
+  name: "Frank"
+"#;
         let _ = post_yaml(&app, repo, setup).await;
 
-        let retract = "\
-person:
+        let retract = r#"person:
   this: ?frank
-  name: \"Frank\"
+  name: "Frank"
 person!:
   this: ?frank
   ..: _
-";
+"#;
         let body_bytes = post_yaml(&app, repo, retract).await;
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         assert!(
@@ -2574,8 +2556,7 @@ person!:
         // Two concepts that overlap on a `name` field via
         // different attribute namespaces. We'll query for
         // entities present in both.
-        let setup = "\
-attribute!: &person-name
+        let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
@@ -2596,8 +2577,8 @@ concept!: &employee
     eid: employee-id
 
 person!: &gina
-  name: \"Gina\"
-";
+  name: "Gina"
+"#;
         let body_bytes = post_yaml(&app, repo, setup).await;
         let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let gina_uri = setup_resp.commits.entities.get("gina").cloned().unwrap();
@@ -2607,14 +2588,13 @@ person!: &gina
         let _ = post_yaml(&app, repo, &add_emp).await;
 
         // Joined query.
-        let join = "\
-person:
+        let join = r#"person:
   this: ?p
   name: ?n
 employee:
   this: ?p
   eid: ?e
-";
+"#;
         let body_bytes = post_yaml(&app, repo, join).await;
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(resp.matches_after.len(), 2, "expected 2 query blocks");
@@ -2682,13 +2662,12 @@ employee:
     /// IRI so tests can grow the result set across commits.
     async fn seed_named_attribute(app: &Router, repo: &str, name: &str, the: &str) {
         let body = format!(
-            "\
-attribute!: &{name}
+            r#"attribute!: &{name}
   the:         {the}
   as:          text
   cardinality: one
   description: A test attribute
-"
+"#
         );
         let _ = post_yaml(app, repo, &body).await;
     }
@@ -3461,13 +3440,12 @@ attribute!: &{name}
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
 
-        let body = "\
-attribute!: &person-name
+        let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
   cardinality: one
-  description: \"name\"
-";
+  description: "name"
+"#;
 
         let response = app
             .clone()
@@ -3576,25 +3554,24 @@ attribute!: &person-name
         // so `person:` resolves; then assert `person!: …` on
         // its own (no explicit query expression) and check the
         // matches block label.
-        let seed = "\
-attribute!: &person-name
+        let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
   cardinality: one
-  description: \"name\"
+  description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
   cardinality: one
-  description: \"age\"
+  description: "age"
 
 concept!: &person
-  description: \"a person\"
+  description: "a person"
   with:
     name: person-name
     age:  person-age
-";
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -3609,11 +3586,10 @@ concept!: &person
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let assertion = "\
-person!:
-  name: \"Bob\"
+        let assertion = r#"person!:
+  name: "Bob"
   age: 2
-";
+"#;
         let response = app
             .oneshot(
                 Request::builder()
@@ -3659,29 +3635,28 @@ person!:
         let repo = key.as_str();
 
         // Seed person concept + an instance.
-        let seed = "\
-attribute!: &person-name
+        let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
   cardinality: one
-  description: \"name\"
+  description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
   cardinality: one
-  description: \"age\"
+  description: "age"
 
 concept!: &person
-  description: \"a person\"
+  description: "a person"
   with:
     name: person-name
     age:  person-age
 
 person!:
-  name: \"Alice\"
+  name: "Alice"
   age:  29
-";
+"#;
         let response = app
             .clone()
             .oneshot(
@@ -3699,11 +3674,10 @@ person!:
         // Query with `name: _` — blank — and `age: _`. Expect
         // both fields to appear in the result with their
         // matched values.
-        let query = "\
-person:
+        let query = r#"person:
   name: _
   age:  _
-";
+"#;
         let response = app
             .oneshot(
                 Request::builder()

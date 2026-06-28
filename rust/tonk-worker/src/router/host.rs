@@ -162,16 +162,17 @@ fn body_for(value: Value) -> Body {
 /// `<script type="module" src>` is enough.
 fn wrap_html_body(body: &str) -> String {
     format!(
-        "<!doctype html>\n\
-         <html>\n\
-         <head>\n\
-         <meta charset=\"utf-8\">\n\
-         <script type=\"module\" src=\"/__tonk/bridge.js\"></script>\n\
-         </head>\n\
-         <body>\n\
-         {body}\n\
-         </body>\n\
-         </html>\n",
+        r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script type="module" src="/__tonk/bridge.js"></script>
+</head>
+<body>
+{body}
+</body>
+</html>
+"#,
         body = body,
     )
 }
