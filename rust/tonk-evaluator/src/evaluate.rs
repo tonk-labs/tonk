@@ -2192,6 +2192,117 @@ rule!:\n\
         Ok(())
     }
 
+    /// End-to-end deduction: an installed deductive rule makes a query
+    /// for its conclusion concept return instances *derived* from
+    /// premise facts (no stored conclusion facts exist), and retracting
+    /// the rule makes those derived instances disappear. The premise
+    /// facts never change — only the rule's presence does.
+    ///
+    /// Rule: `pong` is derived from `ping`. A single durable `ping`
+    /// instance is on the branch; `pong` is never asserted. Querying
+    /// `pong` yields one conclusion while the rule is installed and zero
+    /// after it is retracted.
+    #[dialog_common::test]
+    async fn it_deduces_concepts_until_the_rule_is_retracted() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let ping = one_text_field("io.gozala.ping", "tag");
+        let pong = one_text_field("io.gozala.pong", "tag");
+
+        // Concepts + attributes on the branch (both durable; the
+        // premise concept is a normal stored one here).
+        let mut setup = branch.transaction();
+        setup = install_attribute_facts(setup, &ping);
+        setup = install_attribute_facts(setup, &pong);
+        setup = install_named_concept(setup, "ping", &ping, /*transient=*/ false);
+        setup = install_named_concept(setup, "pong", &pong, /*transient=*/ false);
+        // One durable `ping` instance — the premise the rule derives from.
+        let subject: dialog_artifacts::Entity = "did:key:zDeducedSubject".parse()?;
+        setup = setup.assert(the!("io.gozala.ping/tag").of(subject.clone()).is("hi".to_string()));
+        setup.commit().perform(&operator).await?;
+
+        // A query for `pong` instances, all fields free.
+        let query_pong = || async {
+            let mut terms = Parameters::new();
+            terms.insert("this".to_string(), Term::var("this"));
+            terms.insert("tag".to_string(), Term::var("tag"));
+            let conclusions: Vec<ConceptConclusion> = branch
+                .query()
+                .select(ConceptQuery {
+                    terms,
+                    predicate: pong.clone(),
+                })
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            anyhow::Ok(conclusions)
+        };
+
+        // Before the rule: no stored pong facts, no rule — zero pong.
+        assert!(
+            query_pong().await?.is_empty(),
+            "pong should be empty before the rule is installed"
+        );
+
+        // Install the deductive rule (`assert:` no-bang) at a stable
+        // entity so the retract notation can name it.
+        let install_doc = "\
+rule!:\n\
+\x20 this: id:ping-to-pong\n\
+\x20 assert: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        parse(install_doc)
+            .syntax
+            .expect("install syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
+
+        // With the rule installed, querying `pong` derives one instance
+        // from the `ping` fact — even though no pong fact was written.
+        let deduced = query_pong().await?;
+        assert_eq!(
+            deduced.len(),
+            1,
+            "the installed rule should deduce one pong from the ping fact; saw {deduced:?}"
+        );
+
+        // Retract the rule.
+        let retract_doc = "\
+rule!:\n\
+\x20 this: id:ping-to-pong\n\
+\x20 ..: _\n";
+        parse(retract_doc)
+            .syntax
+            .expect("retract syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (retract rule): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (retract rule): {e}"))?;
+
+        // The ping fact is untouched, but with the rule gone the
+        // deduction stops — querying `pong` is empty again.
+        assert!(
+            query_pong().await?.is_empty(),
+            "pong deduction must stop once the rule is retracted"
+        );
+
+        Ok(())
+    }
+
     /// Repro mirroring the user's report: transient `person-entered`
     /// (two fields, one numeric), a durable `person` concept, a
     /// rule person <- person-entered, then a notation instance
