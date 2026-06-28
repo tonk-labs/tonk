@@ -1066,12 +1066,12 @@ mod tests {
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1118,12 +1118,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1163,12 +1163,12 @@ rule!:\n\
             .declare("ping", one_text_field("io.gozala.ping", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 retract: ping\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  retract: ping
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let result = fixture.analyze(&syntax).await;
         assert!(
@@ -1188,14 +1188,14 @@ rule!:\n\
             .declare("message", one_text_field("io.gozala.mailbox", "body"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 retract!: message\n\
-\x20 when:\n\
-\x20   - assert: ack\n\
-\x20     where: { target: ?this }\n\
-\x20   - assert: message\n\
-\x20     where: { this: ?this, body: ?body }\n";
+        let doc = r#"rule!:
+  retract!: message
+  when:
+    - assert: ack
+      where: { target: ?this }
+    - assert: message
+      where: { this: ?this, body: ?body }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let analysis = fixture
@@ -1222,12 +1222,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1262,13 +1262,13 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 this: id:my-counter\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  this: id:my-counter
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1299,12 +1299,12 @@ rule!:\n\
             .declare("ping", one_text_field("io.gozala.ping", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: missing-concept\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: {}\n";
+        let doc = r#"rule!:
+  assert!: missing-concept
+  when:
+    - assert: ping
+      where: {}
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1325,12 +1325,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: missing-premise\n\
-\x20     where: {}\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: missing-premise
+      where: {}
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1355,12 +1355,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { wrong-field: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { wrong-field: ?tag }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1388,12 +1388,12 @@ rule!:\n\
         // Body's `where:` rebinds `this` and `tag` to variables
         // with the same names the head's `assert!:` reads — the
         // produced fact is identical to the read one.
-        let doc = "\
-rule!:\n\
-\x20 assert!: ping\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: ping
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1423,16 +1423,16 @@ rule!:\n\
             .await;
         // Head writes counter at `?count`; body reads counter at
         // `?prev`. Different variable → not tautological.
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?prev }\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: 1 }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?prev, with: 1, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?prev }
+    - assert: increment
+      where: { this: ?this, by: 1 }
+    - assert: math/sum
+      where: { of: ?prev, with: 1, is: ?count }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         fixture
@@ -1470,16 +1470,16 @@ rule!:\n\
             .declare("increment", one_uint_field("io.gozala.increment", "by"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?value }\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: 1 }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?value, with: 1, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?value }
+    - assert: increment
+      where: { this: ?this, by: 1 }
+    - assert: math/sum
+      where: { of: ?value, with: 1, is: ?count }
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1506,14 +1506,14 @@ rule!:\n\
             .declare("counter", one_uint_field("io.gozala.counter", "count"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?value }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?value, plus: 1, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?value }
+    - assert: math/sum
+      where: { of: ?value, plus: 1, is: ?count }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1536,14 +1536,14 @@ rule!:\n\
             .declare("counter", one_uint_field("io.gozala.counter", "count"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?value }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?value, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?value }
+    - assert: math/sum
+      where: { of: ?value, is: ?count }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1682,9 +1682,9 @@ rule!:
         // Notation path: a `view!:` with one literal field. No
         // `this:` and no `&anchor`, so the lowering falls into
         // `ThisIntent::Derived` and hashes `(predicate, body)`.
-        let doc = "\
-view!:\n\
-\x20 name: Basic\n";
+        let doc = r#"view!:
+  name: Basic
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1838,9 +1838,9 @@ view!:\n\
             .declare("view", one_entity_field("xyz.tonk.view", "model"))
             .await;
 
-        let doc = "\
-view!: &broken\n\
-\x20 model: nonexistent\n";
+        let doc = r#"view!: &broken
+  model: nonexistent
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let err = fixture
             .analyze(&syntax)
