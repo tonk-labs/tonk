@@ -28,6 +28,7 @@ use dialog_common::ConditionalSync;
 use tonk_notation::{Effectful, Expression, FieldValue, HeadName, Syntax};
 
 use tonk_schema::concept::QueryEnv;
+use tonk_schema::deductive_rule::{DeductiveRule, DeductiveRuleResolveError};
 use tonk_schema::query_source::Source;
 use tonk_schema::resolution::{
     AttributeDefinition, AttributeReference, ConceptDefinition, ConceptReference, NamedReference,
@@ -157,6 +158,14 @@ pub(crate) trait Resolve {
     ) -> Result<Option<AttributeDefinition>, ResolveError>;
     async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError>;
     async fn rule(&self, entity: &Entity) -> Result<Option<Rule>, RuleResolveError>;
+    /// Resolve an installed *deductive* rule by entity for a
+    /// `rule!: ..: _` retract. Parallel to [`rule`](Self::rule); a
+    /// retract entity may name either kind, so both are resolved and
+    /// whichever exists wins.
+    async fn deductive_rule(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError>;
 }
 
 /// Resolver that answers every external need with `None`. Used by
@@ -187,6 +196,12 @@ impl Resolve for LocalOnly {
         Ok(None)
     }
     async fn rule(&self, _: &Entity) -> Result<Option<Rule>, RuleResolveError> {
+        Ok(None)
+    }
+    async fn deductive_rule(
+        &self,
+        _: &Entity,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
         Ok(None)
     }
 }
@@ -241,6 +256,14 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
     }
     async fn rule(&self, entity: &Entity) -> Result<Option<Rule>, RuleResolveError> {
         Rule::retracting(entity.clone())
+            .resolve(&self.source, self.env)
+            .await
+    }
+    async fn deductive_rule(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
+        DeductiveRule::retracting(entity.clone())
             .resolve(&self.source, self.env)
             .await
     }
@@ -691,18 +714,33 @@ impl Graph {
                     }
                 }
                 Need::Rule { entity, range } => {
-                    if scope.resolved_rule(entity).is_some() {
-                        continue;
+                    // A retract entity may name an inductive or a
+                    // deductive rule; resolve both off the branch and let
+                    // `lift_rule_claim` pick whichever exists.
+                    if scope.resolved_rule(entity).is_none() {
+                        let rule = resolver.rule(entity).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::RuleCompileFailed {
+                                    reason: format!("rule retract resolve failed at {entity}: {e}"),
+                                },
+                                *range,
+                            )
+                        })?;
+                        scope.record_resolved_rule(entity, rule);
                     }
-                    let rule = resolver.rule(entity).await.map_err(|e| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::RuleCompileFailed {
-                                reason: format!("rule retract resolve failed at {entity}: {e}"),
-                            },
-                            *range,
-                        )
-                    })?;
-                    scope.record_resolved_rule(entity, rule);
+                    if scope.resolved_deductive_rule(entity).is_none() {
+                        let rule = resolver.deductive_rule(entity).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::RuleCompileFailed {
+                                    reason: format!(
+                                        "deductive rule retract resolve failed at {entity}: {e}"
+                                    ),
+                                },
+                                *range,
+                            )
+                        })?;
+                        scope.record_resolved_deductive_rule(entity, rule);
+                    }
                 }
                 // Resolved in Pass 1 (before declaration bodies emit).
                 Need::Attribute { .. }
@@ -815,6 +853,13 @@ mod tests {
             Ok(None)
         }
         async fn rule(&self, _: &Entity) -> Result<Option<Rule>, RuleResolveError> {
+            self.bump();
+            Ok(None)
+        }
+        async fn deductive_rule(
+            &self,
+            _: &Entity,
+        ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
             self.bump();
             Ok(None)
         }

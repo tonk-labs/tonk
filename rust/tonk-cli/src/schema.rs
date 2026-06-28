@@ -151,14 +151,13 @@ struct ConceptInfo {
 /// Run the built-in `attribute` query plus a name-claim lookup
 /// and merge the two by entity.
 async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
-    const QUERY: &str = "\
-attribute:
+    const QUERY: &str = r#"attribute:
   this:        ?a
   id:          ?the
   type:        ?type
   cardinality: ?card
   description: ?desc
-";
+"#;
     let response = run_query(site, QUERY).await?;
     let names = name_claims_by_entity(site).await?;
 
@@ -238,14 +237,13 @@ async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String
 // ---------------------------------------------------------------- //
 
 async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
-    const QUERY: &str = "\
-concept:
+    const QUERY: &str = r#"concept:
   this:        ?c
   concept:     ?cc
   name:        ?name
   description: ?desc
   source:      ?source
-";
+"#;
     let response = run_query(site, QUERY).await?;
     let block = expect_block(&response, "concept")?;
     let mut out: Vec<ConceptInfo> = Vec::with_capacity(block.results.len());
