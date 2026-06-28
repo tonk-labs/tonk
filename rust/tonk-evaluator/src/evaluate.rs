@@ -2220,7 +2220,11 @@ rule!:\n\
         setup = install_named_concept(setup, "pong", &pong, /*transient=*/ false);
         // One durable `ping` instance — the premise the rule derives from.
         let subject: dialog_artifacts::Entity = "did:key:zDeducedSubject".parse()?;
-        setup = setup.assert(the!("io.gozala.ping/tag").of(subject.clone()).is("hi".to_string()));
+        setup = setup.assert(
+            the!("io.gozala.ping/tag")
+                .of(subject.clone())
+                .is("hi".to_string()),
+        );
         setup.commit().perform(&operator).await?;
 
         // A query for `pong` instances, all fields free.
