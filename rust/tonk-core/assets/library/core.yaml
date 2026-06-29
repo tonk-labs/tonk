@@ -1685,17 +1685,111 @@ view!: &workspace/shell/view
       </tonk-repository>
     </div>
 
+# The directory page — `/space/{name}/{model}`. The `{model}` path param is
+# stamped on the site entity (`xyz.tonk.site/model`) and picked here; the view
+# mounts a directory `<tonk-display model={model}>` (no entity → the model's
+# `view/directory` renders, e.g. the board strip, the inspector, the tree). The
+# param uses the slash-tolerant `path` extent in its route pattern so a
+# namespaced model (`tonk/person`) is captured whole.
+concept!: &directory/route
+  this: tonk:directory/route
+  description: A model directory page (`/space/{name}/{model}`).
+  with:
+    model:
+      description: The model name from the path, picked off the site entity.
+      the: xyz.tonk.site/model
+      cardinality: one
+      as: text
+
+view!: &directory/route/view
+  this: id:tonk:directory/route/view
+  model: tonk:directory/route
+  display: |
+    <tonk-display model={model} />
+
+# The artifact page — `/space/{name}/{entity}@{model}`. Binds a concrete entity
+# to a model: the view renders that one instance (`<tonk-display entity model>`).
+concept!: &artifact/route
+  this: tonk:artifact/route
+  description: A single artifact page (`/space/{name}/{entity}@{model}`).
+  with:
+    entity:
+      description: The target entity from the path, picked off the site entity.
+      the: xyz.tonk.site/entity
+      cardinality: one
+      as: entity
+    model:
+      description: The model name from the path, picked off the site entity.
+      the: xyz.tonk.site/model
+      cardinality: one
+      as: text
+
+view!: &artifact/route/view
+  this: id:tonk:artifact/route/view
+  model: tonk:artifact/route
+  display: |
+    <tonk-display entity={entity} model={model} />
+
+# The ad-hoc page — `/space/{name}/{entity}@{model}!{view}`. As the artifact
+# page, but with an explicit `view` chosen for the entity rather than the
+# model's default.
+concept!: &adhoc/route
+  this: tonk:adhoc/route
+  description: An entity rendered with an explicit view (`{entity}@{model}!{view}`).
+  with:
+    entity:
+      description: The target entity from the path, picked off the site entity.
+      the: xyz.tonk.site/entity
+      cardinality: one
+      as: entity
+    model:
+      description: The model name from the path, picked off the site entity.
+      the: xyz.tonk.site/model
+      cardinality: one
+      as: text
+    view:
+      description: The view name from the path, picked off the site entity.
+      the: xyz.tonk.site/view
+      cardinality: one
+      as: text
+
+view!: &adhoc/route/view
+  this: id:tonk:adhoc/route/view
+  model: tonk:adhoc/route
+  display: |
+    <tonk-display entity={entity} model={model} view={view} />
+
 # ---- Seeded routes (bootstrap) ----
 #
-# Built-in routes every space starts with. The SW matches against these.
-# The space route resolves the declarative workspace shell (the site's
-# `{concept}` indirection mounts it on the site entity). Editing this entry's
-# `concept` rather than adding a second `path: "/"` route avoids a matchit
-# conflict (the SW skips conflicting paths — `session.rs match_route`).
+# Built-in routes every space starts with. The SW matches against these. Patterns
+# use the route grammar: `{name}` is one segment, `{name:path}` is slash-tolerant
+# (so a namespaced `{model:path}` captures `tonk/person` whole), `@` and `!` are
+# literal delimiters between params. The SW matches most-specific-first, so the
+# bare `/`, the `@`/`!` artifact patterns, and the plain `{model}` directory never
+# shadow one another.
+#
+# The bare `/` route resolves the declarative workspace shell (the site's
+# `{concept}` indirection mounts it on the site entity); the sub-routes resolve
+# the directory/artifact/ad-hoc page concepts.
 route!: &route/space
   this: id:tonk:route/space
   path: "/"
   concept: tonk:workspace/shell
+
+route!: &route/adhoc
+  this: id:tonk:route/adhoc
+  path: "/{entity}@{model:path}!{view}"
+  concept: tonk:adhoc/route
+
+route!: &route/artifact
+  this: id:tonk:route/artifact
+  path: "/{entity}@{model:path}"
+  concept: tonk:artifact/route
+
+route!: &route/directory
+  this: id:tonk:route/directory
+  path: "/{model:path}"
+  concept: tonk:directory/route
 # The sync chip — the default view for `model: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's
 # <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"

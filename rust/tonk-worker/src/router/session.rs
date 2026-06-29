@@ -109,7 +109,7 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
     let Some(replica) = origin_entity(tonk, &state).await else {
         return;
     };
-    let Some((route, concept)) = match_route(tonk, &state, &rest).await else {
+    let Some(matched) = match_route(tonk, &state, &rest).await else {
         return;
     };
 
@@ -117,25 +117,67 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
     // schedules a poll so subscribers are notified — the request dispatcher
     // drains the poll once. Cardinality-one fields supersede in place, so a
     // navigation re-call just updates this site's path/route/concept.
+    //
+    // The fixed `Site` stamp carries path/anchor/space/branch/replica/route/
+    // concept; the route's captured params (`{model}`, `{entity}`, `{view}`, …)
+    // are stamped alongside as `xyz.tonk.site/{name}` facts so each route model
+    // picks the ones it declares — the same per-field pickup `tonk:space/route`
+    // uses for `replica`. Params are variable per route, so they ride raw claims
+    // rather than the fixed `Site` struct.
     let stamp = Site::new(
-        entity,
+        entity.clone(),
         path.to_owned(),
         anchor,
         space.name.clone(),
         space.branch.clone(),
         replica,
-        route,
-        concept,
+        matched.route,
+        matched.concept,
     );
-    if let Err(e) = branch
-        .overlay()
-        .assert(stamp)
-        .write()
-        .perform(&tonk.operator)
-        .await
-    {
+    let mut overlay = branch.overlay().assert(stamp);
+    for (name, value) in matched.params.iter() {
+        match site_param_claim(&entity, name, value) {
+            Some(claim) => overlay = overlay.assert(claim),
+            None => tonk_common::log!("register_site: bad site param attribute for {name}"),
+        }
+    }
+    if let Err(e) = overlay.write().perform(&tonk.operator).await {
         tonk_common::log!("register_site: overlay write failed for {path}: {e}");
     }
+}
+
+/// Build a raw claim stamping a captured route param as a `xyz.tonk.site/{name}`
+/// fact on the site entity, in the value type the route model's field expects so
+/// the field's typed query resolves it. Returns `None` only if the attribute name
+/// is malformed.
+///
+/// The value type is keyed by param name to match the route models in the
+/// standard library: `entity` is an `as: entity` field (stored [`Value::Entity`]);
+/// `model` and `view` are `as: text` fields (stored [`Value::String`]). This is
+/// the interim before descriptor-driven typing — once `match_route` resolves each
+/// route model's field descriptors (and threads the `as:` types through
+/// `tonk_router::Route::with_types`), the value type comes from the field itself
+/// and this name table goes away. An unknown param name defaults to string.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn site_param_claim(
+    site: &dialog_artifacts::Entity,
+    name: &str,
+    value: &str,
+) -> Option<crate::router::claim::RawClaim> {
+    use dialog_artifacts::{Entity, Value};
+
+    let attribute = format!("xyz.tonk.site/{name}").parse().ok()?;
+    let is = match name {
+        // Entity-typed route-model fields.
+        "entity" => Value::Entity(value.parse::<Entity>().ok()?),
+        // Text-typed route-model fields (model name, view name) and anything else.
+        _ => Value::String(value.to_owned()),
+    };
+    Some(crate::router::claim::RawClaim {
+        the: attribute,
+        of: site.clone(),
+        is,
+    })
 }
 
 /// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for
@@ -170,20 +212,38 @@ async fn origin_entity(
     origins.into_iter().next().map(|origin| origin.this)
 }
 
+/// A matched route: the route-table entry, the model the shell mounts, and the
+/// params captured from the path (`{model}`, `{entity}`, `{view}`, …).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+struct MatchedRoute {
+    /// The route-table entry's entity.
+    route: dialog_artifacts::Entity,
+    /// The route model to mount.
+    concept: dialog_artifacts::Entity,
+    /// The captured path params, by name.
+    params: tonk_router::Params,
+}
+
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
-/// `tonk:route` table, returning the matched `(route entity, route model)`.
+/// `tonk:route` table.
 ///
-/// Builds a fresh `matchit::Router` per call from the queried routes. Routes are
-/// inserted in stable entity-URI order so a `matchit` conflict (two structurally
-/// identical patterns) resolves deterministically — the loser is skipped with a
-/// log line. Returns `None` when nothing matches.
+/// Builds a fresh [`tonk_router::Router`] per call from the queried routes:
+/// each route's `path` pattern compiles via [`Route::parse_pattern`], paired with
+/// its `(route entity, model)`. [`recognize`](tonk_router::Router::recognize)
+/// matches most-specific-first (static > param > catch-all) and returns the
+/// captured params. Routes are inserted in stable entity-URI order so equal-
+/// specificity ties resolve deterministically. Returns `None` when nothing
+/// matches or a pattern fails to compile.
+///
+/// [`recognize`]: tonk_router::Router::recognize
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn match_route(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
     rest: &str,
-) -> Option<(dialog_artifacts::Entity, dialog_artifacts::Entity)> {
+) -> Option<MatchedRoute> {
     use dialog_query::{Output as _, Query, Term};
+    use tonk_router::Route as RoutePattern;
     use tonk_schema::Route;
 
     let mut routes: Vec<Route> = state
@@ -199,19 +259,34 @@ async fn match_route(
         .await
         .unwrap_or_default();
 
-    // Stable order by entity URI so conflict resolution is deterministic.
+    // Stable order by entity URI so equal-specificity ties resolve
+    // deterministically (the table preserves insertion order among equal scores).
     routes.sort_by(|a, b| a.this.to_string().cmp(&b.this.to_string()));
 
-    let mut router = matchit::Router::new();
+    let mut router = tonk_router::Router::new();
     for route in &routes {
-        let value = (route.this.clone(), route.concept.0.clone());
-        if let Err(e) = router.insert(route.path.0.clone(), value) {
-            tonk_common::log!(
-                "match_route: skipping conflicting route {}: {e}",
-                route.path.0
-            );
+        match RoutePattern::parse_pattern(&route.path.0) {
+            Ok(pattern) => {
+                router.insert(pattern, (route.this.clone(), route.concept.0.clone()));
+            }
+            Err(e) => {
+                tonk_common::log!(
+                    "match_route: skipping invalid route {}: {e:?}",
+                    route.path.0
+                );
+            }
         }
     }
 
-    router.at(rest).ok().map(|matched| matched.value.clone())
+    match router.recognize(rest) {
+        Ok(matched) => {
+            let (route, concept) = matched.value.clone();
+            Some(MatchedRoute {
+                route,
+                concept,
+                params: matched.params,
+            })
+        }
+        Err(_) => None,
+    }
 }

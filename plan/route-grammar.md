@@ -99,19 +99,56 @@ or consciously drop:
    STILL TODO: the routing **table** (`oneOf` over many routes + specificity
    ordering static>param>greedy + furthest-progress error). Today matching is
    one-route-at-a-time; the table is built next (Stage 2b) before wiring the SW.
-3. **Dynamic param facts on `tonk:site`** — resolve param-shape sub-decision
-   (typed-per-model vs generic bag), wire `match_route`/`stamp_site`
-   (router/session.rs) to bind matcher params → site facts. Route models declare
-   the fields they read.
-4. **Express all route shapes in core.yaml** as `route!` entries + route models +
-   views. Port name-resolution + 404 off `display.rs` into the data path.
-5. **Cut the SW router over** to the combinator matcher; remove matchit's
-   Level-1 use (keep or drop for Level-0 `/space/{space}` as convenient).
-6. **Retire Leptos** — delete the `*subject` route + `display.rs`, then move `/`
-   and `/join` to `route!` (profile branch route table; drop the
-   `RouteTarget::Profile` special-case in `space.rs`/`session.rs`), then delete
-   `leptos_router` (and the `<tonk-hub>`/`<tonk-join>` shims / `route_views.rs`
-   if subsumed).
+3. **DONE — param facts on `tonk:site`.** `match_route` (router/session.rs) now
+   builds a `tonk_router::Router` from the `tonk:route` table, recognizes the
+   Level-1 path, and returns captured params; `stamp_site` writes the fixed `Site`
+   stamp PLUS each param as a `xyz.tonk.site/{name}` raw claim (via `RawClaim`,
+   now `pub(crate)`). Storage = generic-bag (per-param `xyz.tonk.site/*` facts);
+   consumption = typed-per-model (each route model declares typed fields reading
+   those attrs). `matchit` dropped from tonk-worker.
+   INTERIM: param value type is keyed by name in `site_param_claim` (`entity` →
+   `Value::Entity`, `model`/`view` → `Value::String`) to match the route models'
+   `as:` field types. TODO (descriptor-driven typing): have `match_route` query
+   each route model's field descriptors and thread the `as:` types through
+   `tonk_router::Route::with_types`, so the value type comes from the field and
+   the name table in `site_param_claim` goes away. (This also enables type-based
+   route disambiguation, which the engine already supports.)
+4. **DONE — route shapes in core.yaml** as `route!` entries + route models +
+   views: `tonk:directory/route` (`/{model:path}` → `<tonk-display model>`),
+   `tonk:artifact/route` (`/{entity}@{model:path}` → `entity`+`model`),
+   `tonk:adhoc/route` (`/{entity}@{model:path}!{view}` → + `view`), plus the
+   existing `tonk:space/route` (`/`). All four seeded into the route table.
+   `display.rs` DELETED; `*subject` Leptos route now points at `TonkSpaceSealed`
+   (which threads the full path incl. sub-route into the registered site), so
+   board/inspector/diagnose/artifact all flow through the sealed concept-router.
+   DROPPED for now: bookmark name-resolution + 404 that `display.rs` did — the
+   `{entity}` field is `as: entity`, so URLs must carry real URIs (a bare name
+   won't resolve). Re-add as a route-model step / `tonk:site` reactive state later
+   (see name-resolution note above).
+5. **Cut the SW router over** — DONE (matchit gone from tonk-worker; the engine
+   matches Level 1). Level 0 (`/space/{space}`) stays the `parse_space`/
+   `resolve_path` builtin in tonk-schema.
+6. **Retire Leptos** — PARTIAL: `*subject` route + `display.rs` gone. STILL on
+   Leptos: the `<Router>` shell itself, `/` (`TonkHub`/`<tonk-hub>`), `/join`
+   (`TonkJoin`/`<tonk-join>`). Next: move `/` and `/join` to `route!` on the
+   profile branch (drop the `RouteTarget::Profile` special-case in
+   `space.rs`/`session.rs`), then delete `leptos_router` + the shims +
+   `route_views.rs`.
+
+## Remaining work (after this session)
+
+1. **Browser-verify** the new space sub-routes end to end: `/space/{id}/inspector`,
+   `/space/{id}/diagnose`, `/space/{id}/tonk/person`, an `{entity}@{model}` URL.
+   Confirm the SW stamps `xyz.tonk.site/{model,entity,view}` and the route model
+   resolves + renders inside the sealed iframe. (Couldn't run a browser headless.)
+2. **Descriptor-driven param typing** (Stage 3 TODO above) — replace the name
+   table in `site_param_claim` with types read from the route model's field
+   descriptors via `Route::with_types`; unlocks type-based disambiguation.
+3. **Name-resolution + 404** — re-introduce the dropped `display.rs` behavior as a
+   route-model concern (a `Name`-index lookup step + a `tonk:site` not-found
+   reactive state) if bare bookmark names in URLs are still wanted.
+4. **`/` and `/join` → `route!`** on the profile branch, then delete
+   `leptos_router` (Stage 6).
 
 ## Current architecture (ground truth, verified 2026-06-28)
 

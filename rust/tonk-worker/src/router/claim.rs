@@ -89,10 +89,13 @@ pub struct QueryResponse {
 ///
 /// This implements `Statement` by forwarding to `Update::associate`/`dissociate`,
 /// allowing us to use runtime-determined attribute names and `Value` directly.
-struct RawClaim {
-    the: Attribute,
-    of: Entity,
-    is: Value,
+/// Used here for the claim endpoints and by `session::stamp_site` to write the
+/// route's captured params as `xyz.tonk.site/{name}` facts whose names aren't
+/// known until match time.
+pub(crate) struct RawClaim {
+    pub(crate) the: Attribute,
+    pub(crate) of: Entity,
+    pub(crate) is: Value,
 }
 
 impl Statement for RawClaim {
