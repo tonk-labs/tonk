@@ -304,8 +304,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   }
   window.fetch=function(input,init){
     var url=(typeof input==="string")?input:(input&&input.url)||"";
+    // Host-relative (`/…`, not `//`): route through the relay.
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
       return relayRequest(url,input,init);
+    }
+    // Absolute URL pointing at the HOST origin: some consumers resolve a path
+    // against `document.baseURI` (which the host sets to its real origin), so a
+    // host API call can arrive fully-qualified (`http://host/api/…`). At the
+    // guest's opaque origin that would be a cross-origin fetch (CORS-blocked,
+    // origin `null`), so strip the host-origin prefix and relay the path. The
+    // host origin comes from the bridge context.
+    var origin=(window.tonk&&window.tonk.context&&window.tonk.context.origin)||"";
+    if(origin&&url.indexOf(origin+"/")===0){
+      return relayRequest(url.slice(origin.length),input,init);
     }
     return nativeFetch(input,init);
   };
