@@ -92,15 +92,27 @@ pub struct QueryResponse {
 /// Used here for the claim endpoints and by `session::stamp_site` to write the
 /// route's captured params as `xyz.tonk.site/{name}` facts whose names aren't
 /// known until match time.
+///
+/// `unique` selects the assert cardinality: `false` → [`Update::associate`]
+/// (cardinality-many, the claim endpoints' semantics); `true` →
+/// [`Update::associate_unique`], which emits a replace so a prior value at the
+/// same `(entity, attribute)` is superseded across commits — required for the
+/// per-tab site params, which must reflect only the latest navigation rather than
+/// accumulate one value per visited route.
 pub(crate) struct RawClaim {
     pub(crate) the: Attribute,
     pub(crate) of: Entity,
     pub(crate) is: Value,
+    pub(crate) unique: bool,
 }
 
 impl Statement for RawClaim {
     fn assert(self, update: &mut impl Update) {
-        update.associate(self.the, self.of, self.is);
+        if self.unique {
+            update.associate_unique(self.the, self.of, self.is);
+        } else {
+            update.associate(self.the, self.of, self.is);
+        }
     }
 
     fn retract(self, update: &mut impl Update) {
@@ -230,6 +242,7 @@ pub async fn assert_claim(
         the: attribute,
         of: entity,
         is: value,
+        unique: false,
     };
 
     tonk_state
@@ -302,6 +315,7 @@ pub async fn retract_claim(
         the: attribute,
         of: entity,
         is: value,
+        unique: false,
     };
 
     tonk_state

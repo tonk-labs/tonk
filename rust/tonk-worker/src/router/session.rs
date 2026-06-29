@@ -173,10 +173,13 @@ fn site_param_claim(
         // Text-typed route-model fields (model name, view name) and anything else.
         _ => Value::String(value.to_owned()),
     };
+    // Cardinality-one: a navigation must SUPERSEDE the prior value, not pile up
+    // a new fact per visited route (else a stale `model`/`entity`/`view` lingers).
     Some(crate::router::claim::RawClaim {
         the: attribute,
         of: site.clone(),
         is,
+        unique: true,
     })
 }
 

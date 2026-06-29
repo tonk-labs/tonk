@@ -137,10 +137,36 @@ or consciously drop:
 
 ## Remaining work (after this session)
 
-1. **Browser-verify** the new space sub-routes end to end: `/space/{id}/inspector`,
-   `/space/{id}/diagnose`, `/space/{id}/tonk/person`, an `{entity}@{model}` URL.
-   Confirm the SW stamps `xyz.tonk.site/{model,entity,view}` and the route model
-   resolves + renders inside the sealed iframe. (Couldn't run a browser headless.)
+1. **BROWSER-VERIFIED (2026-06-29, Chrome MCP).** The router stamps correctly for
+   every shape — confirmed via overlay query on a real space:
+   - `/inspector` → concept `tonk:directory/route`, model `inspector`
+   - `/diagnose` → model `diagnose`
+   - `/tonk/person` → model `tonk/person` (slash-tolerant ✓)
+   - `/id:demo@trip` → concept `tonk:artifact/route`, entity `id:demo`, model `trip`
+   - `/id:demo@trip!tonk:view` → concept `tonk:adhoc/route`, +view `tonk:view`
+   Two bugs were FOUND AND FIXED in the process (commit after this):
+   - **Param facts accumulated instead of superseding** — `RawClaim` used
+     `associate` (cardinality-many), so each navigation piled up a new
+     `xyz.tonk.site/model` value and a cardinality-one read returned a stale one.
+     Fixed: `RawClaim` gained a `unique` flag → `associate_unique` (Replace) for
+     site params. Verified: after registering 3 paths, exactly 1 model value
+     remains (the latest).
+   - (process note) a wasm change without a `service_worker.js` change does NOT
+     trigger a SW update — had to `unregister()` + double-reload to load the new
+     worker. Relevant for any future SW browser-verify.
+
+   **STILL BROKEN (separate, pre-existing gap):** directory route models that use
+   repository-context elements — `<tonk-tree>` (diagnose), `<tonk-inspector>` —
+   render "no repository in context (nest under <tonk-repository>)" / blank inside
+   the sealed iframe. These elements resolve repo/branch by walking DOM ancestors
+   (`tonk-tree/src/web.rs:147`), but the guest content is just
+   `<tonk-host><tonk-display model=tonk:site>` with NO `<tonk-repository>`
+   ancestor. `<tonk-display>` data works because the OUTER repository annotates
+   bridge queries; `<tonk-tree>` bypasses that. FIX OPTIONS: (a) stamp
+   `repo`/`branch` as site facts and have the directory route view pass them as
+   explicit `repo=`/`branch=` attributes (tonk-tree already accepts those); or
+   (b) wrap guest content in a `<tonk-repository>`/`<tonk-branch>` whose names come
+   from the site. Not a router bug — a guest-context gap for non-display models.
 2. **Descriptor-driven param typing** (Stage 3 TODO above) — replace the name
    table in `site_param_claim` with types read from the route model's field
    descriptors via `Route::with_types`; unlocks type-based disambiguation.
