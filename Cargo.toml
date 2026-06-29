@@ -14,6 +14,7 @@ members = [
     "rust/tonk-guest",
     "rust/tonk-host",
     "rust/tonk-invite",
+    "rust/tonk-inspector",
     "rust/tonk-language-server",
     "rust/tonk-macros",
     "rust/tonk-notation",
@@ -49,6 +50,7 @@ dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-display = { path = "./rust/tonk-display" }
 tonk-evaluator = { path = "./rust/tonk-evaluator" }
 tonk-host = { path = "./rust/tonk-host" }
+tonk-inspector = { path = "./rust/tonk-inspector" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-macros = { path = "./rust/tonk-macros" }

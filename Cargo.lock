@@ -4870,22 +4870,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-fab"
-version = "0.1.0"
-dependencies = [
- "custom-elements",
- "dialog-common",
- "js-sys",
- "serde_json",
- "tokio",
- "tonk-common",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-guest"
 version = "0.1.0"
 dependencies = [
@@ -4894,8 +4878,7 @@ dependencies = [
  "js-sys",
  "tonk-board",
  "tonk-display",
- "tonk-fab",
- "tonk-host",
+ "tonk-inspector",
  "tonk-portal",
  "tonk-sigil",
  "tonk-tree",
@@ -4925,6 +4908,23 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-streams",
+ "web-sys",
+]
+
+[[package]]
+name = "tonk-inspector"
+version = "0.1.0"
+dependencies = [
+ "custom-elements",
+ "dialog-common",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonk-notation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "web-sys",
 ]
 
@@ -5006,7 +5006,6 @@ dependencies = [
  "serde_json",
  "tonk-common",
  "tonk-display",
- "tonk-fab",
  "tonk-host",
  "tonk-schema",
  "wasm-bindgen",
