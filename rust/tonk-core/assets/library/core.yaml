@@ -1872,6 +1872,47 @@ view!:
         }
 
       </style>
+      <div class="workspace__topbar">
+        <span class="workspace__brand">tonk</span>
+        <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
+        <span class="workspace__title"><tonk-display entity={subject} model=tonk:repository></tonk-display></span>
+        <!-- The sync chip: subscribes to the `tonk:sync` `state:here` overlay
+             the worker stamps on THIS space branch (the one the shell is
+             already scoped to), so it needs no extra repository context. The
+             `no-entity` slot shows `pending` ("syncing…") until the first
+             status lands — which is honest, since a status check / sync fires
+             on load. Without the slot `<tonk-display>` would dump the
+             missing-instance notation as text. -->
+        <tonk-display entity=state:here model=tonk:sync>
+          <span slot="no-entity" class="workspace__sync" data-sync-status="sync:pending" role="button" tabindex="0" data-dialog="open pause-sync" aria-label="Pause sync" title="Pause sync"></span>
+        </tonk-display>
+        <span class="workspace__spacer"></span>
+        <span class="workspace__actions">
+          <!-- Identity chip: shows the signed-in member's sigil + their
+               editable display name. Resolves against the `state:self`
+               overlay the worker stamps on load (see task-5/6). Editing
+               the name commits via the worker-backed `profile/rename`
+               command (no declarative rule — the Rust handler writes to
+               the profile meta branch). The empty `no-entity` slot renders
+               nothing while `state:self` is briefly absent (e.g. just after
+               an overlay clear) — without it `<tonk-display>` would dump the
+               missing-instance notation as text, mirroring the sync chip. -->
+          <tonk-display entity=state:self model=tonk:identity>
+            <span slot="no-entity" class="workspace__identity" aria-hidden="true"></span>
+          </tonk-display>
+          <!-- One click both opens the share dialog (`data-dialog`) and
+               submits the dialog's share form (`form=share-form`, the HTML
+               external-submit attribute) — so the invite mints on open with
+               no separate "Create link" click. The form carries no payload
+               beyond the click timestamp; the worker mints the keypair and
+               delegation. A user click is the trigger, so there is no
+               render-driven auto-fire loop. -->
+          <wa-button class="workspace__share" appearance="plain" type="submit" form="share-form" data-dialog="open share-repo" aria-label="Share this repo" title="Share this repo">
+            <wa-icon name="share-nodes" label="Share"></wa-icon>
+          </wa-button>
+        </span>
+      </div>
+
       <!-- Enable-sync dialog: shown via the `<tonk-sync-state>` enable
            trigger on a no-upstream space. That element stamps the
            resolved repo name into the hidden `name` input on click; the

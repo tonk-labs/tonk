@@ -283,7 +283,6 @@ view/directory!: &profile/fab/view
       <div class="fab">
         <span class="fab__circle" data-sync="offline"></span>
         <span class="fab__identity">
-          <tonk-sigil class="fab__sigil" did={dom.host/data-did}></tonk-sigil>
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
         <span class="fab__space">{dom.host/data-space}</span>
@@ -347,13 +346,6 @@ view/directory!: &profile/fab/view
           display: flex;
           align-items: center;
           gap: 6px;
-        }
-        .fab__sigil {
-          flex: none;
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          overflow: hidden;
         }
         .fab__name {
           font-weight: 500;
