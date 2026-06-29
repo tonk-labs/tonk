@@ -47,7 +47,7 @@ pub fn start() {
     tonk_fab::register();
     // The scratch inspector — a leptos-free notebook element that evaluates by
     // POSTing to the branch's `/evaluate` endpoint over the host fetch bridge.
-    // Needs the `<tonk-code>` editor bundle injected too (the portal does that).
+    // (The `<tonk-code>` editor bundle injection is a separate, pending step.)
     tonk_inspector::register();
     // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
     // sheet's imperative canvas). Register it so a NESTED portal upgrades —
