@@ -5,7 +5,8 @@
 
 use dialog_artifacts::{Entity, Value};
 use dialog_query::{
-    AttributeDescriptor, ConceptDescriptor, Parameters, Term, concept::query::ConceptQuery,
+    AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Parameters, Term,
+    concept::query::ConceptQuery,
 };
 use std::collections::BTreeMap;
 
@@ -746,27 +747,24 @@ fn concept_field_retraction(
     entity: &Entity,
     fields: &[String],
 ) -> Option<Application> {
-    // Pull the stored field set as JSON so each retracted field's
-    // descriptor (carrying its `the:` attribute) can be lifted into a
-    // sub-descriptor of exactly the fields being dropped.
-    let stored_json = serde_json::to_value(stored).expect("ConceptDescriptor is serializable");
-    let stored_with = stored_json
-        .get("with")
-        .and_then(serde_json::Value::as_object);
-
-    let mut sub_with = serde_json::Map::new();
-    for field in fields {
-        if let Some(entry) = stored_with.and_then(|w| w.get(field)) {
-            sub_with.insert(field.clone(), entry.clone());
-        }
-    }
-    if sub_with.is_empty() {
+    // Lift exactly the fields being dropped into a sub-descriptor,
+    // carrying each one's stored `ConceptFieldDescriptor` (its `the:`
+    // attribute) so `concept_schema` maps it to the right
+    // `dialog.concept.with/<field>` relation.
+    let with = stored.with();
+    let sub_fields: Vec<(String, ConceptFieldDescriptor)> = fields
+        .iter()
+        .filter_map(|field| {
+            with.iter()
+                .find(|(name, _)| name == field)
+                .map(|(name, attr)| (name.to_owned(), attr.clone()))
+        })
+        .collect();
+    if sub_fields.is_empty() {
         return None;
     }
-
-    let sub_descriptor: ConceptDescriptor =
-        serde_json::from_value(serde_json::json!({ "with": sub_with }))
-            .expect("sub-descriptor of a valid descriptor is valid");
+    let sub_descriptor =
+        ConceptDescriptor::try_from(sub_fields).expect("subset of a valid descriptor is valid");
 
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
