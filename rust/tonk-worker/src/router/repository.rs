@@ -741,13 +741,14 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
 /// Fired when the topbar identity chip's `<tonk-editable>` commits a
 /// transient [`ProfileRename`]. It persists the new display name as a
 /// durable [`ProfileName`] override on the profile's meta branch, then
-/// re-stamps the self member's [`MemberName`] on the *origin* space's
-/// content branch so the current space's roster updates at once.
+/// re-stamps the self member's [`MemberName`] on every space the profile
+/// belongs to so all of its rosters reflect the new name at once.
 ///
 /// The new name is the only payload (read from `currentTarget.value`);
-/// the space to re-stamp is read from
-/// [`CommandEnv::origin`](crate::router::CommandEnv::origin), not a
-/// command field. An empty/whitespace name is a no-op — a member can't
+/// the spaces to re-stamp come from the profile's replica index on the
+/// meta branch, and the [`CommandEnv::origin`](crate::router::CommandEnv::origin)
+/// space is also used to refresh the self-identity overlay. An
+/// empty/whitespace name is a no-op — a member can't
 /// blank their own name out.
 ///
 /// A custom handler (not a plain `Provider<ProfileRename>`) because it
@@ -826,7 +827,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRename
 }
 
 /// Persist the display-name override on the profile meta branch and
-/// re-stamp `MemberName` on the origin space's content branch.
+/// re-stamp `MemberName` on every space's content branch.
 ///
 /// Split out from [`ProfileRenameHandler::run`] so the `?` early-return
 /// funnels into the single `log!` there — the command future itself
@@ -856,10 +857,11 @@ async fn run_profile_rename(
             TonkWorkerError::Internal(format!("failed to persist profile name override: {e}"))
         })?;
 
-    // 2. Re-stamp MemberName on the current space.
-    crate::router::profile_name::restamp_member_name(&tonk, key, name)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to restamp member name: {e}")))?;
+    // 2. Re-stamp MemberName on every space's roster, so peers on each
+    //    space the profile belongs to see the new name — not just the one
+    //    in focus. Per-space failures are logged inside; a single
+    //    unreachable space must not abort the rename.
+    crate::router::profile_name::restamp_member_name_all_spaces(&tonk, name).await;
 
     // 3. Re-stamp the self-identity overlay so the topbar chip reflects the
     //    new name instantly without waiting for the next sync cycle.
@@ -1808,6 +1810,12 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
             RepositoryError::Internal(format!("Failed to bootstrap profile meta: {}", e))
         })?;
     log!("Profile meta bootstrapped");
+
+    // Stamp a durable display name (the deterministic petname) when none is
+    // stored yet, so the FAB's sealed profile-branch `<tonk-display
+    // model="tonk:profile/name">` resolves a name for a never-renamed member.
+    // Rename-safe: a no-op once any `ProfileName` override exists.
+    crate::router::profile_name::ensure_display_name(tonk).await?;
 
     // Seed the standard library onto the profile meta branch so a
     // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
@@ -2925,6 +2933,60 @@ mod tests {
             self_member_name(&state, &key).await.as_deref(),
             Some("brave-lynx"),
             "the self member's MemberName is re-stamped on the space",
+        );
+    }
+
+    /// A `profile/rename` re-stamps the self member's `MemberName` on
+    /// EVERY space the profile belongs to, not just the one in focus when
+    /// the rename was issued.
+    #[dialog_common::test]
+    async fn it_restamps_member_name_across_all_spaces() {
+        let (app, state, key_a) = fresh_repo("rename-all-a").await;
+
+        // A second space in the same profile/state.
+        let key_b = {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/repository/rename-all-b")
+                        .method("PUT")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
+            info.name
+        };
+
+        // Rename while focused on space A.
+        let changes = profile_rename_transient("did:key:zRenameAll", "brave-lynx");
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: key_a.clone(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        assert_eq!(
+            self_member_name(&state, &key_a).await.as_deref(),
+            Some("brave-lynx"),
+            "the focused space's roster is restamped",
+        );
+        assert_eq!(
+            self_member_name(&state, &key_b).await.as_deref(),
+            Some("brave-lynx"),
+            "the non-focused space's roster is also restamped",
         );
     }
 
