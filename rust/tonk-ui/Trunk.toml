@@ -22,24 +22,27 @@ port = 8080
 no_autoreload = true
 
 [watch]
-# Watch every workspace crate that contributes to the
-# tonk-ui wasm bundle (directly or via the in-SW
-# tonk-worker). Without these, edits to e.g. the LSP
-# server or the schema analyzer wouldn't trigger a
-# rebuild and the dev server would silently serve a stale
-# binary.
+# Watch every workspace crate that contributes to a served bundle, so an edit
+# triggers a rebuild instead of silently serving a stale binary. Three bundles
+# pull from the workspace:
+#   - tonk-ui wasm (the page) — directly + via the in-SW tonk-worker.
+#   - tonk-worker (the SW) — incl. tonk-router (route matching).
+#   - the sealed-guest wasm (tonk-guest) — display/board/workspace/tree/
+#     inspector/portal/sigil register the elements rendered inside the iframe.
+# A crate missing here means its edits never reach the dev server (e.g. a
+# tonk-inspector change wouldn't rebuild the guest bundle).
 #
-# `../tonk-code/assets` is also watched: tonk-code's
-# `<tonk-code>` element bundle is copied into the dist via
-# `<link data-trunk rel="copy-dir">`, but `copy-dir` only
-# re-copies when trunk's watcher fires. Without this entry,
-# a fresh `npm run build` in tonk-code wouldn't reach the
-# served dist and the browser would see stale JS.
+# `../tonk-code/assets` is also watched: tonk-code's `<tonk-code>` element bundle
+# is copied into the dist via `<link data-trunk rel="copy-dir">`, but `copy-dir`
+# only re-copies when trunk's watcher fires. Without this entry, a fresh
+# `npm run build` in tonk-code wouldn't reach the served dist (stale JS). The same
+# applies to the guest Web Awesome bundle under `./assets/guest` (covered by `./`).
 watch = [
     "./",
     "../tonk-common",
     "../tonk-core",
     "../tonk-worker",
+    "../tonk-router",
     "../tonk-language-server",
     "../tonk-schema",
     "../tonk-notation",
@@ -50,6 +53,8 @@ watch = [
     "../tonk-portal",
     "../tonk-guest/src",
     "../tonk-fab/src",
+    "../tonk-inspector/src",
+    "../tonk-sigil/src",
     "../tonk-code/assets",
     "../tonk-tree/src",
 ]
