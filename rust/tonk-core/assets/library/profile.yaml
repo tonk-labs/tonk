@@ -46,6 +46,16 @@ concept!: &space
       the: xyz.tonk.replica/status
       cardinality: one
       as: entity
+  maybe:
+    name:
+      description: |
+        Local name of the space. Optional: a space recorded before
+        names were stored, or one created/joined without a local name,
+        simply omits it. A required field here would empty the whole
+        Hub (the directory join drops every nameless replica).
+      the: xyz.tonk.replica/name
+      cardinality: one
+      as: text
 
 # The Add Space command. Submitting the Hub's form asserts this
 # transient command; the worker's `create_space` handler decodes it and
