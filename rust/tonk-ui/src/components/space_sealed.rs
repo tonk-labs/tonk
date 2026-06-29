@@ -1,24 +1,33 @@
-//! `/space/:space` — the sealed-iframe space view (spike).
+//! `/space/:space` — the declarative workspace-shell space route.
 //!
-//! Renders the space's default view (`<tonk-display model=tonk/space>`)
-//! **inside a sealed opaque-origin iframe** via `<tonk-portal runtime>`. The
-//! outer document provides only the routing context and the data plane:
+//! The composition lives in YAML, not here. This route registers the tab's
+//! SITE with the service worker and then mounts a single fixed
+//! `<tonk-display model=tonk:site entity=site:…>` over the data-plane host.
+//! The `tonk:site` view nests `{concept}` (the route model the SW stamped on
+//! the site — now `tonk:workspace/shell`) on the SAME site entity, so the
+//! declarative shell view renders and owns the page:
 //!
 //! ```text
-//! <tonk-host>                       ← IO owner: queries → SW → DB
-//!   <tonk-repository name={space}>  ← the space; annotates space on queries
-//!     <tonk-branch name=main>       ← annotates branch
-//!       <tonk-portal runtime        ← sealed iframe + window.tonk bridge +
-//!         content="<tonk-display       injected element runtime
-//!           model=tonk/space>">
+//! <tonk-host>                          ← IO owner: queries → SW → DB
+//!   <tonk-repository name=… >          ← routing context for the site query
+//!     <tonk-branch name=… >               (the space branch `/api/site` stamped)
+//!       <tonk-display model=tonk:site  ← site → {concept} → workspace/shell
+//!         entity=site:…>                  → <tonk-repository><tonk-branch>
+//!                                            <tonk-portal runtime …>
 //! ```
 //!
-//! Inside the guest, a real `<tonk-display>` dispatches its query/subscribe
-//! events to the proxy `<tonk-host>` (registered by the guest runtime),
-//! which relays them over `window.tonk` to the outer portal, which bubbles
-//! them to the real `<tonk-host>` → SW. The space/branch annotation happens
-//! outer-side from the `<tonk-repository>`/`<tonk-branch>` ancestors, so the
-//! guest only needs the `model`.
+//! The route still carries no *shell composition* — only the routing context
+//! the outer `tonk:site` query needs to reach the space branch. Without the
+//! `<tonk-repository>`/`<tonk-branch>` annotation the host falls back to the
+//! bare `/query` path, which the SW only rewrites for sealed guest iframes; a
+//! top-level page hitting it gets a 405. The shell view supplies its OWN
+//! repository/branch/portal for the sealed content, and inner-most-wins leaves
+//! that nesting intact.
+//!
+//! The shell's CONTENT portal is a sealed opaque-origin iframe whose guest
+//! renders the space content (`model=tonk:space/route` → `tonk/space`),
+//! relaying its query/subscribe events over `window.tonk` to this outer host.
+//! The FAB portal is a later task.
 
 use leptos::prelude::*;
 use leptos_router::hooks::use_params;
@@ -45,10 +54,6 @@ pub fn TonkSpaceSealed() -> impl IntoView {
             .filter(|s| !s.is_empty())
             .and_then(|s| parse_space(&s))
     });
-    let space_name =
-        Signal::derive_local(move || space_ref.get().map(|s| s.name).unwrap_or_default());
-    let branch_name =
-        Signal::derive_local(move || space_ref.get().map(|s| s.branch).unwrap_or_default());
 
     // Run background sync for the space while it's shown — without this the
     // sealed `/space` route never swept (the controller was only mounted by
@@ -57,6 +62,20 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     let sync_source =
         Signal::derive_local(move || space_ref.get().map(|s| s.name).filter(|s| !s.is_empty()));
     crate::sync_controller::mount(sync_source);
+
+    // The outer `tonk:site` display queries the space branch where `/api/site`
+    // stamped this tab's `site:<client-id>` (see `register_site`). Without a
+    // `<tonk-repository>` / `<tonk-branch>` ancestor the host has no context and
+    // builds the bare `/query` fallback, which the SW only rewrites for guest
+    // iframes — from a top-level page it falls through to the network as a 405.
+    // So annotate the routing context here, exactly as the non-sealed display
+    // route does (`display.rs`). The shell view nests its own
+    // `<tonk-repository>` for the sealed content; inner-most-wins keeps that
+    // intact.
+    let space_name =
+        Signal::derive_local(move || space_ref.get().map(|s| s.name).filter(|s| !s.is_empty()));
+    let branch_name =
+        Signal::derive_local(move || space_ref.get().map(|s| s.branch).filter(|s| !s.is_empty()));
 
     // The route's own path — `/space/{space}` from the param, NOT
     // `window.location`. On a client-side navigation the resource below fires
@@ -101,59 +120,27 @@ pub fn TonkSpaceSealed() -> impl IntoView {
         }
     });
 
-    // The guest content is just the route's mount slot
-    // (`.display-view-slot > tonk-display`) under the proxy `<tonk-host>`.
-    // The app stylesheet anchors the bare-display-route fill-height layout
-    // on `.display-view-slot` (not the `.display-route > tonk-branch`
-    // routing path), so the view fills the iframe with no routing ancestors
-    // inside the guest — the iframe body is the route's viewport box and
-    // `100dvh` resolves against it.
+    // Mount the fixed site display, gated on the site registration so it never
+    // queries an unstamped site. `<tonk-display model=tonk:site entity=site:…>`
+    // resolves the `tonk:site` instance the SW stamped on this tab's
+    // `site:<uuid>` entity; its view nests the matched route's `{concept}` —
+    // `tonk:workspace/shell` — on the SAME entity, so the declarative shell
+    // renders and owns the page (repository/branch/content-portal in YAML).
     //
-    // The proxy `<tonk-host>` (registered by the injected runtime) is the IO
-    // owner: `<tonk-display>` dispatches query/subscribe events to it and it
-    // relays them over `window.tonk` to the outer bridge. It collapses to
-    // `display: contents` (the app CSS `tonk-host:has(> .display-view-slot)`
-    // rule).
-    //
-    // The space renders the tab's SITE. The fixed `model=tonk:site` resolves the
-    // `tonk:site` instance the SW stamped on this tab's `site:<uuid>` entity; its
-    // view nests into the matched route's `{concept}` on the same entity, which
-    // resolves and renders. `data-tonk-entity="site"` is the seam — the guest
-    // proxy `<tonk-host>` fills `entity` with this tab's site id (minted inside
-    // the host, unknown when this markup is built).
-    const CONTENT: &str = "<tonk-host>\
-<div class=\"display-view-slot\">\
-<tonk-display model=tonk:site data-tonk-entity=\"site\"></tonk-display>\
-</div>\
-</tonk-host>";
-
-    // No inner `<tonk-host>`: the launcher wraps the whole router in one
-    // (the IO owner). The portal's relayed query/subscribe events bubble up
-    // through these repository/branch ancestors to that host.
-    //
-    // The `.display-route` + `.display-view-slot` chain is the bare-route
-    // layout contract: `display: contents` collapses the routing-context
-    // elements and the slot fills the viewport (`min-height: 100dvh`). The
-    // sealed `<tonk-portal>` fills that slot via inline flex sizing (it
-    // carries no app CSS itself).
+    // The launcher wraps the whole router in the one real `<tonk-host>` (the IO
+    // owner), so this display dispatches its query/subscribe events up to it.
+    // The site entity is the value `ensure_site` returned (outer-side there is
+    // no guest host to fill `data-tonk-entity="site"`, so `entity` is set
+    // explicitly). The `.display-view-slot` chain is the bare-route fill-height
+    // layout contract: the slot fills the viewport and the shell's portal fills
+    // the slot via its own inline flex sizing.
     view! {
         <main class="display-route">
-            <tonk-repository
-                class="display-route"
-                name=move || space_name.get()
-            >
-                <tonk-branch name=move || branch_name.get()>
+            <tonk-repository class="display-route" name=move || space_name.get().unwrap_or_default()>
+                <tonk-branch name=move || branch_name.get().unwrap_or_default()>
                     <div class="display-view-slot">
-                        // Gate the sealed portal on the site registration so the
-                        // guest never queries an unstamped site. `ensure_site`
-                        // also populates `site_id()`, which the portal threads
-                        // into the guest context.
-                        {move || site.get().flatten().map(|_site| view! {
-                            <tonk-portal
-                                runtime
-                                content=CONTENT
-                                style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"
-                            ></tonk-portal>
+                        {move || site.get().flatten().map(|site_id| view! {
+                            <tonk-display model="tonk:site" entity=site_id></tonk-display>
                         })}
                     </div>
                 </tonk-branch>

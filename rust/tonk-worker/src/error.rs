@@ -30,6 +30,10 @@ pub enum TonkWorkerError {
     #[error("Precondition failed: {0}")]
     PreconditionFailed(String),
 
+    /// The caller is not permitted to perform the operation.
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// An analyzer rejection — preserved structurally so the
     /// editor can attach the diagnostic to the offending source
     /// span instead of rendering the message as a banner.
@@ -101,6 +105,7 @@ impl TonkWorkerError {
             TonkWorkerError::NotFound(_) => "not_found",
             TonkWorkerError::Conflict(_) => "conflict",
             TonkWorkerError::PreconditionFailed(_) => "precondition_failed",
+            TonkWorkerError::Forbidden(_) => "forbidden",
             TonkWorkerError::Analyze { .. } => "analyze",
         }
     }
@@ -111,7 +116,8 @@ impl TonkWorkerError {
             | TonkWorkerError::Internal(m)
             | TonkWorkerError::NotFound(m)
             | TonkWorkerError::Conflict(m)
-            | TonkWorkerError::PreconditionFailed(m) => m.clone(),
+            | TonkWorkerError::PreconditionFailed(m)
+            | TonkWorkerError::Forbidden(m) => m.clone(),
             TonkWorkerError::Analyze { message, .. } => message.clone(),
         }
     }
@@ -145,6 +151,7 @@ impl IntoResponse for TonkWorkerError {
             TonkWorkerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             TonkWorkerError::Conflict(_) => StatusCode::CONFLICT,
             TonkWorkerError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
+            TonkWorkerError::Forbidden(_) => StatusCode::FORBIDDEN,
         };
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),

@@ -19,7 +19,9 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
-use crate::domain::site::{Anchor, Concept as SiteConcept, Path, Replica, Route as SiteRoute};
+use crate::domain::site::{
+    Anchor, Branch, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space,
+};
 
 /// A tab's location and matched route, keyed on the per-tab site entity. The SW
 /// stamps it; the shell reads it. All fields cardinality one, so a navigation
@@ -32,6 +34,10 @@ pub struct Site {
     pub path: Path,
     /// The document fragment (may be empty).
     pub anchor: Anchor,
+    /// The space (repository name) the tab is on.
+    pub space: Space,
+    /// The active branch the tab is on (defaults to `"main"`).
+    pub branch: Branch,
     /// This tab's active replica entity.
     pub replica: Replica,
     /// The matched route entity (the route-table entry).
@@ -42,10 +48,13 @@ pub struct Site {
 
 impl Site {
     /// A site stamp for the given site entity.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         this: Entity,
         path: String,
         anchor: String,
+        space: String,
+        branch: String,
         replica: Entity,
         route: Entity,
         concept: Entity,
@@ -54,10 +63,51 @@ impl Site {
             this,
             path: Path(path),
             anchor: Anchor(anchor),
+            space: Space(space),
+            branch: Branch(branch),
             replica: Replica(replica),
             route: SiteRoute(route),
             concept: SiteConcept(concept),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    async fn it_carries_the_space_name() {
+        let site = Site::new(
+            "site:test".parse().unwrap(),
+            "/space/home".to_owned(),
+            String::new(),
+            "home".to_owned(),
+            "main".to_owned(),
+            "replica:r".parse().unwrap(),
+            "route:x".parse().unwrap(),
+            "concept:y".parse().unwrap(),
+        );
+        assert_eq!(site.space.0, "home");
+    }
+
+    #[dialog_common::test]
+    async fn it_carries_the_branch_name() {
+        let site = Site::new(
+            "site:test".parse().unwrap(),
+            "/space/feature@home".to_owned(),
+            String::new(),
+            "home".to_owned(),
+            "feature".to_owned(),
+            "replica:r".parse().unwrap(),
+            "route:x".parse().unwrap(),
+            "concept:y".parse().unwrap(),
+        );
+        assert_eq!(site.branch.0, "feature");
     }
 }
 

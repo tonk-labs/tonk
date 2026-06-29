@@ -60,13 +60,55 @@ impl Drop for Subscription {
 /// then await `detail.result`. Returns the parsed JSON response
 /// as a `JsValue`.
 pub async fn query(consumer: &Element, query_body: &JsValue) -> Result<JsValue, ErrorDetail> {
+    query_with_route(consumer, query_body, None, None).await
+}
+
+/// Like [`query`], but with an explicit cross-repo route: `space` (a
+/// repository name/DID) and `branch`. When `space` is `Some`, the dispatched
+/// event's `detail` is stamped with that route (and `profile = false`) so it
+/// wins over any `<tonk-repository>`/`<tonk-branch>`/`<tonk-repository
+/// profile>` ancestor annotators — see [`apply_route`]. With `space = None`
+/// this is identical to [`query`].
+pub async fn query_with_route(
+    consumer: &Element,
+    query_body: &JsValue,
+    space: Option<&str>,
+    branch: Option<&str>,
+) -> Result<JsValue, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"query".into(), query_body).ok();
+    apply_route(&detail, space, branch);
     let result_promise = dispatch_one_shot(consumer, events::QUERY, &detail)?;
     let result = JsFuture::from(result_promise)
         .await
         .map_err(|e| js_to_error(&e))?;
     Ok(result)
+}
+
+/// Stamp an explicit cross-repo route onto a one-shot/subscribe `detail`.
+///
+/// Routing context normally flows from the consumer's `<tonk-repository>` /
+/// `<tonk-branch>` ancestors, which annotate `detail.space` / `detail.branch`
+/// during bubble phase ONLY when the field is absent (inner-most-wins). A
+/// caller with an explicit route (e.g. the portal bridge relaying a sealed
+/// guest's nested `<tonk-repository name=…>` context, which the guest's own
+/// ancestors already resolved) pre-fills those fields so the ancestors leave
+/// them untouched. `profile` is forced to `false` because an explicit
+/// repository route must override a `<tonk-repository profile>` ancestor's
+/// flag (which would otherwise re-target the profile endpoint). When `space`
+/// is `None` the detail is left bare so ancestor annotation proceeds as usual.
+fn apply_route(detail: &Object, space: Option<&str>, branch: Option<&str>) {
+    let Some(space) = space else {
+        return;
+    };
+    Reflect::set(detail, &"space".into(), &JsValue::from_str(space)).ok();
+    Reflect::set(
+        detail,
+        &"branch".into(),
+        &JsValue::from_str(branch.unwrap_or("main")),
+    )
+    .ok();
+    Reflect::set(detail, &"profile".into(), &JsValue::FALSE).ok();
 }
 
 /// Dispatch `tonk-claim` on `consumer` with the given structured
@@ -114,11 +156,25 @@ pub fn subscribe(
     query_body: &JsValue,
     tag: Option<&JsValue>,
 ) -> Result<Subscription, ErrorDetail> {
+    subscribe_with_route(consumer, query_body, tag, None, None)
+}
+
+/// Like [`subscribe`], but with an explicit cross-repo route (`space`/`branch`).
+/// See [`query_with_route`] / `apply_route` for the routing semantics. With
+/// `space = None` this is identical to [`subscribe`].
+pub fn subscribe_with_route(
+    consumer: &Element,
+    query_body: &JsValue,
+    tag: Option<&JsValue>,
+    space: Option<&str>,
+    branch: Option<&str>,
+) -> Result<Subscription, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"query".into(), query_body).ok();
     if let Some(t) = tag {
         Reflect::set(&detail, &"tag".into(), t).ok();
     }
+    apply_route(&detail, space, branch);
     let init = CustomEventInit::new();
     init.set_detail(&detail);
     init.set_bubbles(true);

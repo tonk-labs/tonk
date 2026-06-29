@@ -9,8 +9,6 @@ use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
 
-// Used only by the wasm-gated `restamp_member_name`.
-#[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
 use crate::worker::TonkState;
 #[cfg(target_arch = "wasm32")]
@@ -61,8 +59,142 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
         .unwrap_or_else(|| petname(&tonk.profile.did()))
 }
 
+/// Ensure a durable `ProfileName` exists on the profile meta branch.
+///
+/// [`resolve_display_name`] falls back to the deterministic `petname` when
+/// no override is stored, but that fallback is computed, never persisted.
+/// The FAB chrome renders the member name through a sealed profile-branch
+/// `<tonk-display model="tonk:profile/name">`, which can only read the
+/// branch DB — it has no path to the petname fallback, so the name slot is
+/// blank until a rename writes a row. Stamping the petname once at bootstrap
+/// fills that slot for a never-renamed member.
+///
+/// Idempotent and rename-safe: skips the write whenever any `ProfileName`
+/// row already exists, so it never clobbers a user-chosen override (and a
+/// later rename overwrites the petname, `cardinality: one`).
+pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), RepositoryError> {
+    let profile_entity = tonk.profile.did().this();
+
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("ensure_display_name: meta acquire failed: {e}"))
+        })?;
+
+    let existing: Vec<ProfileName> = session
+        .handle()
+        .query()
+        .select(Query::<ProfileName> {
+            this: Term::from(profile_entity.clone()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    if !existing.is_empty() {
+        return Ok(());
+    }
+
+    let name = petname(&tonk.profile.did());
+    tonk.reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .transaction()
+        .assert(ProfileName::new(profile_entity, name))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("ensure_display_name: stamp petname failed: {e}"))
+        })?;
+
+    Ok(())
+}
+
+/// The routing keys of every space the profile belongs to.
+///
+/// Reads the profile's replica index off the meta branch (the same query
+/// `get_profile` runs) and projects each space's routing key. The
+/// self-replica (`subject == profile`) carries no roster, so it's skipped.
+/// A single unparseable subject is logged and dropped rather than failing
+/// the whole list.
+#[cfg(target_arch = "wasm32")]
+async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
+    use dialog_varsig::Did;
+    use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity};
+
+    let profile_did = tonk.profile.did();
+    let profile_entity = profile_did.this();
+
+    let session = match tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            log!("profile_space_keys: meta acquire failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let rows: Vec<Replica> = session
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            profile: Term::from(ProfileEntity(profile_entity.clone())),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    let mut keys = Vec::new();
+    for replica in rows {
+        if replica.subject.0 == profile_entity {
+            continue;
+        }
+        match replica.subject.0.to_string().parse::<Did>() {
+            Ok(did) => keys.push(did.repo_key().to_owned()),
+            Err(e) => log!(
+                "profile_space_keys: unparseable subject {:?}: {e:?}",
+                replica.subject.0
+            ),
+        }
+    }
+    keys
+}
+
+/// Re-stamp the self member's `MemberName` on every space the profile
+/// belongs to.
+///
+/// A rename changes the profile's effective name; each space's roster
+/// (`MemberName` on its synced `main` branch) must reflect it so peers on
+/// every space see the new name — not just the space in focus when the
+/// rename happened. One space's failure is logged and skipped so a single
+/// unreachable branch can't block the rest.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn restamp_member_name_all_spaces(tonk: &TonkState, name: &str) {
+    for key in profile_space_keys(tonk).await {
+        if let Err(e) = restamp_member_name(tonk, &key, name).await {
+            log!("restamp MemberName for space '{key}' failed: {e}");
+        }
+    }
+}
+
 /// Re-stamp the self member's `MemberName` on a space's content branch.
-/// Used by the rename handler so the current space's roster updates.
+/// Used by [`restamp_member_name_all_spaces`] to update one space's roster.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn restamp_member_name(
     tonk: &TonkState,
@@ -141,6 +273,33 @@ mod tests {
         let tonk = isolated_state("profile-name-test-default").await;
         let expected = petname(&tonk.profile.did());
         assert_eq!(resolve_display_name(&tonk).await, expected);
+    }
+
+    #[dialog_common::test]
+    async fn ensure_stamps_the_petname_when_absent() {
+        let tonk = isolated_state("profile-name-test-ensure-stamp").await;
+        let expected = petname(&tonk.profile.did());
+        // Nothing stored yet → the FAB read would be blank.
+        ensure_display_name(&tonk).await.unwrap();
+        // Now a durable row exists, so the branch read resolves the petname.
+        assert_eq!(resolve_display_name(&tonk).await, expected);
+    }
+
+    #[dialog_common::test]
+    async fn ensure_does_not_clobber_an_existing_override() {
+        let tonk = isolated_state("profile-name-test-ensure-keep").await;
+        let profile_entity = tonk.profile.did().this();
+        tonk.reactor
+            .profile_repository()
+            .branch(META_BRANCH)
+            .transaction()
+            .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        ensure_display_name(&tonk).await.unwrap();
+        assert_eq!(resolve_display_name(&tonk).await, "brave-lynx");
     }
 
     #[dialog_common::test]

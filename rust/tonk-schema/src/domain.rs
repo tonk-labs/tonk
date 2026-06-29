@@ -117,6 +117,20 @@ pub mod site {
     #[cardinality(one)]
     pub struct Anchor(pub String);
 
+    /// The space (repository name) the tab is on — the `did:key:…` routing key
+    /// parsed from the URL's `/space/{segment}` prefix.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Space(pub String);
+
+    /// The active branch name the tab is on — the `{branch}` component parsed
+    /// from the space segment (`{branch}@{name}`, defaults to `"main"`).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Branch(pub String);
+
     /// The active replica entity for this site (this device's replica of the
     /// space the tab is on).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]

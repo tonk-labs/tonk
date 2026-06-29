@@ -104,3 +104,19 @@ pub fn register() {
     repository::register();
     branch::register();
 }
+
+/// Register ONLY the passive routing annotators — `<tonk-repository>` and
+/// `<tonk-branch>` — without the IO-owning `<tonk-host>`. Idempotent.
+///
+/// These elements do no IO: they merely annotate `detail.space` /
+/// `detail.branch` on outbound operation events as they bubble. The sealed
+/// iframe guest registers its OWN proxy `<tonk-host>` (which relays over
+/// `window.tonk`), so it must NOT register the real `<tonk-host>` here — but it
+/// still needs these annotators so a nested `<tonk-repository name=…>` can
+/// scope a query to another repository. The guest proxy then forwards the
+/// annotated route to the host bridge (honored only for a privileged portal).
+#[cfg(target_arch = "wasm32")]
+pub fn register_routing_elements() {
+    repository::register();
+    branch::register();
+}

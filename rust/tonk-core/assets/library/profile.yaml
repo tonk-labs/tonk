@@ -143,6 +143,365 @@ view/directory!:
     </div>
 
 # ============================================================
+# FAB — floating action button view (rendered in the FAB portal iframe)
+# ============================================================
+#
+# These declarations live on profile/meta because the FAB portal is
+# scoped to the profile branch (`<tonk-repository profile>`). The
+# guest renders `tonk:profile/fab` via a `<tonk-display>` mounted
+# by the shell's FAB portal content string.
+#
+# Identity note (V1 — not yet wired): the FAB portal `content` string in
+# core.yaml embeds only `data-space`; `data-did` and `data-name` are NOT
+# embedded. The `did={dom.host/data-did}` and `{dom.host/data-name}`
+# template slots below are placeholders that render empty until a follow-up
+# wires the worker to stamp `state:self` identity onto the profile/meta
+# branch and the shell to embed those values in the portal content string.
+
+# The FAB concept — a structural marker; the view reads all display
+# values directly from the host element's data attributes via the
+# `{dom.host/data-*}` template escape hatch (the same mechanism the
+# invite-link and agent-prompt views use for `data-base`/`data-page`).
+# The outer shell view template embeds `{space}` (from the site entity)
+# plus identity fields into the `<tonk-display>` element's `data-*`
+# attributes inside the portal content string, so the FAB view template
+# reads them back as `{dom.host/data-space}` etc.
+concept!: &profile/fab
+  this: tonk:profile/fab
+  description: The FAB overlay view (profile-sourced workspace chrome).
+  with:
+    space:
+      description: >
+        The active space name. The FAB portal content string (in the shell
+        view) embeds `{space}` from the site entity as `data-space` on the
+        `<tonk-display>` element; the view template reads it back as
+        `{dom.host/data-space}`. Declared here so the concept body satisfies
+        the analyzer's at-least-one-field requirement — the field is not
+        resolved from the branch DB.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
+
+# A compact space-list view kind for the FAB switcher. Its `display`
+# template lives under `xyz.tonk.view/fab-menu` — a distinct RDF
+# attribute from `xyz.tonk.view/directory` (used by `tonk:view/directory`)
+# — so a model can carry both a full Hub directory and this compact roster
+# without the two colliding when queried. `<tonk-display>` selects it
+# explicitly via `view=tonk:view/fab-menu`.
+concept!: &view/fab-menu
+  this: tonk:view/fab-menu
+  description: A compact space-list view kind for the FAB space switcher.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the FAB compact space menu
+      the: xyz.tonk.view/fab-menu
+      cardinality: one
+      as: text
+
+# The FAB compact space roster — one anchor per `tonk:space` instance,
+# linking to `/space/{subject}` (the space DID, same as the Hub uses).
+# Rendered inside the FAB chrome's `.fab__menu` via
+# `<tonk-display model="space" view="tonk:view/fab-menu">`.
+view/fab-menu!:
+  this: id:tonk:fab/space-menu
+  model: space
+  display: |
+    <a class="fab__menu-item" href="/space/{subject}"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="no-view">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host></a>
+
+# The member's display name, read directly from THIS (profile meta) branch —
+# the durable `ProfileName` override the worker stamps on `profile/rename`
+# (attribute `xyz.tonk.profile/display-name`, keyed by the profile DID). The
+# FAB is sealed to the profile/meta branch, so unlike the space roster's names
+# (which live in each space's own repo and are unreachable from the sealed
+# guest) this one is an ordinary in-branch read. Absent until the user renames
+# (the worker's `petname` fallback is computed, not persisted), so the bar's
+# name slot renders empty until a name is set.
+concept!: &profile/name
+  this: tonk:profile/name
+  description: The member's display-name override on the profile meta branch.
+  with:
+    name:
+      description: The chosen display name (xyz.tonk.profile/display-name).
+      the: xyz.tonk.profile/display-name
+      cardinality: one
+      as: text
+
+# Rename the signed-in member (set their display name). Lives here as well as
+# in core.yaml because the FAB is sealed to the profile/meta branch: the
+# guest's `<tonk-display>` resolves the command's concept descriptor by a
+# phase-1 lookup against THIS branch (seeded from the lean profile.yaml), so
+# the command must be present here for the editable's `onchange=profile/rename`
+# to fire. The worker's globally-registered `ProfileRenameHandler` does the
+# work (persist `ProfileName`, restamp `MemberName` across every space's
+# roster, republish self-identity) — this descriptor only has to decode the
+# new name and the `tonk:profile` marker that distinguishes it from the repo
+# rename, which shares the same `dom.event.current-target` shape.
+command!: &profile/rename
+  description: Rename the signed-in member (set their display name).
+  with:
+    name:
+      description: The new name, read from the editable's value on commit.
+      the: dom.event.current-target/value
+      as: text
+    marker:
+      description: Per-command marker (data-rename) distinguishing this from repo rename.
+      the: dom.event.current-target.dataset/rename
+      as: entity
+
+# A no-entity directory view over the single profile-name row → an inline
+# editable bound to the name. Mounted in the FAB bar via
+# `<tonk-display model="tonk:profile/name">`. The `<tonk-editable>` commits on
+# Enter/blur (Escape cancels), firing `onchange=profile/rename`; the
+# `data-rename="tonk:profile"` marker distinguishes it from the repository
+# rename. Identical in shape to the topbar identity chip in core.yaml.
+view/directory!:
+  this: id:tonk:profile/name-view
+  model: tonk:profile/name
+  display: |
+    <tonk-editable
+      class="fab__name-input"
+      value={name}
+      data-rename="tonk:profile"
+      onchange=profile/rename
+      aria-label="Your name"
+    ></tonk-editable>
+
+# A directory view (no entity): the FAB portal mounts
+# `<tonk-display model=tonk:profile/fab>` with no entity, so this
+# directory view resolves. Space + identity arrive as `data-*` host
+# attributes on the `<tonk-display>` element in the portal content.
+view/directory!: &profile/fab/view
+  this: id:tonk:profile/fab/view
+  model: tonk:profile/fab
+  display: |
+    <tonk-fab>
+      <div class="fab">
+        <span class="fab__circle" data-sync="offline"></span>
+        <span class="fab__identity">
+          <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
+        </span>
+        <!-- NOTE: the current-repo name is NOT shown here yet. The FAB can't read
+             its active space from the portal host: `{dom.host/data-space}` renders
+             empty even though the shell embeds `data-space` on the <tonk-display>
+             (verified at runtime). Displaying / editing the repo name — and gating
+             the dropdown on hovering it — all need that read wired first (the same
+             V1 gap as `data-did`/`data-name`). Until then the switcher opens on
+             whole-bar hover. -->
+        <span class="fab__space">{dom.host/data-space}</span>
+        <nav class="fab__menu opens-down">
+          <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
+          <a class="fab__menu-item fab__menu-item--action" href="/">
+            <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
+          </a>
+          <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
+            <span class="fab__menu-glyph" aria-hidden="true">+</span> new
+          </button>
+        </nav>
+      </div>
+      <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
+           `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
+           the iframe overlay, and so the `space/create` command + the
+           `<tonk-default-remote>` resolve on this same profile/meta branch.
+           Mirrors the Hub's create dialog (the directory view above). -->
+      <wa-dialog id="fab-space-create" label="New space" class="fab__dialog">
+        <form id="fab-space-create-form" class="fab__form" onsubmit=space/create>
+          <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
+          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+        </form>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
+      </wa-dialog>
+      <style>
+        :host, tonk-fab { display: block; }
+        /* The FAB iframe overlays the page (and spans the whole viewport while
+           dragging), so its document must be see-through — only the `.fab`
+           pill should paint. The injected Web Awesome CSS sets an opaque
+           `html` background inside `@layer wa-native`; this unlayered rule
+           beats it (unlayered declarations win over layered ones). */
+        html, body { background: transparent; }
+        .fab {
+          /* inline-flex (not flex) so `.fab` shrinks to its content width
+             instead of filling the iframe — the host sizes the iframe from
+             `.fab`'s measured extent, so a block-level box would deadlock the
+             width (and never shrink back to the ring on collapse). */
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px;
+          background: var(--wa-color-surface-raised, #fff);
+          border: 1px solid var(--wa-color-surface-border, #ddd);
+          border-radius: 24px;
+          font-family: var(--wa-font-family-body, sans-serif);
+          font-size: 13px;
+          white-space: nowrap;
+          position: relative;
+          cursor: grab;
+        }
+        .fab.expanded {
+          padding: 6px 12px;
+        }
+        /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
+           (set inline by element.rs) inside the full-viewport iframe. Suppress
+           text selection and show the grabbing cursor so the drag reads cleanly. */
+        .fab.dragging {
+          cursor: grabbing;
+          user-select: none;
+        }
+        .fab__circle {
+          flex: none;
+          width: 24px;
+          height: 24px;
+          border-radius: 50%;
+          color: #cddc39;
+          background: currentColor;
+        }
+        .fab__circle[data-sync="synced"]  { background: currentColor; border: 0; }
+        .fab__circle[data-sync="offline"] { background: transparent; border: 2px solid currentColor; box-sizing: border-box; }
+        .fab__circle[data-sync="syncing"] { animation: fab-sync 1s steps(2, jump-none) infinite; }
+        @keyframes fab-sync {
+          0%   { background: currentColor; }
+          50%  { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
+          100% { background: currentColor; }
+        }
+        .fab__identity {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .fab__name {
+          font-weight: 500;
+          color: var(--wa-color-text-normal, #111);
+          max-width: 120px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        /* While editing, lift the wrapper's clamp so the full name is visible
+           (the editable lifts its own clip on focus; the parent must too). */
+        .fab__name:focus-within {
+          max-width: none;
+          overflow: visible;
+        }
+        /* The name is an inline `<tonk-editable>`: reads as plain text until
+           hovered/focused, then shows an editable affordance. Clamped to the
+           same width as the static name; the clamp lifts on focus so the full
+           value is visible while editing. */
+        .fab__name-input {
+          display: inline-block;
+          font: inherit;
+          color: inherit;
+          max-width: 120px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          padding: 0 2px;
+          margin: 0 -2px;
+          border-radius: 4px;
+          cursor: text;
+          outline: none;
+        }
+        .fab__name-input:hover {
+          background: var(--wa-color-surface-hover, #f5f5f5);
+        }
+        .fab__name-input:focus {
+          background: var(--wa-color-surface-default, #fff);
+          box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
+          overflow: visible;
+          text-overflow: clip;
+        }
+        .fab__space {
+          color: var(--wa-color-text-quiet, #666);
+          font-family: var(--wa-font-family-code, monospace);
+          font-size: 11px;
+          max-width: 80px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          cursor: default;
+        }
+        /* Collapsed (default): only the sync-status ring shows; hovering adds
+           the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
+        .fab:not(.expanded) .fab__identity,
+        .fab:not(.expanded) .fab__space { display: none; }
+        /* The menu is a transparent stack: each row is its own floating card,
+           so the page shows through the gaps between rows (like the FAB pill
+           itself). No panel background/border/shadow here — those live on the
+           individual `.fab__menu-item` cards. */
+        .fab__menu {
+          position: absolute;
+          left: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          min-width: 200px;
+          z-index: 100;
+        }
+        .fab__menu.opens-down { top: 100%; margin-top: 6px; }
+        .fab__menu.opens-up { bottom: 100%; margin-bottom: 6px; }
+        /* The space roster renders its rows inside a single `<tonk-display>`
+           wrapper, so the menu's flex `gap` can't reach them. `display:contents`
+           lifts the roster anchors into the menu's flex flow so every row —
+           roster and action alike — gets the same gap. */
+        .fab__menu > tonk-display { display: contents; }
+        .fab__menu-item {
+          display: block;
+          padding: 10px 16px;
+          background: var(--wa-color-surface-raised, #fff);
+          border-radius: 2px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.12);
+          color: var(--wa-color-text-normal, #111);
+          text-decoration: none;
+          font-size: 13px;
+          font-family: var(--wa-font-family-code, monospace);
+        }
+        .fab__menu-item:hover {
+          background: var(--wa-color-surface-hover, #f5f5f5);
+        }
+        /* `all repos` / `new` — actions, not spaces: right-aligned and quieter,
+           rendered as a button/anchor that match the roster cards' type. */
+        .fab__menu-item--action {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 6px;
+          width: 100%;
+          border: 0;
+          cursor: pointer;
+          font: inherit;
+          font-family: var(--wa-font-family-code, monospace);
+          color: var(--wa-color-text-quiet, #666);
+        }
+        .fab__menu-glyph {
+          font-size: 14px;
+          line-height: 1;
+        }
+        .fab:not(.expanded) .fab__menu { display: none; }
+      </style>
+    </tonk-fab>
+
+# The FAB position — x/y in viewport pixels, stored as a transient
+# (overlay-only) claim on `state:fab`. Not durable: the position is
+# not committed to the branch tree. Updated on every pointer-up drop.
+concept!: &fab/position
+  this: tonk:fab/position
+  description: Persisted FAB position (profile-meta claim).
+  with:
+    x:
+      description: Horizontal position in px.
+      the: xyz.tonk.fab/x
+      cardinality: one
+      as: unsigned-integer
+    y:
+      description: Vertical position in px.
+      the: xyz.tonk.fab/y
+      cardinality: one
+      as: unsigned-integer
+
+# ============================================================
 # JOIN — redeem an invite at /join (runs on the profile meta branch)
 # ============================================================
 

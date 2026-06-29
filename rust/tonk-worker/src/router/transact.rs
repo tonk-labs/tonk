@@ -109,6 +109,14 @@ pub async fn transact_profile(
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact profile branch={}", path.branch);
+    if let Some(Extension(client_id)) = &client {
+        let bindings = state.read().await.view_bindings.clone();
+        if bindings.read().await.contains_key(client_id) {
+            return Err(TonkWorkerError::Forbidden(
+                "sealed guests may not write the profile branch".into(),
+            ));
+        }
+    }
     let (response, transients) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
@@ -192,6 +200,73 @@ async fn transact_on_branch<'a>(
         }),
         to_dispatch,
     ))
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod profile_write_boundary {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use axum::{Extension, body::Bytes, http::HeaderMap};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tonk_schema::claim::TransactRequest;
+
+    use super::transact_profile;
+    use crate::{
+        TonkWorkerError,
+        router::{AppState, ClientId, ViewBinding},
+    };
+
+    /// Build a test `AppState` containing a single view-bound client.
+    /// Returns the state and the `ClientId` of that client.
+    async fn test_state_with_view_bound_client() -> (AppState, ClientId) {
+        let state = crate::router::tests::test_state().await;
+        let app_state: AppState = Arc::new(RwLock::new(state));
+        let client_id = ClientId("sealed-guest-test".to_owned());
+        let bindings = app_state.read().await.view_bindings.clone();
+        bindings.write().await.insert(
+            client_id.clone(),
+            ViewBinding {
+                repo: "some-repo".to_owned(),
+                branch: "main".to_owned(),
+            },
+        );
+        (app_state, client_id)
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_profile_writes_from_sealed_guest_clients() {
+        // Arrange: a TonkState whose view_bindings registry contains
+        // `client_id` (i.e. this client is a sealed guest bound to a
+        // {repo, branch}).
+        let (state, client_id) = test_state_with_view_bound_client().await;
+        // Serialize an empty TransactRequest as the body — empty claims
+        // trigger the short-circuit path, so without the auth guard this
+        // call would succeed (proving the guard is the gating change).
+        let body_bytes = Bytes::from(
+            serde_json::to_vec(&TransactRequest::default()).expect("TransactRequest serializes"),
+        );
+
+        // Act
+        let result = transact_profile(
+            axum::extract::State(state),
+            axum::extract::Path(super::ProfileTransactPath {
+                branch: "meta".to_owned(),
+            }),
+            Some(Extension(client_id)),
+            HeaderMap::new(),
+            body_bytes,
+        )
+        .await;
+
+        // Assert
+        assert!(
+            matches!(result, Err(TonkWorkerError::Forbidden(_))),
+            "sealed-guest clients must not write profile/meta, got: {:?}",
+            result,
+        );
+    }
 }
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {

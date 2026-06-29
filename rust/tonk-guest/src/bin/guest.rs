@@ -25,6 +25,14 @@ pub fn start() {
     // `window.tonk`; we never register the real `tonk_host`.
     tonk_guest::guest_host::register();
 
+    // The passive routing annotators (`<tonk-repository>` / `<tonk-branch>`).
+    // These do NO IO — they only annotate `detail.space` / `detail.branch` on
+    // outbound operation events as they bubble. Without them a nested
+    // `<tonk-repository name=…>` inside the guest is inert, so a query can't be
+    // scoped to another repo; with them, the proxy host forwards the annotated
+    // route over the bridge (honored only for a privileged FAB portal).
+    tonk_host::register_routing_elements();
+
     tonk_sigil::Sigil::install();
     // The opaque guest can't mask sigils against a cross-origin `/sigils.svg`
     // sprite (CSS `url()` is CORS-blocked at a null origin). Fetch the sprite
@@ -36,6 +44,7 @@ pub fn start() {
     tonk_board::register();
     tonk_workspace::register();
     tonk_tree::register();
+    tonk_fab::register();
     // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
     // sheet's imperative canvas). Register it so a NESTED portal upgrades —
     // it nests cleanly since the canvas portal is plain `content=` (a
