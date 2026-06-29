@@ -86,7 +86,12 @@ impl CustomElement for TonkFabPortal {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        connect_portal(this, &self.inner, |iframe| {
+        // `true`: the FAB is trusted first-party chrome (placed only by the
+        // shell view in the top document), so its guest may relay a per-query
+        // repository route — letting `<tonk-fab>`'s `<tonk-repository name=…>`
+        // resolve other spaces' labels. This privilege is NOT extended to the
+        // generic `<tonk-portal>`, which renders synced/untrusted content.
+        connect_portal(this, &self.inner, true, |iframe| {
             // Initial fixed small box: top-centre, above all content.
             // Once the first `__tonkFab` geometry message arrives, the
             // centering transform is dropped and absolute px values take

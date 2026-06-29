@@ -129,6 +129,13 @@ fn make_listener(name: &'static str) -> Closure<dyn FnMut(Event)> {
             // surfaces "no <tonk-host> ancestor".
             return;
         };
+        // Claim the event: stop it bubbling to any OUTER `<tonk-host>` proxy so
+        // a single query/subscribe is relayed exactly once. This matters when
+        // hosts nest inside the guest — e.g. the FAB menu wraps each row in its
+        // own `<tonk-host><tonk-repository name=…>` to read another space's
+        // label; without this the outer fab-view host would relay the same
+        // operation a second time. Mirrors the real host's `claim_event`.
+        custom.stop_propagation();
         match name {
             QUERY => relay_one_shot(&custom, &detail, &tonk, "query", "query"),
             CLAIM => relay_one_shot(&custom, &detail, &tonk, "transact", "request"),
@@ -230,8 +237,30 @@ fn fill_site_entities(root: &HtmlElement) {
     }
 }
 
-/// Call `tonk[method](detail[arg_key])`, expect a Promise, write it into
-/// `detail.result`, and preventDefault so the consumer awaits it.
+/// Build the optional per-call routing context (`{space, branch}`) from a
+/// consumer event's detail — the values its in-guest `<tonk-repository name=…>`
+/// / `<tonk-branch name=…>` ancestors annotated during bubble phase. Forwarded
+/// as the second argument to `window.tonk.query` / `.subscribe` so the host can
+/// route the query at that repository. The host honors it ONLY for a privileged
+/// (cross-repo) portal — the FAB — and ignores it otherwise, so forwarding is
+/// always safe. Empty when no `<tonk-repository>` scoped the query (the common
+/// case), leaving the host on its handshake context.
+fn route_ctx(detail: &JsValue) -> JsValue {
+    let ctx = Object::new();
+    for key in ["space", "branch"] {
+        if let Some(value) = Reflect::get(detail, &JsValue::from_str(key))
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|s| !s.is_empty())
+        {
+            let _ = Reflect::set(&ctx, &JsValue::from_str(key), &JsValue::from_str(&value));
+        }
+    }
+    ctx.into()
+}
+
+/// Call `tonk[method](detail[arg_key], routeCtx)`, expect a Promise, write it
+/// into `detail.result`, and preventDefault so the consumer awaits it.
 fn relay_one_shot(
     event: &CustomEvent,
     detail: &JsValue,
@@ -243,7 +272,7 @@ fn relay_one_shot(
         return;
     };
     let arg = Reflect::get(detail, &JsValue::from_str(arg_key)).unwrap_or(JsValue::UNDEFINED);
-    let Ok(result) = func.call1(tonk, &arg) else {
+    let Ok(result) = func.call2(tonk, &arg, &route_ctx(detail)) else {
         return;
     };
     // result is a Promise<rows|receipt>; that's exactly what detail.result
@@ -260,7 +289,7 @@ fn relay_subscribe(event: &CustomEvent, detail: &JsValue, tonk: &Object) {
         return;
     };
     let query = Reflect::get(detail, &JsValue::from_str("query")).unwrap_or(JsValue::UNDEFINED);
-    let Ok(stream) = subscribe.call1(tonk, &query) else {
+    let Ok(stream) = subscribe.call2(tonk, &query, &route_ctx(detail)) else {
         return;
     };
     // The element the event was dispatched on — frames are delivered back

@@ -211,7 +211,33 @@ view/fab-menu!:
   this: id:tonk:fab/space-menu
   model: space
   display: |
-    <a class="fab__menu-item" href="/space/{subject}">{subject}</a>
+    <a class="fab__menu-item" href="/space/{subject}"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="no-view">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host></a>
+
+# The member's display name, read directly from THIS (profile meta) branch —
+# the durable `ProfileName` override the worker stamps on `profile/rename`
+# (attribute `xyz.tonk.profile/display-name`, keyed by the profile DID). The
+# FAB is sealed to the profile/meta branch, so unlike the space roster's names
+# (which live in each space's own repo and are unreachable from the sealed
+# guest) this one is an ordinary in-branch read. Absent until the user renames
+# (the worker's `petname` fallback is computed, not persisted), so the bar's
+# name slot renders empty until a name is set.
+concept!: &profile/name
+  this: tonk:profile/name
+  description: The member's display-name override on the profile meta branch.
+  with:
+    name:
+      description: The chosen display name (xyz.tonk.profile/display-name).
+      the: xyz.tonk.profile/display-name
+      cardinality: one
+      as: text
+
+# A no-entity directory view over the single profile-name row → the name text.
+# Mounted in the FAB bar via `<tonk-display model="tonk:profile/name">`.
+view/directory!:
+  this: id:tonk:profile/name-view
+  model: tonk:profile/name
+  display: |
+    {name}
 
 # A directory view (no entity): the FAB portal mounts
 # `<tonk-display model=tonk:profile/fab>` with no entity, so this
@@ -226,7 +252,7 @@ view/directory!: &profile/fab/view
         <span class="fab__circle" data-sync="offline"></span>
         <span class="fab__identity">
           <tonk-sigil class="fab__sigil" did={dom.host/data-did}></tonk-sigil>
-          <span class="fab__name">{dom.host/data-name}</span>
+          <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
         <span class="fab__space">{dom.host/data-space}</span>
         <nav class="fab__menu">

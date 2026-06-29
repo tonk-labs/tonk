@@ -4866,6 +4866,7 @@ dependencies = [
  "tonk-board",
  "tonk-display",
  "tonk-fab",
+ "tonk-host",
  "tonk-portal",
  "tonk-sigil",
  "tonk-tree",

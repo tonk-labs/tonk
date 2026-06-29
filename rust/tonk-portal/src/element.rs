@@ -46,7 +46,10 @@ impl CustomElement for TonkPortal {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        connect_portal(this, &self.inner, |iframe| {
+        // `false`: a generic content portal renders synced/untrusted markup,
+        // so it must NOT be able to escape its handshake repo context. A
+        // guest-forwarded route is ignored for this portal.
+        connect_portal(this, &self.inner, false, |iframe| {
             // The iframe always fills its container. `flex: 1` + `align-self:
             // stretch` make it fill a flex-column host (the display-route layout)
             // without needing a definite-height ancestor for `height: 100%`.

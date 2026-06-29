@@ -72,6 +72,14 @@ pub(crate) struct PortalState {
     /// The current port's `onmessage` dispatcher, kept alive for the
     /// port's lifetime. Replaced on each handshake.
     _dispatcher: Option<Closure<dyn FnMut(MessageEvent)>>,
+    /// Whether this portal may relay a guest-supplied per-query repository
+    /// route (cross-repo reads). A **privilege of the trusted portal element**,
+    /// set host-side at construction — NOT something the guest can assert.
+    /// `<tonk-fab-portal>` sets it; the generic `<tonk-portal>` leaves it
+    /// `false`, so a synced/untrusted content guest's forwarded route is
+    /// ignored and it stays pinned to its handshake context. See
+    /// `handle_query` / `forwarded_route`.
+    cross_repo: bool,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -94,7 +102,14 @@ impl PortalState {
             subs: BTreeMap::new(),
             port: None,
             _dispatcher: None,
+            cross_repo: false,
         }
+    }
+
+    /// Grant this portal the cross-repo relay privilege. Called once, host-side,
+    /// by the trusted `<tonk-fab-portal>` element during `connect_portal`.
+    pub(crate) fn set_cross_repo(&mut self, cross_repo: bool) {
+        self.cross_repo = cross_repo;
     }
 
     /// Cancel and forget every live subscription. Dropping each
@@ -115,6 +130,15 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
+  // Merge an optional per-call routing context ({space,branch}) into an
+  // envelope. The guest's <tonk-host> proxy passes the space/branch its
+  // in-guest <tonk-repository>/<tonk-branch> ancestors resolved. The host
+  // honors it ONLY for a privileged (cross-repo) portal; for a normal portal
+  // it is ignored, so this is always safe to send.
+  function withRoute(extra,ctx){
+    if(ctx){ if(ctx.space){ extra.space=ctx.space; } if(ctx.branch){ extra.branch=ctx.branch; } }
+    return extra;
+  }
   // The request-context headers every relayed /api fetch carries, so the SW can
   // tie the request to this tab's SITE and route/contain it. Site, path, and hash
   // come from the injected context (the host's site id + the host's location;
@@ -141,7 +165,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var tonk={
     context:{this:"",model:""},
     ready:ready,
-    query:function(body){return call("query",{body:body});},
+    query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
     transact:function(request){return call("transact",{request:request});},
     // Navigate the HOST page: the opaque guest can't touch parent.location
     // and has no router, so a link click posts its href here and the parent
@@ -165,12 +189,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         });
       });
     },
-    subscribe:function(body){
+    subscribe:function(body,ctx){
       var id=mint();
       return new ReadableStream({
         start:function(controller){
           streams.set(id,controller);
-          ready.then(function(){port.postMessage({v:1,type:"subscribe",id:id,body:body});},
+          ready.then(function(){port.postMessage(withRoute({v:1,type:"subscribe",id:id,body:body},ctx));},
                      function(err){streams.delete(id);controller.error(err);});
         },
         cancel:function(){
@@ -808,7 +832,7 @@ fn make_dispatcher(
             return;
         };
         match kind.as_str() {
-            "query" => handle_query(&host, &port, &data),
+            "query" => handle_query(&host, &state, &port, &data),
             "transact" => handle_transact(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
@@ -819,7 +843,7 @@ fn make_dispatcher(
     }) as Box<dyn FnMut(MessageEvent)>)
 }
 
-fn handle_query(host: &Element, port: &MessagePort, data: &JsValue) {
+fn handle_query(host: &Element, state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
     let Some(id) = get_str(data, "id") else {
         return;
     };
@@ -827,14 +851,34 @@ fn handle_query(host: &Element, port: &MessagePort, data: &JsValue) {
         Ok(b) => b,
         Err(msg) => return post_error(port, "query-error", &id, &msg),
     };
+    let (space, branch) = forwarded_route(state, data);
     let host = host.clone();
     let port = port.clone();
     spawn_local(async move {
-        match host_consumer::query(&host, &body).await {
+        match host_consumer::query_with_route(&host, &body, space.as_deref(), branch.as_deref()).await
+        {
             Ok(rows) => post_result(&port, "query-result", &id, "rows", &rows),
             Err(e) => post_error(&port, "query-error", &id, &e.message),
         }
     });
+}
+
+/// The guest-supplied per-query `(space, branch)` route, honored ONLY for a
+/// privileged (`cross_repo`) portal. For a normal portal this returns
+/// `(None, None)` — the relayed route is ignored and the query stays pinned to
+/// the portal's handshake/ancestor context. The privilege is the trusted
+/// portal element's, set host-side (`PortalState::cross_repo`); a guest can
+/// forward a route but cannot grant itself the privilege to have it honored.
+fn forwarded_route(
+    state: &Rc<RefCell<PortalState>>,
+    data: &JsValue,
+) -> (Option<String>, Option<String>) {
+    if !state.borrow().cross_repo {
+        return (None, None);
+    }
+    let space = get_str(data, "space").filter(|s| !s.is_empty());
+    let branch = get_str(data, "branch").filter(|s| !s.is_empty());
+    (space, branch)
 }
 
 fn handle_transact(host: &Element, port: &MessagePort, data: &JsValue) {
@@ -865,6 +909,7 @@ fn handle_subscribe(
         Ok(b) => b,
         Err(msg) => return post_error(port, "subscribe-error", &id, &msg),
     };
+    let (space, branch) = forwarded_route(state, data);
 
     let tag = {
         let mut s = state.borrow_mut();
@@ -872,7 +917,13 @@ fn handle_subscribe(
         format!("portal-sub-{}", s.next_tag)
     };
     let tag_js = JsValue::from_str(&tag);
-    match host_consumer::subscribe(host, &body, Some(&tag_js)) {
+    match host_consumer::subscribe_with_route(
+        host,
+        &body,
+        Some(&tag_js),
+        space.as_deref(),
+        branch.as_deref(),
+    ) {
         Ok(host_sub) => {
             state.borrow_mut().subs.insert(
                 tag,

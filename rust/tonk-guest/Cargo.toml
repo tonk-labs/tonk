@@ -25,6 +25,10 @@ tonk-fab = { workspace = true }
 tonk-workspace = { workspace = true }
 tonk-tree = { workspace = true }
 tonk-portal = { workspace = true }
+# For the passive `<tonk-repository>` / `<tonk-branch>` routing annotators
+# (registered via `register_routing_elements`); the real `<tonk-host>` is NOT
+# registered here — the guest uses its own proxy host.
+tonk-host = { workspace = true }
 tonk-sigil = { workspace = true, features = ["web"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

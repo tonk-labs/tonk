@@ -29,6 +29,7 @@ use crate::bridge::{self, PortalState};
 pub(crate) fn connect_portal(
     this: &HtmlElement,
     inner: &RefCell<Option<Rc<RefCell<PortalState>>>>,
+    cross_repo: bool,
     apply_style: impl Fn(&HtmlIFrameElement),
 ) {
     let host: Element = this.clone().into();
@@ -66,6 +67,11 @@ pub(crate) fn connect_portal(
     apply_style(&iframe);
 
     let state = Rc::new(RefCell::new(PortalState::new()));
+    // Grant the cross-repo relay privilege only when the caller is the trusted
+    // portal element (`<tonk-fab-portal>`). The generic `<tonk-portal>` passes
+    // `false`, so a synced/untrusted content guest can forward a route but the
+    // bridge never honors it.
+    state.borrow_mut().set_cross_repo(cross_repo);
     bridge::register_portal(&iframe, &host, &state);
     install_method_delegates(&host, &state);
 

@@ -67,9 +67,22 @@ impl CustomElement for TonkFab {
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         post_resize(this);
-        // Guard against double-registration if the element reconnects.
-        if this.dataset().get("fabHoverBound").is_none() {
-            this.dataset().set("fabHoverBound", "1").ok();
+        // Guard against double-binding when the SAME element reconnects.
+        //
+        // The marker is a JS expando PROPERTY, not a `data-*` attribute, on
+        // purpose: `<tonk-display>` snapshots its view by `cloneNode`-ing the
+        // authored subtree and mounting the clone. `cloneNode` copies
+        // attributes but NOT event listeners or JS properties — so an
+        // attribute guard would ride along on the clone (marking it "bound")
+        // while the listeners stayed on the discarded original, leaving the
+        // live element inert. A property is dropped by `cloneNode`, so the
+        // mounted clone re-binds; it still persists across a genuine
+        // disconnect/reconnect of the same node, so reconnects don't double-bind.
+        let already_bound = Reflect::get(this.as_ref(), &"__tonkFabBound".into())
+            .map(|v| v.is_truthy())
+            .unwrap_or(false);
+        if !already_bound {
+            let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
             attach_hover(this);
             attach_drag(this);
             // Listen for host→guest `__tonkFab` sync messages. The sync
@@ -127,7 +140,12 @@ fn attach_hover(element: &HtmlElement) {
             }
             element_for_enter.dataset().delete("collapseTimer");
         }
-        element_for_enter.class_list().add_1("expanded").ok();
+        // The `expanded` class drives the CSS on the inner `.fab` div
+        // (`.fab.expanded`, `.fab:not(.expanded) .fab__menu`), NOT the
+        // `<tonk-fab>` host — so toggle it there.
+        if let Some(fab) = element_for_enter.query_selector(".fab").ok().flatten() {
+            fab.class_list().add_1("expanded").ok();
+        }
         apply_menu_direction(&element_for_enter);
         post_resize(&element_for_enter);
     });
@@ -140,7 +158,9 @@ fn attach_hover(element: &HtmlElement) {
     let element_for_collapse = element.clone();
     let collapse_once = Closure::<dyn Fn()>::new(move || {
         element_for_collapse.dataset().delete("collapseTimer");
-        element_for_collapse.class_list().remove_1("expanded").ok();
+        if let Some(fab) = element_for_collapse.query_selector(".fab").ok().flatten() {
+            fab.class_list().remove_1("expanded").ok();
+        }
         post_resize(&element_for_collapse);
     });
     let collapse_fn = collapse_once
@@ -528,10 +548,23 @@ fn post_resize(element: &HtmlElement) {
         return;
     };
 
-    let elem: &web_sys::Element = element.unchecked_ref();
-    let rect = elem.get_bounding_client_rect();
-    let w = rect.width();
-    let h = rect.height();
+    // Measure the inner `.fab`'s CONTENT extent, not the host's bounding box.
+    // `<tonk-fab>`/`.fab` are `display:block`, so their border-box width is
+    // clamped to the (small) iframe width — measuring it would size the iframe
+    // from a value that depends on the iframe's own width (a feedback deadlock
+    // that can never grow), and the expanded bar's `white-space:nowrap`
+    // content would just overflow and get clipped. `scrollWidth`/`scrollHeight`
+    // report the true content extent: the overflowing nowrap content
+    // horizontally, and the absolutely-positioned `.fab__menu` hanging below
+    // vertically. Fall back to the host bounding box if `.fab` is absent.
+    let host: &web_sys::Element = element.unchecked_ref();
+    let (w, h) = match host.query_selector(".fab").ok().flatten() {
+        Some(fab) => (f64::from(fab.scroll_width()), f64::from(fab.scroll_height())),
+        None => {
+            let rect = host.get_bounding_client_rect();
+            (rect.width(), rect.height())
+        }
+    };
 
     let msg = Object::new();
     let fab = Object::new();
