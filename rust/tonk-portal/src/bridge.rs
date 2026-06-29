@@ -326,6 +326,17 @@ const BOOTSTRAP_JS: &str = r#"(function(){
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
 const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
+  // TEMP diagnostic: relay otherwise-invisible guest errors to the parent so a
+  // sealed (opaque-origin) failure is debuggable. The opaque origin sanitizes
+  // `Uncaught (in promise)` details in the parent console; forward them here.
+  window.addEventListener("unhandledrejection", function(ev){
+    var r=ev.reason;
+    parent.postMessage({__tonkRuntime:"warn",error:"unhandledrejection: "+(r&&r.stack?r.stack:String(r))},"*");
+  });
+  window.addEventListener("error", function(ev){
+    parent.postMessage({__tonkRuntime:"warn",error:"error: "+(ev.error&&ev.error.stack?ev.error.stack:ev.message)},"*");
+  });
+
   // Global submit guard: the iframe sandbox grants `allow-forms` only so a
   // `<form>`'s `submit` event fires (declarative `onsubmit=` bindings run on
   // it). This capture-phase listener `preventDefault`s EVERY submission
@@ -879,6 +890,12 @@ pub(crate) fn install_message_listener() {
                     "error" => {
                         tonk_common::log!(
                             "portal guest runtime error: {}",
+                            get_str(&data, "error").unwrap_or_default()
+                        );
+                    }
+                    "warn" => {
+                        tonk_common::log!(
+                            "portal guest runtime warn: {}",
                             get_str(&data, "error").unwrap_or_default()
                         );
                     }
