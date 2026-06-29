@@ -749,7 +749,13 @@ async fn fetch_tonk_code_bundles() -> Vec<(String, String)> {
         if files.iter().any(|(n, _)| n == &name) {
             continue;
         }
-        let src = match fetch_text(&format!("/tonk-code/{name}")).await {
+        // `reload` cache mode: unlike the guest-manifest assets, the tonk-code
+        // bundles are served under STABLE (unhashed) names, so the SW's
+        // stale-while-revalidate shell cache would otherwise serve a previous
+        // build's editor — a content change must reach the guest. `reload`
+        // bypasses the cache for the request but still writes the response back,
+        // so a later offline load is still served.
+        let src = match fetch_text_reload(&format!("/tonk-code/{name}")).await {
             Ok(src) => src,
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!(
@@ -821,6 +827,24 @@ async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Fetch `url` as text with `cache: "reload"` — bypass the cache for the request
+/// but still update it. For stable-named assets (the tonk-code bundles) whose
+/// content changes across builds, so a stale shell-cache copy isn't served.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_text_reload(url: &str) -> Result<String, String> {
+    use web_sys::{RequestCache, RequestInit};
+    let win = window().ok_or("no window")?;
+    let init = RequestInit::new();
+    init.set_cache(RequestCache::Reload);
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init))
+        .await
+        .map_err(|e| format!("fetch {url}: {e:?}"))?;
+    let resp: web_sys::Response = resp_value
+        .dyn_into()
+        .map_err(|_| format!("fetch {url}: not a Response"))?;
+    resp_text(resp).await
+}
+
 async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
     // Default cache mode (no override): these URLs are content-hashed (named
