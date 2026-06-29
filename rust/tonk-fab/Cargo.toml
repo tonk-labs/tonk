@@ -28,6 +28,7 @@ web-sys = { workspace = true, features = [
     "HtmlElement",
     "MessageEvent",
     "PointerEvent",
+    "ResizeObserver",
     "Window",
 ] }
 

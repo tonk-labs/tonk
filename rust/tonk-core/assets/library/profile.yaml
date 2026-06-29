@@ -287,7 +287,7 @@ view/directory!: &profile/fab/view
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
         <span class="fab__space">{dom.host/data-space}</span>
-        <nav class="fab__menu">
+        <nav class="fab__menu opens-down">
           <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
         </nav>
       </div>
@@ -300,7 +300,11 @@ view/directory!: &profile/fab/view
            beats it (unlayered declarations win over layered ones). */
         html, body { background: transparent; }
         .fab {
-          display: flex;
+          /* inline-flex (not flex) so `.fab` shrinks to its content width
+             instead of filling the iframe — the host sizes the iframe from
+             `.fab`'s measured extent, so a block-level box would deadlock the
+             width (and never shrink back to the ring on collapse). */
+          display: inline-flex;
           align-items: center;
           gap: 8px;
           padding: 6px;
@@ -399,6 +403,8 @@ view/directory!: &profile/fab/view
           overflow: hidden;
           text-overflow: ellipsis;
         }
+        /* Collapsed (default): only the sync-status ring shows; hovering adds
+           the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
         .fab:not(.expanded) .fab__identity,
         .fab:not(.expanded) .fab__space { display: none; }
         .fab__menu {

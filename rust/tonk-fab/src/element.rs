@@ -89,6 +89,7 @@ impl CustomElement for TonkFab {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
             attach_hover(this);
             attach_drag(this);
+            attach_resize_observer(this);
             // Listen for host→guest `__tonkFab` sync messages. The sync
             // state lives on the SPACE branch overlay (`state:here`/`tonk:sync`),
             // not on profile/meta — the host `<tonk-fab-portal>` relays it via
@@ -656,6 +657,32 @@ fn attach_host_messages(element: &HtmlElement) {
     on_message.forget();
 }
 
+/// Observe `.fab` (and its menu) and re-post a resize whenever their size
+/// changes, so the iframe tracks the content through expand/collapse and the
+/// asynchronous render of the name, sigil, and space menu. Without this the
+/// one-shot resize on hover measures before async content paints (clipping the
+/// bar), and a collapse never shrinks the iframe back to the ring.
+fn attach_resize_observer(element: &HtmlElement) {
+    let el = element.clone();
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        post_resize(&el);
+    });
+    let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) else {
+        return;
+    };
+    if let Some(fab) = element.query_selector(".fab").ok().flatten() {
+        observer.observe(&fab);
+    }
+    if let Some(menu) = element.query_selector(".fab__menu").ok().flatten() {
+        observer.observe(&menu);
+    }
+    // The FAB is a page-lifetime singleton; leak the callback and observer so
+    // both outlive this scope and keep firing (mirrors the `forget()` pattern
+    // used for the hover/drag listeners).
+    callback.forget();
+    std::mem::forget(observer);
+}
+
 /// Measure `element`'s bounding rect and post a `__tonkFab` resize message to
 /// `window.parent`.
 fn post_resize(element: &HtmlElement) {
@@ -664,14 +691,13 @@ fn post_resize(element: &HtmlElement) {
     };
 
     // Measure the inner `.fab`'s CONTENT extent, not the host's bounding box.
-    // `<tonk-fab>`/`.fab` are `display:block`, so their border-box width is
-    // clamped to the (small) iframe width — measuring it would size the iframe
-    // from a value that depends on the iframe's own width (a feedback deadlock
-    // that can never grow), and the expanded bar's `white-space:nowrap`
-    // content would just overflow and get clipped. `scrollWidth`/`scrollHeight`
-    // report the true content extent: the overflowing nowrap content
-    // horizontally, and the absolutely-positioned `.fab__menu` hanging below
-    // vertically. Fall back to the host bounding box if `.fab` is absent.
+    // `.fab` is `display:inline-flex`, so it shrinks to its content width
+    // independent of the iframe — measuring the host (`display:block`, clamped
+    // to the iframe width) would deadlock the width and never shrink back on
+    // collapse. `scrollWidth`/`scrollHeight` report the true content extent:
+    // the bar content horizontally, and the absolutely-positioned `.fab__menu`
+    // hanging below vertically. Fall back to the host bounding box if `.fab`
+    // is absent.
     let host: &web_sys::Element = element.unchecked_ref();
     let (w, h) = match host.query_selector(".fab").ok().flatten() {
         Some(fab) => (f64::from(fab.scroll_width()), f64::from(fab.scroll_height())),
