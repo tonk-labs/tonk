@@ -163,16 +163,29 @@ or consciously drop:
      a repo endpoint instead of the bridge query channel, so under the guest's
      opaque origin it gets `Failed to fetch` — header shows, data doesn't. Needs
      tonk-tree to route data through the bridge like `<tonk-display>` does.
-   - `/inspector` (`<tonk-inspector>`) — ROOT CAUSE FOUND: the element is NEVER
-     REGISTERED in the guest. `guest.rs` registers tonk_display/board/workspace/
-     tree/portal but NOT tonk_inspector, because `<tonk-inspector>` lives in
-     `tonk-ui` (still a Leptos `#[component]`, links the query engine) and the
-     guest deliberately can't depend on tonk-ui. So `<tonk-inspector>` is an inert
-     unknown element in the iframe — DOM present, nothing under it (user-observed).
-     BLOCKED ON de-Leptosing the inspector: extract it to a standalone leptos-free
-     custom-element crate (like tonk-tree) the guest can register. This is Stage 6
-     of plan/de-leptos-ui.md — the inspector is the one route model that genuinely
-     can't render in the sealed guest until that lands.
+   - `/inspector` (`<tonk-inspector>`) — DE-LEPTOSED + REGISTERED. Extracted to a
+     standalone leptos-free crate `rust/tonk-inspector` (plain-DOM notebook +
+     HTML-string result rendering over engine-free serde mirror types; evaluates
+     by POST to the branch `/evaluate` endpoint via the guest fetch proxy).
+     `guest.rs` now registers it. REMAINING blocker: the `<tonk-code>` EDITOR
+     bundle is not in the guest yet. tonk-code is a CODE-SPLIT CodeMirror bundle
+     (`assets/tonk-code.js` 116K + `chunk-*.js` + per-language
+     `tonk-code-lang-dialog-yaml.js` 158K) that loads chunks/language packs via
+     RELATIVE dynamic `import("./…")` — dead at the guest's opaque origin. WA was
+     fixed by esbuilding ONE self-contained ESM, but tonk-code REQUIRES
+     `splitting: true` (single `@codemirror/state` identity, else "Unrecognized
+     extension value"; see scripts/build.mjs), so it can't collapse to one file.
+     FIX (designed, not built): in `tonk-portal build_inject_payload`, fetch ALL
+     tonk-code bundles (main + chunks + dialog-yaml lang pack), transfer them, and
+     in the guest bootstrap mint a blob URL per file and REWRITE each relative
+     dynamic-import specifier to its blob URL (the same blob-rewrite the glue
+     snippets already use, but for dynamic imports + a manifest of files). The LSP
+     side already works over the bridge: the diagnostics provider uses
+     `httpTransport` (HTTP `/api/language-server`, NOT WebSocket), which the guest
+     `window.fetch` proxy routes. So once the editor bundle upgrades, diagnostics
+     + auto-eval should flow. Browser-verified so far: the inspector element
+     registers and mounts its DOM (form + result slot); `<tonk-code>` stays an
+     inert element until its bundle is injected.
    - Full `did:key:` URL form (`/space/did:key:z6Mk…/inspector`) parses fine —
      `resolve_path` reconstructs the same SpaceRef as the short form (verified). A
      "not working" full-DID URL means that space isn't in the current profile, not
