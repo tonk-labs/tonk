@@ -345,9 +345,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
 const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
-  // TEMP diagnostic: relay otherwise-invisible guest errors to the parent so a
-  // sealed (opaque-origin) failure is debuggable. The opaque origin sanitizes
-  // `Uncaught (in promise)` details in the parent console; forward them here.
+  // Surface guest errors to the parent log: an opaque (null) origin sanitizes
+  // `Uncaught (in promise)` / error details in the parent console to a bare
+  // message, so a sealed-guest failure is otherwise undebuggable. Forwarding the
+  // stack via the bridge keeps the sealed runtime diagnosable. The parent logs
+  // these under "portal guest runtime warn:".
   window.addEventListener("unhandledrejection", function(ev){
     var r=ev.reason;
     parent.postMessage({__tonkRuntime:"warn",error:"unhandledrejection: "+(r&&r.stack?r.stack:String(r))},"*");
