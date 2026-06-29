@@ -183,9 +183,11 @@ or consciously drop:
      side already works over the bridge: the diagnostics provider uses
      `httpTransport` (HTTP `/api/language-server`, NOT WebSocket), which the guest
      `window.fetch` proxy routes. So once the editor bundle upgrades, diagnostics
-     + auto-eval should flow. Browser-verified so far: the inspector element
-     registers and mounts its DOM (form + result slot); `<tonk-code>` stays an
-     inert element until its bundle is injected.
+     + auto-eval should flow. BROWSER-VERIFIED (2026-06-29): the inspector element
+     now registers and mounts its DOM INSIDE the sealed iframe — the snapshot
+     shows the cell `<form>` with the "Submit transaction" play button (previously
+     the iframe was empty). The `<tonk-code>` editor stays an inert element inside
+     the form until its bundle is injected (the one remaining step).
    - Full `did:key:` URL form (`/space/did:key:z6Mk…/inspector`) parses fine —
      `resolve_path` reconstructs the same SpaceRef as the short form (verified). A
      "not working" full-DID URL means that space isn't in the current profile, not
