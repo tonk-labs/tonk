@@ -32,7 +32,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlElement, PointerEvent, window};
+use web_sys::{Element, HtmlElement, PointerEvent, window};
 
 // web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
 // features we have, so we call them via js_sys::Function from the global.
@@ -203,6 +203,20 @@ fn attach_hover(element: &HtmlElement) {
 fn attach_drag(element: &HtmlElement) {
     let el_down = element.clone();
     let on_down = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
+        // A press on an interactive descendant (the name editable, a menu
+        // link, a form control) is a click — not a drag. Bail before
+        // `prevent_default`/capture so the control receives the press; the
+        // FAB stays draggable everywhere else (the circle, the empty pill).
+        if let Some(target) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) {
+            if target
+                .closest("a, button, input, textarea, select, tonk-editable, [contenteditable]")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return;
+            }
+        }
         e.prevent_default();
         // Mark element as dragging.
         el_down.dataset().set("fabDragging", "1").ok();
