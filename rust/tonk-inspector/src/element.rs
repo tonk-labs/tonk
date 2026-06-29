@@ -61,8 +61,28 @@ impl CustomElement for TonkInspectorElement {
         this.set_class_name("tonk-inspector branch-cells wa-stack wa-gap-s");
         this.set_inner_html("");
 
+        // Mount a `<tonk-diagnostics-provider>` as the cell host. Each cell's
+        // `<tonk-code>` dispatches a `tonk-code-connect` event on connect that
+        // must bubble to an ancestor provider; the provider owns the LSP client
+        // (`/api/language-server`, routed over the guest fetch bridge) and feeds
+        // diagnostics back. The host page mounts one app-wide, but the sealed
+        // guest has none — so the inspector provides its own.
+        let Some(document) = window().and_then(|w| w.document()) else {
+            return;
+        };
+        let host: HtmlElement = match document
+            .create_element("tonk-diagnostics-provider")
+            .ok()
+            .and_then(|e| e.dyn_into::<HtmlElement>().ok())
+        {
+            Some(provider) => provider,
+            None => return,
+        };
+        host.set_class_name("branch-cells wa-stack wa-gap-s");
+        let _ = this.append_child(&host);
+
         let notebook = Rc::new(Notebook {
-            host: this.clone(),
+            host,
             repo,
             branch,
             next_id: Cell::new(0),

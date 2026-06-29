@@ -386,6 +386,59 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       var mod=await import(glueUrl);
       await mod.default({ module_or_path: d.wasm });
       mod.start();
+      // The <tonk-code> editor bundle: code-split CodeMirror that loads sibling
+      // chunks + language packs via RELATIVE imports, dead at this opaque origin.
+      // Mint a blob per file, rewrite every "./<name>" import to its blob, and
+      // import the main bundle to define <tonk-code> + <tonk-diagnostics-provider>.
+      // The language pack is loaded at runtime via a `./tonk-code-lang-<id>.js`
+      // URL built from import.meta.url, which is the (useless) blob URL inside the
+      // guest — expose a name->blob map the rewritten lookup consults instead.
+      if (d.code && d.code.length) {
+        try {
+          // Mint a blob per file in DEPENDENCY ORDER so each file's relative
+          // imports rewrite to the FINAL blob URLs of already-minted deps. The
+          // esbuild chunk graph is a DAG (shared chunks are leaves), so repeated
+          // passes that mint any file whose deps are all minted converges; a
+          // file with an unminted relative dep is deferred to a later pass.
+          var srcByName={};
+          for (var ci=0; ci<d.code.length; ci++){ srcByName[d.code[ci].name]=d.code[ci].src; }
+          var relImports=function(src){
+            var out=[],re=/['"]\.\/([^'"$]+)['"]/g,m;
+            while((m=re.exec(src))) if(out.indexOf(m[1])<0) out.push(m[1]);
+            return out;
+          };
+          var blobs={};            // name -> final blob URL
+          var pending=Object.keys(srcByName);
+          var guard=0;
+          while (pending.length && guard++ < 20){
+            var next=[];
+            for (var pi=0; pi<pending.length; pi++){
+              var name=pending[pi];
+              var deps=relImports(srcByName[name]).filter(function(n){return srcByName[n]!==undefined;});
+              var ready=deps.every(function(n){return blobs[n];});
+              if(!ready){ next.push(name); continue; }
+              var out=srcByName[name];
+              for (var di=0; di<deps.length; di++){
+                out=out.split('"./'+deps[di]+'"').join('"'+blobs[deps[di]]+'"');
+                out=out.split("'./"+deps[di]+"'").join("'"+blobs[deps[di]]+"'");
+              }
+              // Runtime language-pack URL → guest blob-map lookup.
+              out=out.replace(
+                "new URL(`./tonk-code-lang-${t}.js`,import.meta.url).href",
+                "window.__tonkCodeLang(t)"
+              );
+              blobs[name]=URL.createObjectURL(new Blob([out],{type:"text/javascript"}));
+            }
+            pending=next;
+          }
+          window.__tonkCodeLang=function(id){return blobs["tonk-code-lang-"+id+".js"]||"";};
+          await import(blobs["tonk-code.js"]);
+        } catch(codeErr) {
+          // The editor failing to inject must not abort the whole runtime — the
+          // rest of the view still works; the inspector just lacks an editor.
+          parent.postMessage({__tonkRuntime:"warn",error:"tonk-code inject: "+String(codeErr)+(codeErr&&codeErr.stack?"\n"+codeErr.stack:"")},"*");
+        }
+      }
     } catch(err) {
       parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
     }
@@ -507,10 +560,22 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
         snippets.push(&entry);
     }
 
+    // The `<tonk-code>` editor bundle graph (main + lang pack + chunks), as
+    // `{name, src}` entries the guest blobs and import-rewrites. Code-split, so
+    // it can't be one self-contained module — the guest mints a blob per file.
+    let code = js_sys::Array::new();
+    for (name, src) in fetch_tonk_code_bundles().await {
+        let entry = Object::new();
+        let _ = Reflect::set(&entry, &"name".into(), &JsValue::from_str(&name));
+        let _ = Reflect::set(&entry, &"src".into(), &JsValue::from_str(&src));
+        code.push(&entry);
+    }
+
     let payload = Object::new();
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
     let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
+    let _ = Reflect::set(&payload, &"code".into(), &code);
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
     let _ = Reflect::set(&payload, &"wa".into(), &wa);
@@ -620,6 +685,77 @@ fn find_snippet_imports(glue: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// Find the relative `./…` ESM import specifiers in a module's source — both
+/// static (`from"./x"`) and dynamic (`import("./x")`). Used to walk the
+/// `<tonk-code>` bundle's chunk graph so every referenced file can be fetched and
+/// injected (the sealed guest can't fetch siblings at its opaque origin).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn find_relative_imports(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Match `"./<name>"` and `'./<name>'` occurrences anywhere — covers
+    // `from"./x.js"`, `import("./x.js")`, and the language-pack URL template.
+    for quote in ['"', '\''] {
+        let needle = format!("{quote}./");
+        let mut rest = src;
+        while let Some(i) = rest.find(&needle) {
+            let after = &rest[i + needle.len()..];
+            if let Some(end) = after.find(quote) {
+                let name = &after[..end];
+                // Skip the language-pack template literal (`./tonk-code-lang-…`
+                // contains a `${…}` placeholder, handled separately).
+                if !name.contains("${") && !out.contains(&name.to_owned()) {
+                    out.push(name.to_owned());
+                }
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Fetch the `<tonk-code>` editor bundle graph from `/tonk-code/` for guest
+/// injection: the main element bundle, the dialog-yaml language pack, and every
+/// `chunk-*.js` either transitively imports. Returns `(name, src)` pairs the
+/// guest blobs + import-rewrites. Best-effort — a missing file is skipped, so the
+/// editor degrades rather than failing the whole inject.
+///
+/// The bundle is code-split (esbuild `splitting:true`, required for a single
+/// `@codemirror/state` identity), so it can't be one self-contained ESM like the
+/// WA bundle; instead the guest mints a blob per file and rewrites relative
+/// imports to those blobs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_tonk_code_bundles() -> Vec<(String, String)> {
+    // Entry points with stable (unhashed) names served at `/tonk-code/`.
+    let entries = ["tonk-code.js", "tonk-code-lang-dialog-yaml.js"];
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut queue: Vec<String> = entries.iter().map(|s| s.to_string()).collect();
+
+    while let Some(name) = queue.pop() {
+        if files.iter().any(|(n, _)| n == &name) {
+            continue;
+        }
+        let src = match fetch_text(&format!("/tonk-code/{name}")).await {
+            Ok(src) => src,
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "tonk-code inject: skipping {name}: {e}"
+                )));
+                continue;
+            }
+        };
+        // Enqueue every chunk this file imports (the lang pack also pulls chunks).
+        for spec in find_relative_imports(&src) {
+            if !files.iter().any(|(n, _)| n == &spec) && !queue.contains(&spec) {
+                queue.push(spec);
+            }
+        }
+        files.push((name, src));
+    }
+    files
 }
 
 /// The parent document's app stylesheet href (the hashed `/styles-*.css`),
