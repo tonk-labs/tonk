@@ -843,7 +843,12 @@ fn make_dispatcher(
     }) as Box<dyn FnMut(MessageEvent)>)
 }
 
-fn handle_query(host: &Element, state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
+fn handle_query(
+    host: &Element,
+    state: &Rc<RefCell<PortalState>>,
+    port: &MessagePort,
+    data: &JsValue,
+) {
     let Some(id) = get_str(data, "id") else {
         return;
     };
@@ -855,7 +860,8 @@ fn handle_query(host: &Element, state: &Rc<RefCell<PortalState>>, port: &Message
     let host = host.clone();
     let port = port.clone();
     spawn_local(async move {
-        match host_consumer::query_with_route(&host, &body, space.as_deref(), branch.as_deref()).await
+        match host_consumer::query_with_route(&host, &body, space.as_deref(), branch.as_deref())
+            .await
         {
             Ok(rows) => post_result(&port, "query-result", &id, "rows", &rows),
             Err(e) => post_error(&port, "query-error", &id, &e.message),
