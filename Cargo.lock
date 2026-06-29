@@ -4915,6 +4915,7 @@ dependencies = [
 name = "tonk-inspector"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "custom-elements",
  "dialog-common",
  "js-sys",

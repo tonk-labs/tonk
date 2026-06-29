@@ -559,6 +559,29 @@ fn render_field_value(value: &Value) -> String {
     format!("<span class=\"{class}\">{}</span>", esc(&text))
 }
 
+/// The full `#<base58>` form of a revision's `tree`, from the wire value.
+///
+/// The wire `tree` is a `TreeReference` — a Blake3 hash serialized as a byte
+/// SEQUENCE (the typed value's `#<base58>` `Display` never reaches the wire). So
+/// base58-encode the byte array to reconstruct the display form. A string value
+/// (a hypothetical future shape) is used as-is; anything else yields `None`.
+fn tree_display(tree: &Value) -> Option<String> {
+    match tree {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Array(bytes) => {
+            let raw: Vec<u8> = bytes
+                .iter()
+                .filter_map(|b| b.as_u64().map(|n| n as u8))
+                .collect();
+            if raw.is_empty() {
+                return None;
+            }
+            Some(format!("#{}", bs58::encode(raw).into_string()))
+        }
+        _ => None,
+    }
+}
+
 /// Github-style short form of a tree reference (`#<base58>` → first 8 chars).
 fn abbreviate_tree(tree: &str) -> String {
     const SHORT_LEN: usize = 8;
@@ -568,13 +591,13 @@ fn abbreviate_tree(tree: &str) -> String {
 
 /// A revision as a `<wa-badge>` (truncated tree hash, full hash on `title`).
 fn revision_badge(revision: Option<&Revision>) -> String {
-    match revision {
-        Some(rev) => format!(
+    match revision.and_then(|rev| tree_display(&rev.tree)) {
+        Some(full) => format!(
             "<wa-badge variant=\"neutral\" appearance=\"filled\" title=\"{}\">\
                <wa-icon name=\"code-commit\" slot=\"start\"></wa-icon>{}\
              </wa-badge>",
-            esc(&rev.tree),
-            esc(&abbreviate_tree(&rev.tree)),
+            esc(&full),
+            esc(&abbreviate_tree(&full)),
         ),
         None => {
             "<wa-badge variant=\"neutral\" appearance=\"filled\">no commits</wa-badge>".to_owned()

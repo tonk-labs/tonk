@@ -29,11 +29,20 @@ pub struct EvaluateResponse {
     pub matches_after: Vec<QueryMatchBlock>,
 }
 
-/// A branch revision — only the `tree` reference is rendered (as a short badge).
+/// A branch revision. Only the `tree` reference is rendered (a short badge).
+///
+/// The wire `tree` is a `TreeReference` — a Blake3 hash that serializes as a
+/// **byte sequence**, not a string (the typed Rust value's `Display` is the
+/// `#<base58>` form, which never reaches the wire). Captured as a raw
+/// [`serde_json::Value`] and base58-encoded for the badge in `render`, so the
+/// other `Revision` fields (subject/issuer/authority/cause/period/moment) are
+/// simply ignored rather than mis-typed. `#[serde(default)]` tolerates a future
+/// shape where `tree` is absent.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Revision {
-    /// The revision's tree reference (`#<base58>`); shown truncated.
-    pub tree: String,
+    /// The revision's tree reference, as it arrives on the wire (a byte array).
+    #[serde(default)]
+    pub tree: serde_json::Value,
 }
 
 /// Matches for one source-expression query.

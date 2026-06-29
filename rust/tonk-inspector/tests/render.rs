@@ -40,6 +40,29 @@ async fn it_renders_an_empty_result_as_a_revision_badge() {
 }
 
 #[dialog_common::test]
+async fn it_renders_a_byte_array_tree_as_a_base58_badge() {
+    // The real wire `tree` is a TreeReference — a Blake3 hash serialized as a
+    // byte SEQUENCE, not a string. The renderer base58-encodes it for the badge.
+    // (Regression: a String-typed mirror made the whole response fail to decode
+    // with "invalid type: sequence, expected a string".)
+    let resp = response(serde_json::json!({
+        "revision_after": { "tree": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] },
+        "matches_before": [],
+        "matches_after": [],
+    }));
+    let html = render_result(None, Some(&resp));
+    assert!(
+        html.contains("wa-badge"),
+        "byte-array tree still renders a badge"
+    );
+    // base58 of [0,1,2,3,4,5,6,7,8,9] starts with leading-zero '1's then chars.
+    assert!(
+        html.contains("title=\"#"),
+        "badge title is the #base58 form: {html}",
+    );
+}
+
+#[dialog_common::test]
 async fn it_renders_a_generic_result_as_notation() {
     let resp = response(serde_json::json!({
         "matches_before": [{

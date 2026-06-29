@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 web = []
 
 [dependencies]
+bs58 = { workspace = true }
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
