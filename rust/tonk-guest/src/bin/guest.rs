@@ -47,7 +47,7 @@ pub fn start() {
     tonk_fab::register();
     // The scratch inspector — a leptos-free notebook element that evaluates by
     // POSTing to the branch's `/evaluate` endpoint over the host fetch bridge.
-    // Its `<tonk-code>` editor is injected by the portal (see bridge.rs).
+    // Its `<tonk-code>` editor + diagnostics provider are injected by the portal.
     tonk_inspector::register();
     // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
     // sheet's imperative canvas). Register it so a NESTED portal upgrades —
