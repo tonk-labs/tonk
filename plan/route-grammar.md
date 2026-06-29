@@ -182,12 +182,30 @@ or consciously drop:
      snippets already use, but for dynamic imports + a manifest of files). The LSP
      side already works over the bridge: the diagnostics provider uses
      `httpTransport` (HTTP `/api/language-server`, NOT WebSocket), which the guest
-     `window.fetch` proxy routes. So once the editor bundle upgrades, diagnostics
-     + auto-eval should flow. BROWSER-VERIFIED (2026-06-29): the inspector element
-     now registers and mounts its DOM INSIDE the sealed iframe — the snapshot
-     shows the cell `<form>` with the "Submit transaction" play button (previously
-     the iframe was empty). The `<tonk-code>` editor stays an inert element inside
-     the form until its bundle is injected (the one remaining step).
+     `window.fetch` proxy routes. EDITOR INJECTION DONE + BROWSER-VERIFIED
+     (2026-06-29): the portal fetches the whole code-split tonk-code bundle graph
+     (main + chunks + dialog-yaml pack), transfers it, and the guest bootstrap
+     mints a blob per file in dependency order, rewriting relative imports to blob
+     URLs (the runtime language-pack URL → a `window.__tonkCodeLang` lookup). The
+     CodeMirror editor now RENDERS and ACCEPTS INPUT inside the sealed iframe
+     (snapshot: a real CM textbox with placeholder; typed `replica ?r:` registers).
+     REMAINING (LSP/auto-eval): a pure query only runs via auto-eval, which is
+     driven by the editor's `diagnostics` event, which needs the LSP. Two fixes
+     applied: (1) the inspector mounts its own `<tonk-diagnostics-provider>` as the
+     cell host; (2) tonk-code's provider `#whenWorkerReady` now races
+     `navigator.serviceWorker.ready` against a 2s timeout (in the sealed guest
+     `.ready` never resolves — no SW at an opaque origin — so it hung forever
+     before building the LSP transport). STILL NOT WORKING: no `/api/language-server`
+     request fires after typing, and an `Uncaught (in promise)` appears right after
+     the inspector mounts. Likely either the `tonk-code-connect` → provider attach
+     races the element upgrade order (both defined in one bundle; if `tonk-code`
+     upgrades before the provider installs its listener the connect event is lost),
+     or the LSP `initialize` rejects. NEXT: instrument inside the guest (the opaque
+     iframe hides its DOM/console detail) — log in the provider's `#onConnect`/
+     `#ensureClient` and the editor's `#announceConnect`; consider having the
+     provider scan for existing `<tonk-code>` descendants on connect, or the
+     inspector re-announce the editor after a frame (detach/reattach re-runs
+     connectedCallback unconditionally).
    - Full `did:key:` URL form (`/space/did:key:z6Mk…/inspector`) parses fine —
      `resolve_path` reconstructs the same SpaceRef as the short form (verified). A
      "not working" full-DID URL means that space isn't in the current profile, not
