@@ -1700,12 +1700,30 @@ concept!: &directory/route
       the: xyz.tonk.site/model
       cardinality: one
       as: text
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
+# Wrap the directory display in repository/branch context so models whose views
+# resolve their repository from a `<tonk-repository>` DOM ancestor (`<tonk-tree>`,
+# `<tonk-inspector>`) work inside the sealed guest, which has no routing-context
+# ancestors of its own.
 view!: &directory/route/view
   this: id:tonk:directory/route/view
   model: tonk:directory/route
   display: |
-    <tonk-display model={model} />
+    <tonk-repository name={repo}>
+      <tonk-branch name={branch}>
+        <tonk-display model={model} />
+      </tonk-branch>
+    </tonk-repository>
 
 # The artifact page — `/space/{name}/{entity}@{model}`. Binds a concrete entity
 # to a model: the view renders that one instance (`<tonk-display entity model>`).
@@ -1723,12 +1741,26 @@ concept!: &artifact/route
       the: xyz.tonk.site/model
       cardinality: one
       as: text
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
 view!: &artifact/route/view
   this: id:tonk:artifact/route/view
   model: tonk:artifact/route
   display: |
-    <tonk-display entity={entity} model={model} />
+    <tonk-repository name={repo}>
+      <tonk-branch name={branch}>
+        <tonk-display entity={entity} model={model} />
+      </tonk-branch>
+    </tonk-repository>
 
 # The ad-hoc page — `/space/{name}/{entity}@{model}!{view}`. As the artifact
 # page, but with an explicit `view` chosen for the entity rather than the
@@ -1752,12 +1784,26 @@ concept!: &adhoc/route
       the: xyz.tonk.site/view
       cardinality: one
       as: text
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
 view!: &adhoc/route/view
   this: id:tonk:adhoc/route/view
   model: tonk:adhoc/route
   display: |
-    <tonk-display entity={entity} model={model} view={view} />
+    <tonk-repository name={repo}>
+      <tonk-branch name={branch}>
+        <tonk-display entity={entity} model={model} view={view} />
+      </tonk-branch>
+    </tonk-repository>
 
 # ---- Seeded routes (bootstrap) ----
 #

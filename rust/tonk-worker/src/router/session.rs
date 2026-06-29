@@ -141,6 +141,20 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
             None => tonk_common::log!("register_site: bad site param attribute for {name}"),
         }
     }
+    // Stamp the Level-0-resolved repository + branch on the site too, so a route
+    // view can give its content a `<tonk-repository>`/`<tonk-branch>` context.
+    // Repository-context elements (`<tonk-tree>`, `<tonk-inspector>`) resolve
+    // repo/branch by walking DOM ancestors, which the sealed guest otherwise
+    // lacks. These are `as: text` site fields, hence string-typed raw claims.
+    for (name, value) in [
+        ("repo", space.name.as_str()),
+        ("branch", space.branch.as_str()),
+    ] {
+        match site_param_claim(&entity, name, value) {
+            Some(claim) => overlay = overlay.assert(claim),
+            None => tonk_common::log!("register_site: bad site {name} attribute"),
+        }
+    }
     if let Err(e) = overlay.write().perform(&tonk.operator).await {
         tonk_common::log!("register_site: overlay write failed for {path}: {e}");
     }
