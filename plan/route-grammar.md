@@ -155,18 +155,28 @@ or consciously drop:
      trigger a SW update — had to `unregister()` + double-reload to load the new
      worker. Relevant for any future SW browser-verify.
 
-   **STILL BROKEN (separate, pre-existing gap):** directory route models that use
-   repository-context elements — `<tonk-tree>` (diagnose), `<tonk-inspector>` —
-   render "no repository in context (nest under <tonk-repository>)" / blank inside
-   the sealed iframe. These elements resolve repo/branch by walking DOM ancestors
-   (`tonk-tree/src/web.rs:147`), but the guest content is just
-   `<tonk-host><tonk-display model=tonk:site>` with NO `<tonk-repository>`
-   ancestor. `<tonk-display>` data works because the OUTER repository annotates
-   bridge queries; `<tonk-tree>` bypasses that. FIX OPTIONS: (a) stamp
-   `repo`/`branch` as site facts and have the directory route view pass them as
-   explicit `repo=`/`branch=` attributes (tonk-tree already accepts those); or
-   (b) wrap guest content in a `<tonk-repository>`/`<tonk-branch>` whose names come
-   from the site. Not a router bug — a guest-context gap for non-display models.
+   **Per-model sealed-guest status (browser-checked 2026-06-29):**
+   - `/board` and any normal `<tonk-display>` model — WORK fully.
+   - `/diagnose` (`<tonk-tree>`) — repository-context FIXED (stamp `repo`/`branch`
+     site facts + route view wraps in `<tonk-repository>`/`<tonk-branch>`; the tree
+     header now renders). REMAINING: `<tonk-tree>` issues its OWN `window.fetch` to
+     a repo endpoint instead of the bridge query channel, so under the guest's
+     opaque origin it gets `Failed to fetch` — header shows, data doesn't. Needs
+     tonk-tree to route data through the bridge like `<tonk-display>` does.
+   - `/inspector` (`<tonk-inspector>`) — ROOT CAUSE FOUND: the element is NEVER
+     REGISTERED in the guest. `guest.rs` registers tonk_display/board/workspace/
+     tree/portal but NOT tonk_inspector, because `<tonk-inspector>` lives in
+     `tonk-ui` (still a Leptos `#[component]`, links the query engine) and the
+     guest deliberately can't depend on tonk-ui. So `<tonk-inspector>` is an inert
+     unknown element in the iframe — DOM present, nothing under it (user-observed).
+     BLOCKED ON de-Leptosing the inspector: extract it to a standalone leptos-free
+     custom-element crate (like tonk-tree) the guest can register. This is Stage 6
+     of plan/de-leptos-ui.md — the inspector is the one route model that genuinely
+     can't render in the sealed guest until that lands.
+   - Full `did:key:` URL form (`/space/did:key:z6Mk…/inspector`) parses fine —
+     `resolve_path` reconstructs the same SpaceRef as the short form (verified). A
+     "not working" full-DID URL means that space isn't in the current profile, not
+     a parse bug.
 2. **Descriptor-driven param typing** (Stage 3 TODO above) — replace the name
    table in `site_param_claim` with types read from the route model's field
    descriptors via `Route::with_types`; unlocks type-based disambiguation.
