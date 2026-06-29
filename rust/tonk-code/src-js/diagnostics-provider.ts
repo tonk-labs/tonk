@@ -279,16 +279,26 @@ class TonkDiagnosticsProvider extends HTMLElement {
    *  worker (e.g. a bare page or a non-SW host) so the transport
    *  still gets a chance against whatever is serving. */
   async #whenWorkerReady(): Promise<void> {
-    const swContainer = navigator.serviceWorker;
+    // Reading `navigator.serviceWorker` THROWS a SecurityError in a sealed
+    // (sandboxed, opaque-origin) iframe that lacks `allow-same-origin` — not
+    // just returns null. Guard the property access itself. In that context the
+    // page has no service worker of its own, but `fetch` is proxied to the
+    // host's SW through the portal bridge, so the LSP transport works anyway;
+    // fall through and let it try.
+    let swContainer: ServiceWorkerContainer | null = null;
+    try {
+      swContainer = navigator.serviceWorker;
+    } catch {
+      return;
+    }
     if (!swContainer) return;
     try {
-      // Bound the `ready` wait: in a sealed (opaque-origin) iframe the page
-      // can't register a service worker, so `navigator.serviceWorker.ready`
-      // never resolves — yet `fetch` is proxied to the host's SW through the
-      // portal bridge, so the transport works anyway. Without a timeout the
-      // LSP would hang here forever and never connect. Lose the race after a
-      // beat and fall through; the transport's own onClose handles a real
-      // failure on a normal page.
+      // Bound the `ready` wait: even when a worker container exists,
+      // `navigator.serviceWorker.ready` may never resolve (e.g. a context that
+      // can't register one) — yet `fetch` may still be proxied to a host SW.
+      // Without a timeout the LSP would hang here forever and never connect.
+      // Lose the race after a beat and fall through; the transport's own
+      // onClose handles a real failure on a normal page.
       const ready = Promise.race([
         swContainer.ready.then(() => true),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
