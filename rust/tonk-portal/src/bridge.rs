@@ -167,6 +167,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     ready:ready,
     query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
     transact:function(request){return call("transact",{request:request});},
+    // Evaluate an asserted-notation document against the branch. `detail` carries
+    // {document, transact}; the parent relays it to the host's real <tonk-host>
+    // consumer, which performs the typed evaluate and returns its parsed result.
+    evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
     // Navigate the HOST page: the opaque guest can't touch parent.location
     // and has no router, so a link click posts its href here and the parent
     // performs the real navigation. Fire-and-forget (no response).
@@ -211,6 +215,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       case "query-result": case "transact-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;
+      }
+      case "evaluate-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
+        h.resolve(env.result); return;
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -257,7 +265,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
           {status:env.status,statusText:env.statusText,headers:headers}));
         return;
       }
-      case "query-error": case "transact-error": case "fetch-error": {
+      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
       }
@@ -1022,6 +1030,7 @@ fn make_dispatcher(
         match kind.as_str() {
             "query" => handle_query(&host, &state, &port, &data),
             "transact" => handle_transact(&host, &port, &data),
+            "evaluate" => handle_evaluate(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&data),
@@ -1086,6 +1095,31 @@ fn handle_transact(host: &Element, port: &MessagePort, data: &JsValue) {
         match host_consumer::claim(&host, &request).await {
             Ok(receipt) => post_result(&port, "transact-result", &id, "receipt", &receipt),
             Err(e) => post_error(&port, "transact-error", &id, &e.message),
+        }
+    });
+}
+
+/// Relay an `evaluate` envelope to the host's real `<tonk-host>` consumer, which
+/// performs the typed evaluate (POST `/evaluate?transact=`) and returns the
+/// parsed JSON result. The guest's inspector dispatches `tonk-evaluate`; its
+/// proxy host relays here, so the inspector uses the same host consumer API as
+/// the in-page editor — no direct HTTP, no hand-rolled response types.
+fn handle_evaluate(host: &Element, port: &MessagePort, data: &JsValue) {
+    let Some(id) = get_str(data, "id") else {
+        return;
+    };
+    let document = get_str(data, "document").unwrap_or_default();
+    // Default to a committing evaluate; only an explicit `false` is a dry run.
+    let transact = Reflect::get(data, &"transact".into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let host = host.clone();
+    let port = port.clone();
+    spawn_local(async move {
+        match host_consumer::evaluate(&host, &document, transact).await {
+            Ok(result) => post_result(&port, "evaluate-result", &id, "result", &result),
+            Err(e) => post_error(&port, "evaluate-error", &id, &e.message),
         }
     });
 }

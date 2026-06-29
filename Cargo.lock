@@ -4940,6 +4940,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tonk-host",
  "tonk-notation",
  "wasm-bindgen",
  "wasm-bindgen-futures",

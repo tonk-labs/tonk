@@ -21,7 +21,7 @@ use custom_elements::CustomElement;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{CustomEvent, Element, Event, HtmlElement, Request, RequestInit, Response, window};
+use web_sys::{CustomEvent, Element, Event, HtmlElement, window};
 
 use crate::render::render_result;
 use crate::response::EvaluateResponse;
@@ -263,7 +263,6 @@ impl NotebookCell {
         // editor `diagnostics` → track error count + auto-eval dry-run on clean.
         add(&self.editor, "diagnostics", store, {
             let cell = self.clone();
-            let notebook = notebook.clone();
             move |ev: Event| {
                 let detail = ev
                     .dyn_ref::<CustomEvent>()
@@ -280,9 +279,8 @@ impl NotebookCell {
                     return;
                 }
                 let cell2 = cell.clone();
-                let notebook = notebook.clone();
                 spawn_local(async move {
-                    if let Ok(response) = evaluate(&notebook, &body, false).await {
+                    if let Ok(response) = evaluate(&cell2.editor, &body, false).await {
                         cell2.render(Some(&response), None);
                     }
                 });
@@ -314,7 +312,7 @@ impl NotebookCell {
         self.running.set(true);
         let notebook = notebook.clone();
         spawn_local(async move {
-            match evaluate(&notebook, &body, true).await {
+            match evaluate(&self.editor, &body, true).await {
                 Ok(response) => {
                     self.render(Some(&response), None);
                     self.running.set(false);
@@ -358,57 +356,30 @@ fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
     Some((repo?, branch?))
 }
 
-/// POST the document to the branch's evaluate endpoint. In the sealed guest the
-/// portal's `window.fetch` proxy routes this over the bridge.
+/// Evaluate `document` against the branch via the `<tonk-host>` consumer.
+///
+/// Dispatches a `tonk-evaluate` event on the editor element (`consumer`); it
+/// bubbles to the `<tonk-host>` ancestor — in the sealed guest, the proxy host,
+/// which relays it over the bridge to the host's real `<tonk-host>` consumer. So
+/// the inspector uses the SAME host IO path as the in-page editor (the host owns
+/// the request, annotates space/branch, and returns the parsed response) rather
+/// than issuing its own HTTP. The result is the host's parsed-JSON
+/// `EvaluateResponse`; round-trip it through `serde_json` into the local mirror.
 async fn evaluate(
-    notebook: &Notebook,
+    consumer: &Element,
     document: &str,
     transact: bool,
 ) -> Result<EvaluateResponse, String> {
-    let url = format!(
-        "/api/repository/{}/branch/{}/evaluate?transact={transact}",
-        notebook.repo, notebook.branch
-    );
-    let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_body(&JsValue::from_str(document));
-    let request = Request::new_with_str_and_init(&url, &init)
-        .map_err(|_| "bad evaluate request".to_owned())?;
-    request
-        .headers()
-        .set("content-type", "text/plain")
-        .map_err(|_| "header set failed".to_owned())?;
-    let win = window().ok_or_else(|| "no window".to_owned())?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+    let value = tonk_host::consumer::evaluate(consumer, document, transact)
         .await
-        .map_err(|e| {
-            reflect_string(&e, "message").unwrap_or_else(|| "evaluate fetch failed".to_owned())
-        })?;
-    let response: Response = resp_value
-        .dyn_into()
-        .map_err(|_| "evaluate response not a Response".to_owned())?;
-    let text_value = JsFuture::from(
-        response
-            .text()
-            .map_err(|_| "evaluate response had no body".to_owned())?,
-    )
-    .await
-    .map_err(|_| "evaluate body read failed".to_owned())?;
-    let text = text_value.as_string().unwrap_or_default();
-    if !response.ok() {
-        return Err(error_message(&text).unwrap_or(text));
-    }
+        .map_err(|detail| detail.message)?;
+    // `value` is a `JsValue` from `JSON.parse`; stringify + serde so the field
+    // maps decode with the same semantics as the worker's own `Deserialize`.
+    let text = js_sys::JSON::stringify(&value)
+        .ok()
+        .and_then(|s| s.as_string())
+        .ok_or_else(|| "evaluate response was not serializable JSON".to_owned())?;
     serde_json::from_str(&text).map_err(|e| format!("evaluate response decode: {e}"))
-}
-
-/// Pull a `{ error: { message } }` envelope's message out of an error body.
-fn error_message(body: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    value
-        .get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .map(str::to_owned)
 }
 
 /// Whether a buffer parses and contains at least one assertion (a mutation).
