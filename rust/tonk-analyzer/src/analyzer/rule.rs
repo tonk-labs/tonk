@@ -1779,7 +1779,7 @@ rule!:
     async fn it_converges_notation_and_wire_path_entities() {
         use dialog_artifacts::Value;
         use tonk_core::claim::{
-            ConceptDescriptor as DurableConceptDescriptor, PredicateApplication, ValueMap,
+            ConceptDescriptor as DurableConceptDescriptor, SourceApplication, ValueMap,
         };
         use tonk_schema::transact::{
             Application, ApplicationPlan, Statement, application_plan_from_predicate,
@@ -1815,11 +1815,15 @@ rule!:
         // Wire path: same descriptor, same payload, no `this:`.
         let mut parameters = ValueMap::new();
         parameters.insert("name".into(), Value::String("Basic".into()));
-        let wire_plan = application_plan_from_predicate(PredicateApplication {
-            predicate: DurableConceptDescriptor::Durable(descriptor),
-            parameters,
-            name: None,
-        });
+        let wire_plan = application_plan_from_predicate(
+            SourceApplication {
+                predicate: DurableConceptDescriptor::Durable(descriptor),
+                parameters,
+                name: None,
+            }
+            .try_into()
+            .expect("wire application validates"),
+        );
         let wire_this = {
             let ApplicationPlan::Concept(plan) = &wire_plan else {
                 panic!("expected concept plan");
@@ -1852,7 +1856,7 @@ rule!:
     async fn it_derives_distinct_entities_for_distinct_reference_fields() {
         use dialog_artifacts::Value;
         use tonk_core::claim::{
-            ConceptDescriptor as DurableConceptDescriptor, PredicateApplication, ValueMap,
+            ConceptDescriptor as DurableConceptDescriptor, SourceApplication, ValueMap,
         };
         use tonk_schema::transact::{
             Application, ApplicationPlan, Statement, application_plan_from_predicate,
@@ -1911,11 +1915,15 @@ rule!:
         let counter_concept = one_text_field("xyz.tonk.counter", "count").this();
         let mut parameters = ValueMap::new();
         parameters.insert("model".into(), Value::Entity(counter_concept));
-        let wire_plan = application_plan_from_predicate(PredicateApplication {
-            predicate: DurableConceptDescriptor::Durable(view),
-            parameters,
-            name: None,
-        });
+        let wire_plan = application_plan_from_predicate(
+            SourceApplication {
+                predicate: DurableConceptDescriptor::Durable(view),
+                parameters,
+                name: None,
+            }
+            .try_into()
+            .expect("wire application validates"),
+        );
         let wire_this = {
             let ApplicationPlan::Concept(plan) = &wire_plan else {
                 panic!("expected concept plan");
