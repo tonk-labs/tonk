@@ -282,7 +282,18 @@ class TonkDiagnosticsProvider extends HTMLElement {
     const swContainer = navigator.serviceWorker;
     if (!swContainer) return;
     try {
-      await swContainer.ready;
+      // Bound the `ready` wait: in a sealed (opaque-origin) iframe the page
+      // can't register a service worker, so `navigator.serviceWorker.ready`
+      // never resolves — yet `fetch` is proxied to the host's SW through the
+      // portal bridge, so the transport works anyway. Without a timeout the
+      // LSP would hang here forever and never connect. Lose the race after a
+      // beat and fall through; the transport's own onClose handles a real
+      // failure on a normal page.
+      const ready = Promise.race([
+        swContainer.ready.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
+      ]);
+      if (!(await ready)) return;
       if (swContainer.controller) return;
       // Registered but not yet controlling this client (first load
       // after install): wait for control, with a bounded fallback so
