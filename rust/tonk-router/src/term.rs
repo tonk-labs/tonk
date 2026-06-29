@@ -58,28 +58,27 @@ impl Term {
     }
 }
 
-/// What a [`Term::Param`] is allowed to capture, and thus how far it consumes.
+/// What a [`Term::Param`] captures, and thus how far it consumes — the one axis
+/// where this router extends matchit.
 ///
-/// The boundary of a param is always the *next literal in the route* (or end of
-/// input). [`Kind`] further restricts which characters are admissible inside
-/// that span — so an [`Kind::Segment`] param stops at a `/` even when a later
-/// literal would have allowed more, while [`Kind::Rest`] takes everything.
+/// A param is always bounded by the *next literal in the route* (or end of
+/// input). [`Kind`] decides whether a `/` also bounds it:
+///
+/// - [`Kind::Segment`] (`{name}`) — a single path segment, like matchit's
+///   `{name}`: stops at the next `/`.
+/// - [`Kind::Span`] (`{*name}`) — a multi-segment span: `/` does NOT bound it,
+///   only the next literal (or end) does. matchit has this as `{*name}` too, but
+///   ONLY as a single trailing catch-all; this router allows SEVERAL spans in one
+///   route with literals between them (`/{*entity}@{*model}!{*view}`), which is
+///   the whole reason the crate exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A single path segment: any characters *except* `/`. Stops at the next `/`
-    /// or the next literal, whichever comes first. The default for a `{name}`
-    /// param. Suits ids and labels that never contain a slash (`inspector`,
-    /// `id:x`, a `did:key:…` blob).
+    /// A single path segment (`{name}`): any characters except `/`.
     Segment,
-    /// A slash-*tolerant* span: any characters up to the next literal, `/`
-    /// included. Suits model names that carry a namespace slash (`tonk/person`,
-    /// `tonk/space`). The next literal (`@`, `!`, or end) bounds it; a `/` does
-    /// not.
-    Path,
-    /// A catch-all: the entire remaining input. Must be the last term — nothing
-    /// can follow it, since it consumes to the end. Suits an opaque tail handed
-    /// to a secondary parser.
-    Rest,
+    /// A slash-tolerant multi-segment span (`{*name}`): any characters up to the
+    /// next literal (or end), `/` included. Suits namespaced refs (`tonk/person`)
+    /// and URIs (`did:key:…`, `id:foo/bar`). When terminal it captures the rest.
+    Span,
 }
 
 impl Kind {
@@ -87,7 +86,7 @@ impl Kind {
     pub(crate) fn admits(self, ch: char) -> bool {
         match self {
             Kind::Segment => ch != '/',
-            Kind::Path | Kind::Rest => true,
+            Kind::Span => true,
         }
     }
 }

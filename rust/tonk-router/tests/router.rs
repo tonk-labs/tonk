@@ -84,9 +84,9 @@ async fn it_is_insertion_order_independent() {
 
 #[dialog_common::test]
 async fn it_prefers_a_segment_route_over_a_catch_all() {
-    // `/{model}` (Segment) beats `/{tail:rest}` (catch-all) for a single segment.
+    // `/{model}` (segment) beats `/{*tail}` (span) for a single segment.
     let router: Router<&str> = [
-        (route("/space/{space}/{tail:rest}"), "rest"),
+        (route("/space/{space}/{*tail}"), "rest"),
         (route("/space/{space}/{model}"), "directory"),
     ]
     .into_iter()

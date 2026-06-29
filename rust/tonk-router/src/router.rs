@@ -123,10 +123,9 @@ impl<V> FromIterator<(Route, V)> for Router<V> {
 /// The ranking is lexicographic, encoded into one integer so sorting is a plain
 /// comparison:
 ///
-/// 1. **Fewer broad params win.** A [`Kind::Rest`] catch-all is the least
-///    specific, then [`Kind::Path`] (slash-tolerant), then [`Kind::Segment`].
-///    The broadest extent any param uses dominates: a route with a `Rest` param
-///    is always less specific than one without.
+/// 1. **Fewer broad params win.** A [`Kind::Span`] (`{*name}`, slash-tolerant) is
+///    less specific than a [`Kind::Segment`] (`{name}`). The broadest extent any
+///    param uses dominates: a route with a span is less specific than one without.
 /// 2. **More literal text wins.** Among routes of the same broadest-extent,
 ///    the one matching more fixed characters is more specific (`/board` beats
 ///    `/{x}`).
@@ -142,8 +141,7 @@ fn specificity(route: &Route) -> u32 {
                 params += 1;
                 let breadth = match kind {
                     Kind::Segment => 1,
-                    Kind::Path => 2,
-                    Kind::Rest => 3,
+                    Kind::Span => 2,
                 };
                 broadest = broadest.max(breadth);
             }

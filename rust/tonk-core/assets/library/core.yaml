@@ -1824,17 +1824,17 @@ route!: &route/space
 
 route!: &route/adhoc
   this: id:tonk:route/adhoc
-  path: "/{entity}@{model:path}!{view}"
+  path: "/{*entity}@{*model}!{*view}"
   concept: tonk:adhoc/route
 
 route!: &route/artifact
   this: id:tonk:route/artifact
-  path: "/{entity}@{model:path}"
+  path: "/{*entity}@{*model}"
   concept: tonk:artifact/route
 
 route!: &route/directory
   this: id:tonk:route/directory
-  path: "/{model:path}"
+  path: "/{*model}"
   concept: tonk:directory/route
 # The sync chip — the default view for `model: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's

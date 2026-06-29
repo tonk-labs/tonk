@@ -36,10 +36,10 @@ async fn it_parses_a_colon_namespaced_model() {
 // ---- The slash-in-model case: `tonk/person` ----
 
 #[dialog_common::test]
-async fn it_captures_a_slash_containing_model_with_a_path_kind() {
-    // A `{model:path}` param is slash-tolerant, so `tonk/person` is captured
-    // whole rather than truncated at the first `/`.
-    let route = Route::parse_pattern("/space/{space}/{model:path}").expect("pattern");
+async fn it_captures_a_slash_containing_model_with_a_span() {
+    // A `{*model}` span is slash-tolerant, so `tonk/person` is captured whole
+    // rather than truncated at the first `/`.
+    let route = Route::parse_pattern("/space/{space}/{*model}").expect("pattern");
     assert_eq!(
         route.parse("/space/home/tonk/person"),
         Ok(params(&[("space", "home"), ("model", "tonk/person")])),
@@ -127,11 +127,11 @@ async fn it_matches_a_bare_literal_route() {
     assert_eq!(route.parse("/"), Ok(Params::new()));
 }
 
-// ---- A `rest` catch-all ----
+// ---- A terminal span captures the whole tail ----
 
 #[dialog_common::test]
-async fn it_captures_the_whole_tail_with_rest() {
-    let route = Route::parse_pattern("/space/{space}/{tail:rest}").expect("pattern");
+async fn it_captures_the_whole_tail_with_a_terminal_span() {
+    let route = Route::parse_pattern("/space/{space}/{*tail}").expect("pattern");
     assert_eq!(
         route.parse("/space/home/id:x@trip!view/extra"),
         Ok(params(&[
@@ -183,7 +183,7 @@ async fn it_rejects_formatting_a_slash_into_a_segment_param() {
 async fn it_round_trips_every_shape() {
     let cases = [
         ("/space/{space}/{model}", "/space/home/inspector"),
-        ("/space/{space}/{model:path}", "/space/home/tonk/person"),
+        ("/space/{space}/{*model}", "/space/home/tonk/person"),
         ("/space/{space}/{entity}@{model}", "/space/home/id:x@trip"),
         (
             "/space/{space}/{entity}@{model}!{view}",
@@ -213,19 +213,31 @@ async fn it_rejects_an_unclosed_param() {
 }
 
 #[dialog_common::test]
-async fn it_rejects_an_unknown_kind() {
+async fn it_rejects_an_empty_param_name() {
     assert!(matches!(
-        Route::parse_pattern("/space/{space:weird}"),
-        Err(PatternError::UnknownKind { kind, .. }) if kind == "weird",
+        Route::parse_pattern("/space/{}"),
+        Err(PatternError::EmptyName { .. }),
+    ));
+    // A bare `{*}` (span marker, no name) is also empty.
+    assert!(matches!(
+        Route::parse_pattern("/space/{*}"),
+        Err(PatternError::EmptyName { .. }),
     ));
 }
 
 #[dialog_common::test]
-async fn it_rejects_a_rest_param_that_is_not_last() {
-    assert!(matches!(
-        Route::parse_pattern("/space/{tail:rest}/more"),
-        Err(PatternError::RestNotLast { .. }),
-    ));
+async fn it_allows_a_span_anywhere_not_just_last() {
+    // matchit allows only a single trailing catch-all; this router allows several
+    // spans with literals between them — the reason the crate exists.
+    let route = Route::parse_pattern("/{*entity}@{*model}!{*view}").expect("pattern");
+    assert_eq!(
+        route.parse("/id:a/b@tonk/person!tonk:view"),
+        Ok(params(&[
+            ("entity", "id:a/b"),
+            ("model", "tonk/person"),
+            ("view", "tonk:view"),
+        ])),
+    );
 }
 
 #[dialog_common::test]

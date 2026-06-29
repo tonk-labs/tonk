@@ -1,15 +1,18 @@
 //! Compile a pattern string into a [`Route`].
 //!
-//! The pattern syntax is the literal grammar a `route!` carries in YAML:
-//! `{name}` (or `{name:kind}`) is a parameter, everything else is literal text.
-//! `/space/{space}/{entity}@{model}!{view}` compiles to alternating
+//! The pattern syntax mirrors matchit: `{name}` is a single-segment param,
+//! `{*name}` is a slash-tolerant multi-segment span, everything else is literal
+//! text. `/space/{space}/{*entity}@{*model}!{*view}` compiles to alternating
 //! [`Term::Text`]/[`Term::Param`] terms — the `@` and `!` between params are just
-//! literal text, which is exactly how intra-segment params fall out for free.
+//! literal text, which is how intra-segment params fall out for free.
 //!
-//! Param kinds:
-//! - `{name}` — [`Kind::Segment`] (default): one segment, no `/`.
-//! - `{name:path}` — [`Kind::Path`]: slash-tolerant (for `tonk/person`).
-//! - `{name:rest}` — [`Kind::Rest`]: the entire remaining input (must be last).
+//! The one extension over matchit: matchit allows a single trailing `{*name}`
+//! catch-all; here SEVERAL spans may appear in one route with literals between
+//! them (the `{*entity}@{*model}!{*view}` shape).
+//!
+//! Params:
+//! - `{name}` — [`Kind::Segment`]: one segment, stops at `/`.
+//! - `{*name}` — [`Kind::Span`]: slash-tolerant, up to the next literal (or end).
 
 use crate::route::Route;
 use crate::term::{Kind, Term};
@@ -27,21 +30,8 @@ pub enum PatternError {
         /// Byte offset of the offending `}`.
         at: usize,
     },
-    /// A param had an empty name (`{}` or `{:kind}`).
+    /// A param had an empty name (`{}` or `{*}`).
     EmptyName {
-        /// Byte offset of the offending `{`.
-        at: usize,
-    },
-    /// A param named an unknown kind (only `segment`, `path`, `rest`).
-    UnknownKind {
-        /// The kind token as written.
-        kind: String,
-        /// Byte offset of the offending `{`.
-        at: usize,
-    },
-    /// A [`Kind::Rest`] param was not the last term — nothing may follow a
-    /// catch-all, since it consumes to the end.
-    RestNotLast {
         /// Byte offset of the offending `{`.
         at: usize,
     },
@@ -92,53 +82,19 @@ impl Route {
             terms.push(Term::Text(literal));
         }
 
-        // A `rest` param must be last — reject a catch-all with anything after it.
-        if let Some(position) = terms.iter().position(is_rest_param)
-            && position != terms.len() - 1
-        {
-            return Err(PatternError::RestNotLast {
-                // Best-effort offset: the start of the pattern, since the per-term
-                // offset is not retained past compilation.
-                at: 0,
-            });
-        }
-
         Ok(Route::new(terms))
     }
 }
 
-/// Parse a param hole body (`name` or `name:kind`) into its name and kind.
+/// Parse a param hole body into its name and kind. A leading `*` marks a
+/// slash-tolerant span ([`Kind::Span`]); otherwise a single segment.
 fn parse_param_body(body: &str, open: usize) -> Result<(String, Kind), PatternError> {
-    let (name, kind) = match body.split_once(':') {
-        Some((name, kind)) => (name, parse_kind(kind, open)?),
+    let (name, kind) = match body.strip_prefix('*') {
+        Some(rest) => (rest, Kind::Span),
         None => (body, Kind::Segment),
     };
     if name.is_empty() {
         return Err(PatternError::EmptyName { at: open });
     }
     Ok((name.to_owned(), kind))
-}
-
-/// Parse a kind token (`segment`, `path`, `rest`).
-fn parse_kind(token: &str, open: usize) -> Result<Kind, PatternError> {
-    match token {
-        "segment" => Ok(Kind::Segment),
-        "path" => Ok(Kind::Path),
-        "rest" => Ok(Kind::Rest),
-        _ => Err(PatternError::UnknownKind {
-            kind: token.to_owned(),
-            at: open,
-        }),
-    }
-}
-
-/// Whether a term is a [`Kind::Rest`] param.
-fn is_rest_param(term: &Term) -> bool {
-    matches!(
-        term,
-        Term::Param {
-            kind: Kind::Rest,
-            ..
-        }
-    )
 }

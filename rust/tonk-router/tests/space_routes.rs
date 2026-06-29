@@ -10,9 +10,9 @@ fn r(p: &str) -> Route {
 async fn it_matches_inspector_against_the_real_table() {
     // The exact seeded table (sorted by entity URI as the SW does).
     let mut router = Router::new();
-    router.insert(r("/{entity}@{model:path}!{view}"), "adhoc");
-    router.insert(r("/{entity}@{model:path}"), "artifact");
-    router.insert(r("/{model:path}"), "directory");
+    router.insert(r("/{*entity}@{*model}!{*view}"), "adhoc");
+    router.insert(r("/{*entity}@{*model}"), "artifact");
+    router.insert(r("/{*model}"), "directory");
     router.insert(r("/"), "space");
 
     let m = router.recognize("/inspector");

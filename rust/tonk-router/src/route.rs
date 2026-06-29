@@ -106,9 +106,9 @@ impl Route {
 
     /// Assign value [`Type`]s to params by name — the binding-layer seam.
     ///
-    /// A pattern string carries only *extent* (`{name}` / `{name:path}` /
-    /// `{name:rest}`), never a value type: a param's type comes from the route
-    /// *model field* it fills (`as: entity` / `as: unsigned` / …), not the URL.
+    /// A pattern string carries only *extent* (`{name}` / `{*name}`), never a
+    /// value type: a param's type comes from the route *model field* it fills
+    /// (`as: entity` / `as: unsigned` / …), not the URL.
     /// After [`parse_pattern`] compiles a route with all params defaulted to
     /// [`text`](crate::value::text), the binding layer calls this with a
     /// `name -> Type` lookup (built from the model's field descriptors) to install
@@ -222,19 +222,19 @@ impl Route {
 
     /// The byte offset where a param starting at `start` ends.
     ///
-    /// A [`Kind::Rest`] param takes everything to the end. Otherwise the capture
-    /// is bounded by *both* constraints, whichever is tighter:
+    /// The capture is bounded by *both* constraints, whichever is tighter:
     ///
     /// 1. The **admissible run** — the longest prefix of remaining input whose
     ///    characters the kind admits. A [`Kind::Segment`] stops at the first `/`;
-    ///    [`Kind::Path`] admits everything.
+    ///    a [`Kind::Span`] admits everything.
     /// 2. The **next literal** — if a [`Term::Text`] follows this param, the
     ///    capture ends where that literal first appears.
     ///
     /// With a following literal the literal must appear *within* the admissible
     /// run (a `Segment` followed by `@` requires the `@` before any `/`),
     /// otherwise it is a [`ParseError::Expected`]. With no following literal the
-    /// capture is the whole admissible run.
+    /// capture is the whole admissible run (a terminal `Span` thus takes the
+    /// rest).
     fn param_end(
         &self,
         input: &str,
@@ -242,10 +242,6 @@ impl Route {
         kind: Kind,
         term_index: usize,
     ) -> Result<usize, ParseError> {
-        if let Kind::Rest = kind {
-            return Ok(input.len());
-        }
-
         // (1) The admissible run.
         let admissible_end = start
             + input[start..]
