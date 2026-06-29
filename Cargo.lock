@@ -5033,6 +5033,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-router"
+version = "0.1.0"
+dependencies = [
+ "dialog-common",
+ "tokio",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
