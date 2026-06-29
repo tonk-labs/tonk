@@ -47,11 +47,7 @@ use tonk_core::meta::{AnchorName, Name, name};
 /// [`derive_this`] — same hash recipe as the notation path's
 /// `Derived` lowering, so identity converges across paths.
 pub fn application_plan_from_predicate(application: PredicateApplication) -> ApplicationPlan {
-    let PredicateApplication {
-        predicate,
-        mut parameters,
-        name,
-    } = application;
+    let (predicate, mut parameters, name) = application.into_parts();
     let descriptor = match predicate {
         ConceptDescriptor::Durable(c) | ConceptDescriptor::Transient(c) => c,
     };
@@ -620,6 +616,7 @@ mod tests {
     use super::*;
     use dialog_artifacts::{Changes, Instruction};
     use dialog_query::ConceptDescriptor;
+    use tonk_core::claim::SourceApplication;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -817,11 +814,15 @@ mod tests {
         for (k, v) in payload {
             parameters.insert((*k).into(), v.clone());
         }
-        application_plan_from_predicate(PredicateApplication {
-            predicate: super::ConceptDescriptor::Durable(descriptor),
-            parameters,
-            name: None,
-        })
+        application_plan_from_predicate(
+            SourceApplication {
+                predicate: super::ConceptDescriptor::Durable(descriptor),
+                parameters,
+                name: None,
+            }
+            .try_into()
+            .expect("wire application validates"),
+        )
     }
 
     fn this_of(plan: &ApplicationPlan) -> Entity {
@@ -882,11 +883,15 @@ mod tests {
         let mut parameters = ValueMap::new();
         parameters.insert("this".into(), Value::Entity(caller_this.clone()));
         parameters.insert("name".into(), Value::String("Basic".into()));
-        let plan = application_plan_from_predicate(PredicateApplication {
-            predicate: super::ConceptDescriptor::Durable(d),
-            parameters,
-            name: None,
-        });
+        let plan = application_plan_from_predicate(
+            SourceApplication {
+                predicate: super::ConceptDescriptor::Durable(d),
+                parameters,
+                name: None,
+            }
+            .try_into()
+            .expect("wire application validates"),
+        );
         assert_eq!(this_of(&plan), caller_this);
     }
 }
