@@ -11,16 +11,15 @@
 //! "the `title` of this recipe" rather than "the value at attribute
 //! `recipe/title` of this entity". This module captures that link
 //! as a separate fact: for each field of a concept, an EAV claim
-//! whose `the` is `dialog.concept.with/{fieldName}` (or
-//! `dialog.concept.maybe/{fieldName}` for optional fields) and
-//! whose value is the attribute entity URI.
+//! whose `the` is `dialog.concept.with/{fieldName}` and whose value
+//! is the attribute entity URI. Optional fields additionally carry a
+//! boolean marker claim `dialog.concept.optional/{fieldName}`.
 //!
-//! The relation namespaces (`dialog.concept.with`,
-//! `dialog.concept.maybe`) match those used by the `carry` CLI so
-//! that field-name facts written by either tool describe the same
-//! concept identically.
+//! The relation namespace (`dialog.concept.with`) matches the one
+//! used by the `carry` CLI so that field-name facts written by
+//! either tool describe the same concept identically.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Select};
 use dialog_capability::{Fork, Provider};
@@ -38,7 +37,7 @@ use dialog_query::{
 use dialog_repository::RemoteSite;
 use thiserror::Error;
 
-pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
+pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Type};
 
 use crate::builtin::concept_registry;
 use crate::query_source::Source;
@@ -48,8 +47,8 @@ use tonk_core::meta::AnonymousAttribute;
 /// Domain prefix for required-field claims.
 const WITH_DOMAIN: &str = "dialog.concept.with";
 
-/// Domain prefix for optional-field claims.
-const MAYBE_DOMAIN: &str = "dialog.concept.maybe";
+/// Domain prefix for the per-field optional marker.
+const OPTIONAL_DOMAIN: &str = "dialog.concept.optional";
 
 /// Build the claim relation that names a required field of a
 /// concept.
@@ -70,19 +69,18 @@ pub fn with(
     format!("{WITH_DOMAIN}/{field_name}").parse()
 }
 
-/// Build the claim relation that names an optional field of a
-/// concept.
+/// Build the marker relation that flags a concept field as optional.
 ///
-/// Same shape as [`with`] but in the `dialog.concept.maybe` domain.
-/// Currently informational — `dialog_query`'s engine does not yet
-/// deduce over `maybe` fields (per the doc comment on
-/// [`ConceptDescriptor::maybe`]) — but the namespace is reserved
-/// here so concept definitions written today carry their optional
-/// fields in the form the engine will eventually understand.
-pub fn maybe(
+/// The returned [`ArtifactsAttribute`] has the form
+/// `dialog.concept.optional/{field_name}`. Emitted as a boolean
+/// marker claim `concept_entity --optional(name)--> true` alongside
+/// the field's `dialog.concept.with/{name}` attribute link. Required
+/// fields carry no such marker, so their storage is byte-identical to
+/// the pre-optionality encoding.
+pub fn optional(
     field_name: &str,
 ) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
-    format!("{MAYBE_DOMAIN}/{field_name}").parse()
+    format!("{OPTIONAL_DOMAIN}/{field_name}").parse()
 }
 
 /// Recover the field name from a relation in the
@@ -96,11 +94,11 @@ pub fn parse_with(the: &ArtifactsAttribute) -> Option<String> {
 }
 
 /// Recover the field name from a relation in the
-/// `dialog.concept.maybe` domain. Returns `None` if `the` is in any
-/// other domain.
-pub fn parse_maybe(the: &ArtifactsAttribute) -> Option<String> {
+/// `dialog.concept.optional` domain. Returns `None` if `the` is in
+/// any other domain.
+pub fn parse_optional(the: &ArtifactsAttribute) -> Option<String> {
     let s = String::from(the);
-    s.strip_prefix(MAYBE_DOMAIN)
+    s.strip_prefix(OPTIONAL_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
         .map(str::to_owned)
 }
@@ -257,7 +255,30 @@ impl ConceptByEntity {
             .await
             .map_err(|e| ConceptLookupError::query(format!("concept-with query failed: {e:?}")))?;
 
-        let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
+        // The optional markers carry Boolean values, so a separate
+        // Boolean-typed query is needed — the Entity-typed `with`
+        // query above never returns them.
+        let optional_claims: Vec<dialog_query::Claim> = source
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::var("the")
+                    .of(Term::from(self.entity.clone()))
+                    .is(Term::<bool>::var("flag")),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                ConceptLookupError::query(format!("concept-optional query failed: {e:?}"))
+            })?;
+        let optional_fields: BTreeSet<String> = optional_claims
+            .iter()
+            .filter_map(|claim| {
+                let the: ArtifactsAttribute = claim.the.clone().into();
+                parse_optional(&the)
+            })
+            .collect();
+
+        let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
         for claim in raw_claims {
             let the: ArtifactsAttribute = claim.the.into();
             let Some(field_name) = parse_with(&the) else {
@@ -275,16 +296,23 @@ impl ConceptByEntity {
                     entity: attribute_entity.to_string(),
                 });
             };
-            fields.push((field_name, facts.descriptor));
+            let field = if optional_fields.contains(&field_name) {
+                ConceptFieldDescriptor::optional(facts.descriptor)
+            } else {
+                ConceptFieldDescriptor::required(facts.descriptor)
+            };
+            fields.push((field_name, field));
         }
 
         if fields.is_empty() {
             return Ok(None);
         }
 
+        let descriptor = ConceptDescriptor::try_from(fields)
+            .map_err(|e| ConceptLookupError::query(format!("invalid concept descriptor: {e:?}")))?;
         Ok(Some(Concept {
             entity: self.entity,
-            descriptor: ConceptDescriptor::from(fields),
+            descriptor,
         }))
     }
 }
@@ -853,7 +881,19 @@ impl Application for AnonymousConceptQuery {
 /// the synthetic [`ConceptQuery`] in
 /// [`AnonymousConceptQuery::realize`].
 fn stub_predicate() -> ConceptDescriptor {
-    ConceptDescriptor::from(Vec::<(&str, AttributeDescriptor)>::new())
+    // A descriptor must have at least one required field, so the
+    // stub carries a single placeholder. `realize` never reads the
+    // predicate, so the field's identity is irrelevant.
+    ConceptDescriptor::try_from(vec![(
+        "_",
+        AttributeDescriptor::new(
+            the!("dialog.concept/stub"),
+            "",
+            dialog_query::Cardinality::default(),
+            None,
+        ),
+    )])
+    .expect("single-field stub descriptor is valid")
 }
 
 // -----------------------------------------------------------------
@@ -972,8 +1012,8 @@ pub fn application_to_plan(application: crate::transact::Application) -> QueryPl
     match application {
         Application::Concept { query, .. } => QueryPlan::from(query),
         Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
-        Application::Rule { .. } => panic!(
-            "Application::Rule has no QueryPlan projection — \
+        Application::Rule { .. } | Application::DeductiveRule { .. } => panic!(
+            "rule applications have no QueryPlan projection — \
              rules are write-only via Statement::Assert/Retract"
         ),
     }
@@ -1057,8 +1097,8 @@ fn resolve_entity_filter(term: &Option<Term<dialog_query::Any>>, input: &Match) 
     match t {
         Term::Constant(value) => Entity::try_from(value.clone()).ok(),
         Term::Variable { name: Some(_), .. } => {
-            let value = input.lookup(t).ok()?;
-            Entity::try_from(value).ok()
+            let binding = input.lookup(t).ok()?;
+            Entity::try_from(binding.as_value()?.clone()).ok()
         }
         Term::Variable { name: None, .. } => None,
     }
@@ -1070,7 +1110,7 @@ fn resolve_string_filter(term: &Option<Term<dialog_query::Any>>, input: &Match) 
     let t = term.as_ref()?;
     let value = match t {
         Term::Constant(value) => value.clone(),
-        Term::Variable { name: Some(_), .. } => input.lookup(t).ok()?,
+        Term::Variable { name: Some(_), .. } => input.lookup(t).ok()?.as_value()?.clone(),
         Term::Variable { name: None, .. } => return None,
     };
     String::try_from(value).ok()
@@ -1096,7 +1136,26 @@ where
     .try_vec()
     .await?;
 
-    let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
+    // The optional markers carry Boolean values, so a separate
+    // Boolean-typed query is needed — the Entity-typed `with` query
+    // above never returns them.
+    let optional_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
+        Term::<dialog_query::attribute::The>::var("the")
+            .of(Term::from(entity.clone()))
+            .is(Term::<bool>::var("flag")),
+    )
+    .perform(env)
+    .try_vec()
+    .await?;
+    let optional_fields: BTreeSet<String> = optional_claims
+        .iter()
+        .filter_map(|claim| {
+            let the: ArtifactsAttribute = claim.the.clone().into();
+            parse_optional(&the)
+        })
+        .collect();
+
+    let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
     for claim in with_claims {
         let the: ArtifactsAttribute = claim.the.into();
         let Some(field_name) = parse_with(&the) else {
@@ -1119,14 +1178,20 @@ where
             continue;
         };
         let descriptor = build_attribute_descriptor(&facts).map_err(EvaluationError::Store)?;
-        fields.push((field_name, descriptor));
+        let field = if optional_fields.contains(&field_name) {
+            ConceptFieldDescriptor::optional(descriptor)
+        } else {
+            ConceptFieldDescriptor::required(descriptor)
+        };
+        fields.push((field_name, field));
     }
 
     if fields.is_empty() {
         return Ok(None);
     }
-    let descriptor = ConceptDescriptor::from(fields);
-    // `ConceptDescriptor::from` leaves `description` as `None`.
+    let descriptor = ConceptDescriptor::try_from(fields)
+        .map_err(|e| EvaluationError::Store(format!("invalid concept descriptor: {e:?}")))?;
+    // `ConceptDescriptor::try_from` leaves `description` as `None`.
     // The concept's own `dialog.meta/description` claim carries
     // it, so fetch that and fold it in — a JSON round-trip is the
     // only way in since the field has no public setter.
@@ -1268,9 +1333,9 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
         entity.clone(),
         Value::Entity(concept_marker_entity()),
     );
-    for (field_name, attribute) in descriptor.with().iter() {
+    for (field_name, field) in descriptor.with().iter() {
         let relation = meta_attr(WITH_DOMAIN, field_name);
-        let attribute_entity: Entity = attribute
+        let attribute_entity: Entity = field
             .to_uri()
             .parse()
             .expect("AttributeDescriptor::to_uri produces a valid entity URI");
@@ -1280,6 +1345,17 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
             entity.clone(),
             Value::Entity(attribute_entity),
         );
+        // Optional fields carry a sibling boolean marker. Required
+        // fields emit nothing here, so their storage stays
+        // byte-identical to the pre-optionality encoding.
+        if field.is_optional() {
+            op(
+                update,
+                meta_attr(OPTIONAL_DOMAIN, field_name),
+                entity.clone(),
+                Value::Boolean(true),
+            );
+        }
     }
     if let Some(description) = descriptor.description()
         && !description.is_empty()
@@ -1330,9 +1406,9 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn maybe_constructs_namespaced_relation() {
-        let the = maybe("subtitle").unwrap();
-        assert_eq!(String::from(&the), "dialog.concept.maybe/subtitle");
+    fn optional_constructs_namespaced_relation() {
+        let the = optional("subtitle").unwrap();
+        assert_eq!(String::from(&the), "dialog.concept.optional/subtitle");
     }
 
     #[dialog_common::test]
@@ -1342,21 +1418,21 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn parse_maybe_round_trips() {
-        let the = maybe("notes").unwrap();
-        assert_eq!(parse_maybe(&the).as_deref(), Some("notes"));
+    fn parse_optional_round_trips() {
+        let the = optional("notes").unwrap();
+        assert_eq!(parse_optional(&the).as_deref(), Some("notes"));
     }
 
     #[dialog_common::test]
     fn parse_with_rejects_other_domains() {
         let the: ArtifactsAttribute = "dialog.meta/name".parse().unwrap();
         assert_eq!(parse_with(&the), None);
-        assert_eq!(parse_maybe(&the), None);
+        assert_eq!(parse_optional(&the), None);
     }
 
     #[dialog_common::test]
-    fn parse_with_rejects_maybe_domain() {
-        let the = maybe("x").unwrap();
+    fn parse_with_rejects_optional_domain() {
+        let the = optional("x").unwrap();
         assert_eq!(parse_with(&the), None);
     }
 
@@ -1705,13 +1781,17 @@ mod tests {
                 c.source()
                     .lookup(&Term::<Any>::var("this"))
                     .ok()
-                    .and_then(|v| Entity::try_from(v).ok())
+                    .and_then(|b| b.as_value().and_then(|v| Entity::try_from(v.clone()).ok()))
                     == Some(concept_entity.clone())
             })
             .expect("expected a row for the asserted concept entity");
 
-        let source: String = String::try_from(row.source().lookup(&Term::<Any>::var("source"))?)
-            .expect("source binding must be a string");
+        let source: String = String::try_from(
+            row.source()
+                .lookup(&Term::<Any>::var("source"))?
+                .content()?,
+        )
+        .expect("source binding must be a string");
         let parsed: ConceptDescriptor = serde_json::from_str(&source)?;
         assert_eq!(
             parsed.with().iter().count(),
@@ -1723,6 +1803,81 @@ mod tests {
             assert_eq!(a_name, b_name);
             assert_eq!(a_attr.to_uri(), b_attr.to_uri());
         }
+        Ok(())
+    }
+
+    /// Round-trip: persisting a concept with an optional field and
+    /// resolving it back via [`ConceptByEntity::resolve`] reproduces
+    /// the per-field `is_optional()` flag (required field stays
+    /// required, optional field stays optional).
+    #[dialog_common::test]
+    async fn it_reconstructs_optional_flag_from_branch() -> anyhow::Result<()> {
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" },
+                    "nickname": { "the": "xyz.tonk.person/nickname", "as": "Text", "cardinality": "one", "optional": true }
+                }
+            }"#,
+        )?;
+
+        // Install each field's attribute facts so reconstruction can
+        // rehydrate the descriptors.
+        let mut txn = branch.transaction();
+        for (_, field) in descriptor.with().iter() {
+            let attr_entity: Entity = field.to_uri().parse()?;
+            txn = txn
+                .assert(
+                    the!("dialog.attribute/id")
+                        .of(attr_entity.clone())
+                        .is(format!("{}/{}", field.domain(), field.name())),
+                )
+                .assert(
+                    the!("dialog.attribute/type")
+                        .of(attr_entity.clone())
+                        .is("Text".to_string()),
+                )
+                .assert(
+                    the!("dialog.attribute/cardinality")
+                        .of(attr_entity.clone())
+                        .is("one".to_string()),
+                )
+                .assert(
+                    the!("dialog.meta/description")
+                        .of(attr_entity)
+                        .is(String::new()),
+                );
+        }
+        let concept = AnonymousConcept::new(descriptor.clone());
+        let concept_entity = concept.this.clone();
+        txn.assert(concept).commit().perform(&operator).await?;
+
+        let resolved = Concept::by_entity(concept_entity)
+            .resolve(&Source::from(&branch), &operator)
+            .await?
+            .expect("concept resolves from branch");
+
+        let with = resolved.descriptor.with();
+        let name = with.iter().find(|(n, _)| *n == "name").expect("name").1;
+        let nickname = with
+            .iter()
+            .find(|(n, _)| *n == "nickname")
+            .expect("nickname")
+            .1;
+        assert!(
+            !name.is_optional(),
+            "required field must rebuild as required"
+        );
+        assert!(
+            nickname.is_optional(),
+            "optional field must rebuild as optional"
+        );
         Ok(())
     }
 
@@ -1838,7 +1993,7 @@ mod tests {
                 c.source()
                     .lookup(&Term::<Any>::var("this"))
                     .ok()
-                    .and_then(|v| Entity::try_from(v).ok())
+                    .and_then(|b| b.as_value().and_then(|v| Entity::try_from(v.clone()).ok()))
                     == Some(transient_entity.clone())
             })
             .expect("transient concept row present");
@@ -1846,7 +2001,7 @@ mod tests {
             transient_row
                 .source()
                 .lookup(&Term::<Any>::var("transient"))?,
-            dialog_query::Value::Boolean(true),
+            dialog_query::Binding::Present(dialog_query::Value::Boolean(true)),
         );
 
         let durable_row = conclusions
@@ -1855,7 +2010,7 @@ mod tests {
                 c.source()
                     .lookup(&Term::<Any>::var("this"))
                     .ok()
-                    .and_then(|v| Entity::try_from(v).ok())
+                    .and_then(|b| b.as_value().and_then(|v| Entity::try_from(v.clone()).ok()))
                     == Some(durable_entity.clone())
             })
             .expect("durable concept row present");
@@ -1863,7 +2018,7 @@ mod tests {
             durable_row
                 .source()
                 .lookup(&Term::<Any>::var("transient"))?,
-            dialog_query::Value::Boolean(false),
+            dialog_query::Binding::Present(dialog_query::Value::Boolean(false)),
         );
 
         Ok(())
@@ -1971,7 +2126,7 @@ mod tests {
                 c.source()
                     .lookup(&Term::<Any>::var("this"))
                     .ok()
-                    .and_then(|v| Entity::try_from(v).ok())
+                    .and_then(|b| b.as_value().and_then(|v| Entity::try_from(v.clone()).ok()))
             })
             .collect();
 

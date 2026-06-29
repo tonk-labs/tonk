@@ -202,12 +202,13 @@ async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String
 
 /// The model the built-in default view is keyed under. When a
 /// model-specific view is absent the browser re-queries the view
-/// concept constrained to this sentinel; we mirror that.
-const DEFAULT_MODEL: &str = "_:_";
+/// concept constrained to this sentinel; we mirror that. `tonk:_`
+/// is the wildcard-model entity seeded by core.yaml.
+const DEFAULT_MODEL: &str = "tonk:_";
 
 /// Resolve the view template by querying the view concept constrained
-/// to the model. Falls back to the `_:_` default-model view when the
-/// model has no specific one, matching the browser's
+/// to the model. Falls back to the `tonk:_` default-model view when
+/// the model has no specific one, matching the browser's
 /// `spawn_default_view`. Returns `None` only when neither exists.
 async fn resolve_view<B: QueryBackend>(
     backend: &B,
@@ -217,7 +218,7 @@ async fn resolve_view<B: QueryBackend>(
     if let Some(view) = query_view(backend, view_descriptor, model_entity).await? {
         return Ok(Some(view));
     }
-    // No model-specific view: try the `_:_` default.
+    // No model-specific view: try the `tonk:_` default.
     query_view(backend, view_descriptor, DEFAULT_MODEL).await
 }
 

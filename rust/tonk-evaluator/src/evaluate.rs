@@ -412,6 +412,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 // conclusion + polarity + one `on:`
                                 // entry per body attribute).
                                 claim_count += 4 + rule.effect.on_entities().len();
+                            } else if let ApplicationPlan::DeductiveRule(_) = &plan {
+                                // A deductive rule install writes a
+                                // constant set: marker + source +
+                                // conclusion (no polarity, no `on:`).
+                                claim_count += 3;
                             }
                             txn = txn.assert(plan);
                         }
@@ -436,6 +441,13 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                     // match the stored ones — the
                                     // dissociate is byte-exact.
                                     claim_count += 4 + rule.effect.on_entities().len();
+                                    txn = txn.retract(*rule);
+                                }
+                                ApplicationPlan::DeductiveRule(rule) => {
+                                    // Deductive rules have no notation
+                                    // retract form, but the storage type
+                                    // supports dissociation for completeness.
+                                    claim_count += 3;
                                     txn = txn.retract(*rule);
                                 }
                             }
@@ -809,8 +821,13 @@ async fn collect_matches<Env: EvaluateEnv>(
         let mut frame = Parameters::new();
         let source = conclusion.source();
         for name in &variable_names {
-            if let Ok(value) = source.lookup(&Term::<dialog_query::Any>::var(name)) {
-                frame.insert(name.clone(), Term::Constant(value));
+            // `lookup` yields a `Binding`; an optional field that
+            // the entity lacks resolves to `Absent` and is simply
+            // omitted from the frame.
+            if let Ok(binding) = source.lookup(&Term::<dialog_query::Any>::var(name))
+                && let Some(value) = binding.as_value()
+            {
+                frame.insert(name.clone(), Term::Constant(value.clone()));
             }
         }
         frames.push(frame);
@@ -902,7 +919,7 @@ fn render_block(
     let descriptor = match application {
         Application::Concept { query: q, .. } => q.predicate.clone(),
         Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
-        Application::Rule { .. } => {
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
             // Rules never appear as a query expression — they are
             // write-only via Statement::Assert/Retract — so the
             // renderer's per-expression block path doesn't reach
@@ -919,7 +936,9 @@ fn render_block(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } => unreachable!("filtered above"),
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            unreachable!("filtered above")
+        }
     };
     for (_, term) in terms.iter() {
         if let Term::Variable {
@@ -960,8 +979,8 @@ fn render_one_result(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } => {
-            unreachable!("render_one_result is not called for Application::Rule")
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            unreachable!("render_one_result is not called for rule applications")
         }
     };
 
@@ -1028,7 +1047,7 @@ mod tests {
     /// matches the helper in `effects.rs::tests`. Inlined to
     /// keep tests modules self-contained.
     fn one_text_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -1037,6 +1056,7 @@ mod tests {
                 Some(Type::String),
             ),
         )])
+        .unwrap()
     }
 
     /// Install the `dialog.attribute/*` and `dialog.meta/description`
@@ -1138,14 +1158,14 @@ mod tests {
 
         // Query id:demo's referent into ?demo, then assert it as
         // id:demo-copy's referent — a different, fresh entity.
-        let doc = "\
-name:\n\
-\x20 this: id:demo\n\
-\x20 entity: ?demo\n\
-\n\
-name!:\n\
-\x20 this: id:demo-copy\n\
-\x20 entity: ?demo\n";
+        let doc = r#"name:
+  this: id:demo
+  entity: ?demo
+
+name!:
+  this: id:demo-copy
+  entity: ?demo
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1205,12 +1225,12 @@ name!:\n\
         // Now run the notation document through the full chain.
         // The rule!: lifts into an Effect, lands on the branch,
         // and fires on the inline ping!: transient assertion.
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1334,29 +1354,29 @@ rule!:\n\
         // durable) + the rule. Concept!: declarations carry
         // their own inline attribute definitions, so the
         // attributes get registered alongside.
-        let doc = "\
-concept!: &ping\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.ping/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-concept!: &pong\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.pong/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1491,36 +1511,36 @@ rule!:\n\
 
         // First commit: declare the concepts + the summing rule,
         // and seed the durable counter at 0.
-        let setup = "\
-concept!: &counter\n\
-\x20 with:\n\
-\x20   count:\n\
-\x20     the: xyz.tonk.counter/count\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"count\"\n\
-\n\
-concept!: &increment\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   by:\n\
-\x20     the: xyz.tonk.command/increment\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"by\"\n\
-\n\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: ?n }\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?m }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?n, with: ?m, is: ?count }\n\
-\n\
-counter!: &counter-demo\n\
-\x20 count: 0\n";
+        let setup = r#"concept!: &counter
+  with:
+    count:
+      the: xyz.tonk.counter/count
+      as: unsigned-integer
+      cardinality: one
+      description: "count"
+
+concept!: &increment
+  transient:
+  with:
+    by:
+      the: xyz.tonk.command/increment
+      as: unsigned-integer
+      cardinality: one
+      description: "by"
+
+rule!:
+  assert!: counter
+  when:
+    - assert: increment
+      where: { this: ?this, by: ?n }
+    - assert: counter
+      where: { this: ?this, count: ?m }
+    - assert: math/sum
+      where: { of: ?n, with: ?m, is: ?count }
+
+counter!: &counter-demo
+  count: 0
+"#;
         let parsed = parse(setup);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1637,36 +1657,36 @@ counter!: &counter-demo\n\
         // Commit 1: concepts + the summing rule + a counter seeded
         // at 0. The literal `count: 0` goes through the analyzer's
         // schema-directed coercion → an unsigned 0.
-        let setup = "\
-concept!: &counter\n\
-\x20 with:\n\
-\x20   count:\n\
-\x20     the: xyz.tonk.counter/count\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"count\"\n\
-\n\
-concept!: &increment\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   by:\n\
-\x20     the: xyz.tonk.command/increment\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"by\"\n\
-\n\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: ?n }\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?m }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?n, with: ?m, is: ?count }\n\
-\n\
-counter!: &counter-demo\n\
-\x20 count: 0\n";
+        let setup = r#"concept!: &counter
+  with:
+    count:
+      the: xyz.tonk.counter/count
+      as: unsigned-integer
+      cardinality: one
+      description: "count"
+
+concept!: &increment
+  transient:
+  with:
+    by:
+      the: xyz.tonk.command/increment
+      as: unsigned-integer
+      cardinality: one
+      description: "by"
+
+rule!:
+  assert!: counter
+  when:
+    - assert: increment
+      where: { this: ?this, by: ?n }
+    - assert: counter
+      where: { this: ?this, count: ?m }
+    - assert: math/sum
+      where: { of: ?n, with: ?m, is: ?count }
+
+counter!: &counter-demo
+  count: 0
+"#;
         let parsed = parse(setup);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1690,10 +1710,10 @@ counter!: &counter-demo\n\
         // path schema coercion must rescue. The second increment
         // reads `math/sum`'s own round-1 output (`count: 1`) back
         // as `?m`; if that output were signed, induction fails.
-        let increment = "\
-increment!:\n\
-\x20 this: counter-demo\n\
-\x20 by: 1\n";
+        let increment = r#"increment!:
+  this: counter-demo
+  by: 1
+"#;
         for round in 1..=2 {
             let parsed = parse(increment);
             assert!(
@@ -1767,46 +1787,46 @@ increment!:\n\
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        let setup = "\
-concept!: &counter\n\
-\x20 with:\n\
-\x20   count:\n\
-\x20     the: xyz.tonk.counter/count\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"count\"\n\
-\n\
-concept!: &increment\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   by:\n\
-\x20     the: xyz.tonk.command/increment\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"by\"\n\
-\n\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: ?n }\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?m }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?n, with: ?m, is: ?count }\n\
-\n\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?m }\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: ?n }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?m, with: ?n, is: ?count }\n\
-\n\
-counter!: &counter-demo\n\
-\x20 count: 0\n";
+        let setup = r#"concept!: &counter
+  with:
+    count:
+      the: xyz.tonk.counter/count
+      as: unsigned-integer
+      cardinality: one
+      description: "count"
+
+concept!: &increment
+  transient:
+  with:
+    by:
+      the: xyz.tonk.command/increment
+      as: unsigned-integer
+      cardinality: one
+      description: "by"
+
+rule!:
+  assert!: counter
+  when:
+    - assert: increment
+      where: { this: ?this, by: ?n }
+    - assert: counter
+      where: { this: ?this, count: ?m }
+    - assert: math/sum
+      where: { of: ?n, with: ?m, is: ?count }
+
+rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?m }
+    - assert: increment
+      where: { this: ?this, by: ?n }
+    - assert: math/sum
+      where: { of: ?m, with: ?n, is: ?count }
+
+counter!: &counter-demo
+  count: 0
+"#;
         let parsed = parse(setup);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         parsed
@@ -1885,23 +1905,23 @@ counter!: &counter-demo\n\
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         // Commit the concepts the rule references.
-        let concepts = "\
-concept!: &ping\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.ping/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-concept!: &pong\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.pong/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n";
+        let concepts = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: one
+      description: "tag"
+"#;
         parse(concepts)
             .syntax
             .expect("concepts syntax")
@@ -1915,12 +1935,12 @@ concept!: &pong\n\
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
 
         // A document that is *only* a rule.
-        let rule_doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let rule_doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let evaluated = parse(rule_doc)
             .syntax
             .expect("rule syntax")
@@ -1965,23 +1985,23 @@ rule!:\n\
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         // Commit the concepts the rule references.
-        let concepts = "\
-concept!: &ping\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.ping/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-concept!: &pong\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.pong/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n";
+        let concepts = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: one
+      description: "tag"
+"#;
         parse(concepts)
             .syntax
             .expect("concepts syntax")
@@ -1996,13 +2016,13 @@ concept!: &pong\n\
 
         // Install at a chosen, stable entity URI.
         let chosen: Entity = "id:my-counter".parse()?;
-        let rule_doc = "\
-rule!:\n\
-\x20 this: id:my-counter\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let rule_doc = r#"rule!:
+  this: id:my-counter
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         parse(rule_doc)
             .syntax
             .expect("rule syntax")
@@ -2072,23 +2092,23 @@ rule!:\n\
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         // Commit the concepts the rule references.
-        let concepts = "\
-concept!: &ping\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.ping/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-concept!: &pong\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.pong/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n";
+        let concepts = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: one
+      description: "tag"
+"#;
         parse(concepts)
             .syntax
             .expect("concepts syntax")
@@ -2104,13 +2124,13 @@ concept!: &pong\n\
         // Install at a chosen entity so the retract notation has a
         // stable URI to name.
         let chosen: Entity = "id:my-rule".parse()?;
-        let install_doc = "\
-rule!:\n\
-\x20 this: id:my-rule\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let install_doc = r#"rule!:
+  this: id:my-rule
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         parse(install_doc)
             .syntax
             .expect("install syntax")
@@ -2139,10 +2159,10 @@ rule!:\n\
 
         // Retract via the notation deletion form. `..: _` is the
         // sentinel for "delete the named effect."
-        let retract_doc = "\
-rule!:\n\
-\x20 this: id:my-rule\n\
-\x20 ..: _\n";
+        let retract_doc = r#"rule!:
+  this: id:my-rule
+  ..: _
+"#;
         parse(retract_doc)
             .syntax
             .expect("retract syntax")
@@ -2167,6 +2187,121 @@ rule!:\n\
         assert!(
             post.is_empty(),
             "dialog.effect/source at {chosen} must be empty after retract, saw {post:?}"
+        );
+
+        Ok(())
+    }
+
+    /// End-to-end deduction: an installed deductive rule makes a query
+    /// for its conclusion concept return instances *derived* from
+    /// premise facts (no stored conclusion facts exist), and retracting
+    /// the rule makes those derived instances disappear. The premise
+    /// facts never change — only the rule's presence does.
+    ///
+    /// Rule: `pong` is derived from `ping`. A single durable `ping`
+    /// instance is on the branch; `pong` is never asserted. Querying
+    /// `pong` yields one conclusion while the rule is installed and zero
+    /// after it is retracted.
+    #[dialog_common::test]
+    async fn it_deduces_concepts_until_the_rule_is_retracted() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let ping = one_text_field("io.gozala.ping", "tag");
+        let pong = one_text_field("io.gozala.pong", "tag");
+
+        // Concepts + attributes on the branch (both durable; the
+        // premise concept is a normal stored one here).
+        let mut setup = branch.transaction();
+        setup = install_attribute_facts(setup, &ping);
+        setup = install_attribute_facts(setup, &pong);
+        setup = install_named_concept(setup, "ping", &ping, /*transient=*/ false);
+        setup = install_named_concept(setup, "pong", &pong, /*transient=*/ false);
+        // One durable `ping` instance — the premise the rule derives from.
+        let subject: dialog_artifacts::Entity = "did:key:zDeducedSubject".parse()?;
+        setup = setup.assert(
+            the!("io.gozala.ping/tag")
+                .of(subject.clone())
+                .is("hi".to_string()),
+        );
+        setup.commit().perform(&operator).await?;
+
+        // A query for `pong` instances, all fields free.
+        let query_pong = || async {
+            let mut terms = Parameters::new();
+            terms.insert("this".to_string(), Term::var("this"));
+            terms.insert("tag".to_string(), Term::var("tag"));
+            let conclusions: Vec<ConceptConclusion> = branch
+                .query()
+                .select(ConceptQuery {
+                    terms,
+                    predicate: pong.clone(),
+                })
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            anyhow::Ok(conclusions)
+        };
+
+        // Before the rule: no stored pong facts, no rule — zero pong.
+        assert!(
+            query_pong().await?.is_empty(),
+            "pong should be empty before the rule is installed"
+        );
+
+        // Install the deductive rule (`assert:` no-bang) at a stable
+        // entity so the retract notation can name it.
+        let install_doc = r#"rule!:
+  this: id:ping-to-pong
+  assert: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
+        parse(install_doc)
+            .syntax
+            .expect("install syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
+
+        // With the rule installed, querying `pong` derives one instance
+        // from the `ping` fact — even though no pong fact was written.
+        let deduced = query_pong().await?;
+        assert_eq!(
+            deduced.len(),
+            1,
+            "the installed rule should deduce one pong from the ping fact; saw {deduced:?}"
+        );
+
+        // Retract the rule.
+        let retract_doc = r#"rule!:
+  this: id:ping-to-pong
+  ..: _
+"#;
+        parse(retract_doc)
+            .syntax
+            .expect("retract syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (retract rule): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (retract rule): {e}"))?;
+
+        // The ping fact is untouched, but with the rule gone the
+        // deduction stops — querying `pong` is empty again.
+        assert!(
+            query_pong().await?.is_empty(),
+            "pong deduction must stop once the rule is retracted"
         );
 
         Ok(())
@@ -2207,50 +2342,50 @@ rule!:\n\
 
         // Commit 1: the transient concept + the durable concept.
         commit_doc(
-            "\
-concept!: &person-entered\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   name:\n\
-\x20     the: xyz.tonk.env/name\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"name\"\n\
-\x20   age:\n\
-\x20     the: xyz.tonk.env/age\n\
-\x20     as: unsigned-integer\n\
-\x20     cardinality: one\n\
-\x20     description: \"age\"\n\
-\n\
-attribute!: &person-name\n\
-\x20 description: The person's name\n\
-\x20 the: xyz.tonk.person/name\n\
-\x20 as: text\n\
-\x20 cardinality: one\n\
-\n\
-attribute!: &person-age\n\
-\x20 description: The person's age\n\
-\x20 the: xyz.tonk.person/age\n\
-\x20 as: unsigned-integer\n\
-\x20 cardinality: one\n\
-\n\
-concept!: &person\n\
-\x20 description: \"A person\"\n\
-\x20 with:\n\
-\x20   name: person-name\n\
-\x20   age: person-age\n",
+            r#"concept!: &person-entered
+  transient:
+  with:
+    name:
+      the: xyz.tonk.env/name
+      as: text
+      cardinality: one
+      description: "name"
+    age:
+      the: xyz.tonk.env/age
+      as: unsigned-integer
+      cardinality: one
+      description: "age"
+
+attribute!: &person-name
+  description: The person's name
+  the: xyz.tonk.person/name
+  as: text
+  cardinality: one
+
+attribute!: &person-age
+  description: The person's age
+  the: xyz.tonk.person/age
+  as: unsigned-integer
+  cardinality: one
+
+concept!: &person
+  description: "A person"
+  with:
+    name: person-name
+    age: person-age
+"#,
             "concepts",
         )
         .await?;
 
         // Commit 2: the rule — a separate document.
         commit_doc(
-            "\
-rule!:\n\
-\x20 assert!: person\n\
-\x20 when:\n\
-\x20   - assert: person-entered\n\
-\x20     where: { this: ?this, name: ?name, age: ?age }\n",
+            r#"rule!:
+  assert!: person
+  when:
+    - assert: person-entered
+      where: { this: ?this, name: ?name, age: ?age }
+"#,
             "rule",
         )
         .await?;
@@ -2313,29 +2448,29 @@ rule!:\n\
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        let install = "\
-concept!: &ping\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.ping/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-concept!: &pong\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.pong/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let install = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(install).syntax.expect("install syntax");
         syntax
             .evaluate(branch.transaction())
@@ -2418,33 +2553,33 @@ rule!:\n\
         // durable), installs the inductive rule, and asserts a ping
         // instance. The whole thing should commit as a single
         // observable step: pong lands, ping is gone.
-        let doc = "\
-concept!: &ping\n\
-\x20 transient:\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.ping/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-concept!: &pong\n\
-\x20 with:\n\
-\x20   tag:\n\
-\x20     the: io.gozala.pong/tag\n\
-\x20     as: text\n\
-\x20     cardinality: one\n\
-\x20     description: \"tag\"\n\
-\n\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n\
-\n\
-ping!:\n\
-\x20 this: did:key:zSingleCommitSubject\n\
-\x20 tag: \"hi\"\n";
+        let doc = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: one
+      description: "tag"
+
+rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+
+ping!:
+  this: did:key:zSingleCommitSubject
+  tag: "hi"
+"#;
 
         let parsed = parse(doc);
         assert!(
@@ -3397,6 +3532,442 @@ workspace!:
         assert!(
             bindings.contains("alice"),
             "the ?alice variable should be bound by the query"
+        );
+        Ok(())
+    }
+
+    /// End-to-end: a `concept!` with a `maybe:` block lands the
+    /// optional marker (`dialog.concept.optional/{field}`) on the
+    /// branch for the optional field only — the required `with:`
+    /// field carries none. Proves the notation → analyzer →
+    /// storage round-trip for optionality.
+    #[dialog_common::test]
+    async fn it_persists_optional_marker_for_maybe_field() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let doc = r#"concept!: &person
+  with:
+    name:
+      the: io.gozala.person/name
+      as: text
+      cardinality: one
+      description: "name"
+  maybe:
+    nickname:
+      the: io.gozala.person/nickname
+      as: text
+      cardinality: one
+      description: "nickname"
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+
+        // The descriptor entity is content-derived; rebuild it the
+        // same way (required name + optional nickname) to find it.
+        let descriptor = ConceptDescriptor::try_from(vec![
+            (
+                "name".to_string(),
+                dialog_query::ConceptFieldDescriptor::required(AttributeDescriptor::new(
+                    the!("io.gozala.person/name"),
+                    "name",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+            (
+                "nickname".to_string(),
+                dialog_query::ConceptFieldDescriptor::optional(AttributeDescriptor::new(
+                    the!("io.gozala.person/nickname"),
+                    "nickname",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+        ])?;
+        let entity = descriptor.this();
+
+        let nickname_the: dialog_query::attribute::The =
+            "dialog.concept.optional/nickname".parse().unwrap();
+        let nickname_markers: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(nickname_the)
+                    .of(Term::from(entity.clone()))
+                    .is(Term::<bool>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            nickname_markers.len(),
+            1,
+            "expected an optional marker for `nickname`; saw {nickname_markers:?}"
+        );
+        assert_eq!(nickname_markers[0].is, Value::Boolean(true));
+
+        let name_the: dialog_query::attribute::The =
+            "dialog.concept.optional/name".parse().unwrap();
+        let name_markers: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(name_the)
+                    .of(Term::from(entity.clone()))
+                    .is(Term::<bool>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            name_markers.is_empty(),
+            "required field `name` must carry no optional marker; saw {name_markers:?}"
+        );
+        Ok(())
+    }
+
+    /// Headline behavior, end to end: a `concept:` query returns
+    /// entities that LACK an optional field (with the field omitted
+    /// from the result), alongside entities that HAVE it (field
+    /// present). Set-widening must not drop the field-less entity.
+    ///
+    /// NOTE: this passes only because the optional field (`nickname`)
+    /// sorts *after* the required field (`name`), so the required
+    /// field leads the scan. The mirror case where the optional
+    /// field sorts first is currently broken by a dialog-db planner
+    /// bug — see
+    /// [`dialog_repro_optional_field_sorted_first_drops_rows`] and
+    /// the ignored [`it_set_widens_body_derived_entities_with_bare_query`].
+    #[dialog_common::test]
+    async fn it_set_widens_optional_field_in_query() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Declare the concept and assert two people in one commit:
+        // alice has a nickname, bob does not.
+        let setup = r#"concept!: &person
+  with:
+    name:
+      the: io.gozala.person/name
+      as: text
+      cardinality: one
+      description: "name"
+  maybe:
+    nickname:
+      the: io.gozala.person/nickname
+      as: text
+      cardinality: one
+      description: "nickname"
+
+person!:
+  this: id:alice
+  name: "Alice"
+  nickname: "Al"
+
+person!:
+  this: id:bob
+  name: "Bob"
+"#;
+        let parsed = parse(setup);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "setup parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
+
+        // Query every person.
+        let query_doc = r#"person:
+  this: ?p
+  name: ?name
+  nickname: ?nick
+"#;
+        let parsed = parse(query_doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "query parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let query_syntax = parsed.syntax.expect("query syntax");
+        let evaluated = query_syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query evaluate: {e}"))?;
+
+        let results: Vec<&QueryResult> = evaluated
+            .matches
+            .iter()
+            .flat_map(|b| b.results.iter())
+            .collect();
+
+        // Both people come back — the optional field must not filter
+        // bob out.
+        assert_eq!(
+            results.len(),
+            2,
+            "expected both people (set-widening must not drop the nickname-less one); saw {results:?}"
+        );
+
+        let alice = results
+            .iter()
+            .find(|r| r.fields.get("name") == Some(&serde_json::json!("Alice")))
+            .expect("alice row present");
+        let bob = results
+            .iter()
+            .find(|r| r.fields.get("name") == Some(&serde_json::json!("Bob")))
+            .expect("bob row present");
+
+        // Alice has the optional field; bob omits it entirely.
+        assert_eq!(
+            alice.fields.get("nickname"),
+            Some(&serde_json::json!("Al")),
+            "alice's nickname must be present"
+        );
+        assert!(
+            !bob.fields.contains_key("nickname"),
+            "bob lacks the optional field, so it must be omitted; saw {:?}",
+            bob.fields
+        );
+        Ok(())
+    }
+
+    /// Reproduces the reported failure end-to-end through notation:
+    /// a concept with required `name` + optional `age`, two people
+    /// (one without `age`), queried with bare `person:`. The
+    /// `age`-less person must still appear.
+    ///
+    /// This previously failed (only the person *with* `age` returned)
+    /// because `age` sorts before `name`, so the optional field led
+    /// the unbound scan. Fixed by the dialog-db query-engine rework
+    /// on `feat/narrowing-diagnostics`; kept as a regression guard.
+    #[dialog_common::test]
+    async fn it_set_widens_body_derived_entities_with_bare_query() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let setup = r#"concept!: &person
+  description: A person
+  with:
+    name:
+      description: Name of the person
+      the: xyz.tonk.person/name
+      as: text
+  maybe:
+    age:
+      description: Age of the person
+      the: xyz.tonk.person/age
+      as: unsigned-integer
+
+person!:
+  name: Alice
+
+person!:
+  name: Bob
+  age: 4
+"#;
+        let parsed = parse(setup);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "setup parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
+
+        let parsed = parse("person:\n");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "query parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let query_syntax = parsed.syntax.expect("query syntax");
+        let evaluated = query_syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query evaluate: {e}"))?;
+
+        let results: Vec<&QueryResult> = evaluated
+            .matches
+            .iter()
+            .flat_map(|b| b.results.iter())
+            .collect();
+
+        let names: Vec<_> = results
+            .iter()
+            .filter_map(|r| r.fields.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            names.contains(&"Alice"),
+            "Alice (no optional `age`) must appear; saw {results:?}"
+        );
+        assert!(names.contains(&"Bob"), "Bob must appear; saw {results:?}");
+        assert_eq!(results.len(), 2, "expected both people; saw {results:?}");
+        Ok(())
+    }
+
+    /// Regression guard at the **dialog level** for set-widening
+    /// when the optional field sorts alphabetically *before* every
+    /// required field. Uses only `dialog_query` + `dialog_repository`
+    /// APIs — no tonk notation, analyzer, or reconstruction.
+    ///
+    /// The concept has `bio` (optional, sorts first) and `name`
+    /// (required). A `this`-unbound query must return both alice
+    /// (`bio` Absent) and bob (`bio` Present). This previously
+    /// returned only bob, because the planner led the unbound scan
+    /// with the optional `bio` premise. Fixed by the dialog-db
+    /// query-engine rework on `feat/narrowing-diagnostics`.
+    #[dialog_common::test]
+    async fn it_set_widens_optional_field_sorted_before_required() -> anyhow::Result<()> {
+        use dialog_query::concept::descriptor::ConceptConclusion;
+        use dialog_query::concept::query::ConceptQuery;
+        use dialog_query::{Output as _, Parameters, Term};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let alice: dialog_artifacts::Entity = "id:alice".parse()?;
+        let bob: dialog_artifacts::Entity = "id:bob".parse()?;
+
+        // alice has only name; bob has name + bio.
+        branch
+            .transaction()
+            .assert(the!("person/name").of(alice).is("Alice".to_string()))
+            .assert(the!("person/name").of(bob.clone()).is("Bob".to_string()))
+            .assert(the!("person/bio").of(bob).is("Hi".to_string()))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // `bio` (optional) sorts before `name` (required).
+        let descriptor = ConceptDescriptor::try_from(vec![
+            (
+                "bio".to_string(),
+                dialog_query::ConceptFieldDescriptor::optional(AttributeDescriptor::new(
+                    the!("person/bio"),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+            (
+                "name".to_string(),
+                dialog_query::ConceptFieldDescriptor::required(AttributeDescriptor::new(
+                    the!("person/name"),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+        ])?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".to_string(), Term::var("person"));
+        terms.insert("name".to_string(), Term::var("name"));
+        terms.insert("bio".to_string(), Term::var("bio"));
+
+        let conclusions: Vec<ConceptConclusion> = branch
+            .query()
+            .select(ConceptQuery {
+                terms,
+                predicate: descriptor,
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(
+            conclusions.len(),
+            2,
+            "expected alice (bio Absent) + bob (bio Present); got {} — \
+             the optional lead premise dropped alice",
+            conclusions.len()
+        );
+        Ok(())
+    }
+
+    /// User-reported repro, end-to-end through notation: a concept
+    /// with a `text` field, asserting a bare integer (`age: 3`)
+    /// into it. The evaluate path must fail with a type error
+    /// rather than committing a `SignedInt` fact that the strictly
+    /// typed `person:` concept query can never match (which made
+    /// the entity silently vanish from its own concept). The
+    /// analyzer-level diagnostic and "untyped accepts any" cases
+    /// are covered in `tonk-analyzer`; this guards the wiring
+    /// through `evaluate`.
+    #[dialog_common::test]
+    async fn it_errors_evaluating_integer_into_text_field() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let setup = r#"concept!: &person
+  description: Person
+  with:
+    age:
+      description: Age of the person
+      the: xyz.tonk.person/age
+      as: text
+"#;
+        let parsed = parse(setup);
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
+
+        let parsed = parse("person!:\n  age: 3\n");
+        let query_syntax = parsed.syntax.expect("assert syntax");
+        let result = query_syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await;
+        let err = result.err().expect("integer into a text field must error");
+        assert!(
+            err.to_string().to_lowercase().contains("text")
+                || err.to_string().to_lowercase().contains("type"),
+            "expected a type-mismatch error mentioning the text type, got: {err}"
         );
         Ok(())
     }

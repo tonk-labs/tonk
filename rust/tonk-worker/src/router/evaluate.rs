@@ -37,8 +37,8 @@ pub use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
 
 /// Wire-shape returned by `/evaluate`. Local to the worker so
 /// the JSON contract is owned at the HTTP boundary, not in the
-/// shared evaluator. Slide owns its own copy of this shape
-/// (`slide::output`) so its `-f json` output stays byte-compatible
+/// shared evaluator. Tonk owns its own copy of this shape
+/// (`tonk_cli::output`) so its `-f json` output stays byte-compatible
 /// with the HTTP body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluateResponse {
@@ -216,6 +216,11 @@ async fn evaluate_on_branch<'a>(
     // is read-only and gets `induce`-swept on commit (below) so it never
     // lands durably.
     let overlay = session.overlay();
+    // The evaluation's match queries (`txn.query()` inside the
+    // evaluator) resolve stored `db.rule/*` rules automatically — rule
+    // resolution is built into the branch query's layer stack, so the
+    // inspector's dry-run preview shows the same deductions a committed
+    // `query` / `subscribe` returns.
     let txn = branch.transaction().integrate(overlay.clone());
 
     let t_eval = web_time::Instant::now();
@@ -474,20 +479,19 @@ mod tests {
     /// the durable `person` concept, and the attributes the rule's
     /// premise and head bind. Committing this first lets a separate
     /// `rule!:` document resolve both concepts by bookmark name.
-    const CONCEPTS: &str = "\
-concept!: &person-entered
+    const CONCEPTS: &str = r#"concept!: &person-entered
   transient:
   with:
     name:
       the: xyz.tonk.env/name
       as: text
       cardinality: one
-      description: \"name\"
+      description: "name"
     age:
       the: xyz.tonk.env/age
       as: unsigned-integer
       cardinality: one
-      description: \"age\"
+      description: "age"
 
 attribute!: &person-name
   description: The person's name
@@ -502,20 +506,19 @@ attribute!: &person-age
   cardinality: one
 
 concept!: &person
-  description: \"A person\"
+  description: "A person"
   with:
     name: person-name
     age: person-age
-";
+"#;
 
     /// The rule person <- person-entered, as its own document.
-    const RULE: &str = "\
-rule!:
+    const RULE: &str = r#"rule!:
   assert!: person
   when:
     - assert: person-entered
       where: { this: ?this, name: ?name, age: ?age }
-";
+"#;
 
     /// Regression: a document that is *only* a `rule!:` is a
     /// mutation document — the `!` says so. It must commit. Before
@@ -562,12 +565,11 @@ rule!:
 
         // Assert a transient `person-entered` instance. The write
         // seeds the effects fixpoint that drives the rule.
-        let instance = "\
-person-entered!:
+        let instance = r#"person-entered!:
   this: did:key:zPersonEnteredSubject
-  name: \"Tester Joe\"
+  name: "Tester Joe"
   age: 42
-";
+"#;
         let asserted = evaluate(&state, repo, instance, true).await;
         assert!(
             asserted.commits.claims > 0,

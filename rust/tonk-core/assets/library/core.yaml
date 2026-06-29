@@ -53,17 +53,20 @@ concept!: &view/directory
       cardinality: one
       as: text
 
-# The default directory view: `model: _:_` matches any model with no
-# specific `view/directory`. <tonk-display> with no `entity` resolves a
-# directory view for the model first; finding none, it falls back to
-# this. It renders the model's instances in a <wa-carousel>, one slide
-# per instance, each a nested single-entity <tonk-display> (which then
-# resolves its own view, or this default's detail counterpart). The
-# nested `model` is threaded from the host via `{dom.host/model}`,
-# since an instance carries no pointer to its own model.
+# The default directory view: `model: tonk:_` matches any model with no
+# specific `view/directory`. `tonk:_` is the wildcard-model sentinel — a
+# valid entity URI standing in for "no specific model" (the `model` field
+# is `as: entity`, so the value must be a real entity, not bare text).
+# <tonk-display> with no `entity` resolves a directory view for the model
+# first; finding none, it falls back to this. It renders the model's
+# instances in a <wa-carousel>, one slide per instance, each a nested
+# single-entity <tonk-display> (which then resolves its own view, or this
+# default's detail counterpart). The nested `model` is threaded from the
+# host via `{dom.host/model}`, since an instance carries no pointer to
+# its own model.
 view/directory!:
   this: id:tonk:view/directory/default
-  model: _:_
+  model: tonk:_
   display: |
     <wa-carousel class="vertical seamless" pagination orientation="vertical">
       <wa-carousel-item subject={this}>
@@ -461,9 +464,9 @@ view!:
     Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
       mkdir -p ~/tonk/{name} &amp;&amp; cd ~/tonk/{name}
-      slide join '{dom.host/data-base}?access={access}{remote}#{code}'
-      slide guide        # how to drive the CLI
-      slide schema       # concepts already on the branch
+      tonk join '{dom.host/data-base}?access={access}{remote}#{code}'
+      tonk guide        # how to drive the CLI
+      tonk schema       # concepts already on the branch
 
     Then build."></wa-copy-button>
       </div>
@@ -472,9 +475,9 @@ view!:
     Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
       mkdir -p ~/tonk/{name} &amp;&amp; cd ~/tonk/{name}
-      slide join '{dom.host/data-base}?access={access}{remote}#{code}'
-      slide guide        # how to drive the CLI
-      slide schema       # concepts already on the branch
+      tonk join '{dom.host/data-base}?access={access}{remote}#{code}'
+      tonk guide        # how to drive the CLI
+      tonk schema       # concepts already on the branch
 
     Then build.</pre>
     </div>
@@ -825,12 +828,13 @@ view/label!:
     {name}
 
 # Tab close. Clicking a tab's close button fires the transient
-# `close-sheet` command. `sheet` is the closed sheet; `next` is the
-# neighbour the binder picked (by tab order) to fall back to when the
-# closed sheet was the active one. The two rules below (a) retract the
-# sheet's `order` so it no longer matches the sheet directory (the tab
-# disappears; the underlying artifact survives), and (b) move the
-# binder's `active` to `next` if the closed sheet was active.
+# `close-sheet` command carrying just the closed sheet. The rule below
+# retracts the sheet's `order` so it no longer matches the sheet
+# directory (the tab disappears; the underlying artifact survives).
+# Reassigning the live selection to a neighbour is the binder element's
+# job: on close it moves `active` to the neighbour and dispatches an
+# `activate` (the single `active` writer), so no `next` field and no
+# reassign rule are needed here.
 command!: &workspace/close-sheet
   description: A request to close `sheet`, demoting it back to a plain artifact.
   with:
@@ -843,10 +847,6 @@ command!: &workspace/close-sheet
         close also read as an activate request and select the closed
         tab.
       the: dom.event.detail/closed
-      as: entity
-    next:
-      description: The neighbour sheet to activate if the closed one was active
-      the: dom.event.detail/next
       as: entity
 
 # A minimal projection of a sheet's `order` key - the one field a
@@ -876,22 +876,6 @@ rule!:
       where: { sheet: ?this }
     - assert: workspace/sheet-order
       where: { this: ?this, order: ?order }
-
-# Reassign active: when the closed sheet was the binder's active one,
-# point `active` at the neighbour the binder supplied. The binder is
-# the replica's (bound through `tonk/replica`); the `active: ?sheet`
-# join gates this to the active-sheet case, so closing a non-active
-# sheet leaves `active` untouched (no match).
-rule!:
-  description: Moves the binder's active pointer to the neighbour when the active sheet closes
-  assert!: tonk/active-sheet
-  when:
-    - assert: workspace/close-sheet
-      where: { sheet: ?sheet, next: ?active }
-    - assert: tonk/replica
-      where: { this: ?this, subject: ?subject }
-    - assert: tonk/active-sheet
-      where: { this: ?this, active: ?sheet }
 
 # The sheet-mount view (default view for `workspace/sheet`): wraps the
 # sheet's content in a `<tonk-sheet>` carrying its metadata as
@@ -1472,17 +1456,18 @@ rule!:
 
 rule!:
   description: Activates the freshly created sheet
-  assert!: tonk/active-sheet
+  assert!: tonk/binder
   when:
     - assert: workspace/create-sheet
       where:
         this: ?active
         name: ?title
         order: ?order
-    # The active sheet is the replica's (bound through `tonk/replica`);
-    # point its `active` at the new sheet so creating lands the user on
+    # The binder is the replica's (bound through `tonk/replica`); record
+    # its default `active` at the new sheet so creating lands the user on
     # the new empty artifact (the head's `active` field unifies with the
-    # created sheet `?active`).
+    # created sheet `?active`). `subject` carries the replica's identity so
+    # the partial update keeps the binder's required field.
     - assert: tonk/replica
       where:
         this: ?this
@@ -2006,7 +1991,7 @@ view!:
         <p class="share-dialog__note">Everyone who follows this link becomes a member of this space. The link stays active, so share it only with people you want to let in.</p>
       </wa-dialog>
 
-      <tonk-display model=workspace/sheet data-binder={this} />
+      <tonk-display model=workspace/sheet data-binder={this} data-active={active} />
     </div>
 
 
@@ -2376,8 +2361,7 @@ view/directory!:
         }
       </style>
 
-      <tonk-sheet-binder class="workspace__binder" onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
-        <tonk-display slot="active" entity={dom.host/data-binder} model=tonk:active-sheet><span slot="no-entity"></span></tonk-display>
+      <tonk-sheet-binder class="workspace__binder" default-active={dom.host/data-active} onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
         <div slot="empty" class="workspace-launchpad" hidden>
           <div class="workspace-launchpad__inner">
             <h1 class="workspace-launchpad__title">nothing here yet.</h1>
@@ -2409,38 +2393,29 @@ concept!: &tonk/binder
         repository-name banner — no bridge view needed.
       the: dialog.origin/subject
       as: entity
-
-concept!: &tonk/active-sheet
-  this: tonk:active-sheet
-  description: A an active sheet on the binder
-  with:
+  maybe:
     active:
-      description: Currently active sheet
+      description: |
+        The binder's default/initial sheet selection — like a form
+        control's `defaultValue`. Optional: a freshly created or joined
+        replica has selected no tab yet, so the field is simply absent
+        and the binder falls back to the first sheet by order. The
+        binder element owns the LIVE selection in its own DOM state
+        (instant on click); this field only seeds the initial selection
+        on mount and records the latest pick so it survives a reload.
       the: xyz.tonk.binder/active
       as: entity
 
-# The active-sheet feed — the default view for `tonk:active-sheet`. The
-# shell slots `<tonk-display model=tonk:active-sheet>` into the binder's
-# `[slot="active"]`; this view renders just the active sheet id as bare
-# text, which `<tonk-sheet-binder>` reads to highlight the live tab. When
-# no `tonk/active-sheet` fact exists yet (a freshly created or joined
-# replica that never selected a tab), the model resolves nothing and the
-# slot stays empty, so the binder falls back to the first sheet by order.
-view!:
-  this: id:active-sheet/feed
-  model: tonk:active-sheet
-  display: |
-    {active}
-
-# Tab selection: when an `activate-sheet` command fires, point the
-# active sheet at the clicked one (replacing the prior selection). The
-# active sheet is the replica's (one per device, bound through
+# Tab selection: when an `activate-sheet` command fires, record the
+# clicked sheet as the binder's default `active` selection (replacing the
+# prior one). The binder is the replica's (one per device, bound through
 # `tonk/replica`), so the command needs only the sheet — no binder id
-# plumbed through the DOM. Mirrors the close/create rules. The slotted
-# `<tonk-display model=tonk:active-sheet>` reads this back to light the
-# live tab.
+# plumbed through the DOM. The shell view reads `{active}` straight off
+# the binder model to seed the live tab; the binder element owns the live
+# selection thereafter, so this write only persists the default for the
+# next mount.
 rule!:
-  assert!: tonk/active-sheet
+  assert!: tonk/binder
   when:
     - assert: workspace/activate-sheet
       where: { sheet: ?active }

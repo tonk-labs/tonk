@@ -51,7 +51,7 @@ for i in $(seq 1 "$RUNS"); do
 
   episode_status=0
   if [ "$SCRIPTED" = 1 ]; then
-    ( cd "$RUN_DIR/site" && SLIDE="$ROOT/target/release/slide" bash "$SCENARIO/scripted.sh" ) \
+    ( cd "$RUN_DIR/site" && TONK="$ROOT/target/release/tonk" bash "$SCENARIO/scripted.sh" ) \
       || episode_status=$?
   else
     "$ROOT/bench/bin/episode.sh" || episode_status=$?

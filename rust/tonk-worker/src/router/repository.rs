@@ -3169,7 +3169,7 @@ mod tests {
     }
 
     /// After attach, a minted invite carries the `remote=` endpoint —
-    /// the whole point of the opt-in remote, so `slide join` has
+    /// the whole point of the opt-in remote, so `tonk join` has
     /// something to pull from. Before attach the repo is remote-less
     /// and the invite carries no remote.
     #[dialog_common::test]

@@ -21,7 +21,9 @@ use dialog_query::concept::query::ConceptQuery;
 use dialog_query::constraint::Constraint;
 use dialog_query::formula::query::FormulaQuery;
 use dialog_query::premise::Premise as DialogPremise;
-use dialog_query::{InductiveRule, Negation, Parameters, Proposition, Term};
+use dialog_query::{
+    DeductiveRule as CompiledDeductiveRule, InductiveRule, Negation, Parameters, Proposition, Term,
+};
 use tonk_notation::{
     Application as SyntaxApplication, FieldValue, Premise as NotationPremise, Scalar,
 };
@@ -34,6 +36,7 @@ use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
 use tonk_core::effect::{Effect, EffectPolarity};
+use tonk_schema::deductive_rule::DeductiveRule;
 use tonk_schema::rule::Rule;
 
 /// Outcome of inspecting a `rule!:` claim body — install (build a
@@ -65,6 +68,27 @@ pub(crate) enum RuleAction {
     /// bytes — handed to `Statement::Retract` so the dissociate
     /// matches what was written byte-for-byte.
     Retract { rule: Box<Rule>, this: Entity },
+    /// Install a new deductive rule (the `assert:` no-bang form).
+    /// `rule` carries the freshly-built
+    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule);
+    /// `this` is `Some(entity)` when pinned via `this: <entity>`.
+    InstallDeductive {
+        /// The freshly-built deductive rule packaged for assert.
+        rule: Box<DeductiveRule>,
+        /// Caller-supplied install-at entity from `this: <entity>`.
+        this: Option<Entity>,
+    },
+    /// Retract an installed deductive rule. `rule` carries the
+    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule)
+    /// resolved off the branch with its stored `db.rule/source` bytes —
+    /// handed to `Statement::Retract` so the dissociate matches what was
+    /// written. The deductive counterpart to [`Retract`](Self::Retract).
+    RetractDeductive {
+        /// The rule resolved off the branch, carrying exact stored bytes.
+        rule: Box<DeductiveRule>,
+        /// The entity the `db.rule/*` claims live under.
+        this: Entity,
+    },
 }
 
 /// `true` when the claim body is the rule-retract shape
@@ -113,40 +137,62 @@ pub(crate) fn lift_rule_claim(
             )
         })?;
         // The stored rule was read off the branch during resolve's
-        // prefetch pass (so the carried `source` bytes match
-        // what's installed) and cached on the scope. `Some(None)`
-        // means the entity holds no `dialog.effect/source` claim —
-        // the user is retracting a rule that isn't installed (or
-        // already retracted in this document); propagate the
-        // absent signal upward so the analyzer drops the claim
-        // silently. `None` means resolve never prefetched it,
-        // which is an analyzer bug.
-        let resolved = scope.resolved_rule(&entity).ok_or_else(|| {
-            AnalyzeError::at(
+        // prefetch pass (so the carried `source` bytes match what's
+        // installed) and cached on the scope. A retract entity may name
+        // an inductive or a deductive rule, so resolve consulted both;
+        // whichever is present wins. `Some(None)` on a map means that
+        // kind is confirmed absent; `None` means resolve never
+        // prefetched it, which is an analyzer bug.
+        let inductive = scope.resolved_rule(&entity);
+        let deductive = scope.resolved_deductive_rule(&entity);
+        if inductive.is_none() && deductive.is_none() {
+            return Err(AnalyzeError::at(
                 AnalyzeErrorKind::RuleCompileFailed {
                     reason: format!("rule retract at {entity} was not prefetched during resolve"),
                 },
                 application.range,
-            )
-        })?;
-        let Some(rule) = resolved else {
-            return Ok(None);
-        };
-        Ok(Some(RuleAction::Retract {
-            rule: Box::new(rule),
-            this: entity,
-        }))
+            ));
+        }
+        if let Some(Some(rule)) = inductive {
+            return Ok(Some(RuleAction::Retract {
+                rule: Box::new(rule),
+                this: entity,
+            }));
+        }
+        if let Some(Some(rule)) = deductive {
+            return Ok(Some(RuleAction::RetractDeductive {
+                rule: Box::new(rule),
+                this: entity,
+            }));
+        }
+        // Both kinds confirmed absent — retracting something not
+        // installed (or already retracted in this document); drop the
+        // claim silently.
+        Ok(None)
     } else {
         let this = parse_rule_this_entity(application)?;
-        let effect = lift_rule(application, scope, analysis)?;
-        let rule = match this.clone() {
-            Some(entity) => Rule::asserting_at(effect, entity),
-            None => Rule::asserting(effect),
-        };
-        Ok(Some(RuleAction::Install {
-            rule: Box::new(rule),
-            this,
-        }))
+        match lift_rule(application, scope, analysis)? {
+            LiftedRule::Inductive(effect) => {
+                let rule = match this.clone() {
+                    Some(entity) => Rule::asserting_at(effect, entity),
+                    None => Rule::asserting(effect),
+                };
+                Ok(Some(RuleAction::Install {
+                    rule: Box::new(rule),
+                    this,
+                }))
+            }
+            LiftedRule::Deductive(compiled) => {
+                let rule = match this.clone() {
+                    Some(entity) => DeductiveRule::asserting_at(compiled, entity),
+                    None => DeductiveRule::asserting(compiled),
+                };
+                Ok(Some(RuleAction::InstallDeductive {
+                    rule: Box::new(rule),
+                    this,
+                }))
+            }
+        }
     }
 }
 
@@ -233,7 +279,7 @@ pub(crate) fn lift_rule(
     application: &SyntaxApplication,
     scope: &Scope,
     analysis: &Working,
-) -> Result<Effect, AnalyzeError> {
+) -> Result<LiftedRule, AnalyzeError> {
     let body = parse_rule_body(application)?;
 
     // ---- Head concept ----
@@ -266,8 +312,11 @@ pub(crate) fn lift_rule(
     // new information; the induce loop would spin against its
     // own output. Retract-polarity rules that read the head
     // concept are not tautological: they observe the fact and
-    // remove it (the mailbox-with-ack pattern).
-    if body.polarity == EffectPolarity::Assert
+    // remove it (the mailbox-with-ack pattern). The check applies
+    // only to inductive `assert!:` rules — a deductive rule that
+    // re-states a premise simply yields that premise's rows on
+    // query, which is harmless (no fixpoint to spin).
+    if body.head == RuleHead::Inductive(EffectPolarity::Assert)
         && let Some(reason) = trivially_tautological(&head_descriptor, &dialog_premises)
     {
         return Err(AnalyzeError::at(
@@ -279,16 +328,41 @@ pub(crate) fn lift_rule(
     // ---- Compile through dialog's planner ----
     // Catches unbound-head-variable, no-unsatisfiable-premise,
     // and similar structural issues.
-    let inductive = InductiveRule::new(head_descriptor, dialog_premises).map_err(|e| {
-        AnalyzeError::at(
-            AnalyzeErrorKind::RuleCompileFailed {
-                reason: e.to_string(),
-            },
-            application.range,
-        )
-    })?;
+    match body.head {
+        RuleHead::Inductive(polarity) => {
+            let inductive = InductiveRule::new(head_descriptor, dialog_premises).map_err(|e| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::RuleCompileFailed {
+                        reason: e.to_string(),
+                    },
+                    application.range,
+                )
+            })?;
+            Ok(LiftedRule::Inductive(Effect::new(inductive, polarity)))
+        }
+        RuleHead::Deductive => {
+            let deductive =
+                CompiledDeductiveRule::new(head_descriptor, dialog_premises).map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::RuleCompileFailed {
+                            reason: e.to_string(),
+                        },
+                        application.range,
+                    )
+                })?;
+            Ok(LiftedRule::Deductive(deductive))
+        }
+    }
+}
 
-    Ok(Effect::new(inductive, body.polarity))
+/// The compiled output of [`lift_rule`]: an inductive
+/// [`Effect`] (the `assert!:` / `retract!:` form) or a compiled
+/// [`DeductiveRule`](dialog_query::DeductiveRule) (the `assert:` form).
+pub(crate) enum LiftedRule {
+    /// An inductive rule with polarity.
+    Inductive(Effect),
+    /// A deductive rule.
+    Deductive(CompiledDeductiveRule),
 }
 
 /// Return `Some(reason)` when the rule's head reads exactly back
@@ -354,11 +428,22 @@ fn trivially_tautological(
 /// Doing this in one place keeps [`lift_rule`] free of grammar
 /// checks.
 struct RuleBody<'a> {
-    polarity: EffectPolarity,
+    head: RuleHead,
     conclusion: String,
     conclusion_range: lsp_types::Range,
     when: Vec<&'a NotationPremise>,
     unless: Vec<&'a NotationPremise>,
+}
+
+/// The head form of a `rule!:` body: inductive (`assert!:` /
+/// `retract!:`, fires on commit with a polarity) or deductive
+/// (`assert:`, derives on query, no polarity).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuleHead {
+    /// `assert!:` / `retract!:` — an inductive rule with a polarity.
+    Inductive(EffectPolarity),
+    /// `assert:` (no bang) — a deductive rule.
+    Deductive,
 }
 
 /// Walk a `rule!:` claim's fields and extract the typed rule
@@ -372,24 +457,27 @@ struct RuleBody<'a> {
 /// - `description:` (when present) must be a string literal.
 /// - Unknown body keys raise a diagnostic.
 fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, AnalyzeError> {
-    let mut polarity: Option<(EffectPolarity, String, lsp_types::Range, lsp_types::Range)> = None;
+    // The head: `assert!:` / `retract!:` are inductive (carry a
+    // polarity); `assert:` (no bang) is deductive (no polarity).
+    let mut head: Option<(RuleHead, String, lsp_types::Range, lsp_types::Range)> = None;
     let mut when: Option<(Vec<&NotationPremise>, lsp_types::Range)> = None;
     let mut unless: Vec<&NotationPremise> = Vec::new();
 
     for field in &application.fields {
         match field.name.as_str() {
-            "assert!" | "retract!" => {
-                let new_polarity = if field.name == "assert!" {
-                    EffectPolarity::Assert
-                } else {
-                    EffectPolarity::Retract
+            "assert!" | "retract!" | "assert" => {
+                let new_head = match field.name.as_str() {
+                    "assert!" => RuleHead::Inductive(EffectPolarity::Assert),
+                    "retract!" => RuleHead::Inductive(EffectPolarity::Retract),
+                    // `assert:` (no bang) — deductive.
+                    _ => RuleHead::Deductive,
                 };
-                if let Some((_, _, prior_range, _)) = polarity {
+                if let Some((_, _, prior_range, _)) = head {
                     return Err(AnalyzeError::at(
                         AnalyzeErrorKind::RuleCompileFailed {
                             reason: format!(
-                                "rule already declared polarity at \
-                                 {}:{}, a rule has exactly one polarity",
+                                "rule already declared a head at \
+                                 {}:{}, a rule has exactly one head",
                                 prior_range.start.line + 1,
                                 prior_range.start.character + 1,
                             ),
@@ -410,7 +498,19 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
                         ));
                     }
                 };
-                polarity = Some((new_polarity, concept, field.name_range, field.value_range));
+                head = Some((new_head, concept, field.name_range, field.value_range));
+            }
+            // Deductive rules have no retract form — only `assert:`.
+            "retract" => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::RuleCompileFailed {
+                        reason: "`retract:` is not a valid rule head — deductive rules use \
+                                 `assert:` (no retract form); inductive rules use `assert!:` / \
+                                 `retract!:`"
+                            .into(),
+                    },
+                    field.name_range,
+                ));
             }
             "when" => {
                 if when.is_some() {
@@ -481,8 +581,8 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::RuleCompileFailed {
                         reason: format!(
-                            "unknown `rule!:` body key `{other}` (valid keys: assert!, retract!, \
-                             when, unless, description)"
+                            "unknown `rule!:` body key `{other}` (valid keys: assert, assert!, \
+                             retract!, when, unless, description)"
                         ),
                     },
                     field.name_range,
@@ -491,10 +591,11 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
         }
     }
 
-    let (polarity, conclusion, _, conclusion_range) = polarity.ok_or_else(|| {
+    let (head, conclusion, _, conclusion_range) = head.ok_or_else(|| {
         AnalyzeError::at(
             AnalyzeErrorKind::RuleCompileFailed {
-                reason: "rule must declare `assert!:` or `retract!:` with a head concept name"
+                reason: "rule must declare a head — `assert:` (deductive), or `assert!:` / \
+                         `retract!:` (inductive) — with a head concept name"
                     .into(),
             },
             application.range,
@@ -519,7 +620,7 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
     }
 
     Ok(RuleBody {
-        polarity,
+        head,
         conclusion,
         conclusion_range,
         when,
@@ -921,13 +1022,33 @@ mod tests {
                 .perform(&self.operator)
                 .await
         }
+
+        /// Analyze a deductive-rule install document, commit the
+        /// resulting rule onto the branch, and return the entity its
+        /// `db.rule/*` claims live under — so a later retract can name it.
+        async fn install_deductive(&self, doc: &str) -> Entity {
+            let syntax = parse(doc).syntax.expect("install parses");
+            let analysis = self.analyze(&syntax).await.expect("install analyzes");
+            let installs = analysis.analysis.deductive_rule_installs();
+            assert_eq!(installs.len(), 1, "fixture expects one deductive rule");
+            let rule = installs[0].clone();
+            let entity = rule.this();
+            self.branch
+                .transaction()
+                .assert(rule)
+                .commit()
+                .perform(&self.operator)
+                .await
+                .expect("deductive rule commits");
+            entity
+        }
     }
 
     /// Build a `ConceptDescriptor` with one cardinality-one
     /// string field. Same helper shape as the effects-side
     /// tests use.
     fn one_text_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -936,13 +1057,16 @@ mod tests {
                 Some(Type::String),
             ),
         )])
+        .unwrap()
     }
 
     /// Build a `ConceptDescriptor` with one cardinality-one
     /// entity-reference field. Used to exercise digest behaviour
-    /// for fields whose value names *another* entity.
+    /// for fields whose value names *another* entity, and where a
+    /// `?this`-shaped variable must stay entity-typed under rule
+    /// type inference.
     fn one_entity_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -951,6 +1075,7 @@ mod tests {
                 Some(Type::Entity),
             ),
         )])
+        .unwrap()
     }
 
     /// Extract the lone `Statement::InstallEffect` from an
@@ -981,12 +1106,12 @@ mod tests {
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1019,25 +1144,168 @@ rule!:\n\
         );
     }
 
+    /// A `rule!:` with an `assert:` (no-bang) head lifts to a
+    /// deductive install: a `Statement::Assert(Application::DeductiveRule)`,
+    /// surfaced by `deductive_rule_installs`, indexed by its
+    /// conclusion concept.
+    #[dialog_common::test]
+    async fn it_lifts_a_deductive_rule() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
+
+        let doc = r#"rule!:
+  assert: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("analyze should succeed");
+
+        use tonk_schema::transact::{Application, Statement};
+        let statements = analysis.analysis.statements();
+        assert_eq!(statements.len(), 1);
+        assert!(
+            matches!(
+                &statements[0].statement,
+                Statement::Assert(Application::DeductiveRule { .. })
+            ),
+            "deductive rule should lift to Application::DeductiveRule, got {:?}",
+            statements[0].statement
+        );
+
+        // It surfaces through the deductive install accessor, indexed
+        // by the pong concept entity.
+        let installs = analysis.analysis.deductive_rule_installs();
+        assert_eq!(installs.len(), 1);
+        assert_eq!(
+            installs[0].conclusion(),
+            one_text_field("io.gozala.pong", "tag").this()
+        );
+        // ...and not through the inductive accessor.
+        assert!(analysis.analysis.rule_installs().is_empty());
+    }
+
+    /// Retracting an installed deductive rule by entity
+    /// (`rule!: this: <entity> ..: _`) lifts to a
+    /// `Statement::Retract(Application::DeductiveRule)`, the symmetric
+    /// counterpart to the inductive `RuleAction::Retract`.
+    #[dialog_common::test]
+    async fn it_retracts_an_installed_deductive_rule() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
+
+        // Install + commit a deductive rule, then retract it by entity.
+        let entity = fixture
+            .install_deductive(
+                r#"rule!:
+  assert: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#,
+            )
+            .await;
+
+        let doc = format!(
+            r#"rule!:
+  this: {entity}
+  ..: _
+"#
+        );
+        let syntax = parse(&doc).syntax.expect("retract parses");
+        let analysis = fixture.analyze(&syntax).await.expect("retract analyzes");
+
+        use tonk_schema::transact::{Application, Statement};
+        let statements = analysis.analysis.statements();
+        assert_eq!(statements.len(), 1, "one retract statement");
+        assert!(
+            matches!(
+                &statements[0].statement,
+                Statement::Retract(Application::DeductiveRule { .. })
+            ),
+            "deductive retract should lift to Retract(Application::DeductiveRule), got {:?}",
+            statements[0].statement
+        );
+    }
+
+    /// Retracting an entity that holds no installed rule (neither
+    /// inductive nor deductive) drops the claim silently — no statement,
+    /// no error.
+    #[dialog_common::test]
+    async fn it_drops_retract_of_absent_rule() {
+        let fixture = new_fixture().await;
+
+        let doc = r#"rule!:
+  this: rule:zNonexistentRuleEntity
+  ..: _
+"#;
+        let syntax = parse(doc).syntax.expect("retract parses");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("retract of absent rule analyzes");
+        assert!(
+            analysis.analysis.statements().is_empty(),
+            "retracting an uninstalled rule emits no statement"
+        );
+    }
+
+    /// `retract:` (no bang) is not a valid head — deductive rules
+    /// have no retract form.
+    #[dialog_common::test]
+    async fn it_rejects_deductive_retract_head() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+
+        let doc = r#"rule!:
+  retract: ping
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let result = fixture.analyze(&syntax).await;
+        assert!(
+            result.is_err(),
+            "`retract:` (no bang) must be rejected as a rule head"
+        );
+    }
+
     /// Retract-polarity head lifts to `EffectPolarity::Retract`.
     #[dialog_common::test]
     async fn it_lifts_retract_polarity() {
         let fixture = new_fixture().await;
         fixture
-            .declare("ack", one_text_field("io.gozala.mailbox", "target"))
+            .declare("ack", one_entity_field("io.gozala.mailbox", "target"))
             .await;
         fixture
             .declare("message", one_text_field("io.gozala.mailbox", "body"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 retract!: message\n\
-\x20 when:\n\
-\x20   - assert: ack\n\
-\x20     where: { target: ?this }\n\
-\x20   - assert: message\n\
-\x20     where: { this: ?this, body: ?body }\n";
+        let doc = r#"rule!:
+  retract!: message
+  when:
+    - assert: ack
+      where: { target: ?this }
+    - assert: message
+      where: { this: ?this, body: ?body }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let analysis = fixture
@@ -1064,12 +1332,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1104,13 +1372,13 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 this: id:my-counter\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  this: id:my-counter
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1141,12 +1409,12 @@ rule!:\n\
             .declare("ping", one_text_field("io.gozala.ping", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: missing-concept\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: {}\n";
+        let doc = r#"rule!:
+  assert!: missing-concept
+  when:
+    - assert: ping
+      where: {}
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1167,12 +1435,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: missing-premise\n\
-\x20     where: {}\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: missing-premise
+      where: {}
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1197,12 +1465,12 @@ rule!:\n\
             .declare("pong", one_text_field("io.gozala.pong", "tag"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: pong\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { wrong-field: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { wrong-field: ?tag }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1230,12 +1498,12 @@ rule!:\n\
         // Body's `where:` rebinds `this` and `tag` to variables
         // with the same names the head's `assert!:` reads — the
         // produced fact is identical to the read one.
-        let doc = "\
-rule!:\n\
-\x20 assert!: ping\n\
-\x20 when:\n\
-\x20   - assert: ping\n\
-\x20     where: { this: ?this, tag: ?tag }\n";
+        let doc = r#"rule!:
+  assert!: ping
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1265,16 +1533,16 @@ rule!:\n\
             .await;
         // Head writes counter at `?count`; body reads counter at
         // `?prev`. Different variable → not tautological.
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?prev }\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: 1 }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?prev, with: 1, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?prev }
+    - assert: increment
+      where: { this: ?this, by: 1 }
+    - assert: math/sum
+      where: { of: ?prev, with: 1, is: ?count }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         fixture
@@ -1287,7 +1555,7 @@ rule!:\n\
     /// unsigned-integer field — counters and other numeric
     /// concepts the formula tests assert against.
     fn one_uint_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -1296,6 +1564,7 @@ rule!:\n\
                 Some(Type::UnsignedInt),
             ),
         )])
+        .unwrap()
     }
 
     /// A `rule!:` whose body uses the `math/sum` formula lifts
@@ -1311,16 +1580,16 @@ rule!:\n\
             .declare("increment", one_uint_field("io.gozala.increment", "by"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?value }\n\
-\x20   - assert: increment\n\
-\x20     where: { this: ?this, by: 1 }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?value, with: 1, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?value }
+    - assert: increment
+      where: { this: ?this, by: 1 }
+    - assert: math/sum
+      where: { of: ?value, with: 1, is: ?count }
+"#;
         let parsed = parse(doc);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1347,14 +1616,14 @@ rule!:\n\
             .declare("counter", one_uint_field("io.gozala.counter", "count"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?value }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?value, plus: 1, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?value }
+    - assert: math/sum
+      where: { of: ?value, plus: 1, is: ?count }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1377,14 +1646,14 @@ rule!:\n\
             .declare("counter", one_uint_field("io.gozala.counter", "count"))
             .await;
 
-        let doc = "\
-rule!:\n\
-\x20 assert!: counter\n\
-\x20 when:\n\
-\x20   - assert: counter\n\
-\x20     where: { this: ?this, count: ?value }\n\
-\x20   - assert: math/sum\n\
-\x20     where: { of: ?value, is: ?count }\n";
+        let doc = r#"rule!:
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?value }
+    - assert: math/sum
+      where: { of: ?value, is: ?count }
+"#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
         let err = fixture.analyze(&syntax).await.expect_err("should fail");
@@ -1523,9 +1792,9 @@ rule!:
         // Notation path: a `view!:` with one literal field. No
         // `this:` and no `&anchor`, so the lowering falls into
         // `ThisIntent::Derived` and hashes `(predicate, body)`.
-        let doc = "\
-view!:\n\
-\x20 name: Basic\n";
+        let doc = r#"view!:
+  name: Basic
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let analysis = fixture
             .analyze(&syntax)
@@ -1679,9 +1948,9 @@ view!:\n\
             .declare("view", one_entity_field("xyz.tonk.view", "model"))
             .await;
 
-        let doc = "\
-view!: &broken\n\
-\x20 model: nonexistent\n";
+        let doc = r#"view!: &broken
+  model: nonexistent
+"#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let err = fixture
             .analyze(&syntax)

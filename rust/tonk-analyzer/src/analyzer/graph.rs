@@ -28,6 +28,7 @@ use dialog_common::ConditionalSync;
 use tonk_notation::{Effectful, Expression, FieldValue, HeadName, Syntax};
 
 use tonk_schema::concept::QueryEnv;
+use tonk_schema::deductive_rule::{DeductiveRule, DeductiveRuleResolveError};
 use tonk_schema::query_source::Source;
 use tonk_schema::resolution::{
     AttributeDefinition, AttributeReference, ConceptDefinition, ConceptReference, NamedReference,
@@ -37,8 +38,8 @@ use tonk_schema::rule::{Rule, RuleResolveError};
 
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
-    DeclaredApplication, attribute_application, concept_application, parse_attribute_body,
-    parse_concept_body,
+    DeclaredApplication, attribute_application, build_concept_retractions, concept_application,
+    parse_attribute_body, parse_concept_body,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -82,6 +83,13 @@ enum Need {
     },
     /// The installed rule a `rule!: ..: _` retract targets.
     Rule {
+        entity: Entity,
+        range: lsp_types::Range,
+    },
+    /// The stored concept a `concept!:` field retraction
+    /// (`with: { f: _ }` / `..: _`) reads its existing fields from.
+    /// Keyed by the body's `this:`-pinned entity.
+    ConceptByEntity {
         entity: Entity,
         range: lsp_types::Range,
     },
@@ -136,6 +144,13 @@ pub(crate) struct Resolved {
 /// during the declaration registration or `expand`.
 pub(crate) trait Resolve {
     async fn concept(&self, name: &str) -> Result<Option<ConceptDefinition>, ResolveError>;
+    /// Resolve a concept by its entity URI (e.g. a `this:`-pinned
+    /// concept like `tonk:binder`). Used by field retraction to read
+    /// the concept's stored fields off the branch.
+    async fn concept_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ConceptDefinition>, ResolveError>;
     async fn attribute(&self, name: &str) -> Result<Option<AttributeDefinition>, ResolveError>;
     async fn attribute_by_entity(
         &self,
@@ -143,6 +158,14 @@ pub(crate) trait Resolve {
     ) -> Result<Option<AttributeDefinition>, ResolveError>;
     async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError>;
     async fn rule(&self, entity: &Entity) -> Result<Option<Rule>, RuleResolveError>;
+    /// Resolve an installed *deductive* rule by entity for a
+    /// `rule!: ..: _` retract. Parallel to [`rule`](Self::rule); a
+    /// retract entity may name either kind, so both are resolved and
+    /// whichever exists wins.
+    async fn deductive_rule(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError>;
 }
 
 /// Resolver that answers every external need with `None`. Used by
@@ -152,6 +175,12 @@ pub(crate) struct LocalOnly;
 
 impl Resolve for LocalOnly {
     async fn concept(&self, _: &str) -> Result<Option<ConceptDefinition>, ResolveError> {
+        Ok(None)
+    }
+    async fn concept_by_entity(
+        &self,
+        _: &Entity,
+    ) -> Result<Option<ConceptDefinition>, ResolveError> {
         Ok(None)
     }
     async fn attribute(&self, _: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
@@ -167,6 +196,12 @@ impl Resolve for LocalOnly {
         Ok(None)
     }
     async fn rule(&self, _: &Entity) -> Result<Option<Rule>, RuleResolveError> {
+        Ok(None)
+    }
+    async fn deductive_rule(
+        &self,
+        _: &Entity,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
         Ok(None)
     }
 }
@@ -192,6 +227,15 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
             .perform(self.env)
             .await
     }
+    async fn concept_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ConceptDefinition>, ResolveError> {
+        ConceptReference::from(entity.clone())
+            .resolve(self.source.clone())
+            .perform(self.env)
+            .await
+    }
     async fn attribute(&self, name: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
         AttributeReference::from(NamedReference(name.to_owned()))
             .resolve(self.source.clone())
@@ -212,6 +256,14 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
     }
     async fn rule(&self, entity: &Entity) -> Result<Option<Rule>, RuleResolveError> {
         Rule::retracting(entity.clone())
+            .resolve(&self.source, self.env)
+            .await
+    }
+    async fn deductive_rule(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
+        DeductiveRule::retracting(entity.clone())
             .resolve(&self.source, self.env)
             .await
     }
@@ -332,13 +384,34 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
     })
 }
 
-/// Gather the attribute references a `concept!`'s `with:` map makes
-/// by bare symbol / `?var` / URI, as [`Need`]s. Inline attribute
-/// definitions (a nested mapping) declare their own entity and
-/// need no resolution, so they're skipped here.
+/// Gather the attribute references a `concept!`'s `with:` and
+/// `maybe:` maps make by bare symbol / `?var` / URI, as [`Need`]s.
+/// Both required and optional fields can reference branch attributes
+/// by name or URI, so both blocks must be prefetched. Inline
+/// attribute definitions (a nested mapping) declare their own entity
+/// and need no resolution, so they're skipped here.
 fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mut Vec<Need>) {
+    // A retraction (`with: { f: _ }`, `maybe: { f: _ }`, or `..: _`)
+    // reads the concept's stored fields off the branch. Track whether
+    // the body carries one so a single `ConceptByEntity` need is
+    // registered against the `this:`-pinned entity below.
+    let mut has_retraction = false;
+    let mut this_entity: Option<(Entity, lsp_types::Range)> = None;
     for field in &assertion.fields {
-        if field.name != "with" {
+        if field.name == "this"
+            && let FieldValue::Uri(uri) = &field.value
+            && let Ok(entity) = uri.parse::<Entity>()
+        {
+            this_entity = Some((entity, field.value_range));
+            continue;
+        }
+        if field.name == ".." {
+            if matches!(field.value, FieldValue::Blank) {
+                has_retraction = true;
+            }
+            continue;
+        }
+        if field.name != "with" && field.name != "maybe" {
             continue;
         }
         let FieldValue::Nested(inner) = &field.value else {
@@ -346,6 +419,9 @@ fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mu
         };
         for sub in inner {
             match &sub.value {
+                // `f: _` is a retraction, not a reference — no
+                // attribute need; the value is read from the branch.
+                FieldValue::Blank => has_retraction = true,
                 FieldValue::Nested(_) => {} // inline definition, no need
                 FieldValue::Symbol(name) | FieldValue::Variable(name) => {
                     needs.push(Need::Attribute {
@@ -364,6 +440,9 @@ fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mu
                 _ => {}
             }
         }
+    }
+    if has_retraction && let Some((entity, range)) = this_entity {
+        needs.push(Need::ConceptByEntity { entity, range });
     }
 }
 
@@ -420,6 +499,25 @@ impl Graph {
                         scope.record_attribute(None, def);
                     }
                 }
+                // A field retraction reads the pinned concept's stored
+                // fields. Resolved here (Pass 1), before declaration
+                // bodies emit in Pass 2, so the retract lowering finds
+                // it cached on the scope.
+                Need::ConceptByEntity { entity, range } => {
+                    if scope.resolved_concept(entity).is_some() {
+                        continue;
+                    }
+                    let found = resolver.concept_by_entity(entity).await.map_err(|e| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("concept {entity}"),
+                                reason: e.to_string(),
+                            },
+                            *range,
+                        )
+                    })?;
+                    scope.record_resolved_concept(entity, found);
+                }
                 _ => {}
             }
         }
@@ -471,8 +569,9 @@ impl Graph {
                     declared.insert(
                         pending.index,
                         DeclaredApplication {
-                            application,
+                            application: Some(application),
                             inline_attributes: Vec::new(),
+                            retractions: Vec::new(),
                         },
                     );
                 }
@@ -484,15 +583,6 @@ impl Graph {
                     // explicit `transient:` inside a `command!:`
                     // body is redundant and silently ignored.
                     let transient = matches!(kind, DeclarationKind::Command) || plan.transient;
-                    let descriptor = if transient {
-                        DurableConceptDescriptor::Transient(plan.descriptor.clone())
-                    } else {
-                        DurableConceptDescriptor::Durable(plan.descriptor.clone())
-                    };
-                    let concept = ConceptDef {
-                        entity: entity.clone(),
-                        descriptor,
-                    };
                     let (this, name) = derive_head_intent(&a.fields, anchor, scope)?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
@@ -511,24 +601,59 @@ impl Graph {
                     if let Some(name) = &variable {
                         scope.bind_variable(name, entity.clone(), variable_range)?;
                     }
-                    scope.record_concept(
-                        name.as_ref()
-                            .map(AnchorName::as_str)
-                            .or(variable.as_deref()),
-                        concept,
-                    );
+                    // A retraction-only body carries a stub descriptor
+                    // that asserts nothing — don't register it as an
+                    // in-doc concept, or later references would resolve
+                    // to the stub instead of the real branch concept.
+                    if !plan.asserts_nothing {
+                        let descriptor = if transient {
+                            DurableConceptDescriptor::Transient(plan.descriptor.clone())
+                        } else {
+                            DurableConceptDescriptor::Durable(plan.descriptor.clone())
+                        };
+                        scope.record_concept(
+                            name.as_ref()
+                                .map(AnchorName::as_str)
+                                .or(variable.as_deref()),
+                            ConceptDef {
+                                entity: entity.clone(),
+                                descriptor,
+                            },
+                        );
+                    }
                     let inline_attributes = plan
                         .inline_attributes
                         .into_iter()
                         .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
                         .collect();
-                    let application =
-                        concept_application(&plan.descriptor, &entity, name, transient);
+                    // Field retractions (`with: { f: _ }` / `..: _`)
+                    // dissociate stored fields read off the branch.
+                    let resolved = scope.resolved_concept(&entity).flatten();
+                    let retractions = build_concept_retractions(
+                        &entity,
+                        &plan.retracted,
+                        plan.rest_retraction.as_ref(),
+                        resolved.as_ref().map(|def| def.descriptor.concept()),
+                    )?;
+                    // A retraction-only body (no asserted fields)
+                    // emits no concept assertion — only the
+                    // retractions; its descriptor is an unemitted stub.
+                    let application = if plan.asserts_nothing {
+                        None
+                    } else {
+                        Some(concept_application(
+                            &plan.descriptor,
+                            &entity,
+                            name,
+                            transient,
+                        ))
+                    };
                     declared.insert(
                         pending.index,
                         DeclaredApplication {
                             application,
                             inline_attributes,
+                            retractions,
                         },
                     );
                 }
@@ -589,20 +714,38 @@ impl Graph {
                     }
                 }
                 Need::Rule { entity, range } => {
-                    if scope.resolved_rule(entity).is_some() {
-                        continue;
+                    // A retract entity may name an inductive or a
+                    // deductive rule; resolve both off the branch and let
+                    // `lift_rule_claim` pick whichever exists.
+                    if scope.resolved_rule(entity).is_none() {
+                        let rule = resolver.rule(entity).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::RuleCompileFailed {
+                                    reason: format!("rule retract resolve failed at {entity}: {e}"),
+                                },
+                                *range,
+                            )
+                        })?;
+                        scope.record_resolved_rule(entity, rule);
                     }
-                    let rule = resolver.rule(entity).await.map_err(|e| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::RuleCompileFailed {
-                                reason: format!("rule retract resolve failed at {entity}: {e}"),
-                            },
-                            *range,
-                        )
-                    })?;
-                    scope.record_resolved_rule(entity, rule);
+                    if scope.resolved_deductive_rule(entity).is_none() {
+                        let rule = resolver.deductive_rule(entity).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::RuleCompileFailed {
+                                    reason: format!(
+                                        "deductive rule retract resolve failed at {entity}: {e}"
+                                    ),
+                                },
+                                *range,
+                            )
+                        })?;
+                        scope.record_resolved_deductive_rule(entity, rule);
+                    }
                 }
-                Need::Attribute { .. } | Need::AttributeByEntity { .. } => {}
+                // Resolved in Pass 1 (before declaration bodies emit).
+                Need::Attribute { .. }
+                | Need::AttributeByEntity { .. }
+                | Need::ConceptByEntity { .. } => {}
             }
         }
 
@@ -687,6 +830,13 @@ mod tests {
             self.bump();
             Ok(None)
         }
+        async fn concept_by_entity(
+            &self,
+            _: &Entity,
+        ) -> Result<Option<ConceptDefinition>, ResolveError> {
+            self.bump();
+            Ok(None)
+        }
         async fn attribute(&self, _: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
             self.bump();
             Ok(None)
@@ -703,6 +853,13 @@ mod tests {
             Ok(None)
         }
         async fn rule(&self, _: &Entity) -> Result<Option<Rule>, RuleResolveError> {
+            self.bump();
+            Ok(None)
+        }
+        async fn deductive_rule(
+            &self,
+            _: &Entity,
+        ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
             self.bump();
             Ok(None)
         }

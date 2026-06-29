@@ -10,7 +10,7 @@ it, the branches it has, the remotes it tracks, and so on. This crate defines th
 schema, plus the analyzer-IR and wire types layered on top of it.
 
 It is shared between the service worker (which reads and writes meta facts via
-`dialog-reactor`), `slide`, and any client that needs to query the same shapes.
+`dialog-reactor`), `tonk`, and any client that needs to query the same shapes.
 It sits above `tonk-core` and below `tonk-analyzer`/`tonk-evaluator` in the
 dependency graph.
 

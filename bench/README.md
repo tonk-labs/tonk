@@ -1,11 +1,11 @@
-# bench — agent-episode benchmarks for the slide ↔ tonk-ui flow
+# bench — agent-episode benchmarks for the tonk ↔ tonk-ui flow
 
 ## What this is
 
 An automated benchmark that measures how well an agent drives the tonk system
-through the `slide` CLI, judged by what actually renders in tonk-ui. Each run
+through the `tonk` CLI, judged by what actually renders in tonk-ui. Each run
 spawns a fresh headless `claude -p` episode, no prior context, pointed at a
-hermetic local stack and a temp slide vault. After the episode the harness
+hermetic local stack and a temp tonk vault. After the episode the harness
 screenshots checkpoint URLs in the real browser, runs a second headless judge
 session against a rubric, and writes a scored report. The score and its
 attached friction items feed an improvement loop (`/loop /bench-iterate
@@ -17,7 +17,7 @@ from-scratch`) that fixes the highest-leverage problem each iteration.
 |---|---|---|
 | `smoke` | `scenarios/smoke/task.md` | Plumbing check — scripted known-good asserts, no episode spend |
 | `artifact-conversion` | `scenarios/artifact-conversion/task.md` | Agent converts a fixture HTML/JS artifact into tonk concepts+views; judged against `reference.png` |
-| `from-scratch` | `scenarios/from-scratch/task.md` | Agent builds a habit tracker from nothing through slide |
+| `from-scratch` | `scenarios/from-scratch/task.md` | Agent builds a habit tracker from nothing through tonk |
 
 ### Baseline measurements (2026-06-10)
 
@@ -70,7 +70,7 @@ task.md/rubric.md are frozen.
   log on startup.
 - Caddy: serves `rust/tonk-ui/dist` (trunk-built) with `/ucan/*` proxied to
   the access service — same-origin layout as production.
-- Slide vault: `$RUN_DIR/site`, fresh per run. Remote `origin` points at
+- Tonk vault: `$RUN_DIR/site`, fresh per run. Remote `origin` points at
   `$BENCH_URL/ucan/`.
 
 **Episode** — headless `claude -p`, given only the scenario task and a
@@ -87,7 +87,7 @@ polls until the URL lands off `/join`, then fires the data pull.
 
 - `home` → `$BENCH_URL/`
 - `<path>` → `$BENCH_URL/space/$SPACE_NAME/<path>`
-- `display:<view-name>` → resolved at capture time via `slide share display`;
+- `display:<view-name>` → resolved at capture time via `tonk share display`;
   `shots.sh` queries the view's model concept and builds the display URL as
   `/space/$SPACE_NAME/<model>!tonk:view`
 
@@ -117,8 +117,8 @@ from the judge.
   `BENCH_USE_API_KEY=1` to bill against the API key instead; `op://`
   references are then resolved via `op read`, which requires an unlocked
   1Password session.
-- `slide` release binary — built automatically by `stack.sh start` via
-  `cargo build --release -p slide` (no-ops when already up to date).
+- `tonk` release binary — built automatically by `stack.sh start` via
+  `cargo build --release -p tonk-cli` (no-ops when already up to date).
 
 ## Interpreting reports
 
@@ -137,18 +137,18 @@ indicate a regression or a real improvement — look at the shots side by side.
 
 ## Known friction
 
-**slide-created concepts have no Name claim** — `<tonk-display>`'s bare
+**tonk-created concepts have no Name claim** — `<tonk-display>`'s bare
 `{model}/` directory route resolves names via the Name concept
-(`dialog.name/referent`); concepts asserted through slide only carry
+(`dialog.name/referent`); concepts asserted through tonk only carry
 `dialog.meta/name`, so name-addressed directory URLs report "no concept
 matched". Checkpoints work around it with the `{model}!tonk:view` bang form.
 
 **`view` concept not seeded on fresh branches** (top item as of 2026-06-10,
-from-scratch score 3/10): a fresh slide branch has no built-in `view` concept,
+from-scratch score 3/10): a fresh tonk branch has no built-in `view` concept,
 so any `view!:` assertion fails immediately. The agent wastes turns probing,
 greps prior runs for a definition, and the copied definition may not register
 correctly. Fix: seed `tonk:view` on fresh branches, or document its canonical
-definition in `slide guide views` so the guide's examples work out of the box.
+definition in `tonk guide views` so the guide's examples work out of the box.
 
 **Route shapes**: the chromed routes are only `/space/:space/view/:entity` and
 `/space/:space/board/:board` (the dedicated `concept`/`layout` routes were
@@ -156,7 +156,7 @@ removed upstream). Everything else falls to the `/space/:space/*subject`
 wildcard rendered by `<tonk-display>`. Checkpoint lines use the bang form
 `{model}!tonk:view` (e.g. `note!tonk:view`) — directory mode over the model
 with the default view. The bare `{model}/` form resolves the name through the
-Name concept (`dialog.name/referent`), which slide-created concepts don't
+Name concept (`dialog.name/referent`), which tonk-created concepts don't
 currently get, so it reports "no concept matched" (known friction, below). The
 wildcard is defined after the chromed parent route so it doesn't shadow
 `view`/`board` — Leptos 0.8 matches in definition order.
@@ -173,7 +173,7 @@ through async SW fetch handlers. `bridge.sh` uses WebDriver `execute/async` (the
 return before the SW response arrives.
 
 **Notation anchors** — `attribute!:` and `concept!:` are how notation rows are
-anchored in slide. A bare field assertion without an anchor creates an
+anchored in tonk. A bare field assertion without an anchor creates an
 unresolvable row. The annotation `this:` for uniqueness via `FieldValue::Nested`
 is not supported by the analyzer; use a content attribute instead.
 
@@ -184,7 +184,7 @@ flag. Episodes are bounded by `EPISODE_TIMEOUT` via `timeout(1)` from coreutils.
 repository's subject DID (`did:key:…`), which the auto-join flow returns as
 `repository.name` and the route parser reconstructs from the URL segment
 (`did:key` is a droppable label; the id is re-prefixed). `site.sh setup`
-captures the DID from `slide init` into `$RUN_DIR/space.did`, and `run.sh`
+captures the DID from `tonk init` into `$RUN_DIR/space.did`, and `run.sh`
 exports it as `SPACE_NAME` for both the bridge pull
 (`/api/repository/<DID>/…`) and the checkpoint shot URLs
 (`/space/<DID>/…`). A hardcoded name like `bench` resolves to

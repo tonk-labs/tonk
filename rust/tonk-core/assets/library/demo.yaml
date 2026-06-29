@@ -402,7 +402,7 @@ concept!: &person
     age:
       description: Age of the person
       the: xyz.tonk.person/age
-      as: text
+      as: unsigned-integer
 
 person!:
    name: Alice

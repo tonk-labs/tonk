@@ -359,17 +359,13 @@ fn walk_document(
     for span in &doc.alias_spans {
         out.push(error(
             range_from_span(*span),
-            "YAML aliases (`*name`) are not supported in this notation. \
-             Use a `&anchor` plus the bare symbol name (`person-name`) to \
-             reference an in-document entity, or a `did:key:…` / `id:…` \
-             URI.",
+            r#"YAML aliases (`*name`) are not supported in this notation. Use a `&anchor` plus the bare symbol name (`person-name`) to reference an in-document entity, or a `did:key:…` / `id:…` URI."#,
         ));
     }
     let Some(pairs) = &doc.pairs else {
         out.push(error(
             range_from_span(doc.span),
-            "Asserted notation expects a mapping at the document root \
-             (head → body).",
+            r#"Asserted notation expects a mapping at the document root (head → body)."#,
         ));
         return;
     };
@@ -391,9 +387,7 @@ fn walk_expression(
         None => {
             out.push(error(
                 range_of(key),
-                "Head must be a string (a concept name like `person` or \
-                 `person!`, a claim domain like `xyz.tonk!`, or a URI \
-                 like `db:concept!`).",
+                r#"Head must be a string (a concept name like `person` or `person!`, a claim domain like `xyz.tonk!`, or a URI like `db:concept!`)."#,
             ));
             return None;
         }
@@ -413,9 +407,7 @@ fn walk_expression(
     if rule_body && anchor.is_some() {
         out.push(error(
             block_range,
-            "`&anchor` is not valid on a `rule!:` claim. Anchors publish a \
-             single entity's name; rules have no single subject entity \
-             (the effect's identity is derived from its rule body).",
+            r#"`&anchor` is not valid on a `rule!:` claim. Anchors publish a single entity's name; rules have no single subject entity (the effect's identity is derived from its rule body)."#,
         ));
     }
 
@@ -427,10 +419,7 @@ fn walk_expression(
     if is_blank_scalar(value) {
         out.push(error(
             range_of(value),
-            "A bare `_` body is not allowed. Retract attributes from \
-             inside the body (`field: _` for one attribute, `..: _` for \
-             the rest of the concept's `with:` map). The entity must be \
-             selected with `this:` in the same body.",
+            r#"A bare `_` body is not allowed. Retract attributes from inside the body (`field: _` for one attribute, `..: _` for the rest of the concept's `with:` map). The entity must be selected with `this:` in the same body."#,
         ));
         return None;
     }
@@ -456,8 +445,7 @@ fn walk_expression(
         _ => {
             out.push(error(
                 range_of(value),
-                "Body must be either a mapping of `field: value`, empty, \
-                 or `_` (retraction).",
+                r#"Body must be either a mapping of `field: value`, empty, or `_` (retraction)."#,
             ));
             return None;
         }
@@ -480,9 +468,7 @@ fn walk_expression(
             // expression). Reject on queries.
             out.push(error(
                 block_range,
-                "`&anchor` is only allowed on assertion heads (`head!:`). \
-                 Queries can match many entities, so an anchor would have \
-                 no single target to point at.",
+                r#"`&anchor` is only allowed on assertion heads (`head!:`). Queries can match many entities, so an anchor would have no single target to point at."#,
             ));
         }
         Some(Expression::Query(application))
@@ -542,8 +528,7 @@ fn parse_premise(item: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<Pre
     let Some(pairs) = mapping_of(item) else {
         out.push(error(
             range_of(item),
-            "Premise must be a mapping with `assert:` and `where:` \
-             fields.",
+            r#"Premise must be a mapping with `assert:` and `where:` fields."#,
         ));
         return None;
     };
@@ -565,8 +550,7 @@ fn parse_premise(item: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<Pre
                 if concept.is_some() {
                     out.push(error(
                         key_range,
-                        "Premise already declared `assert:`. Each premise \
-                         names one concept.",
+                        r#"Premise already declared `assert:`. Each premise names one concept."#,
                     ));
                     continue;
                 }
@@ -583,16 +567,14 @@ fn parse_premise(item: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<Pre
                 if !bindings.is_empty() {
                     out.push(error(
                         key_range,
-                        "Premise already declared `where:`. Combine \
-                         bindings into one mapping.",
+                        r#"Premise already declared `where:`. Combine bindings into one mapping."#,
                     ));
                     continue;
                 }
                 let Some(field_pairs) = mapping_of(v) else {
                     out.push(error(
                         range_of(v),
-                        "Premise `where:` must be a mapping of \
-                         `field: value`.",
+                        r#"Premise `where:` must be a mapping of `field: value`."#,
                     ));
                     continue;
                 };
@@ -608,10 +590,7 @@ fn parse_premise(item: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<Pre
             other => {
                 out.push(error(
                     key_range,
-                    format!(
-                        "Unknown premise key `{other}`. Valid keys: \
-                         `assert:`, `where:`."
-                    ),
+                    format!(r#"Unknown premise key `{other}`. Valid keys: `assert:`, `where:`."#),
                 ));
             }
         }
@@ -673,10 +652,8 @@ fn parse_head(
     if trimmed.contains(char::is_whitespace) {
         out.push(error(
             key_range,
-            "Heads carry only `name[!]`. Move the entity binding into \
-             the body's `this:` field (e.g. `person:\\n  this: ?p`) or, \
-             for assertions, use a `&anchor` between the colon and the \
-             body (e.g. `person!: &alice`).",
+            r#"Heads carry only `name[!]`. Move the entity binding into the body's `this:` field (e.g. `person:\
+  this: ?p`) or, for assertions, use a `&anchor` between the colon and the body (e.g. `person!: &alice`)."#,
         ));
         return None;
     }
@@ -915,8 +892,7 @@ fn walk_field_value(
         YamlData::Sequence(_) => {
             out.push(error(
                 range_of(value),
-                "Sequence values are not supported in this notation. \
-                 Use repeated assertions for cardinality-many writes.",
+                r#"Sequence values are not supported in this notation. Use repeated assertions for cardinality-many writes."#,
             ));
             None
         }
@@ -924,10 +900,7 @@ fn walk_field_value(
         YamlData::Alias(_) => {
             out.push(error(
                 range_of(value),
-                "YAML aliases (`*name`) are not supported in this \
-                 notation. Use a `&anchor` plus the bare symbol name \
-                 (`person-name`) to reference an in-document entity, or \
-                 a `did:key:…` / `id:…` URI.",
+                r#"YAML aliases (`*name`) are not supported in this notation. Use a `&anchor` plus the bare symbol name (`person-name`) to reference an in-document entity, or a `did:key:…` / `id:…` URI."#,
             ));
             None
         }
@@ -2550,13 +2523,14 @@ page!:
     #[dialog_common::test]
     fn it_parses_retract_polarity_rule() {
         let syntax = parse_clean(
-            "rule!:\n\
-             \x20 retract!: message\n\
-             \x20 when:\n\
-             \x20   - assert: ack\n\
-             \x20     where: { target: ?m }\n\
-             \x20   - assert: message\n\
-             \x20     where: { this: ?m, body: ?b }\n",
+            r#"rule!:
+  retract!: message
+  when:
+    - assert: ack
+      where: { target: ?m }
+    - assert: message
+      where: { this: ?m, body: ?b }
+"#,
         );
         let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
             panic!("expected Claim");
@@ -2578,15 +2552,16 @@ page!:
     #[dialog_common::test]
     fn it_parses_unless_and_description() {
         let syntax = parse_clean(
-            "rule!:\n\
-             \x20 description: \"increment counter on increment command\"\n\
-             \x20 assert!: counter\n\
-             \x20 when:\n\
-             \x20   - assert: counter\n\
-             \x20     where: { this: ?c, count: ?prev }\n\
-             \x20 unless:\n\
-             \x20   - assert: counter-paused\n\
-             \x20     where: { this: ?c }\n",
+            r#"rule!:
+  description: "increment counter on increment command"
+  assert!: counter
+  when:
+    - assert: counter
+      where: { this: ?c, count: ?prev }
+  unless:
+    - assert: counter-paused
+      where: { this: ?c }
+"#,
         );
         let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
             panic!("expected Claim");
@@ -2616,11 +2591,12 @@ page!:
     #[dialog_common::test]
     fn it_rejects_anchor_on_rule_head() {
         let parsed = parse(
-            "rule!: &mine\n\
-             \x20 assert!: pong\n\
-             \x20 when:\n\
-             \x20   - assert: ping\n\
-             \x20     where: {}\n",
+            r#"rule!: &mine
+  assert!: pong
+  when:
+    - assert: ping
+      where: {}
+"#,
         );
         let messages: Vec<_> = parsed
             .diagnostics

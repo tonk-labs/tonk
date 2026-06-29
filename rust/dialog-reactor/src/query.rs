@@ -42,7 +42,9 @@ impl<'a> QueryEffect<'a> {
         let terms = self.query.terms.clone();
         // Fold in the branch's session overlay (ephemeral facts kept out
         // of storage, e.g. an invite's private seed) so the read sees
-        // them alongside branch facts.
+        // them alongside branch facts. Deductive `db.rule/*` rules
+        // resolve automatically — the branch query is a layer stack that
+        // resolves rules as well as facts.
         let conclusions = session
             .handle()
             .query()

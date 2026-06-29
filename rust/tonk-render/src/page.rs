@@ -13,10 +13,10 @@
 //! turns a [`dialog_query::ConceptQuery`] into a `Vec<Conclusion>`.
 //! A host implements it over whatever branch handle it has:
 //!
-//! - `slide` over its on-disk `.tonk/` reactor (fixed repo/branch).
+//! - `tonk` over its on-disk `.tonk/` reactor (fixed repo/branch).
 //! - the worker over a URL-named repository/branch.
 //!
-//! Both then share this whole orchestrator, so `slide render` and a
+//! Both then share this whole orchestrator, so `tonk render` and a
 //! worker SSR route produce identical markup by construction.
 
 mod orchestrate;
@@ -70,8 +70,8 @@ pub enum RenderError {
     Descriptor(String),
 
     /// No view resolved for a model (no model-specific view and no
-    /// `_:_` default).
-    #[error("no view found for model `{0}` (no model-specific view and no `_:_` default)")]
+    /// `tonk:_` default).
+    #[error("no view found for model `{0}` (no model-specific view and no `tonk:_` default)")]
     NoView(String),
 
     /// A bookmark name did not resolve to an entity.

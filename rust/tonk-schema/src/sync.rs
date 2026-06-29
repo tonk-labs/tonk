@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Serializes kebab-case (`no-upstream`, `synced`, `ahead`,
 /// `behind`, `diverged`) so the wire shape reads the same as the
-/// states the UI and `slide status` render.
+/// states the UI and `tonk status` render.
 ///
 /// [`classify`] derives the four head-comparison states as a
 /// [`Comparison`]; the configuration state `NoUpstream` is supplied
@@ -210,7 +210,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_serializes_states_kebab_case() {
-        // The UI badges and `slide status` read these exact strings.
+        // The UI badges and `tonk status` read these exact strings.
         let cases = [
             (SyncState::NoUpstream, "\"no-upstream\""),
             (SyncState::Synced, "\"synced\""),

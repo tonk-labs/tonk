@@ -68,7 +68,7 @@ See `plan/effects.md` for the conceptual model behind the induce fixpoint.
 
 ## Consumers
 
-`slide`, `tonk-worker`, and `dialog-reactor` (whose commit path runs the induce
+`tonk`, `tonk-worker`, and `dialog-reactor` (whose commit path runs the induce
 fixpoint) all drive documents through this pipeline. Effects are an explicit
 `.induce(...)` step rather than something `evaluate` does implicitly, so each
 consumer decides when the fixpoint runs and when it commits.

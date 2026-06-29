@@ -14,7 +14,7 @@
 //! - The **page orchestrator** ([`page`]): given a route and a
 //!   [`page::QueryBackend`], it resolves which view and which data to
 //!   render (by querying), then drives the pure renderer. This is the
-//!   host-agnostic core both `slide render` and a worker SSR route
+//!   host-agnostic core both `tonk render` and a worker SSR route
 //!   share.
 
 pub mod collect;

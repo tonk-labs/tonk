@@ -277,7 +277,7 @@ mod tests {
 
     /// `counter` concept with a single `count` field.
     fn counter_head() -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             "count",
             AttributeDescriptor::new(
                 the!("counter/count"),
@@ -286,11 +286,12 @@ mod tests {
                 Some(Type::UnsignedInt),
             ),
         )])
+        .unwrap()
     }
 
     /// `increment` command concept.
     fn increment_concept() -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             "subject",
             AttributeDescriptor::new(
                 the!("command/subject"),
@@ -299,6 +300,7 @@ mod tests {
                 Some(Type::Entity),
             ),
         )])
+        .unwrap()
     }
 
     /// Build a `ConceptQuery` premise binding `this` and the

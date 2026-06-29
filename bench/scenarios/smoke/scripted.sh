@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Known-good slide sequence for the smoke scenario.
-# Runs inside $RUN_DIR/site with SLIDE set to the release binary.
+# Known-good tonk sequence for the smoke scenario.
+# Runs inside $RUN_DIR/site with TONK set to the release binary.
 # Declares the note concept (title, body), asserts two instances,
 # and declares a tonk:view-compatible view named `notes`.
 set -euo pipefail
 
-SLIDE="${SLIDE:?SLIDE must be set to the slide binary path}"
+TONK="${TONK:?TONK must be set to the tonk binary path}"
 
 # Step 1: declare schema and assert instances in one eval.
-"$SLIDE" eval -c '
+"$TONK" eval -c '
 attribute!: &note-title
   description: "The note title"
   the: bench.note/title
@@ -40,7 +40,7 @@ note!: &world
 # The view concept must be pinned to tonk:view so tonk-display can
 # resolve it. The display template uses {title} and {body} field
 # interpolations from the note concept shape.
-"$SLIDE" eval -c '
+"$TONK" eval -c '
 concept!: &view
   this: tonk:view
   description: "A display template for rendering an entity"
@@ -65,4 +65,4 @@ view!: &notes
     </article>
 '
 
-"$SLIDE" status
+"$TONK" status

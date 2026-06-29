@@ -313,17 +313,43 @@ fn expand(
                         claims.push(Statement::Assert(inline));
                         claim_labels.push(None);
                     }
-                    collect_unbound_variables(&declaration.application, &working, &mut requires);
+                    // `predicate`/`this`/`anchor` describe the head for
+                    // the analysis tree. A normal declaration derives
+                    // them from its asserted application; a
+                    // retraction-only `concept!:` body has no
+                    // assertion, so probe its first retraction
+                    // application instead.
+                    let probe = declaration
+                        .application
+                        .as_ref()
+                        .or(declaration.retractions.first());
                     // A declaration head applies the built-in
                     // `concept` / `attribute` schema — that schema
                     // is durable; the declared concept's own
                     // transience is a field of the body, not the
                     // predicate this assertion applies.
-                    predicate = predicate_of(&declaration.application, false);
-                    this = declaration.application.this().clone();
-                    anchor = declaration.application.name().map(str::to_owned);
-                    claims.push(Statement::Assert(declaration.application));
-                    claim_labels.push(None);
+                    predicate = probe
+                        .map(|app| predicate_of(app, false))
+                        .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
+                    this = probe
+                        .map(|app| app.this().clone())
+                        .unwrap_or(ThisIntent::Derived);
+                    anchor = declaration
+                        .application
+                        .as_ref()
+                        .and_then(|app| app.name().map(str::to_owned));
+                    // Retractions emit first so the dissociate sees the
+                    // prior state before any re-assert lands.
+                    for retraction in declaration.retractions {
+                        collect_unbound_variables(&retraction, &working, &mut requires);
+                        claims.push(Statement::Retract(retraction));
+                        claim_labels.push(None);
+                    }
+                    if let Some(application) = declaration.application {
+                        collect_unbound_variables(&application, &working, &mut requires);
+                        claims.push(Statement::Assert(application));
+                        claim_labels.push(None);
+                    }
                     is_declaration = true;
                 } else if is_rule_claim(a) {
                     // `rule!:` claims lower to a single
@@ -362,6 +388,30 @@ fn expand(
                             this = intent.clone();
                             claims
                                 .push(Statement::Retract(Application::Rule { rule, this: intent }));
+                            claim_labels.push(None);
+                        }
+                        Some(rule::RuleAction::InstallDeductive {
+                            rule,
+                            this: install_at,
+                        }) => {
+                            let intent = match install_at {
+                                Some(entity) => ThisIntent::Uri(entity),
+                                None => ThisIntent::Derived,
+                            };
+                            this = intent.clone();
+                            claims.push(Statement::Assert(Application::DeductiveRule {
+                                rule,
+                                this: intent,
+                            }));
+                            claim_labels.push(None);
+                        }
+                        Some(rule::RuleAction::RetractDeductive { rule, this: entity }) => {
+                            let intent = ThisIntent::Uri(entity);
+                            this = intent.clone();
+                            claims.push(Statement::Retract(Application::DeductiveRule {
+                                rule,
+                                this: intent,
+                            }));
                             claim_labels.push(None);
                         }
                         None => {
@@ -529,7 +579,9 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
             })
         }
         Application::Domain { application, .. } => Predicate::Domain(application.domain.clone()),
-        Application::Rule { .. } => Predicate::Domain("rule".to_owned()),
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            Predicate::Domain("rule".to_owned())
+        }
     }
 }
 
@@ -575,7 +627,10 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
         // retract of `dialog.effect/*` claims contributes no
         // implicit query.
         let application = planned.statement.application();
-        if matches!(application, Application::Rule { .. }) {
+        if matches!(
+            application,
+            Application::Rule { .. } | Application::DeductiveRule { .. }
+        ) {
             continue;
         }
         // Two cases of "we know which entity to snapshot":
@@ -668,8 +723,8 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
             // Rules were filtered out above; the rule-snapshot path
             // is the read-side `rule:` query, not a per-write
             // synthesised one.
-            Application::Rule { .. } => unreachable!(
-                "Application::Rule should have been filtered out by the matches! check"
+            Application::Rule { .. } | Application::DeductiveRule { .. } => unreachable!(
+                "rule applications should have been filtered out by the matches! check"
             ),
         };
         // Reuse the assertion's head name so the rendered
@@ -806,6 +861,27 @@ mod tests {
             self.assert_concept_named(name, &descriptor).await;
         }
 
+        /// Like [`concept_typed`] but each field carries an
+        /// `optional` flag, so the registered concept exercises the
+        /// optional-attribute paths (completeness, set-widening,
+        /// marker round-trip).
+        async fn concept_typed_optional(&self, name: &str, fields: &[(&str, &str, &str, bool)]) {
+            let mut with = serde_json::Map::new();
+            for (field, the, ty, optional) in fields {
+                let mut spec = serde_json::json!({ "the": the, "as": ty, "cardinality": "one" });
+                if *optional {
+                    spec.as_object_mut()
+                        .unwrap()
+                        .insert("optional".into(), serde_json::Value::Bool(true));
+                }
+                with.insert((*field).into(), spec);
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            self.assert_concept_named(name, &descriptor).await;
+        }
+
         /// Commit the attribute facts every field of `descriptor`
         /// references, the concept marker claim, and an
         /// `id:<name>` referent so name resolution finds the
@@ -853,6 +929,102 @@ mod tests {
                 .perform(&self.operator)
                 .await
                 .expect("concept assertion commits");
+        }
+
+        /// Assert standalone attributes on the branch and publish
+        /// each under a name. Builds a throwaway concept descriptor
+        /// so [`assert_concept_named`] writes the `dialog.attribute/
+        /// {id,type,cardinality}` claims an `AttributeDefinition`
+        /// needs, then publishes a `dialog.name/referent` for each
+        /// attribute entity so a bare-symbol reference resolves it by
+        /// name (mirrors `attribute!: &name` in real notation).
+        ///
+        /// Each entry is `(published name, field key, `the` URI,
+        /// type label)`.
+        async fn attributes(&self, attrs: &[(&str, &str, &str, &str)]) {
+            let mut with = serde_json::Map::new();
+            for (_, field, the, ty) in attrs {
+                with.insert(
+                    (*field).into(),
+                    serde_json::json!({ "the": the, "as": ty, "cardinality": "one" }),
+                );
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            self.assert_concept_named("__attrs", &descriptor).await;
+            for (name, field, _, _) in attrs {
+                let attr = descriptor
+                    .with()
+                    .iter()
+                    .find(|(f, _)| f == field)
+                    .map(|(_, a)| a)
+                    .expect("field is in the descriptor");
+                let entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                self.publish_name(name, entity).await;
+            }
+        }
+
+        /// Assert a concept at an explicit pinned `entity` (rather
+        /// than the content-derived `descriptor.this()`), so a test
+        /// can reference it via `this: <entity>` in the notation —
+        /// the form a `concept!:` field retraction targets. Each
+        /// field is `(field, the, "Text")`; `optional` widens none.
+        async fn assert_concept_at(&self, entity: &Entity, fields: &[(&str, &str)]) {
+            let mut with = serde_json::Map::new();
+            for (field, the) in fields {
+                with.insert(
+                    (*field).into(),
+                    serde_json::json!({ "the": the, "as": "Text", "cardinality": "one" }),
+                );
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            let mut txn = self.branch.transaction();
+            for (_, attr) in descriptor.with().iter() {
+                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                txn = txn
+                    .assert(
+                        the!("dialog.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(format!("{}/{}", attr.domain(), attr.name())),
+                    )
+                    .assert(
+                        the!("dialog.attribute/type")
+                            .of(attr_entity.clone())
+                            .is("Text".to_owned()),
+                    )
+                    .assert(
+                        the!("dialog.attribute/cardinality")
+                            .of(attr_entity.clone())
+                            .is("one".to_owned()),
+                    )
+                    .assert(
+                        the!("dialog.meta/description")
+                            .of(attr_entity)
+                            .is(String::new()),
+                    );
+            }
+            // Pin the concept at `entity` by emitting its facts there
+            // directly (mirrors `emit_concept_facts`): the marker plus
+            // one `dialog.concept.with/<field>` per field.
+            txn = txn.assert(
+                the!("dialog.meta/concept")
+                    .of(entity.clone())
+                    .is("db:concept".parse::<Entity>().expect("db:concept")),
+            );
+            for (field, attr) in descriptor.with().iter() {
+                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                let the = format!("dialog.concept.with/{field}")
+                    .parse::<dialog_query::attribute::The>()
+                    .expect("with attribute parses");
+                txn = txn.assert(the.of(entity.clone()).is(attr_entity));
+            }
+            txn.commit()
+                .perform(&self.operator)
+                .await
+                .expect("pinned concept assertion commits");
         }
 
         /// Publish a `dialog.name/referent` claim binding `name`
@@ -1176,7 +1348,7 @@ attribute!: &person-name
         let syntax = must_parse(
             r#"
 demo/stuff!:
-  stuff: 1
+  stuff: "1"
 "#,
         );
         let spec = fixed_concept("demo/stuff", &[("stuff", "xyz.tonk.demo/stuff")]);
@@ -1295,6 +1467,194 @@ concept!: &person
             panic!("expected Assert(Concept) for concept");
         };
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
+    }
+
+    /// A `maybe:` block declares optional fields. The descriptor
+    /// carries the optional flag on those fields and the required
+    /// flag on `with:` fields.
+    #[dialog_common::test]
+    async fn it_marks_maybe_block_fields_optional() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    nickname:
+      description: "Nickname"
+      the: xyz.tonk.person/nickname
+      as:  Text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let person = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = person else {
+            panic!("expected concept assertion");
+        };
+        // The emitted concept-schema records each field's attribute
+        // link under `with.<field>`, plus a boolean optional marker
+        // `optional.<field>` for `maybe:` fields only.
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(field_names.contains(&"with.name"));
+        assert!(field_names.contains(&"with.nickname"));
+        assert!(
+            field_names.contains(&"optional.nickname"),
+            "optional `maybe:` field must emit an optional marker"
+        );
+        assert!(
+            !field_names.contains(&"optional.name"),
+            "required `with:` field must not emit an optional marker"
+        );
+        // And the marker term is actually populated on the assertion.
+        assert!(
+            query.terms.get("optional.nickname").is_some(),
+            "expected optional.nickname term on the concept assertion"
+        );
+        assert!(query.terms.get("optional.name").is_none());
+    }
+
+    /// A concept with only `maybe:` fields (no required field) is
+    /// rejected — it would constrain nothing and match every entity.
+    #[dialog_common::test]
+    async fn it_rejects_concept_with_only_optional_fields() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  maybe:
+    nickname:
+      description: "Nickname"
+      the: xyz.tonk.person/nickname
+      as:  Text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for all-optional concept, got {err:?}"
+        );
+    }
+
+    /// A field declared in both `with:` and `maybe:` is a hard
+    /// error — a field is required or optional, never both.
+    #[dialog_common::test]
+    async fn it_rejects_field_in_both_with_and_maybe() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::DuplicateConceptField { field, .. } if field == "name"
+            ),
+            "expected DuplicateConceptField for `name`, got {err:?}"
+        );
+        assert_eq!(err.kind.code(), "E_DUPLICATE_CONCEPT_FIELD");
+    }
+
+    /// A `maybe:` field can be a bare reference to an attribute
+    /// declared earlier in the document (not just an inline
+    /// definition). The referenced field is still marked optional.
+    #[dialog_common::test]
+    async fn it_marks_maybe_bare_reference_optional() {
+        let syntax = must_parse(
+            r#"
+attribute!: &person-nick
+  the:         xyz.tonk.person/nickname
+  as:          Text
+  cardinality: one
+  description: "Nickname"
+concept!: &person
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    nickname: person-nick
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let person = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = person else {
+            panic!("expected concept assertion");
+        };
+        // The `maybe:` bare reference emits an optional marker.
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(
+            field_names.contains(&"optional.nickname"),
+            "bare-reference `maybe:` field must emit an optional marker; saw {field_names:?}"
+        );
+        assert!(query.terms.get("optional.nickname").is_some());
+    }
+
+    /// A `maybe:` field referencing an attribute that lives on the
+    /// branch (not declared in the document) must resolve, exactly
+    /// like a `with:` field does. The prefetch phase has to gather
+    /// references from both blocks — gathering only `with:` left
+    /// branch attributes referenced solely from `maybe:` unresolved,
+    /// surfacing as a spurious "unknown name" error.
+    #[dialog_common::test]
+    async fn it_resolves_branch_attribute_referenced_from_maybe() {
+        // The branch holds two attributes published as the bare
+        // (dot-free) names `dir/title` and `dir/icon` so a reference
+        // parses as a name lookup, not a dotted-domain URI.
+        let fixture = new_fixture().await;
+        fixture
+            .attributes(&[
+                ("dir/title", "title", "xyz.tonk.dir/title", "Text"),
+                ("dir/icon", "icon", "xyz.tonk.dir/icon", "Text"),
+            ])
+            .await;
+
+        // A fresh concept references `title` from `with:` (control)
+        // and `icon` from `maybe:` (the path the bug broke) — both
+        // by published branch name, neither declared in this doc.
+        let syntax = must_parse(
+            r#"
+concept!: &card
+  description: "A card"
+  with:
+    title: dir/title
+  maybe:
+    icon: dir/icon
+"#,
+        );
+        let analysis = flat(fixture.analyze(&syntax).await.unwrap());
+        assert!(analysis.declarations.contains_key("card"));
+        let card = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = card else {
+            panic!("expected concept assertion");
+        };
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(
+            field_names.contains(&"with.title"),
+            "required `with:` reference must resolve; saw {field_names:?}"
+        );
+        assert!(
+            field_names.contains(&"with.icon"),
+            "optional `maybe:` reference to a branch attribute must resolve; saw {field_names:?}"
+        );
+        assert!(
+            field_names.contains(&"optional.icon"),
+            "the `maybe:` field must still be marked optional; saw {field_names:?}"
+        );
     }
 
     /// A bare symbol in field-value position resolves through the
@@ -1551,11 +1911,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -1583,6 +1943,179 @@ person!:
         }
     }
 
+    /// `concept!: { this: <pinned>, with: { f: _ } }` retracts the
+    /// named field from a stored concept: a `Statement::Retract`
+    /// carrying the `with.f` term bound to the field's stored
+    /// attribute entity, and nothing else (no marker, no other
+    /// field).
+    #[dialog_common::test]
+    async fn it_retracts_a_named_field_from_a_concept() {
+        let fixture = new_fixture().await;
+        let entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .expect("valid entity");
+        fixture
+            .assert_concept_at(
+                &entity,
+                &[
+                    ("name", "io.gozala.person/name"),
+                    ("age", "io.gozala.person/age"),
+                ],
+            )
+            .await;
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  with:
+    age: _
+"#,
+        );
+        let analysis = flat(fixture.analyze(&syntax).await.unwrap());
+        // A pure retraction emits exactly one statement: the retract.
+        let retracts: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Retract(Application::Concept { query, .. }) => Some(query),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(retracts.len(), 1, "exactly one concept retraction");
+        let q = retracts[0];
+        // `with.age` is blank: the evaluator dissociates whatever the
+        // branch holds for age (the instance-retraction model).
+        assert!(
+            matches!(
+                q.terms.get("with.age"),
+                Some(Term::Variable { name: None, .. })
+            ),
+            "with.age is a blank retraction directive",
+        );
+        // `name` is untouched — no term for it, and no marker term.
+        assert!(
+            q.terms.get("with.name").is_none(),
+            "the kept field is not retracted",
+        );
+        assert!(
+            q.terms.get("concept").is_none(),
+            "the concept marker is not retracted",
+        );
+        // No assert side for a retraction-only body.
+        assert!(
+            !analysis
+                .mutate
+                .statements
+                .iter()
+                .any(|s| matches!(s, Statement::Assert(Application::Concept { .. }))),
+            "retraction-only body emits no concept assertion",
+        );
+    }
+
+    /// `..: _` on a pinned concept retracts every stored field.
+    #[dialog_common::test]
+    async fn it_retracts_every_field_from_a_concept_via_rest() {
+        let fixture = new_fixture().await;
+        let entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .expect("valid entity");
+        fixture
+            .assert_concept_at(
+                &entity,
+                &[
+                    ("name", "io.gozala.person/name"),
+                    ("age", "io.gozala.person/age"),
+                ],
+            )
+            .await;
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  ..: _
+"#,
+        );
+        let analysis = flat(fixture.analyze(&syntax).await.unwrap());
+        let q = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Statement::Retract(Application::Concept { query, .. }) => Some(query),
+                _ => None,
+            })
+            .expect("a concept retraction");
+        for field in ["name", "age"] {
+            assert!(
+                q.terms.get(&format!("with.{field}")).is_some(),
+                "`..: _` retracts every stored field, including {field}",
+            );
+        }
+    }
+
+    /// Retracting a field the concept doesn't carry is a hard error
+    /// (strict policy): there's no stored triple to dissociate.
+    #[dialog_common::test]
+    async fn it_rejects_retracting_an_absent_field() {
+        let fixture = new_fixture().await;
+        let entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .expect("valid entity");
+        fixture
+            .assert_concept_at(&entity, &[("name", "io.gozala.person/name")])
+            .await;
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  with:
+    nonexistent: _
+"#,
+        );
+        let err = fixture.analyze(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for absent-field retraction, got {err:?}",
+        );
+    }
+
+    /// Retracting against a concept that doesn't exist on the branch
+    /// is a hard error — the attribute value to dissociate is unknown.
+    #[dialog_common::test]
+    async fn it_rejects_retraction_against_unknown_concept() {
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  with:
+    age: _
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for unknown-concept retraction, got {err:?}",
+        );
+    }
+
+    /// `..` is the top-level rest-retraction marker, not a field
+    /// name. Nested inside a `with:`/`maybe:` block it must be a
+    /// parse error, not a silent "retract a field named `..`".
+    #[dialog_common::test]
+    async fn it_rejects_rest_marker_nested_in_a_block() {
+        for block in ["with", "maybe"] {
+            let syntax = must_parse(&format!(
+                "concept!:\n  this: id:thing\n  {block}:\n    ..: _\n"
+            ));
+            let err = analyze_empty(&syntax).await.unwrap_err();
+            assert!(
+                matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+                "expected InvalidConceptBody for `..` nested in `{block}:`, got {err:?}",
+            );
+        }
+    }
+
     /// A partial assertion to a concrete-URI entity sets only the
     /// fields it names; unmentioned fields are omitted from the
     /// assert (not carried as blanks), so the claim lowers cleanly
@@ -1599,11 +2132,11 @@ person!:
   name: "Alice"
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let tree = analyze_with(&syntax, &resolver).await.unwrap();
@@ -1698,6 +2231,86 @@ reading!:
             ),
             "value literal should stay SignedInt, got {:?}",
             q.terms.get("value")
+        );
+    }
+
+    /// A bare integer literal written into a `text` field is a
+    /// type mismatch, not a silent miscast. Storing `3` as a
+    /// `SignedInt` under a Text-typed attribute makes the entity
+    /// invisible to its own (strictly-typed) concept query, so the
+    /// analyzer rejects it up front and points at the field.
+    /// User-reported: `age: 3` into an `as: text` field.
+    #[dialog_common::test]
+    async fn it_rejects_integer_literal_for_text_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 3
+"#,
+        );
+        let resolver = fixed_concept_typed("person", &[("age", "xyz.tonk.person/age", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        let AnalyzeErrorKind::TypeMismatch { field, .. } = &err.kind else {
+            panic!("expected TypeMismatch, got {:?}", err.kind);
+        };
+        assert_eq!(field, "age", "the diagnostic must name the offending field");
+        assert!(
+            err.range.is_some(),
+            "the diagnostic must carry a range so the editor can highlight the value"
+        );
+    }
+
+    /// A quoted string written into a `text` field is fine — the
+    /// type matches, so no diagnostic. Guards against the rejection
+    /// above over-firing on valid input.
+    #[dialog_common::test]
+    async fn it_accepts_string_literal_for_text_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: "3"
+"#,
+        );
+        let resolver = fixed_concept_typed("person", &[("age", "xyz.tonk.person/age", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("age"), Some(Term::Constant(Value::String(s))) if s == "3"),
+            "age should stay a Text value, got {:?}",
+            q.terms.get("age")
+        );
+    }
+
+    /// A claim head (`squash.bug:`) has no schema, so its fields
+    /// carry no declared type. With `expected = None`, any literal
+    /// is accepted — a bare integer stays a `SignedInt` and never
+    /// raises `TypeMismatch`. Guards the "no type specified accepts
+    /// any type" rule.
+    #[dialog_common::test]
+    async fn it_accepts_any_literal_for_untyped_claim_field() {
+        let syntax = must_parse(
+            r#"
+xyz.tonk.person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 3
+"#,
+        );
+        // No concept registered — `xyz.tonk.person` is a domain
+        // (claim) head, so the `age` slot has no declared type.
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("age").cloned();
+        assert!(
+            matches!(term, Some(Term::Constant(Value::SignedInt(3)))),
+            "an untyped claim field must accept the integer as-is, got {term:?}"
         );
     }
 
@@ -2340,11 +2953,11 @@ person!:
   age: 28
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -2367,7 +2980,7 @@ thing!:
   active: true
 "#,
         );
-        let resolver = fixed_concept("thing", &[("active", "x.y/active")]);
+        let resolver = fixed_concept_typed("thing", &[("active", "x.y/active", "Boolean")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
@@ -2388,7 +3001,7 @@ thing!:
   weight: 1.5
 "#,
         );
-        let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
+        let resolver = fixed_concept_typed("thing", &[("weight", "x.y/weight", "Float")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
@@ -2553,7 +3166,7 @@ view!:
         let notation_this = derive_this(&pinned, &body);
 
         // The wire descriptor for the `view` concept — `{display}`.
-        let descriptor = DialogConceptDescriptor::from(vec![(
+        let descriptor = DialogConceptDescriptor::try_from(vec![(
             "display",
             AttributeDescriptor::new(
                 "xyz.tonk.view/display".parse().unwrap(),
@@ -2561,7 +3174,8 @@ view!:
                 DialogCardinality::One,
                 Some(Type::String),
             ),
-        )]);
+        )])
+        .unwrap();
 
         // Wire path WITH `this` carried (the real bootstrap shape):
         // derivation is skipped, the carried entity is used verbatim.
@@ -2987,11 +3601,11 @@ person!:
   age:  _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3020,11 +3634,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3057,11 +3671,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3219,11 +3833,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3237,6 +3851,69 @@ person!:
                        && selector_form.contains("?alice")
             ),
             "expected IncompleteAssertion for `?alice` + age-only body, got {err:?}"
+        );
+    }
+
+    /// Omitting an *optional* field on a fresh entity is fine —
+    /// `IncompleteAssertion` only counts required fields. Here the
+    /// body sets the required `name` but omits the optional
+    /// `nickname`; the assertion must succeed.
+    #[dialog_common::test]
+    async fn it_allows_assertion_omitting_optional_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+"#,
+        );
+        let fixture = new_fixture().await;
+        fixture
+            .concept_typed_optional(
+                "person",
+                &[
+                    ("name", "io.gozala.person/name", "Text", false),
+                    ("nickname", "io.gozala.person/nickname", "Text", true),
+                ],
+            )
+            .await;
+        let analysis = fixture.analyze(&syntax).await;
+        assert!(
+            analysis.is_ok(),
+            "omitting an optional field must not raise IncompleteAssertion, got {:?}",
+            analysis.err()
+        );
+    }
+
+    /// The complement: with an optional field present in the
+    /// schema, omitting the *required* field on a fresh entity
+    /// still raises `IncompleteAssertion`, and the optional field
+    /// is not listed as missing.
+    #[dialog_common::test]
+    async fn it_still_requires_required_field_when_optional_present() {
+        let syntax = must_parse(
+            r#"
+person!:
+  nickname: "Al"
+"#,
+        );
+        let fixture = new_fixture().await;
+        fixture
+            .concept_typed_optional(
+                "person",
+                &[
+                    ("name", "io.gozala.person/name", "Text", false),
+                    ("nickname", "io.gozala.person/nickname", "Text", true),
+                ],
+            )
+            .await;
+        let err = fixture.analyze(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::IncompleteAssertion { missing, .. }
+                    if missing == &vec!["name".to_string()]
+            ),
+            "expected IncompleteAssertion listing only `name`, got {err:?}"
         );
     }
 
@@ -3255,11 +3932,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3276,11 +3953,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3305,11 +3982,11 @@ person!: &alice
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3331,11 +4008,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3352,11 +4029,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3374,11 +4051,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3397,11 +4074,11 @@ person!:
   age: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3473,11 +4150,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3508,11 +4185,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3542,11 +4219,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3600,11 +4277,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());

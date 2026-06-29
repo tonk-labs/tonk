@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Make the browser a member of the run's space: mint an invite from
-# the slide site, open it, and wait until the space route renders. The
+# the tonk site, open it, and wait until the space route renders. The
 # join component auto-joins (no name form — a joined space is addressed
 # by its repository DID, returned as repository.name), so the only job
 # here is to navigate to the invite and confirm we land off /join, then

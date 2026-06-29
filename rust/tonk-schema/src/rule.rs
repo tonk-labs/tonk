@@ -417,7 +417,7 @@ mod tests {
     /// shape `effect_query::tests` and `rule_query::tests` use, so
     /// rule fixtures stay coherent across the three test modules.
     fn counter_head() -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             "count",
             AttributeDescriptor::new(
                 the!("counter/count"),
@@ -426,11 +426,12 @@ mod tests {
                 Some(Type::UnsignedInt),
             ),
         )])
+        .unwrap()
     }
 
     /// `increment` command concept used by [`increment_body`].
     fn increment_concept() -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             "subject",
             AttributeDescriptor::new(
                 the!("command/subject"),
@@ -439,6 +440,7 @@ mod tests {
                 Some(Type::Entity),
             ),
         )])
+        .unwrap()
     }
 
     /// Concept premise binding `this` and each field to a variable.
