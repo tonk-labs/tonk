@@ -88,7 +88,26 @@ impl CustomElement for TonkInspectorElement {
             next_id: Cell::new(0),
             closures: self.closures.clone(),
         });
-        notebook.spawn_cell(true);
+
+        // Spawn the first cell only AFTER `<tonk-code>` is defined. Its bundle is
+        // imported asynchronously by the guest (after the inspector registers), so
+        // mounting a cell now would append an un-upgraded `<tonk-code>` and, worse,
+        // race the `<tonk-diagnostics-provider>` (same bundle): the editor's
+        // initial `tonk-code-connect` could fire before the provider's listener
+        // exists and be lost — no LSP, no diagnostics, no auto-eval. Waiting until
+        // the element is defined guarantees the provider (appended above, upgraded
+        // by the same `define` pass) is listening when the editor connects.
+        let registry = window().map(|w| w.custom_elements());
+        match registry.and_then(|r| r.when_defined("tonk-code").ok()) {
+            Some(defined) => {
+                spawn_local(async move {
+                    let _ = JsFuture::from(defined).await;
+                    notebook.spawn_cell(true);
+                });
+            }
+            // No registry / bad name (shouldn't happen in a browser) — mount now.
+            None => notebook.spawn_cell(true),
+        }
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -123,35 +142,7 @@ impl Notebook {
         let cell = Rc::new(NotebookCell::build(self, id, auto_focus));
         let _ = self.host.append_child(&cell.form);
         cell.install(self);
-        // Re-announce the editor to the diagnostics provider after a frame. The
-        // `<tonk-code>` and `<tonk-diagnostics-provider>` definitions arrive in
-        // one async-imported bundle; if `tonk-code` upgrades first, the editor's
-        // initial `tonk-code-connect` (from its connectedCallback) fires before
-        // the provider installs its listener and is lost — no LSP, no diagnostics,
-        // no auto-eval. Detaching + re-attaching the editor re-runs its
-        // connectedCallback (an unconditional re-announce) once both have
-        // upgraded. Harmless: the cell is freshly spawned with no user input yet.
-        reannounce_editor(&cell.editor);
     }
-}
-
-/// Detach and re-attach `editor` on the next animation frame so its
-/// `connectedCallback` re-runs and re-fires `tonk-code-connect` — see
-/// [`Notebook::spawn_cell`]. (A `language` re-set is insufficient: the editor
-/// only re-announces on a language change when it already has an LSP client.)
-fn reannounce_editor(editor: &Element) {
-    let Some(win) = window() else {
-        return;
-    };
-    let editor = editor.clone();
-    let cb = Closure::once_into_js(move || {
-        if let Some(parent) = editor.parent_node() {
-            let next = editor.next_sibling();
-            let _ = parent.remove_child(&editor);
-            let _ = parent.insert_before(&editor, next.as_ref());
-        }
-    });
-    let _ = win.request_animation_frame(cb.as_ref().unchecked_ref());
 }
 
 /// One notebook cell's DOM + state.
