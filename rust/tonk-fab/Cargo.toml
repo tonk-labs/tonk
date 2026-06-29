@@ -18,12 +18,15 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
+    "CssStyleDeclaration",
     "CustomElementRegistry",
     "DomRect",
     "DomStringMap",
+    "DomTokenList",
     "Element",
     "EventTarget",
     "HtmlElement",
+    "MessageEvent",
     "PointerEvent",
     "Window",
 ] }

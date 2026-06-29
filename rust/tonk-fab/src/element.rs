@@ -14,9 +14,13 @@
 //! A re-enter before the timeout cancels the pending collapse.
 //!
 //! Drag: `pointerdown` on the circle starts a free drag — the host expands
-//! its iframe to the full viewport so the circle can be moved anywhere.
-//! `pointermove` posts dragmove x/y; `pointerup` clamps the position, posts
-//! `drop`, and persists the x/y via `window.tonk.transact(...)`.
+//! its iframe to the full viewport and keeps it there for the whole drag, so
+//! the pointer coordinate frame never moves under itself. `pointermove`
+//! translates the FAB *inside* the iframe (local `position: fixed`, no
+//! per-frame postMessage) to follow the pointer, preserving the grab offset
+//! captured on `pointerdown`. `pointerup` clamps the position, posts `drop`
+//! (the host shrinks the iframe to a box at the drop point), and persists the
+//! x/y via `window.tonk.transact(...)`.
 //!
 //! On connect, the element queries the persisted position from
 //! `window.tonk.query(...)` and, if found, relays it to the host as a `drop`
@@ -93,7 +97,7 @@ impl CustomElement for TonkFab {
             attach_host_messages(this);
         }
         // Query persisted position and relay it to the host portal.
-        restore_position();
+        restore_position(this);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -218,10 +222,30 @@ fn attach_drag(element: &HtmlElement) {
             }
         }
         e.prevent_default();
+
+        // Record the pointer's offset within the FAB so the grab point stays
+        // under the cursor (no snap-to-corner). The client coords and the rect
+        // are read in the same frame, so their difference is a frame-
+        // independent local offset that survives the iframe's expansion.
+        let rect = el_down.get_bounding_client_rect();
+        let grab_x = e.client_x() as f64 - rect.left();
+        let grab_y = e.client_y() as f64 - rect.top();
+        el_down.dataset().set("fabGrabX", &grab_x.to_string()).ok();
+        el_down.dataset().set("fabGrabY", &grab_y.to_string()).ok();
+
         // Mark element as dragging.
         el_down.dataset().set("fabDragging", "1").ok();
         // Capture pointer so moves/up fire even outside element bounds.
         el_down.set_pointer_capture(e.pointer_id()).ok();
+        // Pin the FAB so it can be placed anywhere inside the full-viewport
+        // iframe. Anchor at the FAB's known page position so it stays under
+        // the cursor the instant the host expands the iframe — without it,
+        // `fixed` coords valid in the small iframe land at the corner once the
+        // iframe grows, and the FAB only catches up on the first move. Fall
+        // back to the in-frame rect if the position isn't cached yet.
+        let (anchor_x, anchor_y) =
+            read_cached_position(&el_down).unwrap_or((rect.left(), rect.top()));
+        set_drag_style(&el_down, anchor_x, anchor_y);
         // Tell the host to expand the iframe to full viewport.
         post_fab_msg("dragstart", None, None);
     });
@@ -231,9 +255,13 @@ fn attach_drag(element: &HtmlElement) {
         if el_move.dataset().get("fabDragging").is_none() {
             return;
         }
-        let x = e.client_x() as f64;
-        let y = e.client_y() as f64;
-        post_fab_msg("dragmove", Some(x), Some(y));
+        // Translate the FAB *inside* the full-viewport iframe to follow the
+        // pointer. Local to the guest — no per-frame postMessage, so it's
+        // smooth and the coordinate frame never moves under itself.
+        let (grab_x, grab_y) = read_grab_offset(&el_move);
+        let left = e.client_x() as f64 - grab_x;
+        let top = e.client_y() as f64 - grab_y;
+        set_drag_style(&el_move, left, top);
     });
 
     let el_up = element.clone();
@@ -244,8 +272,12 @@ fn attach_drag(element: &HtmlElement) {
         el_up.dataset().delete("fabDragging");
         el_up.release_pointer_capture(e.pointer_id()).ok();
 
-        let raw_x = e.client_x() as f64;
-        let raw_y = e.client_y() as f64;
+        // FAB top-left in viewport coords (pointer minus the grab offset).
+        let (grab_x, grab_y) = read_grab_offset(&el_up);
+        el_up.dataset().delete("fabGrabX");
+        el_up.dataset().delete("fabGrabY");
+        let raw_x = e.client_x() as f64 - grab_x;
+        let raw_y = e.client_y() as f64 - grab_y;
 
         // Clamp to keep the circle on-screen.
         let (x, y) = if let Some(win) = window() {
@@ -263,6 +295,13 @@ fn attach_drag(element: &HtmlElement) {
         } else {
             (raw_x, raw_y)
         };
+
+        // Return the FAB to normal in-flow layout; the host shrinks the iframe
+        // to the dropped box so the FAB lands back at (x, y).
+        clear_drag_style(&el_up);
+
+        // Remember where we landed so the next drag anchors correctly.
+        cache_position(&el_up, x, y);
 
         // Tell the host to shrink the iframe to a box at (x, y).
         post_fab_msg("drop", Some(x), Some(y));
@@ -285,6 +324,64 @@ fn attach_drag(element: &HtmlElement) {
     on_down.forget();
     on_move.forget();
     on_up.forget();
+}
+
+/// Cache the FAB's current page top-left on the element. Written whenever the
+/// guest tells the host where the FAB is (restore / default / drop) so that
+/// `pointerdown` can anchor the pinned FAB at its real on-screen position —
+/// see `set_drag_style`.
+fn cache_position(el: &HtmlElement, x: f64, y: f64) {
+    el.dataset().set("fabX", &x.to_string()).ok();
+    el.dataset().set("fabY", &y.to_string()).ok();
+}
+
+/// Read the cached FAB page top-left, if known.
+fn read_cached_position(el: &HtmlElement) -> Option<(f64, f64)> {
+    let x = el.dataset().get("fabX").and_then(|s| s.parse::<f64>().ok())?;
+    let y = el.dataset().get("fabY").and_then(|s| s.parse::<f64>().ok())?;
+    Some((x, y))
+}
+
+/// Read the grab offset stashed on the element at `pointerdown`.
+///
+/// Returns `(0.0, 0.0)` if absent (e.g. a stray `pointermove`), which makes
+/// the FAB track from its top-left — harmless, since a real drag always sets
+/// these first.
+fn read_grab_offset(el: &HtmlElement) -> (f64, f64) {
+    let parse = |k: &str| {
+        el.dataset()
+            .get(k)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    (parse("fabGrabX"), parse("fabGrabY"))
+}
+
+/// Pin the FAB at `(left, top)` (viewport coords) while dragging. `fixed`
+/// positioning is relative to the iframe viewport, whose origin tracks the
+/// iframe's on-screen position, so this maps 1:1 to screen coords once the
+/// host has expanded the iframe to the full viewport.
+fn set_drag_style(el: &HtmlElement, left: f64, top: f64) {
+    let style = el.style();
+    let _ = style.set_property("position", "fixed");
+    let _ = style.set_property("margin", "0");
+    let _ = style.set_property("left", &format!("{}px", left));
+    let _ = style.set_property("top", &format!("{}px", top));
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list().add_1("dragging").ok();
+    }
+}
+
+/// Undo `set_drag_style`, returning the FAB to normal in-flow layout.
+fn clear_drag_style(el: &HtmlElement) {
+    let style = el.style();
+    let _ = style.remove_property("position");
+    let _ = style.remove_property("margin");
+    let _ = style.remove_property("left");
+    let _ = style.remove_property("top");
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list().remove_1("dragging").ok();
+    }
 }
 
 /// Post a `__tonkFab` geometry message to `window.parent`.
@@ -349,8 +446,9 @@ fn persist_position(x: u32, y: u32) {
 /// On connect, query the persisted FAB position from `window.tonk.query(...)`
 /// and relay it to the host as a `drop` geometry message so the portal iframe
 /// is placed at the saved location. Falls back to a default top-center
-/// position if no persisted value exists.
-fn restore_position() {
+/// position if no persisted value exists. Caches the resolved position on
+/// `this` so a subsequent drag anchors the FAB at its real on-screen spot.
+fn restore_position(this: &HtmlElement) {
     // Build the query body: pin `this` to `state:fab`, project x and y.
     // Shape matches what `tonk-portal/src/query.rs` produces for entity queries.
     let query_body = serde_json::json!({
@@ -384,7 +482,7 @@ fn restore_position() {
         Some(t) => t,
         None => {
             // No bridge yet — use default top-center position.
-            post_default_position();
+            post_default_position(this);
             return;
         }
     };
@@ -395,7 +493,7 @@ fn restore_position() {
     {
         Some(f) => f,
         None => {
-            post_default_position();
+            post_default_position(this);
             return;
         }
     };
@@ -403,7 +501,7 @@ fn restore_position() {
     let js_body = match js_sys::JSON::parse(&json_str).ok() {
         Some(v) => v,
         None => {
-            post_default_position();
+            post_default_position(this);
             return;
         }
     };
@@ -411,7 +509,7 @@ fn restore_position() {
     let result = match query_fn.call1(&tonk, &js_body).ok() {
         Some(v) => v,
         None => {
-            post_default_position();
+            post_default_position(this);
             return;
         }
     };
@@ -419,20 +517,22 @@ fn restore_position() {
     // `window.tonk.query` returns a Promise<Conclusion[]>.
     // Await it and relay the position to the host if present.
     if let Ok(promise) = result.dyn_into::<Promise>() {
+        let this = this.clone();
         spawn_local(async move {
             match wasm_bindgen_futures::JsFuture::from(promise).await {
                 Ok(rows) => {
                     if let Some((x, y)) = read_position_from_rows(&rows) {
+                        cache_position(&this, x, y);
                         post_fab_msg("drop", Some(x), Some(y));
                     } else {
-                        post_default_position();
+                        post_default_position(&this);
                     }
                 }
-                Err(_) => post_default_position(),
+                Err(_) => post_default_position(&this),
             }
         });
     } else {
-        post_default_position();
+        post_default_position(this);
     }
 }
 
@@ -455,7 +555,7 @@ fn read_position_from_rows(rows: &JsValue) -> Option<(f64, f64)> {
 }
 
 /// Post a default `drop` position (top-center of the viewport).
-fn post_default_position() {
+fn post_default_position(this: &HtmlElement) {
     let (x, y) = if let Some(win) = window() {
         let vw = win
             .inner_width()
@@ -467,6 +567,7 @@ fn post_default_position() {
     } else {
         (480.0, 16.0)
     };
+    cache_position(this, x, y);
     post_fab_msg("drop", Some(x), Some(y));
 }
 

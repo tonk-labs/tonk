@@ -36,11 +36,17 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
             width: vw,
             height: vh,
         },
-        FabIntent::DragMove { x, y, state } => FabBox {
-            left: *x,
-            top: *y,
-            width: state.w,
-            height: state.h,
+        // During a drag the iframe stays pinned full-viewport (like DragStart);
+        // the FAB element is translated *inside* the iframe to follow the
+        // pointer. Moving the iframe itself per-frame would shift the pointer
+        // coordinate frame under itself. `x`/`y` are unused here — the guest
+        // applies them to the inner element, and Drop uses them for the final
+        // shrunk box.
+        FabIntent::DragMove { x: _, y: _, state: _ } => FabBox {
+            left: 0.0,
+            top: 0.0,
+            width: vw,
+            height: vh,
         },
         FabIntent::Resize { w, h, state } => FabBox {
             left: state.x,
@@ -283,7 +289,11 @@ mod geometry {
     }
 
     #[test]
-    fn dragmove_moves_to_point_keeps_size() {
+    fn dragmove_keeps_full_viewport() {
+        // During a drag the iframe stays pinned full-viewport so the pointer
+        // coordinate frame never moves under itself; the FAB element is
+        // translated *inside* the iframe instead. So DragMove ignores x/y for
+        // the iframe box and returns the same full-viewport box as DragStart.
         let state = FabState {
             x: 100.0,
             y: 50.0,
@@ -303,10 +313,10 @@ mod geometry {
         assert_eq!(
             b,
             FabBox {
-                left: 200.0,
-                top: 300.0,
-                width: 320.0,
-                height: 64.0
+                left: 0.0,
+                top: 0.0,
+                width: 1000.0,
+                height: 800.0
             }
         );
     }

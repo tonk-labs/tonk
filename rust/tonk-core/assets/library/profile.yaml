@@ -293,6 +293,12 @@ view/directory!: &profile/fab/view
       </div>
       <style>
         :host, tonk-fab { display: block; }
+        /* The FAB iframe overlays the page (and spans the whole viewport while
+           dragging), so its document must be see-through — only the `.fab`
+           pill should paint. The injected Web Awesome CSS sets an opaque
+           `html` background inside `@layer wa-native`; this unlayered rule
+           beats it (unlayered declarations win over layered ones). */
+        html, body { background: transparent; }
         .fab {
           display: flex;
           align-items: center;
@@ -305,9 +311,17 @@ view/directory!: &profile/fab/view
           font-size: 13px;
           white-space: nowrap;
           position: relative;
+          cursor: grab;
         }
         .fab.expanded {
           padding: 6px 12px;
+        }
+        /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
+           (set inline by element.rs) inside the full-viewport iframe. Suppress
+           text selection and show the grabbing cursor so the drag reads cleanly. */
+        .fab.dragging {
+          cursor: grabbing;
+          user-select: none;
         }
         .fab__circle {
           flex: none;
