@@ -36,7 +36,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlElement, PointerEvent, window};
+use web_sys::{Element, Event, HtmlElement, PointerEvent, window};
 
 // web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
 // features we have, so we call them via js_sys::Function from the global.
@@ -89,6 +89,7 @@ impl CustomElement for TonkFab {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
             attach_hover(this);
             attach_drag(this);
+            attach_modal(this);
             attach_resize_observer(this);
             // Listen for host→guest `__tonkFab` sync messages. The sync
             // state lives on the SPACE branch overlay (`state:here`/`tonk:sync`),
@@ -338,8 +339,14 @@ fn cache_position(el: &HtmlElement, x: f64, y: f64) {
 
 /// Read the cached FAB page top-left, if known.
 fn read_cached_position(el: &HtmlElement) -> Option<(f64, f64)> {
-    let x = el.dataset().get("fabX").and_then(|s| s.parse::<f64>().ok())?;
-    let y = el.dataset().get("fabY").and_then(|s| s.parse::<f64>().ok())?;
+    let x = el
+        .dataset()
+        .get("fabX")
+        .and_then(|s| s.parse::<f64>().ok())?;
+    let y = el
+        .dataset()
+        .get("fabY")
+        .and_then(|s| s.parse::<f64>().ok())?;
     Some((x, y))
 }
 
@@ -657,6 +664,60 @@ fn attach_host_messages(element: &HtmlElement) {
     on_message.forget();
 }
 
+/// Wire a `<wa-dialog>` inside the FAB to the iframe-overlay geometry.
+///
+/// A dialog uses `position: fixed` to cover its document's viewport, so inside
+/// the normally tiny FAB iframe it would be clipped. So while a dialog is open
+/// we ask the host to expand the iframe to the full viewport (`overlay`), and
+/// when it closes we post a `resize` to shrink the iframe back to the FAB's
+/// content box (the host restores the resting position from `FabState`).
+///
+/// The `wa-show` / `wa-after-hide` events bubble (and are `composed`) up from
+/// the dialog to this host element. While the overlay is up we stash a
+/// `data-fab-overlay` flag so `post_resize` (hover, collapse, ResizeObserver)
+/// can't shrink the iframe out from under the open dialog — the explicit
+/// restore on `wa-after-hide` clears the flag first, then re-measures.
+fn attach_modal(element: &HtmlElement) {
+    let el_show = element.clone();
+    let on_show = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+        if !is_dialog_event(&e) {
+            return;
+        }
+        el_show.dataset().set("fabOverlay", "1").ok();
+        post_fab_msg("overlay", None, None);
+    });
+
+    let el_hide = element.clone();
+    let on_hide = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+        if !is_dialog_event(&e) {
+            return;
+        }
+        el_hide.dataset().delete("fabOverlay");
+        post_resize(&el_hide);
+    });
+
+    let target: &web_sys::EventTarget = element.unchecked_ref();
+    target
+        .add_event_listener_with_callback("wa-show", on_show.as_ref().unchecked_ref())
+        .ok();
+    target
+        .add_event_listener_with_callback("wa-after-hide", on_hide.as_ref().unchecked_ref())
+        .ok();
+
+    on_show.forget();
+    on_hide.forget();
+}
+
+/// True when `e`'s target is a `<wa-dialog>` — guards the modal listeners
+/// against `wa-show`/`wa-after-hide` from any other Web Awesome component that
+/// might be nested in the FAB later.
+fn is_dialog_event(e: &Event) -> bool {
+    e.target()
+        .and_then(|t| t.dyn_into::<Element>().ok())
+        .map(|el| el.tag_name().eq_ignore_ascii_case("wa-dialog"))
+        .unwrap_or(false)
+}
+
 /// Observe `.fab` (and its menu) and re-post a resize whenever their size
 /// changes, so the iframe tracks the content through expand/collapse and the
 /// asynchronous render of the name, sigil, and space menu. Without this the
@@ -686,6 +747,13 @@ fn attach_resize_observer(element: &HtmlElement) {
 /// Measure `element`'s bounding rect and post a `__tonkFab` resize message to
 /// `window.parent`.
 fn post_resize(element: &HtmlElement) {
+    // While a modal dialog is open the host pins the iframe to the full
+    // viewport (`overlay`). Suppress content-size resizes from hover, collapse,
+    // and the ResizeObserver so they can't shrink the iframe and clip the open
+    // dialog. The `wa-after-hide` handler clears this flag before re-measuring.
+    if element.dataset().get("fabOverlay").is_some() {
+        return;
+    }
     let Some(win) = window() else {
         return;
     };
@@ -700,7 +768,10 @@ fn post_resize(element: &HtmlElement) {
     // is absent.
     let host: &web_sys::Element = element.unchecked_ref();
     let (w, h) = match host.query_selector(".fab").ok().flatten() {
-        Some(fab) => (f64::from(fab.scroll_width()), f64::from(fab.scroll_height())),
+        Some(fab) => (
+            f64::from(fab.scroll_width()),
+            f64::from(fab.scroll_height()),
+        ),
         None => {
             let rect = host.get_bounding_client_rect();
             (rect.width(), rect.height())

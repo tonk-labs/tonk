@@ -285,11 +285,38 @@ view/directory!: &profile/fab/view
         <span class="fab__identity">
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
+        <!-- NOTE: the current-repo name is NOT shown here yet. The FAB can't read
+             its active space from the portal host: `{dom.host/data-space}` renders
+             empty even though the shell embeds `data-space` on the <tonk-display>
+             (verified at runtime). Displaying / editing the repo name — and gating
+             the dropdown on hovering it — all need that read wired first (the same
+             V1 gap as `data-did`/`data-name`). Until then the switcher opens on
+             whole-bar hover. -->
         <span class="fab__space">{dom.host/data-space}</span>
         <nav class="fab__menu opens-down">
           <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
+          <a class="fab__menu-item fab__menu-item--action" href="/">
+            <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
+          </a>
+          <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
+            <span class="fab__menu-glyph" aria-hidden="true">+</span> new
+          </button>
         </nav>
       </div>
+      <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
+           `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
+           the iframe overlay, and so the `space/create` command + the
+           `<tonk-default-remote>` resolve on this same profile/meta branch.
+           Mirrors the Hub's create dialog (the directory view above). -->
+      <wa-dialog id="fab-space-create" label="New space" class="fab__dialog">
+        <form id="fab-space-create-form" class="fab__form" onsubmit=space/create>
+          <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
+          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+        </form>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
+      </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
         /* The FAB iframe overlays the page (and spans the whole viewport while
@@ -394,29 +421,38 @@ view/directory!: &profile/fab/view
           max-width: 80px;
           overflow: hidden;
           text-overflow: ellipsis;
+          cursor: default;
         }
         /* Collapsed (default): only the sync-status ring shows; hovering adds
            the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
         .fab:not(.expanded) .fab__identity,
         .fab:not(.expanded) .fab__space { display: none; }
+        /* The menu is a transparent stack: each row is its own floating card,
+           so the page shows through the gaps between rows (like the FAB pill
+           itself). No panel background/border/shadow here — those live on the
+           individual `.fab__menu-item` cards. */
         .fab__menu {
           position: absolute;
           left: 0;
           display: flex;
           flex-direction: column;
-          background: var(--wa-color-surface-raised, #fff);
-          border: 1px solid var(--wa-color-surface-border, #ddd);
-          border-radius: 8px;
-          padding: 4px 0;
-          min-width: 160px;
-          box-shadow: 0 4px 12px rgba(0,0,0,.12);
+          gap: 6px;
+          min-width: 200px;
           z-index: 100;
         }
-        .fab__menu.opens-down { top: 100%; margin-top: 4px; }
-        .fab__menu.opens-up { bottom: 100%; margin-bottom: 4px; }
+        .fab__menu.opens-down { top: 100%; margin-top: 6px; }
+        .fab__menu.opens-up { bottom: 100%; margin-bottom: 6px; }
+        /* The space roster renders its rows inside a single `<tonk-display>`
+           wrapper, so the menu's flex `gap` can't reach them. `display:contents`
+           lifts the roster anchors into the menu's flex flow so every row —
+           roster and action alike — gets the same gap. */
+        .fab__menu > tonk-display { display: contents; }
         .fab__menu-item {
           display: block;
-          padding: 6px 12px;
+          padding: 10px 16px;
+          background: var(--wa-color-surface-raised, #fff);
+          border-radius: 2px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.12);
           color: var(--wa-color-text-normal, #111);
           text-decoration: none;
           font-size: 13px;
@@ -424,6 +460,24 @@ view/directory!: &profile/fab/view
         }
         .fab__menu-item:hover {
           background: var(--wa-color-surface-hover, #f5f5f5);
+        }
+        /* `all repos` / `new` — actions, not spaces: right-aligned and quieter,
+           rendered as a button/anchor that match the roster cards' type. */
+        .fab__menu-item--action {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 6px;
+          width: 100%;
+          border: 0;
+          cursor: pointer;
+          font: inherit;
+          font-family: var(--wa-font-family-code, monospace);
+          color: var(--wa-color-text-quiet, #666);
+        }
+        .fab__menu-glyph {
+          font-size: 14px;
+          line-height: 1;
         }
         .fab:not(.expanded) .fab__menu { display: none; }
       </style>

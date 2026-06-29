@@ -23,9 +23,27 @@ pub struct FabState {
 
 pub enum FabIntent {
     DragStart,
-    DragMove { x: f64, y: f64, state: FabState },
-    Resize { w: f64, h: f64, state: FabState },
-    Drop { x: f64, y: f64, state: FabState },
+    DragMove {
+        x: f64,
+        y: f64,
+        state: FabState,
+    },
+    Resize {
+        w: f64,
+        h: f64,
+        state: FabState,
+    },
+    Drop {
+        x: f64,
+        y: f64,
+        state: FabState,
+    },
+    /// Expand the iframe to the full viewport so a modal dialog rendered
+    /// inside the guest is not clipped to the small FAB box. Unlike
+    /// `DragStart` it carries no drag semantics: the host leaves the resting
+    /// position and size untouched, so a later `Resize` restores the FAB to
+    /// exactly where it was when the modal closes.
+    Overlay,
 }
 
 pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
@@ -42,7 +60,11 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
         // coordinate frame under itself. `x`/`y` are unused here — the guest
         // applies them to the inner element, and Drop uses them for the final
         // shrunk box.
-        FabIntent::DragMove { x: _, y: _, state: _ } => FabBox {
+        FabIntent::DragMove {
+            x: _,
+            y: _,
+            state: _,
+        } => FabBox {
             left: 0.0,
             top: 0.0,
             width: vw,
@@ -59,6 +81,15 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
             top: *y,
             width: state.w,
             height: state.h,
+        },
+        // Full-viewport, like DragStart, but with no drag semantics — used to
+        // back a modal dialog so it renders unclipped. The resting box is
+        // recovered from `FabState` by the following `Resize`, not from here.
+        FabIntent::Overlay => FabBox {
+            left: 0.0,
+            top: 0.0,
+            width: vw,
+            height: vh,
         },
     }
 }
@@ -219,6 +250,20 @@ mod geometry {
     #[test]
     fn dragstart_covers_full_viewport() {
         let b = geometry_box(&FabIntent::DragStart, 1000.0, 800.0);
+        assert_eq!(
+            b,
+            FabBox {
+                left: 0.0,
+                top: 0.0,
+                width: 1000.0,
+                height: 800.0
+            }
+        );
+    }
+
+    #[test]
+    fn overlay_covers_full_viewport() {
+        let b = geometry_box(&FabIntent::Overlay, 1000.0, 800.0);
         assert_eq!(
             b,
             FabBox {

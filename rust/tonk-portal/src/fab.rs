@@ -18,7 +18,12 @@
 //! { "__tonkFab": { "type": "dragstart" } }
 //! { "__tonkFab": { "type": "dragmove", "x": 200, "y": 400 } }
 //! { "__tonkFab": { "type": "drop", "x": 200, "y": 400 } }
+//! { "__tonkFab": { "type": "overlay" } }
 //! ```
+//!
+//! `overlay` expands the iframe to the full viewport (so a modal dialog in the
+//! guest renders unclipped) without touching the stored resting box; the guest
+//! restores the FAB by posting a `resize` when the modal closes.
 //!
 //! Host → guest: none (the guest computes submenu direction from its own rect).
 
@@ -161,6 +166,7 @@ impl CustomElement for TonkFabPortal {
                     let g = *geom.borrow();
                     match msg_type.as_deref() {
                         Some("dragstart") => FabIntent::DragStart,
+                        Some("overlay") => FabIntent::Overlay,
                         Some("dragmove") => {
                             let x = Reflect::get(&fab_payload, &"x".into())
                                 .ok()
@@ -233,6 +239,10 @@ impl CustomElement for TonkFabPortal {
                             g.state.w = *w;
                             g.state.h = *h;
                         }
+                        // The overlay is transient chrome: it must NOT clobber
+                        // the resting box, so the following `resize` can put the
+                        // FAB back exactly where it was.
+                        FabIntent::Overlay => {}
                     }
                     g.has_position = true;
                 }

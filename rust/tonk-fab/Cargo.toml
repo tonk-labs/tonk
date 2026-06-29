@@ -24,6 +24,7 @@ web-sys = { workspace = true, features = [
     "DomStringMap",
     "DomTokenList",
     "Element",
+    "Event",
     "EventTarget",
     "HtmlElement",
     "MessageEvent",
