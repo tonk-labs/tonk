@@ -76,10 +76,21 @@ impl<V> Router<V> {
     /// Match `url` against the table, most-specific-first, returning the first
     /// route that parses together with its captured params. When nothing matches,
     /// reports the furthest-progress near-miss (or [`NoMatch::Empty`]).
+    ///
+    /// A trailing slash is insignificant: `/space/{id}/` matches the same route as
+    /// `/space/{id}`. Without this a trailing slash falls into a gap — too much for
+    /// the bare `/space/{id}` route (a leftover `/` is [`ParseError::Trailing`]) and
+    /// too little for `/space/{id}/{*rest}` (the span captures nothing, an
+    /// [`ParseError::EmptyParam`]) — so neither matches. The root `/` is preserved
+    /// (only stripped when the result stays non-empty), since it is itself a route.
     pub fn recognize(&self, url: &str) -> Result<Match<'_, V>, NoMatch> {
         if self.entries.is_empty() {
             return Err(NoMatch::Empty);
         }
+        let url = match url.strip_suffix('/') {
+            Some(trimmed) if !trimmed.is_empty() => trimmed,
+            _ => url,
+        };
         let mut furthest: Option<ParseError> = None;
         for (route, value) in &self.entries {
             match route.parse(url) {
