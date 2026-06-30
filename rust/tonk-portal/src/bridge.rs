@@ -2775,8 +2775,13 @@ mod tests {
         let _ = Reflect::set(&data, &"headers".into(), &headers);
         let _ = Reflect::set(&data, &"body".into(), &"{\"q\":1}".into());
 
+        // `build_relayed_request` reconstructs the `RequestInit`; the path is
+        // fetched separately as a bare string (see `handle_host_fetch`).
+        // Materialize a real `Request` from the init to read the fields back.
+        let init = build_relayed_request(&data).expect("request");
         let request =
-            build_relayed_request("/api/repository/x/branch/main/query", &data).expect("request");
+            web_sys::Request::new_with_str_and_init("/api/repository/x/branch/main/query", &init)
+                .expect("request from init");
 
         assert_eq!(request.method(), "POST");
         assert!(
