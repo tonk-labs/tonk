@@ -438,6 +438,21 @@ fn host_element_path(binding: &Binding) -> Vec<usize> {
 ///
 /// Pure — no DOM access — so unit tests run natively.
 pub fn build_plan_nodes(bindings: Vec<Binding>) -> Vec<PlanNode> {
+    build_plan_nodes_with_scalars(bindings, &std::collections::BTreeSet::new())
+}
+
+/// Like [`build_plan_nodes`], but excludes `scalar_fields` — the concept's
+/// `cardinality: one` field names — from becoming iteration roots. A scalar
+/// field referenced in a template is a plain substitution rendered once; only
+/// `cardinality: many` fields are iteration axes. Without this, an element whose
+/// only hole is an absent optional field is cloned zero times and dropped (the
+/// same failure the `{dom.host/*}` exclusion already guards). Callers that lack
+/// the descriptor pass an empty set (the value-driven behaviour of
+/// [`build_plan_nodes`]).
+pub fn build_plan_nodes_with_scalars(
+    bindings: Vec<Binding>,
+    scalar_fields: &std::collections::BTreeSet<String>,
+) -> Vec<PlanNode> {
     // Group bindings by every field they reference. A binding
     // that mentions two fields appears in two groups. Use the
     // *host element path* (smallest containing element), not the
@@ -455,6 +470,15 @@ pub fn build_plan_nodes(bindings: Vec<Binding>) -> Vec<PlanNode> {
     // Iteration root determination per field.
     let mut iter_roots: Vec<(String, Vec<usize>)> = Vec::new();
     for (field, hosts) in field_hosts {
+        // A `cardinality: one` field is never an iteration axis — iteration is
+        // a cardinality-many concept. Skipping it here leaves its binding to be
+        // placed as a flat `Binding` below, so an absent value renders the host
+        // element once with a blank hole instead of cloning it zero times and
+        // dropping it. (The `{dom.host/*}` exclusion in `binding_fields` guards
+        // the same failure mode for host-attribute references.)
+        if scalar_fields.contains(&field) {
+            continue;
+        }
         let lca = longest_common_path_prefix(&hosts);
         // A binding whose host *is* the LCA element (e.g. `for={f}`
         // on the shared ancestor, or a `{f}` directly on it) pins the
@@ -601,12 +625,25 @@ pub fn node_path(node: &PlanNode) -> &[usize] {
 /// `repeat_root` is `None` when the whole fragment repeats: there is no
 /// chrome, every binding is body, paths unchanged.
 pub fn split_plan(bindings: Vec<Binding>, repeat_root: Option<Vec<usize>>) -> BindingPlan {
+    split_plan_with_scalars(bindings, repeat_root, &std::collections::BTreeSet::new())
+}
+
+/// Like [`split_plan`], but threads `scalar_fields` (the concept's
+/// `cardinality: one` field names) through to [`build_plan_nodes_with_scalars`]
+/// for both the chrome and the repeat body, so an optional scalar field never
+/// becomes an iteration root (and so never drops its host when absent). Callers
+/// without the descriptor pass an empty set.
+pub fn split_plan_with_scalars(
+    bindings: Vec<Binding>,
+    repeat_root: Option<Vec<usize>>,
+    scalar_fields: &std::collections::BTreeSet<String>,
+) -> BindingPlan {
     let Some(root) = repeat_root else {
         return BindingPlan {
             chrome: Vec::new(),
             repeat: RepeatPlan {
                 path: None,
-                body: build_plan_nodes(bindings),
+                body: build_plan_nodes_with_scalars(bindings, scalar_fields),
             },
         };
     };
@@ -628,10 +665,10 @@ pub fn split_plan(bindings: Vec<Binding>, repeat_root: Option<Vec<usize>>) -> Bi
     }
 
     BindingPlan {
-        chrome: build_plan_nodes(chrome_bindings),
+        chrome: build_plan_nodes_with_scalars(chrome_bindings, scalar_fields),
         repeat: RepeatPlan {
             path: Some(root),
-            body: build_plan_nodes(body_bindings),
+            body: build_plan_nodes_with_scalars(body_bindings, scalar_fields),
         },
     }
 }
@@ -757,6 +794,69 @@ mod tests {
             kind: BindingKind::Text {
                 segments: vec![Segment::Field(field.into())],
             },
+        }
+    }
+
+    fn attr_binding(path: &[usize], attr: &str, field: &str) -> Binding {
+        Binding {
+            path: path.to_vec(),
+            kind: BindingKind::Attribute {
+                attr_name: attr.into(),
+                segments: vec![Segment::Field(field.into())],
+                force_attribute: false,
+            },
+        }
+    }
+
+    #[test]
+    fn it_does_not_make_a_cardinality_one_field_an_iteration_root() {
+        // `<tonk-site path={rest}>` where `rest` is a cardinality-one
+        // (optional) field. Given the scalar-field set, it must stay a flat
+        // `Binding`, never an `Iteration`: otherwise an absent `rest` (zero
+        // values) clones the element zero times and drops it entirely — the
+        // same failure mode the `{dom.host/*}` exclusion already guards.
+        let scalars: std::collections::BTreeSet<String> =
+            ["rest".to_owned()].into_iter().collect();
+        let nodes = build_plan_nodes_with_scalars(vec![attr_binding(&[0], "path", "rest")], &scalars);
+        match &nodes[..] {
+            [PlanNode::Binding(b)] => assert_eq!(b.path, vec![0]),
+            other => panic!("expected a single flat Binding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn split_plan_keeps_a_scalar_body_field_a_flat_binding() {
+        // A `cardinality: one` field inside the repeat body must plan as a flat
+        // `Binding`, not an `Iteration`, so an absent value renders the host
+        // once rather than dropping it.
+        let scalars: std::collections::BTreeSet<String> =
+            ["rest".to_owned()].into_iter().collect();
+        let plan = split_plan_with_scalars(
+            vec![attr_binding(&[0, 0], "path", "rest")],
+            Some(vec![0]),
+            &scalars,
+        );
+        assert!(
+            plan.repeat
+                .body
+                .iter()
+                .all(|n| matches!(n, PlanNode::Binding(_))),
+            "scalar field should stay a flat Binding in the body, got {:?}",
+            plan.repeat.body
+        );
+    }
+
+    #[test]
+    fn it_still_iterates_a_field_absent_from_the_scalar_set() {
+        // A field NOT declared cardinality-one (absent from the scalar set)
+        // keeps the existing value-driven iteration behaviour — its host
+        // element becomes an iteration root.
+        let scalars: std::collections::BTreeSet<String> =
+            ["rest".to_owned()].into_iter().collect();
+        let nodes = build_plan_nodes_with_scalars(vec![text_binding(&[0, 0], "item")], &scalars);
+        match &nodes[..] {
+            [PlanNode::Iteration { field, .. }] => assert_eq!(field, "item"),
+            other => panic!("expected a single Iteration, got {other:?}"),
         }
     }
 

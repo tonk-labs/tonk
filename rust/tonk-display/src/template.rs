@@ -151,6 +151,18 @@ mod dom {
     ///
     /// Mutates `fragment` in place.
     pub fn extract_plan(fragment: &DocumentFragment) -> BindingPlan {
+        extract_plan_with_scalars(fragment, &std::collections::BTreeSet::new())
+    }
+
+    /// Like [`extract_plan`], but threads `scalar_fields` (the model concept's
+    /// `cardinality: one` field names) into the planner so an optional scalar
+    /// field never becomes an iteration root — and so its host element is not
+    /// dropped when the value is absent. Callers without the descriptor pass an
+    /// empty set (identical to [`extract_plan`]).
+    pub fn extract_plan_with_scalars(
+        fragment: &DocumentFragment,
+        scalar_fields: &std::collections::BTreeSet<String>,
+    ) -> BindingPlan {
         let bindings = collect_bindings(fragment);
         // Fold flat bindings into the iteration-aware plan tree, then
         // split it around the per-conclusion repeat element. Iteration
@@ -160,7 +172,7 @@ mod dom {
         // they live outside the wasm-only `dom` module and get
         // unit-tested natively.
         let repeat_root = super::this_repeat_root(&bindings);
-        super::split_plan(bindings, repeat_root)
+        super::split_plan_with_scalars(bindings, repeat_root, scalar_fields)
     }
 
     /// Walk a fragment, split interpolated text nodes into per-segment
@@ -649,8 +661,8 @@ mod dom {
 
 #[cfg(target_arch = "wasm32")]
 pub use dom::{
-    Snapshot, apply_attribute_binding, extract_plan, navigate, single_field_value,
-    snapshot_template,
+    Snapshot, apply_attribute_binding, extract_plan, extract_plan_with_scalars, navigate,
+    single_field_value, snapshot_template,
 };
 
 #[cfg(test)]

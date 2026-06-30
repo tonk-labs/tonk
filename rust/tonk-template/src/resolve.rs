@@ -67,6 +67,32 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
 
+/// Collect the `cardinality: one` field names from a concept's
+/// `descriptor_json` — its `with:` (required) and `maybe:` (optional) blocks.
+///
+/// These are the **scalar** fields: a single value per subject, not an
+/// iteration axis. The renderer's planner uses this set so a scalar field used
+/// in a template is a plain substitution rendered once, never an iteration root
+/// that clones its host zero times (and drops it) when the value is absent. A
+/// malformed descriptor yields an empty set — the value-driven default.
+pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let Ok(value) = serde_json::from_str::<Value>(descriptor_json) else {
+        return out;
+    };
+    for block in ["with", "maybe"] {
+        let Some(map) = value.get(block).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for (field, spec) in map {
+            if spec.get("cardinality").and_then(|c| c.as_str()) == Some("one") {
+                out.insert(field.clone());
+            }
+        }
+    }
+    out
+}
+
 /// The descriptor of the built-in `view` concept.
 ///
 /// Two fields: `model` (entity — the concept being displayed) and
@@ -419,6 +445,30 @@ mod tests {
             !with.contains_key("name"),
             "the built-in view concept is keyed by (concept, model), not a `name` field"
         );
+    }
+
+    #[dialog_common::test]
+    fn it_collects_cardinality_one_fields_from_with_and_maybe() {
+        // `with` holds a required cardinality-one field, `maybe` an optional
+        // cardinality-one field, and a cardinality-many field is excluded.
+        let descriptor = r#"{
+            "with": {
+                "id":    { "the": "xyz.tonk.site/id",   "as": "Text", "cardinality": "one" },
+                "items": { "the": "x/items",            "as": "Text", "cardinality": "many" }
+            },
+            "maybe": {
+                "rest":  { "the": "xyz.tonk.site/rest", "as": "Text", "cardinality": "one" }
+            }
+        }"#;
+        let scalars = scalar_field_names(descriptor);
+        assert!(scalars.contains("id"), "required cardinality-one field");
+        assert!(scalars.contains("rest"), "optional cardinality-one field");
+        assert!(!scalars.contains("items"), "cardinality-many excluded");
+    }
+
+    #[dialog_common::test]
+    fn it_returns_no_scalar_fields_for_invalid_descriptor() {
+        assert!(scalar_field_names("not json").is_empty());
     }
 
     #[dialog_common::test]
