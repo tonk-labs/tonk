@@ -60,7 +60,7 @@ impl Drop for Subscription {
 /// then await `detail.result`. Returns the parsed JSON response
 /// as a `JsValue`.
 pub async fn query(consumer: &Element, query_body: &JsValue) -> Result<JsValue, ErrorDetail> {
-    query_with_route(consumer, query_body, None, None).await
+    query_with_route(consumer, query_body, None, None, false).await
 }
 
 /// Like [`query`], but with an explicit cross-repo route: `space` (a
@@ -74,10 +74,11 @@ pub async fn query_with_route(
     query_body: &JsValue,
     space: Option<&str>,
     branch: Option<&str>,
+    profile: bool,
 ) -> Result<JsValue, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"query".into(), query_body).ok();
-    apply_route(&detail, space, branch);
+    apply_route(&detail, space, branch, profile);
     let result_promise = dispatch_one_shot(consumer, events::QUERY, &detail)?;
     let result = JsFuture::from(result_promise)
         .await
@@ -97,7 +98,16 @@ pub async fn query_with_route(
 /// repository route must override a `<tonk-repository profile>` ancestor's
 /// flag (which would otherwise re-target the profile endpoint). When `space`
 /// is `None` the detail is left bare so ancestor annotation proceeds as usual.
-fn apply_route(detail: &Object, space: Option<&str>, branch: Option<&str>) {
+fn apply_route(detail: &Object, space: Option<&str>, branch: Option<&str>, profile: bool) {
+    // A profile route targets the profile-as-repository endpoint: there is no
+    // named `space`, just the branch. Stamp the flag and branch and return.
+    if profile {
+        Reflect::set(detail, &"profile".into(), &JsValue::TRUE).ok();
+        if let Some(branch) = branch {
+            Reflect::set(detail, &"branch".into(), &JsValue::from_str(branch)).ok();
+        }
+        return;
+    }
     let Some(space) = space else {
         return;
     };
@@ -114,8 +124,25 @@ fn apply_route(detail: &Object, space: Option<&str>, branch: Option<&str>) {
 /// Dispatch `tonk-claim` on `consumer` with the given structured
 /// transact request, await `detail.result`.
 pub async fn claim(consumer: &Element, request: &JsValue) -> Result<JsValue, ErrorDetail> {
+    claim_with_route(consumer, request, None, None, false).await
+}
+
+/// Like [`claim`], but with an explicit cross-repo route (`space`/`branch`/
+/// `profile`). See [`query_with_route`] / `apply_route` for the routing
+/// semantics. A transact relayed from a sealed guest's `<tonk-repository
+/// profile>` context needs the profile flag stamped or it falls back to the
+/// bare `/transact` endpoint (405). With `space = None` and `profile = false`
+/// this is identical to [`claim`].
+pub async fn claim_with_route(
+    consumer: &Element,
+    request: &JsValue,
+    space: Option<&str>,
+    branch: Option<&str>,
+    profile: bool,
+) -> Result<JsValue, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"request".into(), request).ok();
+    apply_route(&detail, space, branch, profile);
     let result_promise = dispatch_one_shot(consumer, events::CLAIM, &detail)?;
     let result = JsFuture::from(result_promise)
         .await
@@ -156,7 +183,7 @@ pub fn subscribe(
     query_body: &JsValue,
     tag: Option<&JsValue>,
 ) -> Result<Subscription, ErrorDetail> {
-    subscribe_with_route(consumer, query_body, tag, None, None)
+    subscribe_with_route(consumer, query_body, tag, None, None, false)
 }
 
 /// Like [`subscribe`], but with an explicit cross-repo route (`space`/`branch`).
@@ -168,13 +195,14 @@ pub fn subscribe_with_route(
     tag: Option<&JsValue>,
     space: Option<&str>,
     branch: Option<&str>,
+    profile: bool,
 ) -> Result<Subscription, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"query".into(), query_body).ok();
     if let Some(t) = tag {
         Reflect::set(&detail, &"tag".into(), t).ok();
     }
-    apply_route(&detail, space, branch);
+    apply_route(&detail, space, branch, profile);
     let init = CustomEventInit::new();
     init.set_detail(&detail);
     init.set_bubbles(true);

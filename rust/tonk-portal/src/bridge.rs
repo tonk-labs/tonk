@@ -130,13 +130,17 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
-  // Merge an optional per-call routing context ({space,branch}) into an
-  // envelope. The guest's <tonk-host> proxy passes the space/branch its
+  // Merge an optional per-call routing context ({space,branch,profile}) into an
+  // envelope. The guest's <tonk-host> proxy passes the space/branch/profile its
   // in-guest <tonk-repository>/<tonk-branch> ancestors resolved. The host
   // honors it ONLY for a privileged (cross-repo) portal; for a normal portal
   // it is ignored, so this is always safe to send.
   function withRoute(extra,ctx){
-    if(ctx){ if(ctx.space){ extra.space=ctx.space; } if(ctx.branch){ extra.branch=ctx.branch; } }
+    if(ctx){
+      if(ctx.space){ extra.space=ctx.space; }
+      if(ctx.branch){ extra.branch=ctx.branch; }
+      if(ctx.profile){ extra.profile=ctx.profile; }
+    }
     return extra;
   }
   // The request-context headers every relayed /api fetch carries, so the SW can
@@ -166,7 +170,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     context:{this:"",model:""},
     ready:ready,
     query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
-    transact:function(request){return call("transact",{request:request});},
+    transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
     // {document, transact}; the parent relays it to the host's real <tonk-host>
     // consumer, which performs the typed evaluate and returns its parsed result.
@@ -396,6 +400,12 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       document.head.appendChild(base);
       if (d.css) {
         var style=document.createElement("style");
+        // Tag the injected app CSS so a NESTED guest (whose parent is THIS guest,
+        // not the top document) can discover it: the parent has no
+        // `<link rel=stylesheet href=/styles-*.css>` to read the href from — its
+        // app CSS lives in this inline `<style>` — so `app_stylesheet_css()`
+        // reads the content back off `[data-tonk-app-css]`.
+        style.setAttribute("data-tonk-app-css","");
         style.textContent=d.css;
         document.head.appendChild(style);
       }
@@ -563,9 +573,9 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     let mut css = fetch_text(&format!("/guest/{}", manifest.wa_css))
         .await
         .unwrap_or_default();
-    if let Some(href) = app_stylesheet_href() {
+    if let Some(app_css) = app_stylesheet_css().await {
         css.push('\n');
-        css.push_str(&fetch_text(&href).await.unwrap_or_default());
+        css.push_str(&app_css);
     }
     // Inline `@font-face url("/fonts/*.woff2")` as `data:` URLs: a
     // null-origin guest can't fetch the fonts (CORS-blocked), so the host
@@ -796,21 +806,40 @@ async fn fetch_tonk_code_bundles() -> Vec<(String, String)> {
     files
 }
 
-/// The parent document's app stylesheet href (the hashed `/styles-*.css`),
-/// read off its own `<link rel="stylesheet">`.
+/// The app stylesheet CSS to inject into a guest, read from the document that is
+/// bringing the guest up.
+///
+/// Two cases, because a guest can nest:
+/// - **Top document**: it links the app CSS as `<link rel=stylesheet
+///   href=/styles-*.css>`; fetch that href's content.
+/// - **A guest bringing up a NESTED guest**: it has NO such `<link>` — its own
+///   app CSS was injected as an inline `<style data-tonk-app-css>` (it was itself
+///   a guest). Read that style's text content directly, so the app CSS
+///   propagates down every nesting level instead of stopping at level one.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn app_stylesheet_href() -> Option<String> {
+async fn app_stylesheet_css() -> Option<String> {
     let document = window()?.document()?;
-    let links = document.query_selector_all("link[rel=stylesheet]").ok()?;
-    for i in 0..links.length() {
-        let node = links.item(i)?;
-        let el: Element = node.dyn_into().ok()?;
-        if let Some(href) = el.get_attribute("href")
-            && (href.contains("/styles-") || href.ends_with("styles.css"))
-        {
-            return Some(href);
+
+    // Top document: a `<link rel=stylesheet href=/styles-*.css>`.
+    if let Ok(links) = document.query_selector_all("link[rel=stylesheet]") {
+        for i in 0..links.length() {
+            let Some(node) = links.item(i) else { continue };
+            let Ok(el) = node.dyn_into::<Element>() else {
+                continue;
+            };
+            if let Some(href) = el.get_attribute("href")
+                && (href.contains("/styles-") || href.ends_with("styles.css"))
+            {
+                return fetch_text(&href).await.ok();
+            }
         }
     }
+
+    // A guest bringing up a nested guest: its injected app CSS is inline.
+    if let Ok(Some(style)) = document.query_selector("style[data-tonk-app-css]") {
+        return style.text_content().filter(|c| !c.is_empty());
+    }
+
     None
 }
 
@@ -1031,7 +1060,7 @@ fn make_dispatcher(
         };
         match kind.as_str() {
             "query" => handle_query(&host, &state, &port, &data),
-            "transact" => handle_transact(&host, &port, &data),
+            "transact" => handle_transact(&host, &state, &port, &data),
             "evaluate" => handle_evaluate(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
@@ -1055,12 +1084,18 @@ fn handle_query(
         Ok(b) => b,
         Err(msg) => return post_error(port, "query-error", &id, &msg),
     };
-    let (space, branch) = forwarded_route(state, data);
+    let (space, branch, profile) = forwarded_route(state, data);
     let host = host.clone();
     let port = port.clone();
     spawn_local(async move {
-        match host_consumer::query_with_route(&host, &body, space.as_deref(), branch.as_deref())
-            .await
+        match host_consumer::query_with_route(
+            &host,
+            &body,
+            space.as_deref(),
+            branch.as_deref(),
+            profile,
+        )
+        .await
         {
             Ok(rows) => post_result(&port, "query-result", &id, "rows", &rows),
             Err(e) => post_error(&port, "query-error", &id, &e.message),
@@ -1077,24 +1112,46 @@ fn handle_query(
 fn forwarded_route(
     state: &Rc<RefCell<PortalState>>,
     data: &JsValue,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, bool) {
     if !state.borrow().cross_repo {
-        return (None, None);
+        return (None, None, false);
     }
     let space = get_str(data, "space").filter(|s| !s.is_empty());
     let branch = get_str(data, "branch").filter(|s| !s.is_empty());
-    (space, branch)
+    let profile = get_bool(data, "profile");
+    (space, branch, profile)
 }
 
-fn handle_transact(host: &Element, port: &MessagePort, data: &JsValue) {
+/// Read a boolean field from an envelope, defaulting to `false`.
+fn get_bool(data: &JsValue, key: &str) -> bool {
+    Reflect::get(data, &JsValue::from_str(key))
+        .map(|v| v.is_truthy())
+        .unwrap_or(false)
+}
+
+fn handle_transact(
+    host: &Element,
+    state: &Rc<RefCell<PortalState>>,
+    port: &MessagePort,
+    data: &JsValue,
+) {
     let Some(id) = get_str(data, "id") else {
         return;
     };
     let request = Reflect::get(data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    let (space, branch, profile) = forwarded_route(state, data);
     let host = host.clone();
     let port = port.clone();
     spawn_local(async move {
-        match host_consumer::claim(&host, &request).await {
+        match host_consumer::claim_with_route(
+            &host,
+            &request,
+            space.as_deref(),
+            branch.as_deref(),
+            profile,
+        )
+        .await
+        {
             Ok(receipt) => post_result(&port, "transact-result", &id, "receipt", &receipt),
             Err(e) => post_error(&port, "transact-error", &id, &e.message),
         }
@@ -1139,7 +1196,7 @@ fn handle_subscribe(
         Ok(b) => b,
         Err(msg) => return post_error(port, "subscribe-error", &id, &msg),
     };
-    let (space, branch) = forwarded_route(state, data);
+    let (space, branch, profile) = forwarded_route(state, data);
 
     let tag = {
         let mut s = state.borrow_mut();
@@ -1153,6 +1210,7 @@ fn handle_subscribe(
         Some(&tag_js),
         space.as_deref(),
         branch.as_deref(),
+        profile,
     ) {
         Ok(host_sub) => {
             state.borrow_mut().subs.insert(
@@ -1222,14 +1280,20 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
         return post_error(port, "fetch-error", &id, "path must be host-relative");
     };
     // The guest forwards the full request so POST query/subscribe/transact work,
-    // not just GET. Build a `Request` carrying its method, headers, and body.
-    let request = match build_relayed_request(&path, data) {
-        Ok(request) => request,
+    // not just GET. Build the `RequestInit` (method, headers, body) and fetch the
+    // bare relative path as a STRING — never a `Request`, which would resolve the
+    // path against this document's baseURI. When the host is itself a sealed guest
+    // (a NESTED portal), that baseURI is the real origin, so a `Request` would
+    // make the path a cross-origin absolute URL its OWN `window.fetch` override
+    // can't relay (origin `null` → CORS). The string path lets each level's
+    // override catch the host-relative `/…` and relay up to its parent.
+    let init = match build_relayed_request(data) {
+        Ok(init) => init,
         Err(e) => return post_error(port, "fetch-error", &id, &e),
     };
     let port = port.clone();
     spawn_local(async move {
-        match fetch_request(&request).await {
+        match fetch_path(&path, &init).await {
             Ok(resp) => post_fetch_response(&port, &id, &resp).await,
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
@@ -1240,7 +1304,7 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
 /// `method`/`headers`/`body`. `headers` is an array of `[name, value]` pairs;
 /// `body` is a string (our `/api` bodies are JSON) or absent.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn build_relayed_request(path: &str, data: &JsValue) -> Result<web_sys::Request, String> {
+fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String> {
     let init = web_sys::RequestInit::new();
     let method = get_str(data, "method").unwrap_or_else(|| "GET".to_owned());
     init.set_method(&method);
@@ -1268,15 +1332,17 @@ fn build_relayed_request(path: &str, data: &JsValue) -> Result<web_sys::Request,
         init.set_body(&body);
     }
 
-    web_sys::Request::new_with_str_and_init(path, &init)
-        .map_err(|e| format!("Request {path}: {e:?}"))
+    Ok(init)
 }
 
-/// Perform a host-side `fetch(Request)` and return the `Response`.
+/// Perform a host-side `fetch(path, init)` and return the `Response`. The path is
+/// passed as a STRING (not a `Request`) so a nested-guest host's overridden
+/// `window.fetch` catches the host-relative `/…` and relays it up — see
+/// [`handle_host_fetch`].
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_request(request: &web_sys::Request) -> Result<web_sys::Response, String> {
+async fn fetch_path(path: &str, init: &web_sys::RequestInit) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
-    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_request(request))
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(path, init))
         .await
         .map_err(|e| format!("fetch: {e:?}"))?;
     resp_value

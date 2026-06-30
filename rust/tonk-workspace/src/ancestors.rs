@@ -16,5 +16,10 @@ pub(crate) fn repo_from_ancestor(this: &HtmlElement) -> Option<String> {
         .flatten()
         .and_then(|repo| repo.get_attribute("name"))
         .filter(|name| !name.is_empty())
+        // A `{…}` name is an unsubstituted template placeholder (e.g. a repeat
+        // prototype `<tonk-repository name={subject}>` upgraded before the row
+        // is stamped). It is not a real repo, so ignore it rather than fetch
+        // `/api/repository/{subject}/…` (a guaranteed 404).
+        .filter(|name| !name.contains('{'))
         .or_else(|| tonk_host::bridge::context_field("repo"))
 }

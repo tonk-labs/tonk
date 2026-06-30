@@ -123,12 +123,16 @@ pub(crate) async fn post_site_to(url: &str, path: &str) -> Result<String, ErrorD
     let _ = headers.append("x-tonk-path", path);
     init.set_headers(&headers);
 
-    // Same-origin relative URL: the SW intercepts it. The sealed guest never
-    // calls this (the host does), so the opaque-origin caveat doesn't apply.
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
+    // Fetch the relative URL as a STRING, not a `Request`. A `Request` resolves
+    // `url` against `document.baseURI` at construction; inside a sealed guest
+    // that baseURI is the host's real origin, so the relative `/api/...` becomes
+    // a fully-qualified cross-origin URL that the guest's overridden
+    // `window.fetch` may not strip (origin `null` → CORS block). Passing the
+    // bare string lets the override catch the host-relative `/…` and relay it
+    // through `window.tonk.fetch` to the parent. The nested `<tonk-site>` is a
+    // sealed guest that calls this, so the opaque-origin caveat DOES apply.
     let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+    let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
     let resp: Response = resp_value
