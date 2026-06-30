@@ -1,0 +1,7 @@
+# Tonk sheets template.
+#
+# The tabbed sheets workspace, seeded on top of core.yaml only when the
+# "sheets" template is chosen at repo creation. Overrides the default
+# `tonk/space` alias so the space route mounts the binder.
+#
+# (Stub — populated when the sheets workspace is extracted from core.yaml.)

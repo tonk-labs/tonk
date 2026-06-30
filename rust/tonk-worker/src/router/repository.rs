@@ -288,6 +288,32 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+/// The create form's template field — which library template the repo
+/// should seed. Read directly from the facts (like the remote), so the
+/// command keeps decoding against an older profile descriptor that lacks
+/// this field.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const TEMPLATE_ATTR: &str = "dom.event.current-target.elements.template/value";
+
+/// The chosen template name, read from the create command's facts.
+/// `None` when absent or blank (an older form, or "build with an agent" /
+/// "start blank" — both map to the lean default).
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn template_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == TEMPLATE_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(name) => Some(name.clone()),
+            Value::Entity(uri) => Some(uri.to_string()),
+            _ => None,
+        })
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 /// Command handler for the "New space" form (`space/create`) and the
 /// topbar's "Enable sync" form (`space/enable-sync`).
 ///
@@ -363,6 +389,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         // The optional remote is read from the facts directly (tolerating
         // the URL's `Value::Entity` representation), not via a concept.
         let remote = remote_from_facts(facts);
+        let template = template_from_facts(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -375,7 +402,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             //    whether or not a remote was given (and never vanishes on
             //    a remote failure). The create mints a fresh identity and
             //    returns its routing key.
-            let key = match create_space_inner(env.state(), &name).await {
+            let key = match create_space_inner(env.state(), &name, template.as_deref()).await {
                 Ok(key) => key,
                 Err(error) => {
                     log!("CreateSpace '{}' failed: {}", name, error);
@@ -992,7 +1019,11 @@ fn space_config(remote: &str) -> RepositoryConfiguration {
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn create_space_inner(state: &AppState, name: &str) -> Result<String, RepositoryError> {
+async fn create_space_inner(
+    state: &AppState,
+    name: &str,
+    template: Option<&str>,
+) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
@@ -1012,7 +1043,7 @@ async fn create_space_inner(state: &AppState, name: &str) -> Result<String, Repo
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
-    seed_and_initialize(state, name, &key, &subject, &branches).await?;
+    seed_and_initialize(state, name, &key, &subject, &branches, template).await?;
     Ok(key)
 }
 
@@ -1078,7 +1109,8 @@ fn spawn_seed(
     branches: Vec<String>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = seed_and_initialize(&state, &display_name, &key, &subject, &branches).await
+        if let Err(e) =
+            seed_and_initialize(&state, &display_name, &key, &subject, &branches, None).await
         {
             log!("Background seed for '{}' failed: {}", key, e);
         }
@@ -1105,59 +1137,35 @@ async fn seed_and_initialize(
     key: &str,
     subject: &Did,
     branches: &[String],
+    template: Option<&str>,
 ) -> Result<(), RepositoryError> {
     if !branches.is_empty() {
-        let library = fetch_standard_library(STANDARD_LIBRARY_URL)
-            .await
-            .map_err(|e| RepositoryError::Internal(format!("fetch standard library: {e}")))?;
-        // The showcase demo (the "Trip to Pistoia" sample) lands only in
-        // the default `home` repository, on top of the scaffold; every
-        // other repo gets the scaffold alone, so its directory render has
-        // zero sheet instances and reads as genuinely empty — the
-        // precondition for the launchpad view.
-        let demo = if display_name == DEFAULT_REPOSITORY_NAME {
-            Some(
-                fetch_standard_library(DEMO_LIBRARY_URL)
-                    .await
-                    .map_err(|e| RepositoryError::Internal(format!("fetch showcase demo: {e}")))?,
-            )
-        } else {
-            None
-        };
+        // Fetch every library document this repo seeds — core, then the
+        // chosen template, then (home only) the showcase demo. Concatenated
+        // and evaluated in ONE commit per branch so the rule engine
+        // saturates over the whole document at once (the name flash fix).
+        let urls = seed_library_urls(template, display_name);
+        let mut documents: Vec<String> = Vec::with_capacity(urls.len());
+        for url in &urls {
+            let document = fetch_standard_library(url)
+                .await
+                .map_err(|e| RepositoryError::Internal(format!("fetch '{url}': {e}")))?;
+            documents.push(document);
+        }
 
-        // Seed the whole scaffold in ONE commit per branch: the standard
-        // library, the showcase demo (home only), AND the repository's own
-        // name, concatenated into a single notation document evaluated
-        // once. Splitting these across commits made the name land a beat
-        // after the scaffold, so the Hub card briefly rendered the
-        // library's default "Untitled" before the real name arrived — a
-        // visible flash. Concatenating lets the rule engine saturate over
-        // the whole document at once: the explicit `tonk/repository` name
-        // is present when the library's default-name rule evaluates, so
-        // its `unless` guard suppresses "Untitled" and only the real name
-        // is ever committed.
         let name_body = repository_name_body(subject, display_name)?;
         let tonk = state.read().await;
         for branch_name in branches {
-            let mut body = library.clone();
-            if let Some(demo) = &demo {
-                body.push('\n');
-                body.push_str(demo);
-            }
+            let mut body = documents.join("\n");
             body.push('\n');
             body.push_str(&name_body);
             seed_standard_library(&tonk, key, branch_name, &body)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
-            log!(
-                "Seeded scaffold + name on '{}' branch '{}'",
-                key,
-                branch_name
-            );
+            log!("Seeded {} doc(s) + name on '{}' branch '{}'", urls.len(), key, branch_name);
         }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
-        // Nothing to seed — the replica is immediately initialized.
         let tonk = state.read().await;
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
@@ -1169,15 +1177,20 @@ async fn seed_and_initialize(
 /// the dist from `tonk-core/assets/library/core.yaml` by trunk. Seeded
 /// onto each space's content branch. Only referenced from the
 /// SW-scoped background seed path.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
+
+/// URL of the served sheets-template asset, appended on top of the
+/// scaffold when the `sheets` template is chosen.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const SHEETS_LIBRARY_URL: &str = "/library/sheets.yaml";
 
 /// URL of the served showcase-demo notation asset (`demo.yaml`),
 /// copied into the dist alongside `core.yaml`. Seeded on top of the
 /// scaffold, but only into the default `home` repository, so every
 /// other repo starts with zero sheet instances. Only referenced
 /// from the SW-scoped background seed path.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
 
 /// The default display label for the repository created for a fresh
@@ -1185,8 +1198,26 @@ const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
 /// this label; every other repository gets the scaffold alone and
 /// renders empty until populated. This is a label, not an address —
 /// the repository's identity is still its minted DID.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const DEFAULT_REPOSITORY_NAME: &str = "home";
+
+/// The ordered list of library documents to concatenate and seed for a
+/// new repo. Core is always first. The `sheets` template appends the
+/// sheets workspace (which overrides the `tonk/space` alias to the
+/// binder). The default `home` repo gets sheets + the showcase demo, so
+/// it keeps opening into the populated binder. Every other template
+/// value (including `blank`, `agent`, or an unknown one) is core alone —
+/// the lean default that renders the blank canvas.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn seed_library_urls(template: Option<&str>, display_name: &str) -> Vec<&'static str> {
+    if display_name == DEFAULT_REPOSITORY_NAME {
+        return vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL, DEMO_LIBRARY_URL];
+    }
+    match template {
+        Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
+        _ => vec![STANDARD_LIBRARY_URL],
+    }
+}
 
 /// URL of the lean profile library — only the `space` concept and the
 /// Hub directory view. Seeded onto the profile's meta branch, which
@@ -2770,6 +2801,104 @@ mod remote_from_facts_tests {
             .is("   ".to_string())
             .assert(&mut changes);
         assert!(remote_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
+/// The optional-template reader the create handler uses. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod template_from_facts_tests {
+    use super::template_from_facts;
+    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement};
+    use dialog_query::the;
+
+    fn artifacts(changes: Changes) -> Vec<Artifact> {
+        changes
+            .into_instructions()
+            .into_iter()
+            .map(|instruction| match instruction {
+                Instruction::Assert(artifact)
+                | Instruction::Replace(artifact)
+                | Instruction::Retract(artifact) => artifact,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn it_reads_the_chosen_template() {
+        let of: Entity = "did:key:zTemplate".parse().expect("entity");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.elements.template/value")
+            .of(of)
+            .is("sheets".to_string())
+            .assert(&mut changes);
+        assert_eq!(
+            template_from_facts(&artifacts(changes)).as_deref(),
+            Some("sheets"),
+        );
+    }
+
+    #[test]
+    fn it_returns_none_without_a_template_fact() {
+        let of: Entity = "did:key:zNoTemplate".parse().expect("entity");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.elements.name/value")
+            .of(of)
+            .is("test".to_string())
+            .assert(&mut changes);
+        assert!(template_from_facts(&artifacts(changes)).is_none());
+    }
+
+    #[test]
+    fn it_treats_a_blank_template_as_none() {
+        let of: Entity = "did:key:zBlankTemplate".parse().expect("entity");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.elements.template/value")
+            .of(of)
+            .is("   ".to_string())
+            .assert(&mut changes);
+        assert!(template_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
+/// The pure library-URL selector. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod seed_library_urls_tests {
+    use super::seed_library_urls;
+
+    #[test]
+    fn it_seeds_core_only_for_a_blank_repo() {
+        assert_eq!(
+            seed_library_urls(None, "anything"),
+            vec!["/library/core.yaml"],
+        );
+    }
+
+    #[test]
+    fn it_appends_sheets_for_the_sheets_template() {
+        assert_eq!(
+            seed_library_urls(Some("sheets"), "anything"),
+            vec!["/library/core.yaml", "/library/sheets.yaml"],
+        );
+    }
+
+    #[test]
+    fn it_seeds_core_for_an_unknown_template() {
+        assert_eq!(
+            seed_library_urls(Some("wiki"), "anything"),
+            vec!["/library/core.yaml"],
+        );
+    }
+
+    #[test]
+    fn it_seeds_sheets_and_demo_for_the_home_repo() {
+        assert_eq!(
+            seed_library_urls(None, "home"),
+            vec![
+                "/library/core.yaml",
+                "/library/sheets.yaml",
+                "/library/demo.yaml",
+            ],
+        );
     }
 }
 
