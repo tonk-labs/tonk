@@ -33,7 +33,6 @@
 //! through a `<tonk-display>`), so a `MutationObserver` re-projects as
 //! they land.
 
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -74,7 +73,15 @@ impl CustomElement for TonkSheetBinder {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["active"]
+        // Nothing is observed. `active` is written by the binder itself
+        // (the click handler and the `default-active` seed) and is
+        // deliberately NOT observed: observing it would make each self-write
+        // enqueue an `attributeChangedCallback` on this same instance, which
+        // the browser flushes re-entrantly while the binder's lifecycle
+        // callback still holds its (per-instance) custom-element mutex —
+        // panicking on wasm's non-reentrant mutex. The writers re-project
+        // synchronously instead.
+        &[]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -83,6 +90,15 @@ impl CustomElement for TonkSheetBinder {
         install_click(this, &self.click);
         install_create_listeners(this, &self.submit, &self.keydown);
         install_observer(this, &self.observer, &self.mutation);
+        // Project synchronously: a sealed `<tonk-site>` projected into a
+        // sheet panel reads its routing context from light-DOM ancestors
+        // (`closest("tonk-repository")`) in its own `connected_callback`,
+        // so the panel DOM must exist before that upgrade runs — deferring
+        // it would mount the site into an ancestor-less DOM and render
+        // "required attribute missing". The one write `project` makes to an
+        // OBSERVED attribute (`active`, in `active_sheet`) is deferred to a
+        // microtask there, so it cannot synchronously re-enter this
+        // callback's wasm-bindgen closure / instance mutex.
         project(this);
     }
 
@@ -98,32 +114,17 @@ impl CustomElement for TonkSheetBinder {
 
     fn attribute_changed_callback(
         &mut self,
-        this: &HtmlElement,
+        _this: &HtmlElement,
         _name: String,
-        old: Option<String>,
-        new: Option<String>,
+        _old: Option<String>,
+        _new: Option<String>,
     ) {
-        if old == new {
-            return;
-        }
-        // Skip the callback when it fires re-entrantly from our own
-        // `active` write inside `project` (seeding from `default-active`).
-        // The in-progress `project` renders with the seeded value, so a
-        // nested re-project is redundant — and re-entering would deadlock
-        // the custom-element harness mutex held across this callback.
-        if PROJECTING.with(Cell::get) {
-            return;
-        }
-        project(this);
+        // No attributes are observed (see `observed_attributes`), so this
+        // never fires. The binder owns its `active`/`default-active` state
+        // and re-projects from the writers directly, never via attribute
+        // reactions — which on this single per-instance-mutex element would
+        // re-enter and panic.
     }
-}
-
-thread_local! {
-    /// Set while [`project`] runs so a synchronous `active` write it makes
-    /// (seeding from `default-active`) does not re-enter via
-    /// `attribute_changed_callback`. wasm is single-threaded, so a plain
-    /// `Cell` suffices.
-    static PROJECTING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// CSS class names the consuming view styles.
@@ -160,18 +161,6 @@ const EMPTY: &str = "data-empty";
 /// Build/refresh the tab strip from the `<tonk-sheet>` children, then
 /// apply ordering + the active state. Idempotent.
 fn project(this: &HtmlElement) {
-    // Mark this pass so a synchronous `active` write (the `default-active`
-    // seed in `active_sheet`) does not re-enter `attribute_changed_callback`.
-    // The drop guard clears the flag on every exit path.
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            PROJECTING.with(|p| p.set(false));
-        }
-    }
-    PROJECTING.with(|p| p.set(true));
-    let _reset = Reset;
-
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -269,6 +258,11 @@ fn active_sheet(this: &HtmlElement) -> String {
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
     {
+        // Persist the seed onto `active` so the binder owns the selection
+        // from here on. This is a plain synchronous write: `active` is NOT
+        // an observed attribute (see `observed_attributes`), so it does not
+        // enqueue an `attributeChangedCallback` and cannot re-enter this
+        // element's lifecycle callback / instance mutex.
         let _ = this.set_attribute("active", &seed);
         return seed;
     }
@@ -588,18 +582,25 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
                         let _ = host.remove_attribute("active");
                     }
                 }
+                // `active` is not observed, so the write above does not
+                // re-project on its own; do it explicitly so the tab strip
+                // follows the new selection immediately (the panel updates
+                // when the closed sheet's `<tonk-sheet>` is retracted).
+                project(&host);
             }
 
             dispatch_close(&host, &sheet);
             return;
         }
 
-        // Switch immediately — don't wait for the event → command →
-        // rule → DB roundtrip. Setting `active` triggers
-        // `attribute_changed_callback`, which re-projects (the tab +
-        // panel update without latency). The command (fired below)
-        // persists the same value, which flows back idempotently.
+        // Switch immediately — don't wait for the event → command → rule →
+        // DB roundtrip. `active` is NOT an observed attribute (writing it
+        // must not loop back through `attribute_changed_callback`), so
+        // re-project explicitly here: the tab + panel update without
+        // latency. The command (fired below) persists the same value, which
+        // flows back idempotently.
         let _ = host.set_attribute("active", &sheet);
+        project(&host);
         // Persist: the consuming view wires `activate` to a command.
         dispatch_activate(&host, &sheet);
     }) as Box<dyn FnMut(Event)>);
