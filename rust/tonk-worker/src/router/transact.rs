@@ -83,6 +83,15 @@ pub async fn transact(
             .branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
+    // Mark the repo dirty so the next sync drain pushes its new commits. The
+    // SW owns the sync work-queue (the page only pokes `POST /api/sync` on a
+    // heartbeat); a commit here is the authoritative "this repo has un-pushed
+    // changes" signal. A no-op transact (empty claims) re-marks harmlessly —
+    // the drain just finds nothing ahead and pushes nothing.
+    {
+        let tonk_state = state.read().await;
+        tonk_state.sync_queue.mark_dirty(&path.repo, now_millis());
+    }
     // Dispatch any transient commands (now that the state lock is
     // released, so each command's `execute` can re-acquire it) and then
     // drain the polls this request scheduled. `dispatch` always drains —
@@ -154,6 +163,19 @@ pub async fn transact_profile(
 /// transact response. On wasm the SW keeps the spawned task alive on its event
 /// loop and the returned future is immediately ready; native builds (tests) run
 /// the dispatch inline so commands complete deterministically before assertions.
+/// A millisecond wall-clock stamp for sync-queue activity priority. `Date.now()`
+/// in the SW event context; native (tests) has no clock dependency, so 0.
+fn now_millis() -> f64 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        js_sys::Date::now()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        0.0
+    }
+}
+
 async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
