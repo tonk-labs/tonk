@@ -157,7 +157,8 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // stack.
     let host_for_task = host.clone();
     spawn_local(async move {
-        if let Err(error) = tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
+        if let Err(error) =
+            tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
         {
             tonk_common::log!("tonk-site: load claim failed for {path}: {error:?}");
         }

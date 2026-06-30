@@ -815,9 +815,9 @@ mod tests {
         // `Binding`, never an `Iteration`: otherwise an absent `rest` (zero
         // values) clones the element zero times and drops it entirely — the
         // same failure mode the `{dom.host/*}` exclusion already guards.
-        let scalars: std::collections::BTreeSet<String> =
-            ["rest".to_owned()].into_iter().collect();
-        let nodes = build_plan_nodes_with_scalars(vec![attr_binding(&[0], "path", "rest")], &scalars);
+        let scalars: std::collections::BTreeSet<String> = ["rest".to_owned()].into_iter().collect();
+        let nodes =
+            build_plan_nodes_with_scalars(vec![attr_binding(&[0], "path", "rest")], &scalars);
         match &nodes[..] {
             [PlanNode::Binding(b)] => assert_eq!(b.path, vec![0]),
             other => panic!("expected a single flat Binding, got {other:?}"),
@@ -829,8 +829,7 @@ mod tests {
         // A `cardinality: one` field inside the repeat body must plan as a flat
         // `Binding`, not an `Iteration`, so an absent value renders the host
         // once rather than dropping it.
-        let scalars: std::collections::BTreeSet<String> =
-            ["rest".to_owned()].into_iter().collect();
+        let scalars: std::collections::BTreeSet<String> = ["rest".to_owned()].into_iter().collect();
         let plan = split_plan_with_scalars(
             vec![attr_binding(&[0, 0], "path", "rest")],
             Some(vec![0]),
@@ -851,8 +850,7 @@ mod tests {
         // A field NOT declared cardinality-one (absent from the scalar set)
         // keeps the existing value-driven iteration behaviour — its host
         // element becomes an iteration root.
-        let scalars: std::collections::BTreeSet<String> =
-            ["rest".to_owned()].into_iter().collect();
+        let scalars: std::collections::BTreeSet<String> = ["rest".to_owned()].into_iter().collect();
         let nodes = build_plan_nodes_with_scalars(vec![text_binding(&[0, 0], "item")], &scalars);
         match &nodes[..] {
             [PlanNode::Iteration { field, .. }] => assert_eq!(field, "item"),

@@ -107,7 +107,6 @@ pub fn register() {
     branch::register();
 }
 
-
 /// Register ONLY the passive routing annotators — `<tonk-repository>` and
 /// `<tonk-branch>` — without the IO-owning `<tonk-host>`. Idempotent.
 ///

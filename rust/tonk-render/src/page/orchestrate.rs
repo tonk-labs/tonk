@@ -13,11 +13,11 @@ use std::collections::BTreeMap;
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 use tonk_template::fold::select_rows;
+use tonk_template::resolve::scalar_field_names;
 use tonk_template::resolve::{
     directory_view_predicate, entity_query, instances_query, looks_like_uri, name_query,
     parse_source, phase1_query, view_by_model_query, view_predicate,
 };
-use tonk_template::resolve::scalar_field_names;
 use tonk_template::{split_plan_with_scalars, this_repeat_root};
 
 use crate::page::{QueryBackend, RenderError, RenderRoute};
