@@ -350,6 +350,52 @@ view/directory!: &profile/fab/view
             </button>
           </nav>
         </span>
+        <!-- Share / invite. Like the repo switcher, this is a hover zone: the
+             bar shows "share" until an invite is minted, hovering reveals the
+             member roster, and once minted the bar shows the invite link with a
+             copy button. The invite and the roster both live on the SPACE's OWN
+             content branch (the cross-device source of truth) — `tonk:invite`,
+             `tonk:agent-invite`, `tonk:member` and the two compact `fab-*` views
+             are seeded by core.yaml there, not on this profile/meta branch — so,
+             exactly like the repo-name chip above, they are reached through a
+             nested `<tonk-repository name={DID}>` that opens the space's routing
+             context (honored for the privileged FAB portal). Clicking "share"
+             submits the hidden `fab-invite-form`, firing `tonk:invite`; the
+             worker's InviteHandler mints the membership keypair + delegation
+             against this nested space branch (its origin repo). `<tonk-origin>`
+             supplies `{origin}/join` as `data-base` for the copyable URL. -->
+        <span class="fab__share">
+          <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
+            <tonk-origin>
+              <!-- The minted invite link. Shown once the mint lands; before
+                   that `tonk:agent-invite` does not resolve and the empty
+                   hidden fallbacks suppress tonk-display's built-in absence
+                   callout, so the bar shows only the "share" button below.
+                   When it resolves the display sets `data-state="ready"`, and
+                   the CSS sibling rule hides the button so the bar shows just
+                   the link + copy. `bind:base` supplies `{origin}/join`. -->
+              <tonk-display class="fab__invite-display" entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
+                <span slot="no-entity" hidden></span>
+                <span slot="no-model" hidden></span>
+                <span slot="loading" hidden></span>
+              </tonk-display>
+              <!-- The mint trigger. The "share" form lives in a SPACE-branch
+                   view (core.yaml's `tonk:repository` directory view), mounted
+                   here no-entity inside the nested repository context — so its
+                   `onsubmit=tonk:invite` binding both resolves its descriptor
+                   AND dispatches its claim on the SPACE's content branch, where
+                   the worker's InviteHandler mints for that repo. (Binding it in
+                   the FAB's own profile/meta template instead dispatched the
+                   claim to profile/meta with an empty origin repo.) Directory
+                   chrome renders regardless of whether the repo is named, so the
+                   "share" button is always present. -->
+              <tonk-display class="fab__share-mint" model="tonk:repository"></tonk-display>
+            </tonk-origin>
+            <nav class="fab__menu fab__share-menu opens-up">
+              <tonk-display model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
+            </nav>
+          </tonk-branch></tonk-repository></tonk-host>
+        </span>
       </div>
       <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
            `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
@@ -515,7 +561,8 @@ view/directory!: &profile/fab/view
         /* Collapsed (default): only the sync-status ring shows; hovering adds
            the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
         .fab:not(.expanded) .fab__identity,
-        .fab:not(.expanded) .fab__repo { display: none; }
+        .fab:not(.expanded) .fab__repo,
+        .fab:not(.expanded) .fab__share { display: none; }
         /* The menu is a transparent stack: each row is its own floating card,
            so the page shows through the gaps between rows (like the FAB pill
            itself). No panel background/border/shadow here — those live on the
@@ -591,6 +638,86 @@ view/directory!: &profile/fab/view
           font-size: 14px;
           line-height: 1;
         }
+        /* ── Share / invite ─────────────────────────────────────────────
+           Pushed to the bar's right edge; like `.fab__repo` it anchors its
+           own dropdown, so `position: relative`. */
+        .fab__share {
+          position: relative;
+          margin-left: auto;
+          display: inline-flex;
+          align-items: center;
+        }
+        /* The share content renders through nested routing elements
+           (`<tonk-host>/<tonk-repository>/<tonk-branch>`); keep them inline so
+           the label/link reads as plain text in the bar. The roster `<nav>` is
+           absolutely positioned, so an inline branch host doesn't disturb it. */
+        .fab__share tonk-host,
+        .fab__share tonk-repository,
+        .fab__share tonk-branch { display: inline; }
+        /* The link display (B) and the mint display (A) sit inline in the bar;
+           `<tonk-origin>` (the `data-base` source) and the directory `tonk-view`
+           wrappers carry no layout box of their own. */
+        .fab__share tonk-origin { display: inline; }
+        .fab__share .fab__invite-display,
+        .fab__share .fab__share-mint { display: inline; }
+        .fab__share-mint tonk-view { display: contents; }
+        .fab__share-form {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+        /* Once the invite link has rendered (the display reaches `ready`), drop
+           the "share" mint button so the bar shows just the link + copy. The
+           link display (B) precedes the mint display (A), so the sibling
+           combinator reaches the "share" button inside A. */
+        .fab__invite-display[data-state="ready"] ~ .fab__share-mint .fab__share-trigger,
+        .fab__invite-display[data-state="default-view"] ~ .fab__share-mint .fab__share-trigger { display: none; }
+        /* The "share" affordance shown before a link is minted: a quiet text
+           button that submits the mint form. Reads like the bar's other labels. */
+        .fab__share-trigger {
+          font: inherit;
+          border: 0;
+          background: transparent;
+          color: var(--wa-color-text-quiet, #666);
+          cursor: pointer;
+          padding: 0 2px;
+        }
+        .fab__share-trigger:hover { color: var(--wa-color-text-normal, #111); }
+        /* The minted invite: a friendly `{name}?access=…` label clipped to a
+           width, with the copy button at its end. The label is cosmetic; the
+           copy button (in the fab-invite view) carries the real absolute URL. */
+        .fab__invite {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          max-width: 220px;
+        }
+        .fab__invite-url {
+          color: var(--wa-color-text-quiet, #666);
+          font-family: var(--wa-font-family-code, monospace);
+          font-size: 11px;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+        }
+        .fab__invite-copy {
+          flex: none;
+          color: var(--wa-color-text-quiet, #666);
+          font-size: 13px;
+        }
+        /* The member roster dropdown — anchored to the share zone's RIGHT edge
+           (the repo switcher anchors left). Inherits `.fab__menu`'s transparent
+           card-stack look and the JS-applied opens-up/opens-down direction. */
+        .fab__share-menu {
+          left: auto;
+          right: 0;
+        }
+        /* `.fab__share` wraps both the label and the menu, so hovering the
+           absolutely positioned menu keeps `.fab__share:hover` true. */
+        .fab__share:hover .fab__share-menu,
+        .fab__share-menu:hover { display: flex; }
+        /* Member cards: right-aligned names, matching the wireframe roster. */
+        .fab__menu-item--member { text-align: right; }
       </style>
     </tonk-fab>
 

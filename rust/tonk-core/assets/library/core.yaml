@@ -682,6 +682,103 @@ view/directory!:
       <tonk-display entity={this} model={dom.host/model} />
     </div>
 
+# A compact member-roster view kind for the FAB's share dropdown. Its
+# `display` template lives under a distinct attribute
+# (`xyz.tonk.view/fab-roster`) so `tonk:member` can carry both the full
+# `tonk:member/roster` directory (the share dialog) AND this compact roster
+# without the two colliding under directory resolution — mirroring how
+# `tonk:view/fab-menu` (profile.yaml) gives `space` a compact roster beside
+# its Hub directory. `<tonk-display model=tonk:member view=tonk:view/fab-roster>`
+# (no entity) iterates members, cloning the per-member card below for each.
+concept!: &view/fab-roster
+  this: tonk:view/fab-roster
+  description: A compact member-list view kind for the FAB share dropdown.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the FAB compact member roster
+      the: xyz.tonk.view/fab-roster
+      cardinality: one
+      as: text
+
+# One member card for the FAB share dropdown — just the member's display
+# name as a floating card (the FAB's `.fab__menu-item` styling, supplied by
+# the FAB view's `<style>`, applies since the card renders into the same
+# shadow tree). The richer `tonk:member/row` (avatar + DID + role badge) is
+# reserved for the share dialog; the FAB roster shows names only, matching
+# the wireframe.
+view/fab-roster!:
+  this: id:tonk:member/fab-roster
+  model: tonk:member
+  display: |
+    <span class="fab__menu-item fab__menu-item--member">{name}</span>
+
+# A compact invite-link view kind for the FAB bar. Distinct attribute
+# (`xyz.tonk.view/fab-invite`) so `tonk:agent-invite` can carry both its
+# default agent-prompt view AND this compact bar link. Selected via
+# `view=tonk:view/fab-invite`. Renders the friendly `{name}?access=…` label
+# (CSS-clipped in the bar) with a copy button carrying the real absolute
+# join URL (`{base}?access={access}{remote}#{code}`, `base` = `{origin}/join`
+# from a wrapping `<tonk-origin>`). Resolves only once both invite halves
+# exist, so the FAB shows the "share" mint button until the mint lands.
+concept!: &view/fab-invite
+  this: tonk:view/fab-invite
+  description: A compact invite-link view kind for the FAB bar.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the FAB compact invite link
+      the: xyz.tonk.view/fab-invite
+      cardinality: one
+      as: text
+
+view/fab-invite!:
+  this: id:tonk:agent-invite/fab-invite
+  model: tonk:agent-invite
+  display: |
+    <span class="fab__invite">
+      <span class="fab__invite-url" title="Invite link for {name}">{name}?access={access}{remote}#{code}</span>
+      <wa-copy-button class="fab__invite-copy" value="{dom.host/data-base}?access={access}{remote}#{code}"></wa-copy-button>
+    </span>
+
+# The FAB share-mint trigger — a no-entity directory view over
+# `tonk:repository`, mounted in the FAB share zone via
+# `<tonk-display model="tonk:repository">` (no entity) INSIDE the space's
+# nested routing context. Two reasons it lives here (the space content
+# branch) and is mounted space-scoped rather than written into the FAB's
+# own profile/meta template:
+#   1. Descriptor: `<tonk-display>` resolves an event binding's command
+#      descriptor by a phase-1 lookup against the branch it is scoped to.
+#      Scoped to the space branch, `onsubmit=tonk:invite` resolves against
+#      core.yaml here.
+#   2. Routing: the binding dispatches its `tonk-claim` on THIS display's
+#      host, which sits inside `<tonk-repository name={space}>`, so the
+#      claim is annotated with the space's content branch and the worker's
+#      InviteHandler reads the space as the origin repo. A binding in the
+#      profile/meta FAB template instead dispatched its claim on the FAB's
+#      own host (outside the nested repository), routing to profile/meta
+#      with an empty origin repo.
+# Directory chrome renders regardless of whether the repo is named, so the
+# "share" button is always present (an unnamed repo's `tonk:repository`
+# instance would not resolve an entity view). `data-invite` is the
+# per-command marker `tonk:invite` decodes against. The minted link renders
+# separately via the `tonk:view/fab-invite` display in the FAB template.
+view/directory!:
+  this: id:tonk:repository/fab-share
+  model: tonk:repository
+  display: |
+    <form class="fab__share-form" data-invite="tonk:invite" onsubmit=tonk:invite>
+      <button type="submit" class="fab__share-trigger">share</button>
+    </form>
+
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
 # living only in the joining profile's replica index. The banner reads
