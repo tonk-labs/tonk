@@ -97,6 +97,26 @@ pub async fn ensure_site(path: &str) -> Result<String, ErrorDetail> {
     Ok(site)
 }
 
+/// Register this document's site against a per-branch `/site` endpoint (`url`),
+/// matching `path` on that branch. The branch is named in `url` (e.g.
+/// `/api/profile/branch/meta/site`), so the SW does no document-path routing.
+/// Returns and caches the `site:<client-id>` entity, like [`ensure_site`].
+#[cfg(target_arch = "wasm32")]
+pub async fn ensure_site_on(url: &str, path: &str) -> Result<String, ErrorDetail> {
+    let site = crate::http::post_site_to(url, path).await?;
+    SITE_ID.with(|cell| *cell.borrow_mut() = Some(site.clone()));
+    Ok(site)
+}
+
+/// Native stub — the `/site` fetch is wasm-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn ensure_site_on(_url: &str, _path: &str) -> Result<String, ErrorDetail> {
+    Err(ErrorDetail::new(
+        ErrorKind::Network,
+        "ensure_site_on is only available on wasm32",
+    ))
+}
+
 /// Native stub — the `/api/site` fetch is wasm-only.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn ensure_site(_path: &str) -> Result<String, ErrorDetail> {

@@ -637,3 +637,107 @@ view!: &join/failure-view
       <strong>Couldn’t join</strong>
       <p>{reason}</p>
     </wa-callout>
+
+# ============================================================
+# ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
+# ============================================================
+#
+# The profile is itself a routable target: `<tonk-site path=…>` posts to
+# `/api/profile/branch/meta/site`, the SW asserts this tab's `tonk:site` on this
+# branch (matching the path against the `route!` table below), and the element
+# renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
+# matched `{concept}` on the same site entity — the same indirection a space uses.
+
+# A tab's location + the route concept it renders. Mirrors core.yaml's `&site`.
+concept!: &site
+  this: tonk:site
+  description: A tab's location and the route concept it renders.
+  with:
+    path:
+      description: Currently active path on this site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    anchor:
+      description: Currently active anchor (URL hash) on this site.
+      the: xyz.tonk.site/anchor
+      cardinality: one
+      as: text
+    space:
+      description: The space (repository name) on this site.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
+    branch:
+      description: The active branch name on this site (defaults to "main").
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+    replica:
+      description: Currently active replica on this site.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+    route:
+      description: Matched route of this site.
+      the: xyz.tonk.site/route
+      cardinality: one
+      as: entity
+    concept:
+      description: Matched route's concept (the model the shell mounts).
+      the: xyz.tonk.site/concept
+      cardinality: one
+      as: entity
+
+# The site view: render the matched route concept on this same site entity.
+view!: &site-view
+  this: id:tonk:site/view
+  model: tonk:site
+  display: |
+    <tonk-display entity={this} model={concept} />
+
+# The route table concept. Mirrors core.yaml's `&route`.
+concept!: &route
+  this: tonk:route
+  description: A route — maps a path pattern to the model the SW mounts.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The route model to render when this path matches.
+      the: xyz.tonk.route/concept
+      cardinality: one
+      as: entity
+
+# The profile's only route for now: `/` renders the Hub.
+route!: &route/home
+  this: id:tonk:route/home
+  path: "/"
+  concept: tonk:hub
+
+# The Hub route model + its view: the space directory over this (profile) branch.
+# `tonk:hub` is the concept the `/` route resolves to; its view renders the
+# `space` directory view, the same picker the legacy `<tonk-hub>` element mounted.
+concept!: &hub
+  this: tonk:hub
+  description: The Tonk Hub — a picker over the profile's spaces.
+  with:
+    # Picked off the site entity. The hub view renders the `space`
+    # directory and doesn't read it, but a `concept!` must declare at
+    # least one field, and `path` is the natural one a route model carries.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &hub-view
+  this: id:tonk:hub/view
+  model: tonk:hub
+  display: |
+    <div class="display-view-slot">
+      <tonk-display model="space"></tonk-display>
+    </div>
