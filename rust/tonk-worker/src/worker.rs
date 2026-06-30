@@ -329,6 +329,10 @@ pub struct TonkState {
     /// transient command concepts after a commit. Consulted by the
     /// transact path's post-commit dispatch.
     pub commands: crate::reactor::CommandRegistry<crate::router::CommandEnv>,
+    /// Repositories with un-pushed local commits. A commit enqueues its repo;
+    /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
+    /// reconcile it. See `router::sync::SyncQueue`.
+    pub sync_queue: crate::router::SyncQueue,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -419,6 +423,46 @@ mod route_for_tests {
     }
 }
 
+/// Trailing-edge debounce coordinator for the background sync drain.
+///
+/// Every `on_fetch` bumps `generation` and captures its value, then schedules a
+/// drain after a quiet window. After the window the request drains ONLY if its
+/// captured generation still equals the current one — i.e. no newer request
+/// arrived to supersede it. So a burst of requests collapses into a single
+/// trailing-edge drain (the last request wins); earlier ones wake and no-op.
+/// `in_flight` guards against two drains overlapping if a new winner fires while
+/// the previous drain is still running.
+///
+/// Single-threaded SW, so plain `Cell`s behind `Rc` — no atomics needed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Clone, Default)]
+struct SyncScheduler {
+    generation: std::rc::Rc<std::cell::Cell<u64>>,
+    in_flight: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl SyncScheduler {
+    /// Bump the generation and return the new value — the caller's ticket. The
+    /// caller drains only if this ticket is still current after the debounce.
+    fn next(&self) -> u64 {
+        let next = self.generation.get().wrapping_add(1);
+        self.generation.set(next);
+        next
+    }
+
+    /// Whether `ticket` is still the latest scheduled drain (nothing superseded
+    /// it) and no drain is already running.
+    fn should_drain(&self, ticket: u64) -> bool {
+        self.generation.get() == ticket && !self.in_flight.get()
+    }
+}
+
+/// Quiet window before a request's scheduled sync drain fires. A burst of boot
+/// queries collapses into one drain at the trailing edge.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_DEBOUNCE_MS: i32 = 2_000;
+
 /// The main Tonk service worker that handles browser fetch events.
 ///
 /// This struct bridges the browser's service worker API with an Axum router,
@@ -438,6 +482,12 @@ pub struct TonkServiceWorker {
     /// version begins installing — without this the active worker
     /// can't be replaced because long-lived fetches keep it alive.
     lsp: Arc<LspHub>,
+    /// Trailing-edge debounce for the background sync drain every fetch
+    /// schedules on `event.waitUntil`. See [`SyncScheduler`]. Wasm-only: the
+    /// drain runs on the service-worker event loop, which native builds (tests)
+    /// don't have.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    sync_scheduler: SyncScheduler,
 }
 
 #[wasm_bindgen]
@@ -489,6 +539,7 @@ impl TonkServiceWorker {
             view_bindings: Default::default(),
             bridges: Default::default(),
             commands: crate::router::command_registry(),
+            sync_queue: Default::default(),
         };
         bootstrap_profile_meta(&state)
             .await
@@ -501,7 +552,13 @@ impl TonkServiceWorker {
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
-        Ok(Self { router, state, lsp })
+        Ok(Self {
+            router,
+            state,
+            lsp,
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            sync_scheduler: SyncScheduler::default(),
+        })
     }
 
     /// Hook the SW's `updatefound` event from JavaScript.
@@ -598,6 +655,17 @@ impl TonkServiceWorker {
         let router = self.router.clone();
         let state = self.state.clone();
 
+        // Schedule a debounced background sync drain on this event's lifetime.
+        // Every request (not just commits) does this: the page's normal traffic
+        // IS the sync heartbeat. The drain pushes repos with un-pushed commits
+        // and pulls every open repo, so upstream changes arrive without the page
+        // committing or poking a dedicated endpoint. `wait_until` keeps the SW
+        // alive through the debounce window so the drain actually runs. A burst
+        // of boot queries collapses into one trailing-edge drain via the
+        // generation ticket — only the last request still matches and drains.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        schedule_sync_drain(&event, &self.sync_scheduler, &self.state);
+
         future_to_promise(async move {
             // Opportunistic cleanup of stale bridge sessions and view
             // bindings. Cheap enough to run on every fetch.
@@ -648,36 +716,64 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Runs a durable background sync for the repository named in
-    /// `tag`, invoked from the Background Sync API `onsync` event.
+    /// Runs a durable background sync, invoked from the Background Sync API
+    /// `onsync` event — the tab-closed backstop for the in-fetch drain.
     ///
-    /// The event carries only a tag string, so the repo identity
-    /// travels in it as `tonk-sync:{repo}`. The worker enumerates that
-    /// repo's upstream branches and reconciles each through the
-    /// `/sync` route — the same selection the in-page sweep makes.
+    /// The SW owns the sync work-queue (repos with un-pushed commits) and knows
+    /// every open repo, so the event needs no per-repo identity: the tag is just
+    /// `"sync"`. The handler drains the queue — push the dirty set, pull every
+    /// open repo — exactly like the per-fetch `event.waitUntil` drain.
     ///
     /// # Returns
     ///
-    /// A JavaScript `Promise` that resolves to `undefined` once every
-    /// upstream branch has reconciled. A malformed or unrecognized tag
-    /// resolves as a no-op. If a branch fails to land, the promise
-    /// rejects so the user agent retries the sync with backoff.
+    /// A JavaScript `Promise` that resolves to `undefined` once the drain
+    /// completes.
     pub fn sync(&self, tag: String) -> Promise {
         let state = self.state.clone();
 
         future_to_promise(async move {
-            let Some(repo) = crate::router::repo_from_sync_tag(&tag) else {
-                log!("Background sync: ignoring unrecognized tag {tag:?}");
-                return Ok(JsValue::UNDEFINED);
-            };
-            log!("Background sync triggered for repo '{repo}'");
-
-            match crate::router::sync_repository(&state, repo).await {
-                Ok(()) => Ok(JsValue::UNDEFINED),
-                Err(e) => Err(JsValue::from_str(&e)),
-            }
+            log!("Background sync triggered ({tag:?})");
+            crate::router::drain_sync(&state).await;
+            Ok(JsValue::UNDEFINED)
         })
     }
+}
+
+/// Schedule a debounced background sync drain on `event`'s lifetime.
+///
+/// Bumps the scheduler's generation, captures the ticket, and hands
+/// `event.wait_until` a promise that sleeps the debounce window and then drains
+/// ONLY if the ticket is still current (no newer request superseded it) and no
+/// drain is already running. `wait_until` keeps the SW alive through the sleep,
+/// so the trailing-edge drain actually runs even when the originating request
+/// finished long before. Failures are swallowed — a background drain never
+/// rejects the fetch.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
+    use wasm_bindgen::JsCast;
+
+    let ticket = scheduler.next();
+    let scheduler = scheduler.clone();
+    let state = state.clone();
+
+    let promise = future_to_promise(async move {
+        // Quiet window: a burst of requests collapses into one drain.
+        let _ = crate::sleep(web_time::Duration::from_millis(SYNC_DEBOUNCE_MS as u64)).await;
+
+        if !scheduler.should_drain(ticket) {
+            // A newer request superseded us, or a drain is already running.
+            return Ok(JsValue::UNDEFINED);
+        }
+        scheduler.in_flight.set(true);
+        crate::router::drain_sync(&state).await;
+        scheduler.in_flight.set(false);
+        Ok(JsValue::UNDEFINED)
+    });
+
+    // `wait_until` lives on `ExtendableEvent`, the base of `FetchEvent`. Upcast
+    // and extend the event's lifetime to cover the debounced drain.
+    let extendable: &web_sys::ExtendableEvent = event.unchecked_ref();
+    let _ = extendable.wait_until(&promise);
 }
 
 /// Extracts the `source.id` string from an `ExtendableMessageEvent`.

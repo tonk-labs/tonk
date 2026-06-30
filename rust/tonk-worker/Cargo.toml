@@ -74,6 +74,7 @@ web-sys = { workspace = true, features = [
     "Client",
     "Clients",
     "CryptoKey",
+    "ExtendableEvent",
     "ExtendableMessageEvent",
     "FetchEvent",
     "Headers",

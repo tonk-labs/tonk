@@ -28,7 +28,8 @@ pub use repository::{
 mod sync;
 pub use dialog_repository::Revision;
 pub use sync::{
-    SyncResponse, SyncStatusResponse, branches_to_sync, repo_from_sync_tag, sync_repository,
+    SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, repo_from_sync_tag,
+    sync_repository,
 };
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
