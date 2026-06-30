@@ -89,6 +89,15 @@ command!: &space/create
         kebab→camel-cased.
       the: dom.event.current-target.elements.remote/value
       as: text
+    template:
+      description: >
+        Which template to seed: "sheets" for the tabbed workspace, or
+        blank/absent for the lean default (the blank canvas). Read from
+        the wizard's `template` control on submit, exactly as `name` and
+        `remote` are. The worker's CreateSpaceHandler reads it via
+        template_from_facts; an older form that omits it decodes as blank.
+      the: dom.event.current-target.elements.template/value
+      as: text
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -147,13 +156,76 @@ view/directory!:
         <wa-button class="hub-new" variant="neutral" data-dialog="open space-create">New space</wa-button>
       </header>
       <wa-dialog id="space-create" label="New space" class="hub-dialog">
-        <form id="space-create-form" class="hub-form" onsubmit=space/create>
-          <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
-          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
-          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+        <form id="space-create-form" class="hub-form wizard" onsubmit=space/create>
+          <style>
+            /* CSS-paged wizard: a hidden radio per screen drives which
+               .wizard__screen shows. The form submits once at the end, so
+               every control (name, template, remote) is in the same form
+               and read via dom.event.current-target.elements.* . */
+            .wizard__nav { position: absolute; opacity: 0; pointer-events: none; }
+            .wizard__screen { display: none; flex-direction: column; gap: var(--wa-space-m); }
+            #wiz-start:checked    ~ .wizard__screen--start    { display: flex; }
+            #wiz-template:checked ~ .wizard__screen--template { display: flex; }
+            .wizard__cards { display: flex; gap: var(--wa-space-m); }
+            .wizard__card {
+              flex: 1; display: block; padding: var(--wa-space-l);
+              border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+              border-radius: var(--wa-border-radius-m); cursor: pointer; text-align: left;
+              font: inherit; background: var(--wa-color-surface-default);
+            }
+            .wizard__card:hover { border-color: var(--wa-color-text-normal); }
+            .wizard__card h3 { margin: 0 0 var(--wa-space-2xs); font-size: var(--wa-font-size-l); }
+            .wizard__card p { margin: 0; font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
+            .wizard__template { display: none; }
+          </style>
+
+          <!-- screen radios -->
+          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-start" checked>
+          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-template">
+
+          <!-- the chosen template, carried into space/create; default blank -->
+          <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
+          <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
+
+          <!-- Screen 1: name + how to start -->
+          <div class="wizard__screen wizard__screen--start">
+            <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+            <div class="wizard__cards">
+              <label class="wizard__card" for="wiz-template">
+                <h3>Start from a template</h3>
+                <p>Seed the view with a ready-made layout.</p>
+              </label>
+              <label class="wizard__card" for="tpl-blank">
+                <button type="submit" form="space-create-form" style="all: unset; cursor: pointer;">
+                  <h3>Build with an agent</h3>
+                  <p>Start blank; hand the repo to an agent from inside it.</p>
+                </button>
+              </label>
+            </div>
+            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
+            <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+          </div>
+
+          <!-- Screen 2: pick a template -->
+          <div class="wizard__screen wizard__screen--template">
+            <div class="wizard__cards">
+              <label class="wizard__card" for="tpl-sheets">
+                <button type="submit" form="space-create-form" style="all: unset; cursor: pointer;">
+                  <h3>Sheets</h3>
+                  <p>A tabbed workspace of artifacts.</p>
+                </button>
+              </label>
+              <label class="wizard__card" for="tpl-blank">
+                <button type="submit" form="space-create-form" style="all: unset; cursor: pointer;">
+                  <h3>Blank</h3>
+                  <p>An empty canvas to build by hand or with an agent.</p>
+                </button>
+              </label>
+            </div>
+            <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
+          </div>
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
       <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
@@ -429,13 +501,76 @@ view/directory!: &profile/fab/view
            `<tonk-default-remote>` resolve on this same profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
       <wa-dialog id="fab-space-create" label="New space" class="fab__dialog">
-        <form id="fab-space-create-form" class="fab__form" onsubmit=space/create>
-          <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
-          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
-          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+        <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create>
+          <style>
+            /* CSS-paged wizard: a hidden radio per screen drives which
+               .wizard__screen shows. The form submits once at the end, so
+               every control (name, template, remote) is in the same form
+               and read via dom.event.current-target.elements.* . */
+            .wizard__nav { position: absolute; opacity: 0; pointer-events: none; }
+            .wizard__screen { display: none; flex-direction: column; gap: var(--wa-space-m); }
+            #wiz-start:checked    ~ .wizard__screen--start    { display: flex; }
+            #wiz-template:checked ~ .wizard__screen--template { display: flex; }
+            .wizard__cards { display: flex; gap: var(--wa-space-m); }
+            .wizard__card {
+              flex: 1; display: block; padding: var(--wa-space-l);
+              border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+              border-radius: var(--wa-border-radius-m); cursor: pointer; text-align: left;
+              font: inherit; background: var(--wa-color-surface-default);
+            }
+            .wizard__card:hover { border-color: var(--wa-color-text-normal); }
+            .wizard__card h3 { margin: 0 0 var(--wa-space-2xs); font-size: var(--wa-font-size-l); }
+            .wizard__card p { margin: 0; font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
+            .wizard__template { display: none; }
+          </style>
+
+          <!-- screen radios -->
+          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-start" checked>
+          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-template">
+
+          <!-- the chosen template, carried into space/create; default blank -->
+          <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
+          <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
+
+          <!-- Screen 1: name + how to start -->
+          <div class="wizard__screen wizard__screen--start">
+            <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+            <div class="wizard__cards">
+              <label class="wizard__card" for="wiz-template">
+                <h3>Start from a template</h3>
+                <p>Seed the view with a ready-made layout.</p>
+              </label>
+              <label class="wizard__card" for="tpl-blank">
+                <button type="submit" form="fab-space-create-form" style="all: unset; cursor: pointer;">
+                  <h3>Build with an agent</h3>
+                  <p>Start blank; hand the repo to an agent from inside it.</p>
+                </button>
+              </label>
+            </div>
+            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
+            <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+          </div>
+
+          <!-- Screen 2: pick a template -->
+          <div class="wizard__screen wizard__screen--template">
+            <div class="wizard__cards">
+              <label class="wizard__card" for="tpl-sheets">
+                <button type="submit" form="fab-space-create-form" style="all: unset; cursor: pointer;">
+                  <h3>Sheets</h3>
+                  <p>A tabbed workspace of artifacts.</p>
+                </button>
+              </label>
+              <label class="wizard__card" for="tpl-blank">
+                <button type="submit" form="fab-space-create-form" style="all: unset; cursor: pointer;">
+                  <h3>Blank</h3>
+                  <p>An empty canvas to build by hand or with an agent.</p>
+                </button>
+              </label>
+            </div>
+            <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
+          </div>
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
