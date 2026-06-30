@@ -112,7 +112,10 @@ fn navigate_to(href: &str) {
     let pushed = win
         .history()
         .ok()
-        .map(|h| h.push_state_with_url(&JsValue::NULL, "", Some(href)).is_ok())
+        .map(|h| {
+            h.push_state_with_url(&JsValue::NULL, "", Some(href))
+                .is_ok()
+        })
         .unwrap_or(false);
     if pushed {
         // `pushState` fires no event; dispatch `popstate` so listeners re-route.
