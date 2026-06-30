@@ -904,10 +904,9 @@ view!:
       <tonk-display model=workspace/sheet data-binder={this} data-active={active} />
     </div>
 
-# Set the binder shell as the space's default view. The space route mounts
+# Set the binder as the space's default view. The space route mounts
 # `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
-# `tonk/space` to `tonk:binder`, so the single-mode `tonk:shell` view (the topbar
-# over the sheet binder) renders for that one replica's binder.
+# `tonk/space` to `tonk:binder`, so the binder view renders for that replica.
 name!:
   this: id:tonk/space
   entity: tonk:binder

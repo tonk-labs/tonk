@@ -195,12 +195,10 @@ view/directory!:
                 <h3>Start from a template</h3>
                 <p>Seed the view with a ready-made layout.</p>
               </label>
-              <label class="wizard__card" for="tpl-blank">
-                <button type="submit" form="space-create-form" style="all: unset; cursor: pointer;">
-                  <h3>Build with an agent</h3>
-                  <p>Start blank; hand the repo to an agent from inside it.</p>
-                </button>
-              </label>
+              <button type="submit" form="space-create-form" class="wizard__card" style="cursor:pointer;">
+                <h3>Build with an agent</h3>
+                <p>Start blank; hand the repo to an agent from inside it.</p>
+              </button>
             </div>
             <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
             <tonk-default-remote field="remote">Use this server</tonk-default-remote>
@@ -210,18 +208,15 @@ view/directory!:
           <div class="wizard__screen wizard__screen--template">
             <div class="wizard__cards">
               <label class="wizard__card" for="tpl-sheets">
-                <button type="submit" form="space-create-form" style="all: unset; cursor: pointer;">
-                  <h3>Sheets</h3>
-                  <p>A tabbed workspace of artifacts.</p>
-                </button>
+                <h3>Sheets</h3>
+                <p>A tabbed workspace of artifacts.</p>
               </label>
               <label class="wizard__card" for="tpl-blank">
-                <button type="submit" form="space-create-form" style="all: unset; cursor: pointer;">
-                  <h3>Blank</h3>
-                  <p>An empty canvas to build by hand or with an agent.</p>
-                </button>
+                <h3>Blank</h3>
+                <p>An empty canvas to build by hand or with an agent.</p>
               </label>
             </div>
+            <wa-button type="submit" form="space-create-form" variant="primary">Create space</wa-button>
             <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
           </div>
         </form>
@@ -540,12 +535,10 @@ view/directory!: &profile/fab/view
                 <h3>Start from a template</h3>
                 <p>Seed the view with a ready-made layout.</p>
               </label>
-              <label class="wizard__card" for="tpl-blank">
-                <button type="submit" form="fab-space-create-form" style="all: unset; cursor: pointer;">
-                  <h3>Build with an agent</h3>
-                  <p>Start blank; hand the repo to an agent from inside it.</p>
-                </button>
-              </label>
+              <button type="submit" form="fab-space-create-form" class="wizard__card" style="cursor:pointer;">
+                <h3>Build with an agent</h3>
+                <p>Start blank; hand the repo to an agent from inside it.</p>
+              </button>
             </div>
             <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
             <tonk-default-remote field="remote">Use this server</tonk-default-remote>
@@ -555,18 +548,15 @@ view/directory!: &profile/fab/view
           <div class="wizard__screen wizard__screen--template">
             <div class="wizard__cards">
               <label class="wizard__card" for="tpl-sheets">
-                <button type="submit" form="fab-space-create-form" style="all: unset; cursor: pointer;">
-                  <h3>Sheets</h3>
-                  <p>A tabbed workspace of artifacts.</p>
-                </button>
+                <h3>Sheets</h3>
+                <p>A tabbed workspace of artifacts.</p>
               </label>
               <label class="wizard__card" for="tpl-blank">
-                <button type="submit" form="fab-space-create-form" style="all: unset; cursor: pointer;">
-                  <h3>Blank</h3>
-                  <p>An empty canvas to build by hand or with an agent.</p>
-                </button>
+                <h3>Blank</h3>
+                <p>An empty canvas to build by hand or with an agent.</p>
               </label>
             </div>
+            <wa-button type="submit" form="fab-space-create-form" variant="primary">Create space</wa-button>
             <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
           </div>
         </form>
