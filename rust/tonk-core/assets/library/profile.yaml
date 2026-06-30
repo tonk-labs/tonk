@@ -970,6 +970,40 @@ view!: &hub-view
       <tonk-display model="space"></tonk-display>
     </div>
 
+# The /join route: redeem an invite. The shell's top-level `<tonk-site>`
+# routes every path against this table, so without an entry `/join` matched
+# nothing and the site rendered an empty `tonk:site` ("required attribute
+# missing"). Mirrors the Hub: `/join` → `tonk:join/route`, whose entity view
+# (on the site entity) mounts the no-entity `<tonk-display
+# model="tonk:join/status">` directory. That directory's chrome carries the
+# `<tonk-page onmount=tonk:join>` trigger, which reads the page location
+# (the SW can't see the `#fragment` seed) and fires `tonk:join`.
+route!: &route/join
+  this: id:tonk:route/join
+  path: "/join"
+  concept: tonk:join/route
+
+concept!: &join/route
+  this: tonk:join/route
+  description: The /join page — redeem an invite on the profile meta branch.
+  with:
+    # The hub carries `path` for the same reason: a route model must declare
+    # at least one field, and the view doesn't read it (the join trigger
+    # reads the location itself).
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &join/route-view
+  this: id:tonk:join/route/view
+  model: tonk:join/route
+  display: |
+    <div class="display-view-slot">
+      <tonk-display model="tonk:join/status"></tonk-display>
+    </div>
+
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
 # full-size repo portal with the FAB floating on top — and hands the rest of the
 # path to a NESTED `<tonk-site>` inside the portal, which routes it against the
