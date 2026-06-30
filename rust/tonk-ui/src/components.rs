@@ -17,9 +17,6 @@ use launcher::*;
 #[cfg(target_arch = "wasm32")]
 mod space;
 
-mod display;
-use display::*;
-
 mod hub;
 use hub::*;
 
