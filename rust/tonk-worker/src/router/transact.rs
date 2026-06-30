@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::CommitSummary;
-use tonk_schema::claim::TransactRequest;
+use tonk_schema::claim::{Claim, TransactRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -168,7 +168,13 @@ async fn transact_on_branch<'a>(
     }
 
     let mut builder = tonk_branch.transaction();
-    for claim in request.claims {
+    for source in request.claims {
+        // Validate and type-coerce the wire claim against its
+        // predicate's declared types before it can emit any facts. A
+        // mismatch (e.g. a string into an `as: signed-integer` field
+        // that isn't an integral float) is the caller's error.
+        let claim = Claim::try_from(source)
+            .map_err(|e| TonkWorkerError::Router(format!("invalid claim: {e}")))?;
         builder = builder.apply(claim);
     }
 

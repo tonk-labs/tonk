@@ -3153,9 +3153,7 @@ view!:
         use dialog_query::artifact::Type;
         use dialog_query::attribute::Cardinality as DialogCardinality;
         use dialog_query::concept::descriptor::ConceptDescriptor as DialogConceptDescriptor;
-        use tonk_core::claim::{
-            ConceptDescriptor as WireDescriptor, PredicateApplication, ValueMap,
-        };
+        use tonk_core::claim::{ConceptDescriptor as WireDescriptor, SourceApplication, ValueMap};
         use tonk_schema::transact::{
             ApplicationPlan, application_plan_from_predicate, derive_this,
         };
@@ -3182,11 +3180,15 @@ view!:
         let mut params_with_this = ValueMap::new();
         params_with_this.insert("display".into(), Value::String("x".into()));
         params_with_this.insert("this".into(), Value::Entity(notation_this.clone()));
-        let plan = application_plan_from_predicate(PredicateApplication {
-            predicate: WireDescriptor::Durable(descriptor.clone()),
-            parameters: params_with_this,
-            name: None,
-        });
+        let plan = application_plan_from_predicate(
+            SourceApplication {
+                predicate: WireDescriptor::Durable(descriptor.clone()),
+                parameters: params_with_this,
+                name: None,
+            }
+            .try_into()
+            .expect("wire application validates"),
+        );
         let ApplicationPlan::Concept(plan) = &plan else {
             panic!("expected concept plan");
         };
@@ -3203,11 +3205,15 @@ view!:
         // which is NOT the pinned entity. This documents the edge.
         let mut params_no_this = ValueMap::new();
         params_no_this.insert("display".into(), Value::String("x".into()));
-        let plan = application_plan_from_predicate(PredicateApplication {
-            predicate: WireDescriptor::Durable(descriptor),
-            parameters: params_no_this,
-            name: None,
-        });
+        let plan = application_plan_from_predicate(
+            SourceApplication {
+                predicate: WireDescriptor::Durable(descriptor),
+                parameters: params_no_this,
+                name: None,
+            }
+            .try_into()
+            .expect("wire application validates"),
+        );
         let ApplicationPlan::Concept(plan) = &plan else {
             panic!("expected concept plan");
         };

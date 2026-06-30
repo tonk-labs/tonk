@@ -167,6 +167,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     ready:ready,
     query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
     transact:function(request){return call("transact",{request:request});},
+    // Evaluate an asserted-notation document against the branch. `detail` carries
+    // {document, transact}; the parent relays it to the host's real <tonk-host>
+    // consumer, which performs the typed evaluate and returns its parsed result.
+    evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
     // Navigate the HOST page: the opaque guest can't touch parent.location
     // and has no router, so a link click posts its href here and the parent
     // performs the real navigation. Fire-and-forget (no response).
@@ -211,6 +215,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       case "query-result": case "transact-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;
+      }
+      case "evaluate-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
+        h.resolve(env.result); return;
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -257,7 +265,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
           {status:env.status,statusText:env.statusText,headers:headers}));
         return;
       }
-      case "query-error": case "transact-error": case "fetch-error": {
+      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
       }
@@ -304,8 +312,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   }
   window.fetch=function(input,init){
     var url=(typeof input==="string")?input:(input&&input.url)||"";
+    // Host-relative (`/…`, not `//`): route through the relay.
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
       return relayRequest(url,input,init);
+    }
+    // Absolute URL pointing at the HOST origin: some consumers resolve a path
+    // against `document.baseURI` (which the host sets to its real origin), so a
+    // host API call can arrive fully-qualified (`http://host/api/…`). At the
+    // guest's opaque origin that would be a cross-origin fetch (CORS-blocked,
+    // origin `null`), so strip the host-origin prefix and relay the path. The
+    // host origin comes from the bridge context.
+    var origin=(window.tonk&&window.tonk.context&&window.tonk.context.origin)||"";
+    if(origin&&url.indexOf(origin+"/")===0){
+      return relayRequest(url.slice(origin.length),input,init);
     }
     return nativeFetch(input,init);
   };
@@ -326,6 +345,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
 const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
+  // Surface guest errors to the parent log: an opaque (null) origin sanitizes
+  // `Uncaught (in promise)` / error details in the parent console to a bare
+  // message, so a sealed-guest failure is otherwise undebuggable. Forwarding the
+  // stack via the bridge keeps the sealed runtime diagnosable. The parent logs
+  // these under "portal guest runtime warn:".
+  window.addEventListener("unhandledrejection", function(ev){
+    var r=ev.reason;
+    parent.postMessage({__tonkRuntime:"warn",error:"unhandledrejection: "+(r&&r.stack?r.stack:String(r))},"*");
+  });
+  window.addEventListener("error", function(ev){
+    parent.postMessage({__tonkRuntime:"warn",error:"error: "+(ev.error&&ev.error.stack?ev.error.stack:ev.message)},"*");
+  });
+
   // Global submit guard: the iframe sandbox grants `allow-forms` only so a
   // `<form>`'s `submit` event fires (declarative `onsubmit=` bindings run on
   // it). This capture-phase listener `preventDefault`s EVERY submission
@@ -386,6 +418,59 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       var mod=await import(glueUrl);
       await mod.default({ module_or_path: d.wasm });
       mod.start();
+      // The <tonk-code> editor bundle: code-split CodeMirror that loads sibling
+      // chunks + language packs via RELATIVE imports, dead at this opaque origin.
+      // Mint a blob per file, rewrite every "./<name>" import to its blob, and
+      // import the main bundle to define <tonk-code> + <tonk-diagnostics-provider>.
+      // The language pack is loaded at runtime via a `./tonk-code-lang-<id>.js`
+      // URL built from import.meta.url, which is the (useless) blob URL inside the
+      // guest — expose a name->blob map the rewritten lookup consults instead.
+      if (d.code && d.code.length) {
+        try {
+          // Mint a blob per file in DEPENDENCY ORDER so each file's relative
+          // imports rewrite to the FINAL blob URLs of already-minted deps. The
+          // esbuild chunk graph is a DAG (shared chunks are leaves), so repeated
+          // passes that mint any file whose deps are all minted converges; a
+          // file with an unminted relative dep is deferred to a later pass.
+          var srcByName={};
+          for (var ci=0; ci<d.code.length; ci++){ srcByName[d.code[ci].name]=d.code[ci].src; }
+          var relImports=function(src){
+            var out=[],re=/['"]\.\/([^'"$]+)['"]/g,m;
+            while((m=re.exec(src))) if(out.indexOf(m[1])<0) out.push(m[1]);
+            return out;
+          };
+          var blobs={};            // name -> final blob URL
+          var pending=Object.keys(srcByName);
+          var guard=0;
+          while (pending.length && guard++ < 20){
+            var next=[];
+            for (var pi=0; pi<pending.length; pi++){
+              var name=pending[pi];
+              var deps=relImports(srcByName[name]).filter(function(n){return srcByName[n]!==undefined;});
+              var ready=deps.every(function(n){return blobs[n];});
+              if(!ready){ next.push(name); continue; }
+              var out=srcByName[name];
+              for (var di=0; di<deps.length; di++){
+                out=out.split('"./'+deps[di]+'"').join('"'+blobs[deps[di]]+'"');
+                out=out.split("'./"+deps[di]+"'").join("'"+blobs[deps[di]]+"'");
+              }
+              // Runtime language-pack URL → guest blob-map lookup.
+              out=out.replace(
+                "new URL(`./tonk-code-lang-${t}.js`,import.meta.url).href",
+                "window.__tonkCodeLang(t)"
+              );
+              blobs[name]=URL.createObjectURL(new Blob([out],{type:"text/javascript"}));
+            }
+            pending=next;
+          }
+          window.__tonkCodeLang=function(id){return blobs["tonk-code-lang-"+id+".js"]||"";};
+          await import(blobs["tonk-code.js"]);
+        } catch(codeErr) {
+          // The editor failing to inject must not abort the whole runtime — the
+          // rest of the view still works; the inspector just lacks an editor.
+          parent.postMessage({__tonkRuntime:"warn",error:"tonk-code inject: "+String(codeErr)+(codeErr&&codeErr.stack?"\n"+codeErr.stack:"")},"*");
+        }
+      }
     } catch(err) {
       parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
     }
@@ -507,10 +592,22 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
         snippets.push(&entry);
     }
 
+    // The `<tonk-code>` editor bundle graph (main + lang pack + chunks), as
+    // `{name, src}` entries the guest blobs and import-rewrites. Code-split, so
+    // it can't be one self-contained module — the guest mints a blob per file.
+    let code = js_sys::Array::new();
+    for (name, src) in fetch_tonk_code_bundles().await {
+        let entry = Object::new();
+        let _ = Reflect::set(&entry, &"name".into(), &JsValue::from_str(&name));
+        let _ = Reflect::set(&entry, &"src".into(), &JsValue::from_str(&src));
+        code.push(&entry);
+    }
+
     let payload = Object::new();
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
     let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
+    let _ = Reflect::set(&payload, &"code".into(), &code);
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
     let _ = Reflect::set(&payload, &"wa".into(), &wa);
@@ -622,6 +719,83 @@ fn find_snippet_imports(glue: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Find the relative `./…` ESM import specifiers in a module's source — both
+/// static (`from"./x"`) and dynamic (`import("./x")`). Used to walk the
+/// `<tonk-code>` bundle's chunk graph so every referenced file can be fetched and
+/// injected (the sealed guest can't fetch siblings at its opaque origin).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn find_relative_imports(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Match `"./<name>"` and `'./<name>'` occurrences anywhere — covers
+    // `from"./x.js"`, `import("./x.js")`, and the language-pack URL template.
+    for quote in ['"', '\''] {
+        let needle = format!("{quote}./");
+        let mut rest = src;
+        while let Some(i) = rest.find(&needle) {
+            let after = &rest[i + needle.len()..];
+            if let Some(end) = after.find(quote) {
+                let name = &after[..end];
+                // Skip the language-pack template literal (`./tonk-code-lang-…`
+                // contains a `${…}` placeholder, handled separately).
+                if !name.contains("${") && !out.contains(&name.to_owned()) {
+                    out.push(name.to_owned());
+                }
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Fetch the `<tonk-code>` editor bundle graph from `/tonk-code/` for guest
+/// injection: the main element bundle, the dialog-yaml language pack, and every
+/// `chunk-*.js` either transitively imports. Returns `(name, src)` pairs the
+/// guest blobs + import-rewrites. Best-effort — a missing file is skipped, so the
+/// editor degrades rather than failing the whole inject.
+///
+/// The bundle is code-split (esbuild `splitting:true`, required for a single
+/// `@codemirror/state` identity), so it can't be one self-contained ESM like the
+/// WA bundle; instead the guest mints a blob per file and rewrites relative
+/// imports to those blobs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_tonk_code_bundles() -> Vec<(String, String)> {
+    // Entry points with stable (unhashed) names served at `/tonk-code/`.
+    let entries = ["tonk-code.js", "tonk-code-lang-dialog-yaml.js"];
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut queue: Vec<String> = entries.iter().map(|s| s.to_string()).collect();
+
+    while let Some(name) = queue.pop() {
+        if files.iter().any(|(n, _)| n == &name) {
+            continue;
+        }
+        // `reload` cache mode: unlike the guest-manifest assets, the tonk-code
+        // bundles are served under STABLE (unhashed) names, so the SW's
+        // stale-while-revalidate shell cache would otherwise serve a previous
+        // build's editor — a content change must reach the guest. `reload`
+        // bypasses the cache for the request but still writes the response back,
+        // so a later offline load is still served.
+        let src = match fetch_text_reload(&format!("/tonk-code/{name}")).await {
+            Ok(src) => src,
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "tonk-code inject: skipping {name}: {e}"
+                )));
+                continue;
+            }
+        };
+        // Enqueue every chunk this file imports (the lang pack also pulls chunks).
+        for spec in find_relative_imports(&src) {
+            if !files.iter().any(|(n, _)| n == &spec) && !queue.contains(&spec) {
+                queue.push(spec);
+            }
+        }
+        files.push((name, src));
+    }
+    files
+}
+
 /// The parent document's app stylesheet href (the hashed `/styles-*.css`),
 /// read off its own `<link rel="stylesheet">`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -674,6 +848,24 @@ async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Fetch `url` as text with `cache: "reload"` — bypass the cache for the request
+/// but still update it. For stable-named assets (the tonk-code bundles) whose
+/// content changes across builds, so a stale shell-cache copy isn't served.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_text_reload(url: &str) -> Result<String, String> {
+    use web_sys::{RequestCache, RequestInit};
+    let win = window().ok_or("no window")?;
+    let init = RequestInit::new();
+    init.set_cache(RequestCache::Reload);
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init))
+        .await
+        .map_err(|e| format!("fetch {url}: {e:?}"))?;
+    let resp: web_sys::Response = resp_value
+        .dyn_into()
+        .map_err(|_| format!("fetch {url}: not a Response"))?;
+    resp_text(resp).await
+}
+
 async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
     // Default cache mode (no override): these URLs are content-hashed (named
@@ -743,6 +935,12 @@ pub(crate) fn install_message_listener() {
                     "error" => {
                         tonk_common::log!(
                             "portal guest runtime error: {}",
+                            get_str(&data, "error").unwrap_or_default()
+                        );
+                    }
+                    "warn" => {
+                        tonk_common::log!(
+                            "portal guest runtime warn: {}",
                             get_str(&data, "error").unwrap_or_default()
                         );
                     }
@@ -834,6 +1032,7 @@ fn make_dispatcher(
         match kind.as_str() {
             "query" => handle_query(&host, &state, &port, &data),
             "transact" => handle_transact(&host, &port, &data),
+            "evaluate" => handle_evaluate(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&data),
@@ -898,6 +1097,31 @@ fn handle_transact(host: &Element, port: &MessagePort, data: &JsValue) {
         match host_consumer::claim(&host, &request).await {
             Ok(receipt) => post_result(&port, "transact-result", &id, "receipt", &receipt),
             Err(e) => post_error(&port, "transact-error", &id, &e.message),
+        }
+    });
+}
+
+/// Relay an `evaluate` envelope to the host's real `<tonk-host>` consumer, which
+/// performs the typed evaluate (POST `/evaluate?transact=`) and returns the
+/// parsed JSON result. The guest's inspector dispatches `tonk-evaluate`; its
+/// proxy host relays here, so the inspector uses the same host consumer API as
+/// the in-page editor — no direct HTTP, no hand-rolled response types.
+fn handle_evaluate(host: &Element, port: &MessagePort, data: &JsValue) {
+    let Some(id) = get_str(data, "id") else {
+        return;
+    };
+    let document = get_str(data, "document").unwrap_or_default();
+    // Default to a committing evaluate; only an explicit `false` is a dry run.
+    let transact = Reflect::get(data, &"transact".into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let host = host.clone();
+    let port = port.clone();
+    spawn_local(async move {
+        match host_consumer::evaluate(&host, &document, transact).await {
+            Ok(result) => post_result(&port, "evaluate-result", &id, "result", &result),
+            Err(e) => post_error(&port, "evaluate-error", &id, &e.message),
         }
     });
 }

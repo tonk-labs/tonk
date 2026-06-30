@@ -40,7 +40,7 @@ use dialog_artifacts::Entity;
 use tonk_notation::{Application as SyntaxApplication, Expression, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
-use tonk_core::claim::{Claim, ConceptDescriptor, PredicateApplication, TransactRequest};
+use tonk_core::claim::{ConceptDescriptor, SourceApplication, SourceClaim, TransactRequest};
 use tonk_core::effect::Effect;
 use tonk_schema::transact::{Application, Statement, ThisIntent};
 
@@ -311,7 +311,7 @@ pub enum AnalyzeLowerError {
 fn lower_statement(
     statement: &Statement,
     transient: &HashSet<Entity>,
-) -> Result<Claim, AnalyzeLowerError> {
+) -> Result<SourceClaim, AnalyzeLowerError> {
     let (application, is_assert) = match statement {
         Statement::Assert(app) => (app, true),
         Statement::Retract(app) => (app, false),
@@ -343,15 +343,15 @@ fn lower_statement(
         };
         parameters.insert(key.clone(), value);
     }
-    let predicate_application = PredicateApplication {
+    let application = SourceApplication {
         predicate,
         parameters,
         name,
     };
     Ok(if is_assert {
-        Claim::Assert(predicate_application)
+        SourceClaim::Assert(application)
     } else {
-        Claim::Retract(predicate_application)
+        SourceClaim::Retract(application)
     })
 }
 

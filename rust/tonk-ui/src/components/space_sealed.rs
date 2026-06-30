@@ -38,6 +38,11 @@ use tonk_schema::parse_space;
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct SealedSpaceParams {
     space: Option<String>,
+    /// The remaining path after `/space/{space}` (e.g. `inspector`,
+    /// `id:x@trip`). Captured as a wildcard so an entity URI containing `/`
+    /// is taken whole; threaded into the registered site path so the SW's
+    /// route table matches the full Level-1 path. Absent for a bare space URL.
+    subject: Option<String>,
 }
 
 /// The sealed-iframe space route. `:space` is `{branch}@{name}` (branch
@@ -77,17 +82,20 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     let branch_name =
         Signal::derive_local(move || space_ref.get().map(|s| s.branch).filter(|s| !s.is_empty()));
 
-    // The route's own path — `/space/{space}` from the param, NOT
-    // `window.location`. On a client-side navigation the resource below fires
-    // before the router has committed the new URL, so reading `window.location`
-    // would carry the previous path and the SW would resolve the wrong route.
+    // The route's own path — `/space/{space}` plus any `*subject` tail, from the
+    // params, NOT `window.location`. On a client-side navigation the resource
+    // below fires before the router has committed the new URL, so reading
+    // `window.location` would carry the previous path and the SW would resolve
+    // the wrong route. The SW splits off the `/space/{space}` prefix (Level 0)
+    // and matches the remaining `/{subject}` against the route table (Level 1),
+    // so the full path must be registered, sub-route included.
     let route_path = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.space)
-            .filter(|s| !s.is_empty())
-            .map(|space| format!("/space/{space}"))
+        let params = params.get().ok()?;
+        let space = params.space.filter(|s| !s.is_empty())?;
+        match params.subject.filter(|s| !s.is_empty()) {
+            Some(subject) => Some(format!("/space/{space}/{subject}")),
+            None => Some(format!("/space/{space}")),
+        }
     });
 
     // Register this page's SITE with the service worker before mounting the

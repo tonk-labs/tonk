@@ -32,9 +32,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, Element, Event, HtmlElement, window};
 
-/// The four consumer event names, matching `tonk_host::events`.
+/// The consumer event names, matching `tonk_host::events`.
 const QUERY: &str = "tonk-query";
 const CLAIM: &str = "tonk-claim";
+const EVALUATE: &str = "tonk-evaluate";
 const SUBSCRIBE: &str = "tonk-subscribe";
 const UNSUBSCRIBE: &str = "tonk-unsubscribe";
 
@@ -76,7 +77,7 @@ impl CustomElement for GuestHost {
         });
 
         let mut installed = Vec::new();
-        for name in [QUERY, CLAIM, SUBSCRIBE, UNSUBSCRIBE] {
+        for name in [QUERY, CLAIM, EVALUATE, SUBSCRIBE, UNSUBSCRIBE] {
             let listener = make_listener(name);
             let _ = this.add_event_listener_with_callback(name, listener.as_ref().unchecked_ref());
             installed.push((name.to_owned(), listener));
@@ -139,6 +140,9 @@ fn make_listener(name: &'static str) -> Closure<dyn FnMut(Event)> {
         match name {
             QUERY => relay_one_shot(&custom, &detail, &tonk, "query", "query"),
             CLAIM => relay_one_shot(&custom, &detail, &tonk, "transact", "request"),
+            // Evaluate carries two fields (`document` + `transact`), so the whole
+            // detail object is relayed rather than a single keyed arg.
+            EVALUATE => relay_evaluate(&custom, &detail, &tonk),
             SUBSCRIBE => relay_subscribe(&custom, &detail, &tonk),
             UNSUBSCRIBE => relay_unsubscribe(&custom, &detail),
             _ => {}
@@ -277,6 +281,22 @@ fn relay_one_shot(
     };
     // result is a Promise<rows|receipt>; that's exactly what detail.result
     // must be.
+    let _ = Reflect::set(detail, &JsValue::from_str("result"), &result);
+    event.prevent_default();
+}
+
+/// Relay a `tonk-evaluate` consumer event to `window.tonk.evaluate(detail)`.
+/// Unlike query/claim, evaluate carries two fields (`document`, `transact`), so
+/// the whole detail object is passed; the bridge forwards it to the host's real
+/// `<tonk-host>` consumer, which performs the typed evaluate and returns the
+/// promise the consumer awaits as `detail.result`.
+fn relay_evaluate(event: &CustomEvent, detail: &JsValue, tonk: &Object) {
+    let Some(func) = get_fn(tonk, "evaluate") else {
+        return;
+    };
+    let Ok(result) = func.call1(tonk, detail) else {
+        return;
+    };
     let _ = Reflect::set(detail, &JsValue::from_str("result"), &result);
     event.prevent_default();
 }

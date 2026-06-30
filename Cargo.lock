@@ -4896,6 +4896,7 @@ dependencies = [
  "tonk-display",
  "tonk-fab",
  "tonk-host",
+ "tonk-inspector",
  "tonk-portal",
  "tonk-sigil",
  "tonk-tree",
@@ -4925,6 +4926,25 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-streams",
+ "web-sys",
+]
+
+[[package]]
+name = "tonk-inspector"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "custom-elements",
+ "dialog-common",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonk-host",
+ "tonk-notation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "web-sys",
 ]
 
@@ -5029,6 +5049,15 @@ dependencies = [
  "tokio",
  "tonk-schema",
  "tonk-template",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-router"
+version = "0.1.0"
+dependencies = [
+ "dialog-common",
+ "tokio",
  "wasm-bindgen-test",
 ]
 
@@ -5194,7 +5223,6 @@ dependencies = [
  "ipld-core",
  "js-sys",
  "lsp-types",
- "matchit 0.8.4",
  "parking_lot",
  "rand 0.9.2",
  "send_wrapper",
@@ -5211,6 +5239,7 @@ dependencies = [
  "tonk-invite",
  "tonk-language-server",
  "tonk-notation",
+ "tonk-router",
  "tonk-schema",
  "tower",
  "tower-service",

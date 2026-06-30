@@ -1,0 +1,57 @@
+[package]
+name = "tonk-inspector"
+description = "<tonk-inspector> custom element — a notebook-style scratch editor over a branch."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+web = []
+
+[dependencies]
+bs58 = { workspace = true }
+custom-elements = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tonk-host = { workspace = true }
+tonk-notation = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "console",
+    "CustomElementRegistry",
+    "CustomEvent",
+    "CustomEventInit",
+    "Document",
+    "DomTokenList",
+    "Element",
+    "Event",
+    "EventTarget",
+    "Headers",
+    "HtmlElement",
+    "Location",
+    "Node",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
