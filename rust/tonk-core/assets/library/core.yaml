@@ -1465,23 +1465,17 @@ concept!: &workspace/shell
       cardinality: one
       as: entity
 
-# The shell's content portal carries the guest markup verbatim from the former
-# Leptos `TonkSpaceSealed` body, with ONE change: the guest renders
-# `model=tonk:space/route` (the space's content concept) directly rather than
-# `model=tonk:site`. The shell already IS the site's matched `{concept}`, so a
-# nested `model=tonk:site` would re-resolve to the shell and recurse the portal.
-# `tonk:space/route` picks the tab's `replica` off the same site entity (filled
-# by `data-tonk-entity="site"`) and renders `tonk/space` — identical content to
-# before, now composed by the shell. The proxy `<tonk-host>` inside the guest is
-# the IO owner; its query/subscribe events relay over `window.tonk` to the outer
-# bridge. The `.display-view-slot` chain is the bare-route fill-height layout.
+# The shell mounts the space's content via the `tonk/space` alias on the active
+# replica. The alias resolves to `tonk:blank` by default (lean repo, no
+# template); seeding `sheets.yaml` overrides it to `tonk:binder`. The
+# `.display-view-slot` wrapper is the bare-route fill-height layout.
 view!: &workspace/shell/view
   this: id:tonk:workspace/shell/view
   model: tonk:workspace/shell
   display: |
     <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
       <div class='display-view-slot'>
-        <tonk-display entity={replica} model=tonk:binder />
+        <tonk-display entity={replica} model=tonk/space />
       </div>
     </div>
 
