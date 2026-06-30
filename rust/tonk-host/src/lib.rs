@@ -71,6 +71,8 @@ mod http;
 mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod ops;
+#[cfg(target_arch = "wasm32")]
+pub use ops::read_context_from_ancestors;
 // LRU for `tonk-query` responses. The production callers live in
 // `host.rs` / `ops.rs` (both wasm-only), but the unit tests run
 // natively via `dialog_common::test`, so the module is also
@@ -89,8 +91,6 @@ mod registry;
 #[cfg(target_arch = "wasm32")]
 mod repository;
 #[cfg(target_arch = "wasm32")]
-mod site;
-#[cfg(target_arch = "wasm32")]
 pub mod sse;
 #[cfg(target_arch = "wasm32")]
 mod url;
@@ -107,13 +107,6 @@ pub fn register() {
     branch::register();
 }
 
-/// Register the `<tonk-site>` routing element. Idempotent. Separate from
-/// [`register`] because it is an opt-in routing surface (the `/` page mounts it)
-/// rather than part of the base IO-owning element set.
-#[cfg(target_arch = "wasm32")]
-pub fn register_site_element() {
-    site::register();
-}
 
 /// Register ONLY the passive routing annotators — `<tonk-repository>` and
 /// `<tonk-branch>` — without the IO-owning `<tonk-host>`. Idempotent.

@@ -45,6 +45,7 @@ tonk-workspace = { workspace = true }
 tonk-code = { workspace = true, features = ["web"] }
 tonk-tree = { workspace = true }
 tonk-display = { workspace = true }
+tonk-fab = { workspace = true }
 tonk-host = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }

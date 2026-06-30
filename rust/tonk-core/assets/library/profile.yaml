@@ -93,6 +93,20 @@ command!: &space/create
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# Load the requesting tab's site for its current path. Mirrors core.yaml's
+# `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
+# the PROFILE branch (its ancestors resolve no named repo, so the claim routes
+# here). The worker's `LoadHandler` matches `path` against this branch's `route!`
+# table and stamps `tonk:site` onto the element-supplied `this`.
+command!: &tonk/load
+  this: tonk:load
+  description: Stamp the requesting tab's site for its current path on this branch.
+  with:
+    path:
+      description: The route path the tab is at, matched against the route table.
+      the: xyz.tonk.site/path
+      as: text
+
 # The `view/directory` concept — the shape `<tonk-display>` queries to
 # find a directory view (a `model` + a `display` template under
 # `xyz.tonk.view/directory`). The `view/directory!:` instance below is
@@ -144,7 +158,20 @@ view/directory!:
       <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
-          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-model" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="hub-card__name">
+            <tonk-host>
+              <tonk-repository name={subject}>
+                <tonk-branch name="main">
+                  <tonk-display entity={subject} model=tonk:repository view=tonk:view/label>
+                    <span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="no-model" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="no-view" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="loading" class="hub-card__untitled" hidden>Untitled</span>
+                  </tonk-display>
+                </tonk-branch>
+              </tonk-repository>
+            </tonk-host>
+          </span>
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
@@ -329,17 +356,9 @@ view/directory!: &profile/fab/view
       </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
-        /* The FAB iframe overlays the page (and spans the whole viewport while
-           dragging), so its document must be see-through — only the `.fab`
-           pill should paint. The injected Web Awesome CSS sets an opaque
-           `html` background inside `@layer wa-native`; this unlayered rule
-           beats it (unlayered declarations win over layered ones). */
-        html, body { background: transparent; }
         .fab {
-          /* inline-flex (not flex) so `.fab` shrinks to its content width
-             instead of filling the iframe — the host sizes the iframe from
-             `.fab`'s measured extent, so a block-level box would deadlock the
-             width (and never shrink back to the ring on collapse). */
+          /* inline-flex so `.fab` shrinks to its content width — the floating
+             `<tonk-fab>` host is sized by its content, not by a container. */
           display: inline-flex;
           align-items: center;
           gap: 8px;
@@ -741,3 +760,48 @@ view!: &hub-view
     <div class="display-view-slot">
       <tonk-display model="space"></tonk-display>
     </div>
+
+# The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
+# full-size repo portal with the FAB floating on top — and hands the rest of the
+# path to a NESTED `<tonk-site>` inside the portal, which routes it against the
+# space's own route table. So `/space/{id}`, `/space/{id}/inspector`, etc. all
+# render the same chrome; only the nested router's path differs.
+# Two routes, same concept: the bare space root (`/space/{id}`, no sub-path) and
+# any sub-path (`/space/{id}/{*rest}`). A `{*rest}` span may not capture nothing,
+# so the bare form is its own route; it leaves `rest` unstamped, and the nested
+# `<tonk-site nested>` defaults its absent path to `/`.
+route!: &route/space-root
+  this: id:tonk:route/space-root
+  path: "/space/{id}"
+  concept: tonk:space/chrome
+
+route!: &route/space-sub
+  this: id:tonk:route/space-sub
+  path: "/space/{id}/{*rest}"
+  concept: tonk:space/chrome
+
+# The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
+# captured from the path and stamped on the site; the view reads them. `rest` is
+# optional — the bare space route does not capture it (the view defaults to `/`).
+concept!: &space-chrome
+  this: tonk:space/chrome
+  description: The space chrome — repo portal with the FAB on top.
+  with:
+    id:
+      description: The space repository id, picked off the site entity.
+      the: xyz.tonk.site/id
+      cardinality: one
+      as: text
+  maybe:
+    rest:
+      description: The sub-path within the space, picked off the site entity.
+      the: xyz.tonk.site/rest
+      cardinality: one
+      as: text
+
+view!: &space-view
+  this: id:tonk:space/view
+  model: tonk:space/chrome
+  display: |
+    <tonk-host><tonk-repository name={id}><tonk-branch name="main"><tonk-site path={rest}></tonk-site></tonk-branch></tonk-repository></tonk-host>
+    <tonk-host><tonk-repository profile><tonk-branch name="meta"><tonk-display model="tonk:profile/fab" data-space="{id}"></tonk-display></tonk-branch></tonk-repository></tonk-host>

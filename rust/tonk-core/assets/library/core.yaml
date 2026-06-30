@@ -250,6 +250,24 @@ command!: &tonk/invite
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# Load the requesting tab's site for its current path. Asserted transiently by
+# `<tonk-site>` (via the regular transact API) instead of a `/site` fetch: the
+# element supplies its own minted `site:<uuid>` as `this` and the route `path`.
+# The transient rides the normal event path, so the `<tonk-site>`'s ancestor
+# `<tonk-repository>`/`<tonk-branch>` annotate the origin repo/branch. The
+# worker's `LoadHandler` matches `path` against this branch's `route!` table and
+# stamps the resolved `tonk:site` (+ captured route params) onto `this` in this
+# branch's overlay — superseding in place on navigation. One field, so it keeps
+# decoding against an older seeded descriptor.
+command!: &tonk/load
+  this: tonk:load
+  description: Stamp the requesting tab's site for its current path on this branch.
+  with:
+    path:
+      description: The route path the tab is at, matched against the route table.
+      the: xyz.tonk.site/path
+      as: text
+
 # Toggle auto-sync for the space in scope. The sync chip submits this (via the
 # confirm dialog when pausing, directly via the resume overlay when paused).
 # `time` carries the click timestamp so each submit is a distinct transient and
@@ -1671,18 +1689,9 @@ view!: &workspace/shell/view
   model: tonk:workspace/shell
   display: |
     <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
-      <tonk-repository class="display-route" name={space}>
-        <tonk-branch name={branch}>
-          <div class="display-view-slot">
-            <tonk-portal runtime content="<tonk-host><div class='display-view-slot'><tonk-display model='tonk:space/route' data-tonk-entity='site'></tonk-display></div></tonk-host>" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"></tonk-portal>
-          </div>
-        </tonk-branch>
-      </tonk-repository>
-      <tonk-repository profile>
-        <tonk-branch name="meta">
-          <tonk-fab-portal runtime content="<tonk-host><tonk-display model='tonk:profile/fab' data-space='{space}'></tonk-display></tonk-host>"></tonk-fab-portal>
-        </tonk-branch>
-      </tonk-repository>
+      <div class='display-view-slot'>
+        <tonk-display entity={replica} model=tonk:binder />
+      </div>
     </div>
 
 # The directory page — `/space/{name}/{model}`. The `{model}` path param is

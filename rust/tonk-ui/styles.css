@@ -280,6 +280,18 @@ tonk-repository.display-route,
     display: contents;
 }
 
+/* `<tonk-site>` is a ROUTING element, like `<tonk-host>`/`<tonk-repository>`/
+   `<tonk-branch>`: it wires up a per-tab site + sealed iframe but imposes no
+   visual box or constraints. `display: contents` makes it transparent so its
+   iframe participates in the surrounding layout directly and the CONTENT
+   (the iframe, sized by the element, and the guest's own view) decides height.
+   The `<tonk-host>` wrapping it collapses the same way. */
+tonk-host:has(> tonk-site),
+tonk-host:has(> tonk-repository > tonk-branch > tonk-site),
+tonk-site {
+    display: contents;
+}
+
 /* Bare display route layout. The mount slot fills the viewport at
    minimum (`min-height: 100dvh`, viewport-relative so it needs no
    definite-height ancestor) and is a flex column — the PAGE is the
@@ -638,6 +650,15 @@ tonk-repository.display-route,
     display: flex;
     flex-direction: column;
     gap: var(--wa-space-m);
+    /* The Hub is now the route's own page (it renders inside the sealed
+       `<tonk-site>` guest, with no `.hub-route` shell wrapper). So it carries
+       its own page frame — a centered, max-width column with viewport padding —
+       the way the old Leptos shell's `.hub-route` did. */
+    box-sizing: border-box;
+    inline-size: 100%;
+    max-inline-size: 56rem;
+    margin-inline: auto;
+    padding: var(--wa-space-2xl) var(--wa-space-xl);
 }
 /* One repository row: a framed card linking to its space. The sigil is
    a square swatch on the left; the name and URL stack to its right. */

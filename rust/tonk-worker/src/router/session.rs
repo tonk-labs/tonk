@@ -361,6 +361,104 @@ fn site_param_claim(
     })
 }
 
+/// Post-commit handler for the [`Load`](tonk_schema::command::Load) command —
+/// the transact-driven replacement for the `POST /api/.../site` endpoint.
+///
+/// A `<tonk-site>` asserts a transient `tonk:load { this: site:<uuid>, path }`
+/// through the regular transact API; its ancestor `<tonk-repository>` /
+/// `<tonk-branch>` annotate the origin repo/branch, so the commit lands on the
+/// branch the tab routes against. This handler reads `this`/`path` from the
+/// command and `repo`/`branch` from [`CommandEnv::origin`](crate::router::CommandEnv::origin),
+/// then runs [`stamp_site_on`] — matching `path` against that branch's `route!`
+/// table and stamping the `tonk:site` (+ captured params) onto `this` in the
+/// branch overlay. A profile-branch commit carries an empty `origin.repo` (see
+/// `transact_profile`), which is exactly the `profile` flag `stamp_site_on` wants.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct LoadHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl LoadHandler {
+    /// Cache `Load`'s trigger attributes (its `path` field) so the registry
+    /// indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::Load::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::Load::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock); carry owned
+        // values into the `'static` future. `this` is the site entity to stamp,
+        // `path` the route-relative path to match + record.
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Load::decode(entity, facts))
+            .map(|command| (command.this.to_string(), command.path.0));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some((site, path)) = decoded else {
+                return;
+            };
+            // An empty `origin.repo` means the commit landed on the profile
+            // branch (the profile is outside the named-repo namespace).
+            let repo = env.origin().repo.clone();
+            let branch = env.origin().branch.clone();
+            let profile = repo.is_empty();
+            dialog_common::log!(
+                "command Load site={} path={} repo={} branch={} profile={}",
+                site,
+                path,
+                repo,
+                branch,
+                profile
+            );
+
+            let tonk = env.state().read().await;
+            // The command's `path` is already the route-relative path the tab
+            // routes (a nested `<tonk-site path={rest}>`), so it is both the
+            // recorded `path` and the `rest` matched against the route table.
+            stamp_site_on(
+                &tonk,
+                &site,
+                &repo,
+                &branch,
+                profile,
+                &path,
+                &path,
+                String::new(),
+            )
+            .await;
+        })
+    }
+}
+
 /// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for
 /// this device's `(profile, subject)` on the branch — the entity `tonk/replica`
 /// and `tonk:binder` live on. Queried (not derived) so it stays correct even if
