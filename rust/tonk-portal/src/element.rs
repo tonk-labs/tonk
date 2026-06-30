@@ -21,8 +21,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use wasm_bindgen::JsCast;
-use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
+use web_sys::{Element, HtmlElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::shared::{connect_portal, install_method_shims, reload_portal};
@@ -123,8 +122,9 @@ fn already_registered() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use web_sys::Document;
+    use web_sys::{Document, HtmlIFrameElement};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
