@@ -155,14 +155,22 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // runtime holds across the callback → "cannot recursively acquire mutex". A
     // `spawn_local` lets the callback return first, so the render happens on a clean
     // stack.
+    //
+    // Bring the iframe up FIRST, then fire the load claim WITHOUT awaiting it. The
+    // iframe boot (wasm + Web Awesome + chrome upgrade) has no dependency on the
+    // `tonk:site` stamp landing first: the guest's `<tonk-display model=tonk:site>`
+    // SUBSCRIBES to the site entity, so whenever the stamp lands the subscription
+    // delivers the frame and the content renders. Awaiting the claim's `/transact`
+    // round-trip before the bring-up serialized the two — the iframe sat idle for
+    // the whole round-trip before it even started booting — so overlap them.
     let host_for_task = host.clone();
     spawn_local(async move {
+        render_in_iframe(&host_for_task, &cell, &site);
         if let Err(error) =
             tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
         {
             tonk_common::log!("tonk-site: load claim failed for {path}: {error:?}");
         }
-        render_in_iframe(&host_for_task, &cell, &site);
     });
 }
 
