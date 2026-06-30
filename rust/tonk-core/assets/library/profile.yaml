@@ -769,7 +769,13 @@ view!: &hub-view
 # Two routes, same concept: the bare space root (`/space/{id}`, no sub-path) and
 # any sub-path (`/space/{id}/{*rest}`). A `{*rest}` span may not capture nothing,
 # so the bare form is its own route; it leaves `rest` unstamped, and the nested
-# `<tonk-site nested>` defaults its absent path to `/`.
+# `<tonk-site>` defaults its absent `path` to `/`.
+#
+# The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
+# `rest` is a `cardinality: one` (scalar) field: `<tonk-display>` stamps the
+# concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
+# the planner renders them as plain substitutions rather than iteration axes that
+# would clone the host zero times — and drop it — when the value is empty.
 route!: &route/space-root
   this: id:tonk:route/space-root
   path: "/space/{id}"
@@ -782,7 +788,8 @@ route!: &route/space-sub
 
 # The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
 # captured from the path and stamped on the site; the view reads them. `rest` is
-# optional — the bare space route does not capture it (the view defaults to `/`).
+# optional — the bare space route does not capture it, and the nested `<tonk-site>`
+# defaults its absent `path` to `/`.
 concept!: &space-chrome
   this: tonk:space/chrome
   description: The space chrome — repo portal with the FAB on top.
