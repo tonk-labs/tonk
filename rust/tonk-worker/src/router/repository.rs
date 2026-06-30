@@ -2925,6 +2925,7 @@ mod tests {
 
     /// The scaffold and showcase notation, embedded at compile time.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+    const SHEETS: &str = include_str!("../../../tonk-core/assets/library/sheets.yaml");
     const DEMO: &str = include_str!("../../../tonk-core/assets/library/demo.yaml");
 
     /// Create a fresh repo and return its router, wrapped state, and
@@ -3228,19 +3229,22 @@ mod tests {
             .unwrap_or(0)
     }
 
-    /// The scaffold alone defines the `workspace/sheet` concept — so the
-    /// directory route can resolve it — but seeds zero sheet instances.
-    /// That empty render is the precondition for the launchpad.
+    /// The lean scaffold (core alone) carries the blank canvas concept,
+    /// not the sheets workspace. The blank model resolves with zero
+    /// instances — the lean default a no-template repo renders.
     #[dialog_common::test]
-    async fn it_seeds_scaffold_without_showcase_instances() {
-        let (_app, state, repo) = fresh_repo("test-seed-scaffold-only").await;
+    async fn it_seeds_blank_scaffold() {
+        let (_app, state, repo) = fresh_repo("test-seed-blank-scaffold").await;
         let repo = repo.as_str();
         seed(&state, repo, CORE).await;
 
+        // The lean scaffold carries the blank canvas concept, not the
+        // sheets workspace. `tonk:blank:` resolves (zero instances is fine);
+        // a `workspace/sheet:` query would fault on an unresolved concept.
         assert_eq!(
-            count(&state, repo, "workspace/sheet:\n").await,
+            count(&state, repo, "tonk:blank:\n").await,
             0,
-            "scaffold-only repo must have zero sheet instances",
+            "blank scaffold has the blank model but no instances",
         );
     }
 
@@ -3254,6 +3258,7 @@ mod tests {
         let (_app, state, repo) = fresh_repo("test-seed-showcase").await;
         let repo = repo.as_str();
         seed(&state, repo, CORE).await;
+        seed(&state, repo, SHEETS).await;
         seed(&state, repo, DEMO).await;
 
         assert!(

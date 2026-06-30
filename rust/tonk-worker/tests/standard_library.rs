@@ -30,6 +30,10 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
+/// The sheets template — seeded on top of core when chosen. Must lower
+/// self-contained (it re-declares the core concepts it references).
+const SHEETS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/sheets.yaml");
+
 /// The served showcase demo, embedded at compile time.
 const DEMO_LIBRARY: &str = include_str!("../../tonk-core/assets/library/demo.yaml");
 
@@ -66,6 +70,31 @@ fn it_lowers_the_standard_library() {
 #[test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+}
+
+#[test]
+fn it_lowers_the_sheets_library() {
+    assert_library_lowers("sheets library (sheets.yaml)", SHEETS_LIBRARY);
+}
+
+#[test]
+fn it_defaults_the_space_alias_to_blank_in_core() {
+    assert!(
+        STANDARD_LIBRARY.contains("entity: tonk:blank"),
+        "core.yaml must seed the default tonk/space -> tonk:blank alias",
+    );
+    assert!(
+        !STANDARD_LIBRARY.contains("model: tonk:sheet"),
+        "core.yaml must not carry the sheets workspace after the split",
+    );
+}
+
+#[test]
+fn it_overrides_the_space_alias_to_binder_in_sheets() {
+    assert!(
+        SHEETS_LIBRARY.contains("entity: tonk:binder"),
+        "sheets.yaml must override tonk/space -> tonk:binder",
+    );
 }
 
 #[test]
