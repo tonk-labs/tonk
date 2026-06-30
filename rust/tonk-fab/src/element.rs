@@ -193,7 +193,10 @@ fn attach_drag(element: &HtmlElement) {
         // `prevent_default`/capture so the control receives the press.
         if let Some(target) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) {
             if target
-                .closest("a, button, input, textarea, select, tonk-editable, [contenteditable]")
+                .closest(
+                    "a, button, input, textarea, select, tonk-editable, \
+                     wa-button, wa-copy-button, [contenteditable]",
+                )
                 .ok()
                 .flatten()
                 .is_some()
@@ -530,8 +533,11 @@ fn apply_menu_direction(element: &HtmlElement) {
     let current_y = rect.top();
     let opens_down = submenu_opens_down(current_y, vh);
 
-    if let Some(menu_el) = elem.query_selector(".fab__menu").ok().flatten() {
-        let cl = menu_el.class_list();
+    // The bar has more than one menu — the repo switcher (`.fab__menu`, first
+    // match) and the share roster (`.fab__share-menu`) — so reorient each.
+    // `query_selector` returns only the first match, so query them separately.
+    let orient = |menu: &Element| {
+        let cl = menu.class_list();
         if opens_down {
             cl.remove_1("opens-up").ok();
             cl.add_1("opens-down").ok();
@@ -539,6 +545,12 @@ fn apply_menu_direction(element: &HtmlElement) {
             cl.remove_1("opens-down").ok();
             cl.add_1("opens-up").ok();
         }
+    };
+    if let Some(menu_el) = elem.query_selector(".fab__menu").ok().flatten() {
+        orient(&menu_el);
+    }
+    if let Some(menu_el) = elem.query_selector(".fab__share-menu").ok().flatten() {
+        orient(&menu_el);
     }
 }
 
