@@ -47,10 +47,13 @@ impl<'a> BranchReference<'a> {
         let name = self.name;
 
         // Resolve the repo entry (may open the repository).
+        let t_repo = web_time::Instant::now();
         let repository = self.repository.acquire(env).await?;
+        let repo_ms = t_repo.elapsed().as_millis();
 
         // Fast path: branch already cached.
         if let Some(state) = repository.branches().read().get(name) {
+            dialog_common::log!("ACQUIRE {name}: repo_open {repo_ms}ms | branch CACHED");
             return Ok(BranchSession {
                 state: Arc::clone(state),
             });
@@ -58,6 +61,7 @@ impl<'a> BranchReference<'a> {
 
         // Open the branch outside the lock — `branch().open()` is
         // async.
+        let t_branch = web_time::Instant::now();
         let branch = repository
             .repository()
             .branch(name)
@@ -69,6 +73,10 @@ impl<'a> BranchReference<'a> {
                 branch: name.to_owned(),
                 reason: e.to_string(),
             })?;
+        dialog_common::log!(
+            "ACQUIRE {name}: repo_open {repo_ms}ms | branch_open {}ms (COLD)",
+            t_branch.elapsed().as_millis()
+        );
 
         let mut branches = repository.branches().write();
         let entry = branches

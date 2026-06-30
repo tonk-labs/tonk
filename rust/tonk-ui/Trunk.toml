@@ -42,6 +42,7 @@ watch = [
     "../tonk-common",
     "../tonk-core",
     "../tonk-worker",
+    "../dialog-reactor",
     "../tonk-router",
     "../tonk-language-server",
     "../tonk-schema",
