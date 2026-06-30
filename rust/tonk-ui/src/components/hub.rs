@@ -22,7 +22,20 @@ use leptos::prelude::*;
 /// the router mounts elements directly it goes away.
 #[component]
 pub fn TonkHub() -> impl IntoView {
-    view! { <tonk-hub></tonk-hub> }
+    // Route `/` through the profile's own route table via `<tonk-site>`: it
+    // registers the tab's site on the profile meta branch (matching `/` against
+    // the `route!` table), then renders `<tonk-display model=tonk:site>` whose
+    // matched concept is `tonk:hub` — the space picker. This replaces the
+    // SW-document-path-driven `<tonk-hub>` shim with the data-driven router.
+    view! {
+        <main class="hub-route">
+            <tonk-repository class="display-route" name="home" profile>
+                <tonk-branch name="meta">
+                    <tonk-site profile path="/"></tonk-site>
+                </tonk-branch>
+            </tonk-repository>
+        </main>
+    }
 }
 
 #[cfg(all(

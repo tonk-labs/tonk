@@ -16,6 +16,7 @@ async fn main() {
 
     tonk_sigil::Sigil::install();
     tonk_host::register();
+    tonk_host::register_site_element();
     tonk_display::register();
     tonk_board::register();
     tonk_portal::register();

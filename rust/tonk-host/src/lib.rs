@@ -89,6 +89,8 @@ mod registry;
 #[cfg(target_arch = "wasm32")]
 mod repository;
 #[cfg(target_arch = "wasm32")]
+mod site;
+#[cfg(target_arch = "wasm32")]
 pub mod sse;
 #[cfg(target_arch = "wasm32")]
 mod url;
@@ -103,6 +105,14 @@ pub fn register() {
     host::register();
     repository::register();
     branch::register();
+}
+
+/// Register the `<tonk-site>` routing element. Idempotent. Separate from
+/// [`register`] because it is an opt-in routing surface (the `/` page mounts it)
+/// rather than part of the base IO-owning element set.
+#[cfg(target_arch = "wasm32")]
+pub fn register_site_element() {
+    site::register();
 }
 
 /// Register ONLY the passive routing annotators — `<tonk-repository>` and
