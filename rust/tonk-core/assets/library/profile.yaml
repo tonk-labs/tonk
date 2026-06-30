@@ -322,23 +322,34 @@ view/directory!: &profile/fab/view
         <span class="fab__identity">
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
-        <!-- NOTE: the current-repo name is NOT shown here yet. The FAB can't read
-             its active space from the portal host: `{dom.host/data-space}` renders
-             empty even though the shell embeds `data-space` on the <tonk-display>
-             (verified at runtime). Displaying / editing the repo name — and gating
-             the dropdown on hovering it — all need that read wired first (the same
-             V1 gap as `data-did`/`data-name`). Until then the switcher opens on
-             whole-bar hover. -->
-        <span class="fab__space">{dom.host/data-space}</span>
-        <nav class="fab__menu opens-down">
-          <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
-          <a class="fab__menu-item fab__menu-item--action" href="/">
-            <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
-          </a>
-          <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
-            <span class="fab__menu-glyph" aria-hidden="true">+</span> new
-          </button>
-        </nav>
+        <!-- The active space's repo name, read from — and renamed on — the
+             space's OWN repository (the cross-device source of truth). A nested
+             `<tonk-repository name={DID}>` opens that space's routing context;
+             omitting `view=` resolves the repository's DEFAULT entity view,
+             `tonk:repository/name-view` (core.yaml), an inline `<tonk-editable
+             value={name} data-subject={this} onchange=tonk/rename-repository>` —
+             the same chip the workspace topbar uses. Committing (Enter/blur)
+             fires `tonk/rename-repository` against this nested space branch, and
+             its declarative rule writes the new name there (no worker handler).
+             `{dom.host/data-space}` is the active space's subject DID, embedded by
+             the shell on the portal `<tonk-display>` and readable from chrome (a
+             zero-instance directory view feeds chrome a host-only conclusion; see
+             tonk-display). The repo name owns the `.fab__menu` switcher: hovering
+             it opens the dropdown. -->
+        <span class="fab__repo">
+          <span class="fab__space">
+            <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
+          </span>
+          <nav class="fab__menu opens-down">
+            <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
+            <a class="fab__menu-item fab__menu-item--action" href="/">
+              <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
+            </a>
+            <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
+              <span class="fab__menu-glyph" aria-hidden="true">+</span> new
+            </button>
+          </nav>
+        </span>
       </div>
       <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
            `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
@@ -443,19 +454,68 @@ view/directory!: &profile/fab/view
           overflow: visible;
           text-overflow: clip;
         }
+        /* The repo name + its switcher dropdown. Positioned so the absolutely
+           positioned `.fab__menu` anchors under the name (not the bar's left
+           edge), and so hovering the menu keeps `.fab__repo:hover` true. */
+        .fab__repo {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+        }
         .fab__space {
           color: var(--wa-color-text-quiet, #666);
           font-family: var(--wa-font-family-code, monospace);
           font-size: 11px;
-          max-width: 80px;
+          max-width: 160px;
           overflow: hidden;
+          white-space: nowrap;
           text-overflow: ellipsis;
-          cursor: default;
+          cursor: pointer;
+        }
+        /* The repo name renders through nested routing elements
+           (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-display>`); keep
+           them inline so the name reads as plain text in the bar. */
+        .fab__space tonk-host,
+        .fab__space tonk-repository,
+        .fab__space tonk-branch,
+        .fab__space tonk-display { display: inline; }
+        /* While editing, lift the width clamp so the full name is visible. */
+        .fab__space:focus-within {
+          max-width: none;
+          overflow: visible;
+        }
+        /* The repo name is an inline `<tonk-editable>` (the repository
+           name-view): reads as plain text, commits a rename on Enter/blur.
+           Styled like the profile-name editable but inheriting `.fab__space`'s
+           quieter look. */
+        .fab__space tonk-editable {
+          display: inline-block;
+          font: inherit;
+          color: inherit;
+          min-width: 2ch;
+          max-width: 160px;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          padding: 0 2px;
+          margin: 0 -2px;
+          border-radius: 4px;
+          cursor: text;
+          outline: none;
+        }
+        .fab__space tonk-editable:hover {
+          background: var(--wa-color-surface-hover, #f5f5f5);
+        }
+        .fab__space tonk-editable:focus {
+          background: var(--wa-color-surface-default, #fff);
+          box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
+          overflow: visible;
+          text-overflow: clip;
         }
         /* Collapsed (default): only the sync-status ring shows; hovering adds
            the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
         .fab:not(.expanded) .fab__identity,
-        .fab:not(.expanded) .fab__space { display: none; }
+        .fab:not(.expanded) .fab__repo { display: none; }
         /* The menu is a transparent stack: each row is its own floating card,
            so the page shows through the gaps between rows (like the FAB pill
            itself). No panel background/border/shadow here — those live on the
@@ -463,7 +523,7 @@ view/directory!: &profile/fab/view
         .fab__menu {
           position: absolute;
           left: 0;
-          display: flex;
+          display: none;
           flex-direction: column;
           gap: 6px;
           min-width: 200px;
@@ -471,6 +531,29 @@ view/directory!: &profile/fab/view
         }
         .fab__menu.opens-down { top: 100%; margin-top: 6px; }
         .fab__menu.opens-up { bottom: 100%; margin-bottom: 6px; }
+        /* The dropdown belongs to the repo name: hidden until the name (or the
+           menu itself) is hovered. `.fab__repo` wraps both, so hovering the
+           absolutely positioned menu keeps `.fab__repo:hover` true. The
+           `::before` bridges the 6px gap so the pointer can cross from the name
+           into the menu without it collapsing. */
+        .fab__repo:hover .fab__menu,
+        .fab__menu:hover { display: flex; }
+        .fab__menu.opens-down::before {
+          content: "";
+          position: absolute;
+          left: 0;
+          right: 0;
+          top: -6px;
+          height: 6px;
+        }
+        .fab__menu.opens-up::before {
+          content: "";
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: -6px;
+          height: 6px;
+        }
         /* The space roster renders its rows inside a single `<tonk-display>`
            wrapper, so the menu's flex `gap` can't reach them. `display:contents`
            lifts the roster anchors into the menu's flex flow so every row —
@@ -508,7 +591,6 @@ view/directory!: &profile/fab/view
           font-size: 14px;
           line-height: 1;
         }
-        .fab:not(.expanded) .fab__menu { display: none; }
       </style>
     </tonk-fab>
 
