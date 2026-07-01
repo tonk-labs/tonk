@@ -593,18 +593,19 @@ view/directory!: &profile/fab/view
         .fab.dragging { cursor: grabbing; user-select: none; }
         .fab.dragging .fab__cap-l { cursor: grabbing; }
         .fab.dragging { filter: drop-shadow(0 14px 26px rgba(20,22,8,.3)); }
+        /* The account/spot names SHRINK-WRAP their content: the segment grows
+           with the name (the wireframe's "sections resize with content"), so a
+           short name keeps the segment tight and a longer one widens it. The
+           `max-width` cap only bounds a pathologically long name; past it the
+           name clips WITHIN the box (`overflow: hidden`) rather than painting
+           over the adjacent circle — the old `:focus-within` lift, which let a
+           long name spill out while editing, is dropped for that reason. */
         .fab__name {
           font-weight: 500;
           color: var(--fab-ink);
-          max-width: 120px;
+          max-width: 16ch;
           overflow: hidden;
           text-overflow: ellipsis;
-        }
-        /* While editing, lift the wrapper's clamp so the full name is visible
-           (the editable lifts its own clip on focus; the parent must too). */
-        .fab__name:focus-within {
-          max-width: none;
-          overflow: visible;
         }
         /* The name is an inline `<tonk-editable>`: reads as plain text until
            hovered/focused, then shows an editable affordance. Clamped to the
@@ -614,7 +615,7 @@ view/directory!: &profile/fab/view
           display: inline-block;
           font: inherit;
           color: inherit;
-          max-width: 120px;
+          max-width: 16ch;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -631,8 +632,6 @@ view/directory!: &profile/fab/view
         .fab__name-input:focus {
           background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
           box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
-          overflow: visible;
-          text-overflow: clip;
         }
         /* The account segment: the profile name, its own pill (wireframe's
            `mr_oats`). A clickable segment (opens nothing itself; the name inside
@@ -644,7 +643,7 @@ view/directory!: &profile/fab/view
         .fab__repo { cursor: pointer; }
         .fab__space {
           color: var(--fab-ink);
-          max-width: 160px;
+          max-width: 16ch;
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -657,11 +656,6 @@ view/directory!: &profile/fab/view
         .fab__space tonk-repository,
         .fab__space tonk-branch,
         .fab__space tonk-display { display: inline; }
-        /* While editing, lift the width clamp so the full name is visible. */
-        .fab__space:focus-within {
-          max-width: none;
-          overflow: visible;
-        }
         /* The repo name is an inline `<tonk-editable>` (the repository
            name-view): reads as plain text, commits a rename on Enter/blur.
            Styled like the profile-name editable but inheriting `.fab__space`'s
@@ -671,7 +665,7 @@ view/directory!: &profile/fab/view
           font: inherit;
           color: inherit;
           min-width: 2ch;
-          max-width: 160px;
+          max-width: 16ch;
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -682,11 +676,16 @@ view/directory!: &profile/fab/view
           outline: none;
         }
         /* Same as the profile name: no hover affordance (double-click to edit);
-           only the focused editing state shows the subtle carved field. */
+           only the focused editing state shows the subtle carved field. The box
+           stays clamped at its `max-width` while editing (never overrunning the
+           bar into the circle); the browser scrolls the contenteditable's own
+           content to keep the caret in view, so a long name being typed stays
+           legible without the box growing. `text-overflow: clip` drops the
+           ellipsis while editing (an ellipsis over the live caret reads as a
+           bug). */
         .fab__space tonk-editable:focus {
           background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
           box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
-          overflow: visible;
           text-overflow: clip;
         }
         /* Collapse/expand is the telescope above (`.fab__tele` width animation
@@ -699,10 +698,15 @@ view/directory!: &profile/fab/view
         .fab__menu {
           position: absolute;
           left: 0;
+          right: 0;
           display: none;
           flex-direction: column;
           gap: 6px;
-          min-width: 200px;
+          /* The dropdown is exactly as wide as the trigger that opens it:
+             `left:0; right:0` stretches it to the positioned `.fab__repo`
+             parent's box, so menu ≡ trigger (they read as one stacked control,
+             per the wireframe). Long roster labels DON'T widen the menu — they
+             clip with ellipsis inside the row (`.fab__menu-item` below). */
           z-index: 100;
         }
         .fab__menu.opens-down { top: 100%; margin-top: 6px; }
@@ -746,6 +750,11 @@ view/directory!: &profile/fab/view
           text-decoration: none;
           font-size: 13px;
           font-family: var(--wa-font-family-code, monospace);
+          /* Clip a long space name to the menu width (which tracks the trigger)
+             instead of stretching the whole dropdown to the longest label. */
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
         }
         .fab__menu-item:hover {
           background: color-mix(in oklab, var(--fab-pill) 88%, var(--fab-ink));
