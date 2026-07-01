@@ -335,30 +335,34 @@ view/directory!: &profile/fab/view
              reconciles. When collapsed the whole bar shrinks to just this cap
              (a floating disc); dragging grabs it. `.fab__circle` sizes the disc. -->
         <span class="fab__seg fab__cap-l fab__circle"><tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
-        <!-- Divider between the grab cap and the identity segment: a thin dark
-             bar, revealed (with 2px gaps) only when the bar is expanded. -->
-        <span class="fab__thick" aria-hidden="true"></span>
-        <!-- IDENTITY + SPACE — the one label segment, reading
-             "`<name>` / `<space>`" like the wireframe's "ACME / myspace". The
-             profile name and the space repo name sit side by side, separated by
-             a quiet slash; `.fab__repo` owns the space switcher (hovering the
-             segment opens the dropdown).
-             The space repo name is read from — and renamed on — the space's OWN
-             repository (the cross-device source of truth). A nested
-             `<tonk-repository name={DID}>` opens that space's routing context;
-             omitting `view=` resolves the repository's DEFAULT entity view,
-             `tonk:repository/name-view` (core.yaml), an inline `<tonk-editable
-             value={name} data-subject={this} onchange=tonk/rename-repository>` —
-             the same chip the workspace topbar uses. Committing (Enter/blur)
-             fires `tonk/rename-repository` against this nested space branch, and
-             its declarative rule writes the new name there (no worker handler).
-             `{dom.host/data-space}` is the active space's subject DID, embedded by
-             the shell on the portal `<tonk-display>` and readable from chrome (a
-             zero-instance directory view feeds chrome a host-only conclusion; see
-             tonk-display). -->
-        <span class="fab__seg fab__label fab__repo">
+        <!-- LEFT BORDER — the disclosure edge for the ACCOUNT section (the only
+             left-side border). Clicking it reveals/hides the account segment
+             (wireframe §02: a thick edge stands in for the hidden account and
+             reveals it on click). element.rs wires the click and the `.fab--show-account`
+             state; the account segment collapses to zero when hidden. There is
+             NO border between account and spot — the spot is always shown. -->
+        <span class="fab__thick fab__disclose" data-section="account" role="button" tabindex="0" title="show account" aria-hidden="true"></span>
+        <!-- ACCOUNT — its own segment (wireframe's `mr_oats`): the signed-in
+             profile name, an inline editable that renames the profile. Hidden
+             behind the left border until disclosed. -->
+        <span class="fab__seg fab__account" data-section="account">
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
-          <span class="fab__slash" aria-hidden="true">/</span>
+        </span>
+        <!-- SPOT — its own segment (wireframe's `myspace`): the active space's
+             repo name, and the switcher menu (opened on click). Read from — and
+             renamed on — the space's OWN repository (the cross-device source of
+             truth). A nested `<tonk-repository name={DID}>` opens that space's
+             routing context; omitting `view=` resolves the repository's DEFAULT
+             entity view, `tonk:repository/name-view` (core.yaml), an inline
+             `<tonk-editable value={name} data-subject={this}
+             onchange=tonk/rename-repository>` — the same chip the workspace
+             topbar uses. Committing (Enter/blur) fires `tonk/rename-repository`
+             against this nested space branch, and its declarative rule writes
+             the new name there (no worker handler). `{dom.host/data-space}` is the
+             active space's subject DID, embedded by the shell on the portal
+             `<tonk-display>` and readable from chrome (a zero-instance directory
+             view feeds chrome a host-only conclusion; see tonk-display). -->
+        <span class="fab__seg fab__repo">
           <span class="fab__space">
             <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
           </span>
@@ -372,8 +376,11 @@ view/directory!: &profile/fab/view
             </button>
           </nav>
         </span>
-        <!-- Divider between the label and the share segment. -->
-        <span class="fab__thick" aria-hidden="true"></span>
+        <!-- RIGHT BORDER — the disclosure edge for the SHARE section (the only
+             right-side border). Clicking it reveals/hides the share segment
+             (wireframe §02: the right edge stands in for the hidden share). No
+             border between spot and share otherwise — the spot is always shown. -->
+        <span class="fab__thick fab__disclose" data-section="share" role="button" tabindex="0" title="show share" aria-hidden="true"></span>
         <!-- Share / invite. Like the repo switcher, this is a hover zone: the
              bar shows "share" until an invite is minted, hovering reveals the
              member roster, and once minted the bar shows the invite link with a
@@ -388,7 +395,7 @@ view/directory!: &profile/fab/view
              worker's InviteHandler mints the membership keypair + delegation
              against this nested space branch (its origin repo). `<tonk-origin>`
              supplies `{origin}/join` as `data-base` for the copyable URL. -->
-        <span class="fab__seg fab__cap-r fab__share">
+        <span class="fab__seg fab__cap-r fab__share" data-section="share">
           <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
             <tonk-origin>
               <!-- The minted invite link. Shown once the mint lands; before
@@ -434,6 +441,27 @@ view/directory!: &profile/fab/view
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
+      </wa-dialog>
+      <!-- Pause-sync confirm dialog + form — opened by DOUBLE-CLICKING the FAB
+           circle (element.rs `trigger_pause_toggle`). The DIALOG lives on the
+           FAB's own profile/meta branch (like the create-space dialog above), so
+           it's plain chrome here. Only the FORM is wrapped in the space's nested
+           `<tonk-repository name={space}>` context, because `tonk:pause-sync`
+           flips the durable `enabled` boolean on the space's OWN replica and so
+           must resolve + dispatch on the space's content branch (binding it on
+           profile/meta would target the wrong repo). The dialog's button submits
+           the repo-scoped form by id via WebAwesome's external `form=` attribute.
+           The command is a toggle, so the same dialog resumes when paused. -->
+      <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
+        <tonk-display model="tonk:repository" view="tonk:view/fab-pause"></tonk-display>
+      </tonk-branch></tonk-repository></tonk-host>
+      <wa-dialog id="fab-pause-sync" label="Pause sync?" class="fab__dialog">
+        <p>Your changes won't reach other devices and agents until you resume. Local edits are buffered; incoming edits are queued.</p>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="fab-pause-sync-form" data-dialog="close" autofocus>
+          <wa-icon slot="start" name="pause"></wa-icon>
+          Pause sync
+        </wa-button>
       </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
@@ -483,6 +511,13 @@ view/directory!: &profile/fab/view
         }
         .fab__cap-l { border-radius: 36px 0 0 36px; }
         .fab__cap-r { border-radius: 0 36px 36px 0; }
+        /* Right-docked: the circle is the anchor welded to the right edge, so
+           reverse the row (circle becomes the rightmost child) and the segments
+           telescope leftward from it. The outer corners swap accordingly — the
+           circle cap rounds on its RIGHT, the far share cap on its LEFT. */
+        .fab--dock-right { flex-direction: row-reverse; }
+        .fab--dock-right .fab__cap-l { border-radius: 0 36px 36px 0; }
+        .fab--dock-right .fab__cap-r { border-radius: 36px 0 0 36px; }
         /* The grab-handle cap: a fixed 36px square (round-left) holding just the
            sync disc, centred. It is the drag handle; collapsing shrinks the whole
            bar to this cap alone (a floating disc). */
@@ -515,19 +550,49 @@ view/directory!: &profile/fab/view
           cursor: pointer;
         }
         .fab__thick:hover { background: var(--fab-ink); }
+        /* ── Telescope (collapse / expand) ───────────────────────────────
+           element.rs wraps each collapsible segment (everything after the
+           circle cap) in a `.fab__tele` div and toggles `fab--collapsed` on a
+           click. The wrapper clips its tile and animates `max-width` (0 ↔ the
+           tile's measured width) + `margin-left` (−2px swallows the 2px gap
+           while collapsed), staggered per tile, so the bar unfolds from / folds
+           into the circle. `fab--anim` gates the transitions; `fab--settled`
+           (set after the sweep) unclamps `max-width` so expanded content can
+           reflow past its measured width. Inline `max-width` / `margin-left` /
+           `transition-delay` are written per tile by element.rs. */
+        .fab--anim .fab__tele {
+          flex: 0 0 auto;
+          display: flex;
+          align-items: stretch;
+          justify-content: flex-end;
+          block-size: 36px;
+          overflow: hidden;
+          transition: max-width 0.4s ease, margin-left 0.4s ease;
+        }
+        /* After settling, unclamp SHOWN tiles so their content can reflow past
+           the measured width (e.g. a growing invite link). Hidden-section tiles
+           (`.fab__tele--hidden`, set by element.rs) are excluded — they must
+           stay clamped to zero, or a hidden section (and its absolutely
+           positioned menu) would reappear and overlay the page once settled. */
+        .fab--anim.fab--settled .fab__tele:not(.fab__tele--hidden) {
+          overflow: visible;
+          max-width: none;
+        }
+        .fab--anim.fab--collapsed .fab__tele { pointer-events: none; }
+        /* The circle cap rounds to a full disc while collapsed, and its
+           border-radius eases in step with the telescope. */
+        .fab--anim .fab__cap-l { transition: border-radius 0.4s ease; }
+        .fab--anim.fab--collapsed .fab__cap-l { border-radius: 50%; }
+        @media (prefers-reduced-motion: reduce) {
+          .fab--anim .fab__tele,
+          .fab--anim .fab__cap-l { transition: none; }
+        }
         /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
            (set inline by element.rs) inside the full-viewport iframe. Suppress
            text selection and show the grabbing cursor so the drag reads cleanly. */
         .fab.dragging { cursor: grabbing; user-select: none; }
         .fab.dragging .fab__cap-l { cursor: grabbing; }
         .fab.dragging { filter: drop-shadow(0 14px 26px rgba(20,22,8,.3)); }
-        /* The label segment reads "`name` / `space`". The slash is a quiet rule
-           between the two, matching the wireframe's "ACME / myspace". */
-        .fab__label { gap: 8px; }
-        .fab__slash {
-          color: color-mix(in oklab, var(--fab-ink) 40%, transparent);
-          font-weight: 400;
-        }
         .fab__name {
           font-weight: 500;
           color: var(--fab-ink);
@@ -559,26 +624,26 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
-        /* Editing shows a subtle field carved into the cream pill: a slightly
-           darker tint of the pill and a hairline inset, keeping the `--fab-ink`
-           text readable (the pill is already the near-inverse surface, so no
-           theme-surface flip is needed). */
-        .fab__name-input:hover {
-          background: color-mix(in oklab, var(--fab-ink) 8%, transparent);
-        }
+        /* No hover affordance: the name reads as plain text until double-clicked
+           into edit mode (element.rs). Only the focused (editing) state shows a
+           subtle field carved into the cream pill — a slightly darker tint and a
+           hairline inset — keeping the `--fab-ink` text readable. */
         .fab__name-input:focus {
           background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
           box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
           overflow: visible;
           text-overflow: clip;
         }
-        /* The label segment owns the space switcher dropdown. It is already a
-           positioned flex `.fab__seg`, so the absolutely positioned `.fab__menu`
-           anchors under the segment and hovering the menu keeps `:hover` true. */
+        /* The account segment: the profile name, its own pill (wireframe's
+           `mr_oats`). A clickable segment (opens nothing itself; the name inside
+           is an editable). */
+        .fab__account { cursor: default; }
+        /* The spot segment owns the switcher dropdown, opened on click
+           (`.fab__repo.is-open`). It is a positioned flex `.fab__seg`, so the
+           absolutely positioned `.fab__menu` anchors under it. */
+        .fab__repo { cursor: pointer; }
         .fab__space {
-          /* The space name reads as the second half of the "name / space" label,
-             in the same face/size as the profile name but slightly quieter. */
-          color: color-mix(in oklab, var(--fab-ink) 85%, transparent);
+          color: var(--fab-ink);
           max-width: 160px;
           overflow: hidden;
           white-space: nowrap;
@@ -616,25 +681,17 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
-        /* Same as the profile name: a subtle field carved into the cream pill,
-           keeping the quiet space ink readable. */
-        .fab__space tonk-editable:hover {
-          background: color-mix(in oklab, var(--fab-ink) 8%, transparent);
-        }
+        /* Same as the profile name: no hover affordance (double-click to edit);
+           only the focused editing state shows the subtle carved field. */
         .fab__space tonk-editable:focus {
           background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
           box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
           overflow: visible;
           text-overflow: clip;
         }
-        /* Collapsed (default): only the grab-handle cap (the sync ring) shows;
-           hovering adds the `expanded` class (element.rs `attach_hover`) to
-           reveal the rest of the bar. Hide the label, dividers and share; round
-           the cap into a full disc so it reads as a floating circle. */
-        .fab:not(.expanded) .fab__label,
-        .fab:not(.expanded) .fab__thick,
-        .fab:not(.expanded) .fab__share { display: none; }
-        .fab:not(.expanded) .fab__cap-l { border-radius: 50%; }
+        /* Collapse/expand is the telescope above (`.fab__tele` width animation
+           driven by element.rs), not a `display` toggle — so the segments slide
+           in and out rather than snapping. */
         /* The menu is a transparent stack: each row is its own floating card,
            so the page shows through the gaps between rows (like the FAB pill
            itself). No panel background/border/shadow here — those live on the
@@ -650,13 +707,10 @@ view/directory!: &profile/fab/view
         }
         .fab__menu.opens-down { top: 100%; margin-top: 6px; }
         .fab__menu.opens-up { bottom: 100%; margin-bottom: 6px; }
-        /* The dropdown belongs to the repo name: hidden until the name (or the
-           menu itself) is hovered. `.fab__repo` wraps both, so hovering the
-           absolutely positioned menu keeps `.fab__repo:hover` true. The
-           `::before` bridges the 6px gap so the pointer can cross from the name
-           into the menu without it collapsing. */
-        .fab__repo:hover .fab__menu,
-        .fab__menu:hover { display: flex; }
+        /* The dropdown belongs to the repo name segment: hidden until the
+           segment is CLICKED (element.rs toggles `is-open`), matching the
+           wireframe where segments open their menus on click, not hover. */
+        .fab__repo.is-open .fab__menu { display: flex; }
         .fab__menu.opens-down::before {
           content: "";
           position: absolute;
@@ -678,19 +732,23 @@ view/directory!: &profile/fab/view
            lifts the roster anchors into the menu's flex flow so every row —
            roster and action alike — gets the same gap. */
         .fab__menu > tonk-display { display: contents; }
+        /* Each row is its own floating card in the SAME material as the bar
+           segments — the inverted cream `--fab-pill` with `--fab-ink` text (the
+           wireframe's `.cp-nav-row` reuses the bar's `--pill`), so the dropdown
+           reads as more of the same control, not a differently-coloured panel. */
         .fab__menu-item {
           display: block;
           padding: 10px 16px;
-          background: var(--wa-color-surface-raised, #fff);
+          background: var(--fab-pill);
           border-radius: 2px;
-          box-shadow: 0 2px 8px rgba(0,0,0,.12);
-          color: var(--wa-color-text-normal, #111);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
+          color: var(--fab-ink);
           text-decoration: none;
           font-size: 13px;
           font-family: var(--wa-font-family-code, monospace);
         }
         .fab__menu-item:hover {
-          background: var(--wa-color-surface-hover, #f5f5f5);
+          background: color-mix(in oklab, var(--fab-pill) 88%, var(--fab-ink));
         }
         /* `all repos` / `new` — actions, not spaces: right-aligned and quieter,
            rendered as a button/anchor that match the roster cards' type. */
@@ -704,7 +762,7 @@ view/directory!: &profile/fab/view
           cursor: pointer;
           font: inherit;
           font-family: var(--wa-font-family-code, monospace);
-          color: var(--wa-color-text-quiet, #666);
+          color: color-mix(in oklab, var(--fab-ink) 70%, transparent);
         }
         .fab__menu-glyph {
           font-size: 14px;
@@ -778,10 +836,9 @@ view/directory!: &profile/fab/view
           left: auto;
           right: 0;
         }
-        /* `.fab__share` wraps both the label and the menu, so hovering the
-           absolutely positioned menu keeps `.fab__share:hover` true. */
-        .fab__share:hover .fab__share-menu,
-        .fab__share-menu:hover { display: flex; }
+        /* The roster opens when the share segment is CLICKED (element.rs
+           toggles `is-open`), like the repo switcher above. */
+        .fab__share.is-open .fab__share-menu { display: flex; }
         /* Member cards: right-aligned names, matching the wireframe roster. */
         .fab__menu-item--member { text-align: right; }
       </style>

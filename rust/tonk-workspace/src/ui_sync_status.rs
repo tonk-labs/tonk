@@ -39,12 +39,15 @@ const INITIAL_STATUS: &str = "sync:pending";
 /// (frames are addressed to this element via its own `reset` method).
 const SUB_TAG: &str = "ui-sync-status";
 
+/// The reset delegate closure the host calls with each subscription frame.
+type ResetClosure = Closure<dyn FnMut(JsValue, JsValue)>;
+
 /// Per-element state: the live subscription (its `Drop` cancels upstream) and
 /// the reset delegate closure, kept alive for the element's lifetime.
 #[derive(Default)]
 pub(crate) struct UiSyncStatus {
     subscription: Rc<RefCell<Option<Subscription>>>,
-    reset: Rc<RefCell<Option<Closure<dyn FnMut(JsValue, JsValue)>>>>,
+    reset: Rc<RefCell<Option<ResetClosure>>>,
 }
 
 impl CustomElement for UiSyncStatus {

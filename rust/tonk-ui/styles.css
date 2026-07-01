@@ -458,9 +458,6 @@ tonk-site {
     white-space: nowrap;
     cursor: text;
 }
-.workspace__title-input:hover {
-    border-color: var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
-}
 .workspace__title-input:focus {
     outline: none;
     border-color: var(--wa-color-brand-fill-loud, #0070f3);

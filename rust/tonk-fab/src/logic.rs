@@ -100,49 +100,38 @@ pub fn submenu_opens_down(y: f64, vh: f64) -> bool {
     y < vh / 2.0
 }
 
-pub const COLLAPSE_MS: u64 = 1000;
+/// The telescope animation duration, in milliseconds — each tile's
+/// `max-width` transition (wireframe `--dur: .4s`).
+pub const TELESCOPE_MS: u64 = 400;
 
-pub struct CollapseMachine {
-    expanded: bool,
-    since_leave: Option<u64>,
+/// Milliseconds of stagger between consecutive tiles as the bar telescopes
+/// open/closed (wireframe `CP_STAG`). The tiles animate in sequence rather
+/// than together, so the bar reads as unfolding rather than snapping.
+pub const TELESCOPE_STAGGER_MS: u64 = 70;
+
+/// The `transition-delay` (ms) for tile `i` of `n` in the telescope.
+///
+/// Expanding runs inner-to-outer (`i * stagger`), collapsing runs
+/// outer-to-inner (`(n - 1 - i) * stagger`), so in both directions the tile
+/// nearest the anchoring circle leads and the far edge trails — the bar looks
+/// like it grows from / retracts into the circle. Mirrors the wireframe's
+/// `(collapsed ? nTiles - 1 - i : i) * CP_STAG`.
+pub fn telescope_delay_ms(index: usize, count: usize, collapsing: bool) -> u64 {
+    let step = if collapsing {
+        count.saturating_sub(1).saturating_sub(index)
+    } else {
+        index
+    };
+    step as u64 * TELESCOPE_STAGGER_MS
 }
 
-impl CollapseMachine {
-    pub fn new() -> Self {
-        Self {
-            expanded: false,
-            since_leave: None,
-        }
-    }
-
-    pub fn expanded(&self) -> bool {
-        self.expanded
-    }
-
-    pub fn on_enter(&mut self) {
-        self.expanded = true;
-        self.since_leave = None;
-    }
-
-    pub fn on_leave(&mut self) {
-        self.since_leave = Some(0);
-    }
-
-    pub fn tick(&mut self, elapsed_ms: u64) {
-        if let Some(acc) = self.since_leave.as_mut() {
-            *acc += elapsed_ms;
-            if *acc >= COLLAPSE_MS {
-                self.expanded = false;
-                self.since_leave = None;
-            }
-        }
-    }
-}
-
-impl Default for CollapseMachine {
-    fn default() -> Self {
-        Self::new()
-    }
+/// How long the whole telescope takes to settle: the last tile's start delay
+/// plus one transition duration, with a small cushion. Used to schedule the
+/// post-animation `settled` state that unclamps `max-width` so content can
+/// reflow freely.
+pub fn telescope_settle_ms(count: usize) -> u64 {
+    let last = count.saturating_sub(1) as u64 * TELESCOPE_STAGGER_MS;
+    last + TELESCOPE_MS + 160
 }
 
 /// Clamp the drop position so the circle stays fully on-screen.
@@ -211,35 +200,35 @@ mod submenu {
 }
 
 #[cfg(test)]
-mod collapse {
+mod telescope {
     use super::*;
 
     #[test]
-    fn enter_expands_immediately() {
-        let mut m = CollapseMachine::new();
-        m.on_enter();
-        assert!(m.expanded());
+    fn expanding_leads_from_the_inner_tile() {
+        // Inner-to-outer: tile 0 starts first, later tiles trail.
+        assert_eq!(telescope_delay_ms(0, 3, false), 0);
+        assert_eq!(telescope_delay_ms(1, 3, false), TELESCOPE_STAGGER_MS);
+        assert_eq!(telescope_delay_ms(2, 3, false), 2 * TELESCOPE_STAGGER_MS);
     }
 
     #[test]
-    fn leave_then_timeout_collapses() {
-        let mut m = CollapseMachine::new();
-        m.on_enter();
-        m.on_leave();
-        assert!(m.expanded(), "still expanded right after leave");
-        m.tick(1000);
-        assert!(!m.expanded(), "collapsed after 1s");
+    fn collapsing_leads_from_the_outer_tile() {
+        // Outer-to-inner: the far tile (index 2) starts first, tile 0 trails —
+        // so it still reads as retracting toward the circle.
+        assert_eq!(telescope_delay_ms(2, 3, true), 0);
+        assert_eq!(telescope_delay_ms(1, 3, true), TELESCOPE_STAGGER_MS);
+        assert_eq!(telescope_delay_ms(0, 3, true), 2 * TELESCOPE_STAGGER_MS);
     }
 
     #[test]
-    fn reenter_cancels_collapse() {
-        let mut m = CollapseMachine::new();
-        m.on_enter();
-        m.on_leave();
-        m.tick(500);
-        m.on_enter();
-        m.tick(1000);
-        assert!(m.expanded());
+    fn settle_covers_the_last_tile_plus_a_duration() {
+        // 3 tiles: last starts at 2*stagger, runs one duration, + cushion.
+        assert_eq!(
+            telescope_settle_ms(3),
+            2 * TELESCOPE_STAGGER_MS + TELESCOPE_MS + 160
+        );
+        // Degenerate: a single tile has no stagger.
+        assert_eq!(telescope_settle_ms(1), TELESCOPE_MS + 160);
     }
 }
 

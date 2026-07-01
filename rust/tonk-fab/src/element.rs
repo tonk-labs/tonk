@@ -7,19 +7,25 @@
 //! it to float the profile pill over the space content, but nothing here is
 //! FAB-specific beyond the `.fab` class names the view supplies.
 //!
-//! - Hover expand/collapse: `mouseenter` adds the `expanded` class to the inner
-//!   `.fab`; `mouseleave` schedules a collapse after `COLLAPSE_MS`. A re-enter
-//!   before the timeout cancels the pending collapse.
+//! - Telescope collapse/expand: the bar rests COLLAPSED (just the sync circle).
+//!   A plain click on the circle toggles it — the segments after the cap
+//!   animate their `max-width` open/closed, staggered, so the bar unfolds from
+//!   / retracts into the circle. A DOUBLE click toggles pause/resume of sync
+//!   (the circle is the pause switch, matching the control-panel wireframe).
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
 //!   capturing the grab offset; `pointermove` sets the element's own
 //!   `left`/`top`; `pointerup` clamps to keep it on-screen and persists the
-//!   x/y as a profile claim via `window.tonk.transact(...)`.
-//! - On connect it restores the persisted position (or a default top-centre) and
-//!   applies it to its own style.
+//!   x/y as a profile claim via `window.tonk.transact(...)`. A press that never
+//!   moves past a small threshold is treated as a click, not a drag.
+//! - On connect it wraps each collapsible segment for the telescope, restores
+//!   the persisted position (or a default top-centre), and applies it.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
-use crate::logic::{COLLAPSE_MS, clamp_position, position_claim_json, submenu_opens_down};
+use crate::logic::{
+    clamp_position, position_claim_json, submenu_opens_down, telescope_delay_ms,
+    telescope_settle_ms,
+};
 use custom_elements::CustomElement;
 use js_sys::Promise;
 use js_sys::{Function, Object, Reflect};
@@ -48,6 +54,11 @@ const CIRCLE_SIZE: f64 = 64.0;
 /// content portal) so it never gets covered. Near `MAX_SAFE_INTEGER` to beat
 /// any app stacking context.
 const FAB_Z_INDEX: &str = "2147483646";
+
+/// How far (CSS px) the pointer must travel from the press origin before it
+/// counts as a drag rather than a click. Below this the press toggles the
+/// telescope; above it the FAB moves and the click is suppressed.
+const DRAG_THRESHOLD_PX: f64 = 4.0;
 
 /// The `<tonk-fab>` custom element.
 #[derive(Default)]
@@ -88,21 +99,24 @@ impl CustomElement for TonkFab {
             .unwrap_or(false);
         if !already_bound {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
-            attach_hover(this);
+            wrap_telescope_tiles(this);
             attach_drag(this);
+            attach_gestures(this);
         }
         // Restore the persisted position and apply it to our own style.
         restore_position(this);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
-        // Cancel any pending collapse timer so the closure doesn't fire against
-        // a detached element.
-        if let Some(id_str) = this.dataset().get("collapseTimer") {
-            if let Ok(id) = id_str.parse::<i32>() {
-                clear_timeout(id);
+        // Cancel any pending timers so their closures don't fire against a
+        // detached element.
+        for key in ["settleTimer", "tapTimer", "editTimer"] {
+            if let Some(id_str) = this.dataset().get(key) {
+                if let Ok(id) = id_str.parse::<i32>() {
+                    clear_timeout(id);
+                }
+                this.dataset().delete(key);
             }
-            this.dataset().delete("collapseTimer");
         }
     }
 
@@ -116,65 +130,374 @@ impl CustomElement for TonkFab {
     }
 }
 
-/// Attach `mouseenter` / `mouseleave` listeners to `element`.
-///
-/// - `mouseenter`: add `expanded` class to the inner `.fab`, cancel any pending
-///   collapse timer, and reorient the submenu.
-/// - `mouseleave`: schedule collapse after `COLLAPSE_MS`; on fire, remove the
-///   `expanded` class.
-fn attach_hover(element: &HtmlElement) {
-    let element_for_enter = element.clone();
-    let on_enter = Closure::<dyn Fn()>::new(move || {
-        // Cancel any pending collapse stored in the element dataset.
-        if let Some(id_str) = element_for_enter.dataset().get("collapseTimer") {
-            if let Ok(id) = id_str.parse::<i32>() {
-                clear_timeout(id);
+/// Wrap each collapsible segment (every `.fab` child after the sync-circle cap)
+/// in a `.fab__tele` div whose `max-width` the telescope animates. Adds the
+/// `fab--anim` marker (enables the transition CSS) and the initial
+/// `fab--collapsed` state (the bar rests as just the circle). Mirrors the
+/// wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
+/// so the view template stays a plain segment list.
+fn wrap_telescope_tiles(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    // Children after the first (the `.fab__cap-l` circle) are collapsible.
+    let children = fab.children();
+    let mut tiles: Vec<Element> = Vec::new();
+    for i in 1..children.length() {
+        if let Some(child) = children.item(i) {
+            // Skip anything already wrapped (defensive against a re-run).
+            if child.class_list().contains("fab__tele") {
+                continue;
             }
-            element_for_enter.dataset().delete("collapseTimer");
+            tiles.push(child);
         }
-        // The `expanded` class drives the CSS on the inner `.fab` div, NOT the
-        // `<tonk-fab>` host — so toggle it there.
-        if let Some(fab) = element_for_enter.query_selector(".fab").ok().flatten() {
-            fab.class_list().add_1("expanded").ok();
+    }
+    for tile in &tiles {
+        let Ok(wrapper) = document.create_element("div") else {
+            continue;
+        };
+        let _ = wrapper.set_attribute("class", "fab__tele");
+        // Start each wrapper in the collapsed geometry (clamped to zero, gap
+        // swallowed) so the bar rests as just the circle without a first-frame
+        // flash of the full width. `set_telescope` drives these on toggle.
+        let style = wrapper.unchecked_ref::<HtmlElement>().style();
+        let _ = style.set_property("max-width", "0px");
+        let _ = style.set_property("margin-left", "-2px");
+        // Insert the wrapper where the tile is, then move the tile inside it.
+        if let Some(parent) = tile.parent_node() {
+            let _ = parent.insert_before(&wrapper, Some(tile));
+            let _ = wrapper.append_child(tile);
         }
-        apply_menu_direction(&element_for_enter);
+    }
+    fab.class_list().add_2("fab--anim", "fab--collapsed").ok();
+}
+
+/// Attach the FAB's NATIVE click/dblclick gesture listeners. Because only the
+/// circle is draggable (see `attach_drag`), the pointer is never captured over a
+/// segment, so the browser's own `click`/`dblclick` fire normally — no manual
+/// tap detection, no timers. The listeners sit on the `<tonk-fab>` host and
+/// route by the event target:
+///
+/// - CIRCLE cap: `click` folds/expands the bar, `dblclick` pauses/resumes sync.
+/// - DISCLOSURE border: `click` reveals/hides its section.
+/// - SPOT segment: `click` toggles the switcher menu.
+/// - SHARE segment: `click` toggles the roster menu.
+///
+/// The name/spot editables edit on their OWN native `dblclick` (editable.rs).
+fn attach_gestures(element: &HtmlElement) {
+    let el_click = element.clone();
+    let on_click = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
+        let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        if t.closest(".fab__cap-l").ok().flatten().is_some() {
+            // Only the FIRST click of a click sequence folds the bar; the second
+            // click of a double (`detail == 2`) is left for `dblclick` to pause,
+            // so a double-click doesn't fold-then-fold back.
+            if e.detail() <= 1 {
+                toggle_telescope(&el_click);
+            }
+        } else if let Some(border) = t.closest(".fab__disclose").ok().flatten()
+            && let Some(section) = border.get_attribute("data-section")
+        {
+            toggle_section(&el_click, &section);
+        } else if t
+            .closest(".fab__menu, .fab__share-menu")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            // A click inside an open menu acts on that menu's own row.
+        } else if let Some(seg) = t.closest(".fab__repo").ok().flatten() {
+            toggle_menu(&el_click, &seg, ".fab__share");
+        } else if let Some(seg) = t.closest(".fab__share").ok().flatten() {
+            toggle_menu(&el_click, &seg, ".fab__repo");
+        }
     });
 
-    // Build the collapse closure ONCE. Its JS Function handle is captured by
-    // `on_leave` and passed to `setTimeout` on each mouseleave, so no new
-    // Closure is allocated per interaction.
-    let element_for_collapse = element.clone();
-    let collapse_once = Closure::<dyn Fn()>::new(move || {
-        element_for_collapse.dataset().delete("collapseTimer");
-        if let Some(fab) = element_for_collapse.query_selector(".fab").ok().flatten() {
-            fab.class_list().remove_1("expanded").ok();
+    let el_dbl = element.clone();
+    let on_dbl = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
+        // Double-clicking the circle pauses/resumes sync (its ring already shows
+        // the state). The browser fires one `click` (which folds once) before
+        // this `dblclick`; reverse that fold so a double-click reads as ONLY a
+        // pause, not a fold. Double-click on editables is handled by the editable.
+        if let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok())
+            && t.closest(".fab__cap-l").ok().flatten().is_some()
+        {
+            toggle_telescope(&el_dbl);
+            trigger_pause_toggle(&el_dbl);
         }
-    });
-    let collapse_fn = collapse_once
-        .as_ref()
-        .unchecked_ref::<js_sys::Function>()
-        .clone();
-    collapse_once.forget();
-
-    let element_for_leave = element.clone();
-    let on_leave = Closure::<dyn Fn()>::new(move || {
-        let id = set_timeout(&collapse_fn, COLLAPSE_MS as i32);
-        element_for_leave
-            .dataset()
-            .set("collapseTimer", &id.to_string())
-            .ok();
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();
     target
-        .add_event_listener_with_callback("mouseenter", on_enter.as_ref().unchecked_ref())
+        .add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref())
         .ok();
     target
-        .add_event_listener_with_callback("mouseleave", on_leave.as_ref().unchecked_ref())
+        .add_event_listener_with_callback("dblclick", on_dbl.as_ref().unchecked_ref())
         .ok();
+    on_click.forget();
+    on_dbl.forget();
+}
 
-    on_enter.forget();
-    on_leave.forget();
+/// Reveal or hide a disclosure section (`account` / `share`) by toggling the
+/// matching `fab--show-<section>` class on `.fab`, then re-run the telescope so
+/// the now-shown/hidden segments animate to their new widths. Keeps the border's
+/// `title` in step for the tooltip ("show …" ⇄ "hide …").
+fn toggle_section(element: &HtmlElement, section: &str) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let class = format!("fab--show-{section}");
+    let showing = !fab.class_list().contains(&class);
+    fab.class_list().toggle_with_force(&class, showing).ok();
+    // Update the border tooltip for the new state.
+    let title = if showing {
+        format!("hide {section}")
+    } else {
+        format!("show {section}")
+    };
+    if let Some(border) = fab
+        .query_selector(&format!(".fab__disclose[data-section=\"{section}\"]"))
+        .ok()
+        .flatten()
+    {
+        let _ = border.set_attribute("title", &title);
+    }
+    // Re-flow the telescope to the new set of shown tiles (unless collapsed).
+    if !fab.class_list().contains("fab--collapsed") {
+        set_telescope(element, &fab, false);
+    }
+}
+
+/// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
+/// closing the other menu (matched by `other_sel`) so only one is open at a
+/// time. Reorients the opened menu to the current viewport half.
+fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
+    if let Some(other) = element.query_selector(other_sel).ok().flatten() {
+        other.class_list().remove_1("is-open").ok();
+    }
+    let opening = !seg.class_list().contains("is-open");
+    seg.class_list().toggle_with_force("is-open", opening).ok();
+    if opening {
+        apply_menu_direction(element);
+    }
+}
+
+/// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
+/// each `.fab__tele` tile's `max-width` / `margin-left` / staggered
+/// `transition-delay`, then schedule the post-animation `settled` state that
+/// unclamps `max-width` so expanded content can reflow freely.
+fn toggle_telescope(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let collapsing = !fab.class_list().contains("fab--collapsed");
+    set_telescope(element, &fab, collapsing);
+    // Expanding reorients the dropdowns to the current viewport half.
+    if !collapsing {
+        apply_menu_direction(element);
+    }
+}
+
+/// Drive the telescope to the given state. `collapsing = true` retracts the
+/// tiles into the circle; `false` unfolds them to their measured widths.
+fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
+    let tiles = telescope_tiles(fab);
+    let count = tiles.len();
+
+    // Clear any prior settle timer + `settled` class: while animating, tiles
+    // must be clamped (overflow hidden) so `max-width` can drive them.
+    if let Some(id_str) = element.dataset().get("settleTimer") {
+        if let Ok(id) = id_str.parse::<i32>() {
+            clear_timeout(id);
+        }
+        element.dataset().delete("settleTimer");
+    }
+    fab.class_list().remove_1("fab--settled").ok();
+
+    // Measure natural widths BEFORE mutating the state class, so an
+    // already-expanded tile reports its true width (see `measure_tile_widths`).
+    let widths = if collapsing {
+        Vec::new()
+    } else {
+        measure_tile_widths(&tiles)
+    };
+
+    for (i, tile) in tiles.iter().enumerate() {
+        let style = tile.unchecked_ref::<HtmlElement>().style();
+        let delay = telescope_delay_ms(i, count, collapsing);
+        let _ = style.set_property("transition-delay", &format!("{delay}ms"));
+        // A tile stays collapsed if the whole bar is folding OR it wraps a
+        // section the disclosure ladder currently hides (account / share).
+        let hidden = collapsing || tile_section_hidden(fab, tile);
+        // Mark hidden tiles so the post-settle `overflow: visible; max-width:
+        // none` unclamp SKIPS them — otherwise a hidden section would reappear
+        // (and its absolutely-positioned menu overlay the page) once settled.
+        tile.class_list()
+            .toggle_with_force("fab__tele--hidden", hidden)
+            .ok();
+        if hidden {
+            let _ = style.set_property("max-width", "0px");
+            let _ = style.set_property("margin-left", "-2px");
+        } else {
+            let w = widths.get(i).copied().unwrap_or(0.0);
+            let _ = style.set_property("max-width", &format!("{w}px"));
+            let _ = style.set_property("margin-left", "0px");
+        }
+    }
+
+    if collapsing {
+        fab.class_list().add_1("fab--collapsed").ok();
+    } else {
+        fab.class_list().remove_1("fab--collapsed").ok();
+        // After the sweep, mark settled so `max-width` unclamps (`none`) and
+        // the expanded content can reflow (e.g. a growing invite link).
+        schedule_settle(element, fab, count);
+    }
+}
+
+/// Whether a telescope tile wraps a disclosure section (`.fab__account` /
+/// `.fab__share`, tagged `data-section`) that the ladder currently hides — i.e.
+/// `.fab` lacks the matching `fab--show-<section>`. Borders and the always-shown
+/// spot are never hidden this way. Such tiles stay at zero width even when the
+/// bar is expanded, until their disclosure border reveals them.
+fn tile_section_hidden(fab: &Element, tile: &Element) -> bool {
+    // Only SECTION segments gate on disclosure — borders (`.fab__disclose`) are
+    // always shown when the bar is expanded, so look for a `.fab__seg` child
+    // (not a border) carrying `data-section`.
+    let Some(section) = tile
+        .query_selector(".fab__seg[data-section]")
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute("data-section"))
+    else {
+        return false;
+    };
+    !fab.class_list().contains(&format!("fab--show-{section}"))
+}
+
+/// Collect the `.fab__tele` wrapper tiles in DOM order.
+fn telescope_tiles(fab: &Element) -> Vec<Element> {
+    let mut out = Vec::new();
+    let children = fab.children();
+    for i in 0..children.length() {
+        if let Some(child) = children.item(i)
+            && child.class_list().contains("fab__tele")
+        {
+            out.push(child);
+        }
+    }
+    out
+}
+
+/// Measure each tile's natural width by momentarily unclamping it (max-width
+/// none, overflow visible, no negative margin), reading the box, then
+/// restoring the inline styles. Mirrors the wireframe's `measure()`.
+fn measure_tile_widths(tiles: &[Element]) -> Vec<f64> {
+    let mut widths = Vec::with_capacity(tiles.len());
+    for tile in tiles {
+        let style = tile.unchecked_ref::<HtmlElement>().style();
+        let saved_mw = style.get_property_value("max-width").unwrap_or_default();
+        let saved_ov = style.get_property_value("overflow").unwrap_or_default();
+        let saved_ml = style.get_property_value("margin-left").unwrap_or_default();
+        let _ = style.set_property("max-width", "none");
+        let _ = style.set_property("overflow", "visible");
+        let _ = style.set_property("margin-left", "0px");
+        let w = tile.get_bounding_client_rect().width().ceil() + 1.0;
+        // Restore (empty string removes the inline prop).
+        let _ = style.set_property("max-width", &saved_mw);
+        let _ = style.set_property("overflow", &saved_ov);
+        let _ = style.set_property("margin-left", &saved_ml);
+        widths.push(w);
+    }
+    widths
+}
+
+/// Schedule the `fab--settled` class after the telescope finishes expanding, so
+/// each tile's `max-width` unclamps and the content can reflow past its
+/// measured width. Stashes the timer id so a re-toggle (or disconnect) cancels it.
+fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
+    let fab_for_settle = fab.clone();
+    let settle_once = Closure::<dyn Fn()>::new(move || {
+        fab_for_settle.class_list().add_1("fab--settled").ok();
+    });
+    let settle_fn = settle_once
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    settle_once.forget();
+    let id = set_timeout(&settle_fn, telescope_settle_ms(count) as i32);
+    element.dataset().set("settleTimer", &id.to_string()).ok();
+}
+
+/// The circle's double-click — pause or resume, whichever the current state
+/// isn't. `tonk:pause-sync` is a single TOGGLE command, so the same submit both
+/// pauses and resumes; only the confirmation UX differs by direction:
+///
+/// - When SYNCED, we open the `#fab-pause-sync` confirm dialog — pausing has a
+///   consequence (changes stop propagating), so we confirm first.
+/// - When already PAUSED, we resume IMMEDIATELY — resuming is safe and needs no
+///   confirmation — by submitting the toggle form directly (the same form the
+///   dialog's "Pause sync" button submits).
+///
+/// The live state comes off the `<ui-sync-status>` disc, whose subscription
+/// stamps a `.sync--paused` modifier class as the status changes.
+fn trigger_pause_toggle(element: &HtmlElement) {
+    if is_sync_paused(element) {
+        submit_pause_form(element);
+    } else {
+        open_pause_dialog(element);
+    }
+}
+
+/// Whether sync is currently paused, read from the `<ui-sync-status>` disc's
+/// state modifier class (`.sync--paused`), which its subscription keeps live.
+fn is_sync_paused(element: &HtmlElement) -> bool {
+    element
+        .query_selector(".sync--paused")
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Open the pause-sync confirm dialog. We call the WebAwesome dialog's `.show()`
+/// (not just `open`) so the guest's modal wiring — which listens for `wa-show`
+/// to size the sealed iframe — fires, the same path a `data-dialog="open …"`
+/// control triggers. Falls back to the `open` attribute if `.show()` is absent.
+fn open_pause_dialog(element: &HtmlElement) {
+    let Some(dialog) = element.query_selector("#fab-pause-sync").ok().flatten() else {
+        return;
+    };
+    if let Ok(show) = Reflect::get(dialog.as_ref(), &"show".into())
+        && let Ok(show) = show.dyn_into::<Function>()
+    {
+        let _ = show.call0(dialog.as_ref());
+    } else {
+        let _ = dialog.set_attribute("open", "");
+    }
+}
+
+/// Resume directly: submit the toggle form the dialog's Pause button targets,
+/// which carries the `onsubmit=tonk:pause-sync` binding routed to the space
+/// branch. `requestSubmit()` (not `submit()`) so the form's `submit` event —
+/// which the command delegation listens for — actually fires.
+fn submit_pause_form(element: &HtmlElement) {
+    let Some(form) = element
+        .query_selector("#fab-pause-sync-form")
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    if let Ok(request_submit) = Reflect::get(form.as_ref(), &"requestSubmit".into())
+        && let Ok(request_submit) = request_submit.dyn_into::<Function>()
+    {
+        let _ = request_submit.call0(form.as_ref());
+    }
 }
 
 /// Attach pointer event listeners for free drag-and-drop. The element moves
@@ -188,74 +511,94 @@ fn attach_hover(element: &HtmlElement) {
 fn attach_drag(element: &HtmlElement) {
     let el_down = element.clone();
     let on_down = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
-        // A press on an interactive descendant (the name editable, a menu
-        // link, a form control) is a click — not a drag. Bail before
-        // `prevent_default`/capture so the control receives the press.
-        if let Some(target) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) {
-            if target
-                .closest(
-                    "a, button, input, textarea, select, tonk-editable, \
-                     wa-button, wa-copy-button, [contenteditable]",
-                )
-                .ok()
-                .flatten()
-                .is_some()
-            {
-                return;
-            }
+        // Only the primary button drags, and only from the CIRCLE cap — that is
+        // the sole draggable handle. A press anywhere else on the bar (a
+        // segment, an editable, a menu) is left entirely to native click.
+        if e.button() != 0 {
+            return;
         }
-        e.prevent_default();
-
-        // Record the pointer's offset within the FAB so the grab point stays
-        // under the cursor (no snap-to-corner).
+        let on_circle = e
+            .target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+            .and_then(|el| el.closest(".fab__cap-l").ok().flatten())
+            .is_some();
+        if !on_circle {
+            return;
+        }
+        // DELTA-based drag: remember the pointer's start AND the element's start
+        // `left`/`top`, then translate by the pointer delta. No grab-offset or
+        // rect math — the element moves 1:1 with the cursor and drops exactly
+        // where released. We do NOT capture or `preventDefault` here so a plain
+        // press still fires native click/dblclick; capture is taken in
+        // `pointermove` only once the press passes the drag threshold.
         let rect = el_down.get_bounding_client_rect();
-        let grab_x = e.client_x() as f64 - rect.left();
-        let grab_y = e.client_y() as f64 - rect.top();
-        el_down.dataset().set("fabGrabX", &grab_x.to_string()).ok();
-        el_down.dataset().set("fabGrabY", &grab_y.to_string()).ok();
-
-        el_down.dataset().set("fabDragging", "1").ok();
-        el_down.set_pointer_capture(e.pointer_id()).ok();
-        // Mark the inner `.fab` dragging (CSS may suppress hover/transitions).
-        if let Some(fab) = el_down.query_selector(".fab").ok().flatten() {
-            fab.class_list().add_1("dragging").ok();
-        }
+        el_down
+            .dataset()
+            .set("fabStartLeft", &rect.left().to_string())
+            .ok();
+        el_down
+            .dataset()
+            .set("fabStartTop", &rect.top().to_string())
+            .ok();
+        el_down
+            .dataset()
+            .set("fabDownX", &(e.client_x() as f64).to_string())
+            .ok();
+        el_down
+            .dataset()
+            .set("fabDownY", &(e.client_y() as f64).to_string())
+            .ok();
+        el_down.dataset().set("fabPressing", "1").ok();
+        el_down.dataset().delete("fabMoved");
     });
 
     let el_move = element.clone();
     let on_move = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
-        if el_move.dataset().get("fabDragging").is_none() {
+        if el_move.dataset().get("fabPressing").is_none() {
             return;
         }
-        let (grab_x, grab_y) = read_grab_offset(&el_move);
-        let left = e.client_x() as f64 - grab_x;
-        let top = e.client_y() as f64 - grab_y;
+        let dx = e.client_x() as f64 - read_data_f64(&el_move, "fabDownX");
+        let dy = e.client_y() as f64 - read_data_f64(&el_move, "fabDownY");
+        // Promote to a DRAG once past the dead zone; take capture only then, so a
+        // stationary press stays a plain native click.
+        if el_move.dataset().get("fabMoved").is_none() {
+            if dx.hypot(dy) < DRAG_THRESHOLD_PX {
+                return;
+            }
+            el_move.dataset().set("fabMoved", "1").ok();
+            el_move.set_pointer_capture(e.pointer_id()).ok();
+            if let Some(fab) = el_move.query_selector(".fab").ok().flatten() {
+                fab.class_list().add_1("dragging").ok();
+            }
+        }
+        e.prevent_default();
+        let left = read_data_f64(&el_move, "fabStartLeft") + dx;
+        let top = read_data_f64(&el_move, "fabStartTop") + dy;
         track_position(&el_move, left, top);
     });
 
     let el_up = element.clone();
     let on_up = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
-        if el_up.dataset().get("fabDragging").is_none() {
+        if el_up.dataset().get("fabPressing").is_none() {
             return;
         }
-        el_up.dataset().delete("fabDragging");
+        el_up.dataset().delete("fabPressing");
+        let moved = el_up.dataset().get("fabMoved").is_some();
+        // A press that never moved is a plain click — leave it to native
+        // click/dblclick; do nothing here.
+        if !moved {
+            return;
+        }
         el_up.release_pointer_capture(e.pointer_id()).ok();
         if let Some(fab) = el_up.query_selector(".fab").ok().flatten() {
             fab.class_list().remove_1("dragging").ok();
         }
-
-        // FAB top-left in viewport coords (pointer minus the grab offset).
-        let (grab_x, grab_y) = read_grab_offset(&el_up);
-        el_up.dataset().delete("fabGrabX");
-        el_up.dataset().delete("fabGrabY");
-        let raw_x = e.client_x() as f64 - grab_x;
-        let raw_y = e.client_y() as f64 - grab_y;
-
-        // Clamp to keep the circle on-screen, then settle there.
-        let (x, y) = clamp_to_viewport(raw_x, raw_y);
+        let dx = e.client_x() as f64 - read_data_f64(&el_up, "fabDownX");
+        let dy = e.client_y() as f64 - read_data_f64(&el_up, "fabDownY");
+        let left = read_data_f64(&el_up, "fabStartLeft") + dx;
+        let top = read_data_f64(&el_up, "fabStartTop") + dy;
+        let (x, y) = clamp_to_viewport(left, top);
         settle_position(&el_up, x, y);
-
-        // Persist the new position over the bridge.
         persist_position(x as u32, y as u32);
     });
 
@@ -293,15 +636,12 @@ fn clamp_to_viewport(raw_x: f64, raw_y: f64) -> (f64, f64) {
     clamp_position(raw_x, raw_y, vw, vh, CIRCLE_SIZE, CIRCLE_SIZE)
 }
 
-/// Read the grab offset stashed on the element at `pointerdown`.
-fn read_grab_offset(el: &HtmlElement) -> (f64, f64) {
-    let parse = |k: &str| {
-        el.dataset()
-            .get(k)
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0)
-    };
-    (parse("fabGrabX"), parse("fabGrabY"))
+/// Read a numeric `data-*` value off the element, defaulting to 0.
+fn read_data_f64(el: &HtmlElement, key: &str) -> f64 {
+    el.dataset()
+        .get(key)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 /// Track the FAB at `(left, top)` (viewport top-left) with plain `left`/`top`
@@ -321,49 +661,16 @@ fn track_position(el: &HtmlElement, left: f64, top: f64) {
 /// edge keeps the FAB in the same corner when the viewport resizes, instead of
 /// drifting from a fixed top-left offset. Used at drop and on restore.
 fn settle_position(el: &HtmlElement, left: f64, top: f64) {
+    // Settle at exactly the tracked `left`/`top` — same coordinate space
+    // `track_position` uses during the drag — so the FAB drops precisely where
+    // the cursor released it, with no re-anchoring drift. (Corner-anchoring on
+    // viewport resize is deferred; it fought the wide host box and the
+    // row-reverse geometry.)
     let style = el.style();
-    let (vw, vh) = viewport_size();
-    let rect = el.get_bounding_client_rect();
-    let (w, h) = (
-        rect.width().max(CIRCLE_SIZE),
-        rect.height().max(CIRCLE_SIZE),
-    );
-
-    let _ = style.remove_property("left");
     let _ = style.remove_property("right");
-    if left + w / 2.0 > vw / 2.0 {
-        let right = (vw - (left + w)).max(0.0);
-        let _ = style.set_property("right", &format!("{}px", right));
-    } else {
-        let _ = style.set_property("left", &format!("{}px", left.max(0.0)));
-    }
-
-    let _ = style.remove_property("top");
     let _ = style.remove_property("bottom");
-    if top + h / 2.0 > vh / 2.0 {
-        let bottom = (vh - (top + h)).max(0.0);
-        let _ = style.set_property("bottom", &format!("{}px", bottom));
-    } else {
-        let _ = style.set_property("top", &format!("{}px", top.max(0.0)));
-    }
-}
-
-/// The viewport size, defaulting if unavailable.
-fn viewport_size() -> (f64, f64) {
-    let Some(win) = window() else {
-        return (1024.0, 768.0);
-    };
-    let vw = win
-        .inner_width()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(1024.0);
-    let vh = win
-        .inner_height()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(768.0);
-    (vw, vh)
+    let _ = style.set_property("left", &format!("{}px", left.max(0.0)));
+    let _ = style.set_property("top", &format!("{}px", top.max(0.0)));
 }
 
 /// Persist `(x, y)` by calling `window.tonk.transact(request)`. The request is
