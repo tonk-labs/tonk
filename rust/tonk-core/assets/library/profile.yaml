@@ -655,10 +655,14 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
-        /* No hover affordance: the name reads as plain text until double-clicked
-           into edit mode (element.rs). Only the focused (editing) state shows a
-           subtle field carved into the cream pill — a slightly darker tint and a
-           hairline inset — keeping the `--fab-ink` text readable. */
+        /* Hover reveals a subtle carved field — a light tint + hairline inset —
+           signalling the name is editable (double-click enters edit mode, wired
+           in element.rs). The focused (editing) state deepens the same field so
+           hover → edit reads as a progression; both keep `--fab-ink` readable. */
+        .fab__name-input:hover {
+          background: color-mix(in oklab, var(--fab-ink) 4%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 16%, transparent);
+        }
         .fab__name-input:focus {
           background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
           box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
@@ -705,14 +709,18 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
-        /* Same as the profile name: no hover affordance (double-click to edit);
-           only the focused editing state shows the subtle carved field. The box
-           stays clamped at its `max-width` while editing (never overrunning the
-           bar into the circle); the browser scrolls the contenteditable's own
-           content to keep the caret in view, so a long name being typed stays
-           legible without the box growing. `text-overflow: clip` drops the
-           ellipsis while editing (an ellipsis over the live caret reads as a
-           bug). */
+        /* Same as the profile name: hover reveals the carved field to signal the
+           name is editable (double-click to edit); the focused editing state
+           deepens it. The box stays clamped at its `max-width` while editing
+           (never overrunning the bar into the circle); the browser scrolls the
+           contenteditable's own content to keep the caret in view, so a long
+           name being typed stays legible without the box growing. `text-overflow:
+           clip` drops the ellipsis while editing (an ellipsis over the live caret
+           reads as a bug). */
+        .fab__space tonk-editable:hover {
+          background: color-mix(in oklab, var(--fab-ink) 4%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 16%, transparent);
+        }
         .fab__space tonk-editable:focus {
           background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
           box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
@@ -810,19 +818,23 @@ view/directory!: &profile/fab/view
         /* ── Share / invite ─────────────────────────────────────────────
            The bar's right-cap segment: rounds its right edge, anchors its own
            roster dropdown (already a positioned `.fab__seg`). */
-        /* The share content renders through nested routing elements
-           (`<tonk-host>/<tonk-repository>/<tonk-branch>`); keep them inline so
-           the label/link reads as plain text in the bar. The roster `<nav>` is
-           absolutely positioned, so an inline branch host doesn't disturb it. */
+        /* The share content renders through nested routing/wrapper elements
+           (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-origin>` and the
+           two `<tonk-display>` wrappers). Collapse ALL of them with
+           `display: contents` so they generate no box of their own and their
+           leaf controls — the copy-link button (B) and the "share" mint trigger
+           (A) — become direct flex items of the `.fab__seg` share zone. That
+           lets the segment's `align-items: center` centre the control on the
+           bar's axis. Leaving the wrappers `inline` instead made the button an
+           inline-block sitting on the text baseline, so it rode up out of the
+           pill. The roster `<nav>` is `position: absolute`, so it stays out of
+           this flex flow. */
         .fab__share tonk-host,
         .fab__share tonk-repository,
-        .fab__share tonk-branch { display: inline; }
-        /* The link display (B) and the mint display (A) sit inline in the bar;
-           `<tonk-origin>` (the `data-base` source) and the directory `tonk-view`
-           wrappers carry no layout box of their own. */
-        .fab__share tonk-origin { display: inline; }
+        .fab__share tonk-branch,
+        .fab__share tonk-origin,
         .fab__share .fab__invite-display,
-        .fab__share .fab__share-mint { display: inline; }
+        .fab__share .fab__share-mint,
         .fab__share-mint tonk-view { display: contents; }
         .fab__share-form {
           display: inline-flex;
@@ -846,27 +858,34 @@ view/directory!: &profile/fab/view
           padding: 0 2px;
         }
         .fab__share-trigger:hover { color: var(--fab-ink); }
-        /* The minted invite: a friendly `{name}?access=…` label clipped to a
-           width, with the copy button at its end. The label is cosmetic; the
-           copy button (in the fab-invite view) carries the real absolute URL. */
-        .fab__invite {
+        /* The minted invite: a "Copy invite link" control that reads as part of
+           the pill — a plain `--fab-ink` label + link glyph in the bar's own
+           font, no button chrome, so it matches the bar's other labels. (The
+           <wa-copy-button> defaults its host colour to a quiet neutral grey,
+           invisible on the inverted pill, and its `button` part to a padded
+           icon-button; both are overridden below. Part styles from this outer
+           tree win over the component's own `.button` rules regardless of
+           specificity.) The button still carries the real absolute join URL and
+           copies it on click, briefly swapping to "Copied!"; the raw token is
+           never shown. */
+        .fab__invite { color: var(--fab-ink); }
+        .fab__invite::part(button) {
+          padding: 0;
+          border-radius: 0;
+          color: var(--fab-ink);
+          background: transparent;
+          transition: opacity 0.15s ease;
+        }
+        .fab__invite::part(button):hover {
+          background: transparent;
+          opacity: 0.7;
+        }
+        /* Icon + label sit inline within each state slot (copy / copied). */
+        .fab__invite-label {
           display: inline-flex;
           align-items: center;
-          gap: 4px;
-          max-width: 220px;
-        }
-        .fab__invite-url {
-          color: var(--wa-color-text-quiet, #666);
-          font-family: var(--wa-font-family-code, monospace);
-          font-size: 11px;
-          overflow: hidden;
+          gap: 6px;
           white-space: nowrap;
-          text-overflow: ellipsis;
-        }
-        .fab__invite-copy {
-          flex: none;
-          color: var(--wa-color-text-quiet, #666);
-          font-size: 13px;
         }
         /* The member roster dropdown — anchored to the share zone's RIGHT edge
            (the repo switcher anchors left). Inherits `.fab__menu`'s transparent

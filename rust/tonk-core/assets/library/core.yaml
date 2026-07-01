@@ -720,11 +720,12 @@ view/fab-roster!:
 # A compact invite-link view kind for the FAB bar. Distinct attribute
 # (`xyz.tonk.view/fab-invite`) so `tonk:agent-invite` can carry both its
 # default agent-prompt view AND this compact bar link. Selected via
-# `view=tonk:view/fab-invite`. Renders the friendly `{name}?access=…` label
-# (CSS-clipped in the bar) with a copy button carrying the real absolute
-# join URL (`{base}?access={access}{remote}#{code}`, `base` = `{origin}/join`
-# from a wrapping `<tonk-origin>`). Resolves only once both invite halves
-# exist, so the FAB shows the "share" mint button until the mint lands.
+# `view=tonk:view/fab-invite`. Renders a single "Copy invite link" button —
+# the raw access token is never shown; the `<wa-copy-button>` carries the
+# real absolute join URL (`{base}?access={access}{remote}#{code}`, `base` =
+# `{origin}/join` from a wrapping `<tonk-origin>`) and copies it on click,
+# briefly swapping its label to "Copied!". Resolves only once both invite
+# halves exist, so the FAB shows the "share" mint button until the mint lands.
 concept!: &view/fab-invite
   this: tonk:view/fab-invite
   description: A compact invite-link view kind for the FAB bar.
@@ -744,10 +745,10 @@ view/fab-invite!:
   this: id:tonk:agent-invite/fab-invite
   model: tonk:agent-invite
   display: |
-    <span class="fab__invite">
-      <span class="fab__invite-url" title="Invite link for {name}">{name}?access={access}{remote}#{code}</span>
-      <wa-copy-button class="fab__invite-copy" value="{dom.host/data-base}?access={access}{remote}#{code}"></wa-copy-button>
-    </span>
+    <wa-copy-button class="fab__invite" copy-label="Copy invite link for {name}" value="{dom.host/data-base}?access={access}{remote}#{code}">
+      <span slot="copy-icon" class="fab__invite-label"><wa-icon name="link"></wa-icon>Copy invite link</span>
+      <span slot="success-icon" class="fab__invite-label"><wa-icon name="check"></wa-icon>Copied!</span>
+    </wa-copy-button>
 
 # The FAB share-mint trigger — a no-entity directory view over
 # `tonk:repository`, mounted in the FAB share zone via
