@@ -108,28 +108,29 @@ wa-tree-item:not(:defined) {
     src: url("/fonts/space-mono-latin-700-normal.woff2") format("woff2");
 }
 
-/* Brand accent → purple, matching the viewer wireframes (the
-   shoelace palette ships a blue brand). Remap the brand semantic
-   tokens used across the app (fills, borders, on-colors) to a violet
-   scale so accents read purple in both light and dark. */
+/* Brand accent → yellow-green, matching the control-panel wireframe
+   (`#cbd70c`). The shoelace palette ships a blue brand; remap the brand
+   semantic tokens (fills, borders, on-colors) to a chartreuse scale so
+   accents read yellow-green in both light and dark. `#cbd70c` is bright,
+   so `on-loud` is DARK ink (not white) to stay legible on the fill. */
 :root,
 .wa-light,
 .wa-dark {
-    --wa-color-brand-fill-quiet: #f3ebfb;
-    --wa-color-brand-fill-normal: #d9bff2;
-    --wa-color-brand-fill-loud: #9c5bd8;
-    --wa-color-brand-border-quiet: #d9bff2;
-    --wa-color-brand-border-normal: #b483e3;
-    --wa-color-brand-border-loud: #9c5bd8;
-    --wa-color-brand-on-quiet: #6b29a8;
-    --wa-color-brand-on-normal: #4a1d73;
-    --wa-color-brand-on-loud: #ffffff;
+    --wa-color-brand-fill-quiet: #f7fbdd;
+    --wa-color-brand-fill-normal: #e6ef9a;
+    --wa-color-brand-fill-loud: #cbd70c;
+    --wa-color-brand-border-quiet: #e6ef9a;
+    --wa-color-brand-border-normal: #d3df46;
+    --wa-color-brand-border-loud: #cbd70c;
+    --wa-color-brand-on-quiet: #5c6608;
+    --wa-color-brand-on-normal: #41490a;
+    --wa-color-brand-on-loud: #1a1c05;
 }
 .wa-dark {
-    --wa-color-brand-fill-quiet: #2a1840;
-    --wa-color-brand-fill-normal: #4a2d6e;
-    --wa-color-brand-fill-loud: #9c5bd8;
-    --wa-color-brand-on-quiet: #d9bff2;
+    --wa-color-brand-fill-quiet: #2a2e08;
+    --wa-color-brand-fill-normal: #454d0d;
+    --wa-color-brand-fill-loud: #cbd70c;
+    --wa-color-brand-on-quiet: #e6ef9a;
 }
 
 html,
