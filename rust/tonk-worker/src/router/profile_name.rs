@@ -193,6 +193,22 @@ pub(crate) async fn restamp_member_name_all_spaces(tonk: &TonkState, name: &str)
     }
 }
 
+/// Re-stamp the self-identity overlay (`state:self`) on every space the
+/// profile belongs to, so the topbar chip reflects a rename instantly on
+/// whichever space is in view.
+///
+/// A profile rename is fired from the FAB on the PROFILE branch, so the
+/// command carries no origin space — it can't target just the one in focus.
+/// The overlay is per-space (the chip reads it without seeing the profile
+/// branch), so re-stamp them all; each is overlay-only and one space's
+/// failure is logged inside [`crate::router::sync::publish_self_identity`].
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn restamp_self_identity_all_spaces(tonk: &TonkState) {
+    for key in profile_space_keys(tonk).await {
+        crate::router::sync::publish_self_identity(tonk, &key, CONTENT_BRANCH).await;
+    }
+}
+
 /// Re-stamp the self member's `MemberName` on a space's content branch.
 /// Used by [`restamp_member_name_all_spaces`] to update one space's roster.
 #[cfg(target_arch = "wasm32")]
@@ -264,6 +280,7 @@ mod tests {
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
+            sync_queue: Default::default(),
             commands: crate::router::command_registry(),
         }
     }

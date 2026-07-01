@@ -28,7 +28,8 @@ pub use repository::{
 mod sync;
 pub use dialog_repository::Revision;
 pub use sync::{
-    SyncResponse, SyncStatusResponse, branches_to_sync, repo_from_sync_tag, sync_repository,
+    SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, repo_from_sync_tag,
+    sync_repository,
 };
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
@@ -141,6 +142,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
         // stamp — see `router/session.rs`.
         .route("/api/site", post(session::register_site))
+        // Per-branch site registration: the branch comes from the URL (like
+        // `/query` and `/transact`), not from parsing the document path. A
+        // `<tonk-site>` scoped by `<tonk-repository>`/`<tonk-branch>` ancestors
+        // posts its path here and renders the returned site entity.
+        .route(
+            "/api/profile/branch/{branch}/site",
+            post(session::register_site_on_profile),
+        )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/site",
+            post(session::register_site_on_repo),
+        )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
@@ -331,6 +344,7 @@ pub mod tests {
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
+            sync_queue: Default::default(),
             commands: super::command_registry(),
         }
     }

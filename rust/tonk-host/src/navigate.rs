@@ -99,10 +99,32 @@ fn dispatch_committed() {
     }
 }
 
-/// Assign `window.location` to `href`, redirecting the page.
+/// Navigate to `href` WITHOUT reloading: push it onto history and fire
+/// `popstate` so the top-level `<tonk-site>` re-resolves. The path change then
+/// updates the tab's site in the overlay, whose subscription re-renders the
+/// view — the route change propagates as a data change, not a page load. Falls
+/// back to a real `location.assign` only if history isn't available.
 fn navigate_to(href: &str) {
-    if let Some(location) = window().map(|w| w.location()) {
-        let _ = location.assign(href);
+    use wasm_bindgen::JsValue;
+    let Some(win) = window() else {
+        return;
+    };
+    let pushed = win
+        .history()
+        .ok()
+        .map(|h| {
+            h.push_state_with_url(&JsValue::NULL, "", Some(href))
+                .is_ok()
+        })
+        .unwrap_or(false);
+    if pushed {
+        // `pushState` fires no event; dispatch `popstate` so listeners re-route.
+        if let Ok(event) = web_sys::Event::new("popstate") {
+            let _ = win.dispatch_event(&event);
+        }
+    } else {
+        // No history access — fall back to a real (reloading) navigation.
+        let _ = win.location().assign(href);
     }
 }
 

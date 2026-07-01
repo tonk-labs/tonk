@@ -207,6 +207,67 @@ pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch
     !enabled.iter().any(|fact| !fact.enabled.0)
 }
 
+/// Re-classify `repo`/`branch` against a fresh upstream fetch and publish the
+/// settled `tonk/sync` status to the chip's overlay (`synced` / `syncing…` via
+/// `ahead`/`behind`/`diverged` / `offline`). This is the settle step a sync run
+/// owes the chip: the `sync` op flips to `pending` at the start but must
+/// publish the resolved state when it finishes, or the chip stays `syncing…`
+/// forever (the regression after the in-page status controller was removed).
+///
+/// Honors the pause preference (a replica paused mid-sync keeps `paused`) and
+/// treats an unreachable remote as `offline` rather than clobbering with a
+/// stale reading. A branch with no upstream publishes `offline` (nothing to
+/// sync against). Best-effort: a failure to acquire/fetch is logged, not
+/// surfaced — the caller's sync result already carried the real outcome.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
+    // A replica paused mid-sync keeps `paused` — don't classify or hit the
+    // network for it.
+    if !is_sync_enabled(tonk, repo, branch).await {
+        publish_paused_status(tonk, repo, branch).await;
+        return;
+    }
+
+    let session = match tonk
+        .reactor
+        .repository(repo)
+        .branch(branch)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            log!("publish_settled_status: failed to acquire {repo}/{branch}: {e}");
+            return;
+        }
+    };
+    let handle = session.handle();
+    let local = handle.revision();
+
+    if handle.upstream().is_none() {
+        publish_sync_status(tonk, repo, branch, SyncState::NoUpstream).await;
+        return;
+    }
+
+    let remote = match handle.fetch().perform(&tonk.operator).await {
+        Ok(remote) => remote,
+        Err(e) => {
+            log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
+            publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::offline_status())
+                .await;
+            return;
+        }
+    };
+
+    let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    // Re-check pause: it could have landed during the (awaiting) fetch.
+    if is_sync_enabled(tonk, repo, branch).await {
+        publish_sync_status(tonk, repo, branch, state).await;
+    } else {
+        publish_paused_status(tonk, repo, branch).await;
+    }
+}
+
 /// How many times a `/sync` pull refreshes-and-retries when a concurrent
 /// commit advances the branch head mid-merge. Each retry reuses the blocks the
 /// prior attempt already fetched, so this only re-runs the cheap merge+CAS, not
@@ -387,7 +448,7 @@ pub async fn pull(
         .await
     {
         Ok(after) => {
-            log!("Pull succeeded");
+            log!("Pull succeeded: {}@{}", params.branch, params.repo);
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
@@ -397,7 +458,7 @@ pub async fn pull(
             }))
         }
         Err(e) => {
-            log!("Pull failed: {e:?}");
+            log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
             Ok(Json(SyncResponse {
                 success: false,
                 before: before.clone(),
@@ -441,7 +502,7 @@ pub async fn push(
         .await
     {
         Ok(_) => {
-            log!("Push succeeded");
+            log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
@@ -452,7 +513,7 @@ pub async fn push(
             }))
         }
         Err(e) => {
-            log!("Push failed: {e:?}");
+            log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
             Ok(Json(SyncResponse {
                 success: false,
                 before: before.clone(),
@@ -680,7 +741,7 @@ pub async fn sync(
             .await
         {
             Ok(after) => {
-                log!("Pull succeeded");
+                log!("Pull succeeded: {}@{}", params.branch, params.repo);
                 after_pull = Some(after);
                 pull_error = None;
                 break;
@@ -688,7 +749,12 @@ pub async fn sync(
             Err(e) if is_head_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
                 // A commit advanced the head while we merged. Refresh the
                 // handle's view of it and retry from the now-current snapshot.
-                log!("Pull raced a commit (attempt {}); refreshing", attempt + 1);
+                log!(
+                    "Pull raced a commit on {}@{} (attempt {}); refreshing",
+                    params.branch,
+                    params.repo,
+                    attempt + 1
+                );
                 if let Err(refresh_err) = session.handle().refresh(&tonk_state.operator).await {
                     log!("refresh after raced pull failed: {refresh_err:?}");
                     pull_error = Some(refresh_err.to_string());
@@ -696,7 +762,7 @@ pub async fn sync(
                 }
             }
             Err(e) => {
-                log!("Pull failed: {e:?}");
+                log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
                 pull_error = Some(format!("Pull failed: {e}"));
                 break;
             }
@@ -721,9 +787,16 @@ pub async fn sync(
         .await
     {
         Ok(_) => {
-            log!("Push succeeded");
+            log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
             announce_head(&params.repo, &params.branch, after.clone());
+            // Settle the chip: re-classify against the upstream and publish the
+            // resolved status (e.g. `synced`), or it stays stuck on `pending`/
+            // `syncing…` — the `sync` op only flipped it to `pending` at the
+            // start. Done per-branch as this one finishes, so a slow branch
+            // never pins another's chip.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
             Ok(Json(SyncResponse {
                 success: true,
                 before,
@@ -732,7 +805,11 @@ pub async fn sync(
             }))
         }
         Err(e) => {
-            log!("Push failed: {e:?}");
+            log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
+            // Still settle the chip — a failed push leaves us `ahead`, not
+            // `pending`; classify so the chip reflects reality.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
             Ok(Json(SyncResponse {
                 success: false,
                 before,
@@ -740,6 +817,110 @@ pub async fn sync(
                 error: Some(format!("Push failed: {e}")),
             }))
         }
+    }
+}
+
+/// The set of repositories that have local commits not yet pushed.
+///
+/// The service worker owns *what* needs syncing; the page only pokes *when*
+/// (`POST /api/sync`). A commit enqueues its repo here (from the transact
+/// handler, where the route is known); a successful drain clears it. The pull
+/// side is not tracked — [`drain`] pulls every currently-open repository so a
+/// read-only viewer receives upstream edits without ever committing, so the
+/// dirty set is purely a push-priority hint.
+///
+/// Interior-mutable behind its own lock so enqueuing on commit doesn't contend
+/// with the outer `TonkState` lock.
+#[derive(Default)]
+pub struct SyncQueue {
+    /// Repo name → most recent commit instant (for activity priority).
+    dirty: std::sync::Mutex<HashMap<String, f64>>,
+}
+
+impl SyncQueue {
+    /// Record that `repo` has un-pushed local commits. `now` is a caller-
+    /// supplied monotonic-ish timestamp (the SW stamps `Date.now()` at the
+    /// event boundary — the reactor's deterministic paths can't read a clock).
+    pub fn mark_dirty(&self, repo: &str, now: f64) {
+        if let Ok(mut dirty) = self.dirty.lock() {
+            dirty.insert(repo.to_owned(), now);
+        }
+    }
+
+    /// The dirty repos, most-recently-active first.
+    fn drain_dirty(&self) -> Vec<String> {
+        let Ok(mut dirty) = self.dirty.lock() else {
+            return Vec::new();
+        };
+        let mut repos: Vec<(String, f64)> = dirty.drain().collect();
+        // Descending by timestamp: an active editor's repo syncs before idle
+        // background repos.
+        repos.sort_by(|a, b| b.1.total_cmp(&a.1));
+        repos.into_iter().map(|(repo, _)| repo).collect()
+    }
+
+    /// Re-mark `repo` dirty after a failed drain so the next pass retries it.
+    fn requeue(&self, repo: &str, now: f64) {
+        self.mark_dirty(repo, now);
+    }
+}
+
+/// Drain the sync work-queue: reconcile every repository that has un-pushed
+/// commits (the dirty set) plus every currently-open repository (so a viewer
+/// pulls upstream edits without committing). The union is synced through the
+/// per-repo [`sync_repository`] sweep, which pulls+pushes each upstream branch
+/// and honors the durable pause preference.
+///
+/// This is the single parameterless drain the page's `<tonk-host>` heartbeat
+/// pokes (`POST /api/sync`) and the SW's own post-commit `event.waitUntil`
+/// push run through. Branches are synced per-repo; repos run sequentially here
+/// (the reactor serializes branch state anyway), priority-ordered by activity.
+pub async fn drain_sync(state: &AppState) {
+    // Dirty repos first (push priority), then every other open repo (pull).
+    let now = current_millis();
+    let dirty = {
+        let tonk = state.read().await;
+        tonk.sync_queue.drain_dirty()
+    };
+
+    // Every currently-open repository — the pull population. Read the reactor's
+    // cached repo map; a repo only appears once acquired, which every rendered
+    // space has done.
+    let open: Vec<String> = {
+        let tonk = state.read().await;
+        tonk.reactor.repos().read().keys().cloned().collect()
+    };
+
+    // Union, dirty-first, de-duplicated while preserving order.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let order: Vec<String> = dirty
+        .into_iter()
+        .chain(open)
+        .filter(|repo| seen.insert(repo.clone()))
+        .collect();
+
+    for repo in order {
+        if let Err(e) = sync_repository(state, &repo).await {
+            // Push didn't fully land — re-mark so the next heartbeat retries.
+            log!("drain_sync: {repo} did not fully reconcile: {e}");
+            let tonk = state.read().await;
+            tonk.sync_queue.requeue(&repo, now);
+        }
+    }
+}
+
+/// A millisecond wall-clock stamp for activity priority. `Date.now()` in the SW
+/// event context (not the reactor's deterministic paths). Native builds (tests)
+/// have no clock dependency here, so they return 0 — priority ordering is moot
+/// off-wasm.
+fn current_millis() -> f64 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        js_sys::Date::now()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        0.0
     }
 }
 

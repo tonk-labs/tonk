@@ -54,6 +54,10 @@ pub fn start() {
     // it nests cleanly since the canvas portal is plain `content=` (a
     // self-contained srcdoc), needing no runtime injection or network.
     tonk_portal::register();
+    // The nested router: a space's chrome runs a `<tonk-site>` inside the guest
+    // to route the sub-path against the space's route table, rendering its match
+    // in a further-nested sealed iframe.
+    tonk_portal::register_site();
 }
 
 /// Fetch the sigil sprite over the host bridge, mint a same-origin blob URL,

@@ -70,8 +70,25 @@ impl CustomElement for TonkEditable {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let _ = this.set_attribute("contenteditable", "plaintext-only");
+        // Editing is opt-in on DOUBLE-CLICK, not a single click: the element
+        // starts NON-editable (so a click just selects/does nothing) and only
+        // turns `contenteditable` on when double-clicked, focusing to edit. It
+        // reverts to non-editable on blur (see `on_blur`). This keeps a stray
+        // single click from dropping the chip straight into edit mode.
+        let _ = this.set_attribute("contenteditable", "false");
         let _ = this.set_attribute("role", "textbox");
+
+        // Double-click enters edit mode: make it editable, then focus so the
+        // caret lands and `on_focus` captures the pre-edit value.
+        let on_dblclick = {
+            let this = this.clone();
+            Closure::wrap(Box::new(move |_event: Event| {
+                let _ = this.set_attribute("contenteditable", "plaintext-only");
+                let _ = this.focus();
+            }) as Box<dyn FnMut(Event)>)
+        };
+        let _ =
+            this.add_event_listener_with_callback("dblclick", on_dblclick.as_ref().unchecked_ref());
 
         // Capture the value on focus so Escape can restore it.
         let focus_value = self.focus_value.clone();
@@ -121,6 +138,9 @@ impl CustomElement for TonkEditable {
             let this = this.clone();
             Closure::wrap(Box::new(move |_event: Event| {
                 let current = this.text_content().unwrap_or_default();
+                // Leaving edit mode: revert to non-editable so the next single
+                // click doesn't re-enter it (double-click is required again).
+                let _ = this.set_attribute("contenteditable", "false");
                 // No-op when nothing changed (e.g. Escape just restored
                 // the original) — avoids a redundant rename round-trip.
                 if current == *focus_value.borrow() {
@@ -137,7 +157,7 @@ impl CustomElement for TonkEditable {
 
         self.listeners
             .borrow_mut()
-            .extend([on_focus, on_keydown, on_blur]);
+            .extend([on_dblclick, on_focus, on_keydown, on_blur]);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {

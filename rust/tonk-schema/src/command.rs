@@ -71,6 +71,42 @@ impl Command for CreateSpace {
     type Output = ();
 }
 
+/// Load the requesting tab's site for its current path.
+///
+/// Asserted transiently by `<tonk-site>` (via the regular transact API) instead
+/// of the legacy `POST /api/.../site` fetch. The element mints its own site
+/// entity once (`site:<uuid>`) and supplies it as `this`, plus the route `path`.
+/// The command rides the normal event path, so its ancestor `<tonk-repository>` /
+/// `<tonk-branch>` annotate the origin repo/branch — a nested router stamps onto
+/// the space's repo branch, the top-level one onto the profile branch, with no
+/// special endpoint.
+///
+/// On navigation the same `<tonk-site>` re-asserts `tonk:load` with the SAME
+/// `this` and a new `path`; the handler stamps the cardinality-one `tonk:site`
+/// fields, which supersede in place, and the element's live subscription
+/// re-renders — no teardown, no reload. Each `<tonk-site>` mints its own entity,
+/// so two sites on one page (even on the same branch) never clobber.
+///
+/// The handler (`LoadHandler` in `tonk-worker`) does exactly what `register_site`
+/// did: match `path` against the origin branch's `route!` table and stamp the
+/// resolved [`crate::site::Site`] (plus captured route params) onto `this` in
+/// that branch's overlay.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Load {
+    /// The site entity to stamp (`site:<uuid>`), minted by the `<tonk-site>`.
+    pub this: Entity,
+    /// The route path the tab is at, matched against the origin branch's route
+    /// table.
+    pub path: crate::domain::command::load::Path,
+}
+
+/// `Load` is a [`dialog_capability::Command`]; its handler stamps the tab's
+/// `tonk:site` onto the command's `this` from the origin branch.
+impl Command for Load {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Request to mint a repository invite.
 ///
 /// Asserted transiently when the user submits the share form (a

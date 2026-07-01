@@ -658,7 +658,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
 /// `<tonk-repository>` and `<tonk-branch>` ancestor; return their
 /// `name` attributes. Inner-most-wins — the first one found on
 /// the way up.
-fn read_context_from_ancestors(consumer: &Element) -> (Option<String>, Option<String>, bool) {
+pub fn read_context_from_ancestors(consumer: &Element) -> (Option<String>, Option<String>, bool) {
     let mut space: Option<String> = None;
     let mut branch: Option<String> = None;
     let mut profile = false;

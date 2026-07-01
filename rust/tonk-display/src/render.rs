@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 
 use crate::template::{
     Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, Snapshot, apply_attribute_binding,
-    extract_plan, navigate, render_segments_with_shadow, single_field_value,
+    extract_plan_with_scalars, navigate, render_segments_with_shadow, single_field_value,
 };
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
@@ -129,13 +129,20 @@ fn empty_conclusion() -> Conclusion {
 }
 
 impl Renderer {
-    /// Construct a renderer from a snapshotted template + container.
-    pub fn from_snapshot(snapshot: Snapshot) -> Self {
+    /// Construct a renderer from a snapshotted template + container, planning
+    /// with `scalar_fields` — the model concept's `cardinality: one` field
+    /// names. A scalar field used in a template is rendered as a plain
+    /// substitution rather than an iteration root that vanishes when the value
+    /// is absent. Pass an empty set for the value-driven default (no descriptor).
+    pub fn from_snapshot_with_scalars(
+        snapshot: Snapshot,
+        scalar_fields: &std::collections::BTreeSet<String>,
+    ) -> Self {
         // Preprocess on<event>=<concept> into data-on<event> before
         // plan extraction; the rewrite is a pure DOM mutation that
         // iteration rows inherit via cloning.
         let event_bindings = preprocess::preprocess(&snapshot.fragment);
-        let plan = extract_plan(&snapshot.fragment);
+        let plan = extract_plan_with_scalars(&snapshot.fragment, scalar_fields);
         Self {
             host: snapshot.container,
             template: snapshot.fragment,
@@ -484,6 +491,13 @@ fn build_repeat_row(
     template: &DocumentFragment,
     member: &Conclusion,
 ) -> Option<MountedRow> {
+    // A subjectless conclusion (empty `this`) is the synthetic host-attribute
+    // lead injected to feed chrome on an empty directory frame (e.g. the FAB's
+    // {dom.host/data-space} with zero instances), never a real instance — it
+    // must not clone a repeat row.
+    if member.this.is_empty() {
+        return None;
+    }
     let template_root: Node = template.clone().into();
 
     let (row_root, body_scope): (Node, Vec<usize>) = match &plan.path {
@@ -925,7 +939,10 @@ mod tests {
         let host = document.create_element("tonk-view").expect("create host");
         host.set_inner_html(template_html);
         let snapshot = snapshot_template(&host).expect("snapshot");
-        (Renderer::from_snapshot(snapshot), host)
+        (
+            Renderer::from_snapshot_with_scalars(snapshot, &std::collections::BTreeSet::new()),
+            host,
+        )
     }
 
     /// One conclusion with string fields.
@@ -1081,6 +1098,35 @@ mod tests {
         let (mut r, host) = renderer(LIST);
         r.apply(&[row("a", &[("name", "Ann")])]);
         r.apply(&[]);
+        assert!(li_texts(&host).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_drops_a_repeat_row_whose_subject_is_empty() {
+        // The empty-directory chrome fix feeds a synthetic conclusion with
+        // an empty `this` (carrying only dom.host/* fields) so chrome can
+        // read host attributes with zero instances. That subjectless
+        // conclusion must never materialize as a repeat row.
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("", &[("name", "Ghost")]), row("a", &[("name", "Ann")])]);
+        assert_eq!(li_withs(&host), vec!["a"]);
+        assert_eq!(li_texts(&host), vec!["Ann"]);
+    }
+
+    #[dialog_common::test]
+    fn it_renders_chrome_host_fields_from_a_subjectless_lead() {
+        // Mirrors the FAB: chrome reads {dom.host/data-space} while the
+        // repeat collection is empty. A single subjectless conclusion
+        // carrying the host field renders chrome but no row.
+        let (mut r, host) = renderer(
+            "<div><span class=\"space\">{dom.host/data-space}</span><ul><li data-id={this}>{name}</li></ul></div>",
+        );
+        r.apply(&[row("", &[("dom.host/data-space", "acme")])]);
+        let space = host
+            .query_selector(".space")
+            .expect("query .space")
+            .expect("span exists");
+        assert_eq!(space.text_content().unwrap_or_default().trim(), "acme");
         assert!(li_texts(&host).is_empty());
     }
 

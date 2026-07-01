@@ -54,6 +54,19 @@ pub struct TonkView {
     inner: RefCell<Option<Rc<RefCell<Inner>>>>,
 }
 
+/// Read the `data-scalar-fields` attribute (a comma-separated list of the model
+/// concept's `cardinality: one` field names) into a set for the planner. Empty
+/// or absent yields an empty set — the value-driven default.
+fn scalar_fields_attr(host: &Element) -> std::collections::BTreeSet<String> {
+    host.get_attribute("data-scalar-fields")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 impl CustomElement for TonkView {
     fn shadow() -> bool {
         false
@@ -71,7 +84,17 @@ impl CustomElement for TonkView {
         // Build a renderer from the child template, if there is one.
         // Empty hosts are fine — `.render()` calls then no-op until
         // someone fills children in and re-mounts.
-        let renderer = snapshot_template(&host).ok().map(Renderer::from_snapshot);
+        //
+        // `data-scalar-fields` (a comma-separated list the owning
+        // `<tonk-display>` stamps from the model concept's `cardinality: one`
+        // fields) tells the planner which fields are scalar substitutions, so an
+        // optional scalar field used in a template is never treated as an
+        // iteration root that drops its host element when the value is absent.
+        // Absent attribute → empty set → the value-driven default.
+        let scalar_fields = scalar_fields_attr(&host);
+        let renderer = snapshot_template(&host)
+            .ok()
+            .map(|snapshot| Renderer::from_snapshot_with_scalars(snapshot, &scalar_fields));
 
         // Surface the event-handler bindings the renderer
         // discovered as JSON on a `data-event-bindings` attribute,
@@ -249,6 +272,26 @@ mod tests {
         host
     }
 
+    /// Like [`mount`], but stamps `data-scalar-fields` (a comma-separated list
+    /// of `cardinality: one` field names) before the element connects, so the
+    /// renderer plans those fields as scalar substitutions rather than iteration
+    /// axes.
+    fn mount_with_scalars(template_html: &str, scalar_fields: &str) -> Element {
+        register();
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document
+            .create_element("tonk-view")
+            .expect("create tonk-view");
+        let _ = host.set_attribute("data-scalar-fields", scalar_fields);
+        host.set_inner_html(template_html);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
     /// Build a serialized `{ this, fields }` JsValue conclusion the
     /// way `<tonk-display>` would pass it into `el.render(detail)`.
     fn detail(this: &str, fields: &[(&str, &str)]) -> JsValue {
@@ -272,6 +315,43 @@ mod tests {
         let draw = Reflect::get(el.as_ref(), &"draw".into()).expect("draw");
         let func: Function = draw.dyn_into().expect("draw is a function");
         func.call1(&JsValue::NULL, detail).expect("call draw");
+    }
+
+    // The fix: a `cardinality: one` field declared in `data-scalar-fields` is a
+    // scalar substitution, not an iteration axis. An element whose only hole is
+    // such a field must render once (blank when absent) — `<tonk-site
+    // path={rest}>` survives a bare-root render with no `rest`.
+    #[dialog_common::test]
+    fn it_keeps_a_scalar_field_host_when_the_value_is_absent() {
+        // `{id}` (present) makes the <div> the repeat root, so the sibling <a>
+        // bearing the only `{rest}` hole becomes an iteration root — which, when
+        // `rest` is absent and undeclared, would clone zero times and drop it.
+        let host = mount_with_scalars(
+            "<div><span class=\"id\">{id}</span><a class=\"probe\" path=\"{rest}\">x</a></div>",
+            "id,rest",
+        );
+        call_draw(&host, &detail("did:key:zX", &[("id", "did:key:zRepo")]));
+        assert!(
+            host.query_selector("a.probe").unwrap().is_some(),
+            "declared scalar field host was dropped when its value was absent: {}",
+            host.inner_html(),
+        );
+    }
+
+    // The contrast: WITHOUT the scalar declaration the same field is
+    // value-driven, so an absent value clones its host zero times and drops it.
+    // This is exactly the behaviour the `data-scalar-fields` threading fixes.
+    #[dialog_common::test]
+    fn it_drops_an_undeclared_absent_field_host() {
+        let host = mount(
+            "<div><span class=\"id\">{id}</span><a class=\"probe\" path=\"{rest}\">x</a></div>",
+        );
+        call_draw(&host, &detail("did:key:zX", &[("id", "did:key:zRepo")]));
+        assert!(
+            host.query_selector("a.probe").unwrap().is_none(),
+            "expected the undeclared absent field to drop its host (value-driven): {}",
+            host.inner_html(),
+        );
     }
 
     // A display body that embeds a nested template-owning component

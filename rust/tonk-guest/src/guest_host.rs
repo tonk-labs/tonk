@@ -260,6 +260,15 @@ fn route_ctx(detail: &JsValue) -> JsValue {
             let _ = Reflect::set(&ctx, &JsValue::from_str(key), &JsValue::from_str(&value));
         }
     }
+    // Forward the `profile` flag (a `<tonk-repository profile>` ancestor) so the
+    // host routes the query at the profile-as-repository endpoint. Like `space`,
+    // the host honors it only for a privileged portal.
+    if Reflect::get(detail, &JsValue::from_str("profile"))
+        .map(|v| v.is_truthy())
+        .unwrap_or(false)
+    {
+        let _ = Reflect::set(&ctx, &JsValue::from_str("profile"), &JsValue::TRUE);
+    }
     ctx.into()
 }
 

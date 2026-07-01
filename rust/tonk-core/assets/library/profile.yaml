@@ -93,6 +93,20 @@ command!: &space/create
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# Load the requesting tab's site for its current path. Mirrors core.yaml's
+# `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
+# the PROFILE branch (its ancestors resolve no named repo, so the claim routes
+# here). The worker's `LoadHandler` matches `path` against this branch's `route!`
+# table and stamps `tonk:site` onto the element-supplied `this`.
+command!: &tonk/load
+  this: tonk:load
+  description: Stamp the requesting tab's site for its current path on this branch.
+  with:
+    path:
+      description: The route path the tab is at, matched against the route table.
+      the: xyz.tonk.site/path
+      as: text
+
 # The `view/directory` concept — the shape `<tonk-display>` queries to
 # find a directory view (a `model` + a `display` template under
 # `xyz.tonk.view/directory`). The `view/directory!:` instance below is
@@ -144,11 +158,32 @@ view/directory!:
       <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
-          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-model" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="hub-card__name">
+            <tonk-host>
+              <tonk-repository name={subject}>
+                <tonk-branch name="main">
+                  <tonk-display entity={subject} model=tonk:repository view=tonk:view/label>
+                    <span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="no-model" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="no-view" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="loading" class="hub-card__untitled" hidden>Untitled</span>
+                  </tonk-display>
+                </tonk-branch>
+              </tonk-repository>
+            </tonk-host>
+          </span>
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
-        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-sync-badge></tonk-sync-badge></tonk-branch></tonk-repository></tonk-host></span>
+        <!-- Sync status: the host-chrome `<ui-sync-status>` element (defined in
+             Rust, space-agnostic — a space can't redefine or break it), scoped
+             to this card's space branch via the `<tonk-repository>` ancestor. It
+             SUBSCRIBES to the `tonk:sync` `state:here` status the worker stamps,
+             so it updates live as the background sync drain reconciles — unlike
+             the old `<tonk-sync-badge>`, which fetched once on mount (and on
+             commit/toggle, neither of which fires on the Hub) and froze on a
+             stale reading. Read-only: pause lives in the space topbar. -->
+        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
       </a>
     </div>
 
@@ -291,27 +326,112 @@ view/directory!: &profile/fab/view
   display: |
     <tonk-fab>
       <div class="fab">
-        <span class="fab__circle" data-sync="offline"></span>
-        <span class="fab__identity">
+        <!-- LEFT CAP — the grab handle. A round-left segment (36×36) holding
+             the live sync ring: the same host-chrome `<ui-sync-status>` element
+             the Hub cards use, scoped to the active space's branch
+             (`{dom.host/data-space}`, the space DID the shell embeds — same
+             context the repo-name display below uses). It subscribes to the
+             space's `state:here` sync status and updates as the background drain
+             reconciles. When collapsed the whole bar shrinks to just this cap
+             (a floating disc); dragging grabs it. `.fab__circle` sizes the disc. -->
+        <span class="fab__seg fab__cap-l fab__circle"><tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
+        <!-- LEFT BORDER — the disclosure edge for the ACCOUNT section (the only
+             left-side border). Clicking it reveals/hides the account segment
+             (wireframe §02: a thick edge stands in for the hidden account and
+             reveals it on click). element.rs wires the click and the `.fab--show-account`
+             state; the account segment collapses to zero when hidden. There is
+             NO border between account and spot — the spot is always shown. -->
+        <span class="fab__thick fab__disclose" data-section="account" role="button" tabindex="0" title="show account" aria-hidden="true"></span>
+        <!-- ACCOUNT — its own segment (wireframe's `mr_oats`): the signed-in
+             profile name, an inline editable that renames the profile. Hidden
+             behind the left border until disclosed. -->
+        <span class="fab__seg fab__account" data-section="account">
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
-        <!-- NOTE: the current-repo name is NOT shown here yet. The FAB can't read
-             its active space from the portal host: `{dom.host/data-space}` renders
-             empty even though the shell embeds `data-space` on the <tonk-display>
-             (verified at runtime). Displaying / editing the repo name — and gating
-             the dropdown on hovering it — all need that read wired first (the same
-             V1 gap as `data-did`/`data-name`). Until then the switcher opens on
-             whole-bar hover. -->
-        <span class="fab__space">{dom.host/data-space}</span>
-        <nav class="fab__menu opens-down">
-          <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
-          <a class="fab__menu-item fab__menu-item--action" href="/">
-            <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
-          </a>
-          <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
-            <span class="fab__menu-glyph" aria-hidden="true">+</span> new
-          </button>
-        </nav>
+        <!-- SPOT — its own segment (wireframe's `myspace`): the active space's
+             repo name, and the switcher menu (opened on click). Read from — and
+             renamed on — the space's OWN repository (the cross-device source of
+             truth). A nested `<tonk-repository name={DID}>` opens that space's
+             routing context; omitting `view=` resolves the repository's DEFAULT
+             entity view, `tonk:repository/name-view` (core.yaml), an inline
+             `<tonk-editable value={name} data-subject={this}
+             onchange=tonk/rename-repository>` — the same chip the workspace
+             topbar uses. Committing (Enter/blur) fires `tonk/rename-repository`
+             against this nested space branch, and its declarative rule writes
+             the new name there (no worker handler). `{dom.host/data-space}` is the
+             active space's subject DID, embedded by the shell on the portal
+             `<tonk-display>` and readable from chrome (a zero-instance directory
+             view feeds chrome a host-only conclusion; see tonk-display). -->
+        <span class="fab__seg fab__repo">
+          <span class="fab__space">
+            <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
+          </span>
+          <ui-dropdown class="fab__menu opens-down" exclude={dom.host/data-space}>
+            <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
+            <a class="fab__menu-item fab__menu-item--action" href="/">
+              <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
+            </a>
+            <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
+              <span class="fab__menu-glyph" aria-hidden="true">+</span> new
+            </button>
+          </ui-dropdown>
+        </span>
+        <!-- RIGHT BORDER — the disclosure edge for the SHARE section (the only
+             right-side border). Clicking it reveals/hides the share segment
+             (wireframe §02: the right edge stands in for the hidden share). No
+             border between spot and share otherwise — the spot is always shown. -->
+        <span class="fab__thick fab__disclose" data-section="share" role="button" tabindex="0" title="show share" aria-hidden="true"></span>
+        <!-- Share / invite. Like the repo switcher, this is a hover zone: the
+             bar shows "share" until an invite is minted, hovering reveals the
+             member roster, and once minted the bar shows the invite link with a
+             copy button. The invite and the roster both live on the SPACE's OWN
+             content branch (the cross-device source of truth) — `tonk:invite`,
+             `tonk:agent-invite`, `tonk:member` and the two compact `fab-*` views
+             are seeded by core.yaml there, not on this profile/meta branch — so,
+             exactly like the repo-name chip above, they are reached through a
+             nested `<tonk-repository name={DID}>` that opens the space's routing
+             context (honored for the privileged FAB portal). Clicking "share"
+             submits the hidden `fab-invite-form`, firing `tonk:invite`; the
+             worker's InviteHandler mints the membership keypair + delegation
+             against this nested space branch (its origin repo). `<tonk-origin>`
+             supplies `{origin}/join` as `data-base` for the copyable URL. -->
+        <span class="fab__seg fab__share" data-section="share">
+          <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
+            <tonk-origin>
+              <!-- The minted invite link. Shown once the mint lands; before
+                   that `tonk:agent-invite` does not resolve and the empty
+                   hidden fallbacks suppress tonk-display's built-in absence
+                   callout, so the bar shows only the "share" button below.
+                   When it resolves the display sets `data-state="ready"`, and
+                   the CSS sibling rule hides the button so the bar shows just
+                   the link + copy. `bind:base` supplies `{origin}/join`. -->
+              <tonk-display class="fab__invite-display" entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
+                <span slot="no-entity" hidden></span>
+                <span slot="no-model" hidden></span>
+                <span slot="loading" hidden></span>
+              </tonk-display>
+              <!-- The mint trigger. The "share" form lives in a SPACE-branch
+                   view (core.yaml's `tonk:repository` directory view), mounted
+                   here no-entity inside the nested repository context — so its
+                   `onsubmit=tonk:invite` binding both resolves its descriptor
+                   AND dispatches its claim on the SPACE's content branch, where
+                   the worker's InviteHandler mints for that repo. (Binding it in
+                   the FAB's own profile/meta template instead dispatched the
+                   claim to profile/meta with an empty origin repo.) Directory
+                   chrome renders regardless of whether the repo is named, so the
+                   "share" button is always present. -->
+              <tonk-display class="fab__share-mint" model="tonk:repository"></tonk-display>
+            </tonk-origin>
+            <nav class="fab__menu fab__share-menu opens-up">
+              <tonk-display model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
+            </nav>
+          </tonk-branch></tonk-repository></tonk-host>
+        </span>
+        <!-- RIGHT CAP — a plain rounded end cap that always closes the bar
+             (wireframe §01: the bar's far edge rounds off). It carries no
+             control (the wireframe hangs its colour-mode toggle here; we omit
+             that), so the bar reads as a finished pill whatever is disclosed. -->
+        <span class="fab__seg fab__cap-r fab__end" aria-hidden="true"></span>
       </div>
       <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
            `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
@@ -327,75 +447,195 @@ view/directory!: &profile/fab/view
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
+      <!-- Pause-sync confirm dialog + form — opened by DOUBLE-CLICKING the FAB
+           circle (element.rs `trigger_pause_toggle`). The DIALOG lives on the
+           FAB's own profile/meta branch (like the create-space dialog above), so
+           it's plain chrome here. Only the FORM is wrapped in the space's nested
+           `<tonk-repository name={space}>` context, because `tonk:pause-sync`
+           flips the durable `enabled` boolean on the space's OWN replica and so
+           must resolve + dispatch on the space's content branch (binding it on
+           profile/meta would target the wrong repo). The dialog's button submits
+           the repo-scoped form by id via WebAwesome's external `form=` attribute.
+           The command is a toggle, so the same dialog resumes when paused. -->
+      <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
+        <tonk-display model="tonk:repository" view="tonk:view/fab-pause"></tonk-display>
+      </tonk-branch></tonk-repository></tonk-host>
+      <wa-dialog id="fab-pause-sync" label="Pause sync?" class="fab__dialog">
+        <p>Your changes won't reach other devices and agents until you resume. Local edits are buffered; incoming edits are queued.</p>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="fab-pause-sync-form" data-dialog="close" autofocus>
+          <wa-icon slot="start" name="pause"></wa-icon>
+          Pause sync
+        </wa-button>
+      </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
-        /* The FAB iframe overlays the page (and spans the whole viewport while
-           dragging), so its document must be see-through — only the `.fab`
-           pill should paint. The injected Web Awesome CSS sets an opaque
-           `html` background inside `@layer wa-native`; this unlayered rule
-           beats it (unlayered declarations win over layered ones). */
-        html, body { background: transparent; }
+
+        /* ── SEGMENTED CONTROL BAR (matches the "Control Panel" wireframe) ────
+           The bar is NOT one solid pill: it is a row of independent segments
+           (`.fab__seg`) separated by 2px gaps, so the page shows between them.
+           `.fab` itself is transparent and only carries the drop-shadow; each
+           segment paints its own `--fab-pill` surface. End caps
+           (`.fab__cap-l` / `.fab__cap-r`) round the outer corners; the middle
+           segments are square. Sized to the wireframe: 36px tall, 2px gaps. */
         .fab {
-          /* inline-flex (not flex) so `.fab` shrinks to its content width
-             instead of filling the iframe — the host sizes the iframe from
-             `.fab`'s measured extent, so a block-level box would deadlock the
-             width (and never shrink back to the ring on collapse). */
           display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 6px;
-          background: var(--wa-color-surface-raised, #fff);
-          border: 1px solid var(--wa-color-surface-border, #ddd);
-          border-radius: 24px;
+          align-items: stretch;
+          gap: 2px;
+          block-size: 36px;
+          /* INVERTED against the page (wireframe): a bright pill on a dark page,
+             a dark pill on a light page — the segments contrast the page rather
+             than blending into it. `--wa-color-text-normal` is the theme ink
+             (dark-in-light / light-in-dark), so it IS the inverted surface: use
+             it as the pill fill, softened a touch toward white for the
+             wireframe's warm-cream feel. Its inverse `--wa-color-surface-default`
+             is then the readable INK on the pill (`--fab-ink`). Popout children
+             (dropdown, roster) keep their own surface + theme ink — off-bar. */
+          --fab-pill: color-mix(in oklab, var(--wa-color-text-normal, #eee) 90%, #ffffff);
+          --fab-ink: var(--wa-color-surface-default, #1a1a1a);
+          --fab-thick: color-mix(in oklab, var(--fab-pill) 55%, var(--fab-ink));
           font-family: var(--wa-font-family-body, sans-serif);
-          font-size: 13px;
+          font-size: 16px;
           white-space: nowrap;
           position: relative;
           cursor: grab;
+          filter: drop-shadow(0 5px 13px rgba(20, 22, 8, 0.16));
         }
-        .fab.expanded {
-          padding: 6px 12px;
+        /* A segment: its own cream surface + ink, an inset highlight/shadow that
+           reads like the wireframe's pressed-plastic pill. Middle segments are
+           square; the caps below round their outer edge. */
+        .fab__seg {
+          display: inline-flex;
+          align-items: center;
+          gap: 9px;
+          padding: 0 22px;
+          background: var(--fab-pill);
+          color: var(--fab-ink);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
+          position: relative;
+        }
+        .fab__cap-l { border-radius: 36px 0 0 36px; }
+        .fab__cap-r { border-radius: 0 36px 36px 0; }
+        /* Right-docked: the circle is the anchor welded to the right edge, so
+           reverse the row (circle becomes the rightmost child) and the segments
+           telescope leftward from it. The outer corners swap accordingly — the
+           circle cap rounds on its RIGHT, the far share cap on its LEFT. */
+        .fab--dock-right { flex-direction: row-reverse; }
+        .fab--dock-right .fab__cap-l { border-radius: 0 36px 36px 0; }
+        .fab--dock-right .fab__cap-r { border-radius: 36px 0 0 36px; }
+        /* The grab-handle cap: a fixed 36px square (round-left) holding just the
+           sync disc, centred. It is the drag handle; collapsing shrinks the whole
+           bar to this cap alone (a floating disc). */
+        .fab__cap-l {
+          flex: none;
+          inline-size: 36px;
+          padding: 0;
+          justify-content: center;
+          cursor: grab;
+        }
+        /* The far end cap: a fixed 18px round-right nub that finishes the bar
+           (the wireframe's `cp-cap-r` without its toggle glyph). Half the
+           handle's width — it's a rounded terminator, not a control, so it just
+           gives the bar a finished edge past the last divider. */
+        .fab__end {
+          flex: none;
+          inline-size: 18px;
+          padding: 0;
+        }
+        /* The sync disc reads in the segment ink so it contrasts the cream pill.
+           The state shape (solid / pulsing / hollow / half) lives in the shared
+           `.sync` stylesheet rules, so the FAB carries no per-state colour. */
+        .fab .sync { --sync-ink: var(--fab-ink); }
+        /* Sizing wrapper for the live `<ui-sync-status>` disc: the disc is `1em`,
+           so `font-size` sets its diameter (14px, matching the wireframe). */
+        .fab__circle {
+          display: inline-grid;
+          place-items: center;
+          font-size: 14px;
+        }
+        /* A thin dark divider bar between segments (the wireframe's `.cp-thick`).
+           Sits in the 2px flex gaps so the page shows on either side. A
+           disclosure divider is WIDE (15px) while its section is hidden — a fat
+           edge inviting a click to reveal — and THINS to 7px once the section is
+           open, so the divider's width reads the state (wireframe's
+           `.cp-thick` ↔ `.cp-thick.collapse`). The width eases so the change
+           tracks the section's telescope. */
+        .fab__thick {
+          flex: none;
+          inline-size: 15px;
+          align-self: stretch;
+          background: var(--fab-thick);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
+          cursor: pointer;
+          transition: inline-size 0.4s ease;
+        }
+        /* Thin the disclosure divider once its section is disclosed. The
+           `fab--show-<section>` class (set by element.rs on `.fab`) marks an
+           open section; the matching `.fab__disclose[data-section]` thins. */
+        .fab--show-account .fab__disclose[data-section="account"],
+        .fab--show-share .fab__disclose[data-section="share"] {
+          inline-size: 7px;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .fab__thick { transition: none; }
+        }
+        .fab__thick:hover { background: var(--fab-ink); }
+        /* ── Telescope (collapse / expand) ───────────────────────────────
+           element.rs wraps each collapsible segment (everything after the
+           circle cap) in a `.fab__tele` div and toggles `fab--collapsed` on a
+           click. The wrapper clips its tile and animates `max-width` (0 ↔ the
+           tile's measured width) + `margin-left` (−2px swallows the 2px gap
+           while collapsed), staggered per tile, so the bar unfolds from / folds
+           into the circle. `fab--anim` gates the transitions; `fab--settled`
+           (set after the sweep) unclamps `max-width` so expanded content can
+           reflow past its measured width. Inline `max-width` / `margin-left` /
+           `transition-delay` are written per tile by element.rs. */
+        .fab--anim .fab__tele {
+          flex: 0 0 auto;
+          display: flex;
+          align-items: stretch;
+          justify-content: flex-end;
+          block-size: 36px;
+          overflow: hidden;
+          transition: max-width 0.4s ease, margin-left 0.4s ease;
+        }
+        /* After settling, unclamp SHOWN tiles so their content can reflow past
+           the measured width (e.g. a growing invite link). Hidden-section tiles
+           (`.fab__tele--hidden`, set by element.rs) are excluded — they must
+           stay clamped to zero, or a hidden section (and its absolutely
+           positioned menu) would reappear and overlay the page once settled. */
+        .fab--anim.fab--settled .fab__tele:not(.fab__tele--hidden) {
+          overflow: visible;
+          max-width: none;
+        }
+        .fab--anim.fab--collapsed .fab__tele { pointer-events: none; }
+        /* The circle cap rounds to a full disc while collapsed, and its
+           border-radius eases in step with the telescope. */
+        .fab--anim .fab__cap-l { transition: border-radius 0.4s ease; }
+        .fab--anim.fab--collapsed .fab__cap-l { border-radius: 50%; }
+        @media (prefers-reduced-motion: reduce) {
+          .fab--anim .fab__tele,
+          .fab--anim .fab__cap-l { transition: none; }
         }
         /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
            (set inline by element.rs) inside the full-viewport iframe. Suppress
            text selection and show the grabbing cursor so the drag reads cleanly. */
-        .fab.dragging {
-          cursor: grabbing;
-          user-select: none;
-        }
-        .fab__circle {
-          flex: none;
-          width: 24px;
-          height: 24px;
-          border-radius: 50%;
-          color: #cddc39;
-          background: currentColor;
-        }
-        .fab__circle[data-sync="synced"]  { background: currentColor; border: 0; }
-        .fab__circle[data-sync="offline"] { background: transparent; border: 2px solid currentColor; box-sizing: border-box; }
-        .fab__circle[data-sync="syncing"] { animation: fab-sync 1s steps(2, jump-none) infinite; }
-        @keyframes fab-sync {
-          0%   { background: currentColor; }
-          50%  { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
-          100% { background: currentColor; }
-        }
-        .fab__identity {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
+        .fab.dragging { cursor: grabbing; user-select: none; }
+        .fab.dragging .fab__cap-l { cursor: grabbing; }
+        .fab.dragging { filter: drop-shadow(0 14px 26px rgba(20,22,8,.3)); }
+        /* The account/spot names SHRINK-WRAP their content: the segment grows
+           with the name (the wireframe's "sections resize with content"), so a
+           short name keeps the segment tight and a longer one widens it. The
+           `max-width` cap only bounds a pathologically long name; past it the
+           name clips WITHIN the box (`overflow: hidden`) rather than painting
+           over the adjacent circle — the old `:focus-within` lift, which let a
+           long name spill out while editing, is dropped for that reason. */
         .fab__name {
           font-weight: 500;
-          color: var(--wa-color-text-normal, #111);
-          max-width: 120px;
+          color: var(--fab-ink);
+          max-width: 16ch;
           overflow: hidden;
           text-overflow: ellipsis;
-        }
-        /* While editing, lift the wrapper's clamp so the full name is visible
-           (the editable lifts its own clip on focus; the parent must too). */
-        .fab__name:focus-within {
-          max-width: none;
-          overflow: visible;
         }
         /* The name is an inline `<tonk-editable>`: reads as plain text until
            hovered/focused, then shows an editable affordance. Clamped to the
@@ -405,7 +645,7 @@ view/directory!: &profile/fab/view
           display: inline-block;
           font: inherit;
           color: inherit;
-          max-width: 120px;
+          max-width: 16ch;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -415,28 +655,80 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
+        /* Hover reveals a subtle carved field — a light tint + hairline inset —
+           signalling the name is editable (double-click enters edit mode, wired
+           in element.rs). The focused (editing) state deepens the same field so
+           hover → edit reads as a progression; both keep `--fab-ink` readable. */
         .fab__name-input:hover {
-          background: var(--wa-color-surface-hover, #f5f5f5);
+          background: color-mix(in oklab, var(--fab-ink) 4%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 16%, transparent);
         }
         .fab__name-input:focus {
-          background: var(--wa-color-surface-default, #fff);
-          box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
-          overflow: visible;
+          background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
+        }
+        /* The account segment: the profile name, its own pill (wireframe's
+           `mr_oats`). A clickable segment (opens nothing itself; the name inside
+           is an editable). */
+        .fab__account { cursor: default; }
+        /* The spot segment owns the switcher dropdown, opened on click
+           (`.fab__repo.is-open`). It is a positioned flex `.fab__seg`, so the
+           absolutely positioned `.fab__menu` anchors under it. */
+        .fab__repo { cursor: pointer; }
+        .fab__space {
+          color: var(--fab-ink);
+          max-width: 16ch;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          cursor: pointer;
+        }
+        /* The repo name renders through nested routing elements
+           (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-display>`); keep
+           them inline so the name reads as plain text in the bar. */
+        .fab__space tonk-host,
+        .fab__space tonk-repository,
+        .fab__space tonk-branch,
+        .fab__space tonk-display { display: inline; }
+        /* The repo name is an inline `<tonk-editable>` (the repository
+           name-view): reads as plain text, commits a rename on Enter/blur.
+           Styled like the profile-name editable but inheriting `.fab__space`'s
+           quieter look. */
+        .fab__space tonk-editable {
+          display: inline-block;
+          font: inherit;
+          color: inherit;
+          min-width: 2ch;
+          max-width: 16ch;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          padding: 0 2px;
+          margin: 0 -2px;
+          border-radius: 4px;
+          cursor: text;
+          outline: none;
+        }
+        /* Same as the profile name: hover reveals the carved field to signal the
+           name is editable (double-click to edit); the focused editing state
+           deepens it. The box stays clamped at its `max-width` while editing
+           (never overrunning the bar into the circle); the browser scrolls the
+           contenteditable's own content to keep the caret in view, so a long
+           name being typed stays legible without the box growing. `text-overflow:
+           clip` drops the ellipsis while editing (an ellipsis over the live caret
+           reads as a bug). */
+        .fab__space tonk-editable:hover {
+          background: color-mix(in oklab, var(--fab-ink) 4%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 16%, transparent);
+        }
+        .fab__space tonk-editable:focus {
+          background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
           text-overflow: clip;
         }
-        .fab__space {
-          color: var(--wa-color-text-quiet, #666);
-          font-family: var(--wa-font-family-code, monospace);
-          font-size: 11px;
-          max-width: 80px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          cursor: default;
-        }
-        /* Collapsed (default): only the sync-status ring shows; hovering adds
-           the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
-        .fab:not(.expanded) .fab__identity,
-        .fab:not(.expanded) .fab__space { display: none; }
+        /* Collapse/expand is the telescope above (`.fab__tele` width animation
+           driven by element.rs), not a `display` toggle — so the segments slide
+           in and out rather than snapping. */
         /* The menu is a transparent stack: each row is its own floating card,
            so the page shows through the gaps between rows (like the FAB pill
            itself). No panel background/border/shadow here — those live on the
@@ -444,32 +736,66 @@ view/directory!: &profile/fab/view
         .fab__menu {
           position: absolute;
           left: 0;
-          display: flex;
+          right: 0;
+          display: none;
           flex-direction: column;
           gap: 6px;
-          min-width: 200px;
+          /* The dropdown is exactly as wide as the trigger that opens it:
+             `left:0; right:0` stretches it to the positioned `.fab__repo`
+             parent's box, so menu ≡ trigger (they read as one stacked control,
+             per the wireframe). Long roster labels DON'T widen the menu — they
+             clip with ellipsis inside the row (`.fab__menu-item` below). */
           z-index: 100;
         }
         .fab__menu.opens-down { top: 100%; margin-top: 6px; }
         .fab__menu.opens-up { bottom: 100%; margin-bottom: 6px; }
+        /* The dropdown belongs to the repo name segment: hidden until the
+           segment is CLICKED (element.rs toggles `is-open`), matching the
+           wireframe where segments open their menus on click, not hover. */
+        .fab__repo.is-open .fab__menu { display: flex; }
+        .fab__menu.opens-down::before {
+          content: "";
+          position: absolute;
+          left: 0;
+          right: 0;
+          top: -6px;
+          height: 6px;
+        }
+        .fab__menu.opens-up::before {
+          content: "";
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: -6px;
+          height: 6px;
+        }
         /* The space roster renders its rows inside a single `<tonk-display>`
            wrapper, so the menu's flex `gap` can't reach them. `display:contents`
            lifts the roster anchors into the menu's flex flow so every row —
            roster and action alike — gets the same gap. */
         .fab__menu > tonk-display { display: contents; }
+        /* Each row is its own floating card in the SAME material as the bar
+           segments — the inverted cream `--fab-pill` with `--fab-ink` text (the
+           wireframe's `.cp-nav-row` reuses the bar's `--pill`), so the dropdown
+           reads as more of the same control, not a differently-coloured panel. */
         .fab__menu-item {
           display: block;
           padding: 10px 16px;
-          background: var(--wa-color-surface-raised, #fff);
+          background: var(--fab-pill);
           border-radius: 2px;
-          box-shadow: 0 2px 8px rgba(0,0,0,.12);
-          color: var(--wa-color-text-normal, #111);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
+          color: var(--fab-ink);
           text-decoration: none;
           font-size: 13px;
           font-family: var(--wa-font-family-code, monospace);
+          /* Clip a long space name to the menu width (which tracks the trigger)
+             instead of stretching the whole dropdown to the longest label. */
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
         }
         .fab__menu-item:hover {
-          background: var(--wa-color-surface-hover, #f5f5f5);
+          background: color-mix(in oklab, var(--fab-pill) 88%, var(--fab-ink));
         }
         /* `all repos` / `new` — actions, not spaces: right-aligned and quieter,
            rendered as a button/anchor that match the roster cards' type. */
@@ -483,13 +809,96 @@ view/directory!: &profile/fab/view
           cursor: pointer;
           font: inherit;
           font-family: var(--wa-font-family-code, monospace);
-          color: var(--wa-color-text-quiet, #666);
+          color: color-mix(in oklab, var(--fab-ink) 70%, transparent);
         }
         .fab__menu-glyph {
           font-size: 14px;
           line-height: 1;
         }
-        .fab:not(.expanded) .fab__menu { display: none; }
+        /* ── Share / invite ─────────────────────────────────────────────
+           The bar's right-cap segment: rounds its right edge, anchors its own
+           roster dropdown (already a positioned `.fab__seg`). */
+        /* The share content renders through nested routing/wrapper elements
+           (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-origin>` and the
+           two `<tonk-display>` wrappers). Collapse ALL of them with
+           `display: contents` so they generate no box of their own and their
+           leaf controls — the copy-link button (B) and the "share" mint trigger
+           (A) — become direct flex items of the `.fab__seg` share zone. That
+           lets the segment's `align-items: center` centre the control on the
+           bar's axis. Leaving the wrappers `inline` instead made the button an
+           inline-block sitting on the text baseline, so it rode up out of the
+           pill. The roster `<nav>` is `position: absolute`, so it stays out of
+           this flex flow. */
+        .fab__share tonk-host,
+        .fab__share tonk-repository,
+        .fab__share tonk-branch,
+        .fab__share tonk-origin,
+        .fab__share .fab__invite-display,
+        .fab__share .fab__share-mint,
+        .fab__share-mint tonk-view { display: contents; }
+        .fab__share-form {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+        /* Once the invite link has rendered (the display reaches `ready`), drop
+           the "share" mint button so the bar shows just the link + copy. The
+           link display (B) precedes the mint display (A), so the sibling
+           combinator reaches the "share" button inside A. */
+        .fab__invite-display[data-state="ready"] ~ .fab__share-mint .fab__share-trigger,
+        .fab__invite-display[data-state="default-view"] ~ .fab__share-mint .fab__share-trigger { display: none; }
+        /* The "share" affordance shown before a link is minted: a quiet text
+           button that submits the mint form. Reads like the bar's other labels. */
+        .fab__share-trigger {
+          font: inherit;
+          border: 0;
+          background: transparent;
+          color: color-mix(in oklab, var(--fab-ink) 65%, transparent);
+          cursor: pointer;
+          padding: 0 2px;
+        }
+        .fab__share-trigger:hover { color: var(--fab-ink); }
+        /* The minted invite: a "Copy invite link" control that reads as part of
+           the pill — a plain `--fab-ink` label + link glyph in the bar's own
+           font, no button chrome, so it matches the bar's other labels. (The
+           <wa-copy-button> defaults its host colour to a quiet neutral grey,
+           invisible on the inverted pill, and its `button` part to a padded
+           icon-button; both are overridden below. Part styles from this outer
+           tree win over the component's own `.button` rules regardless of
+           specificity.) The button still carries the real absolute join URL and
+           copies it on click, briefly swapping to "Copied!"; the raw token is
+           never shown. */
+        .fab__invite { color: var(--fab-ink); }
+        .fab__invite::part(button) {
+          padding: 0;
+          border-radius: 0;
+          color: var(--fab-ink);
+          background: transparent;
+          transition: opacity 0.15s ease;
+        }
+        .fab__invite::part(button):hover {
+          background: transparent;
+          opacity: 0.7;
+        }
+        /* Icon + label sit inline within each state slot (copy / copied). */
+        .fab__invite-label {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          white-space: nowrap;
+        }
+        /* The member roster dropdown — anchored to the share zone's RIGHT edge
+           (the repo switcher anchors left). Inherits `.fab__menu`'s transparent
+           card-stack look and the JS-applied opens-up/opens-down direction. */
+        .fab__share-menu {
+          left: auto;
+          right: 0;
+        }
+        /* The roster opens when the share segment is CLICKED (element.rs
+           toggles `is-open`), like the repo switcher above. */
+        .fab__share.is-open .fab__share-menu { display: flex; }
+        /* Member cards: right-aligned names, matching the wireframe roster. */
+        .fab__menu-item--member { text-align: right; }
       </style>
     </tonk-fab>
 
@@ -637,3 +1046,193 @@ view!: &join/failure-view
       <strong>Couldn’t join</strong>
       <p>{reason}</p>
     </wa-callout>
+
+# ============================================================
+# ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
+# ============================================================
+#
+# The profile is itself a routable target: `<tonk-site path=…>` posts to
+# `/api/profile/branch/meta/site`, the SW asserts this tab's `tonk:site` on this
+# branch (matching the path against the `route!` table below), and the element
+# renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
+# matched `{concept}` on the same site entity — the same indirection a space uses.
+
+# A tab's location + the route concept it renders. Mirrors core.yaml's `&site`.
+concept!: &site
+  this: tonk:site
+  description: A tab's location and the route concept it renders.
+  with:
+    path:
+      description: Currently active path on this site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    anchor:
+      description: Currently active anchor (URL hash) on this site.
+      the: xyz.tonk.site/anchor
+      cardinality: one
+      as: text
+    space:
+      description: The space (repository name) on this site.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
+    branch:
+      description: The active branch name on this site (defaults to "main").
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+    replica:
+      description: Currently active replica on this site.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+    route:
+      description: Matched route of this site.
+      the: xyz.tonk.site/route
+      cardinality: one
+      as: entity
+    concept:
+      description: Matched route's concept (the model the shell mounts).
+      the: xyz.tonk.site/concept
+      cardinality: one
+      as: entity
+
+# The site view: render the matched route concept on this same site entity.
+view!: &site-view
+  this: id:tonk:site/view
+  model: tonk:site
+  display: |
+    <tonk-display entity={this} model={concept} />
+
+# The route table concept. Mirrors core.yaml's `&route`.
+concept!: &route
+  this: tonk:route
+  description: A route — maps a path pattern to the model the SW mounts.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The route model to render when this path matches.
+      the: xyz.tonk.route/concept
+      cardinality: one
+      as: entity
+
+# The profile's only route for now: `/` renders the Hub.
+route!: &route/home
+  this: id:tonk:route/home
+  path: "/"
+  concept: tonk:hub
+
+# The Hub route model + its view: the space directory over this (profile) branch.
+# `tonk:hub` is the concept the `/` route resolves to; its view renders the
+# `space` directory view, the same picker the legacy `<tonk-hub>` element mounted.
+concept!: &hub
+  this: tonk:hub
+  description: The Tonk Hub — a picker over the profile's spaces.
+  with:
+    # Picked off the site entity. The hub view renders the `space`
+    # directory and doesn't read it, but a `concept!` must declare at
+    # least one field, and `path` is the natural one a route model carries.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &hub-view
+  this: id:tonk:hub/view
+  model: tonk:hub
+  display: |
+    <div class="display-view-slot">
+      <tonk-display model="space"></tonk-display>
+    </div>
+
+# The /join route: redeem an invite. The shell's top-level `<tonk-site>`
+# routes every path against this table, so without an entry `/join` matched
+# nothing and the site rendered an empty `tonk:site` ("required attribute
+# missing"). Mirrors the Hub: `/join` → `tonk:join/route`, whose entity view
+# (on the site entity) mounts the no-entity `<tonk-display
+# model="tonk:join/status">` directory. That directory's chrome carries the
+# `<tonk-page onmount=tonk:join>` trigger, which reads the page location
+# (the SW can't see the `#fragment` seed) and fires `tonk:join`.
+route!: &route/join
+  this: id:tonk:route/join
+  path: "/join"
+  concept: tonk:join/route
+
+concept!: &join/route
+  this: tonk:join/route
+  description: The /join page — redeem an invite on the profile meta branch.
+  with:
+    # The hub carries `path` for the same reason: a route model must declare
+    # at least one field, and the view doesn't read it (the join trigger
+    # reads the location itself).
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &join/route-view
+  this: id:tonk:join/route/view
+  model: tonk:join/route
+  display: |
+    <div class="display-view-slot">
+      <tonk-display model="tonk:join/status"></tonk-display>
+    </div>
+
+# The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
+# full-size repo portal with the FAB floating on top — and hands the rest of the
+# path to a NESTED `<tonk-site>` inside the portal, which routes it against the
+# space's own route table. So `/space/{id}`, `/space/{id}/inspector`, etc. all
+# render the same chrome; only the nested router's path differs.
+# Two routes, same concept: the bare space root (`/space/{id}`, no sub-path) and
+# any sub-path (`/space/{id}/{*rest}`). A `{*rest}` span may not capture nothing,
+# so the bare form is its own route; it leaves `rest` unstamped, and the nested
+# `<tonk-site>` defaults its absent `path` to `/`.
+#
+# The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
+# `rest` is a `cardinality: one` (scalar) field: `<tonk-display>` stamps the
+# concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
+# the planner renders them as plain substitutions rather than iteration axes that
+# would clone the host zero times — and drop it — when the value is empty.
+route!: &route/space-root
+  this: id:tonk:route/space-root
+  path: "/space/{id}"
+  concept: tonk:space/chrome
+
+route!: &route/space-sub
+  this: id:tonk:route/space-sub
+  path: "/space/{id}/{*rest}"
+  concept: tonk:space/chrome
+
+# The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
+# captured from the path and stamped on the site; the view reads them. `rest` is
+# optional — the bare space route does not capture it, and the nested `<tonk-site>`
+# defaults its absent `path` to `/`.
+concept!: &space-chrome
+  this: tonk:space/chrome
+  description: The space chrome — repo portal with the FAB on top.
+  with:
+    id:
+      description: The space repository id, picked off the site entity.
+      the: xyz.tonk.site/id
+      cardinality: one
+      as: text
+  maybe:
+    rest:
+      description: The sub-path within the space, picked off the site entity.
+      the: xyz.tonk.site/rest
+      cardinality: one
+      as: text
+
+view!: &space-view
+  this: id:tonk:space/view
+  model: tonk:space/chrome
+  display: |
+    <tonk-host><tonk-repository name={id}><tonk-branch name="main"><tonk-site path={rest}></tonk-site></tonk-branch></tonk-repository></tonk-host>
+    <tonk-host><tonk-repository profile><tonk-branch name="meta"><tonk-display model="tonk:profile/fab" data-space="{id}"></tonk-display></tonk-branch></tonk-repository></tonk-host>

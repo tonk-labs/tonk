@@ -13,11 +13,12 @@ use std::collections::BTreeMap;
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 use tonk_template::fold::select_rows;
+use tonk_template::resolve::scalar_field_names;
 use tonk_template::resolve::{
     directory_view_predicate, entity_query, instances_query, looks_like_uri, name_query,
     parse_source, phase1_query, view_by_model_query, view_predicate,
 };
-use tonk_template::{build_plan_nodes, split_plan, this_repeat_root};
+use tonk_template::{split_plan_with_scalars, this_repeat_root};
 
 use crate::page::{QueryBackend, RenderError, RenderRoute};
 
@@ -114,9 +115,13 @@ async fn render_at_depth<B: QueryBackend>(
     //    matching the browser's `with_host_attributes`.
     let mut roots = crate::parse_fragment(&view.display);
     let bindings = crate::collect_bindings(&mut roots);
+    // Scalar (`cardinality: one`) fields are plain substitutions, not iteration
+    // axes — so an absent optional scalar field renders its host once (blank)
+    // instead of cloning it zero times and dropping it. Mirrors the browser
+    // renderer's `data-scalar-fields` threading.
+    let scalar_fields = scalar_field_names(&descriptor_json);
     let repeat_root = this_repeat_root(&bindings);
-    let _ = build_plan_nodes(bindings.clone());
-    let plan = split_plan(bindings, repeat_root);
+    let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let host_fields = host_fields(route);
     let conclusions: Vec<crate::Conclusion> = folded
         .iter()

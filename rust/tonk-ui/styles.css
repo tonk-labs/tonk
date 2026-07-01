@@ -108,28 +108,29 @@ wa-tree-item:not(:defined) {
     src: url("/fonts/space-mono-latin-700-normal.woff2") format("woff2");
 }
 
-/* Brand accent → purple, matching the viewer wireframes (the
-   shoelace palette ships a blue brand). Remap the brand semantic
-   tokens used across the app (fills, borders, on-colors) to a violet
-   scale so accents read purple in both light and dark. */
+/* Brand accent → yellow-green, matching the control-panel wireframe
+   (`#cbd70c`). The shoelace palette ships a blue brand; remap the brand
+   semantic tokens (fills, borders, on-colors) to a chartreuse scale so
+   accents read yellow-green in both light and dark. `#cbd70c` is bright,
+   so `on-loud` is DARK ink (not white) to stay legible on the fill. */
 :root,
 .wa-light,
 .wa-dark {
-    --wa-color-brand-fill-quiet: #f3ebfb;
-    --wa-color-brand-fill-normal: #d9bff2;
-    --wa-color-brand-fill-loud: #9c5bd8;
-    --wa-color-brand-border-quiet: #d9bff2;
-    --wa-color-brand-border-normal: #b483e3;
-    --wa-color-brand-border-loud: #9c5bd8;
-    --wa-color-brand-on-quiet: #6b29a8;
-    --wa-color-brand-on-normal: #4a1d73;
-    --wa-color-brand-on-loud: #ffffff;
+    --wa-color-brand-fill-quiet: #f7fbdd;
+    --wa-color-brand-fill-normal: #e6ef9a;
+    --wa-color-brand-fill-loud: #cbd70c;
+    --wa-color-brand-border-quiet: #e6ef9a;
+    --wa-color-brand-border-normal: #d3df46;
+    --wa-color-brand-border-loud: #cbd70c;
+    --wa-color-brand-on-quiet: #5c6608;
+    --wa-color-brand-on-normal: #41490a;
+    --wa-color-brand-on-loud: #1a1c05;
 }
 .wa-dark {
-    --wa-color-brand-fill-quiet: #2a1840;
-    --wa-color-brand-fill-normal: #4a2d6e;
-    --wa-color-brand-fill-loud: #9c5bd8;
-    --wa-color-brand-on-quiet: #d9bff2;
+    --wa-color-brand-fill-quiet: #2a2e08;
+    --wa-color-brand-fill-normal: #454d0d;
+    --wa-color-brand-fill-loud: #cbd70c;
+    --wa-color-brand-on-quiet: #e6ef9a;
 }
 
 html,
@@ -277,6 +278,18 @@ tonk-host:has(> .display-view-slot),
 tonk-host:has(.display-route),
 tonk-repository.display-route,
 .display-route > tonk-branch {
+    display: contents;
+}
+
+/* `<tonk-site>` is a ROUTING element, like `<tonk-host>`/`<tonk-repository>`/
+   `<tonk-branch>`: it wires up a per-tab site + sealed iframe but imposes no
+   visual box or constraints. `display: contents` makes it transparent so its
+   iframe participates in the surrounding layout directly and the CONTENT
+   (the iframe, sized by the element, and the guest's own view) decides height.
+   The `<tonk-host>` wrapping it collapses the same way. */
+tonk-host:has(> tonk-site),
+tonk-host:has(> tonk-repository > tonk-branch > tonk-site),
+tonk-site {
     display: contents;
 }
 
@@ -444,9 +457,6 @@ tonk-repository.display-route,
     min-width: 8ch;
     white-space: nowrap;
     cursor: text;
-}
-.workspace__title-input:hover {
-    border-color: var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
 }
 .workspace__title-input:focus {
     outline: none;
@@ -638,6 +648,15 @@ tonk-repository.display-route,
     display: flex;
     flex-direction: column;
     gap: var(--wa-space-m);
+    /* The Hub is now the route's own page (it renders inside the sealed
+       `<tonk-site>` guest, with no `.hub-route` shell wrapper). So it carries
+       its own page frame — a centered, max-width column with viewport padding —
+       the way the old Leptos shell's `.hub-route` did. */
+    box-sizing: border-box;
+    inline-size: 100%;
+    max-inline-size: 56rem;
+    margin-inline: auto;
+    padding: var(--wa-space-2xl) var(--wa-space-xl);
 }
 /* One repository row: a framed card linking to its space. The sigil is
    a square swatch on the left; the name and URL stack to its right. */
@@ -743,40 +762,69 @@ tonk-repository.display-route,
 .hub-card[data-kind="tonk:repository"]:not([data-status="tonk:blank"]) .hub-card__sync {
     display: flex;
     align-items: center;
-}
-.hub-card__sync .sync-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wa-space-xs);
-    font-family: var(--wa-font-family-code);
-    font-size: var(--wa-font-size-s);
+    /* The disc is `1em`, so `font-size` sizes it: 24px on the Hub cards (the
+       wireframe's `.home-sync`), larger than the FAB's 14px ring. */
+    font-size: 24px;
     color: var(--wa-color-text-quiet);
-    white-space: nowrap;
 }
-.hub-card__sync .sync-badge::before {
-    content: "";
-    inline-size: 7px;
-    block-size: 7px;
+/* The sync status disc — the wireframe indicator (Tonk Control Panel MVP),
+   rendered by `<ui-sync-status>` and reused by the Hub cards AND the FAB ring.
+   These rules live in the app stylesheet (injected into every guest), so the
+   disc is host chrome: identical everywhere the element mounts regardless of
+   what a space asserts.
+
+   MONOCHROME, like the wireframe: the disc is a single INK color that inverts
+   with color mode (`--sync-ink` = the theme's normal text ink, so dark on a
+   light surface, light on a dark surface). The five states differ by SHAPE,
+   not color — solid / pulsing / hollow ring / half — set by the state MODIFIER
+   CLASS the component writes (`sync--synced` etc.). The disc is `1em`, so a
+   caller sizes it via `font-size` on `.sync` (the FAB ring is larger than the
+   Hub card disc). */
+.sync {
+    --sync-ink: var(--wa-color-text-normal);
+    inline-size: 1em;
+    block-size: 1em;
     border-radius: 50%;
-    background: currentColor;
     flex: none;
+    display: grid;
+    place-items: center;
 }
-.hub-card__sync .sync-badge.is-synced {
-    color: var(--wa-color-success-on-quiet);
+.sync .disc {
+    inline-size: 1em;
+    block-size: 1em;
+    border-radius: 50%;
+    box-sizing: border-box;
+    /* Default (offline / local / unknown): hollow ink ring. */
+    background: transparent;
+    border: 2px solid var(--sync-ink);
 }
-.hub-card__sync .sync-badge.is-synced::before {
-    background: var(--wa-color-success-fill-loud);
+/* Synced: solid filled disc. */
+.sync--synced .disc {
+    background: var(--sync-ink);
+    border: 0;
 }
-.hub-card__sync .sync-badge.is-syncing {
-    color: var(--wa-color-warning-on-quiet);
+/* Syncing: solid disc, pulsing. */
+.sync--syncing .disc {
+    background: var(--sync-ink);
+    border: 0;
+    animation: sync-disc-pulse 1.05s ease infinite;
 }
-.hub-card__sync .sync-badge.is-syncing::before {
-    background: var(--wa-color-warning-fill-loud);
+/* Offline and local both use the default hollow ring — distinct component
+   states, styled the same per the design. (`.sync--offline` / `.sync--local`
+   inherit the base `.disc` rule; listed here for intent.) */
+.sync--offline .disc,
+.sync--local .disc {
+    background: transparent;
+    border: 2px solid var(--sync-ink);
 }
-/* Paused and offline are both inert, neutral states. */
-.hub-card__sync .sync-badge.is-paused::before,
-.hub-card__sync .sync-badge.is-offline::before {
-    background: var(--wa-color-neutral-fill-loud);
+/* Paused: half-filled disc. */
+.sync--paused .disc {
+    background: linear-gradient(135deg, var(--sync-ink) 0 50%, transparent 50% 100%);
+    border: 1.5px solid var(--sync-ink);
+}
+@keyframes sync-disc-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }
 .hub-card[data-status="tonk:blank"] {
     pointer-events: none;

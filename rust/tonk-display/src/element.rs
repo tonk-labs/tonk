@@ -1087,13 +1087,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // frame is replayed: directory mode has one conclusion per instance,
     // so a single-conclusion replay would drop every instance but the
     // first.
-    let cached_detail = {
-        let augmented: Vec<Conclusion> = cached
-            .iter()
-            .map(|c| with_host_attributes(host, c))
-            .collect();
-        serialize_conclusions(&augmented)
-    };
+    let cached_detail = augmented_detail(host, &cached, s.directory);
     for (name, display) in incoming {
         let existing_matches = s
             .slides
@@ -1203,12 +1197,7 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
             // conclusion per instance; a single replay would drop all
             // but the first).
             if !s.last_frame.is_empty() {
-                let augmented: Vec<Conclusion> = s
-                    .last_frame
-                    .iter()
-                    .map(|c| with_host_attributes(&host, c))
-                    .collect();
-                let detail = serialize_conclusions(&augmented);
+                let detail = augmented_detail(&host, &s.last_frame, s.directory);
                 call_render(&slide.view_el, &detail);
             }
             s.slides.insert("__default__".to_owned(), slide);
@@ -1528,9 +1517,13 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
         // no-entity diagnostic can name the concept's required attributes
         // and probe which ones the entity is actually missing.
         let descriptor = s.resolved_model.as_ref().map(|(_, value)| value.clone());
-        let empty = serialize_conclusions(&[]);
+        // A directory view with zero instances still renders chrome that may
+        // read {dom.host/*} (the FAB reads {dom.host/data-space}); feed a
+        // synthetic host-only conclusion so those resolve. Single mode keeps
+        // the truly-empty render so its no-entity slot/diagnosis is unaffected.
+        let detail = augmented_detail(host, &[], directory);
         for slide in s.slides.values() {
-            call_render(&slide.view_el, &empty);
+            call_render(&slide.view_el, &detail);
         }
         drop(s);
         if directory {
@@ -1560,11 +1553,7 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
     // Each slide sees the whole frame, augmented with the host's own
     // attributes under `dom.host/*`; notation, caching, and the result
     // event keep the unaugmented conclusions.
-    let augmented: Vec<Conclusion> = frame
-        .iter()
-        .map(|c| with_host_attributes(host, c))
-        .collect();
-    let detail = serialize_conclusions(&augmented);
+    let detail = augmented_detail(host, &frame, s.directory);
     for slide in s.slides.values() {
         call_render(&slide.view_el, &detail);
     }
@@ -1740,6 +1729,19 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
     let document = window()?.document()?;
 
     let view_el = document.create_element("tonk-view").ok()?;
+    // Stamp the model concept's `cardinality: one` field names so the view's
+    // planner treats them as scalar substitutions, not iteration axes — an
+    // optional scalar field used in the template then renders its host once
+    // (blank when absent) instead of being cloned zero times and dropped. Set
+    // before the element connects (append below), since `<tonk-view>` reads it
+    // in `connected_callback`.
+    if let Some(descriptor) = inner.portal_descriptor.as_deref() {
+        let scalars = tonk_template::resolve::scalar_field_names(descriptor);
+        if !scalars.is_empty() {
+            let csv = scalars.into_iter().collect::<Vec<_>>().join(",");
+            let _ = view_el.set_attribute("data-scalar-fields", &csv);
+        }
+    }
     view_el.set_inner_html(display);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
@@ -1789,30 +1791,76 @@ fn serialize_conclusions(conclusions: &[Conclusion]) -> JsValue {
     serde_wasm_bindgen::to_value(conclusions).unwrap_or(JsValue::NULL)
 }
 
-/// Return a copy of `conclusion` with the host `<tonk-display>`'s own
-/// attributes added to its fields under `dom.host/<attr>` keys, so a
-/// template can reference them with `{dom.host/model}` etc. — the
-/// render-time counterpart of the `dom.event/*` namespace (see
-/// `events::path`). Scalars, constant across the render: a directory
-/// template threads the outer model into each nested
-/// `<tonk-display entity={this} model={dom.host/model}>` this way,
+/// The host `<tonk-display>`'s own attributes as `dom.host/<attr>` fields,
+/// so a template can reference them with `{dom.host/model}`,
+/// `{dom.host/data-space}`, etc. — the render-time counterpart of the
+/// `dom.event/*` namespace (see `events::path`). Scalars, constant across
+/// the render: a directory template threads the outer model into each
+/// nested `<tonk-display entity={this} model={dom.host/model}>` this way,
 /// since an instance carries no pointer to its own model.
 ///
-/// The augmentation is render-only — the cached/notation/event
-/// conclusion stays unaugmented. The substituter resolves
-/// `{dom.host/X}` by an ordinary field lookup, so no parser or
-/// substituter change is needed, only that these entries are present.
-fn with_host_attributes(host: &Element, conclusion: &Conclusion) -> Conclusion {
-    let mut augmented = conclusion.clone();
+/// The augmentation is render-only — the cached/notation/event conclusion
+/// stays unaugmented (see [`augment_frame`]). The substituter resolves
+/// `{dom.host/X}` by an ordinary field lookup, so no parser or substituter
+/// change is needed, only that these entries are present.
+fn host_attr_fields(host: &Element) -> BTreeMap<String, Ipld> {
+    let mut fields = BTreeMap::new();
     let attrs = host.attributes();
     for i in 0..attrs.length() {
         let Some(attr) = attrs.item(i) else { continue };
-        augmented.fields.insert(
+        fields.insert(
             format!("dom.host/{}", attr.name()),
             Ipld::String(attr.value()),
         );
     }
-    augmented
+    fields
+}
+
+/// Augment a render frame with the host's `dom.host/*` fields.
+///
+/// Normally this just folds the host fields into every conclusion. The
+/// special case is an **empty directory frame**: a directory view whose
+/// collection has zero instances (e.g. the FAB, whose `tonk:profile/fab`
+/// concept is never asserted) still renders its chrome, and that chrome
+/// may read `{dom.host/data-space}` and friends. With no conclusion to
+/// fold into, those reads would resolve to nothing. So emit a single
+/// conclusion carrying only the host fields; its empty `this` keeps it
+/// from materializing as a repeat row (see `render::build_repeat_row`).
+///
+/// Single (non-directory) mode keeps an empty frame empty: an absent
+/// entity must stay absent so its `no-entity` slot / diagnosis is
+/// unaffected.
+fn augment_frame(
+    host_fields: &BTreeMap<String, Ipld>,
+    frame: &[Conclusion],
+    directory: bool,
+) -> Vec<Conclusion> {
+    if frame.is_empty() {
+        if directory {
+            return vec![Conclusion {
+                this: String::new(),
+                fields: host_fields.clone(),
+            }];
+        }
+        return Vec::new();
+    }
+    frame
+        .iter()
+        .map(|c| {
+            let mut augmented = c.clone();
+            for (k, v) in host_fields {
+                augmented.fields.insert(k.clone(), v.clone());
+            }
+            augmented
+        })
+        .collect()
+}
+
+/// Serialize a frame for a slide's `<tonk-view>`, augmented with the
+/// host's `dom.host/*` attributes (see [`augment_frame`]).
+fn augmented_detail(host: &Element, frame: &[Conclusion], directory: bool) -> JsValue {
+    let host_fields = host_attr_fields(host);
+    serialize_conclusions(&augment_frame(&host_fields, frame, directory))
 }
 
 /// Whether a change to `name` resolves a different view template —
@@ -1832,22 +1880,23 @@ fn resolves_template(name: &str) -> bool {
 }
 
 /// Re-project the host's current attributes into the mounted view(s)
-/// without restarting. Re-augments the cached frame with
-/// `with_host_attributes` (picking up the changed `data-*` value) and
+/// without restarting. Re-augments the cached frame with the host's
+/// `dom.host/*` attributes (picking up the changed `data-*` value) and
 /// replays it through each slide's `<tonk-view>` renderer, which diffs
 /// the new values into the existing DOM in place. A no-op before
 /// anything is mounted (no frame, no slides).
 fn replay_host_attributes(host: &Element, state: &Rc<RefCell<Inner>>) {
     let s = state.borrow();
-    if s.last_frame.is_empty() || s.slides.is_empty() {
+    if s.slides.is_empty() {
         return;
     }
-    let augmented: Vec<Conclusion> = s
-        .last_frame
-        .iter()
-        .map(|c| with_host_attributes(host, c))
-        .collect();
-    let detail = serialize_conclusions(&augmented);
+    // A directory view's chrome reads {dom.host/*} even with zero instances
+    // (the FAB), so replay an empty directory frame too; single mode with no
+    // frame has nothing to re-project.
+    if s.last_frame.is_empty() && !s.directory {
+        return;
+    }
+    let detail = augmented_detail(host, &s.last_frame, s.directory);
     for slide in s.slides.values() {
         call_render(&slide.view_el, &detail);
     }
@@ -1888,6 +1937,80 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    fn host_field(key: &str, value: &str) -> BTreeMap<String, Ipld> {
+        let mut fields = BTreeMap::new();
+        fields.insert(key.to_owned(), Ipld::String(value.to_owned()));
+        fields
+    }
+
+    // `<tonk-display>` mounts each view slide with `data-scalar-fields` derived
+    // from the model concept's `cardinality: one` fields, so the view's planner
+    // keeps an optional scalar field's host element when the value is absent
+    // (e.g. `<tonk-site path={rest}>` on the bare space root).
+    #[dialog_common::test]
+    fn it_stamps_scalar_fields_on_the_mounted_view_from_the_descriptor() {
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document.create_element("div").expect("host");
+        let mut inner = Inner::new();
+        inner.portal_descriptor = Some(
+            r#"{
+                "with":  { "id":   { "the": "xyz.tonk.site/id",   "as": "Text", "cardinality": "one" } },
+                "maybe": { "rest": { "the": "xyz.tonk.site/rest", "as": "Text", "cardinality": "one" } }
+            }"#
+            .to_owned(),
+        );
+        mount_view_slide(&host, &mut inner, "<a path=\"{rest}\">x</a>").expect("slide mounts");
+        let view = host
+            .query_selector("tonk-view")
+            .unwrap()
+            .expect("a <tonk-view> was mounted");
+        // BTreeSet → comma-joined in sorted order.
+        assert_eq!(
+            view.get_attribute("data-scalar-fields").unwrap_or_default(),
+            "id,rest",
+            "the mounted view should carry the descriptor's cardinality-one fields"
+        );
+    }
+
+    #[dialog_common::test]
+    fn augment_frame_emits_a_host_only_conclusion_for_an_empty_directory() {
+        // A zero-instance directory view (the FAB) still needs its chrome to
+        // read {dom.host/data-space}, so emit one subjectless conclusion
+        // carrying just the host fields.
+        let hf = host_field("dom.host/data-space", "acme");
+        let out = augment_frame(&hf, &[], true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].this, "");
+        assert_eq!(
+            out[0].fields.get("dom.host/data-space"),
+            Some(&Ipld::String("acme".to_owned()))
+        );
+    }
+
+    #[dialog_common::test]
+    fn augment_frame_keeps_an_empty_single_frame_empty() {
+        // Single (non-directory) mode: an absent entity stays absent so the
+        // no-entity slot / diagnosis is unaffected.
+        let hf = host_field("dom.host/data-space", "acme");
+        assert!(augment_frame(&hf, &[], false).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn augment_frame_folds_host_fields_into_each_conclusion() {
+        let hf = host_field("dom.host/data-space", "acme");
+        let frame = vec![Conclusion {
+            this: "did:x".to_owned(),
+            fields: BTreeMap::new(),
+        }];
+        let out = augment_frame(&hf, &frame, true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].this, "did:x");
+        assert_eq!(
+            out[0].fields.get("dom.host/data-space"),
+            Some(&Ipld::String("acme".to_owned()))
+        );
+    }
 
     /// Only the subject inputs (`entity`/`model`/`view`) re-resolve what
     /// the display renders, so only those force a teardown. A host-context

@@ -78,6 +78,122 @@ pub async fn register_site(
     Ok(Json(SiteResponse { site }))
 }
 
+/// Body of a per-branch `POST .../site`: the path to record and match against
+/// the branch's route table, plus an optional anchor (URL hash).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct SiteRequest {
+    /// The path to record on the site and match against the branch's `route!`
+    /// table. For a per-branch endpoint this is the path the caller wants
+    /// routed within that branch (the branch is named in the URL, not parsed
+    /// from this path).
+    #[serde(default)]
+    pub path: String,
+    /// The active anchor (URL hash), if any.
+    #[serde(default)]
+    pub anchor: String,
+}
+
+/// `POST /api/repository/{repo}/branch/{branch}/site` — register the requesting
+/// client's site on an explicit `(repo, branch)`, matching the body `path`
+/// against that branch's route table. Unlike [`register_site`], the branch comes
+/// from the request URL (like `/query` and `/transact`), not from parsing the
+/// document path — so the SW does no document-path routing here.
+#[wasm_compat]
+pub async fn register_site_on_repo(
+    State(state): State<AppState>,
+    ::axum::extract::Path(path): ::axum::extract::Path<crate::router::transact::TransactPath>,
+    request: Request,
+) -> Result<Json<SiteResponse>, TonkWorkerError> {
+    let site = client_site(&request)?;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let body = read_site_request(request).await?;
+        let tonk = state.read().await;
+        stamp_site_on(
+            &tonk,
+            &site,
+            &path.repo,
+            &path.branch,
+            false,
+            &body.path,
+            &body.path,
+            body.anchor,
+        )
+        .await;
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = (&state, &path, &request);
+    }
+    Ok(Json(SiteResponse { site }))
+}
+
+/// `POST /api/profile/branch/{branch}/site` — the profile counterpart of
+/// [`register_site_on_repo`]. The profile is a singleton repository, so the URL
+/// carries only the branch.
+#[wasm_compat]
+pub async fn register_site_on_profile(
+    State(state): State<AppState>,
+    ::axum::extract::Path(path): ::axum::extract::Path<
+        crate::router::transact::ProfileTransactPath,
+    >,
+    request: Request,
+) -> Result<Json<SiteResponse>, TonkWorkerError> {
+    let site = client_site(&request)?;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let body = read_site_request(request).await?;
+        let tonk = state.read().await;
+        let repo = tonk.profile_name.clone();
+        stamp_site_on(
+            &tonk,
+            &site,
+            &repo,
+            &path.branch,
+            true,
+            &body.path,
+            &body.path,
+            body.anchor,
+        )
+        .await;
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = (&state, &path, &request);
+    }
+    Ok(Json(SiteResponse { site }))
+}
+
+/// Derive the `site:<client-id>` entity for a request, erroring if the SW set no
+/// client id (the per-tab key the site is stamped under).
+fn client_site(request: &Request) -> Result<String, TonkWorkerError> {
+    let client_id = request
+        .extensions()
+        .get::<ClientId>()
+        .map(|c| c.0.clone())
+        .unwrap_or_default();
+    if client_id.is_empty() {
+        return Err(TonkWorkerError::Router("no client id on /site".into()));
+    }
+    Ok(format!("site:{client_id}"))
+}
+
+/// Read and decode the [`SiteRequest`] body, defaulting to an empty path when
+/// the body is absent or empty.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn read_site_request(request: Request) -> Result<SiteRequest, TonkWorkerError> {
+    use ::axum::body::to_bytes;
+    let bytes = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|e| TonkWorkerError::Router(format!("failed to read /site body: {e}")))?;
+    if bytes.is_empty() {
+        return Ok(SiteRequest::default());
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|e| TonkWorkerError::Router(format!("invalid /site body: {e}")))
+}
+
 /// Assert the [`Site`] for `site` (a `site:<client-id>` URI) from `path` on the
 /// Level-0-resolved branch's overlay: derive the replica, match the remaining
 /// path against the route table, and write `{path, anchor, replica, route,
@@ -85,19 +201,70 @@ pub async fn register_site(
 /// see the change — no inline whole-branch re-poll). Best-effort: a non-space
 /// path, an unacquirable branch, an absent replica, or no matched route all skip
 /// stamping rather than fail registration.
+/// Resolve `path` to its Level-0 branch, then stamp the site there. This is the
+/// document-path-driven entry: `resolve_path` decides which repository/branch
+/// the path addresses, and [`stamp_site_on`] does the branch-generic work.
+///
+/// Only spaces route here; the profile (`/`, `/join`) is handled by the
+/// per-branch `/site` endpoint, which calls [`stamp_site_on`] directly with the
+/// branch named in the request URL.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anchor: String) {
-    use tonk_schema::{RouteTarget, Site, resolve_path};
+    use tonk_schema::{RouteTarget, resolve_path};
+
+    let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
+        return;
+    };
+    stamp_site_on(
+        tonk,
+        site,
+        &space.name,
+        &space.branch,
+        false,
+        path,
+        &rest,
+        anchor,
+    )
+    .await;
+}
+
+/// Stamp a site on an explicit `(repo, branch)` — the branch-generic core,
+/// independent of any document-path parsing. The caller supplies the branch
+/// coordinates (from `resolve_path` for the legacy document path, or from the
+/// request URL for the per-branch `/site` endpoint), the full `path` to record,
+/// and the `rest` to match against that branch's `route!` table.
+///
+/// Acquires the branch, derives the replica (the branch's origin), matches the
+/// route, and writes `{path, anchor, repo, branch, replica, route, concept}`
+/// plus the captured route params into the session overlay. Best-effort: an
+/// unacquirable branch, an absent replica, or no matched route skip stamping.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[allow(clippy::too_many_arguments)]
+async fn stamp_site_on(
+    tonk: &crate::worker::TonkState,
+    site: &str,
+    repo: &str,
+    branch_name: &str,
+    profile: bool,
+    path: &str,
+    rest: &str,
+    anchor: String,
+) {
+    use tonk_schema::Site;
 
     let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
         return;
     };
-    // Only spaces route here; the profile (`/`, `/join`) stays special for now.
-    let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
-        return;
-    };
 
-    let branch = tonk.reactor.repository(&space.name).branch(&space.branch);
+    // The profile lives outside the named-repo namespace, so it is acquired
+    // through `profile_repository()`, not `repository(name)`. The `repo` string
+    // is still recorded on the site (the `space` field), but it does not select
+    // the branch in profile mode.
+    let branch = if profile {
+        tonk.reactor.profile_repository().branch(branch_name)
+    } else {
+        tonk.reactor.repository(repo).branch(branch_name)
+    };
     let state = match branch.acquire(&tonk.operator).await {
         Ok(session) => session,
         Err(e) => {
@@ -109,7 +276,7 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
     let Some(replica) = origin_entity(tonk, &state).await else {
         return;
     };
-    let Some(matched) = match_route(tonk, &state, &rest).await else {
+    let Some(matched) = match_route(tonk, &state, rest).await else {
         return;
     };
 
@@ -128,8 +295,8 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
         entity.clone(),
         path.to_owned(),
         anchor,
-        space.name.clone(),
-        space.branch.clone(),
+        repo.to_owned(),
+        branch_name.to_owned(),
         replica,
         matched.route,
         matched.concept,
@@ -146,10 +313,7 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
     // Repository-context elements (`<tonk-tree>`, `<tonk-inspector>`) resolve
     // repo/branch by walking DOM ancestors, which the sealed guest otherwise
     // lacks. These are `as: text` site fields, hence string-typed raw claims.
-    for (name, value) in [
-        ("repo", space.name.as_str()),
-        ("branch", space.branch.as_str()),
-    ] {
+    for (name, value) in [("repo", repo), ("branch", branch_name)] {
         match site_param_claim(&entity, name, value) {
             Some(claim) => overlay = overlay.assert(claim),
             None => tonk_common::log!("register_site: bad site {name} attribute"),
@@ -195,6 +359,104 @@ fn site_param_claim(
         is,
         unique: true,
     })
+}
+
+/// Post-commit handler for the [`Load`](tonk_schema::command::Load) command —
+/// the transact-driven replacement for the `POST /api/.../site` endpoint.
+///
+/// A `<tonk-site>` asserts a transient `tonk:load { this: site:<uuid>, path }`
+/// through the regular transact API; its ancestor `<tonk-repository>` /
+/// `<tonk-branch>` annotate the origin repo/branch, so the commit lands on the
+/// branch the tab routes against. This handler reads `this`/`path` from the
+/// command and `repo`/`branch` from [`CommandEnv::origin`](crate::router::CommandEnv::origin),
+/// then runs [`stamp_site_on`] — matching `path` against that branch's `route!`
+/// table and stamping the `tonk:site` (+ captured params) onto `this` in the
+/// branch overlay. A profile-branch commit carries an empty `origin.repo` (see
+/// `transact_profile`), which is exactly the `profile` flag `stamp_site_on` wants.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct LoadHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl LoadHandler {
+    /// Cache `Load`'s trigger attributes (its `path` field) so the registry
+    /// indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::Load::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::Load::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock); carry owned
+        // values into the `'static` future. `this` is the site entity to stamp,
+        // `path` the route-relative path to match + record.
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Load::decode(entity, facts))
+            .map(|command| (command.this.to_string(), command.path.0));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some((site, path)) = decoded else {
+                return;
+            };
+            // An empty `origin.repo` means the commit landed on the profile
+            // branch (the profile is outside the named-repo namespace).
+            let repo = env.origin().repo.clone();
+            let branch = env.origin().branch.clone();
+            let profile = repo.is_empty();
+            dialog_common::log!(
+                "command Load site={} path={} repo={} branch={} profile={}",
+                site,
+                path,
+                repo,
+                branch,
+                profile
+            );
+
+            let tonk = env.state().read().await;
+            // The command's `path` is already the route-relative path the tab
+            // routes (a nested `<tonk-site path={rest}>`), so it is both the
+            // recorded `path` and the `rest` matched against the route table.
+            stamp_site_on(
+                &tonk,
+                &site,
+                &repo,
+                &branch,
+                profile,
+                &path,
+                &path,
+                String::new(),
+            )
+            .await;
+        })
+    }
 }
 
 /// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for

@@ -71,6 +71,8 @@ mod http;
 mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod ops;
+#[cfg(target_arch = "wasm32")]
+pub use ops::read_context_from_ancestors;
 // LRU for `tonk-query` responses. The production callers live in
 // `host.rs` / `ops.rs` (both wasm-only), but the unit tests run
 // natively via `dialog_common::test`, so the module is also

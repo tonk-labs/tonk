@@ -33,8 +33,12 @@ mod fab;
 mod query;
 #[cfg(target_arch = "wasm32")]
 mod shared;
+#[cfg(target_arch = "wasm32")]
+mod site;
 
 #[cfg(target_arch = "wasm32")]
 pub use element::register;
 #[cfg(target_arch = "wasm32")]
 pub use fab::register_fab_portal;
+#[cfg(target_arch = "wasm32")]
+pub use site::register as register_site;

@@ -1,0 +1,232 @@
+//! `<ui-sync-status>` — a read-only, subscription-driven sync-status disc.
+//!
+//! Host chrome, NOT space content: it renders the same wireframe "disc"
+//! indicator regardless of what a space asserts, so a space choosing wild UI
+//! can never redefine or break it (unlike a stdlib `tonk:view/*` view, which
+//! lives on the space branch and would need per-space seeding). It is defined
+//! in Rust — the `ui-` prefix marks it as a host UI primitive, distinct from
+//! the `tonk-` data elements.
+//!
+//! It SUBSCRIBES to the `tonk:sync` `state:here` status the service worker
+//! stamps on the space branch (the same fact the topbar pause chip reads), so
+//! it updates live as the background sync drain reconciles — the fix for the
+//! old `<tonk-sync-badge>`, which one-shot-fetched on mount + commit + toggle
+//! (none of which recur on the Hub, so it froze on a stale reading).
+//!
+//! Resolves its space from the nearest `<tonk-repository name=…>` ancestor and
+//! subscribes through that routing context — the same way every consumer
+//! reaches the worker. Read-only: no pause affordance (that stays on the
+//! topbar chip). The `.sync` / `.disc` CSS lives in the app stylesheet, so the
+//! disc styles wherever this mounts; the caller sizes it with `font-size`.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use custom_elements::CustomElement;
+use js_sys::{JSON, Reflect};
+use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::*;
+use web_sys::{Element, HtmlElement, window};
+
+use tonk_host::consumer::{self, Subscription};
+
+/// The `data-sync-status` value shown until the first frame lands — the
+/// pending disc (matches the topbar chip's honest "syncing…" default, since a
+/// status check / sync fires on load).
+const INITIAL_STATUS: &str = "sync:pending";
+
+/// The subscription tag. One subscription per element, so a fixed tag is fine
+/// (frames are addressed to this element via its own `reset` method).
+const SUB_TAG: &str = "ui-sync-status";
+
+/// The reset delegate closure the host calls with each subscription frame.
+type ResetClosure = Closure<dyn FnMut(JsValue, JsValue)>;
+
+/// Per-element state: the live subscription (its `Drop` cancels upstream) and
+/// the reset delegate closure, kept alive for the element's lifetime.
+#[derive(Default)]
+pub(crate) struct UiSyncStatus {
+    subscription: Rc<RefCell<Option<Subscription>>>,
+    reset: Rc<RefCell<Option<ResetClosure>>>,
+}
+
+impl CustomElement for UiSyncStatus {
+    fn shadow() -> bool {
+        // Light DOM: the disc's CSS lives in the app stylesheet, and the
+        // element resolves its `<tonk-repository>` ancestor via `closest`.
+        false
+    }
+
+    fn observed_attributes() -> &'static [&'static str] {
+        &[]
+    }
+
+    fn inject_children(&mut self, _this: &HtmlElement) {}
+
+    fn connected_callback(&mut self, this: &HtmlElement) {
+        // Render the disc immediately in its pending state so the badge is
+        // present before the first frame.
+        paint(this, INITIAL_STATUS);
+
+        // Install the per-instance `reset` delegate: the host calls
+        // `element.reset(conclusions, { tag })` for each subscription frame,
+        // and the prototype shim (installed in `register`) forwards it here.
+        let host = this.clone();
+        let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                on_frame(&host, payload);
+            }));
+        let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
+        *self.reset.borrow_mut() = Some(reset);
+
+        // Subscribe to the sync status at `state:here`, routed through the
+        // `<tonk-repository>` / `<tonk-branch>` ancestors (which annotate the
+        // event with the space repo/branch, like every other consumer).
+        let consumer: Element = this.clone().into();
+        match status_query_body() {
+            Ok(body) => {
+                let tag = JsValue::from_str(SUB_TAG);
+                match consumer::subscribe(&consumer, &body, Some(&tag)) {
+                    Ok(sub) => *self.subscription.borrow_mut() = Some(sub),
+                    Err(err) => {
+                        // No `<tonk-host>` ancestor / dispatch failure: leave
+                        // the pending disc; nothing to subscribe to.
+                        tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+                    }
+                }
+            }
+            Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
+        }
+    }
+
+    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+        // Dropping the subscription cancels the upstream host subscription.
+        self.subscription.borrow_mut().take();
+        self.reset.borrow_mut().take();
+    }
+}
+
+/// Build the subscribe body for the `tonk:sync` status at `state:here`.
+///
+/// The wire shape a consumer subscribe takes is `{ predicate, terms }` — the
+/// same body `<tonk-display entity=state:here model=tonk:sync>` sends. We build
+/// it as JSON directly (the concept is fixed: one `status` field on
+/// `xyz.tonk.sync/status`, `this` pinned to the `state:here` singleton, `status`
+/// a variable to read back), avoiding a typed-query→wire conversion for one
+/// known query. Mirrors the `<tonk-site>` load-claim's hand-built JSON body.
+fn status_query_body() -> Result<JsValue, String> {
+    // `status` is a cardinality-one `entity` attribute; the description is
+    // cosmetic and omitted. Matches the query the topbar chip already issues.
+    let body = r#"{
+      "predicate": { "with": { "status": {
+        "the": "xyz.tonk.sync/status", "as": "Entity", "cardinality": "one"
+      } } },
+      "terms": { "this": "state:here", "status": { "?": { "name": "status" } } }
+    }"#;
+    JSON::parse(body).map_err(|e| format!("query JSON parse: {e:?}"))
+}
+
+/// A subscription frame: read the first conclusion's `status` and paint the
+/// disc. The frame is a `Vec<Conclusion>` serialized as JS; `ReplicaSyncStatus`
+/// only derives `Serialize` (it's a stamp type), so we read the `status` field
+/// off the raw conclusion rather than deserializing into it. An empty frame (no
+/// status stamped yet) leaves the current disc — the SW stamps a status on
+/// load, so it's a brief gap, and clearing would flicker.
+fn on_frame(host: &HtmlElement, payload: JsValue) {
+    // payload is an array of conclusions: [{ this, fields: { status } }, …].
+    let Some(first) = js_sys::Array::from(&payload)
+        .get(0)
+        .dyn_ref::<JsValue>()
+        .cloned()
+    else {
+        return;
+    };
+    if first.is_undefined() || first.is_null() {
+        return;
+    }
+    // `conclusion.fields.status` is the status entity (e.g. "sync:idle").
+    let status = Reflect::get(&first, &"fields".into())
+        .ok()
+        .and_then(|fields| Reflect::get(&fields, &"status".into()).ok())
+        .and_then(|s| s.as_string());
+    if let Some(status) = status {
+        paint(host, &status);
+    }
+}
+
+/// Render (or update) the disc: `<span class="sync sync--<state>"><span
+/// class="disc"></span></span>`. Coloring + fill/ring/pulse come from the
+/// state MODIFIER CLASS (`sync--synced` / `sync--syncing` / `sync--offline` /
+/// `sync--local` / `sync--paused`), styled in the app stylesheet — the
+/// component carries no inline color. Idempotent: reuses the nodes, only
+/// swapping the modifier class, so a frame doesn't rebuild the DOM.
+fn paint(host: &HtmlElement, status: &str) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let modifier = modifier_class(status);
+    // Reuse an existing `.sync` span if present; otherwise build it once.
+    let sync = match host.query_selector(":scope > .sync") {
+        Ok(Some(existing)) => existing,
+        _ => {
+            let Ok(sync) = document.create_element("span") else {
+                return;
+            };
+            if let Ok(disc) = document.create_element("span") {
+                let _ = disc.set_attribute("class", "disc");
+                let _ = sync.append_child(&disc);
+            }
+            let _ = host.append_child(&sync);
+            sync
+        }
+    };
+    let _ = sync.set_attribute("class", &format!("sync {modifier}"));
+}
+
+/// Map a `sync:*` status entity to its BEM modifier class. An unknown value
+/// falls back to `sync--offline` (the neutral hollow ring) rather than an
+/// unstyled disc.
+fn modifier_class(status: &str) -> &'static str {
+    match status {
+        "sync:idle" => "sync--synced",
+        "sync:pending" => "sync--syncing",
+        "sync:local" => "sync--local",
+        "sync:paused" => "sync--paused",
+        // "sync:offline" and anything unrecognized.
+        _ => "sync--offline",
+    }
+}
+
+/// Register `<ui-sync-status>`. Idempotent. Installs the prototype `reset`
+/// method shim (forwarding to the per-instance `__tonkReset` delegate) so host
+/// subscription frames reach the element.
+pub(crate) fn register() {
+    let Some(win) = window() else {
+        return;
+    };
+    if win.custom_elements().get("ui-sync-status").is_undefined() {
+        UiSyncStatus::define("ui-sync-status");
+        install_reset_shim();
+    }
+}
+
+/// Install the `reset` method on the element prototype, forwarding to the
+/// per-instance `__tonkReset` closure. On the prototype (not each instance) so
+/// `this`-binding is correct — the same pattern `<tonk-display>` uses.
+fn install_reset_shim() {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get("ui-sync-status");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = js_sys::Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+}
