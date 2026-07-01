@@ -7,24 +7,27 @@
 //! it to float the profile pill over the space content, but nothing here is
 //! FAB-specific beyond the `.fab` class names the view supplies.
 //!
-//! - Telescope collapse/expand: the bar rests COLLAPSED (just the sync circle).
+//! - Telescope collapse/expand: the bar rests EXPANDED (all segments shown).
 //!   A plain click on the circle toggles it — the segments after the cap
 //!   animate their `max-width` open/closed, staggered, so the bar unfolds from
 //!   / retracts into the circle. A DOUBLE click toggles pause/resume of sync
 //!   (the circle is the pause switch, matching the control-panel wireframe).
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
 //!   capturing the grab offset; `pointermove` sets the element's own
-//!   `left`/`top`; `pointerup` clamps to keep it on-screen and persists the
-//!   x/y as a profile claim via `window.tonk.transact(...)`. A press that never
-//!   moves past a small threshold is treated as a click, not a drag.
+//!   `left`/`top`; `pointerup` SNAPS the FAB to the nearest of the four corners
+//!   — by swapping its `fab-dock-*` classes and persisting the dock as a profile
+//!   claim via `window.tonk.transact(...)`. The dock classes are the only thing
+//!   Rust sets: the view stylesheet (profile.yaml) owns the resting pixel
+//!   position AND the submenu open-direction (down from a top dock, up from a
+//!   bottom one; into the viewport horizontally). A press that never moves past
+//!   a small threshold is a click.
 //! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted position (or a default top-centre), and applies it.
+//!   the persisted dock (or a default top-left), and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    clamp_position, position_claim_json, submenu_opens_down, telescope_delay_ms,
-    telescope_settle_ms,
+    DOCK_CLASSES, Dock, dock_claim_json, nearest_dock, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -45,10 +48,6 @@ extern "C" {
     #[wasm_bindgen(js_namespace = globalThis, js_name = clearTimeout)]
     fn clear_timeout(id: i32);
 }
-
-/// Circle size in CSS pixels — the FAB's resting footprint. We clamp to this so
-/// the full circle (with its padding) stays on screen.
-const CIRCLE_SIZE: f64 = 64.0;
 
 /// The z-index the floating FAB sits at — above page content (and the repo
 /// content portal) so it never gets covered. Near `MAX_SAFE_INTEGER` to beat
@@ -133,8 +132,8 @@ impl CustomElement for TonkFab {
 /// Wrap each collapsible segment (every `.fab` child after the sync-circle cap)
 /// in a `.fab__tele` div whose `max-width` the telescope animates. Adds the
 /// `fab--anim` marker (enables the transition CSS) and the initial
-/// `fab--collapsed` state (the bar rests as just the circle). Mirrors the
-/// wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
+/// `fab--settled` state (the bar rests EXPANDED — all segments shown). Mirrors
+/// the wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
 /// so the view template stays a plain segment list.
 fn wrap_telescope_tiles(element: &HtmlElement) {
     let Some(fab) = element.query_selector(".fab").ok().flatten() else {
@@ -160,19 +159,23 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
             continue;
         };
         let _ = wrapper.set_attribute("class", "fab__tele");
-        // Start each wrapper in the collapsed geometry (clamped to zero, gap
-        // swallowed) so the bar rests as just the circle without a first-frame
-        // flash of the full width. `set_telescope` drives these on toggle.
+        // Start each wrapper EXPANDED — the bar rests open (every segment shown),
+        // not as a bare circle. `max-width: none` + `margin-left: 0` is the same
+        // resting geometry `schedule_settle` leaves after an expand; the matching
+        // `fab--settled` class below makes the wrappers overflow-visible so the
+        // dropdowns can escape. `set_telescope` drives these on toggle.
         let style = wrapper.unchecked_ref::<HtmlElement>().style();
-        let _ = style.set_property("max-width", "0px");
-        let _ = style.set_property("margin-left", "-2px");
+        let _ = style.set_property("max-width", "none");
+        let _ = style.set_property("margin-left", "0px");
         // Insert the wrapper where the tile is, then move the tile inside it.
         if let Some(parent) = tile.parent_node() {
             let _ = parent.insert_before(&wrapper, Some(tile));
             let _ = wrapper.append_child(tile);
         }
     }
-    fab.class_list().add_2("fab--anim", "fab--collapsed").ok();
+    // Rest EXPANDED + settled (no `fab--collapsed`), so the first circle click
+    // collapses. `fab--anim` still gates the transitions for later toggles.
+    fab.class_list().add_2("fab--anim", "fab--settled").ok();
 }
 
 /// Attach the FAB's NATIVE click/dblclick gesture listeners. Because only the
@@ -182,7 +185,6 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
 /// route by the event target:
 ///
 /// - CIRCLE cap: `click` folds/expands the bar, `dblclick` pauses/resumes sync.
-/// - DISCLOSURE border: `click` reveals/hides its section.
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -200,10 +202,6 @@ fn attach_gestures(element: &HtmlElement) {
             if e.detail() <= 1 {
                 toggle_telescope(&el_click);
             }
-        } else if let Some(border) = t.closest(".fab__disclose").ok().flatten()
-            && let Some(section) = border.get_attribute("data-section")
-        {
-            toggle_section(&el_click, &section);
         } else if t
             .closest(".fab__menu, .fab__share-menu")
             .ok()
@@ -243,48 +241,15 @@ fn attach_gestures(element: &HtmlElement) {
     on_dbl.forget();
 }
 
-/// Reveal or hide a disclosure section (`account` / `share`) by toggling the
-/// matching `fab--show-<section>` class on `.fab`, then re-run the telescope so
-/// the now-shown/hidden segments animate to their new widths. Keeps the border's
-/// `title` in step for the tooltip ("show …" ⇄ "hide …").
-fn toggle_section(element: &HtmlElement, section: &str) {
-    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
-        return;
-    };
-    let class = format!("fab--show-{section}");
-    let showing = !fab.class_list().contains(&class);
-    fab.class_list().toggle_with_force(&class, showing).ok();
-    // Update the border tooltip for the new state.
-    let title = if showing {
-        format!("hide {section}")
-    } else {
-        format!("show {section}")
-    };
-    if let Some(border) = fab
-        .query_selector(&format!(".fab__disclose[data-section=\"{section}\"]"))
-        .ok()
-        .flatten()
-    {
-        let _ = border.set_attribute("title", &title);
-    }
-    // Re-flow the telescope to the new set of shown tiles (unless collapsed).
-    if !fab.class_list().contains("fab--collapsed") {
-        set_telescope(element, &fab, false);
-    }
-}
-
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
-/// closing the other menu (matched by `other_sel`) so only one is open at a
-/// time. Reorients the opened menu to the current viewport half.
+/// closing the other menu (matched by `other_sel`) so only one is open at a time.
+/// The open-direction is CSS, keyed off the FAB's `fab-dock-*` class.
 fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     if let Some(other) = element.query_selector(other_sel).ok().flatten() {
         other.class_list().remove_1("is-open").ok();
     }
     let opening = !seg.class_list().contains("is-open");
     seg.class_list().toggle_with_force("is-open", opening).ok();
-    if opening {
-        apply_menu_direction(element);
-    }
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
@@ -297,10 +262,6 @@ fn toggle_telescope(element: &HtmlElement) {
     };
     let collapsing = !fab.class_list().contains("fab--collapsed");
     set_telescope(element, &fab, collapsing);
-    // Expanding reorients the dropdowns to the current viewport half.
-    if !collapsing {
-        apply_menu_direction(element);
-    }
 }
 
 /// Drive the telescope to the given state. `collapsing = true` retracts the
@@ -327,16 +288,28 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
         measure_tile_widths(&tiles)
     };
 
+    // Collapsing from the settled state, shown tiles rest at `max-width: none`
+    // (see `schedule_settle`), and a `none → 0` transition does not animate.
+    // Pin each tile to its current rendered width and flush layout, so the
+    // clamp-to-zero below animates from a concrete start value.
+    if collapsing {
+        for tile in &tiles {
+            let w = tile.get_bounding_client_rect().width();
+            let style = tile.unchecked_ref::<HtmlElement>().style();
+            let _ = style.set_property("max-width", &format!("{w}px"));
+        }
+        let _ = fab.unchecked_ref::<HtmlElement>().offset_width();
+    }
+
     for (i, tile) in tiles.iter().enumerate() {
         let style = tile.unchecked_ref::<HtmlElement>().style();
         let delay = telescope_delay_ms(i, count, collapsing);
         let _ = style.set_property("transition-delay", &format!("{delay}ms"));
-        // A tile stays collapsed if the whole bar is folding OR it wraps a
-        // section the disclosure ladder currently hides (account / share).
-        let hidden = collapsing || tile_section_hidden(fab, tile);
+        // A tile is hidden only while the whole bar is folding; when expanded
+        // every segment shows (no per-section disclosure gate).
+        let hidden = collapsing;
         // Mark hidden tiles so the post-settle `overflow: visible; max-width:
-        // none` unclamp SKIPS them — otherwise a hidden section would reappear
-        // (and its absolutely-positioned menu overlay the page) once settled.
+        // none` unclamp SKIPS them while collapsed.
         tile.class_list()
             .toggle_with_force("fab__tele--hidden", hidden)
             .ok();
@@ -358,26 +331,6 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
         // the expanded content can reflow (e.g. a growing invite link).
         schedule_settle(element, fab, count);
     }
-}
-
-/// Whether a telescope tile wraps a disclosure section (`.fab__account` /
-/// `.fab__share`, tagged `data-section`) that the ladder currently hides — i.e.
-/// `.fab` lacks the matching `fab--show-<section>`. Borders and the always-shown
-/// spot are never hidden this way. Such tiles stay at zero width even when the
-/// bar is expanded, until their disclosure border reveals them.
-fn tile_section_hidden(fab: &Element, tile: &Element) -> bool {
-    // Only SECTION segments gate on disclosure — borders (`.fab__disclose`) are
-    // always shown when the bar is expanded, so look for a `.fab__seg` child
-    // (not a border) carrying `data-section`.
-    let Some(section) = tile
-        .query_selector(".fab__seg[data-section]")
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute("data-section"))
-    else {
-        return false;
-    };
-    !fab.class_list().contains(&format!("fab--show-{section}"))
 }
 
 /// Collect the `.fab__tele` wrapper tiles in DOM order.
@@ -424,6 +377,20 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     let fab_for_settle = fab.clone();
     let settle_once = Closure::<dyn Fn()>::new(move || {
         fab_for_settle.class_list().add_1("fab--settled").ok();
+        // Unclamp shown tiles: drop the inline `max-width` pinned during the
+        // expand animation so each tile now sizes to its content. Inline styles
+        // beat the stylesheet's `max-width: none`, so the clamp must be lifted
+        // here in JS — otherwise content that grows AFTER the expand (a minted
+        // invite link, a longer edited name) overflows its measured box and,
+        // with the tile's `justify-content: flex-end`, spills leftward over the
+        // neighbouring segment instead of widening the bar.
+        for tile in telescope_tiles(&fab_for_settle) {
+            if tile.class_list().contains("fab__tele--hidden") {
+                continue;
+            }
+            let style = tile.unchecked_ref::<HtmlElement>().style();
+            let _ = style.set_property("max-width", "none");
+        }
     });
     let settle_fn = settle_once
         .as_ref()
@@ -570,6 +537,13 @@ fn attach_drag(element: &HtmlElement) {
             if let Some(fab) = el_move.query_selector(".fab").ok().flatten() {
                 fab.class_list().add_1("dragging").ok();
             }
+            // Drop the dock class so the stylesheet's `.fab-dock-*` position
+            // (which pins `bottom`/`top`) stops fighting the inline `left`/`top`
+            // that now tracks the pointer 1:1.
+            let cl = el_move.class_list();
+            for c in DOCK_CLASSES {
+                cl.remove_1(c).ok();
+            }
         }
         e.prevent_default();
         let left = read_data_f64(&el_move, "fabStartLeft") + dx;
@@ -593,13 +567,16 @@ fn attach_drag(element: &HtmlElement) {
         if let Some(fab) = el_up.query_selector(".fab").ok().flatten() {
             fab.class_list().remove_1("dragging").ok();
         }
-        let dx = e.client_x() as f64 - read_data_f64(&el_up, "fabDownX");
-        let dy = e.client_y() as f64 - read_data_f64(&el_up, "fabDownY");
-        let left = read_data_f64(&el_up, "fabStartLeft") + dx;
-        let top = read_data_f64(&el_up, "fabStartTop") + dy;
-        let (x, y) = clamp_to_viewport(left, top);
-        settle_position(&el_up, x, y);
-        persist_position(x as u32, y as u32);
+        // Snap to the corner nearest where the pointer was released — the
+        // release point's viewport half on each axis picks the dock.
+        let dock = nearest_dock(
+            e.client_x() as f64,
+            e.client_y() as f64,
+            viewport_width(),
+            viewport_height(),
+        );
+        apply_dock(&el_up, dock);
+        persist_dock(dock);
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();
@@ -618,22 +595,20 @@ fn attach_drag(element: &HtmlElement) {
     on_up.forget();
 }
 
-/// Clamp `(raw_x, raw_y)` so the FAB circle stays within the viewport.
-fn clamp_to_viewport(raw_x: f64, raw_y: f64) -> (f64, f64) {
-    let Some(win) = window() else {
-        return (raw_x, raw_y);
-    };
-    let vw = win
-        .inner_width()
-        .ok()
+/// The viewport height in CSS px, defaulting if unavailable.
+fn viewport_height() -> f64 {
+    window()
+        .and_then(|w| w.inner_height().ok())
         .and_then(|v| v.as_f64())
-        .unwrap_or(1024.0);
-    let vh = win
-        .inner_height()
-        .ok()
+        .unwrap_or(768.0)
+}
+
+/// The viewport width in CSS px, defaulting if unavailable.
+fn viewport_width() -> f64 {
+    window()
+        .and_then(|w| w.inner_width().ok())
         .and_then(|v| v.as_f64())
-        .unwrap_or(768.0);
-    clamp_position(raw_x, raw_y, vw, vh, CIRCLE_SIZE, CIRCLE_SIZE)
+        .unwrap_or(1024.0)
 }
 
 /// Read a numeric `data-*` value off the element, defaulting to 0.
@@ -655,30 +630,31 @@ fn track_position(el: &HtmlElement, left: f64, top: f64) {
     let _ = style.set_property("top", &format!("{}px", top));
 }
 
-/// Settle the FAB at `(left, top)` anchored to the NEAREST corner: pin to
-/// `right` when its center is in the right half of the viewport (else `left`),
-/// and to `bottom` when in the bottom half (else `top`). Anchoring to the near
-/// edge keeps the FAB in the same corner when the viewport resizes, instead of
-/// drifting from a fixed top-left offset. Used at drop and on restore.
-fn settle_position(el: &HtmlElement, left: f64, top: f64) {
-    // Settle at exactly the tracked `left`/`top` — same coordinate space
-    // `track_position` uses during the drag — so the FAB drops precisely where
-    // the cursor released it, with no re-anchoring drift. (Corner-anchoring on
-    // viewport resize is deferred; it fought the wide host box and the
-    // row-reverse geometry.)
+/// Dock the FAB by swapping its `fab-dock-*` classes and clearing any drag-time
+/// inline offsets, so the view stylesheet's `.fab-dock-*` rules own the resting
+/// pixel position (and the submenu open-direction). Used at drop and on restore.
+/// Anchoring by class — not a fixed pixel offset — keeps the FAB pinned to its
+/// corner when the viewport resizes.
+fn apply_dock(el: &HtmlElement, dock: Dock) {
     let style = el.style();
+    let _ = style.remove_property("left");
+    let _ = style.remove_property("top");
     let _ = style.remove_property("right");
     let _ = style.remove_property("bottom");
-    let _ = style.set_property("left", &format!("{}px", left.max(0.0)));
-    let _ = style.set_property("top", &format!("{}px", top.max(0.0)));
+    let cl = el.class_list();
+    for c in DOCK_CLASSES {
+        cl.remove_1(c).ok();
+    }
+    for c in dock.css_classes() {
+        cl.add_1(c).ok();
+    }
 }
 
-/// Persist `(x, y)` by calling `window.tonk.transact(request)`. The request is
-/// the `TransactRequest` JSON produced by `position_claim_json`, parsed back to
-/// a JS object via `JSON.parse` (the bridge accepts any structured-clonable
-/// object).
-fn persist_position(x: u32, y: u32) {
-    let claim = position_claim_json(x, y);
+/// Persist `dock` by calling `window.tonk.transact(request)`. The request is the
+/// `TransactRequest` JSON produced by `dock_claim_json`, parsed back to a JS
+/// object via `JSON.parse` (the bridge accepts any structured-clonable object).
+fn persist_dock(dock: Dock) {
+    let claim = dock_claim_json(dock);
     let json_str = match serde_json::to_string(&claim) {
         Ok(s) => s,
         Err(_) => return,
@@ -707,21 +683,22 @@ fn persist_position(x: u32, y: u32) {
     transact_fn.call1(&tonk, &js_obj).ok();
 }
 
-/// On connect, query the persisted FAB position from `window.tonk.query(...)`
-/// and apply it to the element's own style. Falls back to a default top-centre
-/// position if no persisted value exists.
+/// On connect, query the persisted FAB dock from `window.tonk.query(...)` and
+/// apply its class. Falls back to the default (top-left) dock if none is stored.
 fn restore_position(this: &HtmlElement) {
+    // Position at the default dock immediately so the FAB is placed on first
+    // paint; the async query below swaps in the persisted dock if one exists.
+    apply_dock(this, Dock::TopLeft);
+
     let query_body = serde_json::json!({
         "terms": {
             "this": "state:fab",
-            "x": { "?": { "name": "x" } },
-            "y": { "?": { "name": "y" } }
+            "dock": { "?": { "name": "dock" } }
         },
         "predicate": {
-            "description": "Persisted FAB position (profile-meta claim).",
+            "description": "Persisted FAB dock (profile-meta claim).",
             "with": {
-                "x": { "the": "xyz.tonk.fab/x", "cardinality": "one", "as": "UnsignedInteger" },
-                "y": { "the": "xyz.tonk.fab/y", "cardinality": "one", "as": "UnsignedInteger" }
+                "dock": { "the": "xyz.tonk.fab/dock", "cardinality": "one", "as": "entity" }
             }
         }
     });
@@ -774,13 +751,13 @@ fn restore_position(this: &HtmlElement) {
     };
 
     // `window.tonk.query` returns a Promise<Conclusion[]>. Await it and apply
-    // the position if present.
+    // the persisted dock if present.
     if let Ok(promise) = result.dyn_into::<Promise>() {
         let this = this.clone();
         spawn_local(async move {
             match wasm_bindgen_futures::JsFuture::from(promise).await {
-                Ok(rows) => match read_position_from_rows(&rows) {
-                    Some((x, y)) => settle_position(&this, x, y),
+                Ok(rows) => match read_dock_from_rows(&rows) {
+                    Some(dock) => apply_dock(&this, dock),
                     None => default_position(&this),
                 },
                 Err(_) => default_position(&this),
@@ -791,74 +768,23 @@ fn restore_position(this: &HtmlElement) {
     }
 }
 
-/// Extract the first `x`/`y` from a `Conclusion[]` rows value returned by
-/// `window.tonk.query(...)`.
-fn read_position_from_rows(rows: &JsValue) -> Option<(f64, f64)> {
+/// Extract the first row's `dock` from a `Conclusion[]` value returned by
+/// `window.tonk.query(...)` and resolve it to a `Dock`.
+fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
     let arr = rows.dyn_ref::<js_sys::Array>()?;
     let first = arr.get(0);
     if first.is_undefined() || first.is_null() {
         return None;
     }
-    let x = Reflect::get(&first, &"x".into())
+    let sym = Reflect::get(&first, &"dock".into())
         .ok()
-        .and_then(|v| v.as_f64())?;
-    let y = Reflect::get(&first, &"y".into())
-        .ok()
-        .and_then(|v| v.as_f64())?;
-    Some((x, y))
+        .and_then(|v| v.as_string())?;
+    Dock::from_symbol(&sym)
 }
 
-/// Apply a default top-centre position to the element.
+/// Apply the default dock (top-left) to the element.
 fn default_position(this: &HtmlElement) {
-    let (x, y) = if let Some(win) = window() {
-        let vw = win
-            .inner_width()
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1024.0);
-        ((vw / 2.0 - CIRCLE_SIZE / 2.0).max(0.0), 16.0)
-    } else {
-        (480.0, 16.0)
-    };
-    settle_position(this, x, y);
-}
-
-/// Apply `opens-down` or `opens-up` to the `.fab__menu` inside `element`, based
-/// on whether the FAB is in the top or bottom half of the viewport.
-fn apply_menu_direction(element: &HtmlElement) {
-    let Some(win) = window() else {
-        return;
-    };
-    let vh = win
-        .inner_height()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(768.0);
-
-    let elem: &web_sys::Element = element.unchecked_ref();
-    let rect = elem.get_bounding_client_rect();
-    let current_y = rect.top();
-    let opens_down = submenu_opens_down(current_y, vh);
-
-    // The bar has more than one menu — the repo switcher (`.fab__menu`, first
-    // match) and the share roster (`.fab__share-menu`) — so reorient each.
-    // `query_selector` returns only the first match, so query them separately.
-    let orient = |menu: &Element| {
-        let cl = menu.class_list();
-        if opens_down {
-            cl.remove_1("opens-up").ok();
-            cl.add_1("opens-down").ok();
-        } else {
-            cl.remove_1("opens-down").ok();
-            cl.add_1("opens-up").ok();
-        }
-    };
-    if let Some(menu_el) = elem.query_selector(".fab__menu").ok().flatten() {
-        orient(&menu_el);
-    }
-    if let Some(menu_el) = elem.query_selector(".fab__share-menu").ok().flatten() {
-        orient(&menu_el);
-    }
+    apply_dock(this, Dock::TopLeft);
 }
 
 /// Register `<tonk-fab>` with the page's custom element registry. Idempotent.

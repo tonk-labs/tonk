@@ -35,6 +35,7 @@ mod query;
 mod shared;
 #[cfg(target_arch = "wasm32")]
 mod site;
+mod site_content;
 
 #[cfg(target_arch = "wasm32")]
 pub use element::register;

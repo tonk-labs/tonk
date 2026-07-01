@@ -228,11 +228,10 @@ fn load_claim(site: &str, path: &str) -> wasm_bindgen::JsValue {
 /// `tonk:site` display resolves against exactly the branch the site was stamped
 /// on, without `<tonk-site>` knowing or injecting that context.
 fn render_in_iframe(host: &HtmlElement, cell: &StateCell, site: &str) {
-    let content = format!(
-        "<tonk-host>\
-         <tonk-display entity='{site}' model='tonk:site'></tonk-display>\
-         </tonk-host>"
-    );
+    // The display carries slotted placeholders for the pre-stamp window so it
+    // shows a quiet spinner instead of flashing its loud `no-entity`
+    // concept-mismatch dump while the SW is still stamping `tonk:site`.
+    let content = crate::site_content::guest_content(site);
 
     // Tear down any prior iframe so a re-resolve (navigation) replaces it.
     teardown(cell);
