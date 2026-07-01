@@ -20,6 +20,8 @@ web-sys = { workspace = true, features = [
     "console",
     "CssStyleDeclaration",
     "CustomElementRegistry",
+    "CustomEvent",
+    "CustomEventInit",
     "Document",
     "DomRect",
     "DomStringMap",

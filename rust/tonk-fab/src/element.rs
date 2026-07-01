@@ -17,18 +17,24 @@
 //!   `left`/`top`; `pointerup` clamps to keep it on-screen and persists the
 //!   x/y as a profile claim via `window.tonk.transact(...)`. A press that never
 //!   moves past a small threshold is treated as a click, not a drag.
-//! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted position (or a default top-centre), and applies it.
+//! - On connect it wraps each collapsible segment for the telescope, then
+//!   restores the persisted STATE — position and expansion shape (collapsed +
+//!   which disclosures are shown) — from `state:fab`, or seeds the
+//!   `defaultposition` / `defaultexpansion` attributes on a first load. The
+//!   read is load-only (never subscribed): later fact changes don't move the
+//!   live bar, like a form control's `defaultValue`. Position is written back
+//!   only on drop; expansion on each telescope/disclosure change.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    clamp_position, position_claim_json, submenu_opens_down, telescope_delay_ms,
-    telescope_settle_ms,
+    clamp_position, expansion_claim_json, position_claim_json, submenu_opens_down,
+    telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
 use js_sys::{Function, Object, Reflect};
+use serde_json::Value;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -82,6 +88,9 @@ impl CustomElement for TonkFab {
         let _ = style.set_property("position", "fixed");
         let _ = style.set_property("margin", "0");
         let _ = style.set_property("z-index", FAB_Z_INDEX);
+        // Hide until the persisted state resolves, so the restore doesn't flash
+        // the default shape/position first. `reveal` clears this once seeded.
+        let _ = style.set_property("visibility", "hidden");
 
         // Guard against double-binding when the SAME element reconnects.
         //
@@ -103,8 +112,8 @@ impl CustomElement for TonkFab {
             attach_drag(this);
             attach_gestures(this);
         }
-        // Restore the persisted position and apply it to our own style.
-        restore_position(this);
+        // Restore the persisted state (position + expansion), or seed defaults.
+        restore_state(this);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -271,6 +280,8 @@ fn toggle_section(element: &HtmlElement, section: &str) {
     if !fab.class_list().contains("fab--collapsed") {
         set_telescope(element, &fab, false);
     }
+    // Write back the new expansion shape so the next load restores it.
+    persist_current_expansion(element);
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -301,6 +312,8 @@ fn toggle_telescope(element: &HtmlElement) {
     if !collapsing {
         apply_menu_direction(element);
     }
+    // Write back the new expansion shape so the next load restores it.
+    persist_current_expansion(element);
 }
 
 /// Drive the telescope to the given state. `collapsing = true` retracts the
@@ -378,6 +391,54 @@ fn tile_section_hidden(fab: &Element, tile: &Element) -> bool {
         return false;
     };
     !fab.class_list().contains(&format!("fab--show-{section}"))
+}
+
+/// Read the current expansion shape off `.fab`'s state classes and persist it.
+/// Called after every telescope/disclosure change so the write reflects exactly
+/// what the DOM now shows. `element` is the `<tonk-fab>` host — the claim is
+/// dispatched from it so the event bubbles to the `<tonk-host>` ancestor.
+fn persist_current_expansion(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let classes = fab.class_list();
+    let collapsed = classes.contains("fab--collapsed");
+    let account = classes.contains("fab--show-account");
+    let share = classes.contains("fab--show-share");
+    persist_expansion(element, collapsed, account, share);
+}
+
+/// Apply a restored expansion shape to the bar: set the disclosure classes,
+/// then drive the telescope to the collapsed-or-expanded state (which honours
+/// those classes via `tile_section_hidden`). No write-back — this is the load
+/// path, and re-persisting the value we just read would be a redundant claim.
+fn apply_expansion(this: &HtmlElement, collapsed: bool, account: bool, share: bool) {
+    let Some(fab) = this.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    fab.class_list()
+        .toggle_with_force("fab--show-account", account)
+        .ok();
+    fab.class_list()
+        .toggle_with_force("fab--show-share", share)
+        .ok();
+    set_telescope(this, &fab, collapsed);
+    if !collapsed {
+        apply_menu_direction(this);
+    }
+}
+
+/// The resting expansion on a true first load (empty query), from the
+/// `defaultexpansion` attribute. `collapsed` rests as just the circle;
+/// `spot` (the default) expands the bar to the circle + space-name segment with
+/// both disclosures hidden. Unknown / absent → `spot`.
+fn default_expansion(this: &HtmlElement) {
+    let value = this
+        .get_attribute("defaultexpansion")
+        .unwrap_or_else(|| "spot".to_string());
+    let collapsed = value == "collapsed";
+    // `spot` and the fallback both rest expanded with account + share hidden.
+    apply_expansion(this, collapsed, false, false);
 }
 
 /// Collect the `.fab__tele` wrapper tiles in DOM order.
@@ -599,7 +660,7 @@ fn attach_drag(element: &HtmlElement) {
         let top = read_data_f64(&el_up, "fabStartTop") + dy;
         let (x, y) = clamp_to_viewport(left, top);
         settle_position(&el_up, x, y);
-        persist_position(x as u32, y as u32);
+        persist_position(&el_up, x as u32, y as u32);
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();
@@ -620,19 +681,7 @@ fn attach_drag(element: &HtmlElement) {
 
 /// Clamp `(raw_x, raw_y)` so the FAB circle stays within the viewport.
 fn clamp_to_viewport(raw_x: f64, raw_y: f64) -> (f64, f64) {
-    let Some(win) = window() else {
-        return (raw_x, raw_y);
-    };
-    let vw = win
-        .inner_width()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(1024.0);
-    let vh = win
-        .inner_height()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(768.0);
+    let (vw, vh) = viewport_size();
     clamp_position(raw_x, raw_y, vw, vh, CIRCLE_SIZE, CIRCLE_SIZE)
 }
 
@@ -656,62 +705,187 @@ fn track_position(el: &HtmlElement, left: f64, top: f64) {
 }
 
 /// Settle the FAB at `(left, top)` anchored to the NEAREST corner: pin to
-/// `right` when its center is in the right half of the viewport (else `left`),
-/// and to `bottom` when in the bottom half (else `top`). Anchoring to the near
-/// edge keeps the FAB in the same corner when the viewport resizes, instead of
-/// drifting from a fixed top-left offset. Used at drop and on restore.
+/// `right` when the CIRCLE's center is in the right half of the viewport (else
+/// `left`), and to `bottom` when in the bottom half (else `top`). Anchoring to
+/// the near edge keeps the FAB in the same corner when the viewport resizes,
+/// instead of drifting from a fixed top-left offset. When docked right, the bar
+/// gets `fab--dock-right` so it row-reverses — the circle welds to the right
+/// edge and the segments telescope INWARD (leftward). Used at drop and restore.
 fn settle_position(el: &HtmlElement, left: f64, top: f64) {
-    // Settle at exactly the tracked `left`/`top` — same coordinate space
-    // `track_position` uses during the drag — so the FAB drops precisely where
-    // the cursor released it, with no re-anchoring drift. (Corner-anchoring on
-    // viewport resize is deferred; it fought the wide host box and the
-    // row-reverse geometry.)
     let style = el.style();
+    let (vw, vh) = viewport_size();
+
+    // Anchor by the CIRCLE's center, not the whole (variable-width) bar: the
+    // circle is the fixed handle and the always-visible part, so which half it
+    // sits in decides the docking edge. `.fab__cap-l` is `CIRCLE_SIZE` wide.
+    let circle_center_x = left + CIRCLE_SIZE / 2.0;
+    let circle_center_y = top + CIRCLE_SIZE / 2.0;
+    let dock_right = circle_center_x > vw / 2.0;
+    let dock_bottom = circle_center_y > vh / 2.0;
+
+    // Toggle the row-reverse dock class so the telescope expands inward from the
+    // docked edge (the CSS `.fab--dock-right` swaps the cap radii + direction).
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list()
+            .toggle_with_force("fab--dock-right", dock_right)
+            .ok();
+    }
+
+    // Horizontal: pin to whichever edge the circle is nearer, so a resize keeps
+    // the circle its measured distance from that edge. The circle is the anchor,
+    // so the right offset is measured from the circle's right edge.
+    let _ = style.remove_property("left");
     let _ = style.remove_property("right");
+    if dock_right {
+        let right = (vw - (left + CIRCLE_SIZE)).max(0.0);
+        let _ = style.set_property("right", &format!("{right}px"));
+    } else {
+        let _ = style.set_property("left", &format!("{}px", left.max(0.0)));
+    }
+
+    // Vertical: same, top vs bottom.
+    let _ = style.remove_property("top");
     let _ = style.remove_property("bottom");
-    let _ = style.set_property("left", &format!("{}px", left.max(0.0)));
-    let _ = style.set_property("top", &format!("{}px", top.max(0.0)));
+    if dock_bottom {
+        let bottom = (vh - (top + CIRCLE_SIZE)).max(0.0);
+        let _ = style.set_property("bottom", &format!("{bottom}px"));
+    } else {
+        let _ = style.set_property("top", &format!("{}px", top.max(0.0)));
+    }
 }
 
-/// Persist `(x, y)` by calling `window.tonk.transact(request)`. The request is
-/// the `TransactRequest` JSON produced by `position_claim_json`, parsed back to
-/// a JS object via `JSON.parse` (the bridge accepts any structured-clonable
-/// object).
-fn persist_position(x: u32, y: u32) {
-    let claim = position_claim_json(x, y);
-    let json_str = match serde_json::to_string(&claim) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+/// The viewport `(width, height)` in CSS px, with sane fallbacks.
+fn viewport_size() -> (f64, f64) {
     let Some(win) = window() else {
+        return (1024.0, 768.0);
+    };
+    let vw = win
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1024.0);
+    let vh = win
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(768.0);
+    (vw, vh)
+}
+
+/// Persist `(x, y)` on drop as a profile claim. Position is asserted ONLY here
+/// (on pointer-up), never mid-drag, and independently of the expansion claim.
+fn persist_position(this: &HtmlElement, x: u32, y: u32) {
+    transact_claim(this, position_claim_json(x, y));
+}
+
+/// Persist the bar's expansion shape (collapsed + which sections shown) as a
+/// profile claim, written back on a telescope/disclosure change. Independent of
+/// the position claim, so it never disturbs the persisted `x`/`y`.
+fn persist_expansion(this: &HtmlElement, collapsed: bool, account: bool, share: bool) {
+    transact_claim(this, expansion_claim_json(collapsed, account, share));
+}
+
+/// Fire-and-forget a profile-branch claim by dispatching a `tonk-claim`
+/// CustomEvent on the FAB element. The outer `<tonk-host>` catches the bubbling
+/// event, routes it (here `profile: true`, `branch: "meta"` targets the profile
+/// meta branch), executes the transact, and writes a result Promise back — the
+/// same path `<tonk-display>` uses, so the FAB shares the host's routing and
+/// permissions rather than calling a global `window.tonk`. The result Promise is
+/// dropped: the persisted state is load-only and never fed back into the live bar.
+fn transact_claim(this: &HtmlElement, claim: Value) {
+    let Some(request) = value_to_js(&claim) else {
         return;
     };
-    let tonk = match Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    {
-        Some(t) => t,
-        None => return,
-    };
-    let transact_fn = match Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    {
-        Some(f) => f,
-        None => return,
-    };
-    let js_obj = match js_sys::JSON::parse(&json_str).ok() {
-        Some(v) => v,
-        None => return,
-    };
-    transact_fn.call1(&tonk, &js_obj).ok();
+    let detail = Object::new();
+    let _ = Reflect::set(&detail, &"request".into(), &request);
+    apply_profile_route(&detail);
+    // Fire-and-forget: the result Promise is dropped (load-only persistence).
+    let _ = dispatch_host_event(this, "tonk-claim", &detail);
 }
 
-/// On connect, query the persisted FAB position from `window.tonk.query(...)`
-/// and apply it to the element's own style. Falls back to a default top-centre
-/// position if no persisted value exists.
-fn restore_position(this: &HtmlElement) {
-    let query_body = serde_json::json!({
+/// Stamp a `detail` for the profile meta branch: `profile = true` targets the
+/// profile-as-repository endpoint, `branch = "meta"` names its branch. Mirrors
+/// `consumer::apply_route(profile = true)`.
+fn apply_profile_route(detail: &Object) {
+    let _ = Reflect::set(detail, &"profile".into(), &JsValue::TRUE);
+    let _ = Reflect::set(detail, &"branch".into(), &JsValue::from_str("meta"));
+}
+
+/// Dispatch a bubbling, composed, cancelable `tonk-*` CustomEvent carrying
+/// `detail` on `consumer`. The `<tonk-host>` ancestor handles it and (for
+/// one-shots) calls `preventDefault` + writes `detail.result`. Returns the
+/// `detail.result` Promise the host wrote, or `None` if no host handled it.
+fn dispatch_host_event(consumer: &HtmlElement, name: &str, detail: &Object) -> Option<Promise> {
+    let init = web_sys::CustomEventInit::new();
+    init.set_detail(detail);
+    init.set_bubbles(true);
+    init.set_composed(true);
+    init.set_cancelable(true);
+    let ev = web_sys::CustomEvent::new_with_event_init_dict(name, &init).ok()?;
+    let _ = consumer.dispatch_event(&ev);
+    if !ev.default_prevented() {
+        return None;
+    }
+    Reflect::get(detail, &"result".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Promise>().ok())
+}
+
+/// Parse a `serde_json::Value` into a JS object via `JSON.parse` (the host
+/// accepts any structured-clonable object).
+fn value_to_js(value: &Value) -> Option<JsValue> {
+    let json_str = serde_json::to_string(value).ok()?;
+    js_sys::JSON::parse(&json_str).ok()
+}
+
+/// On connect, seed the bar from the persisted FAB state (`state:fab`). This is
+/// a load-only read (no subscription): a later fact change never feeds back into
+/// the live element, like a form control's `defaultValue`. When a query is empty
+/// (a first load, or an older profile that only persisted position), the
+/// `defaultposition` / `defaultexpansion` attributes supply that aspect instead.
+///
+/// Position and expansion are queried SEPARATELY, because each is an all-required
+/// join and an older profile has position facts but no expansion facts — a single
+/// combined query would return nothing and lose the persisted position. Two
+/// queries let each aspect restore or default on its own. The bar is revealed
+/// only after both resolve, so no default shape flashes first.
+fn restore_state(this: &HtmlElement) {
+    // Dispatch the reads through `<tonk-host>` (the same path `<tonk-display>`
+    // uses). If no host handled them (`None`), there's nothing to read from —
+    // seed the defaults and reveal.
+    let position = run_query(this, &position_query_body());
+    let expansion = run_query(this, &expansion_query_body());
+    if position.is_none() && expansion.is_none() {
+        seed_defaults(this);
+        reveal(this);
+        return;
+    }
+
+    let this = this.clone();
+    spawn_local(async move {
+        // Position: persisted x/y, else the default.
+        match await_rows(position)
+            .await
+            .and_then(|r| read_position(&first_row(&r)))
+        {
+            Some((x, y)) => settle_position(&this, x, y),
+            None => default_position(&this),
+        }
+        // Expansion: persisted shape, else the `defaultexpansion` attribute.
+        match await_rows(expansion)
+            .await
+            .and_then(|r| read_expansion(&first_row(&r)))
+        {
+            Some((collapsed, account, share)) => apply_expansion(&this, collapsed, account, share),
+            None => default_expansion(&this),
+        }
+        reveal(&this);
+    });
+}
+
+/// The persisted-position query body (`state:fab` x/y).
+fn position_query_body() -> Value {
+    serde_json::json!({
         "terms": {
             "this": "state:fab",
             "x": { "?": { "name": "x" } },
@@ -724,103 +898,113 @@ fn restore_position(this: &HtmlElement) {
                 "y": { "the": "xyz.tonk.fab/y", "cardinality": "one", "as": "UnsignedInteger" }
             }
         }
-    });
-
-    let json_str = match serde_json::to_string(&query_body) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let Some(win) = window() else {
-        return;
-    };
-
-    let tonk = match Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    {
-        Some(t) => t,
-        None => {
-            default_position(this);
-            return;
-        }
-    };
-
-    let query_fn = match Reflect::get(&tonk, &"query".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    {
-        Some(f) => f,
-        None => {
-            default_position(this);
-            return;
-        }
-    };
-
-    let js_body = match js_sys::JSON::parse(&json_str).ok() {
-        Some(v) => v,
-        None => {
-            default_position(this);
-            return;
-        }
-    };
-
-    let result = match query_fn.call1(&tonk, &js_body).ok() {
-        Some(v) => v,
-        None => {
-            default_position(this);
-            return;
-        }
-    };
-
-    // `window.tonk.query` returns a Promise<Conclusion[]>. Await it and apply
-    // the position if present.
-    if let Ok(promise) = result.dyn_into::<Promise>() {
-        let this = this.clone();
-        spawn_local(async move {
-            match wasm_bindgen_futures::JsFuture::from(promise).await {
-                Ok(rows) => match read_position_from_rows(&rows) {
-                    Some((x, y)) => settle_position(&this, x, y),
-                    None => default_position(&this),
-                },
-                Err(_) => default_position(&this),
-            }
-        });
-    } else {
-        default_position(this);
-    }
+    })
 }
 
-/// Extract the first `x`/`y` from a `Conclusion[]` rows value returned by
-/// `window.tonk.query(...)`.
-fn read_position_from_rows(rows: &JsValue) -> Option<(f64, f64)> {
-    let arr = rows.dyn_ref::<js_sys::Array>()?;
-    let first = arr.get(0);
-    if first.is_undefined() || first.is_null() {
+/// The persisted-expansion query body (`state:fab` collapsed/account/share).
+fn expansion_query_body() -> Value {
+    serde_json::json!({
+        "terms": {
+            "this": "state:fab",
+            "collapsed": { "?": { "name": "collapsed" } },
+            "account": { "?": { "name": "account" } },
+            "share": { "?": { "name": "share" } }
+        },
+        "predicate": {
+            "description": "Persisted FAB expansion (profile-meta claim).",
+            "with": {
+                "collapsed": { "the": "xyz.tonk.fab/collapsed", "cardinality": "one", "as": "Boolean" },
+                "account": { "the": "xyz.tonk.fab/account", "cardinality": "one", "as": "Boolean" },
+                "share": { "the": "xyz.tonk.fab/share", "cardinality": "one", "as": "Boolean" }
+            }
+        }
+    })
+}
+
+/// Dispatch a profile-branch `tonk-query` on the FAB element and return the
+/// host's result Promise, or `None` when no `<tonk-host>` handled it. Routed to
+/// the profile meta branch — the same event path `<tonk-display>` reads through.
+fn run_query(this: &HtmlElement, body: &Value) -> Option<Promise> {
+    let query = value_to_js(body)?;
+    let detail = Object::new();
+    let _ = Reflect::set(&detail, &"query".into(), &query);
+    apply_profile_route(&detail);
+    dispatch_host_event(this, "tonk-query", &detail)
+}
+
+/// Await a query Promise into its `Conclusion[]` rows value, or `None`.
+async fn await_rows(promise: Option<Promise>) -> Option<JsValue> {
+    let promise = promise?;
+    wasm_bindgen_futures::JsFuture::from(promise).await.ok()
+}
+
+/// The first row of a `Conclusion[]` value, or a null `JsValue` when empty.
+fn first_row(rows: &JsValue) -> JsValue {
+    js_sys::Array::from(rows).get(0)
+}
+
+/// A conclusion's `fields` sub-object: `{ this, fields: { <term>: value } }` is
+/// the wire shape a query row takes, so the projected values live under
+/// `fields`, not at the row's top level (mirrors `<ui-sync-status>`'s frame read).
+fn row_fields(row: &JsValue) -> Option<JsValue> {
+    if row.is_undefined() || row.is_null() {
         return None;
     }
-    let x = Reflect::get(&first, &"x".into())
+    Reflect::get(row, &"fields".into())
+        .ok()
+        .filter(|f| !f.is_undefined() && !f.is_null())
+}
+
+/// Read `x`/`y` off a persisted `state:fab` conclusion.
+fn read_position(row: &JsValue) -> Option<(f64, f64)> {
+    let fields = row_fields(row)?;
+    let x = Reflect::get(&fields, &"x".into())
         .ok()
         .and_then(|v| v.as_f64())?;
-    let y = Reflect::get(&first, &"y".into())
+    let y = Reflect::get(&fields, &"y".into())
         .ok()
         .and_then(|v| v.as_f64())?;
     Some((x, y))
 }
 
-/// Apply a default top-centre position to the element.
+/// Read `collapsed`/`account`/`share` off a persisted `state:fab` conclusion.
+/// All three must be present (they are written together) or the whole expansion
+/// falls back to the default.
+fn read_expansion(row: &JsValue) -> Option<(bool, bool, bool)> {
+    let fields = row_fields(row)?;
+    let collapsed = Reflect::get(&fields, &"collapsed".into())
+        .ok()
+        .and_then(|v| v.as_bool())?;
+    let account = Reflect::get(&fields, &"account".into())
+        .ok()
+        .and_then(|v| v.as_bool())?;
+    let share = Reflect::get(&fields, &"share".into())
+        .ok()
+        .and_then(|v| v.as_bool())?;
+    Some((collapsed, account, share))
+}
+
+/// Seed both aspects from their defaults (used when there is no `window.tonk`
+/// or the query never resolves).
+fn seed_defaults(this: &HtmlElement) {
+    default_position(this);
+    default_expansion(this);
+}
+
+/// Reveal the bar after the restore has run, clearing the connect-time
+/// `visibility: hidden` that suppresses a default-shape flash.
+fn reveal(this: &HtmlElement) {
+    let _ = this.style().remove_property("visibility");
+}
+
+/// Apply the first-load position from the `defaultposition` attribute. Only
+/// `top-left` is implemented (also the fallback for an absent / unknown value);
+/// the attribute is the seam for other resting corners later. A small inset
+/// keeps the circle off the very edge.
 fn default_position(this: &HtmlElement) {
-    let (x, y) = if let Some(win) = window() {
-        let vw = win
-            .inner_width()
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1024.0);
-        ((vw / 2.0 - CIRCLE_SIZE / 2.0).max(0.0), 16.0)
-    } else {
-        (480.0, 16.0)
-    };
-    settle_position(this, x, y);
+    // `defaultposition` is read but currently only `top-left` is realized.
+    let _ = this.get_attribute("defaultposition");
+    settle_position(this, 16.0, 16.0);
 }
 
 /// Apply `opens-down` or `opens-up` to the `.fab__menu` inside `element`, based

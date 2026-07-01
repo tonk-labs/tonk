@@ -154,15 +154,19 @@ pub fn clamp_position(x: f64, y: f64, vw: f64, vh: f64, w: f64, h: f64) -> (f64,
 /// derive in `tonk-core/src/claim.rs`:
 ///
 /// - `Claim` → `#[serde(tag="op", content="application")]` → `"op":"assert"`, `"application":{...}`
-/// - `ConceptDescriptor` → `#[serde(tag="kind", content="concept")]` → `"kind":"transient"`, `"concept":{...}`
+/// - `ConceptDescriptor` → `#[serde(tag="kind", content="concept")]` → `"kind":"durable"`, `"concept":{...}`
 /// - `PredicateApplication` → `{ predicate, parameters }`
+///
+/// `durable` (not `transient`): the position must survive the reactor's commit
+/// so a later load can read it back. A transient concept is stripped before the
+/// durable commit, so it would never persist across a reload.
 pub fn position_claim_json(x: u32, y: u32) -> Value {
     json!({
         "claims": [{
             "op": "assert",
             "application": {
                 "predicate": {
-                    "kind": "transient",
+                    "kind": "durable",
                     "concept": {
                         "description": "Persisted FAB position (profile-meta claim).",
                         "with": {
@@ -183,6 +187,56 @@ pub fn position_claim_json(x: u32, y: u32) -> Value {
                     "this": "state:fab",
                     "x": x,
                     "y": y
+                }
+            }
+        }]
+    })
+}
+
+/// Build a `TransactRequest` JSON body asserting the FAB's EXPANSION state on
+/// `state:fab`: whether the bar is collapsed to the circle, and which
+/// disclosure sections (`account` / `share`) are shown. Written back on a
+/// telescope/disclosure change so the next load restores the bar's shape.
+///
+/// Independent of the position claim (each field is cardinality-one), so
+/// asserting expansion here does not touch the persisted `x`/`y` — a drop
+/// persists position, a toggle persists expansion, neither disturbs the other.
+///
+/// `durable` (not `transient`), like the position claim: the expansion must
+/// survive the reactor's commit to be read back on the next load.
+pub fn expansion_claim_json(collapsed: bool, account: bool, share: bool) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "durable",
+                    "concept": {
+                        "description": "Persisted FAB expansion (profile-meta claim).",
+                        "with": {
+                            "collapsed": {
+                                "the": "xyz.tonk.fab/collapsed",
+                                "cardinality": "one",
+                                "as": "Boolean"
+                            },
+                            "account": {
+                                "the": "xyz.tonk.fab/account",
+                                "cardinality": "one",
+                                "as": "Boolean"
+                            },
+                            "share": {
+                                "the": "xyz.tonk.fab/share",
+                                "cardinality": "one",
+                                "as": "Boolean"
+                            }
+                        }
+                    }
+                },
+                "parameters": {
+                    "this": "state:fab",
+                    "collapsed": collapsed,
+                    "account": account,
+                    "share": share
                 }
             }
         }]
@@ -379,9 +433,21 @@ mod persist {
         let app = &v["claims"][0]["application"];
         assert_eq!(app["parameters"]["x"], 120);
         assert_eq!(app["parameters"]["y"], 240);
-        // verify predicate shape matches claim.rs serde derive
-        assert_eq!(app["predicate"]["kind"], "transient");
+        // Durable so the position survives the commit and restores on reload.
+        assert_eq!(app["predicate"]["kind"], "durable");
         assert!(app["predicate"]["concept"]["with"].is_object());
+        assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+
+    #[test]
+    fn expansion_claim_json_targets_fab_state() {
+        let v = expansion_claim_json(true, false, true);
+        assert_eq!(v["claims"][0]["op"], "assert");
+        let app = &v["claims"][0]["application"];
+        assert_eq!(app["parameters"]["collapsed"], true);
+        assert_eq!(app["parameters"]["account"], false);
+        assert_eq!(app["parameters"]["share"], true);
+        assert_eq!(app["predicate"]["kind"], "durable");
         assert_eq!(app["parameters"]["this"], "state:fab");
     }
 }

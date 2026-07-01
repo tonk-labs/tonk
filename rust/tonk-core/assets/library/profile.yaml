@@ -324,7 +324,7 @@ view/directory!: &profile/fab/view
   this: id:tonk:profile/fab/view
   model: tonk:profile/fab
   display: |
-    <tonk-fab>
+    <tonk-fab defaultexpansion="spot" defaultposition="top-left">
       <div class="fab">
         <!-- LEFT CAP — the grab handle. A round-left segment (36×36) holding
              the live sync ring: the same host-chrome `<ui-sync-status>` element
@@ -669,8 +669,16 @@ view/directory!: &profile/fab/view
         .fab__account { cursor: default; }
         /* The spot segment owns the switcher dropdown, opened on click
            (`.fab__repo.is-open`). It is a positioned flex `.fab__seg`, so the
-           absolutely positioned `.fab__menu` anchors under it. */
-        .fab__repo { cursor: pointer; }
+           absolutely positioned `.fab__menu` anchors under it. A `min-width`
+           (wireframe's `seg-spot`) keeps the segment substantial even for a
+           short name, so the pill doesn't read as a cramped nub and the dropdown
+           (sized to this segment) has a sane width. The name right-justifies
+           toward the divider, matching the wireframe. */
+        .fab__repo {
+          cursor: pointer;
+          min-width: 161px;
+          justify-content: flex-end;
+        }
         .fab__space {
           color: var(--fab-ink);
           max-width: 16ch;
