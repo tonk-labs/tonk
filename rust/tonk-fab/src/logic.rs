@@ -94,35 +94,55 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     }
 }
 
-/// The two spots the FAB is allowed to rest in. It docks against the left edge
-/// only, so the sole choice is vertical: hug the top-left or the bottom-left
-/// corner.
+/// The four corners the FAB is allowed to rest in. A drop snaps to the nearest
+/// one: the vertical half of the viewport picks top vs bottom, the horizontal
+/// half picks left vs right.
 ///
-/// The resting spot is expressed as a CSS class on `<tonk-fab>`
-/// (`fab-dock-top` / `fab-dock-bottom`) and the actual pixel placement + the
+/// The resting spot is expressed as two CSS classes on `<tonk-fab>` — a vertical
+/// one (`fab-dock-top` / `fab-dock-bottom`) and a horizontal one
+/// (`fab-dock-left` / `fab-dock-right`) — and the actual pixel placement + the
 /// submenu open-direction live in the view's stylesheet (profile.yaml). This
-/// enum is only the small decision Rust still owns — which of the two docks a
-/// drop lands in — plus its persisted symbol.
+/// enum is only the small decision Rust still owns — which corner a drop lands
+/// in — plus its persisted symbol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dock {
     TopLeft,
+    TopRight,
     BottomLeft,
+    BottomRight,
 }
 
+/// Every dock axis class the view stylesheet defines, for clearing the element
+/// before a fresh dock's classes are applied.
+pub const DOCK_CLASSES: [&str; 4] = [
+    "fab-dock-top",
+    "fab-dock-bottom",
+    "fab-dock-left",
+    "fab-dock-right",
+];
+
 impl Dock {
-    /// The CSS class the view stylesheet keys position + menu direction off.
-    pub fn css_class(self) -> &'static str {
-        match self {
-            Dock::TopLeft => "fab-dock-top",
-            Dock::BottomLeft => "fab-dock-bottom",
-        }
+    /// The two CSS classes the view stylesheet keys position + menu direction
+    /// off: `[vertical, horizontal]`.
+    pub fn css_classes(self) -> [&'static str; 2] {
+        let vertical = match self {
+            Dock::TopLeft | Dock::TopRight => "fab-dock-top",
+            Dock::BottomLeft | Dock::BottomRight => "fab-dock-bottom",
+        };
+        let horizontal = match self {
+            Dock::TopLeft | Dock::BottomLeft => "fab-dock-left",
+            Dock::TopRight | Dock::BottomRight => "fab-dock-right",
+        };
+        [vertical, horizontal]
     }
 
     /// The entity symbol persisted for this dock (the `tonk:fab/dock` value).
     pub fn symbol(self) -> &'static str {
         match self {
             Dock::TopLeft => "tonk:top-left",
+            Dock::TopRight => "tonk:top-right",
             Dock::BottomLeft => "tonk:bottom-left",
+            Dock::BottomRight => "tonk:bottom-right",
         }
     }
 
@@ -131,21 +151,24 @@ impl Dock {
     pub fn from_symbol(s: &str) -> Option<Dock> {
         match s {
             "tonk:top-left" => Some(Dock::TopLeft),
+            "tonk:top-right" => Some(Dock::TopRight),
             "tonk:bottom-left" => Some(Dock::BottomLeft),
+            "tonk:bottom-right" => Some(Dock::BottomRight),
             _ => None,
         }
     }
 }
 
-/// Pick the dock nearest a drop. Both docks sit on the left edge, so only the
-/// vertical position decides: a FAB whose center `center_y` is in the top half
-/// of a viewport of height `vh` docks top-left, otherwise bottom-left. The
-/// exact midline falls to the bottom dock.
-pub fn nearest_dock(center_y: f64, vh: f64) -> Dock {
-    if center_y < vh / 2.0 {
-        Dock::TopLeft
-    } else {
-        Dock::BottomLeft
+/// Pick the corner nearest a drop. The vertical half of the viewport (height
+/// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
+/// right, keyed off the FAB center `(center_x, center_y)`. The exact midlines
+/// fall to the bottom / right dock.
+pub fn nearest_dock(center_x: f64, center_y: f64, vw: f64, vh: f64) -> Dock {
+    match (center_x < vw / 2.0, center_y < vh / 2.0) {
+        (true, true) => Dock::TopLeft,
+        (false, true) => Dock::TopRight,
+        (true, false) => Dock::BottomLeft,
+        (false, false) => Dock::BottomRight,
     }
 }
 
@@ -223,37 +246,67 @@ pub fn dock_claim_json(dock: Dock) -> Value {
 mod dock {
     use super::*;
 
+    // 1000x800 viewport: midlines at x=500, y=400.
     #[test]
-    fn top_half_docks_top_left() {
-        assert_eq!(nearest_dock(10.0, 800.0), Dock::TopLeft);
+    fn the_top_left_quadrant_docks_top_left() {
+        assert_eq!(nearest_dock(10.0, 10.0, 1000.0, 800.0), Dock::TopLeft);
     }
 
     #[test]
-    fn bottom_half_docks_bottom_left() {
-        assert_eq!(nearest_dock(700.0, 800.0), Dock::BottomLeft);
+    fn the_top_right_quadrant_docks_top_right() {
+        assert_eq!(nearest_dock(900.0, 10.0, 1000.0, 800.0), Dock::TopRight);
     }
 
     #[test]
-    fn the_midline_falls_to_the_bottom_dock() {
-        assert_eq!(nearest_dock(400.0, 800.0), Dock::BottomLeft);
+    fn the_bottom_left_quadrant_docks_bottom_left() {
+        assert_eq!(nearest_dock(10.0, 700.0, 1000.0, 800.0), Dock::BottomLeft);
     }
 
     #[test]
-    fn each_dock_has_its_css_class() {
-        assert_eq!(Dock::TopLeft.css_class(), "fab-dock-top");
-        assert_eq!(Dock::BottomLeft.css_class(), "fab-dock-bottom");
+    fn the_bottom_right_quadrant_docks_bottom_right() {
+        assert_eq!(nearest_dock(900.0, 700.0, 1000.0, 800.0), Dock::BottomRight);
+    }
+
+    #[test]
+    fn the_midlines_fall_to_the_bottom_right_dock() {
+        assert_eq!(nearest_dock(500.0, 400.0, 1000.0, 800.0), Dock::BottomRight);
+    }
+
+    #[test]
+    fn each_dock_has_a_vertical_and_horizontal_class() {
+        assert_eq!(
+            Dock::TopLeft.css_classes(),
+            ["fab-dock-top", "fab-dock-left"]
+        );
+        assert_eq!(
+            Dock::TopRight.css_classes(),
+            ["fab-dock-top", "fab-dock-right"]
+        );
+        assert_eq!(
+            Dock::BottomLeft.css_classes(),
+            ["fab-dock-bottom", "fab-dock-left"]
+        );
+        assert_eq!(
+            Dock::BottomRight.css_classes(),
+            ["fab-dock-bottom", "fab-dock-right"]
+        );
     }
 
     #[test]
     fn a_dock_round_trips_through_its_symbol() {
-        for dock in [Dock::TopLeft, Dock::BottomLeft] {
+        for dock in [
+            Dock::TopLeft,
+            Dock::TopRight,
+            Dock::BottomLeft,
+            Dock::BottomRight,
+        ] {
             assert_eq!(Dock::from_symbol(dock.symbol()), Some(dock));
         }
     }
 
     #[test]
     fn an_unknown_symbol_has_no_dock() {
-        assert_eq!(Dock::from_symbol("tonk:top-right"), None);
+        assert_eq!(Dock::from_symbol("tonk:middle"), None);
         assert_eq!(Dock::from_symbol(""), None);
     }
 }

@@ -460,16 +460,19 @@ view/directory!: &profile/fab/view
         :host, tonk-fab { display: block; }
 
         /* ── Docking ──────────────────────────────────────────────────────
-           The FAB rests in one of two spots: top-left or bottom-left.
-           element.rs decides which on drop (and on restore) and sets the
-           matching class on `<tonk-fab>`; the pixel placement lives HERE so
-           it's declarative and resize-robust (a class pins to the corner; a
-           fixed px offset would drift). During a drag element.rs drops the
-           class and drives inline `left`/`top` to track the pointer, so these
-           only take effect at rest. `position: fixed` is set inline by
-           element.rs. */
-        tonk-fab.fab-dock-top    { top: 16px; bottom: auto; left: 16px; right: auto; }
-        tonk-fab.fab-dock-bottom { top: auto; bottom: 16px; left: 16px; right: auto; }
+           The FAB rests in one of the four corners. element.rs decides which on
+           drop (and on restore) and sets two axis classes on `<tonk-fab>` — a
+           vertical (`fab-dock-top`/`fab-dock-bottom`) and a horizontal
+           (`fab-dock-left`/`fab-dock-right`) — so each edge is pinned
+           independently; the pixel placement lives HERE so it's declarative and
+           resize-robust (a class pins to the edge; a fixed px offset would
+           drift). During a drag element.rs drops the classes and drives inline
+           `left`/`top` to track the pointer, so these only take effect at rest.
+           `position: fixed` is set inline by element.rs. */
+        tonk-fab.fab-dock-top    { top: 16px; bottom: auto; }
+        tonk-fab.fab-dock-bottom { top: auto; bottom: 16px; }
+        tonk-fab.fab-dock-left   { left: 16px; right: auto; }
+        tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 
         /* ── SEGMENTED CONTROL BAR (matches the "Control Panel" wireframe) ────
            The bar is NOT one solid pill: it is a row of independent segments
@@ -786,11 +789,13 @@ view/directory!: &profile/fab/view
           z-index: 100;
         }
         /* Dropdowns open AWAY from the docked edge — down from the top dock, up
-           from the bottom — so they always unfold into the viewport. Direction
-           is keyed off the FAB's `fab-dock-*` class (set by element.rs); no JS
-           measuring. */
+           from the bottom, and horizontally into the viewport (rightward from a
+           left dock, leftward from a right dock) — so they always unfold into
+           view. Direction is keyed off the FAB's `fab-dock-*` classes (set by
+           element.rs); no JS measuring. */
         .fab-dock-top .fab__menu { top: 100%; margin-top: 6px; }
         .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 6px; }
+        .fab-dock-right .fab__menu { left: auto; right: 0; }
         /* The dropdown belongs to the repo name segment: hidden until the
            segment is CLICKED (element.rs toggles `is-open`), matching the
            wireframe where segments open their menus on click, not hover. */

@@ -14,19 +14,20 @@
 //!   (the circle is the pause switch, matching the control-panel wireframe).
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
 //!   capturing the grab offset; `pointermove` sets the element's own
-//!   `left`/`top`; `pointerup` SNAPS the FAB to the nearest dock — top-left or
-//!   bottom-left — by swapping a `fab-dock-*` class and persisting the dock as a
-//!   profile claim via `window.tonk.transact(...)`. The dock class is the only
-//!   thing Rust sets: the view stylesheet (profile.yaml) owns the resting pixel
-//!   position AND the submenu open-direction (down from the top dock, up from
-//!   the bottom). A press that never moves past a small threshold is a click.
+//!   `left`/`top`; `pointerup` SNAPS the FAB to the nearest of the four corners
+//!   — by swapping its `fab-dock-*` classes and persisting the dock as a profile
+//!   claim via `window.tonk.transact(...)`. The dock classes are the only thing
+//!   Rust sets: the view stylesheet (profile.yaml) owns the resting pixel
+//!   position AND the submenu open-direction (down from a top dock, up from a
+//!   bottom one; into the viewport horizontally). A press that never moves past
+//!   a small threshold is a click.
 //! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted dock (or a default top-left), and applies its class.
+//!   the persisted dock (or a default top-left), and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    Dock, dock_claim_json, nearest_dock, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, dock_claim_json, nearest_dock, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -540,8 +541,9 @@ fn attach_drag(element: &HtmlElement) {
             // (which pins `bottom`/`top`) stops fighting the inline `left`/`top`
             // that now tracks the pointer 1:1.
             let cl = el_move.class_list();
-            cl.remove_1(Dock::TopLeft.css_class()).ok();
-            cl.remove_1(Dock::BottomLeft.css_class()).ok();
+            for c in DOCK_CLASSES {
+                cl.remove_1(c).ok();
+            }
         }
         e.prevent_default();
         let left = read_data_f64(&el_move, "fabStartLeft") + dx;
@@ -565,9 +567,14 @@ fn attach_drag(element: &HtmlElement) {
         if let Some(fab) = el_up.query_selector(".fab").ok().flatten() {
             fab.class_list().remove_1("dragging").ok();
         }
-        // Snap to the dock nearest where the pointer was released. Both docks are
-        // on the left, so only the release height matters (its vertical half).
-        let dock = nearest_dock(e.client_y() as f64, viewport_height());
+        // Snap to the corner nearest where the pointer was released — the
+        // release point's viewport half on each axis picks the dock.
+        let dock = nearest_dock(
+            e.client_x() as f64,
+            e.client_y() as f64,
+            viewport_width(),
+            viewport_height(),
+        );
         apply_dock(&el_up, dock);
         persist_dock(dock);
     });
@@ -596,6 +603,14 @@ fn viewport_height() -> f64 {
         .unwrap_or(768.0)
 }
 
+/// The viewport width in CSS px, defaulting if unavailable.
+fn viewport_width() -> f64 {
+    window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1024.0)
+}
+
 /// Read a numeric `data-*` value off the element, defaulting to 0.
 fn read_data_f64(el: &HtmlElement, key: &str) -> f64 {
     el.dataset()
@@ -615,11 +630,11 @@ fn track_position(el: &HtmlElement, left: f64, top: f64) {
     let _ = style.set_property("top", &format!("{}px", top));
 }
 
-/// Dock the FAB by swapping its `fab-dock-*` class and clearing any drag-time
-/// inline offsets, so the view stylesheet's `.fab-dock-top` / `.fab-dock-bottom`
-/// rules own the resting pixel position (and the submenu open-direction). Used at
-/// drop and on restore. Anchoring by class — not a fixed pixel offset — keeps the
-/// FAB pinned to its corner when the viewport resizes.
+/// Dock the FAB by swapping its `fab-dock-*` classes and clearing any drag-time
+/// inline offsets, so the view stylesheet's `.fab-dock-*` rules own the resting
+/// pixel position (and the submenu open-direction). Used at drop and on restore.
+/// Anchoring by class — not a fixed pixel offset — keeps the FAB pinned to its
+/// corner when the viewport resizes.
 fn apply_dock(el: &HtmlElement, dock: Dock) {
     let style = el.style();
     let _ = style.remove_property("left");
@@ -627,9 +642,12 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
     let _ = style.remove_property("right");
     let _ = style.remove_property("bottom");
     let cl = el.class_list();
-    cl.remove_1(Dock::TopLeft.css_class()).ok();
-    cl.remove_1(Dock::BottomLeft.css_class()).ok();
-    cl.add_1(dock.css_class()).ok();
+    for c in DOCK_CLASSES {
+        cl.remove_1(c).ok();
+    }
+    for c in dock.css_classes() {
+        cl.add_1(c).ok();
+    }
 }
 
 /// Persist `dock` by calling `window.tonk.transact(request)`. The request is the
