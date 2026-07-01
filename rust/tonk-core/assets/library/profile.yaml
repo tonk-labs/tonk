@@ -359,7 +359,7 @@ view/directory!: &profile/fab/view
           <span class="fab__space">
             <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
           </span>
-          <ui-dropdown class="fab__menu opens-down" exclude={dom.host/data-space}>
+          <ui-dropdown class="fab__menu" exclude={dom.host/data-space}>
             <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
             <a class="fab__menu-item fab__menu-item--action" href="/">
               <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
@@ -410,7 +410,7 @@ view/directory!: &profile/fab/view
                    "share" button is always present. -->
               <tonk-display class="fab__share-mint" model="tonk:repository"></tonk-display>
             </tonk-origin>
-            <nav class="fab__menu fab__share-menu opens-up">
+            <nav class="fab__menu fab__share-menu">
               <tonk-display model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
             </nav>
           </tonk-branch></tonk-repository></tonk-host>
@@ -458,6 +458,18 @@ view/directory!: &profile/fab/view
       </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
+
+        /* ── Docking ──────────────────────────────────────────────────────
+           The FAB rests in one of two spots: top-left or bottom-left.
+           element.rs decides which on drop (and on restore) and sets the
+           matching class on `<tonk-fab>`; the pixel placement lives HERE so
+           it's declarative and resize-robust (a class pins to the corner; a
+           fixed px offset would drift). During a drag element.rs drops the
+           class and drives inline `left`/`top` to track the pointer, so these
+           only take effect at rest. `position: fixed` is set inline by
+           element.rs. */
+        tonk-fab.fab-dock-top    { top: 16px; bottom: auto; left: 16px; right: auto; }
+        tonk-fab.fab-dock-bottom { top: auto; bottom: 16px; left: 16px; right: auto; }
 
         /* ── SEGMENTED CONTROL BAR (matches the "Control Panel" wireframe) ────
            The bar is NOT one solid pill: it is a row of independent segments
@@ -773,13 +785,20 @@ view/directory!: &profile/fab/view
           max-width: 280px;
           z-index: 100;
         }
-        .fab__menu.opens-down { top: 100%; margin-top: 6px; }
-        .fab__menu.opens-up { bottom: 100%; margin-bottom: 6px; }
+        /* Dropdowns open AWAY from the docked edge — down from the top dock, up
+           from the bottom — so they always unfold into the viewport. Direction
+           is keyed off the FAB's `fab-dock-*` class (set by element.rs); no JS
+           measuring. */
+        .fab-dock-top .fab__menu { top: 100%; margin-top: 6px; }
+        .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 6px; }
         /* The dropdown belongs to the repo name segment: hidden until the
            segment is CLICKED (element.rs toggles `is-open`), matching the
            wireframe where segments open their menus on click, not hover. */
         .fab__repo.is-open .fab__menu { display: flex; }
-        .fab__menu.opens-down::before {
+        /* Invisible hover-bridge over the 6px gap so the pointer can travel from
+           the trigger to the menu without the hover dropping. On the same edge
+           the menu opens from — above it for the bottom dock, below for the top. */
+        .fab-dock-top .fab__menu::before {
           content: "";
           position: absolute;
           left: 0;
@@ -787,7 +806,7 @@ view/directory!: &profile/fab/view
           top: -6px;
           height: 6px;
         }
-        .fab__menu.opens-up::before {
+        .fab-dock-bottom .fab__menu::before {
           content: "";
           position: absolute;
           left: 0;
@@ -936,7 +955,7 @@ view/directory!: &profile/fab/view
         }
         /* The member roster dropdown — anchored to the share zone's RIGHT edge
            (the repo switcher anchors left). Inherits `.fab__menu`'s transparent
-           card-stack look and the JS-applied opens-up/opens-down direction. */
+           card-stack look and its dock-keyed open-direction. */
         .fab__share-menu {
           left: auto;
           right: 0;
@@ -949,23 +968,20 @@ view/directory!: &profile/fab/view
       </style>
     </tonk-fab>
 
-# The FAB position — x/y in viewport pixels, stored as a transient
-# (overlay-only) claim on `state:fab`. Not durable: the position is
-# not committed to the branch tree. Updated on every pointer-up drop.
-concept!: &fab/position
-  this: tonk:fab/position
-  description: Persisted FAB position (profile-meta claim).
+# The FAB dock — which corner the bar rests in (tonk:top-left or
+# tonk:bottom-left), stored as a transient (overlay-only) claim on
+# `state:fab`. Not durable: the dock is not committed to the branch tree.
+# Updated on every pointer-up drop; element.rs applies the matching
+# `fab-dock-*` class and the stylesheet below positions it.
+concept!: &fab/dock
+  this: tonk:fab/dock
+  description: Persisted FAB dock (profile-meta claim).
   with:
-    x:
-      description: Horizontal position in px.
-      the: xyz.tonk.fab/x
+    dock:
+      description: The resting corner — tonk:top-left or tonk:bottom-left.
+      the: xyz.tonk.fab/dock
       cardinality: one
-      as: unsigned-integer
-    y:
-      description: Vertical position in px.
-      the: xyz.tonk.fab/y
-      cardinality: one
-      as: unsigned-integer
+      as: entity
 
 # ============================================================
 # JOIN — redeem an invite at /join (runs on the profile meta branch)

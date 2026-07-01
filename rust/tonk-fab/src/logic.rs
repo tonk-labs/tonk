@@ -94,10 +94,59 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     }
 }
 
-/// Returns `true` when the FAB's top-left `y` is in the top half of the viewport
-/// (height `vh`), meaning the submenu should open downward.
-pub fn submenu_opens_down(y: f64, vh: f64) -> bool {
-    y < vh / 2.0
+/// The two spots the FAB is allowed to rest in. It docks against the left edge
+/// only, so the sole choice is vertical: hug the top-left or the bottom-left
+/// corner.
+///
+/// The resting spot is expressed as a CSS class on `<tonk-fab>`
+/// (`fab-dock-top` / `fab-dock-bottom`) and the actual pixel placement + the
+/// submenu open-direction live in the view's stylesheet (profile.yaml). This
+/// enum is only the small decision Rust still owns — which of the two docks a
+/// drop lands in — plus its persisted symbol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dock {
+    TopLeft,
+    BottomLeft,
+}
+
+impl Dock {
+    /// The CSS class the view stylesheet keys position + menu direction off.
+    pub fn css_class(self) -> &'static str {
+        match self {
+            Dock::TopLeft => "fab-dock-top",
+            Dock::BottomLeft => "fab-dock-bottom",
+        }
+    }
+
+    /// The entity symbol persisted for this dock (the `tonk:fab/dock` value).
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Dock::TopLeft => "tonk:top-left",
+            Dock::BottomLeft => "tonk:bottom-left",
+        }
+    }
+
+    /// Parse a persisted dock symbol back to a `Dock`. Unknown / absent → `None`
+    /// (the caller falls back to the default dock).
+    pub fn from_symbol(s: &str) -> Option<Dock> {
+        match s {
+            "tonk:top-left" => Some(Dock::TopLeft),
+            "tonk:bottom-left" => Some(Dock::BottomLeft),
+            _ => None,
+        }
+    }
+}
+
+/// Pick the dock nearest a drop. Both docks sit on the left edge, so only the
+/// vertical position decides: a FAB whose center `center_y` is in the top half
+/// of a viewport of height `vh` docks top-left, otherwise bottom-left. The
+/// exact midline falls to the bottom dock.
+pub fn nearest_dock(center_y: f64, vh: f64) -> Dock {
+    if center_y < vh / 2.0 {
+        Dock::TopLeft
+    } else {
+        Dock::BottomLeft
+    }
 }
 
 /// The telescope animation duration, in milliseconds — each tile's
@@ -134,29 +183,16 @@ pub fn telescope_settle_ms(count: usize) -> u64 {
     last + TELESCOPE_MS + 160
 }
 
-/// Clamp the drop position so the circle stays fully on-screen.
-///
-/// `x`, `y` are the desired top-left of the circle (viewport coords).
-/// `vw`, `vh` are the viewport width/height.
-/// `w`, `h` are the circle's width/height.
-/// Returns the clamped `(x, y)`.
-pub fn clamp_position(x: f64, y: f64, vw: f64, vh: f64, w: f64, h: f64) -> (f64, f64) {
-    (
-        x.clamp(0.0, (vw - w).max(0.0)),
-        y.clamp(0.0, (vh - h).max(0.0)),
-    )
-}
-
 /// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
 ///
-/// Asserts the `tonk:fab/position` concept on `state:fab` with the given
-/// x/y pixel values. The JSON shape matches the `TransactRequest` serde
-/// derive in `tonk-core/src/claim.rs`:
+/// Asserts the `tonk:fab/dock` concept on `state:fab` with the given dock as an
+/// entity symbol. The JSON shape matches the `TransactRequest` serde derive in
+/// `tonk-core/src/claim.rs`:
 ///
 /// - `Claim` → `#[serde(tag="op", content="application")]` → `"op":"assert"`, `"application":{...}`
 /// - `ConceptDescriptor` → `#[serde(tag="kind", content="concept")]` → `"kind":"transient"`, `"concept":{...}`
 /// - `PredicateApplication` → `{ predicate, parameters }`
-pub fn position_claim_json(x: u32, y: u32) -> Value {
+pub fn dock_claim_json(dock: Dock) -> Value {
     json!({
         "claims": [{
             "op": "assert",
@@ -164,25 +200,19 @@ pub fn position_claim_json(x: u32, y: u32) -> Value {
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "Persisted FAB position (profile-meta claim).",
+                        "description": "Persisted FAB dock (profile-meta claim).",
                         "with": {
-                            "x": {
-                                "the": "xyz.tonk.fab/x",
+                            "dock": {
+                                "the": "xyz.tonk.fab/dock",
                                 "cardinality": "one",
-                                "as": "UnsignedInteger"
-                            },
-                            "y": {
-                                "the": "xyz.tonk.fab/y",
-                                "cardinality": "one",
-                                "as": "UnsignedInteger"
+                                "as": "entity"
                             }
                         }
                     }
                 },
                 "parameters": {
                     "this": "state:fab",
-                    "x": x,
-                    "y": y
+                    "dock": dock.symbol()
                 }
             }
         }]
@@ -190,12 +220,41 @@ pub fn position_claim_json(x: u32, y: u32) -> Value {
 }
 
 #[cfg(test)]
-mod submenu {
+mod dock {
     use super::*;
+
     #[test]
-    fn opens_down_in_top_half() {
-        assert!(submenu_opens_down(10.0, 800.0));
-        assert!(!submenu_opens_down(700.0, 800.0));
+    fn top_half_docks_top_left() {
+        assert_eq!(nearest_dock(10.0, 800.0), Dock::TopLeft);
+    }
+
+    #[test]
+    fn bottom_half_docks_bottom_left() {
+        assert_eq!(nearest_dock(700.0, 800.0), Dock::BottomLeft);
+    }
+
+    #[test]
+    fn the_midline_falls_to_the_bottom_dock() {
+        assert_eq!(nearest_dock(400.0, 800.0), Dock::BottomLeft);
+    }
+
+    #[test]
+    fn each_dock_has_its_css_class() {
+        assert_eq!(Dock::TopLeft.css_class(), "fab-dock-top");
+        assert_eq!(Dock::BottomLeft.css_class(), "fab-dock-bottom");
+    }
+
+    #[test]
+    fn a_dock_round_trips_through_its_symbol() {
+        for dock in [Dock::TopLeft, Dock::BottomLeft] {
+            assert_eq!(Dock::from_symbol(dock.symbol()), Some(dock));
+        }
+    }
+
+    #[test]
+    fn an_unknown_symbol_has_no_dock() {
+        assert_eq!(Dock::from_symbol("tonk:top-right"), None);
+        assert_eq!(Dock::from_symbol(""), None);
     }
 }
 
@@ -361,27 +420,17 @@ mod persist {
     use super::*;
 
     #[test]
-    fn clamp_keeps_circle_on_screen() {
-        assert_eq!(
-            clamp_position(-30.0, 5.0, 1000.0, 800.0, 64.0, 64.0),
-            (0.0, 5.0)
-        );
-        assert_eq!(
-            clamp_position(2000.0, 5.0, 1000.0, 800.0, 64.0, 64.0),
-            (936.0, 5.0)
-        );
-    }
-
-    #[test]
-    fn claim_json_targets_fab_position() {
-        let v = position_claim_json(120, 240);
+    fn claim_json_targets_the_fab_dock() {
+        let v = dock_claim_json(Dock::BottomLeft);
         assert_eq!(v["claims"][0]["op"], "assert");
         let app = &v["claims"][0]["application"];
-        assert_eq!(app["parameters"]["x"], 120);
-        assert_eq!(app["parameters"]["y"], 240);
+        assert_eq!(app["parameters"]["dock"], "tonk:bottom-left");
         // verify predicate shape matches claim.rs serde derive
         assert_eq!(app["predicate"]["kind"], "transient");
-        assert!(app["predicate"]["concept"]["with"].is_object());
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["dock"]["the"],
+            "xyz.tonk.fab/dock"
+        );
         assert_eq!(app["parameters"]["this"], "state:fab");
     }
 }
