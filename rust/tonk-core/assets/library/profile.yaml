@@ -326,20 +326,25 @@ view/directory!: &profile/fab/view
   display: |
     <tonk-fab>
       <div class="fab">
-        <!-- Live sync ring for the active space: the same host-chrome
-             `<ui-sync-status>` element the Hub cards use, scoped to the active
-             space's branch (`{dom.host/data-space}`, the space DID the shell
-             embeds — same context the repo-name display below uses). It
-             subscribes to the space's `state:here` sync status and updates as
-             the background drain reconciles, replacing the old static
-             `data-sync="offline"` circle that never changed. `.fab__circle`
-             sizes the `1em` disc. -->
-        <span class="fab__circle"><tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
-        <span class="fab__identity">
-          <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
-        </span>
-        <!-- The active space's repo name, read from — and renamed on — the
-             space's OWN repository (the cross-device source of truth). A nested
+        <!-- LEFT CAP — the grab handle. A round-left segment (36×36) holding
+             the live sync ring: the same host-chrome `<ui-sync-status>` element
+             the Hub cards use, scoped to the active space's branch
+             (`{dom.host/data-space}`, the space DID the shell embeds — same
+             context the repo-name display below uses). It subscribes to the
+             space's `state:here` sync status and updates as the background drain
+             reconciles. When collapsed the whole bar shrinks to just this cap
+             (a floating disc); dragging grabs it. `.fab__circle` sizes the disc. -->
+        <span class="fab__seg fab__cap-l fab__circle"><tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
+        <!-- Divider between the grab cap and the identity segment: a thin dark
+             bar, revealed (with 2px gaps) only when the bar is expanded. -->
+        <span class="fab__thick" aria-hidden="true"></span>
+        <!-- IDENTITY + SPACE — the one label segment, reading
+             "`<name>` / `<space>`" like the wireframe's "ACME / myspace". The
+             profile name and the space repo name sit side by side, separated by
+             a quiet slash; `.fab__repo` owns the space switcher (hovering the
+             segment opens the dropdown).
+             The space repo name is read from — and renamed on — the space's OWN
+             repository (the cross-device source of truth). A nested
              `<tonk-repository name={DID}>` opens that space's routing context;
              omitting `view=` resolves the repository's DEFAULT entity view,
              `tonk:repository/name-view` (core.yaml), an inline `<tonk-editable
@@ -350,9 +355,10 @@ view/directory!: &profile/fab/view
              `{dom.host/data-space}` is the active space's subject DID, embedded by
              the shell on the portal `<tonk-display>` and readable from chrome (a
              zero-instance directory view feeds chrome a host-only conclusion; see
-             tonk-display). The repo name owns the `.fab__menu` switcher: hovering
-             it opens the dropdown. -->
-        <span class="fab__repo">
+             tonk-display). -->
+        <span class="fab__seg fab__label fab__repo">
+          <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
+          <span class="fab__slash" aria-hidden="true">/</span>
           <span class="fab__space">
             <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
           </span>
@@ -366,6 +372,8 @@ view/directory!: &profile/fab/view
             </button>
           </nav>
         </span>
+        <!-- Divider between the label and the share segment. -->
+        <span class="fab__thick" aria-hidden="true"></span>
         <!-- Share / invite. Like the repo switcher, this is a hover zone: the
              bar shows "share" until an invite is minted, hovering reveals the
              member roster, and once minted the bar shows the invite link with a
@@ -380,7 +388,7 @@ view/directory!: &profile/fab/view
              worker's InviteHandler mints the membership keypair + delegation
              against this nested space branch (its origin repo). `<tonk-origin>`
              supplies `{origin}/join` as `data-base` for the copyable URL. -->
-        <span class="fab__share">
+        <span class="fab__seg fab__cap-r fab__share">
           <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
             <tonk-origin>
               <!-- The minted invite link. Shown once the mint lands; before
@@ -429,66 +437,96 @@ view/directory!: &profile/fab/view
       </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
+
+        /* ── SEGMENTED CONTROL BAR (matches the "Control Panel" wireframe) ────
+           The bar is NOT one solid pill: it is a row of independent segments
+           (`.fab__seg`) separated by 2px gaps, so the page shows between them.
+           `.fab` itself is transparent and only carries the drop-shadow; each
+           segment paints its own `--fab-pill` surface. End caps
+           (`.fab__cap-l` / `.fab__cap-r`) round the outer corners; the middle
+           segments are square. Sized to the wireframe: 36px tall, 2px gaps. */
         .fab {
-          /* inline-flex so `.fab` shrinks to its content width — the floating
-             `<tonk-fab>` host is sized by its content, not by a container.
-             Sized to the wireframe control bar: a 36px-tall fully-rounded pill,
-             asymmetric padding (tighter on the left where the sync disc sits). */
           display: inline-flex;
-          align-items: center;
-          gap: 8px;
+          align-items: stretch;
+          gap: 2px;
           block-size: 36px;
-          padding: 0 18px 0 10px;
-          /* INVERTED control bar (wireframe): dark bar on a light page, light
-             bar on a dark page — the bar contrasts the page rather than blending
-             into a same-tone surface. `--wa-color-text-normal` is the theme ink
-             (dark-in-light / light-in-dark), so it's the inverted BACKGROUND;
-             `--wa-color-surface-default` (its inverse) is the bar INK, exposed
-             as `--fab-ink` for the on-bar children (name, repo, share, sync
-             disc) to read against it. Popout children (the dropdown menu, share
-             panel) keep their own surface + theme ink — they sit off the bar. */
-          --fab-ink: var(--wa-color-surface-default, #fff);
-          background: var(--wa-color-text-normal, #1a1a1a);
-          color: var(--fab-ink);
-          border: 1px solid var(--wa-color-text-normal, #1a1a1a);
-          border-radius: 36px;
+          /* INVERTED against the page (wireframe): a bright pill on a dark page,
+             a dark pill on a light page — the segments contrast the page rather
+             than blending into it. `--wa-color-text-normal` is the theme ink
+             (dark-in-light / light-in-dark), so it IS the inverted surface: use
+             it as the pill fill, softened a touch toward white for the
+             wireframe's warm-cream feel. Its inverse `--wa-color-surface-default`
+             is then the readable INK on the pill (`--fab-ink`). Popout children
+             (dropdown, roster) keep their own surface + theme ink — off-bar. */
+          --fab-pill: color-mix(in oklab, var(--wa-color-text-normal, #eee) 90%, #ffffff);
+          --fab-ink: var(--wa-color-surface-default, #1a1a1a);
+          --fab-thick: color-mix(in oklab, var(--fab-pill) 55%, var(--fab-ink));
           font-family: var(--wa-font-family-body, sans-serif);
-          font-size: 13px;
+          font-size: 16px;
           white-space: nowrap;
           position: relative;
           cursor: grab;
+          filter: drop-shadow(0 5px 13px rgba(20, 22, 8, 0.16));
         }
-        /* The sync disc reads in the bar ink so it contrasts the inverted bar.
-           The text children (name / repo / share) set `--fab-ink` on their own
-           `color:` rules below. */
-        .fab .sync {
-          --sync-ink: var(--fab-ink);
+        /* A segment: its own cream surface + ink, an inset highlight/shadow that
+           reads like the wireframe's pressed-plastic pill. Middle segments are
+           square; the caps below round their outer edge. */
+        .fab__seg {
+          display: inline-flex;
+          align-items: center;
+          gap: 9px;
+          padding: 0 22px;
+          background: var(--fab-pill);
+          color: var(--fab-ink);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
+          position: relative;
         }
-        .fab.expanded {
-          padding: 6px 12px;
-        }
-        /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
-           (set inline by element.rs) inside the full-viewport iframe. Suppress
-           text selection and show the grabbing cursor so the drag reads cleanly. */
-        .fab.dragging {
-          cursor: grabbing;
-          user-select: none;
-        }
-        /* Sizing wrapper for the live `<ui-sync-status>` disc: the disc is
-           `1em`, so `font-size` sets its diameter. Ink comes from the bar
-           (`--fab-ink` via `.fab .sync`), so the disc contrasts the inverted
-           bar; the state shape (solid / pulsing / hollow / half) lives in the
-           shared `.sync` stylesheet rules, so the FAB carries no per-state CSS. */
-        .fab__circle {
+        .fab__cap-l { border-radius: 36px 0 0 36px; }
+        .fab__cap-r { border-radius: 0 36px 36px 0; }
+        /* The grab-handle cap: a fixed 36px square (round-left) holding just the
+           sync disc, centred. It is the drag handle; collapsing shrinks the whole
+           bar to this cap alone (a floating disc). */
+        .fab__cap-l {
           flex: none;
+          inline-size: 36px;
+          padding: 0;
+          justify-content: center;
+          cursor: grab;
+        }
+        /* The sync disc reads in the segment ink so it contrasts the cream pill.
+           The state shape (solid / pulsing / hollow / half) lives in the shared
+           `.sync` stylesheet rules, so the FAB carries no per-state colour. */
+        .fab .sync { --sync-ink: var(--fab-ink); }
+        /* Sizing wrapper for the live `<ui-sync-status>` disc: the disc is `1em`,
+           so `font-size` sets its diameter (14px, matching the wireframe). */
+        .fab__circle {
           display: inline-grid;
           place-items: center;
           font-size: 14px;
         }
-        .fab__identity {
-          display: flex;
-          align-items: center;
-          gap: 6px;
+        /* A thin dark divider bar between segments (the wireframe's `.cp-thick`).
+           Fixed width, sits in the 2px flex gaps so the page shows on either side. */
+        .fab__thick {
+          flex: none;
+          inline-size: 15px;
+          align-self: stretch;
+          background: var(--fab-thick);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
+          cursor: pointer;
+        }
+        .fab__thick:hover { background: var(--fab-ink); }
+        /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
+           (set inline by element.rs) inside the full-viewport iframe. Suppress
+           text selection and show the grabbing cursor so the drag reads cleanly. */
+        .fab.dragging { cursor: grabbing; user-select: none; }
+        .fab.dragging .fab__cap-l { cursor: grabbing; }
+        .fab.dragging { filter: drop-shadow(0 14px 26px rgba(20,22,8,.3)); }
+        /* The label segment reads "`name` / `space`". The slash is a quiet rule
+           between the two, matching the wireframe's "ACME / myspace". */
+        .fab__label { gap: 8px; }
+        .fab__slash {
+          color: color-mix(in oklab, var(--fab-ink) 40%, transparent);
+          font-weight: 400;
         }
         .fab__name {
           font-weight: 500;
@@ -521,35 +559,26 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
-        /* Editing pops a normal-scheme field out of the inverted bar: the
-           background becomes a normal surface and the text flips to the normal
-           ink, so it stays readable (inheriting the bar's `--fab-ink` here would
-           be light-on-light in dark mode / dark-on-dark in light mode). */
+        /* Editing shows a subtle field carved into the cream pill: a slightly
+           darker tint of the pill and a hairline inset, keeping the `--fab-ink`
+           text readable (the pill is already the near-inverse surface, so no
+           theme-surface flip is needed). */
         .fab__name-input:hover {
-          background: var(--wa-color-surface-hover, #f5f5f5);
-          color: var(--wa-color-text-normal, #111);
+          background: color-mix(in oklab, var(--fab-ink) 8%, transparent);
         }
         .fab__name-input:focus {
-          background: var(--wa-color-surface-default, #fff);
-          color: var(--wa-color-text-normal, #111);
-          box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
+          background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
           overflow: visible;
           text-overflow: clip;
         }
-        /* The repo name + its switcher dropdown. Positioned so the absolutely
-           positioned `.fab__menu` anchors under the name (not the bar's left
-           edge), and so hovering the menu keeps `.fab__repo:hover` true. */
-        .fab__repo {
-          position: relative;
-          display: inline-flex;
-          align-items: center;
-        }
+        /* The label segment owns the space switcher dropdown. It is already a
+           positioned flex `.fab__seg`, so the absolutely positioned `.fab__menu`
+           anchors under the segment and hovering the menu keeps `:hover` true. */
         .fab__space {
-          /* Quiet = the bar ink dimmed, so it reads as secondary on the
-             inverted bar (a plain theme-quiet token would be dark-on-dark). */
-          color: color-mix(in oklab, var(--fab-ink) 65%, transparent);
-          font-family: var(--wa-font-family-code, monospace);
-          font-size: 11px;
+          /* The space name reads as the second half of the "name / space" label,
+             in the same face/size as the profile name but slightly quieter. */
+          color: color-mix(in oklab, var(--fab-ink) 85%, transparent);
           max-width: 160px;
           overflow: hidden;
           white-space: nowrap;
@@ -587,24 +616,25 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
-        /* Same as the profile name: editing pops a normal-scheme field out of
-           the inverted bar, so the text flips to normal ink to stay readable. */
+        /* Same as the profile name: a subtle field carved into the cream pill,
+           keeping the quiet space ink readable. */
         .fab__space tonk-editable:hover {
-          background: var(--wa-color-surface-hover, #f5f5f5);
-          color: var(--wa-color-text-normal, #111);
+          background: color-mix(in oklab, var(--fab-ink) 8%, transparent);
         }
         .fab__space tonk-editable:focus {
-          background: var(--wa-color-surface-default, #fff);
-          color: var(--wa-color-text-normal, #111);
-          box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
+          background: color-mix(in oklab, var(--fab-ink) 6%, transparent);
+          box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fab-ink) 25%, transparent);
           overflow: visible;
           text-overflow: clip;
         }
-        /* Collapsed (default): only the sync-status ring shows; hovering adds
-           the `expanded` class (element.rs `attach_hover`) to reveal the bar. */
-        .fab:not(.expanded) .fab__identity,
-        .fab:not(.expanded) .fab__repo,
+        /* Collapsed (default): only the grab-handle cap (the sync ring) shows;
+           hovering adds the `expanded` class (element.rs `attach_hover`) to
+           reveal the rest of the bar. Hide the label, dividers and share; round
+           the cap into a full disc so it reads as a floating circle. */
+        .fab:not(.expanded) .fab__label,
+        .fab:not(.expanded) .fab__thick,
         .fab:not(.expanded) .fab__share { display: none; }
+        .fab:not(.expanded) .fab__cap-l { border-radius: 50%; }
         /* The menu is a transparent stack: each row is its own floating card,
            so the page shows through the gaps between rows (like the FAB pill
            itself). No panel background/border/shadow here — those live on the
@@ -681,14 +711,8 @@ view/directory!: &profile/fab/view
           line-height: 1;
         }
         /* ── Share / invite ─────────────────────────────────────────────
-           Pushed to the bar's right edge; like `.fab__repo` it anchors its
-           own dropdown, so `position: relative`. */
-        .fab__share {
-          position: relative;
-          margin-left: auto;
-          display: inline-flex;
-          align-items: center;
-        }
+           The bar's right-cap segment: rounds its right edge, anchors its own
+           roster dropdown (already a positioned `.fab__seg`). */
         /* The share content renders through nested routing elements
            (`<tonk-host>/<tonk-repository>/<tonk-branch>`); keep them inline so
            the label/link reads as plain text in the bar. The roster `<nav>` is
