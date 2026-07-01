@@ -395,7 +395,7 @@ view/directory!: &profile/fab/view
              worker's InviteHandler mints the membership keypair + delegation
              against this nested space branch (its origin repo). `<tonk-origin>`
              supplies `{origin}/join` as `data-base` for the copyable URL. -->
-        <span class="fab__seg fab__cap-r fab__share" data-section="share">
+        <span class="fab__seg fab__share" data-section="share">
           <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
             <tonk-origin>
               <!-- The minted invite link. Shown once the mint lands; before
@@ -427,6 +427,11 @@ view/directory!: &profile/fab/view
             </nav>
           </tonk-branch></tonk-repository></tonk-host>
         </span>
+        <!-- RIGHT CAP — a plain rounded end cap that always closes the bar
+             (wireframe §01: the bar's far edge rounds off). It carries no
+             control (the wireframe hangs its colour-mode toggle here; we omit
+             that), so the bar reads as a finished pill whatever is disclosed. -->
+        <span class="fab__seg fab__cap-r fab__end" aria-hidden="true"></span>
       </div>
       <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
            `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
@@ -527,6 +532,15 @@ view/directory!: &profile/fab/view
           padding: 0;
           justify-content: center;
           cursor: grab;
+        }
+        /* The far end cap: a fixed 18px round-right nub that finishes the bar
+           (the wireframe's `cp-cap-r` without its toggle glyph). Half the
+           handle's width — it's a rounded terminator, not a control, so it just
+           gives the bar a finished edge past the last divider. */
+        .fab__end {
+          flex: none;
+          inline-size: 18px;
+          padding: 0;
         }
         /* The sync disc reads in the segment ink so it contrasts the cream pill.
            The state shape (solid / pulsing / hollow / half) lives in the shared
