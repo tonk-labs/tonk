@@ -175,7 +175,15 @@ view/directory!:
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
-        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-sync-badge></tonk-sync-badge></tonk-branch></tonk-repository></tonk-host></span>
+        <!-- Sync status: the host-chrome `<ui-sync-status>` element (defined in
+             Rust, space-agnostic — a space can't redefine or break it), scoped
+             to this card's space branch via the `<tonk-repository>` ancestor. It
+             SUBSCRIBES to the `tonk:sync` `state:here` status the worker stamps,
+             so it updates live as the background sync drain reconciles — unlike
+             the old `<tonk-sync-badge>`, which fetched once on mount (and on
+             commit/toggle, neither of which fires on the Hub) and froze on a
+             stale reading. Read-only: pause lives in the space topbar. -->
+        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
       </a>
     </div>
 
@@ -318,7 +326,15 @@ view/directory!: &profile/fab/view
   display: |
     <tonk-fab>
       <div class="fab">
-        <span class="fab__circle" data-sync="offline"></span>
+        <!-- Live sync ring for the active space: the same host-chrome
+             `<ui-sync-status>` element the Hub cards use, scoped to the active
+             space's branch (`{dom.host/data-space}`, the space DID the shell
+             embeds — same context the repo-name display below uses). It
+             subscribes to the space's `state:here` sync status and updates as
+             the background drain reconciles, replacing the old static
+             `data-sync="offline"` circle that never changed. `.fab__circle`
+             sizes the `1em` disc. -->
+        <span class="fab__circle"><tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
         <span class="fab__identity">
           <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
         </span>
@@ -415,19 +431,38 @@ view/directory!: &profile/fab/view
         :host, tonk-fab { display: block; }
         .fab {
           /* inline-flex so `.fab` shrinks to its content width — the floating
-             `<tonk-fab>` host is sized by its content, not by a container. */
+             `<tonk-fab>` host is sized by its content, not by a container.
+             Sized to the wireframe control bar: a 36px-tall fully-rounded pill,
+             asymmetric padding (tighter on the left where the sync disc sits). */
           display: inline-flex;
           align-items: center;
           gap: 8px;
-          padding: 6px;
-          background: var(--wa-color-surface-raised, #fff);
-          border: 1px solid var(--wa-color-surface-border, #ddd);
-          border-radius: 24px;
+          block-size: 36px;
+          padding: 0 18px 0 10px;
+          /* INVERTED control bar (wireframe): dark bar on a light page, light
+             bar on a dark page — the bar contrasts the page rather than blending
+             into a same-tone surface. `--wa-color-text-normal` is the theme ink
+             (dark-in-light / light-in-dark), so it's the inverted BACKGROUND;
+             `--wa-color-surface-default` (its inverse) is the bar INK, exposed
+             as `--fab-ink` for the on-bar children (name, repo, share, sync
+             disc) to read against it. Popout children (the dropdown menu, share
+             panel) keep their own surface + theme ink — they sit off the bar. */
+          --fab-ink: var(--wa-color-surface-default, #fff);
+          background: var(--wa-color-text-normal, #1a1a1a);
+          color: var(--fab-ink);
+          border: 1px solid var(--wa-color-text-normal, #1a1a1a);
+          border-radius: 36px;
           font-family: var(--wa-font-family-body, sans-serif);
           font-size: 13px;
           white-space: nowrap;
           position: relative;
           cursor: grab;
+        }
+        /* The sync disc reads in the bar ink so it contrasts the inverted bar.
+           The text children (name / repo / share) set `--fab-ink` on their own
+           `color:` rules below. */
+        .fab .sync {
+          --sync-ink: var(--fab-ink);
         }
         .fab.expanded {
           padding: 6px 12px;
@@ -439,21 +474,16 @@ view/directory!: &profile/fab/view
           cursor: grabbing;
           user-select: none;
         }
+        /* Sizing wrapper for the live `<ui-sync-status>` disc: the disc is
+           `1em`, so `font-size` sets its diameter. Ink comes from the bar
+           (`--fab-ink` via `.fab .sync`), so the disc contrasts the inverted
+           bar; the state shape (solid / pulsing / hollow / half) lives in the
+           shared `.sync` stylesheet rules, so the FAB carries no per-state CSS. */
         .fab__circle {
           flex: none;
-          width: 24px;
-          height: 24px;
-          border-radius: 50%;
-          color: #cddc39;
-          background: currentColor;
-        }
-        .fab__circle[data-sync="synced"]  { background: currentColor; border: 0; }
-        .fab__circle[data-sync="offline"] { background: transparent; border: 2px solid currentColor; box-sizing: border-box; }
-        .fab__circle[data-sync="syncing"] { animation: fab-sync 1s steps(2, jump-none) infinite; }
-        @keyframes fab-sync {
-          0%   { background: currentColor; }
-          50%  { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
-          100% { background: currentColor; }
+          display: inline-grid;
+          place-items: center;
+          font-size: 14px;
         }
         .fab__identity {
           display: flex;
@@ -462,7 +492,7 @@ view/directory!: &profile/fab/view
         }
         .fab__name {
           font-weight: 500;
-          color: var(--wa-color-text-normal, #111);
+          color: var(--fab-ink);
           max-width: 120px;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -491,11 +521,17 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
+        /* Editing pops a normal-scheme field out of the inverted bar: the
+           background becomes a normal surface and the text flips to the normal
+           ink, so it stays readable (inheriting the bar's `--fab-ink` here would
+           be light-on-light in dark mode / dark-on-dark in light mode). */
         .fab__name-input:hover {
           background: var(--wa-color-surface-hover, #f5f5f5);
+          color: var(--wa-color-text-normal, #111);
         }
         .fab__name-input:focus {
           background: var(--wa-color-surface-default, #fff);
+          color: var(--wa-color-text-normal, #111);
           box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
           overflow: visible;
           text-overflow: clip;
@@ -509,7 +545,9 @@ view/directory!: &profile/fab/view
           align-items: center;
         }
         .fab__space {
-          color: var(--wa-color-text-quiet, #666);
+          /* Quiet = the bar ink dimmed, so it reads as secondary on the
+             inverted bar (a plain theme-quiet token would be dark-on-dark). */
+          color: color-mix(in oklab, var(--fab-ink) 65%, transparent);
           font-family: var(--wa-font-family-code, monospace);
           font-size: 11px;
           max-width: 160px;
@@ -549,11 +587,15 @@ view/directory!: &profile/fab/view
           cursor: text;
           outline: none;
         }
+        /* Same as the profile name: editing pops a normal-scheme field out of
+           the inverted bar, so the text flips to normal ink to stay readable. */
         .fab__space tonk-editable:hover {
           background: var(--wa-color-surface-hover, #f5f5f5);
+          color: var(--wa-color-text-normal, #111);
         }
         .fab__space tonk-editable:focus {
           background: var(--wa-color-surface-default, #fff);
+          color: var(--wa-color-text-normal, #111);
           box-shadow: inset 0 0 0 1px var(--wa-color-surface-border, #ddd);
           overflow: visible;
           text-overflow: clip;
@@ -678,11 +720,11 @@ view/directory!: &profile/fab/view
           font: inherit;
           border: 0;
           background: transparent;
-          color: var(--wa-color-text-quiet, #666);
+          color: color-mix(in oklab, var(--fab-ink) 65%, transparent);
           cursor: pointer;
           padding: 0 2px;
         }
-        .fab__share-trigger:hover { color: var(--wa-color-text-normal, #111); }
+        .fab__share-trigger:hover { color: var(--fab-ink); }
         /* The minted invite: a friendly `{name}?access=…` label clipped to a
            width, with the copy button at its end. The label is cosmetic; the
            copy button (in the fab-invite view) carries the real absolute URL. */
