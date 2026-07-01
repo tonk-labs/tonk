@@ -764,40 +764,69 @@ tonk-site {
 .hub-card[data-kind="tonk:repository"]:not([data-status="tonk:blank"]) .hub-card__sync {
     display: flex;
     align-items: center;
-}
-.hub-card__sync .sync-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wa-space-xs);
-    font-family: var(--wa-font-family-code);
-    font-size: var(--wa-font-size-s);
+    /* The disc is `1em`, so `font-size` sizes it: 24px on the Hub cards (the
+       wireframe's `.home-sync`), larger than the FAB's 14px ring. */
+    font-size: 24px;
     color: var(--wa-color-text-quiet);
-    white-space: nowrap;
 }
-.hub-card__sync .sync-badge::before {
-    content: "";
-    inline-size: 7px;
-    block-size: 7px;
+/* The sync status disc — the wireframe indicator (Tonk Control Panel MVP),
+   rendered by `<ui-sync-status>` and reused by the Hub cards AND the FAB ring.
+   These rules live in the app stylesheet (injected into every guest), so the
+   disc is host chrome: identical everywhere the element mounts regardless of
+   what a space asserts.
+
+   MONOCHROME, like the wireframe: the disc is a single INK color that inverts
+   with color mode (`--sync-ink` = the theme's normal text ink, so dark on a
+   light surface, light on a dark surface). The five states differ by SHAPE,
+   not color — solid / pulsing / hollow ring / half — set by the state MODIFIER
+   CLASS the component writes (`sync--synced` etc.). The disc is `1em`, so a
+   caller sizes it via `font-size` on `.sync` (the FAB ring is larger than the
+   Hub card disc). */
+.sync {
+    --sync-ink: var(--wa-color-text-normal);
+    inline-size: 1em;
+    block-size: 1em;
     border-radius: 50%;
-    background: currentColor;
     flex: none;
+    display: grid;
+    place-items: center;
 }
-.hub-card__sync .sync-badge.is-synced {
-    color: var(--wa-color-success-on-quiet);
+.sync .disc {
+    inline-size: 1em;
+    block-size: 1em;
+    border-radius: 50%;
+    box-sizing: border-box;
+    /* Default (offline / local / unknown): hollow ink ring. */
+    background: transparent;
+    border: 2px solid var(--sync-ink);
 }
-.hub-card__sync .sync-badge.is-synced::before {
-    background: var(--wa-color-success-fill-loud);
+/* Synced: solid filled disc. */
+.sync--synced .disc {
+    background: var(--sync-ink);
+    border: 0;
 }
-.hub-card__sync .sync-badge.is-syncing {
-    color: var(--wa-color-warning-on-quiet);
+/* Syncing: solid disc, pulsing. */
+.sync--syncing .disc {
+    background: var(--sync-ink);
+    border: 0;
+    animation: sync-disc-pulse 1.05s ease infinite;
 }
-.hub-card__sync .sync-badge.is-syncing::before {
-    background: var(--wa-color-warning-fill-loud);
+/* Offline and local both use the default hollow ring — distinct component
+   states, styled the same per the design. (`.sync--offline` / `.sync--local`
+   inherit the base `.disc` rule; listed here for intent.) */
+.sync--offline .disc,
+.sync--local .disc {
+    background: transparent;
+    border: 2px solid var(--sync-ink);
 }
-/* Paused and offline are both inert, neutral states. */
-.hub-card__sync .sync-badge.is-paused::before,
-.hub-card__sync .sync-badge.is-offline::before {
-    background: var(--wa-color-neutral-fill-loud);
+/* Paused: half-filled disc. */
+.sync--paused .disc {
+    background: linear-gradient(135deg, var(--sync-ink) 0 50%, transparent 50% 100%);
+    border: 1.5px solid var(--sync-ink);
+}
+@keyframes sync-disc-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }
 .hub-card[data-status="tonk:blank"] {
     pointer-events: none;
