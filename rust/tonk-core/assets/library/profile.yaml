@@ -554,7 +554,12 @@ view/directory!: &profile/fab/view
           font-size: 14px;
         }
         /* A thin dark divider bar between segments (the wireframe's `.cp-thick`).
-           Fixed width, sits in the 2px flex gaps so the page shows on either side. */
+           Sits in the 2px flex gaps so the page shows on either side. A
+           disclosure divider is WIDE (15px) while its section is hidden — a fat
+           edge inviting a click to reveal — and THINS to 7px once the section is
+           open, so the divider's width reads the state (wireframe's
+           `.cp-thick` ↔ `.cp-thick.collapse`). The width eases so the change
+           tracks the section's telescope. */
         .fab__thick {
           flex: none;
           inline-size: 15px;
@@ -562,6 +567,17 @@ view/directory!: &profile/fab/view
           background: var(--fab-thick);
           box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 5px rgba(20,22,8,.06);
           cursor: pointer;
+          transition: inline-size 0.4s ease;
+        }
+        /* Thin the disclosure divider once its section is disclosed. The
+           `fab--show-<section>` class (set by element.rs on `.fab`) marks an
+           open section; the matching `.fab__disclose[data-section]` thins. */
+        .fab--show-account .fab__disclose[data-section="account"],
+        .fab--show-share .fab__disclose[data-section="share"] {
+          inline-size: 7px;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .fab__thick { transition: none; }
         }
         .fab__thick:hover { background: var(--fab-ink); }
         /* ── Telescope (collapse / expand) ───────────────────────────────
