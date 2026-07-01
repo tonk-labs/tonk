@@ -366,7 +366,7 @@ view/directory!: &profile/fab/view
           <span class="fab__space">
             <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
           </span>
-          <nav class="fab__menu opens-down">
+          <ui-dropdown class="fab__menu opens-down" exclude={dom.host/data-space}>
             <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
             <a class="fab__menu-item fab__menu-item--action" href="/">
               <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
@@ -374,7 +374,7 @@ view/directory!: &profile/fab/view
             <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
               <span class="fab__menu-glyph" aria-hidden="true">+</span> new
             </button>
-          </nav>
+          </ui-dropdown>
         </span>
         <!-- RIGHT BORDER — the disclosure edge for the SHARE section (the only
              right-side border). Clicking it reveals/hides the share segment
