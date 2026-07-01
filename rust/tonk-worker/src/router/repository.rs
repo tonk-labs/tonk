@@ -819,7 +819,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRename
             }
             log!("command ProfileRename repo={} name={}", key, name);
 
-            if let Err(error) = run_profile_rename(&env, &key, name).await {
+            if let Err(error) = run_profile_rename(&env, name).await {
                 log!("ProfileRename for repo '{}' failed: {}", key, error);
             }
         })
@@ -835,7 +835,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRename
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_profile_rename(
     env: &crate::router::CommandEnv,
-    key: &str,
     name: &str,
 ) -> Result<(), TonkWorkerError> {
     let tonk = env.state().read().await;
@@ -863,9 +862,11 @@ async fn run_profile_rename(
     //    unreachable space must not abort the rename.
     crate::router::profile_name::restamp_member_name_all_spaces(&tonk, name).await;
 
-    // 3. Re-stamp the self-identity overlay so the topbar chip reflects the
-    //    new name instantly without waiting for the next sync cycle.
-    crate::router::sync::publish_self_identity(&tonk, key, CONTENT_BRANCH).await;
+    // 3. Re-stamp the self-identity overlay on every space so the topbar chip
+    //    reflects the new name instantly without waiting for the next sync
+    //    cycle. The rename fires on the PROFILE branch, so there is no origin
+    //    space to target — re-stamp them all (mirrors step 2).
+    crate::router::profile_name::restamp_self_identity_all_spaces(&tonk).await;
 
     // 4. Prompt an immediate push so peers see the new name without waiting
     //    for the 20s heartbeat. Fire-and-forget: the held read lock is
@@ -2987,6 +2988,62 @@ mod tests {
             self_member_name(&state, &key_b).await.as_deref(),
             Some("brave-lynx"),
             "the non-focused space's roster is also restamped",
+        );
+    }
+
+    /// A rename fired from the FAB carries an EMPTY origin repo (it lands on
+    /// the profile branch, not a space). The self-identity overlay
+    /// (`state:self`) the topbar chip reads must still be re-stamped on the
+    /// space — regression for a rename that persisted the name but left the
+    /// chip stale because step 3 tried to acquire the empty-named origin repo.
+    #[dialog_common::test]
+    async fn it_stamps_the_self_identity_overlay_with_an_empty_origin() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, key) = fresh_repo("rename-empty-origin").await;
+
+        // Realistic origin: a profile-branch rename command has no repo.
+        let changes = profile_rename_transient("did:key:zRenameChip", "brave-lynx");
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: String::new(),
+                branch: "meta".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        // The topbar chip's overlay on the space now carries the new name.
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let entity: dialog_artifacts::Entity =
+            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
+        let rows: Vec<tonk_schema::ProfileIdentity> = session
+            .handle()
+            .query()
+            .with(session.overlay())
+            .select(Query::<tonk_schema::ProfileIdentity> {
+                this: Term::from(entity),
+                did: Term::var("did"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1, "one state:self overlay row on the space");
+        assert_eq!(
+            rows[0].name.0, "brave-lynx",
+            "the chip overlay reflects the new name despite the empty origin repo",
         );
     }
 

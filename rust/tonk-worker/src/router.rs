@@ -344,6 +344,7 @@ pub mod tests {
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
+            sync_queue: Default::default(),
             commands: super::command_registry(),
         }
     }
