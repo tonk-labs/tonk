@@ -779,6 +779,41 @@ view/directory!:
       <button type="submit" class="fab__share-trigger">share</button>
     </form>
 
+# A named view kind for the FAB's pause-sync form — a distinct RDF attribute
+# (`xyz.tonk.view/fab-pause`) so it doesn't collide with `tonk:repository`'s
+# `fab-share` directory view. Selected explicitly via `view=tonk:view/fab-pause`.
+concept!: &view/fab-pause
+  this: tonk:view/fab-pause
+  description: A view kind holding the FAB's pause-sync form.
+  with:
+    model:
+      description: Concept this view renders.
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template — the hidden pause-sync form.
+      the: xyz.tonk.view/fab-pause
+      cardinality: one
+      as: text
+
+# The FAB's pause-sync FORM, authored on the SPACE branch (a `tonk:repository`
+# view) for the SAME reason the share form is (above): mounted via
+# `<tonk-display model="tonk:repository" view="tonk:view/fab-pause">` inside the
+# FAB's nested `<tonk-repository name={space}>`, its `tonk:pause-sync` claim
+# dispatches from this display's host — INSIDE the repository — so
+# `<tonk-repository>` annotates the claim with the space's content branch. A
+# bare form in the FAB's own profile/meta template dispatched its claim on the
+# FAB host (outside the nested repository), so the pause landed on profile/meta
+# and did nothing. The dialog itself stays in the FAB (profile) chrome; its
+# button submits this form by id via WebAwesome's external `form=` attribute.
+# `data-pause-sync` is the marker `tonk:pause-sync` decodes against.
+view/fab-pause!:
+  this: id:tonk:repository/fab-pause
+  model: tonk:repository
+  display: |
+    <form id="fab-pause-sync-form" data-pause-sync="tonk:pause-sync" onsubmit=tonk:pause-sync></form>
+
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
 # living only in the joining profile's replica index. The banner reads
