@@ -182,7 +182,6 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
 /// route by the event target:
 ///
 /// - CIRCLE cap: `click` folds/expands the bar, `dblclick` pauses/resumes sync.
-/// - DISCLOSURE border: `click` reveals/hides its section.
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -200,10 +199,6 @@ fn attach_gestures(element: &HtmlElement) {
             if e.detail() <= 1 {
                 toggle_telescope(&el_click);
             }
-        } else if let Some(border) = t.closest(".fab__disclose").ok().flatten()
-            && let Some(section) = border.get_attribute("data-section")
-        {
-            toggle_section(&el_click, &section);
         } else if t
             .closest(".fab__menu, .fab__share-menu")
             .ok()
@@ -241,36 +236,6 @@ fn attach_gestures(element: &HtmlElement) {
         .ok();
     on_click.forget();
     on_dbl.forget();
-}
-
-/// Reveal or hide a disclosure section (`account` / `share`) by toggling the
-/// matching `fab--show-<section>` class on `.fab`, then re-run the telescope so
-/// the now-shown/hidden segments animate to their new widths. Keeps the border's
-/// `title` in step for the tooltip ("show …" ⇄ "hide …").
-fn toggle_section(element: &HtmlElement, section: &str) {
-    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
-        return;
-    };
-    let class = format!("fab--show-{section}");
-    let showing = !fab.class_list().contains(&class);
-    fab.class_list().toggle_with_force(&class, showing).ok();
-    // Update the border tooltip for the new state.
-    let title = if showing {
-        format!("hide {section}")
-    } else {
-        format!("show {section}")
-    };
-    if let Some(border) = fab
-        .query_selector(&format!(".fab__disclose[data-section=\"{section}\"]"))
-        .ok()
-        .flatten()
-    {
-        let _ = border.set_attribute("title", &title);
-    }
-    // Re-flow the telescope to the new set of shown tiles (unless collapsed).
-    if !fab.class_list().contains("fab--collapsed") {
-        set_telescope(element, &fab, false);
-    }
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -327,16 +292,28 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
         measure_tile_widths(&tiles)
     };
 
+    // Collapsing from the settled state, shown tiles rest at `max-width: none`
+    // (see `schedule_settle`), and a `none → 0` transition does not animate.
+    // Pin each tile to its current rendered width and flush layout, so the
+    // clamp-to-zero below animates from a concrete start value.
+    if collapsing {
+        for tile in &tiles {
+            let w = tile.get_bounding_client_rect().width();
+            let style = tile.unchecked_ref::<HtmlElement>().style();
+            let _ = style.set_property("max-width", &format!("{w}px"));
+        }
+        let _ = fab.unchecked_ref::<HtmlElement>().offset_width();
+    }
+
     for (i, tile) in tiles.iter().enumerate() {
         let style = tile.unchecked_ref::<HtmlElement>().style();
         let delay = telescope_delay_ms(i, count, collapsing);
         let _ = style.set_property("transition-delay", &format!("{delay}ms"));
-        // A tile stays collapsed if the whole bar is folding OR it wraps a
-        // section the disclosure ladder currently hides (account / share).
-        let hidden = collapsing || tile_section_hidden(fab, tile);
+        // A tile is hidden only while the whole bar is folding; when expanded
+        // every segment shows (no per-section disclosure gate).
+        let hidden = collapsing;
         // Mark hidden tiles so the post-settle `overflow: visible; max-width:
-        // none` unclamp SKIPS them — otherwise a hidden section would reappear
-        // (and its absolutely-positioned menu overlay the page) once settled.
+        // none` unclamp SKIPS them while collapsed.
         tile.class_list()
             .toggle_with_force("fab__tele--hidden", hidden)
             .ok();
@@ -358,26 +335,6 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
         // the expanded content can reflow (e.g. a growing invite link).
         schedule_settle(element, fab, count);
     }
-}
-
-/// Whether a telescope tile wraps a disclosure section (`.fab__account` /
-/// `.fab__share`, tagged `data-section`) that the ladder currently hides — i.e.
-/// `.fab` lacks the matching `fab--show-<section>`. Borders and the always-shown
-/// spot are never hidden this way. Such tiles stay at zero width even when the
-/// bar is expanded, until their disclosure border reveals them.
-fn tile_section_hidden(fab: &Element, tile: &Element) -> bool {
-    // Only SECTION segments gate on disclosure — borders (`.fab__disclose`) are
-    // always shown when the bar is expanded, so look for a `.fab__seg` child
-    // (not a border) carrying `data-section`.
-    let Some(section) = tile
-        .query_selector(".fab__seg[data-section]")
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute("data-section"))
-    else {
-        return false;
-    };
-    !fab.class_list().contains(&format!("fab--show-{section}"))
 }
 
 /// Collect the `.fab__tele` wrapper tiles in DOM order.
@@ -424,6 +381,20 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     let fab_for_settle = fab.clone();
     let settle_once = Closure::<dyn Fn()>::new(move || {
         fab_for_settle.class_list().add_1("fab--settled").ok();
+        // Unclamp shown tiles: drop the inline `max-width` pinned during the
+        // expand animation so each tile now sizes to its content. Inline styles
+        // beat the stylesheet's `max-width: none`, so the clamp must be lifted
+        // here in JS — otherwise content that grows AFTER the expand (a minted
+        // invite link, a longer edited name) overflows its measured box and,
+        // with the tile's `justify-content: flex-end`, spills leftward over the
+        // neighbouring segment instead of widening the bar.
+        for tile in telescope_tiles(&fab_for_settle) {
+            if tile.class_list().contains("fab__tele--hidden") {
+                continue;
+            }
+            let style = tile.unchecked_ref::<HtmlElement>().style();
+            let _ = style.set_property("max-width", "none");
+        }
     });
     let settle_fn = settle_once
         .as_ref()

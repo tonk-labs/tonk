@@ -142,59 +142,8 @@ body {
 
 body {
     font-family: var(--wa-font-body);
-    background-color: var(--wa-color-neutral-fill-quiet);
+    background-color: #f0f0f0;
     color: var(--wa-color-text-normal);
-
-    /* Graph-paper dot grid behind the whole page — two overlaid
-       layers. The base layer is a dim dot every `--dot-gap`; the
-       accent layer is a brighter dot every 4 × `--dot-gap`,
-       producing visible "major" intersections on a 4×4 sub-grid
-       (like engineering graph paper). The accent layer goes
-       *first* in the stack so it paints on top of the base.
-
-       Each `radial-gradient` paints at the *center* of its tile.
-       To make accent dots land *on* dim-grid intersections, shift
-       the bright layer's origin by `--dot-gap / 2` in each
-       direction so its 64×64 center (32,32) becomes (40,40) —
-       a multiple of 16 plus the dim layer's own 8px center
-       offset, putting it exactly atop a dim dot. */
-    --dot-gap: 16px;
-    --dot-size-dim: 0.5px;
-    --dot-size-bright: 0.5px;
-    --dot-color-dim: color-mix(
-        in oklab,
-        var(--wa-color-text-normal) 16%,
-        transparent
-    );
-    --dot-color-bright: color-mix(
-        in oklab,
-        var(--wa-color-text-normal) 25%,
-        transparent
-    );
-    background-image:
-        radial-gradient(
-            circle,
-            var(--dot-color-bright) var(--dot-size-bright),
-            transparent calc(var(--dot-size-bright) + 0.5px)
-        ),
-        radial-gradient(
-            circle,
-            var(--dot-color-dim) var(--dot-size-dim),
-            transparent calc(var(--dot-size-dim) + 0.5px)
-        );
-    background-size:
-        calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
-        var(--dot-gap) var(--dot-gap);
-    /* Both layers shifted by half their respective tile so the
-       first dot of each lands at (0,0). The dim layer's tile is
-       16×16 (center at 8) so it shifts -8px. The bright layer's
-       tile is 64×64 (center at 32) so it shifts -32px (which is
-       `--dot-gap * 2`, i.e. half of `--dot-gap * 4`). After both
-       shifts every bright dot still sits exactly on a dim dot
-       because 32px is a multiple of 16px. */
-    background-position:
-        calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
-        calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
 }
 
 /* We stay on the default WA theme but borrow two things from the

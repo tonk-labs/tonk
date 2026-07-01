@@ -745,9 +745,9 @@ view/fab-invite!:
   this: id:tonk:agent-invite/fab-invite
   model: tonk:agent-invite
   display: |
-    <wa-copy-button class="fab__invite" copy-label="Copy invite link for {name}" value="{dom.host/data-base}?access={access}{remote}#{code}">
-      <span slot="copy-icon" class="fab__invite-label"><wa-icon name="link"></wa-icon>Copy invite link</span>
-      <span slot="success-icon" class="fab__invite-label"><wa-icon name="check"></wa-icon>Copied!</span>
+    <wa-copy-button class="fab__invite" style="display: inline-flex; align-items: center; vertical-align: middle;" copy-label="Copy invite link for {name}" value="{dom.host/data-base}?access={access}{remote}#{code}">
+      <span slot="copy-icon" class="fab__invite-label"><wa-icon name="copy" style="opacity: 0.7;"></wa-icon>copy invite link</span>
+      <span slot="success-icon" class="fab__invite-label"><wa-icon name="check"></wa-icon>copied</span>
     </wa-copy-button>
 
 # The FAB share-mint trigger — a no-entity directory view over
