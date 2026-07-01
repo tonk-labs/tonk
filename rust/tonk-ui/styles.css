@@ -242,6 +242,21 @@ tonk-site {
     display: contents;
 }
 
+/* Pre-stamp placeholder for a `<tonk-site>` guest display. Between the
+   sealed iframe booting and the SW stamping the tab's `tonk:site` (route
+   match + stamp, ~1s) the site entity carries none of its required
+   attributes, so the display projects its slotted `loading` / `no-entity`
+   child (a spinner) rather than flashing the loud concept-mismatch dump.
+   `<tonk-display>` toggles the `hidden` attribute to show/hide the slot, so
+   this only centres the child while it is shown — `[hidden]`'s `display:
+   none` must still win when it is not. */
+tonk-display > .site-pending:not([hidden]) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+}
+
 /* Bare display route layout. The mount slot fills the viewport at
    minimum (`min-height: 100dvh`, viewport-relative so it needs no
    definite-height ancestor) and is a flex column — the PAGE is the
