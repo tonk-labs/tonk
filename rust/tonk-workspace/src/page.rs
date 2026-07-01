@@ -125,7 +125,13 @@ impl CustomElement for TonkPage {
 /// `searchParams` as a plain object (`Object.fromEntries`). `None` when
 /// there is no window/location to read.
 fn location_detail() -> Option<js_sys::Object> {
-    let href = window()?.location().href().ok()?;
+    // Prefer the host-forwarded location. `<tonk-page>` renders inside a sealed
+    // `<tonk-site>` guest whose own `window.location` is `about:srcdoc` — it
+    // carries none of the page's `?access`/`#seed`. The host injects its REAL
+    // location into `window.tonk.context` ({ origin, path, search, hash }); when
+    // present, rebuild the href from it. Fall back to `window.location` for the
+    // unsealed/top-page case (and tests).
+    let href = context_href().or_else(|| window()?.location().href().ok())?;
     // `Url` parses href into the standard URL fields; we copy them onto a
     // plain object so the event-read walk does only property reads.
     let url = Url::new(&href).ok()?;
@@ -159,6 +165,37 @@ fn location_detail() -> Option<js_sys::Object> {
     let _ = js_sys::Reflect::set(&detail, &JsValue::from_str("searchParams"), &search_params);
 
     Some(detail)
+}
+
+/// Rebuild the page href from the host-forwarded `window.tonk.context`.
+///
+/// A sealed guest can't read the real page URL off its `about:srcdoc`
+/// location, so the host bridge forwards `{ origin, path, search, hash }` in
+/// the `ready` handshake. Reassemble `origin + path + search + hash` into a
+/// URL the caller can parse. Returns `None` when there is no guest context
+/// (top-page/tests → caller falls back to `window.location`) or when the
+/// forwarded origin is empty (a nested guest whose parent is itself an
+/// `about:srcdoc` guest has no real location to rebuild).
+fn context_href() -> Option<String> {
+    let win = window()?;
+    let tonk = js_sys::Reflect::get(&win, &JsValue::from_str("tonk")).ok()?;
+    let context = js_sys::Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
+    if context.is_undefined() || context.is_null() {
+        return None;
+    }
+    let field = |key: &str| {
+        js_sys::Reflect::get(&context, &JsValue::from_str(key))
+            .ok()
+            .and_then(|v| v.as_string())
+    };
+    let origin = field("origin")?;
+    if origin.is_empty() {
+        return None;
+    }
+    let path = field("path").unwrap_or_default();
+    let search = field("search").unwrap_or_default();
+    let hash = field("hash").unwrap_or_default();
+    Some(format!("{origin}{path}{search}{hash}"))
 }
 
 /// Set a string property on an object.
@@ -277,5 +314,50 @@ mod tests {
             .ok()
             .and_then(|v| v.as_string())
             .unwrap_or_default()
+    }
+
+    /// Inside a sealed guest, `window.location` is `about:srcdoc`, so the join
+    /// trigger must read the host-forwarded location from `window.tonk.context`
+    /// instead — otherwise the invite's `?access`/`#seed` never reach the
+    /// command. With that context set, `location_detail` reconstructs the real
+    /// `search`, `hash`, and `searchParams`.
+    #[dialog_common::test]
+    async fn it_reads_the_forwarded_location_from_guest_context() {
+        let win = window().unwrap();
+
+        // Simulate the host `ready` handshake: `window.tonk.context` carries the
+        // parent page's real location (the guest's own is `about:srcdoc`).
+        let tonk = js_sys::Object::new();
+        let context = js_sys::Object::new();
+        set(&context, "origin", "https://hub.example");
+        set(&context, "path", "/join");
+        set(&context, "search", "?access=abc&remote=xyz");
+        set(&context, "hash", "#seed123");
+        js_sys::Reflect::set(&tonk, &JsValue::from_str("context"), &context).unwrap();
+        js_sys::Reflect::set(&win, &JsValue::from_str("tonk"), &tonk).unwrap();
+
+        let detail = location_detail().expect("detail rebuilt from guest context");
+        assert_eq!(
+            get(&detail, "search"),
+            "?access=abc&remote=xyz",
+            "search comes from the forwarded context, not about:srcdoc",
+        );
+        assert_eq!(
+            get(&detail, "hash"),
+            "#seed123",
+            "the #seed fragment is recovered from the forwarded context",
+        );
+        let params = js_sys::Reflect::get(&detail, &JsValue::from_str("searchParams"))
+            .ok()
+            .and_then(|v| v.dyn_into::<js_sys::Object>().ok())
+            .expect("searchParams is a plain object");
+        assert_eq!(
+            get(&params, "access"),
+            "abc",
+            "searchParams is reconstructed from the forwarded search",
+        );
+
+        // Restore so other tests fall back to `window.location` as usual.
+        js_sys::Reflect::set(&win, &JsValue::from_str("tonk"), &JsValue::UNDEFINED).unwrap();
     }
 }

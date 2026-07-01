@@ -1684,13 +1684,20 @@ fn build_context(host: &Element) -> Object {
         .and_then(|l| l.origin().ok())
         .unwrap_or_default();
     // The guest's own `window.location` is `about:srcdoc`; its REAL location is
-    // the parent's. Pass the parent's path + hash so the guest stamps them on
-    // its requests (the SW reads them to route/contain). `hash` especially:
-    // browsers strip the fragment from network requests, so the SW never sees
-    // it otherwise.
+    // the parent's. Pass the parent's path + search + hash so the guest stamps
+    // them on its requests (the SW reads them to route/contain) and so a
+    // location-reading guest control (e.g. `<tonk-page>`, which couriers an
+    // invite's `?access` + `#seed` into the join command) sees the real URL.
+    // `search`/`hash` especially: browsers strip the query only from the
+    // fragment, but the guest can't read EITHER off `about:srcdoc`, and the SW
+    // never sees the fragment on a network request.
     let path = location
         .as_ref()
         .and_then(|l| l.pathname().ok())
+        .unwrap_or_default();
+    let search = location
+        .as_ref()
+        .and_then(|l| l.search().ok())
         .unwrap_or_default();
     let hash = location
         .as_ref()
@@ -1719,6 +1726,7 @@ fn build_context(host: &Element) -> Object {
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
+    let _ = Reflect::set(&context, &"search".into(), &JsValue::from_str(&search));
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
@@ -2164,6 +2172,13 @@ mod tests {
             Some("id:demo-counter")
         );
         assert_eq!(get_str(&context, "model").as_deref(), Some("counter"));
+        // The host forwards its real `search` (the `?query`) into the guest
+        // context — a sealed guest can't read it off its own `about:srcdoc`
+        // location, and `<tonk-page>` needs it to courier an invite's `?access`.
+        assert!(
+            get_str(&context, "search").is_some(),
+            "context carries a `search` field forwarded from the host location",
+        );
     }
 
     #[dialog_common::test]
