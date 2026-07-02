@@ -128,6 +128,36 @@ fn handle_event(event: &Event, attr_name: &str, descriptors: &Descriptors, host:
             log_error(format!("event handler: tonk-claim: {}", e.message));
         }
     });
+    maybe_close_dialog(event);
+}
+
+/// Opt-in dialog dismissal. When the element that carried the winning
+/// binding (or an ancestor of it) is marked `[data-close-dialog]`,
+/// close its nearest `<wa-dialog>`. The delegate only runs on events
+/// the browser actually dispatched, so on a `submit` this fires solely
+/// once the form has passed native constraint validation — closing on
+/// a valid submit, never on an attempt that a `required` field
+/// rejected. `event.target()` is the `<form>` for a `submit` and the
+/// activated element otherwise, so `closest` finds the marker either
+/// way. A no-op unless the marker attribute is present.
+fn maybe_close_dialog(event: &Event) {
+    let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+        return;
+    };
+    let Some(marked) = target.closest("[data-close-dialog]").ok().flatten() else {
+        return;
+    };
+    let Some(dialog) = marked.closest("wa-dialog").ok().flatten() else {
+        return;
+    };
+    // Set the reactive `open` property (not the attribute) so Web
+    // Awesome's open-change watcher runs its animated close — the same
+    // path a `data-dialog="close"` click takes.
+    let _ = js_sys::Reflect::set(
+        dialog.as_ref(),
+        &wasm_bindgen::JsValue::from_str("open"),
+        &wasm_bindgen::JsValue::FALSE,
+    );
 }
 
 /// Walk ancestors of `event.target` in innermost-first order,

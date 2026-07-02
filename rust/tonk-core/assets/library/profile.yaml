@@ -156,7 +156,7 @@ view/directory!:
         <wa-button class="hub-new" variant="neutral" data-dialog="open space-create">New space</wa-button>
       </header>
       <wa-dialog id="space-create" label="New space" class="hub-dialog">
-        <form id="space-create-form" class="hub-form wizard" onsubmit=space/create>
+        <form id="space-create-form" class="hub-form wizard" onsubmit=space/create data-close-dialog>
           <style>
             /* CSS-paged wizard: a hidden radio per screen drives which
                .wizard__screen shows. The form submits once at the end, so
@@ -507,7 +507,7 @@ view/directory!: &profile/fab/view
            `<tonk-default-remote>` resolve on this same profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
       <wa-dialog id="fab-space-create" label="New space" class="fab__dialog">
-        <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create>
+        <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create data-close-dialog>
           <style>
             /* CSS-paged wizard: a hidden radio per screen drives which
                .wizard__screen shows. The form submits once at the end, so
