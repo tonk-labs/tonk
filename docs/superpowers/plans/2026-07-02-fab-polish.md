@@ -971,3 +971,150 @@ Expected: all pass/clean.
 ```bash
 jj commit -m "fix(fab): restamp menu widths authoritatively once fonts load"
 ```
+
+---
+
+### Task 12: Live drag mirroring, center-based docking, drag-time menu close (spec §9)
+
+**Files:**
+- Modify: `rust/tonk-fab/src/logic.rs` (pure `mirrored` helper + tests)
+- Modify: `rust/tonk-fab/src/element.rs`
+- Modify: `rust/tonk-core/assets/library/profile.yaml` (re-key mirror rules)
+
+**Interfaces:**
+- Produces: `pub fn mirrored(center_x: f64, vw: f64) -> bool` in `crate::logic`.
+- Consumes: `nearest_dock`, `Dock::css_classes` (unchanged).
+
+- [ ] **Step 1 (TDD): pure helper in logic.rs**
+
+Tests first (`mod mirror`, plain `#[test]`; run `cargo test -p tonk-fab mirror`
+RED, implement, GREEN):
+
+```rust
+#[cfg(test)]
+mod mirror {
+    use super::*;
+
+    #[test]
+    fn a_center_left_of_the_midline_is_not_mirrored() {
+        assert!(!mirrored(499.9, 1000.0));
+    }
+
+    #[test]
+    fn a_center_right_of_the_midline_is_mirrored() {
+        assert!(mirrored(500.1, 1000.0));
+    }
+
+    #[test]
+    fn the_midline_mirrors_like_nearest_dock_falls_right() {
+        // Consistent with `nearest_dock`, whose exact midline docks right.
+        assert!(mirrored(500.0, 1000.0));
+    }
+}
+```
+
+```rust
+/// Whether the bar shows MIRRORED (right-anchored) at this horizontal center.
+/// The exact midline mirrors, matching `nearest_dock`'s midline-to-right
+/// choice, so the live drag preview always agrees with the eventual snap.
+pub fn mirrored(center_x: f64, vw: f64) -> bool {
+    !(center_x < vw / 2.0)
+}
+```
+
+- [ ] **Step 2: Re-key the mirror CSS to `fab-mirror` (profile.yaml)**
+
+The `fab-dock-*` classes keep positioning (`tonk-fab.fab-dock-* { top/bottom/
+left/right }`) and the menus' VERTICAL open-direction (`.fab-dock-top/.fab-dock-bottom
+.fab__menu` rules + hover bridges) — those still key off the dock. Re-key every
+VISUAL mirror rule from `.fab-dock-right` to `.fab-mirror` (values unchanged):
+
+- `.fab-dock-right .fab { flex-direction: row-reverse; }` → `.fab-mirror .fab { … }`
+- both cap radius swaps (`.fab__cap-l` / `.fab__cap-r`)
+- `.fab-dock-right .fab__menu { left: auto; right: 0; }` → `.fab-mirror .fab__menu { … }`
+- `.fab-dock-right .fab__share-menu { left: 0; right: auto; }` → `.fab-mirror .fab__share-menu { … }`
+- `.fab-dock-right .fab__menu-item--action { justify-content: flex-start; }` → `.fab-mirror …`
+- `.fab-dock-right .fab__menu-item--member { text-align: left; }` → `.fab-mirror …`
+- `.fab-dock-right .fab--anim .fab__tele { justify-content: flex-start; }` → `.fab-mirror …`
+
+Update the comments above the re-keyed blocks: the mirror is its own host
+class, set by element.rs from the horizontal dock at rest and LIVE from the
+bar's center while dragging (the dock classes vanish during a drag, so the
+mirror cannot key off them).
+
+- [ ] **Step 3: Drive the mirror + close menus + center-based dock (element.rs)**
+
+Import `mirrored` from `crate::logic`. Add two helpers:
+
+```rust
+/// The `fab-mirror` host class carrying the visual right-anchored flips —
+/// separate from the `fab-dock-*` classes (position + menu vertical
+/// direction) because a drag removes those while the mirror must track the
+/// bar LIVE across the midline.
+const MIRROR_CLASS: &str = "fab-mirror";
+
+/// Set the mirror from the bar's current center: mirrored on the right half
+/// of the viewport, upright on the left. Called per drag move and at rest.
+fn apply_mirror_from_center(el: &HtmlElement) {
+    let rect = el.get_bounding_client_rect();
+    let center = rect.left() + rect.width() / 2.0;
+    el.class_list()
+        .toggle_with_force(MIRROR_CLASS, mirrored(center, viewport_width()))
+        .ok();
+}
+
+/// Close both dropdowns (the ratcheted widths stay). A drag drops the
+/// `fab-dock-*` classes that give an open menu its vertical anchor, so an
+/// open menu would float mid-bar; dragging with a menu open isn't a state
+/// the chrome supports.
+fn close_menus(el: &HtmlElement) {
+    for sel in MENU_SEGMENTS {
+        if let Some(seg) = el.query_selector(sel).ok().flatten() {
+            seg.class_list().remove_1("is-open").ok();
+        }
+    }
+}
+```
+
+In `apply_dock`, after adding the dock classes, sync the mirror from the dock
+(not the rect — at rest the dock IS the truth):
+
+```rust
+    cl.toggle_with_force(MIRROR_CLASS, dock.css_classes()[1] == "fab-dock-right")
+        .ok();
+```
+
+In `on_move`'s drag-promotion block (where the dock classes are dropped), add
+`close_menus(&el_move);` and after the promotion block's class removal — and
+then on EVERY move after `track_position(...)` — call
+`apply_mirror_from_center(&el_move);`.
+
+In `finish_drag`, decide the dock from the BAR'S CENTER, not the pointer:
+change the signature to `finish_drag(el: &HtmlElement, pointer_id: i32)`,
+compute
+
+```rust
+    let rect = el.get_bounding_client_rect();
+    let center_x = rect.left() + rect.width() / 2.0;
+    let center_y = rect.top() + rect.height() / 2.0;
+    let dock = nearest_dock(center_x, center_y, viewport_width(), viewport_height());
+```
+
+and update the three call sites (`on_up`, `on_cancel`, the `buttons() == 0`
+guard) to drop the x/y arguments. Update `finish_drag`'s and the module's doc
+comments (drop decided by the bar's center so it always matches the live
+mirror preview).
+
+- [ ] **Step 4: Verify**
+
+Run: `cargo test -p tonk-fab` (28/28 with the three new tests),
+`cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`,
+`cargo test -p tonk-worker --test standard_library`,
+`cargo clippy --all -- -D warnings`
+Expected: all pass/clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+jj commit -m "feat(fab): mirror live across the midline and dock by bar center"
+```

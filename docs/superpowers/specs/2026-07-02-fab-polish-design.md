@@ -137,6 +137,27 @@ over-stamps cannot recur. Hardening from the same review: `disconnected_callback
 clears the press flags (`fabPressing`/`fabMoved`) so a mid-press clone remount
 cannot let a stale window listener persist a phantom dock.
 
+## 9. Live drag mirroring + drag-time menu hygiene (amendment, 2026-07-02 live review)
+
+Two drag-time defects, one root cause: the mirror and the menus' open-direction
+are keyed on the `fab-dock-*` classes, which a drag REMOVES (they pin corners
+and would fight the inline drag position) — so the mirror can only flip on
+drop, and an open menu loses its `top: 100%` anchor and falls back to its
+static position, floating mid-bar.
+
+- Split the mirror into its own host class, `fab-mirror`, carrying ONLY the
+  visual flips (row-reverse, cap radii, menu horizontal anchors, row
+  alignment, tele justify) — the `fab-dock-*` classes keep only positioning
+  and the menus' vertical open-direction.
+- element.rs drives `fab-mirror` continuously: from the horizontal dock at
+  rest (apply_dock), and from the FAB's CENTER vs the viewport x-midline on
+  every drag move — the bar mirrors the moment it crosses the middle.
+- The drop corner is now decided by the FAB's CENTER too (was: pointer release
+  point), so the live mirror is always a truthful preview of the snap.
+- A drag promotion closes any open menu (`is-open` dropped; the ratcheted
+  widths stay). Dragging with a dropdown open is not a state the chrome
+  supports.
+
 ## Testing
 
 - `cargo clippy --all -- -D warnings` (native lint gate).
