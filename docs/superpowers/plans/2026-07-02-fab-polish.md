@@ -849,3 +849,125 @@ Expected: all pass/clean.
 ```bash
 jj commit -m "feat(fab): preload ratcheted menu widths at connect"
 ```
+
+---
+
+### Task 11: Authoritative fonts-ready restamp + press-flag cleanup (final-review fixes)
+
+Final review found the preload's font interaction inverted: pre-font
+measurements use the fallback face, which is typically WIDER than condensed
+Plex, so the never-shrink ratchet bakes in over-wide columns the fonts-ready
+pass can only fail to correct. Fix: the fonts-ready pass restamps
+authoritatively (both directions); everything else stays ratcheted. Plus a
+lifecycle hardening: clear press flags on disconnect.
+
+**Files:**
+- Modify: `rust/tonk-fab/src/logic.rs` (new pure helper + tests)
+- Modify: `rust/tonk-fab/src/element.rs`
+
+**Interfaces:**
+- Consumes: existing `ratchet_min_width` (unchanged).
+- Produces: `pub fn corrected_min_width(menu_natural: f64) -> Option<f64>` in `crate::logic`.
+
+- [ ] **Step 1 (TDD): pure helper in logic.rs**
+
+Tests first (own `#[cfg(test)] mod corrected` block, plain `#[test]`, run
+`cargo test -p tonk-fab corrected` to see them fail, then implement):
+
+```rust
+#[cfg(test)]
+mod corrected {
+    use super::*;
+
+    #[test]
+    fn a_rendered_menu_restamps_to_its_ceiled_width() {
+        assert_eq!(corrected_min_width(220.4), Some(221.0));
+    }
+
+    #[test]
+    fn an_empty_menu_clears_nothing() {
+        // Zero means the menu has no rendered rows yet — leave the current
+        // stamp alone rather than collapsing the column.
+        assert_eq!(corrected_min_width(0.0), None);
+    }
+}
+```
+
+```rust
+/// The AUTHORITATIVE `min-width` for the one fonts-ready restamp: the menu's
+/// fresh real-metrics width, ceiled, replacing any ratcheted stamp in BOTH
+/// directions — measurements taken before the font landed used the fallback
+/// face (typically wider than condensed Plex), and the never-shrink ratchet
+/// cannot correct an over-wide stamp downward. `None` (an unrendered, empty
+/// menu) leaves the existing stamp untouched.
+pub fn corrected_min_width(menu_natural: f64) -> Option<f64> {
+    (menu_natural > 0.0).then(|| menu_natural.ceil())
+}
+```
+
+- [ ] **Step 2: element.rs — measure helper, restamp path, disconnect cleanup**
+
+Extract the measurement block of `equalize_menu_width` (the closed-menu
+forcing + `width: max-content` read + restore) into:
+
+```rust
+/// Measure the menu's natural (max-content) width, open or closed — a closed
+/// menu (`display: none`) is momentarily forced measurable, invisible and out
+/// of the paint (`visibility: hidden`); everything is restored before return.
+/// Synchronous within one task, so nothing flashes.
+fn menu_natural_width(seg: &Element, menu: &Element) -> f64 {
+    // (body moved verbatim from equalize_menu_width)
+}
+```
+
+`equalize_menu_width` keeps its ratchet behavior, now via the helper. Add the
+authoritative sibling used only by the fonts-ready pass:
+
+```rust
+/// Restamp `seg`'s width from a FRESH measurement, replacing any ratcheted
+/// stamp in both directions — the one-time correction for stamps taken
+/// against fallback-font metrics before the Plex face landed. The min-width
+/// transition eases the correction, riding the font swap's own reflow.
+fn restamp_menu_width(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let natural = menu_natural_width(seg, &menu);
+    if let Some(min_width) = corrected_min_width(natural) {
+        let _ = seg
+            .unchecked_ref::<HtmlElement>()
+            .style()
+            .set_property("min-width", &format!("{min_width}px"));
+    }
+}
+```
+
+In `refresh_on_fonts_ready`, call `restamp_menu_width(&seg)` instead of
+`equalize_menu_width(&seg)`, and fix its doc comment (the fallback face
+typically OVER-reports condensed Plex, hence an authoritative restamp rather
+than a ratchet). Extend the `crate::logic` import with `corrected_min_width`.
+
+In `disconnected_callback`, after the `settleTimer` cleanup add:
+
+```rust
+        // Drop any in-flight press: the window-scoped drag listeners outlive
+        // a clone remount, and a press left armed on the old element would
+        // let its stale `finish_drag` persist a phantom dock on the next
+        // buttons-up move.
+        this.dataset().delete("fabPressing");
+        this.dataset().delete("fabMoved");
+```
+
+- [ ] **Step 3: Verify**
+
+Run: `cargo test -p tonk-fab` (25/25 with the two new tests),
+`cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`,
+`cargo test -p tonk-worker --test standard_library`,
+`cargo clippy --all -- -D warnings`
+Expected: all pass/clean.
+
+- [ ] **Step 4: Commit**
+
+```bash
+jj commit -m "fix(fab): restamp menu widths authoritatively once fonts load"
+```

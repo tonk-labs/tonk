@@ -125,6 +125,18 @@ segment `min-width`. Re-measure and re-ratchet when a menu's content mutates
 `document.fonts.ready` resolves (a font swap changes metrics but fires no
 mutation). The on-open equalize stays as a cheap no-op fallback.
 
+**Corrected (final review):** measurements taken before the font loads use the
+FALLBACK face, which is typically WIDER than condensed Plex — they
+over-report, and a never-shrink ratchet would bake the over-wide stamp in for
+the session. The `fonts.ready` pass is therefore AUTHORITATIVE, not ratcheted:
+it restamps each segment from a fresh real-metrics measurement in both
+directions (the correction rides the font swap's own reflow, eased by the
+min-width transition). All other passes (connect, mutations, open) stay
+ratcheted; after the fonts land every measurement uses real metrics, so
+over-stamps cannot recur. Hardening from the same review: `disconnected_callback`
+clears the press flags (`fabPressing`/`fabMoved`) so a mid-press clone remount
+cannot let a stale window listener persist a phantom dock.
+
 ## Testing
 
 - `cargo clippy --all -- -D warnings` (native lint gate).
