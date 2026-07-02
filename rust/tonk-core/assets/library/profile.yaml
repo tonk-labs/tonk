@@ -509,7 +509,10 @@ view/directory!: &profile/fab/view
           --fab-pill: color-mix(in oklab, var(--fab-pill-solid) 80%, transparent);
           --fab-pill-hover: color-mix(in oklab, var(--fab-pill-solid) 92%, transparent);
           --fab-ink: var(--wa-color-surface-default, #1a1a1a);
-          font-family: var(--wa-font-family-body, sans-serif);
+          /* The FAB is set in IBM Plex Sans Condensed throughout — the app's
+             display face (already shipped + inlined into the sealed iframe by
+             the portal bridge), condensed so the bar stays tight. */
+          font-family: "IBM Plex Sans Condensed", var(--wa-font-family-heading, sans-serif);
           font-size: 16px;
           white-space: nowrap;
           position: relative;
@@ -776,7 +779,7 @@ view/directory!: &profile/fab/view
           right: auto;
           display: none;
           flex-direction: column;
-          gap: 6px;
+          gap: 7px;
           /* At LEAST as wide as the trigger (`min-width: 100%` of the positioned
              `.fab__repo`), but grows to fit its widest row (`width: max-content`)
              so labels like "all repos" aren't clipped. A pathologically long
@@ -793,14 +796,14 @@ view/directory!: &profile/fab/view
            left dock, leftward from a right dock) — so they always unfold into
            view. Direction is keyed off the FAB's `fab-dock-*` classes (set by
            element.rs); no JS measuring. */
-        .fab-dock-top .fab__menu { top: 100%; margin-top: 6px; }
-        .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 6px; }
+        .fab-dock-top .fab__menu { top: 100%; margin-top: 7px; }
+        .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 7px; }
         .fab-dock-right .fab__menu { left: auto; right: 0; }
         /* The dropdown belongs to the repo name segment: hidden until the
            segment is CLICKED (element.rs toggles `is-open`), matching the
            wireframe where segments open their menus on click, not hover. */
         .fab__repo.is-open .fab__menu { display: flex; }
-        /* Invisible hover-bridge over the 6px gap so the pointer can travel from
+        /* Invisible hover-bridge over the 7px gap so the pointer can travel from
            the trigger to the menu without the hover dropping. On the same edge
            the menu opens from — above it for the bottom dock, below for the top. */
         .fab-dock-top .fab__menu::before {
@@ -808,16 +811,16 @@ view/directory!: &profile/fab/view
           position: absolute;
           left: 0;
           right: 0;
-          top: -6px;
-          height: 6px;
+          top: -7px;
+          height: 7px;
         }
         .fab-dock-bottom .fab__menu::before {
           content: "";
           position: absolute;
           left: 0;
           right: 0;
-          bottom: -6px;
-          height: 6px;
+          bottom: -7px;
+          height: 7px;
         }
         /* The space roster renders its rows inside a single `<tonk-display>`
            wrapper, so the menu's flex `gap` can't reach them. `display:contents`
@@ -837,7 +840,6 @@ view/directory!: &profile/fab/view
           color: var(--fab-ink);
           text-decoration: none;
           font-size: 13px;
-          font-family: var(--wa-font-family-code, monospace);
           transition: background 0.15s ease;
           /* Clip a pathologically long space name to the menu's `max-width`
              cap instead of stretching the dropdown indefinitely. */
@@ -861,7 +863,6 @@ view/directory!: &profile/fab/view
           border: 0;
           cursor: pointer;
           font: inherit;
-          font-family: var(--wa-font-family-code, monospace);
           color: color-mix(in oklab, var(--fab-ink) 70%, transparent);
         }
         .fab__menu-glyph {
