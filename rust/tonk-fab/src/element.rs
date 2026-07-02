@@ -36,7 +36,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlElement, PointerEvent, window};
+use web_sys::{Element, HtmlElement, MutationObserver, MutationObserverInit, PointerEvent, window};
 
 // web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
 // features we have, so we call them via js_sys::Function from the global.
@@ -101,6 +101,7 @@ impl CustomElement for TonkFab {
             wrap_telescope_tiles(this);
             attach_drag(this);
             attach_gestures(this);
+            preload_menu_widths(this);
         }
         // Restore the persisted position and apply it to our own style.
         restore_position(this);
@@ -239,23 +240,38 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     }
 }
 
-/// Measure the just-opened menu's natural (max-content) width — momentarily
-/// overriding the stylesheet's `width: 100%`, reading the box, restoring —
-/// and stamp the segment's inline `min-width` to the RATCHETED target (never
-/// below a prior stamp — see `ratchet_min_width`). Runs after `is-open` lands
-/// (the menu must be laid out to measure) but within the same task, so
-/// nothing paints at the unmeasured width. On the first-ever stamp, pins the
-/// segment's current rendered width and flushes layout before the target, so
-/// the 0.2s `min-width` ease has a numeric start instead of animating from
-/// the unanimatable `auto`.
+/// Measure the menu's natural (max-content) width — momentarily overriding
+/// the stylesheet's `width: 100%`, reading the box, restoring — and stamp the
+/// segment's inline `min-width` to the RATCHETED target (never below a prior
+/// stamp — see `ratchet_min_width`). Works whether the menu is open or
+/// closed: a closed menu (`display: none`) is forced measurable — laid out at
+/// its natural width, invisible and out of the paint — then restored, all
+/// within one task, so nothing flashes. Called on open (`toggle_menu`), at
+/// connect and on content mutation (`preload_menu_widths`, `observe_menu`),
+/// and once fonts finish loading (`refresh_on_fonts_ready`). On the
+/// first-ever stamp, pins the segment's current rendered width and flushes
+/// layout before the target, so the 0.2s `min-width` ease has a numeric start
+/// instead of animating from the unanimatable `auto`.
 fn equalize_menu_width(seg: &Element) {
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
     };
     let style = menu.unchecked_ref::<HtmlElement>().style();
+    // A closed menu is `display: none` (no boxes). Force it measurable —
+    // invisible and out of the paint (`visibility: hidden`), laid out at its
+    // natural width — then restore. All within one task, so no flash.
+    let closed = !seg.class_list().contains("is-open");
+    if closed {
+        let _ = style.set_property("display", "flex");
+        let _ = style.set_property("visibility", "hidden");
+    }
     let _ = style.set_property("width", "max-content");
     let natural = menu.get_bounding_client_rect().width();
     let _ = style.remove_property("width");
+    if closed {
+        let _ = style.remove_property("display");
+        let _ = style.remove_property("visibility");
+    }
     let seg_el = seg.unchecked_ref::<HtmlElement>();
     let segment = seg.get_bounding_client_rect().width();
     // A prior ratchet stamp, read back off the inline style ("260px" → 260.0).
@@ -279,6 +295,68 @@ fn equalize_menu_width(seg: &Element) {
             .style()
             .set_property("min-width", &format!("{min_width}px"));
     }
+}
+
+/// The two dropdown-owning segments.
+const MENU_SEGMENTS: [&str; 2] = [".fab__repo", ".fab__share"];
+
+/// Stamp both segments' ratcheted widths up front and keep them fresh, so a
+/// dropdown OPEN never changes the bar: rows render asynchronously (a
+/// MutationObserver per menu re-ratchets as content lands) and the Plex face
+/// loads asynchronously (a font swap changes metrics but fires no mutation,
+/// so `document.fonts.ready` triggers one more pass).
+fn preload_menu_widths(element: &HtmlElement) {
+    for sel in MENU_SEGMENTS {
+        if let Some(seg) = element.query_selector(sel).ok().flatten() {
+            equalize_menu_width(&seg);
+            observe_menu(&seg);
+        }
+    }
+    refresh_on_fonts_ready(element);
+}
+
+/// Re-ratchet `seg`'s width whenever its menu's content changes (rows arrive
+/// from live subscriptions well after connect). The observer lives as long as
+/// the page (closure forgotten) — one FAB, two menus, so no accounting.
+fn observe_menu(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let seg_for_cb = seg.clone();
+    let cb = Closure::<dyn FnMut(js_sys::Array, web_sys::MutationObserver)>::new(
+        move |_records: js_sys::Array, _obs: web_sys::MutationObserver| {
+            equalize_menu_width(&seg_for_cb);
+        },
+    );
+    if let Ok(observer) = MutationObserver::new(cb.as_ref().unchecked_ref()) {
+        let init = MutationObserverInit::new();
+        init.set_child_list(true);
+        init.set_subtree(true);
+        init.set_character_data(true);
+        observer.observe_with_options(&menu, &init).ok();
+    }
+    cb.forget();
+}
+
+/// One more ratchet pass once the fonts land: measurements taken against the
+/// fallback face under-report the condensed Plex metrics.
+fn refresh_on_fonts_ready(element: &HtmlElement) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let ready = match document.fonts().ready() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let el = element.clone();
+    spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
+        for sel in MENU_SEGMENTS {
+            if let Some(seg) = el.query_selector(sel).ok().flatten() {
+                equalize_menu_width(&seg);
+            }
+        }
+    });
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
