@@ -70,8 +70,32 @@ impl CustomElement for TonkDefaultRemote {
 
 /// The default-service URL for this page: `origin + /ucan/`.
 fn default_remote_url() -> Option<String> {
-    let origin = window()?.location().origin().ok()?;
+    let origin = page_origin()?;
     Some(format!("{origin}{ACCESS_SERVICE_PATH}"))
+}
+
+/// The real page origin. Inside a sealed `<tonk-portal>` guest the
+/// document is `about:srcdoc`, so `location.origin` is the opaque string
+/// `"null"`; the portal bridge injects the true origin at
+/// `window.tonk.context.origin`. Prefer that, and fall back to
+/// `location.origin` at the top-level shell (where `window.tonk` is
+/// absent). Returns `None` if neither yields a real origin.
+fn page_origin() -> Option<String> {
+    let win = window()?;
+    if let Some(origin) = tonk_context_origin(&win) {
+        return Some(origin);
+    }
+    let origin = win.location().origin().ok()?;
+    (origin != "null" && !origin.is_empty()).then_some(origin)
+}
+
+/// Read `window.tonk.context.origin` — the host-supplied real origin the
+/// portal bridge sets on the guest. `None` when any hop is missing/empty.
+fn tonk_context_origin(win: &web_sys::Window) -> Option<String> {
+    let tonk = js_sys::Reflect::get(win, &JsValue::from_str("tonk")).ok()?;
+    let context = js_sys::Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
+    let origin = js_sys::Reflect::get(&context, &JsValue::from_str("origin")).ok()?;
+    origin.as_string().filter(|s| !s.is_empty() && s != "null")
 }
 
 /// Find or create the button as the element's only child. The label is
