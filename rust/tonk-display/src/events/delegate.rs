@@ -143,6 +143,8 @@ fn handle_event(event: &Event, attr_name: &str, descriptors: &Descriptors, host:
 /// - `[data-close-radio="<id>"]` checks the radio with that id — used to
 ///   select the "closed" state of a CSS-radio-group overlay, which both
 ///   hides it and (since the other states deselect) resets its paging.
+///   When the marked element is itself a `<form>`, its fields are also
+///   reset so the next open starts blank.
 fn maybe_dismiss_overlay(event: &Event) {
     let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
         return;
@@ -166,6 +168,9 @@ fn maybe_dismiss_overlay(event: &Event) {
             &wasm_bindgen::JsValue::from_str("checked"),
             &wasm_bindgen::JsValue::TRUE,
         );
+        if let Some(form) = marked.dyn_ref::<web_sys::HtmlFormElement>() {
+            form.reset();
+        }
     }
 }
 
