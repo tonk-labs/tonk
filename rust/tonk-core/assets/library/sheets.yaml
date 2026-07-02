@@ -3,53 +3,12 @@
 # The tabbed sheets workspace, seeded on top of core.yaml only when the
 # "sheets" template is chosen at repo creation. Overrides the default
 # `tonk/space` alias so the space route mounts the binder.
-
-# Self-contained re-declarations (idempotent by URI when evaluated onto a
-# branch that already carries core): the moved view! instances are
-# instances of tonk:view / tonk:view/directory, and the binder-activate
-# rule references tonk:replica.
-concept!: &view
-  this: tonk:view
-  description: A display template (model, display) for rendering an entity.
-  with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the view
-      the: xyz.tonk.view/display
-      cardinality: one
-      as: text
-
-concept!: &view/directory
-  this: tonk:view/directory
-  description: A directory view used by tonk-display when entity is not set.
-  with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the view
-      the: xyz.tonk.view/directory
-      cardinality: one
-      as: text
-
-concept!: &tonk/replica
-  this: tonk:replica
-  description: Replica of the shared repository on this device.
-  with:
-    subject:
-      description: The repository subject (as did:key).
-      the: dialog.origin/subject
-      as: entity
-    profile:
-      description: Profile entity (as did:key) for this device.
-      the: dialog.origin/profile
-      as: entity
+#
+# core.yaml is always concatenated ahead of this template into one seed
+# document, so the concepts the moved instances depend on (tonk:view,
+# tonk:view/directory, tonk:replica) are already declared there. This
+# template must not redeclare them: duplicate anchors/variables are
+# rejected within a single document.
 
 # The `artifact` concept. Binds an entity to a model and a view,
 # plus the tab metadata (title, icon) the viewer shell shows. Its

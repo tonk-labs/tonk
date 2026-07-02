@@ -73,8 +73,17 @@ fn it_lowers_the_profile_library() {
 }
 
 #[test]
-fn it_lowers_the_sheets_library() {
-    assert_library_lowers("sheets library (sheets.yaml)", SHEETS_LIBRARY);
+fn it_lowers_core_concatenated_with_the_sheets_template() {
+    // The worker never seeds sheets.yaml alone: for the `sheets`
+    // template it concatenates core.yaml ahead of it into ONE document
+    // and evaluates the whole thing in a single commit. The template
+    // therefore relies on the concepts core declares (tonk:view,
+    // tonk:view/directory, tonk:replica) and must not redeclare them —
+    // duplicate anchors are rejected within a document. Analyze the
+    // same concatenation the seed builds so that collision is caught
+    // here rather than at first launch.
+    let seeded = format!("{STANDARD_LIBRARY}\n{SHEETS_LIBRARY}");
+    assert_library_lowers("core.yaml + sheets.yaml (sheets template)", &seeded);
 }
 
 #[test]
