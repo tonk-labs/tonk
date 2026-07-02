@@ -1162,7 +1162,12 @@ async fn seed_and_initialize(
             seed_standard_library(&tonk, key, branch_name, &body)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
-            log!("Seeded {} doc(s) + name on '{}' branch '{}'", urls.len(), key, branch_name);
+            log!(
+                "Seeded {} doc(s) + name on '{}' branch '{}'",
+                urls.len(),
+                key,
+                branch_name
+            );
         }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
@@ -3230,8 +3235,9 @@ mod tests {
     }
 
     /// The lean scaffold (core alone) carries the blank canvas concept,
-    /// not the sheets workspace. The blank model resolves with zero
-    /// instances — the lean default a no-template repo renders.
+    /// not the sheets workspace. The blank model resolves to exactly one
+    /// instance — the repo's own subject — which the blank-canvas view
+    /// binds to render the lean, no-template default.
     #[dialog_common::test]
     async fn it_seeds_blank_scaffold() {
         let (_app, state, repo) = fresh_repo("test-seed-blank-scaffold").await;
@@ -3239,12 +3245,13 @@ mod tests {
         seed(&state, repo, CORE).await;
 
         // The lean scaffold carries the blank canvas concept, not the
-        // sheets workspace. `tonk:blank:` resolves (zero instances is fine);
-        // a `workspace/sheet:` query would fault on an unresolved concept.
+        // sheets workspace. `blank:` resolves to the repo subject (its
+        // sole `dialog.origin/subject`-derived attribute); a
+        // `workspace/sheet:` query would fault on an unresolved concept.
         assert_eq!(
-            count(&state, repo, "tonk:blank:\n").await,
-            0,
-            "blank scaffold has the blank model but no instances",
+            count(&state, repo, "blank:\n").await,
+            1,
+            "blank scaffold resolves the blank model to the repo subject",
         );
     }
 
