@@ -26,8 +26,8 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, dock_claim_json, nearest_dock, ratchet_min_width, telescope_delay_ms,
-    telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, nearest_dock, ratchet_min_width,
+    telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -116,6 +116,13 @@ impl CustomElement for TonkFab {
             }
             this.dataset().delete("settleTimer");
         }
+
+        // Drop any in-flight press: the window-scoped drag listeners outlive
+        // a clone remount, and a press left armed on the old element would
+        // let its stale `finish_drag` persist a phantom dock on the next
+        // buttons-up move.
+        this.dataset().delete("fabPressing");
+        this.dataset().delete("fabMoved");
     }
 
     fn attribute_changed_callback(
@@ -256,22 +263,7 @@ fn equalize_menu_width(seg: &Element) {
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
     };
-    let style = menu.unchecked_ref::<HtmlElement>().style();
-    // A closed menu is `display: none` (no boxes). Force it measurable —
-    // invisible and out of the paint (`visibility: hidden`), laid out at its
-    // natural width — then restore. All within one task, so no flash.
-    let closed = !seg.class_list().contains("is-open");
-    if closed {
-        let _ = style.set_property("display", "flex");
-        let _ = style.set_property("visibility", "hidden");
-    }
-    let _ = style.set_property("width", "max-content");
-    let natural = menu.get_bounding_client_rect().width();
-    let _ = style.remove_property("width");
-    if closed {
-        let _ = style.remove_property("display");
-        let _ = style.remove_property("visibility");
-    }
+    let natural = menu_natural_width(seg, &menu);
     let seg_el = seg.unchecked_ref::<HtmlElement>();
     let segment = seg.get_bounding_client_rect().width();
     // A prior ratchet stamp, read back off the inline style ("260px" → 260.0).
@@ -292,6 +284,47 @@ fn equalize_menu_width(seg: &Element) {
             let _ = seg_el.offset_width();
         }
         let _ = seg_el
+            .style()
+            .set_property("min-width", &format!("{min_width}px"));
+    }
+}
+
+/// Measure the menu's natural (max-content) width, open or closed — a closed
+/// menu (`display: none`) is momentarily forced measurable, invisible and out
+/// of the paint (`visibility: hidden`); everything is restored before return.
+/// Synchronous within one task, so nothing flashes.
+fn menu_natural_width(seg: &Element, menu: &Element) -> f64 {
+    let style = menu.unchecked_ref::<HtmlElement>().style();
+    // A closed menu is `display: none` (no boxes). Force it measurable —
+    // invisible and out of the paint (`visibility: hidden`), laid out at its
+    // natural width — then restore. All within one task, so no flash.
+    let closed = !seg.class_list().contains("is-open");
+    if closed {
+        let _ = style.set_property("display", "flex");
+        let _ = style.set_property("visibility", "hidden");
+    }
+    let _ = style.set_property("width", "max-content");
+    let natural = menu.get_bounding_client_rect().width();
+    let _ = style.remove_property("width");
+    if closed {
+        let _ = style.remove_property("display");
+        let _ = style.remove_property("visibility");
+    }
+    natural
+}
+
+/// Restamp `seg`'s width from a FRESH measurement, replacing any ratcheted
+/// stamp in both directions — the one-time correction for stamps taken
+/// against fallback-font metrics before the Plex face landed. The min-width
+/// transition eases the correction, riding the font swap's own reflow.
+fn restamp_menu_width(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let natural = menu_natural_width(seg, &menu);
+    if let Some(min_width) = corrected_min_width(natural) {
+        let _ = seg
+            .unchecked_ref::<HtmlElement>()
             .style()
             .set_property("min-width", &format!("{min_width}px"));
     }
@@ -338,8 +371,11 @@ fn observe_menu(seg: &Element) {
     cb.forget();
 }
 
-/// One more ratchet pass once the fonts land: measurements taken against the
-/// fallback face under-report the condensed Plex metrics.
+/// One authoritative restamp once the fonts land: measurements taken before
+/// this point (connect, mutation) used the fallback face, which typically
+/// OVER-reports condensed Plex's metrics — and the ratchet those passes use
+/// can only widen, never correct an over-wide stamp back down. This pass
+/// restamps from a fresh measurement in both directions instead of ratcheting.
 fn refresh_on_fonts_ready(element: &HtmlElement) {
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
@@ -353,7 +389,7 @@ fn refresh_on_fonts_ready(element: &HtmlElement) {
         let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
         for sel in MENU_SEGMENTS {
             if let Some(seg) = el.query_selector(sel).ok().flatten() {
-                equalize_menu_width(&seg);
+                restamp_menu_width(&seg);
             }
         }
     });

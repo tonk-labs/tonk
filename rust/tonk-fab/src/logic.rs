@@ -263,6 +263,33 @@ pub fn ratchet_min_width(menu_natural: f64, segment: f64, stamped: Option<f64>) 
     Some(stamped.map_or(target, |prior| target.max(prior)))
 }
 
+/// The AUTHORITATIVE `min-width` for the one fonts-ready restamp: the menu's
+/// fresh real-metrics width, ceiled, replacing any ratcheted stamp in BOTH
+/// directions — measurements taken before the font landed used the fallback
+/// face (typically wider than condensed Plex), and the never-shrink ratchet
+/// cannot correct an over-wide stamp downward. `None` (an unrendered, empty
+/// menu) leaves the existing stamp untouched.
+pub fn corrected_min_width(menu_natural: f64) -> Option<f64> {
+    (menu_natural > 0.0).then(|| menu_natural.ceil())
+}
+
+#[cfg(test)]
+mod corrected {
+    use super::*;
+
+    #[test]
+    fn a_rendered_menu_restamps_to_its_ceiled_width() {
+        assert_eq!(corrected_min_width(220.4), Some(221.0));
+    }
+
+    #[test]
+    fn an_empty_menu_clears_nothing() {
+        // Zero means the menu has no rendered rows yet — leave the current
+        // stamp alone rather than collapsing the column.
+        assert_eq!(corrected_min_width(0.0), None);
+    }
+}
+
 #[cfg(test)]
 mod dock {
     use super::*;
