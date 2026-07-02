@@ -285,7 +285,7 @@ command!: &tonk/pause-sync
       as: float
     marker:
       description: |
-          Per-command marker read from the pause form's `data-pause-sync`.
+          Per-command marker read from a pause affordance's `data-pause-sync`.
           Gives `tonk:pause-sync` an attribute no other command carries, so
           this transient does not also decode as `tonk:invite`.
       the: dom.event.current-target.dataset/pause-sync

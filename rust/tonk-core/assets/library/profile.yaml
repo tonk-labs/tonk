@@ -182,7 +182,9 @@ view/directory!:
              so it updates live as the background sync drain reconciles — unlike
              the old `<tonk-sync-badge>`, which fetched once on mount (and on
              commit/toggle, neither of which fires on the Hub) and froze on a
-             stale reading. Read-only: pause lives in the space topbar. -->
+             stale reading. Read-only: sync pausing currently has no chrome
+             affordance (the `tonk:pause-sync` command remains for a future
+             one). -->
         <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
       </a>
     </div>
@@ -765,10 +767,10 @@ view/directory!: &profile/fab/view
           gap: 7px;
           /* Exactly as wide as the trigger segment. When the menu's natural
              width exceeds the segment's, element.rs stamps a matching inline
-             `min-width` on the segment as the menu opens (never cleared — a column only ratchets wider),
-             so rung and dropdown always read as one column; rows ellipsise
-             within it. Anchored at `left: 0`; the share roster re-anchors
-             right (`.fab__share-menu`). */
+             `min-width` on the segment as the menu opens (never cleared — a
+             column only ratchets wider), so rung and dropdown always read as
+             one column; rows ellipsise within it. Anchored at `left: 0`; the
+             share roster re-anchors right (`.fab__share-menu`). */
           width: 100%;
           z-index: 100;
         }
@@ -821,8 +823,8 @@ view/directory!: &profile/fab/view
           color: var(--fab-ink);
           text-decoration: none;
           transition: background 0.15s ease;
-          /* Clip a pathologically long space name to the menu's `max-width`
-             cap instead of stretching the dropdown indefinitely. */
+          /* Clip a pathologically long space name to the menu's
+             segment-equalized width instead of stretching the dropdown. */
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
