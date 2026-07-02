@@ -14,10 +14,11 @@
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
 //!   capturing the grab offset; promotion closes any open menu and drops the
 //!   `fab-dock-*` classes; `pointermove` sets the element's own `left`/`top`
-//!   and, every move, resyncs the `fab-mirror` host class LIVE from the bar's
-//!   current center, so the visual right-anchored flip previews the eventual
-//!   snap continuously, not just at drop; `pointerup` SNAPS the FAB to the
-//!   corner nearest the BAR'S CENTER (not the pointer, so the drop always
+//!   and, every move, resyncs the `fab-mirror` host class LIVE from the drag
+//!   HANDLE's current center (the circle cap — held fixed across mirror
+//!   flips), so the visual right-anchored flip previews the eventual snap
+//!   continuously, not just at drop; `pointerup` SNAPS the FAB to the corner
+//!   nearest the HANDLE'S CENTER (the same anchor, so the drop always
 //!   matches what the live mirror was just showing) — by swapping its
 //!   `fab-dock-*` classes, resyncing `fab-mirror` from the dock, and
 //!   persisting the dock as a profile claim via `window.tonk.transact(...)`.
@@ -246,7 +247,12 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     // No menu work while the bar is mid-drag (a second pointer's click): the
     // dock classes that anchor an open menu are stripped during a drag, so an
     // open here would float unanchored mid-bar.
-    if element.query_selector(".fab.dragging").ok().flatten().is_some() {
+    if element
+        .query_selector(".fab.dragging")
+        .ok()
+        .flatten()
+        .is_some()
+    {
         return;
     }
     if let Some(other) = element.query_selector(other_sel).ok().flatten() {
@@ -351,44 +357,52 @@ const MENU_SEGMENTS: [&str; 2] = [".fab__repo", ".fab__share"];
 /// bar LIVE across the midline.
 const MIRROR_CLASS: &str = "fab-mirror";
 
-/// The grab handle's (circle cap's) viewport left edge, or `None` if the
-/// bar hasn't rendered one. Reading it forces layout — which is exactly what
-/// the flip compensation needs (a fresh post-flip position).
-fn circle_left(el: &HtmlElement) -> Option<f64> {
-    el.query_selector(".fab__cap-l")
-        .ok()
-        .flatten()
-        .map(|c| c.get_bounding_client_rect().left())
+/// The grab handle's (circle cap's) viewport center, or `None` if the bar
+/// hasn't rendered one. The handle is the drag's anchor: the flip
+/// compensation holds it fixed, so decisions keyed on it are stable across
+/// mirror flips (the bar's own center moves by nearly a bar-width per flip
+/// and would oscillate).
+fn handle_center(el: &HtmlElement) -> Option<(f64, f64)> {
+    el.query_selector(".fab__cap-l").ok().flatten().map(|c| {
+        let r = c.get_bounding_client_rect();
+        (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0)
+    })
 }
 
-/// Set the mirror from the bar's current center: mirrored on the right half
-/// of the viewport, upright on the left. Called per drag move (apply_dock
-/// owns the resting sync).
+/// Set the mirror from the drag HANDLE's current center: mirrored on the
+/// right half of the viewport, upright on the left. Called per drag move
+/// (apply_dock owns the resting sync). Falls back to the bar-rect center
+/// only if the handle is missing.
 ///
 /// A flip row-reverses the bar inside its fixed box, which would teleport
 /// the circle — the grab handle under the pointer — to the bar's other end.
-/// So a mid-drag flip SHIFTS the bar by the circle's measured displacement
-/// (its left edge before vs after the class toggle): the circle stays put,
-/// the bar swings around it. The shift is folded into the drag's stored
-/// `fabStartLeft` so the next pointer delta doesn't undo it.
-fn apply_mirror_from_center(el: &HtmlElement) {
+/// So a mid-drag flip SHIFTS the bar by the handle's measured displacement
+/// (its center before vs after the class toggle): the handle stays put, the
+/// bar swings around it. The shift is folded into the drag's stored
+/// `fabStartLeft` so the next pointer delta doesn't undo it. Because the
+/// flip decision is keyed on the handle — the very point the compensation
+/// holds fixed — a compensated flip cannot re-cross the threshold that
+/// triggered it: no oscillation, no hysteresis needed. (Keying on the bar's
+/// own center would oscillate: the compensation moves it by nearly a
+/// bar-width, straight back across the midline.)
+fn apply_mirror_from_handle(el: &HtmlElement) {
     let rect = el.get_bounding_client_rect();
-    let center = rect.left() + rect.width() / 2.0;
-    let want = mirrored(center, viewport_width());
+    let before = handle_center(el);
+    let anchor_x = before.map_or(rect.left() + rect.width() / 2.0, |(x, _)| x);
+    let want = mirrored(anchor_x, viewport_width());
     if el.class_list().contains(MIRROR_CLASS) == want {
         return;
     }
-    let before = circle_left(el);
     el.class_list().toggle_with_force(MIRROR_CLASS, want).ok();
     // Compensate only while actually dragging: at promotion (and any
     // non-drag call) the bar is at rest geometry and no pointer is anchored.
     if el.dataset().get("fabMoved").is_none() {
         return;
     }
-    let (Some(before), Some(after)) = (before, circle_left(el)) else {
+    let (Some(before), Some(after)) = (before, handle_center(el)) else {
         return;
     };
-    let shift = before - after;
+    let shift = before.0 - after.0;
     if shift != 0.0 {
         let left = rect.left() + shift;
         let _ = el.style().set_property("left", &format!("{left}px"));
@@ -716,14 +730,14 @@ fn attach_drag(element: &HtmlElement) {
                 cl.remove_1(c).ok();
             }
             // The dock classes just vanished — resync the mirror from the
-            // live center immediately so it doesn't flash upright for one frame.
-            apply_mirror_from_center(&el_move);
+            // live handle immediately so it doesn't flash upright for one frame.
+            apply_mirror_from_handle(&el_move);
         }
         e.prevent_default();
         let left = read_data_f64(&el_move, "fabStartLeft") + dx;
         let top = read_data_f64(&el_move, "fabStartTop") + dy;
         track_position(&el_move, left, top);
-        apply_mirror_from_center(&el_move);
+        apply_mirror_from_handle(&el_move);
     });
 
     let el_up = element.clone();
@@ -772,10 +786,12 @@ fn attach_drag(element: &HtmlElement) {
 
 /// Finish a press: clear the press flags and — if the press had been promoted
 /// to a drag — release capture, drop the dragging class, and snap/persist the
-/// dock nearest the BAR'S CENTER (not the pointer), so the drop always matches
-/// the live mirror preview the bar has been showing throughout the drag.
-/// Shared by `pointerup`, `pointercancel`, and the stale-press guard in
-/// `pointermove`.
+/// dock nearest the HANDLE'S CENTER (falling back to the bar-rect center if
+/// the handle is missing). The handle is what you drag, and it is the anchor
+/// the mirror preview keys on (`apply_mirror_from_handle`), so the snap
+/// always agrees with the live preview the bar has been showing throughout
+/// the drag. Shared by `pointerup`, `pointercancel`, and the stale-press
+/// guard in `pointermove`.
 fn finish_drag(el: &HtmlElement, pointer_id: i32) {
     el.dataset().delete("fabPressing");
     let moved = el.dataset().get("fabMoved").is_some();
@@ -787,8 +803,10 @@ fn finish_drag(el: &HtmlElement, pointer_id: i32) {
         fab.class_list().remove_1("dragging").ok();
     }
     let rect = el.get_bounding_client_rect();
-    let center_x = rect.left() + rect.width() / 2.0;
-    let center_y = rect.top() + rect.height() / 2.0;
+    let (center_x, center_y) = handle_center(el).unwrap_or((
+        rect.left() + rect.width() / 2.0,
+        rect.top() + rect.height() / 2.0,
+    ));
     let dock = nearest_dock(center_x, center_y, viewport_width(), viewport_height());
     apply_dock(el, dock);
     persist_dock(dock);
@@ -849,8 +867,8 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
         cl.add_1(c).ok();
     }
     // Sync the mirror from the dock, not the rect — at rest the dock IS the
-    // truth (a drag drives it from the live center instead; see
-    // `apply_mirror_from_center`).
+    // truth (a drag drives it from the live handle instead; see
+    // `apply_mirror_from_handle`).
     cl.toggle_with_force(MIRROR_CLASS, dock.css_classes()[1] == "fab-dock-right")
         .ok();
 }

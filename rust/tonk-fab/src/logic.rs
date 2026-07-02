@@ -161,8 +161,9 @@ impl Dock {
 
 /// Pick the corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
-/// right, keyed off the FAB center `(center_x, center_y)`. The exact midlines
-/// fall to the bottom / right dock.
+/// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
+/// handle's center, the same anchor `mirrored` reads. The exact midlines fall
+/// to the bottom / right dock.
 pub fn nearest_dock(center_x: f64, center_y: f64, vw: f64, vh: f64) -> Dock {
     match (center_x < vw / 2.0, center_y < vh / 2.0) {
         (true, true) => Dock::TopLeft,
