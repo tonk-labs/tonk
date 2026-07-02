@@ -83,7 +83,7 @@ view/directory!:
 # default target of the `tonk/space` alias (below). Mirrors the mock's
 # "your starting layout is in place" frame: a connect-an-agent prompt
 # (the same `tonk:invite` mint the share path uses, rendered via the
-# `tonk:agent-invite` prompt view) plus a link back to all repos.
+# `tonk:agent-invite` prompt view).
 concept!: &blank
   this: tonk:blank
   description: A lean repo's starting canvas — connect an agent or build by hand.
@@ -145,11 +145,6 @@ view!:
           color: var(--wa-color-text-quiet);
         }
         .blank-canvas__instr p { margin: 0; }
-        .blank-canvas__back {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-quiet);
-        }
       </style>
       <span class="blank-canvas__label">no template &middot; empty view</span>
       <h1 class="blank-canvas__title">your starting layout is in place</h1>
@@ -169,7 +164,6 @@ view!:
       <div class="blank-canvas__instr">
         <p>Keep building by hand, or paste this link into your agent to take it further.</p>
       </div>
-      <a class="blank-canvas__back" href="/">&lsaquo; back to all repos</a>
     </div>
 
 # The Enable-sync command. Submitting the sync chip's "Enable sync" form

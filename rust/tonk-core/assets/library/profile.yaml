@@ -174,10 +174,6 @@ view/directory!:
               font: inherit; background: var(--wa-color-surface-default);
             }
             .wizard__card:hover { border-color: var(--wa-color-text-normal); }
-            /* The agent card is a <button>: strip its native rendering so
-               the heading lays out like the <label> cards instead of the
-               dark headline box overflowing the card border. */
-            button.wizard__card { -webkit-appearance: none; appearance: none; box-sizing: border-box; width: 100%; }
             /* Highlight the chosen template card so the selection is legible. */
             #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
             #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
@@ -205,10 +201,15 @@ view/directory!:
                 <h3>Start from a template</h3>
                 <p>Seed the view with a ready-made layout.</p>
               </label>
-              <button type="submit" form="space-create-form" class="wizard__card" style="cursor:pointer;" data-dialog="close">
+              <label class="wizard__card" for="hub-agent-submit">
                 <h3>Build with an agent</h3>
                 <p>Start blank; hand the repo to an agent from inside it.</p>
-              </button>
+              </label>
+              <!-- Hidden submit the card's <label> drives, so the card renders
+                   like the sibling <label> cards. A native <button> laid its
+                   heading's dark box outside the card border. -->
+              <input type="submit" id="hub-agent-submit" form="space-create-form"
+                     style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
             </div>
             <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
             <tonk-default-remote field="remote">Use this server</tonk-default-remote>
@@ -226,7 +227,7 @@ view/directory!:
                 <p>An empty canvas to build by hand or with an agent.</p>
               </label>
             </div>
-            <wa-button type="submit" form="space-create-form" variant="primary" data-dialog="close">Create space</wa-button>
+            <wa-button type="submit" form="space-create-form" variant="primary">Create space</wa-button>
             <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
           </div>
         </form>
@@ -524,10 +525,6 @@ view/directory!: &profile/fab/view
               font: inherit; background: var(--wa-color-surface-default);
             }
             .wizard__card:hover { border-color: var(--wa-color-text-normal); }
-            /* The agent card is a <button>: strip its native rendering so
-               the heading lays out like the <label> cards instead of the
-               dark headline box overflowing the card border. */
-            button.wizard__card { -webkit-appearance: none; appearance: none; box-sizing: border-box; width: 100%; }
             /* Highlight the chosen template card so the selection is legible. */
             #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
             #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
@@ -555,10 +552,15 @@ view/directory!: &profile/fab/view
                 <h3>Start from a template</h3>
                 <p>Seed the view with a ready-made layout.</p>
               </label>
-              <button type="submit" form="fab-space-create-form" class="wizard__card" style="cursor:pointer;" data-dialog="close">
+              <label class="wizard__card" for="fab-agent-submit">
                 <h3>Build with an agent</h3>
                 <p>Start blank; hand the repo to an agent from inside it.</p>
-              </button>
+              </label>
+              <!-- Hidden submit the card's <label> drives, so the card renders
+                   like the sibling <label> cards. A native <button> laid its
+                   heading's dark box outside the card border. -->
+              <input type="submit" id="fab-agent-submit" form="fab-space-create-form"
+                     style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
             </div>
             <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
             <tonk-default-remote field="remote">Use this server</tonk-default-remote>
@@ -576,7 +578,7 @@ view/directory!: &profile/fab/view
                 <p>An empty canvas to build by hand or with an agent.</p>
               </label>
             </div>
-            <wa-button type="submit" form="fab-space-create-form" variant="primary" data-dialog="close">Create space</wa-button>
+            <wa-button type="submit" form="fab-space-create-form" variant="primary">Create space</wa-button>
             <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
           </div>
         </form>
