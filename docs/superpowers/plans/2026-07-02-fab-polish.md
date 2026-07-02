@@ -1195,14 +1195,30 @@ Note the call ORDER inside `on_move` stays as is (promotion block, then
 after `track_position` has already written this move's `left`, and the next
 move's delta math uses the adjusted `fabStartLeft`, so the shift persists.
 
-- [ ] **Step 2: Verify**
+- [ ] **Step 2: Guard menu toggles during a drag**
+
+Final-review edge: a SECOND pointer clicking a segment mid-drag would open a
+menu while the `fab-dock-*` vertical anchor is stripped (the §9 floating-menu
+defect via multi-touch; `close_menus` only runs at promotion). Guard at the
+top of `toggle_menu`:
+
+```rust
+    // No menu work while the bar is mid-drag (a second pointer's click): the
+    // dock classes that anchor an open menu are stripped during a drag, so an
+    // open here would float unanchored mid-bar.
+    if element.query_selector(".fab.dragging").ok().flatten().is_some() {
+        return;
+    }
+```
+
+- [ ] **Step 3: Verify**
 
 Run: `cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`
 Expected: clean.
 Run: `cargo test -p tonk-fab && cargo test -p tonk-worker --test standard_library`
 Expected: 28/28 and 3/3 (no logic changes).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 jj commit -m "fix(fab): keep the grab handle under the pointer across a mid-drag flip"
