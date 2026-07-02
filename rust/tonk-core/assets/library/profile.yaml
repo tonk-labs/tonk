@@ -200,6 +200,69 @@ view/directory!:
           background: var(--paper); color: var(--ink); font-family: var(--font-ui); }
         #space-wizard:checked ~ .spot-overlay { display: block; }
         .spot-untitled { color: var(--ink-faint); }
+        /* chooser paging: hidden radios switch the two screens */
+        .onb-nav { position: absolute; opacity: 0; pointer-events: none; }
+        .onb-screen { display: none; position: absolute; inset: 0; flex-direction: column;
+          align-items: center; justify-content: center; gap: 34px; padding: 60px 40px; }
+        #onb-start:checked ~ .onb-screen--start { display: flex; }
+        #onb-tmpl:checked ~ .onb-screen--tmpl { display: flex; }
+        .onb-tpl { display: none; }
+        .onb-close { position: absolute; right: 24px; top: 20px; background: none; border: none;
+          cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: var(--ink-soft); }
+        .onb-close:hover { color: var(--accent-press); }
+        .onb-back { position: absolute; left: 24px; top: 20px; background: none; border: none;
+          cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: var(--ink-soft); }
+        .onb-back:hover { color: var(--accent-press); }
+        .onb-head { text-align: center; max-width: 560px; }
+        .onb-kick { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .13em;
+          text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px; }
+        .onb-head h3 { font-family: var(--font-display); font-weight: 300; font-size: 38px;
+          letter-spacing: -1.3px; margin: 0 0 12px; color: var(--ink); }
+        .onb-lede { font-size: 16px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
+        .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; }
+        .onb-choice { background: #fff; border: 1.5px solid var(--ink); padding: 24px; cursor: pointer;
+          text-align: left; display: flex; flex-direction: column; gap: 10px; font-family: var(--font-ui); }
+        .onb-choice:hover { box-shadow: 6px 6px 0 rgba(0,0,0,.14); transform: translate(-1px,-1px); }
+        .onb-choice:hover .onb-choice__cta { color: var(--accent-press); }
+        .onb-choice__art { height: 78px; border: 1.5px solid var(--ink); display: flex;
+          align-items: center; justify-content: center; gap: 12px; margin-bottom: 6px; overflow: hidden; }
+        .onb-art--tmpl { background: #3f74f0; }
+        .onb-art--agent { background: #f6f6f1; }
+        .onb-swatch { width: 30px; height: 46px; background: #fff; border: 1.5px solid var(--ink); }
+        .onb-lines { display: flex; flex-direction: column; gap: 7px; width: 96px; }
+        .onb-lines i { height: 6px; background: rgba(0,0,0,.5); display: block; }
+        .onb-lines i:last-child { width: 62%; }
+        .onb-prompt { display: flex; flex-direction: column; gap: 7px; width: 150px; padding: 0 8px; }
+        .onb-prompt i { height: 6px; background: var(--ink); opacity: .7; display: block; }
+        .onb-prompt i:nth-child(2) { width: 88%; } .onb-prompt i:nth-child(3) { width: 72%; }
+        .onb-prompt i:last-child { width: 40%; opacity: .4; }
+        .onb-choice__name { font-family: var(--font-display); font-weight: 400; font-size: 22px;
+          letter-spacing: -.4px; color: var(--ink); }
+        .onb-choice__desc { font-size: 13.5px; line-height: 1.45; color: var(--ink-soft); }
+        .onb-choice__cta { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
+        /* template picker screen */
+        .onb-grid { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; justify-content: center; }
+        .tmpl { background: #fff; border: 1.5px solid var(--ink); padding: 18px; cursor: pointer;
+          text-align: left; display: flex; flex-direction: column; gap: 8px; font-family: var(--font-ui); }
+        .tmpl:hover { box-shadow: 5px 5px 0 rgba(0,0,0,.14); transform: translate(-1px,-1px); }
+        .tmpl-name { font-family: var(--font-display); font-weight: 400; font-size: 20px;
+          letter-spacing: -.4px; color: var(--ink); }
+        .tmpl-desc { font-size: 13px; line-height: 1.4; color: var(--ink-soft); }
+        /* highlight the chosen template card */
+        #tpl-sheets:checked ~ .onb-screen--tmpl .tmpl[data-for="tpl-sheets"],
+        #tpl-blank:checked  ~ .onb-screen--tmpl .tmpl[data-for="tpl-blank"] {
+          box-shadow: inset 0 0 0 1.5px var(--ink); border-color: var(--ink);
+        }
+        .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
+        .onb-name, .onb-remote { display: flex; flex-direction: column; gap: 6px; }
+        .onb-lab { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .12em;
+          text-transform: uppercase; color: var(--ink-soft); }
+        .onb-input { font-family: var(--font-ui); font-size: 16px; padding: 12px 14px;
+          border: 1.5px solid var(--ink); background: #fff; color: var(--ink); }
+        .onb-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+        .onb-create { font-family: var(--font-mono); font-size: 14px; padding: 12px 22px;
+          background: var(--ink); color: #fff; border: 1.5px solid var(--ink); cursor: pointer; }
+        .onb-create:hover { background: var(--accent-press); border-color: var(--accent-press); }
       </style>
 
       <input class="spot-wizard-toggle" type="checkbox" id="space-wizard">
@@ -234,8 +297,80 @@ view/directory!:
         </a>
       </div>
 
-      <!-- CHOOSER: filled in Task 3 -->
-      <div class="spot-overlay"></div>
+      <div class="spot-overlay">
+        <form class="onb-overlay-body" onsubmit=space/create>
+          <!-- chooser paging radios -->
+          <input class="onb-nav" type="radio" name="__onb" id="onb-start" checked>
+          <input class="onb-nav" type="radio" name="__onb" id="onb-tmpl">
+          <!-- chosen template, carried into space/create; default blank -->
+          <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
+          <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
+          <!-- hidden submit the agent card drives -->
+          <input type="submit" id="onb-agent-submit"
+                 style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
+
+          <!-- Screen 1: start chooser -->
+          <div class="onb-screen onb-screen--start">
+            <label class="onb-close" for="space-wizard">close</label>
+            <div class="onb-head">
+              <div class="onb-kick">new space</div>
+              <h3>How do you want to start?</h3>
+              <p class="onb-lede">Seed a ready-made layout, or start blank and hand the repo to an agent.</p>
+            </div>
+            <div class="onb-choices">
+              <label class="onb-choice" for="onb-tmpl">
+                <div class="onb-choice__art onb-art--tmpl">
+                  <div class="onb-swatch"></div>
+                  <div class="onb-lines"><i></i><i></i><i></i></div>
+                </div>
+                <div class="onb-choice__name">From a template</div>
+                <div class="onb-choice__desc">Seed the view with a ready-made layout.</div>
+                <div class="onb-choice__cta">choose a template &rsaquo;</div>
+              </label>
+              <label class="onb-choice" for="onb-agent-submit">
+                <div class="onb-choice__art onb-art--agent">
+                  <div class="onb-prompt"><i></i><i></i><i></i><i></i></div>
+                </div>
+                <div class="onb-choice__name">Build with an agent</div>
+                <div class="onb-choice__desc">Start blank; hand the repo to an agent from inside it.</div>
+                <div class="onb-choice__cta">start blank &rsaquo;</div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Screen 2: template picker + fields -->
+          <div class="onb-screen onb-screen--tmpl">
+            <label class="onb-back" for="onb-start">&lsaquo; back</label>
+            <label class="onb-close" for="space-wizard">close</label>
+            <div class="onb-head">
+              <div class="onb-kick">new space</div>
+              <h3>Pick a template</h3>
+            </div>
+            <div class="onb-grid">
+              <label class="tmpl" data-for="tpl-sheets" for="tpl-sheets">
+                <div class="tmpl-name">Sheets</div>
+                <div class="tmpl-desc">A tabbed workspace of artifacts.</div>
+              </label>
+              <label class="tmpl" data-for="tpl-blank" for="tpl-blank">
+                <div class="tmpl-name">Blank</div>
+                <div class="tmpl-desc">An empty canvas to build by hand or with an agent.</div>
+              </label>
+            </div>
+            <div class="onb-fields">
+              <div class="onb-name">
+                <label class="onb-lab" for="onb-name-input">Space name</label>
+                <input class="onb-input" id="onb-name-input" name="name" placeholder="e.g. pictures" autocomplete="off" required>
+              </div>
+              <div class="onb-remote">
+                <label class="onb-lab" for="onb-remote-input">Sync server (optional)</label>
+                <input class="onb-input" id="onb-remote-input" name="remote" placeholder="leave blank for a local-only space">
+              </div>
+              <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+              <button class="onb-create" type="submit">Create space</button>
+            </div>
+          </div>
+        </form>
+      </div>
     </div>
 
 # ============================================================
