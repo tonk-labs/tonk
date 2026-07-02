@@ -641,7 +641,6 @@ view/directory!: &profile/fab/view
           display: inline-flex;
           align-items: center;
           line-height: 1;
-          font-weight: 500;
           color: var(--fab-ink);
           max-width: 15ch;
           overflow: hidden;
@@ -821,7 +820,6 @@ view/directory!: &profile/fab/view
           box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -2px 6px rgba(20,22,8,.10);
           color: var(--fab-ink);
           text-decoration: none;
-          font-size: 13px;
           transition: background 0.15s ease;
           /* Clip a pathologically long space name to the menu's `max-width`
              cap instead of stretching the dropdown indefinitely. */
@@ -834,7 +832,7 @@ view/directory!: &profile/fab/view
         .fab__menu-item:hover {
           background: var(--fab-pill-hover);
         }
-        /* `all repos` / `new` — actions, not spaces: right-aligned and quieter,
+        /* `all repos` / `new` — actions, not spaces: right-aligned,
            rendered as a button/anchor that match the roster cards' type. */
         .fab__menu-item--action {
           display: flex;
@@ -845,10 +843,8 @@ view/directory!: &profile/fab/view
           border: 0;
           cursor: pointer;
           font: inherit;
-          color: color-mix(in oklab, var(--fab-ink) 70%, transparent);
         }
         .fab__menu-glyph {
-          font-size: 14px;
           line-height: 1;
         }
         /* ── Share / invite ─────────────────────────────────────────────
