@@ -157,6 +157,14 @@ static position, floating mid-bar.
 - A drag promotion closes any open menu (`is-open` dropped; the ratcheted
   widths stay). Dragging with a dropdown open is not a state the chrome
   supports.
+- **Amended (2026-07-02, live review):** the flip must keep the pointer on the
+  part of the bar it grabbed. Row-reversing inside a fixed box teleports the
+  circle to the bar's other end; instead, on a mid-drag mirror toggle the bar
+  SHIFTS by the grab handle's measured displacement (circle rect before vs
+  after the class flip), and the shift is folded into the drag's stored
+  start-left so subsequent pointer deltas don't undo it. Net effect: the
+  circle — and the pointer holding it — stays put while the bar swings around
+  it to the other side.
 
 ## Testing
 

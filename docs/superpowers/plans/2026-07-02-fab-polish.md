@@ -1118,3 +1118,92 @@ Expected: all pass/clean.
 ```bash
 jj commit -m "feat(fab): mirror live across the midline and dock by bar center"
 ```
+
+---
+
+### Task 13: Keep the grab handle under the pointer across a mid-drag flip (spec §9 amendment)
+
+A mid-drag mirror flip row-reverses the bar inside its fixed box, so the
+circle (the grab handle) teleports to the other end while the pointer stays
+where the circle was. Fix: shift the bar by the circle's measured displacement
+so the circle — and the pointer — stays put and the bar swings around it.
+
+**Files:**
+- Modify: `rust/tonk-fab/src/element.rs` (`apply_mirror_from_center` + a small rect helper)
+
+**Interfaces:** consumes `crate::logic::mirrored` (unchanged); nothing new produced.
+
+- [ ] **Step 1: Flip-with-compensation in `apply_mirror_from_center`**
+
+Add a helper:
+
+```rust
+/// The grab handle's (circle cap's) viewport left edge, or `None` if the
+/// bar hasn't rendered one. Reading it forces layout — which is exactly what
+/// the flip compensation needs (a fresh post-flip position).
+fn circle_left(el: &HtmlElement) -> Option<f64> {
+    el.query_selector(".fab__cap-l")
+        .ok()
+        .flatten()
+        .map(|c| c.get_bounding_client_rect().left())
+}
+```
+
+Rewrite `apply_mirror_from_center` to no-op when the state already matches,
+and to compensate when a DRAG flips it:
+
+```rust
+/// Set the mirror from the bar's current center: mirrored on the right half
+/// of the viewport, upright on the left. Called per drag move (apply_dock
+/// owns the resting sync).
+///
+/// A flip row-reverses the bar inside its fixed box, which would teleport
+/// the circle — the grab handle under the pointer — to the bar's other end.
+/// So a mid-drag flip SHIFTS the bar by the circle's measured displacement
+/// (its left edge before vs after the class toggle): the circle stays put,
+/// the bar swings around it. The shift is folded into the drag's stored
+/// `fabStartLeft` so the next pointer delta doesn't undo it.
+fn apply_mirror_from_center(el: &HtmlElement) {
+    let rect = el.get_bounding_client_rect();
+    let center = rect.left() + rect.width() / 2.0;
+    let want = mirrored(center, viewport_width());
+    if el.class_list().contains(MIRROR_CLASS) == want {
+        return;
+    }
+    let before = circle_left(el);
+    el.class_list().toggle_with_force(MIRROR_CLASS, want).ok();
+    // Compensate only while actually dragging: at promotion (and any
+    // non-drag call) the bar is at rest geometry and no pointer is anchored.
+    if el.dataset().get("fabMoved").is_none() {
+        return;
+    }
+    let (Some(before), Some(after)) = (before, circle_left(el)) else {
+        return;
+    };
+    let shift = before - after;
+    if shift != 0.0 {
+        let left = rect.left() + shift;
+        let _ = el.style().set_property("left", &format!("{left}px"));
+        let start = read_data_f64(el, "fabStartLeft") + shift;
+        el.dataset().set("fabStartLeft", &start.to_string()).ok();
+    }
+}
+```
+
+Note the call ORDER inside `on_move` stays as is (promotion block, then
+`track_position`, then `apply_mirror_from_center`) — the compensation runs
+after `track_position` has already written this move's `left`, and the next
+move's delta math uses the adjusted `fabStartLeft`, so the shift persists.
+
+- [ ] **Step 2: Verify**
+
+Run: `cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`
+Expected: clean.
+Run: `cargo test -p tonk-fab && cargo test -p tonk-worker --test standard_library`
+Expected: 28/28 and 3/3 (no logic changes).
+
+- [ ] **Step 3: Commit**
+
+```bash
+jj commit -m "fix(fab): keep the grab handle under the pointer across a mid-drag flip"
+```
