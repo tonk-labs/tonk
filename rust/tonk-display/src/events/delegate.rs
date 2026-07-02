@@ -140,8 +140,9 @@ fn handle_event(event: &Event, attr_name: &str, descriptors: &Descriptors, host:
 /// markers, each a no-op unless present:
 /// - `[data-close-dialog]` closes the element's nearest `<wa-dialog>`
 ///   (Web Awesome's `open` property → its animated close).
-/// - `[data-close-toggle="<id>"]` unchecks the checkbox with that id,
-///   used to hide a CSS-toggled full-screen overlay.
+/// - `[data-close-radio="<id>"]` checks the radio with that id — used to
+///   select the "closed" state of a CSS-radio-group overlay, which both
+///   hides it and (since the other states deselect) resets its paging.
 fn maybe_dismiss_overlay(event: &Event) {
     let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
         return;
@@ -155,15 +156,15 @@ fn maybe_dismiss_overlay(event: &Event) {
             &wasm_bindgen::JsValue::FALSE,
         );
     }
-    if let Some(marked) = target.closest("[data-close-toggle]").ok().flatten()
-        && let Some(id) = marked.get_attribute("data-close-toggle")
+    if let Some(marked) = target.closest("[data-close-radio]").ok().flatten()
+        && let Some(id) = marked.get_attribute("data-close-radio")
         && let Some(doc) = marked.owner_document()
-        && let Some(toggle) = doc.get_element_by_id(&id)
+        && let Some(radio) = doc.get_element_by_id(&id)
     {
         let _ = js_sys::Reflect::set(
-            toggle.as_ref(),
+            radio.as_ref(),
             &wasm_bindgen::JsValue::from_str("checked"),
-            &wasm_bindgen::JsValue::FALSE,
+            &wasm_bindgen::JsValue::TRUE,
         );
     }
 }

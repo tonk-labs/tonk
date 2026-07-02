@@ -194,19 +194,23 @@ view/directory!:
         .srow[data-kind="tonk:profile"] { display: none; }
         /* dim the row while the content branch is still seeding */
         .srow[data-status="tonk:blank"] .srow-name { opacity: .6; }
-        /* full-screen chooser overlay — hidden until the toggle is checked */
-        .spot-wizard-toggle { position: absolute; opacity: 0; pointer-events: none; }
+        /* Wizard state is ONE radio group: wiz-closed (default) hides the
+           overlay; wiz-start/wiz-tmpl/wiz-agent open it at a screen. "New
+           spot" targets wiz-start, so reopening always resets to the start —
+           never the last page. */
+        .spot-wiz { position: absolute; opacity: 0; pointer-events: none; }
         .spot-overlay { display: none; position: fixed; inset: 0; z-index: 50;
           background: var(--paper); color: var(--ink); font-family: var(--font-ui); }
-        #space-wizard:checked ~ .spot-overlay { display: block; }
+        #wiz-start:checked ~ .spot-overlay,
+        #wiz-tmpl:checked ~ .spot-overlay,
+        #wiz-agent:checked ~ .spot-overlay { display: block; }
         .spot-untitled { color: var(--ink-faint); }
-        /* chooser paging: hidden radios switch the screens */
-        .onb-nav { position: absolute; opacity: 0; pointer-events: none; }
+        /* chooser paging: the wiz radios (siblings of .spot-overlay) switch screens */
         .onb-screen { display: none; position: absolute; inset: 0; flex-direction: column;
           align-items: center; justify-content: center; gap: 34px; padding: 60px 40px; }
-        #onb-start:checked ~ .onb-screen--start { display: flex; }
-        #onb-tmpl:checked ~ .onb-screen--details,
-        #onb-agent:checked ~ .onb-screen--details { display: flex; }
+        #wiz-start:checked ~ .spot-overlay .onb-screen--start { display: flex; }
+        #wiz-tmpl:checked ~ .spot-overlay .onb-screen--details,
+        #wiz-agent:checked ~ .spot-overlay .onb-screen--details { display: flex; }
         .onb-tpl { display: none; }
         .onb-close { position: absolute; right: 24px; top: 20px; background: none; border: none;
           cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: var(--ink-soft); }
@@ -245,9 +249,9 @@ view/directory!:
         .onb-choice__cta { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
         /* details screen: template picker (template path only) + name + create */
         .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; justify-content: center; }
-        #onb-tmpl:checked ~ .onb-screen--details .onb-grid { display: grid; }
+        #wiz-tmpl:checked ~ .spot-overlay .onb-grid { display: grid; }
         .onb-agent-note { display: none; text-align: center; }
-        #onb-agent:checked ~ .onb-screen--details .onb-agent-note { display: block; }
+        #wiz-agent:checked ~ .spot-overlay .onb-agent-note { display: block; }
         .tmpl { background: #fff; border: 1.5px solid var(--ink); padding: 18px; cursor: pointer;
           text-align: left; display: flex; flex-direction: column; gap: 8px; font-family: var(--font-ui); }
         .tmpl:hover { box-shadow: 5px 5px 0 rgba(0,0,0,.14); transform: translate(-1px,-1px); }
@@ -270,14 +274,19 @@ view/directory!:
         .onb-create:hover { background: var(--accent-press); border-color: var(--accent-press); }
       </style>
 
-      <input class="spot-wizard-toggle" type="checkbox" id="space-wizard">
+      <!-- wizard state radio group: closed by default; each open state is a
+           distinct screen so "New spot" (→ wiz-start) always resets to start -->
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-closed" checked>
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-start">
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-tmpl">
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-agent">
 
       <header class="spot-top">
         <div class="spot-brand">
           <img class="spot-logo" src="/images/tonk-logo.svg" alt="Tonk">
           <span class="spot-badge">spot</span>
         </div>
-        <label class="spot-new" for="space-wizard">New space</label>
+        <label class="spot-new" for="wiz-start">New spot</label>
       </header>
 
       <div class="spot-list">
@@ -303,25 +312,21 @@ view/directory!:
       </div>
 
       <div class="spot-overlay">
-        <form class="onb-overlay-body" onsubmit=space/create data-close-toggle="space-wizard">
-          <!-- paging radios: which screen shows -->
-          <input class="onb-nav" type="radio" name="__onb" id="onb-start" checked>
-          <input class="onb-nav" type="radio" name="__onb" id="onb-tmpl">
-          <input class="onb-nav" type="radio" name="__onb" id="onb-agent">
+        <form class="onb-overlay-body" onsubmit=space/create data-close-radio="wiz-closed">
           <!-- chosen template, carried into space/create; default blank -->
           <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
           <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
 
           <!-- Screen 1: start chooser (navigation only, no submit) -->
           <div class="onb-screen onb-screen--start">
-            <label class="onb-close" for="space-wizard">close</label>
+            <label class="onb-close" for="wiz-closed">close</label>
             <div class="onb-head">
-              <div class="onb-kick">new space</div>
+              <div class="onb-kick">new spot</div>
               <h3>How do you want to start?</h3>
-              <p class="onb-lede">Seed a ready-made layout, or start blank and hand the repo to an agent.</p>
+              <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
             </div>
             <div class="onb-choices">
-              <label class="onb-choice" for="onb-tmpl">
+              <label class="onb-choice" for="wiz-tmpl">
                 <div class="onb-choice__art onb-art--tmpl">
                   <div class="onb-swatch"></div>
                   <div class="onb-lines"><i></i><i></i><i></i></div>
@@ -330,12 +335,12 @@ view/directory!:
                 <div class="onb-choice__desc">Seed the view with a ready-made layout.</div>
                 <div class="onb-choice__cta">choose a template &rsaquo;</div>
               </label>
-              <label class="onb-choice" for="onb-agent">
+              <label class="onb-choice" for="wiz-agent">
                 <div class="onb-choice__art onb-art--agent">
                   <div class="onb-prompt"><i></i><i></i><i></i><i></i></div>
                 </div>
                 <div class="onb-choice__name">Build with an agent</div>
-                <div class="onb-choice__desc">Start blank; hand the repo to an agent from inside it.</div>
+                <div class="onb-choice__desc">Start blank; hand the spot to an agent from inside it.</div>
                 <div class="onb-choice__cta">name it &rsaquo;</div>
               </label>
             </div>
@@ -344,11 +349,11 @@ view/directory!:
           <!-- Screen 2: details — the only submit. Name (required, visible)
                + template picker (template path) or agent note (agent path). -->
           <div class="onb-screen onb-screen--details">
-            <label class="onb-back" for="onb-start">&lsaquo; back</label>
-            <label class="onb-close" for="space-wizard">close</label>
+            <label class="onb-back" for="wiz-start">&lsaquo; back</label>
+            <label class="onb-close" for="wiz-closed">close</label>
             <div class="onb-head">
-              <div class="onb-kick">new space</div>
-              <h3>Name your space</h3>
+              <div class="onb-kick">new spot</div>
+              <h3>Name your spot</h3>
             </div>
             <div class="onb-grid">
               <label class="tmpl" data-for="tpl-sheets" for="tpl-sheets">
@@ -360,18 +365,18 @@ view/directory!:
                 <div class="tmpl-desc">An empty canvas to build by hand or with an agent.</div>
               </label>
             </div>
-            <p class="onb-agent-note onb-lede">An agent will build this space from a blank canvas.</p>
+            <p class="onb-agent-note onb-lede">An agent will build this spot from a blank canvas.</p>
             <div class="onb-fields">
               <div class="onb-name">
-                <label class="onb-lab" for="onb-name-input">Space name</label>
+                <label class="onb-lab" for="onb-name-input">Spot name</label>
                 <input class="onb-input" id="onb-name-input" name="name" placeholder="e.g. pictures" autocomplete="off" required>
               </div>
               <div class="onb-remote">
                 <label class="onb-lab" for="onb-remote-input">Sync server (optional)</label>
-                <input class="onb-input" id="onb-remote-input" name="remote" placeholder="leave blank for a local-only space">
+                <input class="onb-input" id="onb-remote-input" name="remote" placeholder="leave blank for a local-only spot">
               </div>
               <tonk-default-remote field="remote">Use this server</tonk-default-remote>
-              <button class="onb-create" type="submit">Create space</button>
+              <button class="onb-create" type="submit">Create spot</button>
             </div>
           </div>
         </form>
@@ -553,7 +558,7 @@ view/directory!: &profile/fab/view
           <ui-dropdown class="fab__menu" exclude={dom.host/data-space}>
             <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
             <a class="fab__menu-item fab__menu-item--action" href="/">
-              <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
+              <span class="fab__menu-glyph" aria-hidden="true">↰</span> all spots
             </a>
             <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
               <span class="fab__menu-glyph" aria-hidden="true">+</span> new
@@ -617,7 +622,7 @@ view/directory!: &profile/fab/view
            the iframe overlay, and so the `space/create` command + the
            `<tonk-default-remote>` resolve on this same profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
-      <wa-dialog id="fab-space-create" label="New space" class="fab__dialog">
+      <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog">
         <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create data-close-dialog>
           <style>
             /* CSS-paged wizard: a hidden radio per screen drives which
@@ -657,7 +662,7 @@ view/directory!: &profile/fab/view
 
           <!-- Screen 1: name + how to start -->
           <div class="wizard__screen wizard__screen--start">
-            <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+            <wa-input name="name" label="Spot name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
             <div class="wizard__cards">
               <label class="wizard__card" for="wiz-template">
                 <h3>Start from a template</h3>
@@ -665,7 +670,7 @@ view/directory!: &profile/fab/view
               </label>
               <label class="wizard__card" for="fab-agent-submit">
                 <h3>Build with an agent</h3>
-                <p>Start blank; hand the repo to an agent from inside it.</p>
+                <p>Start blank; hand the spot to an agent from inside it.</p>
               </label>
               <!-- Hidden submit the card's <label> drives, so the card renders
                    like the sibling <label> cards. A native <button> laid its
@@ -673,7 +678,7 @@ view/directory!: &profile/fab/view
               <input type="submit" id="fab-agent-submit" form="fab-space-create-form"
                      style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
             </div>
-            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
+            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only spot"></wa-input>
             <tonk-default-remote field="remote">Use this server</tonk-default-remote>
           </div>
 
@@ -689,7 +694,7 @@ view/directory!: &profile/fab/view
                 <p>An empty canvas to build by hand or with an agent.</p>
               </label>
             </div>
-            <wa-button type="submit" form="fab-space-create-form" variant="primary">Create space</wa-button>
+            <wa-button type="submit" form="fab-space-create-form" variant="primary">Create spot</wa-button>
             <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
           </div>
         </form>
