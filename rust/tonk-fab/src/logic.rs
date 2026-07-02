@@ -172,6 +172,13 @@ pub fn nearest_dock(center_x: f64, center_y: f64, vw: f64, vh: f64) -> Dock {
     }
 }
 
+/// Whether the bar shows MIRRORED (right-anchored) at this horizontal center.
+/// The exact midline mirrors, matching `nearest_dock`'s midline-to-right
+/// choice, so the live drag preview always agrees with the eventual snap.
+pub fn mirrored(center_x: f64, vw: f64) -> bool {
+    center_x >= vw / 2.0
+}
+
 /// The telescope animation duration, in milliseconds — each tile's
 /// `max-width` transition (wireframe `--dur: .4s`).
 pub const TELESCOPE_MS: u64 = 400;
@@ -271,6 +278,27 @@ pub fn ratchet_min_width(menu_natural: f64, segment: f64, stamped: Option<f64>) 
 /// menu) leaves the existing stamp untouched.
 pub fn corrected_min_width(menu_natural: f64) -> Option<f64> {
     (menu_natural > 0.0).then(|| menu_natural.ceil())
+}
+
+#[cfg(test)]
+mod mirror {
+    use super::*;
+
+    #[test]
+    fn a_center_left_of_the_midline_is_not_mirrored() {
+        assert!(!mirrored(499.9, 1000.0));
+    }
+
+    #[test]
+    fn a_center_right_of_the_midline_is_mirrored() {
+        assert!(mirrored(500.1, 1000.0));
+    }
+
+    #[test]
+    fn the_midline_mirrors_like_nearest_dock_falls_right() {
+        // Consistent with `nearest_dock`, whose exact midline docks right.
+        assert!(mirrored(500.0, 1000.0));
+    }
 }
 
 #[cfg(test)]

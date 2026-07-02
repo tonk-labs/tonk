@@ -12,22 +12,28 @@
 //!   animate their `max-width` open/closed, staggered, so the bar unfolds from
 //!   / retracts into the circle.
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
-//!   capturing the grab offset; `pointermove` sets the element's own
-//!   `left`/`top`; `pointerup` SNAPS the FAB to the nearest of the four corners
-//!   — by swapping its `fab-dock-*` classes and persisting the dock as a profile
-//!   claim via `window.tonk.transact(...)`. The dock classes are the only thing
-//!   Rust sets: the view stylesheet (profile.yaml) owns the resting pixel
-//!   position AND the submenu open-direction (down from a top dock, up from a
-//!   bottom one; into the viewport horizontally). A press that never moves past
-//!   a small threshold is a click.
+//!   capturing the grab offset; promotion closes any open menu and drops the
+//!   `fab-dock-*` classes; `pointermove` sets the element's own `left`/`top`
+//!   and, every move, resyncs the `fab-mirror` host class LIVE from the bar's
+//!   current center, so the visual right-anchored flip previews the eventual
+//!   snap continuously, not just at drop; `pointerup` SNAPS the FAB to the
+//!   corner nearest the BAR'S CENTER (not the pointer, so the drop always
+//!   matches what the live mirror was just showing) — by swapping its
+//!   `fab-dock-*` classes, resyncing `fab-mirror` from the dock, and
+//!   persisting the dock as a profile claim via `window.tonk.transact(...)`.
+//!   The view stylesheet (profile.yaml) owns the resting pixel position and
+//!   the menus' vertical open-direction (both keyed off `fab-dock-*`, which
+//!   only exist at rest); the visual right-anchored flips key off
+//!   `fab-mirror` instead, since that is the class still present mid-drag. A
+//!   press that never moves past a small threshold is a click.
 //! - On connect it wraps each collapsible segment for the telescope, restores
 //!   the persisted dock (or a default top-left), and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, nearest_dock, ratchet_min_width,
-    telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, mirrored, nearest_dock,
+    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -333,6 +339,34 @@ fn restamp_menu_width(seg: &Element) {
 /// The two dropdown-owning segments.
 const MENU_SEGMENTS: [&str; 2] = [".fab__repo", ".fab__share"];
 
+/// The `fab-mirror` host class carrying the visual right-anchored flips —
+/// separate from the `fab-dock-*` classes (position + menu vertical
+/// direction) because a drag removes those while the mirror must track the
+/// bar LIVE across the midline.
+const MIRROR_CLASS: &str = "fab-mirror";
+
+/// Set the mirror from the bar's current center: mirrored on the right half
+/// of the viewport, upright on the left. Called per drag move and at rest.
+fn apply_mirror_from_center(el: &HtmlElement) {
+    let rect = el.get_bounding_client_rect();
+    let center = rect.left() + rect.width() / 2.0;
+    el.class_list()
+        .toggle_with_force(MIRROR_CLASS, mirrored(center, viewport_width()))
+        .ok();
+}
+
+/// Close both dropdowns (the ratcheted widths stay). A drag drops the
+/// `fab-dock-*` classes that give an open menu its vertical anchor, so an
+/// open menu would float mid-bar; dragging with a menu open isn't a state
+/// the chrome supports.
+fn close_menus(el: &HtmlElement) {
+    for sel in MENU_SEGMENTS {
+        if let Some(seg) = el.query_selector(sel).ok().flatten() {
+            seg.class_list().remove_1("is-open").ok();
+        }
+    }
+}
+
 /// Stamp both segments' ratcheted widths up front and keep them fresh, so a
 /// dropdown OPEN never changes the bar: rows render asynchronously (a
 /// MutationObserver per menu re-ratchets as content lands) and the Plex face
@@ -613,7 +647,7 @@ fn attach_drag(element: &HtmlElement) {
         // (fast flick released outside the element before capture was taken):
         // finish the drag here so a later hover can't resume a phantom press.
         if e.buttons() == 0 {
-            finish_drag(&el_move, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+            finish_drag(&el_move, e.pointer_id());
             return;
         }
         let dx = e.client_x() as f64 - read_data_f64(&el_move, "fabDownX");
@@ -629,6 +663,9 @@ fn attach_drag(element: &HtmlElement) {
             if let Some(fab) = el_move.query_selector(".fab").ok().flatten() {
                 fab.class_list().add_1("dragging").ok();
             }
+            // A drag can't support an open menu (see `close_menus`): the
+            // dock classes it's about to drop are the menu's vertical anchor.
+            close_menus(&el_move);
             // Drop the dock class so the stylesheet's `.fab-dock-*` position
             // (which pins `bottom`/`top`) stops fighting the inline `left`/`top`
             // that now tracks the pointer 1:1.
@@ -636,11 +673,15 @@ fn attach_drag(element: &HtmlElement) {
             for c in DOCK_CLASSES {
                 cl.remove_1(c).ok();
             }
+            // The dock classes just vanished — resync the mirror from the
+            // live center immediately so it doesn't flash upright for one frame.
+            apply_mirror_from_center(&el_move);
         }
         e.prevent_default();
         let left = read_data_f64(&el_move, "fabStartLeft") + dx;
         let top = read_data_f64(&el_move, "fabStartTop") + dy;
         track_position(&el_move, left, top);
+        apply_mirror_from_center(&el_move);
     });
 
     let el_up = element.clone();
@@ -648,7 +689,7 @@ fn attach_drag(element: &HtmlElement) {
         if el_up.dataset().get("fabPressing").is_none() {
             return;
         }
-        finish_drag(&el_up, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+        finish_drag(&el_up, e.pointer_id());
     });
 
     let el_cancel = element.clone();
@@ -656,7 +697,7 @@ fn attach_drag(element: &HtmlElement) {
         if el_cancel.dataset().get("fabPressing").is_none() {
             return;
         }
-        finish_drag(&el_cancel, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+        finish_drag(&el_cancel, e.pointer_id());
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();
@@ -687,11 +728,13 @@ fn attach_drag(element: &HtmlElement) {
     on_cancel.forget();
 }
 
-/// Finish a press at viewport point `(x, y)`: clear the press flags and — if
-/// the press had been promoted to a drag — release capture, drop the dragging
-/// class, and snap/persist the nearest dock. Shared by `pointerup`,
-/// `pointercancel`, and the stale-press guard in `pointermove`.
-fn finish_drag(el: &HtmlElement, pointer_id: i32, x: f64, y: f64) {
+/// Finish a press: clear the press flags and — if the press had been promoted
+/// to a drag — release capture, drop the dragging class, and snap/persist the
+/// dock nearest the BAR'S CENTER (not the pointer), so the drop always matches
+/// the live mirror preview the bar has been showing throughout the drag.
+/// Shared by `pointerup`, `pointercancel`, and the stale-press guard in
+/// `pointermove`.
+fn finish_drag(el: &HtmlElement, pointer_id: i32) {
     el.dataset().delete("fabPressing");
     let moved = el.dataset().get("fabMoved").is_some();
     if !moved {
@@ -701,7 +744,10 @@ fn finish_drag(el: &HtmlElement, pointer_id: i32, x: f64, y: f64) {
     if let Some(fab) = el.query_selector(".fab").ok().flatten() {
         fab.class_list().remove_1("dragging").ok();
     }
-    let dock = nearest_dock(x, y, viewport_width(), viewport_height());
+    let rect = el.get_bounding_client_rect();
+    let center_x = rect.left() + rect.width() / 2.0;
+    let center_y = rect.top() + rect.height() / 2.0;
+    let dock = nearest_dock(center_x, center_y, viewport_width(), viewport_height());
     apply_dock(el, dock);
     persist_dock(dock);
 }
@@ -743,9 +789,10 @@ fn track_position(el: &HtmlElement, left: f64, top: f64) {
 
 /// Dock the FAB by swapping its `fab-dock-*` classes and clearing any drag-time
 /// inline offsets, so the view stylesheet's `.fab-dock-*` rules own the resting
-/// pixel position (and the submenu open-direction). Used at drop and on restore.
-/// Anchoring by class — not a fixed pixel offset — keeps the FAB pinned to its
-/// corner when the viewport resizes.
+/// pixel position (and the submenu open-direction), and sync the `fab-mirror`
+/// class from the dock. Used at drop and on restore. Anchoring by class — not
+/// a fixed pixel offset — keeps the FAB pinned to its corner when the
+/// viewport resizes.
 fn apply_dock(el: &HtmlElement, dock: Dock) {
     let style = el.style();
     let _ = style.remove_property("left");
@@ -759,6 +806,11 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
     for c in dock.css_classes() {
         cl.add_1(c).ok();
     }
+    // Sync the mirror from the dock, not the rect — at rest the dock IS the
+    // truth (a drag drives it from the live center instead; see
+    // `apply_mirror_from_center`).
+    cl.toggle_with_force(MIRROR_CLASS, dock.css_classes()[1] == "fab-dock-right")
+        .ok();
 }
 
 /// Persist `dock` by calling `window.tonk.transact(request)`. The request is the

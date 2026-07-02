@@ -538,13 +538,17 @@ view/directory!: &profile/fab/view
         }
         .fab__cap-l { border-radius: 36px 0 0 36px; }
         .fab__cap-r { border-radius: 0 36px 36px 0; }
-        /* Right-docked: the circle is the anchor welded to the right edge, so
+        /* Mirrored: the circle is the anchor welded to the right edge, so
            reverse the row (circle becomes the rightmost child) and the segments
            telescope leftward from it. The outer corners swap accordingly — the
-           circle cap rounds on its RIGHT, the far share cap on its LEFT. */
-        .fab-dock-right .fab { flex-direction: row-reverse; }
-        .fab-dock-right .fab__cap-l { border-radius: 0 36px 36px 0; }
-        .fab-dock-right .fab__cap-r { border-radius: 36px 0 0 36px; }
+           circle cap rounds on its RIGHT, the far share cap on its LEFT.
+           `.fab-mirror` is its own host class, set by element.rs from the
+           horizontal dock at rest and LIVE from the bar's center while
+           dragging — the dock classes vanish during a drag, so this can't key
+           off them. */
+        .fab-mirror .fab { flex-direction: row-reverse; }
+        .fab-mirror .fab__cap-l { border-radius: 0 36px 36px 0; }
+        .fab-mirror .fab__cap-r { border-radius: 36px 0 0 36px; }
         /* The grab-handle cap: a fixed 36px square (round-left) holding just the
            sync disc, centred. It is the drag handle; collapsing shrinks the whole
            bar to this cap alone (a floating disc). */
@@ -777,11 +781,15 @@ view/directory!: &profile/fab/view
         /* Dropdowns open AWAY from the docked edge — down from the top dock, up
            from the bottom, and horizontally into the viewport (rightward from a
            left dock, leftward from a right dock) — so they always unfold into
-           view. Direction is keyed off the FAB's `fab-dock-*` classes (set by
-           element.rs); no JS measuring. */
+           view. Vertical direction is keyed off the FAB's `fab-dock-*` classes
+           (set by element.rs; no JS measuring) — those persist at rest.
+           Horizontal anchoring keys off `.fab-mirror` instead: a drag drops the
+           `fab-dock-*` classes, but the mirror keeps tracking the bar's center
+           live, so an open menu (closed at drag start — see `close_menus`)
+           still re-anchors correctly the moment the bar docks again. */
         .fab-dock-top .fab__menu { top: 100%; margin-top: 7px; }
         .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 7px; }
-        .fab-dock-right .fab__menu { left: auto; right: 0; }
+        .fab-mirror .fab__menu { left: auto; right: 0; }
         /* The dropdown belongs to the repo name segment: hidden until the
            segment is CLICKED (element.rs toggles `is-open`), matching the
            wireframe where segments open their menus on click, not hover. */
@@ -949,17 +957,19 @@ view/directory!: &profile/fab/view
         /* The roster opens when the share segment is CLICKED (element.rs
            toggles `is-open`), like the repo switcher above. */
         .fab__share.is-open .fab__share-menu { display: flex; }
-        /* Mirrored on a right dock: the bar is row-reversed, so the share
-           zone is the LEFT end — its roster flips to anchor left (the repo
-           switcher already re-anchors right via `.fab-dock-right .fab__menu`).
-           Row alignment mirrors with it: actions and member cards read from
-           the bar's outer edge inward on both docks. */
-        .fab-dock-right .fab__share-menu { left: 0; right: auto; }
-        .fab-dock-right .fab__menu-item--action { justify-content: flex-start; }
-        .fab-dock-right .fab__menu-item--member { text-align: left; }
+        /* Mirrored: the bar is row-reversed, so the share zone is the LEFT
+           end — its roster flips to anchor left (the repo switcher already
+           re-anchors right via `.fab-mirror .fab__menu`). Row alignment
+           mirrors with it: actions and member cards read from the bar's outer
+           edge inward on both orientations. Keyed off `.fab-mirror`, not the
+           dock, so it tracks the live drag preview, not just the resting
+           corner. */
+        .fab-mirror .fab__share-menu { left: 0; right: auto; }
+        .fab-mirror .fab__menu-item--action { justify-content: flex-start; }
+        .fab-mirror .fab__menu-item--member { text-align: left; }
         /* Telescope tiles clip toward the circle, so the unfold reads from
-           the circle outward on a right dock too. */
-        .fab-dock-right .fab--anim .fab__tele { justify-content: flex-start; }
+           the circle outward when mirrored too. */
+        .fab-mirror .fab--anim .fab__tele { justify-content: flex-start; }
         /* Member cards: right-aligned names, matching the wireframe roster. */
         .fab__menu-item--member { text-align: right; }
       </style>
