@@ -222,19 +222,20 @@ fn attach_gestures(element: &HtmlElement) {
 ///
 /// On open the segment is widened (an eased inline `min-width`) to the menu's
 /// natural width when the menu is the wider of the two — the stylesheet's
-/// `width: 100%` then makes menu and rung exactly equal. The inline
-/// `min-width` is cleared on close so the resting bar shrink-wraps.
+/// `width: 100%` then makes menu and rung exactly equal. The stamped
+/// `min-width` RATCHETS: it is never cleared, so a column keeps its width
+/// across open/close and across the other menu's toggles, and only grows —
+/// re-measured on each open — when a wider element has entered the menu.
+/// (Clearing on close made the bar's columns visibly resize depending on
+/// which dropdown was open.)
 fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     if let Some(other) = element.query_selector(other_sel).ok().flatten() {
         other.class_list().remove_1("is-open").ok();
-        clear_menu_width(&other);
     }
     let opening = !seg.class_list().contains("is-open");
     seg.class_list().toggle_with_force("is-open", opening).ok();
     if opening {
         equalize_menu_width(seg);
-    } else {
-        clear_menu_width(seg);
     }
 }
 
@@ -258,15 +259,6 @@ fn equalize_menu_width(seg: &Element) {
             .style()
             .set_property("min-width", &format!("{min_width}px"));
     }
-}
-
-/// Drop the equalized inline `min-width` so the closed segment shrink-wraps
-/// its label again (the `min-width` transition eases it back).
-fn clear_menu_width(seg: &Element) {
-    let _ = seg
-        .unchecked_ref::<HtmlElement>()
-        .style()
-        .remove_property("min-width");
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive

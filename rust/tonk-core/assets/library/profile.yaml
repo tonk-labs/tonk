@@ -643,7 +643,7 @@ view/directory!: &profile/fab/view
           line-height: 1;
           font-weight: 500;
           color: var(--fab-ink);
-          max-width: 16ch;
+          max-width: 15ch;
           overflow: hidden;
           text-overflow: ellipsis;
         }
@@ -660,7 +660,7 @@ view/directory!: &profile/fab/view
           display: inline-block;
           font: inherit;
           color: inherit;
-          max-width: 16ch;
+          max-width: 15ch;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -697,7 +697,7 @@ view/directory!: &profile/fab/view
           align-items: center;
           line-height: 1;
           color: var(--fab-ink);
-          max-width: 16ch;
+          max-width: 24ch;
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -723,7 +723,7 @@ view/directory!: &profile/fab/view
           font: inherit;
           color: inherit;
           min-width: 2ch;
-          max-width: 16ch;
+          max-width: 24ch;
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -766,7 +766,7 @@ view/directory!: &profile/fab/view
           gap: 7px;
           /* Exactly as wide as the trigger segment. When the menu's natural
              width exceeds the segment's, element.rs stamps a matching inline
-             `min-width` on the segment as the menu opens (cleared on close),
+             `min-width` on the segment as the menu opens (never cleared — a column only ratchets wider),
              so rung and dropdown always read as one column; rows ellipsise
              within it. Anchored at `left: 0`; the share roster re-anchors
              right (`.fab__share-menu`). */
