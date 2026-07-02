@@ -103,6 +103,8 @@ view!:
         .blank-canvas {
           display: flex;
           flex-direction: column;
+          justify-content: center;
+          min-height: 100dvh;
           gap: var(--wa-space-2xl);
           width: 100%;
           max-width: 620px;
@@ -820,7 +822,7 @@ view!:
       value={name}
       data-subject={this}
       onchange=tonk/rename-repository
-      aria-label="Repository name"
+      aria-label="Spot name"
     ></tonk-editable>
 
 # ============================================================
