@@ -150,10 +150,18 @@ static position, floating mid-bar.
   alignment, tele justify) — the `fab-dock-*` classes keep only positioning
   and the menus' vertical open-direction.
 - element.rs drives `fab-mirror` continuously: from the horizontal dock at
-  rest (apply_dock), and from the FAB's CENTER vs the viewport x-midline on
-  every drag move — the bar mirrors the moment it crosses the middle.
-- The drop corner is now decided by the FAB's CENTER too (was: pointer release
-  point), so the live mirror is always a truthful preview of the snap.
+  rest (apply_dock), and during a drag from the viewport x-midline — the bar
+  mirrors the moment it crosses the middle.
+- The drop corner is decided by the same signal the mirror uses, so the live
+  mirror is always a truthful preview of the snap (was: pointer release
+  point).
+- **Corrected (task review):** the drag-time signal is the HANDLE'S (circle
+  cap's) center, not the bar's. The pointer-compensation below holds the
+  handle fixed across a flip, so a bar-center predicate would be shifted back
+  across the midline by its own compensation (≈ a bar-width per flip) and
+  oscillate; the handle is flip-invariant by construction, so no hysteresis
+  is needed. `finish_drag` docks by the handle's center on both axes — the
+  corner you dock is where the handle is.
 - A drag promotion closes any open menu (`is-open` dropped; the ratcheted
   widths stay). Dragging with a dropdown open is not a state the chrome
   supports.
