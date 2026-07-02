@@ -243,6 +243,12 @@ fn attach_gestures(element: &HtmlElement) {
 /// (Clearing on close made the bar's columns visibly resize depending on
 /// which dropdown was open.)
 fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
+    // No menu work while the bar is mid-drag (a second pointer's click): the
+    // dock classes that anchor an open menu are stripped during a drag, so an
+    // open here would float unanchored mid-bar.
+    if element.query_selector(".fab.dragging").ok().flatten().is_some() {
+        return;
+    }
     if let Some(other) = element.query_selector(other_sel).ok().flatten() {
         other.class_list().remove_1("is-open").ok();
     }
@@ -345,14 +351,50 @@ const MENU_SEGMENTS: [&str; 2] = [".fab__repo", ".fab__share"];
 /// bar LIVE across the midline.
 const MIRROR_CLASS: &str = "fab-mirror";
 
+/// The grab handle's (circle cap's) viewport left edge, or `None` if the
+/// bar hasn't rendered one. Reading it forces layout — which is exactly what
+/// the flip compensation needs (a fresh post-flip position).
+fn circle_left(el: &HtmlElement) -> Option<f64> {
+    el.query_selector(".fab__cap-l")
+        .ok()
+        .flatten()
+        .map(|c| c.get_bounding_client_rect().left())
+}
+
 /// Set the mirror from the bar's current center: mirrored on the right half
-/// of the viewport, upright on the left. Called per drag move and at rest.
+/// of the viewport, upright on the left. Called per drag move (apply_dock
+/// owns the resting sync).
+///
+/// A flip row-reverses the bar inside its fixed box, which would teleport
+/// the circle — the grab handle under the pointer — to the bar's other end.
+/// So a mid-drag flip SHIFTS the bar by the circle's measured displacement
+/// (its left edge before vs after the class toggle): the circle stays put,
+/// the bar swings around it. The shift is folded into the drag's stored
+/// `fabStartLeft` so the next pointer delta doesn't undo it.
 fn apply_mirror_from_center(el: &HtmlElement) {
     let rect = el.get_bounding_client_rect();
     let center = rect.left() + rect.width() / 2.0;
-    el.class_list()
-        .toggle_with_force(MIRROR_CLASS, mirrored(center, viewport_width()))
-        .ok();
+    let want = mirrored(center, viewport_width());
+    if el.class_list().contains(MIRROR_CLASS) == want {
+        return;
+    }
+    let before = circle_left(el);
+    el.class_list().toggle_with_force(MIRROR_CLASS, want).ok();
+    // Compensate only while actually dragging: at promotion (and any
+    // non-drag call) the bar is at rest geometry and no pointer is anchored.
+    if el.dataset().get("fabMoved").is_none() {
+        return;
+    }
+    let (Some(before), Some(after)) = (before, circle_left(el)) else {
+        return;
+    };
+    let shift = before - after;
+    if shift != 0.0 {
+        let left = rect.left() + shift;
+        let _ = el.style().set_property("left", &format!("{left}px"));
+        let start = read_data_f64(el, "fabStartLeft") + shift;
+        el.dataset().set("fabStartLeft", &start.to_string()).ok();
+    }
 }
 
 /// Close both dropdowns (the ratcheted widths stay). A drag drops the
