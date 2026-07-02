@@ -50,6 +50,8 @@ pub mod notation_format;
 mod notation_tokens;
 
 #[cfg(target_arch = "wasm32")]
+mod component;
+#[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
 mod fallback;
@@ -68,13 +70,16 @@ mod view;
 /// Register every custom element this crate ships:
 /// `<tonk-display>` (the orchestrator with subscriptions),
 /// `<tonk-view>` (the dumb single-template renderer driven by
-/// `<tonk-display>` or any other consumer), and `<tonk-notation>`
+/// `<tonk-display>` or any other consumer), `<tonk-notation>`
 /// (syntax-highlighted dialog-yaml notation renderer used as the
-/// carousel's trailing inspection slide). Idempotent.
+/// carousel's trailing inspection slide), and `<tonk-component>`
+/// (the realm-level loader for author-defined web components).
+/// Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
     view::register();
     notation::register();
     element::register();
     fallback::register();
+    component::register();
 }

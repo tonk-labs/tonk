@@ -255,6 +255,14 @@ tonk-notation {
     width: 100%;
 }
 
+/* `<tonk-component>` is a loader, not a visual: it executes its module
+   into the realm and renders nothing. Hide it (and its inert child
+   script holders) so mounting a component directory in a shell view
+   leaves no box behind. */
+tonk-component {
+    display: none;
+}
+
 /* The routing elements — `<tonk-host>`, `<tonk-repository>`,
    `<tonk-branch>` — only wire context and event bubbling; they must not
    occupy layout, so `display: contents` removes their boxes and their

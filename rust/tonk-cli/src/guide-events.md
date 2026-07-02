@@ -334,12 +334,17 @@ Two related verbs to keep apart:
 
 ### When the declarative path doesn't fit
 
-Anything that needs to render arbitrary HTML/CSS/JS without
-going through the concept-and-rule pipeline — third-party
-embeds, complex canvas drawing, a charting library — belongs
-in a sandboxed iframe view rather than in the main view body.
-That sandbox is a separate piece (`<tonk-portal>`) outside the
-scope of this guide.
+Interactions a template can't express — caret management, drag
+and drop, rich text editing — belong in a **web component** that
+dispatches `CustomEvent`s consumed by commands via
+`dom.event.detail/*`, exactly like the built-in
+`<tonk-sheet-binder>`. Components are authored as branch data
+(the `component` concept) and stay inside the concept-and-rule
+pipeline; see `tonk guide views`.
+
+Anything that instead needs a whole isolated page — third-party
+embeds, self-contained canvas apps — belongs in a sandboxed
+iframe view (`<tonk-portal>`), outside the scope of this guide.
 
 ---
 

@@ -118,6 +118,62 @@ the referenced concept, and `view` the view concept you want
 (`tonk:view/label` for just a name, `tonk:view` for the full detail
 card).
 
+## Web components
+
+Views can freely use any custom element already registered in the
+rendering realm — the built-in `<tonk-*>` elements and the Web
+Awesome `<wa-*>` set (`<wa-icon>`, `<wa-carousel>`, …) — with no
+script. A `<script>` written directly in a `display:` template never
+executes (templates render through inert fragments), so behaviour the
+template language can't express (rich editing, canvas, drag
+interactions) is packaged as a **web component** instead.
+
+A component is branch data: a `component` row whose `module` field is
+a JS module that defines your element.
+
+```yaml
+component!: &tally-widget
+  module: |
+    customElements.get('tally-widget') || customElements.define('tally-widget',
+      class extends HTMLElement {
+        connectedCallback() {
+          this.addEventListener('click', () => this.dispatchEvent(
+            new CustomEvent('bump', { bubbles: true, detail: { amount: 1 } })));
+        }
+      });
+```
+
+Mount the component directory once, in a view that always renders
+(typically your root/shell view); it is invisible and loads every
+component on the branch:
+
+```html
+<tonk-display model=component />
+```
+
+`<tonk-component>` executes each module once per realm (de-duplicated
+by content), and from then on `<tally-widget>` upgrades wherever any
+view renders it. Rules of the road:
+
+- **Guard definitions** with `customElements.get(name) ||` — a custom
+  element name cannot be redefined, so an edited component takes
+  effect on the next page load.
+- **Data flows in** through attributes the view binds (`<tally-widget
+  count={count}>`) and through child rows the view renders inside the
+  element; **actions flow out** as bubbling `CustomEvent`s, wired
+  exactly like clicks — `onbump=<command>` on the element plus
+  `dom.event.detail/amount` fields on the command (see `tonk guide
+  events`). The built-in `<tonk-sheet-binder>` works this way; your
+  components are peers of it.
+- **One-off inline form**: inside a view's `display`, a
+  `<tonk-component>` wrapping an inert holder
+  `<script type="tonk/module">…</script>` executes that source the
+  same way — handy while prototyping, before promoting the source to
+  a `component` row.
+- Components **share the realm** with every view on the branch —
+  that is the point (they compose with bindings and events). For a
+  fully isolated third-party page, use a portal (below) instead.
+
 ## Escape hatch: raw `text/html` views
 
 For a one-off HTML page (no live binding), assert a `text/html` claim
