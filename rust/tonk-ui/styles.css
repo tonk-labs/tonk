@@ -108,6 +108,51 @@ wa-tree-item:not(:defined) {
     src: url("/fonts/space-mono-latin-700-normal.woff2") format("woff2");
 }
 
+/* Control Panel launcher faces — self-hosted like the others. Gestalte
+   (display) is shipped as OpenType; IBM Plex Sans/Mono as woff2. */
+@font-face {
+    font-family: "Gestalte";
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url("/fonts/gestalte-300.otf") format("opentype");
+}
+@font-face {
+    font-family: "Gestalte";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("/fonts/gestalte-400.otf") format("opentype");
+}
+@font-face {
+    font-family: "Gestalte";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("/fonts/gestalte-700.otf") format("opentype");
+}
+@font-face {
+    font-family: "IBM Plex Sans";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-sans-400-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "IBM Plex Sans";
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-sans-600-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "IBM Plex Mono";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-mono-400-normal.woff2") format("woff2");
+}
+
 /* Brand accent → yellow-green, matching the control-panel wireframe
    (`#cbd70c`). The shoelace palette ships a blue brand; remap the brand
    semantic tokens (fills, borders, on-colors) to a chartreuse scale so
