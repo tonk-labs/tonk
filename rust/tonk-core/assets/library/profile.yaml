@@ -627,6 +627,10 @@ view/directory!: &profile/fab/view
            border-radius eases in step with the telescope. */
         .fab--anim .fab__cap-l { transition: border-radius 0.4s ease; }
         .fab--anim.fab--collapsed .fab__cap-l { border-radius: 50%; }
+        /* Ease the equalize-on-open widening (the inline `min-width`
+           element.rs stamps when a dropdown opens) so the rung unfolds
+           rather than snaps; background keeps its existing hover fade. */
+        .fab__repo, .fab__share { transition: background 0.15s ease, min-width 0.2s ease; }
         @media (prefers-reduced-motion: reduce) {
           .fab--anim .fab__tele,
           .fab--anim .fab__cap-l { transition: none; }
@@ -720,10 +724,6 @@ view/directory!: &profile/fab/view
           text-overflow: ellipsis;
           cursor: pointer;
         }
-        /* Ease the equalize-on-open widening (the inline `min-width`
-           element.rs stamps when a dropdown opens) so the rung unfolds
-           rather than snaps; background keeps its existing hover fade. */
-        .fab__repo, .fab__share { transition: background 0.15s ease, min-width 0.2s ease; }
         /* The repo name renders through nested routing/display wrappers
            (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-display>/<tonk-view>`).
            Collapse them all with `display: contents` so they generate no box and
