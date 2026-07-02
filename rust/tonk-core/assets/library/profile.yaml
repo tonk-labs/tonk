@@ -150,121 +150,92 @@ view/directory!:
   this: id:tonk:space/directory
   model: space
   display: |
-    <div class="hub">
-      <header class="hub-header">
-        <h1 class="hub-title">Spaces</h1>
-        <wa-button class="hub-new" variant="neutral" data-dialog="open space-create">New space</wa-button>
+    <div class="spot">
+      <style>
+        /* Scoped design tokens for the launcher (mock's Control Panel set).
+           Kept on .spot so they don't leak into WA-styled views. */
+        .spot {
+          --ink: #131313; --ink-soft: #3A3A38; --ink-faint: #777570;
+          --rule: #CCCCCC; --rule-soft: #E0E0E0; --paper: #FFFFFF;
+          --accent: #C71F86; --accent-press: #9E1568;
+          --lime: #DEFF1A; --band: #E7E5DB;
+          --font-display: "Gestalte", "Times New Roman", Georgia, serif;
+          --font-ui: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+          --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+          position: relative; min-height: 100dvh; background: var(--paper);
+          color: var(--ink); font-family: var(--font-ui);
+          display: flex; flex-direction: column; padding: 26px 38px 30px;
+        }
+        /* header: brand (logo + lime badge) left, New space link right */
+        .spot-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex: none; }
+        .spot-brand { display: flex; align-items: center; gap: 12px; }
+        .spot-logo { height: 42px; width: auto; display: block; }
+        .spot-badge { font-family: var(--font-ui); font-weight: 600; font-size: 19px;
+          color: var(--ink); background: var(--lime); padding: 3px 11px; line-height: 1.1; }
+        .spot-new { background: none; border: none; cursor: pointer; font-family: var(--font-ui);
+          font-size: 18px; color: var(--ink); padding: 1px 0; }
+        .spot-new:hover { color: var(--accent); }
+        /* list — vertically centered */
+        .spot-list { flex: 1; display: flex; flex-direction: column; justify-content: center;
+          gap: 0; max-width: 880px; width: 100%; margin: 0 auto; padding: 30px 0; }
+        .spot-dir-head { font-family: var(--font-display); font-size: 22px; font-weight: 700;
+          letter-spacing: -.5px; color: var(--ink); padding: 0 0 10px;
+          border-bottom: 1.5px solid var(--ink); margin-bottom: 8px; }
+        .srow { display: grid; grid-template-columns: 56px minmax(0,1fr) auto; align-items: stretch;
+          background: transparent; text-decoration: none; color: var(--ink); font-family: var(--font-ui); }
+        .srow > span { display: flex; align-items: center; padding: 18px 0; font-size: 15px; white-space: nowrap; }
+        .srow-dot { justify-content: center; }
+        .srow-name { padding-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .srow-open { padding-left: 24px; font-family: var(--font-mono); font-size: 12.5px;
+          color: var(--ink-faint); justify-content: flex-end; }
+        .srow:hover { background: var(--band); }
+        .srow:hover .srow-open { color: var(--accent-press); }
+        /* hide the profile's self-replica row */
+        .srow[data-kind="tonk:profile"] { display: none; }
+        /* dim the row while the content branch is still seeding */
+        .srow[data-status="tonk:blank"] .srow-name { opacity: .6; }
+        /* full-screen chooser overlay — hidden until the toggle is checked */
+        .spot-wizard-toggle { position: absolute; opacity: 0; pointer-events: none; }
+        .spot-overlay { display: none; position: fixed; inset: 0; z-index: 50;
+          background: var(--paper); color: var(--ink); font-family: var(--font-ui); }
+        #space-wizard:checked ~ .spot-overlay { display: block; }
+        .spot-untitled { color: var(--ink-faint); }
+      </style>
+
+      <input class="spot-wizard-toggle" type="checkbox" id="space-wizard">
+
+      <header class="spot-top">
+        <div class="spot-brand">
+          <img class="spot-logo" src="/images/tonk-logo.svg" alt="Tonk">
+          <span class="spot-badge">spot</span>
+        </div>
+        <label class="spot-new" for="space-wizard">New space</label>
       </header>
-      <wa-dialog id="space-create" label="New space" class="hub-dialog">
-        <form id="space-create-form" class="hub-form wizard" onsubmit=space/create data-close-dialog>
-          <style>
-            /* CSS-paged wizard: a hidden radio per screen drives which
-               .wizard__screen shows. The form submits once at the end, so
-               every control (name, template, remote) is in the same form
-               and read via dom.event.current-target.elements.* . */
-            .wizard__nav { position: absolute; opacity: 0; pointer-events: none; }
-            .wizard__screen { display: none; flex-direction: column; gap: var(--wa-space-m); }
-            #wiz-start:checked    ~ .wizard__screen--start    { display: flex; }
-            #wiz-template:checked ~ .wizard__screen--template { display: flex; }
-            .wizard__cards { display: flex; gap: var(--wa-space-m); }
-            .wizard__card {
-              flex: 1; display: block; padding: var(--wa-space-l);
-              border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-              border-radius: var(--wa-border-radius-m); cursor: pointer; text-align: left;
-              font: inherit; background: var(--wa-color-surface-default);
-            }
-            .wizard__card:hover { border-color: var(--wa-color-text-normal); }
-            /* Highlight the chosen template card so the selection is legible. */
-            #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
-            #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
-              border-color: var(--wa-color-text-normal);
-              box-shadow: inset 0 0 0 1px var(--wa-color-text-normal);
-            }
-            .wizard__card h3 { margin: 0 0 var(--wa-space-2xs); font-size: var(--wa-font-size-l); max-width: 100%; }
-            .wizard__card p { margin: 0; font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
-            .wizard__template { display: none; }
-          </style>
 
-          <!-- screen radios -->
-          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-start" checked>
-          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-template">
-
-          <!-- the chosen template, carried into space/create; default blank -->
-          <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
-          <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
-
-          <!-- Screen 1: name + how to start -->
-          <div class="wizard__screen wizard__screen--start">
-            <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
-            <div class="wizard__cards">
-              <label class="wizard__card" for="wiz-template">
-                <h3>Start from a template</h3>
-                <p>Seed the view with a ready-made layout.</p>
-              </label>
-              <label class="wizard__card" for="hub-agent-submit">
-                <h3>Build with an agent</h3>
-                <p>Start blank; hand the repo to an agent from inside it.</p>
-              </label>
-              <!-- Hidden submit the card's <label> drives, so the card renders
-                   like the sibling <label> cards. A native <button> laid its
-                   heading's dark box outside the card border. -->
-              <input type="submit" id="hub-agent-submit" form="space-create-form"
-                     style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
-            </div>
-            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
-            <tonk-default-remote field="remote">Use this server</tonk-default-remote>
-          </div>
-
-          <!-- Screen 2: pick a template -->
-          <div class="wizard__screen wizard__screen--template">
-            <div class="wizard__cards">
-              <label class="wizard__card" for="tpl-sheets">
-                <h3>Sheets</h3>
-                <p>A tabbed workspace of artifacts.</p>
-              </label>
-              <label class="wizard__card" for="tpl-blank">
-                <h3>Blank</h3>
-                <p>An empty canvas to build by hand or with an agent.</p>
-              </label>
-            </div>
-            <wa-button type="submit" form="space-create-form" variant="primary">Create space</wa-button>
-            <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
-          </div>
-        </form>
-        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-      </wa-dialog>
-      <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
-        <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
-        <span class="hub-card__body">
-          <span class="hub-card__name">
+      <div class="spot-list">
+        <div class="spot-dir-head">Directory</div>
+        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
+          <span class="srow-dot"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="srow-name">
             <tonk-host>
               <tonk-repository name={subject}>
                 <tonk-branch name="main">
                   <tonk-display entity={subject} model=tonk:repository view=tonk:view/label>
-                    <span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span>
-                    <span slot="no-model" class="hub-card__untitled" hidden>Untitled</span>
-                    <span slot="no-view" class="hub-card__untitled" hidden>Untitled</span>
-                    <span slot="loading" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
+                    <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
+                    <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
+                    <span slot="loading" class="spot-untitled" hidden>Untitled</span>
                   </tonk-display>
                 </tonk-branch>
               </tonk-repository>
             </tonk-host>
           </span>
-          <span class="hub-card__url">/space/{subject}</span>
-          <span class="hub-card__status"></span>
-        </span>
-        <!-- Sync status: the host-chrome `<ui-sync-status>` element (defined in
-             Rust, space-agnostic — a space can't redefine or break it), scoped
-             to this card's space branch via the `<tonk-repository>` ancestor. It
-             SUBSCRIBES to the `tonk:sync` `state:here` status the worker stamps,
-             so it updates live as the background sync drain reconciles — unlike
-             the old `<tonk-sync-badge>`, which fetched once on mount (and on
-             commit/toggle, neither of which fires on the Hub) and froze on a
-             stale reading. Read-only: sync pausing currently has no chrome
-             affordance (the `tonk:pause-sync` command remains for a future
-             one). -->
-        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
-      </a>
+          <span class="srow-open">open</span>
+        </a>
+      </div>
+
+      <!-- CHOOSER: filled in Task 3 -->
+      <div class="spot-overlay"></div>
     </div>
 
 # ============================================================
