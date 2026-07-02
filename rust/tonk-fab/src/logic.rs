@@ -242,6 +242,17 @@ pub fn dock_claim_json(dock: Dock) -> Value {
     })
 }
 
+/// The inline `min-width` (px) to stamp on a bar segment when its dropdown
+/// opens: the menu's natural (max-content) width when that EXCEEDS the
+/// segment, so the rung widens — whitespace filling around its label — and
+/// the menu (styled `width: 100%`) lands exactly as wide as the rung. `None`
+/// when the segment is already at least as wide (the menu's `width: 100%`
+/// alone matches them). Only ever widens; a menu narrower than its segment
+/// never shrinks the bar.
+pub fn menu_min_width(menu_natural: f64, segment: f64) -> Option<f64> {
+    (menu_natural > segment).then(|| menu_natural.ceil())
+}
+
 #[cfg(test)]
 mod dock {
     use super::*;
@@ -485,5 +496,23 @@ mod persist {
             "xyz.tonk.fab/dock"
         );
         assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+}
+
+#[cfg(test)]
+mod menu {
+    use super::*;
+
+    #[test]
+    fn a_wider_menu_widens_the_segment() {
+        // Fractional natural widths round UP so the stamped min-width never
+        // undershoots the menu by a subpixel.
+        assert_eq!(menu_min_width(220.4, 120.0), Some(221.0));
+    }
+
+    #[test]
+    fn a_narrower_or_equal_menu_leaves_the_segment_alone() {
+        assert_eq!(menu_min_width(80.0, 120.0), None);
+        assert_eq!(menu_min_width(120.0, 120.0), None);
     }
 }
