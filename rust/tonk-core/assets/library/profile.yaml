@@ -1076,11 +1076,12 @@ view/directory!: &profile/fab/view
           bottom: -7px;
           height: 7px;
         }
-        /* The space roster renders its rows inside a single `<tonk-display>`
-           wrapper, so the menu's flex `gap` can't reach them. `display:contents`
-           lifts the roster anchors into the menu's flex flow so every row —
-           roster and action alike — gets the same gap. */
-        .fab__menu > tonk-display { display: contents; }
+        /* The spot roster renders its rows inside a `<tonk-display>`/`<tonk-view>`
+           pair, so the menu's flex `gap` can't reach them unless BOTH collapse.
+           `display:contents` on the pair lifts the roster anchors into the menu's
+           flex flow so every row — roster and action alike — shares the 7px gap. */
+        .fab__menu > tonk-display,
+        .fab__menu > tonk-display > tonk-view { display: contents; }
         /* Each row is its own floating card in the SAME material as the bar
            segments — the inverted cream `--fab-pill` with `--fab-ink` text (the
            wireframe's `.cp-nav-row` reuses the bar's `--pill`), so the dropdown
