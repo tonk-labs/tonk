@@ -630,6 +630,7 @@ view/directory!: &profile/fab/view
         @media (prefers-reduced-motion: reduce) {
           .fab--anim .fab__tele,
           .fab--anim .fab__cap-l { transition: none; }
+          .fab__repo, .fab__share { transition: background 0.15s ease; }
         }
         /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
            (set inline by element.rs) inside the full-viewport iframe. Suppress
@@ -719,6 +720,10 @@ view/directory!: &profile/fab/view
           text-overflow: ellipsis;
           cursor: pointer;
         }
+        /* Ease the equalize-on-open widening (the inline `min-width`
+           element.rs stamps when a dropdown opens) so the rung unfolds
+           rather than snaps; background keeps its existing hover fade. */
+        .fab__repo, .fab__share { transition: background 0.15s ease, min-width 0.2s ease; }
         /* The repo name renders through nested routing/display wrappers
            (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-display>/<tonk-view>`).
            Collapse them all with `display: contents` so they generate no box and
@@ -780,15 +785,13 @@ view/directory!: &profile/fab/view
           display: none;
           flex-direction: column;
           gap: 7px;
-          /* At LEAST as wide as the trigger (`min-width: 100%` of the positioned
-             `.fab__repo`), but grows to fit its widest row (`width: max-content`)
-             so labels like "all repos" aren't clipped. A pathologically long
-             space name is capped by `max-width` and ellipsised inside its row
-             (`.fab__menu-item` below). Anchored at `left: 0` so it grows
-             rightward; the share roster re-anchors right (`.fab__share-menu`). */
-          min-width: 100%;
-          width: max-content;
-          max-width: 280px;
+          /* Exactly as wide as the trigger segment. When the menu's natural
+             width exceeds the segment's, element.rs stamps a matching inline
+             `min-width` on the segment as the menu opens (cleared on close),
+             so rung and dropdown always read as one column; rows ellipsise
+             within it. Anchored at `left: 0`; the share roster re-anchors
+             right (`.fab__share-menu`). */
+          width: 100%;
           z-index: 100;
         }
         /* Dropdowns open AWAY from the docked edge — down from the top dock, up

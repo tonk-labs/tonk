@@ -27,7 +27,8 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, dock_claim_json, nearest_dock, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, dock_claim_json, menu_min_width, nearest_dock, telescope_delay_ms,
+    telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -244,12 +245,54 @@ fn attach_gestures(element: &HtmlElement) {
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
 /// closing the other menu (matched by `other_sel`) so only one is open at a time.
 /// The open-direction is CSS, keyed off the FAB's `fab-dock-*` class.
+///
+/// On open the segment is widened (an eased inline `min-width`) to the menu's
+/// natural width when the menu is the wider of the two — the stylesheet's
+/// `width: 100%` then makes menu and rung exactly equal. The inline
+/// `min-width` is cleared on close so the resting bar shrink-wraps.
 fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     if let Some(other) = element.query_selector(other_sel).ok().flatten() {
         other.class_list().remove_1("is-open").ok();
+        clear_menu_width(&other);
     }
     let opening = !seg.class_list().contains("is-open");
     seg.class_list().toggle_with_force("is-open", opening).ok();
+    if opening {
+        equalize_menu_width(seg);
+    } else {
+        clear_menu_width(seg);
+    }
+}
+
+/// Measure the just-opened menu's natural (max-content) width — momentarily
+/// overriding the stylesheet's `width: 100%`, reading the box, restoring —
+/// and stamp the segment's inline `min-width` when the menu is wider. Runs
+/// after `is-open` lands (the menu must be laid out to measure) but within
+/// the same task, so nothing paints at the unmeasured width.
+fn equalize_menu_width(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let style = menu.unchecked_ref::<HtmlElement>().style();
+    let _ = style.set_property("width", "max-content");
+    let natural = menu.get_bounding_client_rect().width();
+    let _ = style.remove_property("width");
+    let segment = seg.get_bounding_client_rect().width();
+    if let Some(min_width) = menu_min_width(natural, segment) {
+        let _ = seg
+            .unchecked_ref::<HtmlElement>()
+            .style()
+            .set_property("min-width", &format!("{min_width}px"));
+    }
+}
+
+/// Drop the equalized inline `min-width` so the closed segment shrink-wraps
+/// its label again (the `min-width` transition eases it back).
+fn clear_menu_width(seg: &Element) {
+    let _ = seg
+        .unchecked_ref::<HtmlElement>()
+        .style()
+        .remove_property("min-width");
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
