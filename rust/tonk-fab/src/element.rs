@@ -10,8 +10,7 @@
 //! - Telescope collapse/expand: the bar rests EXPANDED (all segments shown).
 //!   A plain click on the circle toggles it — the segments after the cap
 //!   animate their `max-width` open/closed, staggered, so the bar unfolds from
-//!   / retracts into the circle. A DOUBLE click toggles pause/resume of sync
-//!   (the circle is the pause switch, matching the control-panel wireframe).
+//!   / retracts into the circle.
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
 //!   capturing the grab offset; `pointermove` sets the element's own
 //!   `left`/`top`; `pointerup` SNAPS the FAB to the nearest of the four corners
@@ -110,13 +109,11 @@ impl CustomElement for TonkFab {
     fn disconnected_callback(&mut self, this: &HtmlElement) {
         // Cancel any pending timers so their closures don't fire against a
         // detached element.
-        for key in ["settleTimer", "tapTimer", "editTimer"] {
-            if let Some(id_str) = this.dataset().get(key) {
-                if let Ok(id) = id_str.parse::<i32>() {
-                    clear_timeout(id);
-                }
-                this.dataset().delete(key);
+        if let Some(id_str) = this.dataset().get("settleTimer") {
+            if let Ok(id) = id_str.parse::<i32>() {
+                clear_timeout(id);
             }
+            this.dataset().delete("settleTimer");
         }
     }
 
@@ -179,13 +176,13 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
     fab.class_list().add_2("fab--anim", "fab--settled").ok();
 }
 
-/// Attach the FAB's NATIVE click/dblclick gesture listeners. Because only the
-/// circle is draggable (see `attach_drag`), the pointer is never captured over a
-/// segment, so the browser's own `click`/`dblclick` fire normally — no manual
-/// tap detection, no timers. The listeners sit on the `<tonk-fab>` host and
-/// route by the event target:
+/// Attach the FAB's NATIVE click gesture listener. Because only the circle is
+/// draggable (see `attach_drag`), the pointer is never captured over a
+/// segment, so the browser's own `click` fires normally — no manual tap
+/// detection, no timers. The listener sits on the `<tonk-fab>` host and
+/// routes by the event target:
 ///
-/// - CIRCLE cap: `click` folds/expands the bar, `dblclick` pauses/resumes sync.
+/// - CIRCLE cap: `click` folds/expands the bar.
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -197,12 +194,7 @@ fn attach_gestures(element: &HtmlElement) {
             return;
         };
         if t.closest(".fab__cap-l").ok().flatten().is_some() {
-            // Only the FIRST click of a click sequence folds the bar; the second
-            // click of a double (`detail == 2`) is left for `dblclick` to pause,
-            // so a double-click doesn't fold-then-fold back.
-            if e.detail() <= 1 {
-                toggle_telescope(&el_click);
-            }
+            toggle_telescope(&el_click);
         } else if t
             .closest(".fab__menu, .fab__share-menu")
             .ok()
@@ -217,29 +209,11 @@ fn attach_gestures(element: &HtmlElement) {
         }
     });
 
-    let el_dbl = element.clone();
-    let on_dbl = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
-        // Double-clicking the circle pauses/resumes sync (its ring already shows
-        // the state). The browser fires one `click` (which folds once) before
-        // this `dblclick`; reverse that fold so a double-click reads as ONLY a
-        // pause, not a fold. Double-click on editables is handled by the editable.
-        if let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok())
-            && t.closest(".fab__cap-l").ok().flatten().is_some()
-        {
-            toggle_telescope(&el_dbl);
-            trigger_pause_toggle(&el_dbl);
-        }
-    });
-
     let target: &web_sys::EventTarget = element.unchecked_ref();
     target
         .add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref())
         .ok();
-    target
-        .add_event_listener_with_callback("dblclick", on_dbl.as_ref().unchecked_ref())
-        .ok();
     on_click.forget();
-    on_dbl.forget();
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -442,72 +416,6 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     settle_once.forget();
     let id = set_timeout(&settle_fn, telescope_settle_ms(count) as i32);
     element.dataset().set("settleTimer", &id.to_string()).ok();
-}
-
-/// The circle's double-click — pause or resume, whichever the current state
-/// isn't. `tonk:pause-sync` is a single TOGGLE command, so the same submit both
-/// pauses and resumes; only the confirmation UX differs by direction:
-///
-/// - When SYNCED, we open the `#fab-pause-sync` confirm dialog — pausing has a
-///   consequence (changes stop propagating), so we confirm first.
-/// - When already PAUSED, we resume IMMEDIATELY — resuming is safe and needs no
-///   confirmation — by submitting the toggle form directly (the same form the
-///   dialog's "Pause sync" button submits).
-///
-/// The live state comes off the `<ui-sync-status>` disc, whose subscription
-/// stamps a `.sync--paused` modifier class as the status changes.
-fn trigger_pause_toggle(element: &HtmlElement) {
-    if is_sync_paused(element) {
-        submit_pause_form(element);
-    } else {
-        open_pause_dialog(element);
-    }
-}
-
-/// Whether sync is currently paused, read from the `<ui-sync-status>` disc's
-/// state modifier class (`.sync--paused`), which its subscription keeps live.
-fn is_sync_paused(element: &HtmlElement) -> bool {
-    element
-        .query_selector(".sync--paused")
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-/// Open the pause-sync confirm dialog. We call the WebAwesome dialog's `.show()`
-/// (not just `open`) so the guest's modal wiring — which listens for `wa-show`
-/// to size the sealed iframe — fires, the same path a `data-dialog="open …"`
-/// control triggers. Falls back to the `open` attribute if `.show()` is absent.
-fn open_pause_dialog(element: &HtmlElement) {
-    let Some(dialog) = element.query_selector("#fab-pause-sync").ok().flatten() else {
-        return;
-    };
-    if let Ok(show) = Reflect::get(dialog.as_ref(), &"show".into())
-        && let Ok(show) = show.dyn_into::<Function>()
-    {
-        let _ = show.call0(dialog.as_ref());
-    } else {
-        let _ = dialog.set_attribute("open", "");
-    }
-}
-
-/// Resume directly: submit the toggle form the dialog's Pause button targets,
-/// which carries the `onsubmit=tonk:pause-sync` binding routed to the space
-/// branch. `requestSubmit()` (not `submit()`) so the form's `submit` event —
-/// which the command delegation listens for — actually fires.
-fn submit_pause_form(element: &HtmlElement) {
-    let Some(form) = element
-        .query_selector("#fab-pause-sync-form")
-        .ok()
-        .flatten()
-    else {
-        return;
-    };
-    if let Ok(request_submit) = Reflect::get(form.as_ref(), &"requestSubmit".into())
-        && let Ok(request_submit) = request_submit.dyn_into::<Function>()
-    {
-        let _ = request_submit.call0(form.as_ref());
-    }
 }
 
 /// Attach pointer event listeners for free drag-and-drop. The element moves

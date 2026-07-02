@@ -435,27 +435,6 @@ view/directory!: &profile/fab/view
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
-      <!-- Pause-sync confirm dialog + form — opened by DOUBLE-CLICKING the FAB
-           circle (element.rs `trigger_pause_toggle`). The DIALOG lives on the
-           FAB's own profile/meta branch (like the create-space dialog above), so
-           it's plain chrome here. Only the FORM is wrapped in the space's nested
-           `<tonk-repository name={space}>` context, because `tonk:pause-sync`
-           flips the durable `enabled` boolean on the space's OWN replica and so
-           must resolve + dispatch on the space's content branch (binding it on
-           profile/meta would target the wrong repo). The dialog's button submits
-           the repo-scoped form by id via WebAwesome's external `form=` attribute.
-           The command is a toggle, so the same dialog resumes when paused. -->
-      <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
-        <tonk-display model="tonk:repository" view="tonk:view/fab-pause"></tonk-display>
-      </tonk-branch></tonk-repository></tonk-host>
-      <wa-dialog id="fab-pause-sync" label="Pause sync?" class="fab__dialog">
-        <p>Your changes won't reach other devices and agents until you resume. Local edits are buffered; incoming edits are queued.</p>
-        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="fab-pause-sync-form" data-dialog="close" autofocus>
-          <wa-icon slot="start" name="pause"></wa-icon>
-          Pause sync
-        </wa-button>
-      </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
 
