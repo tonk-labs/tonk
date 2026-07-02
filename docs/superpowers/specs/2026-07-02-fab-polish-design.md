@@ -15,6 +15,11 @@ lives in two places: the `tonk:profile/fab` view (markup + CSS) in
 - No new assets: the woff2s (400/500/600/700) already ship in
   `rust/tonk-ui/assets/fonts/` and the portal bridge inlines `/fonts/*.woff2`
   into the sealed iframe as data URLs.
+- **Amended (2026-07-02, live review):** text is UNIFORM across the control,
+  matching the wireframe — one size, weight, and ink everywhere. Drop the
+  `font-weight: 500` on the profile name, the `font-size: 13px` on menu rows
+  and `14px` on the menu glyph (all inherit the bar's 16px), and the 70%-ink
+  dim on the "all repos" / "+ new" action rows (full `--fab-ink`).
 
 ## 2. 7px gaps around dropdowns
 

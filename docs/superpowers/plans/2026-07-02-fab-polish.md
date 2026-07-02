@@ -492,3 +492,61 @@ Expected: clean.
 ```bash
 jj commit -m "feat(fab): ratchet equalized segment widths and retune name caps"
 ```
+
+---
+
+### Task 7: Uniform text across the control (live-review amendment)
+
+The wireframe sets every label — bar segments and dropdown rows — in one size,
+weight, and ink. The live FAB deviates three ways (spec §1 amendment,
+2026-07-02). All edits are in the FAB `<style>` block of
+`rust/tonk-core/assets/library/profile.yaml`.
+
+**Files:**
+- Modify: `rust/tonk-core/assets/library/profile.yaml`
+
+**Interfaces:** none — presentational CSS only.
+
+- [ ] **Step 1: Drop the three deviations**
+
+In the `.fab__name` rule, delete the line:
+
+```css
+          font-weight: 500;
+```
+
+In the `.fab__menu-item` rule, delete the line (rows then inherit the bar's
+16px from `.fab`):
+
+```css
+          font-size: 13px;
+```
+
+In the `.fab__menu-glyph` rule, delete the line (the glyph inherits the row
+size):
+
+```css
+          font-size: 14px;
+```
+
+In the `.fab__menu-item--action` rule, delete the line (actions then inherit
+`.fab__menu-item`'s full `--fab-ink`):
+
+```css
+          color: color-mix(in oklab, var(--fab-ink) 70%, transparent);
+```
+
+Update the comment above `.fab__menu-item--action` — it currently reads
+"actions, not spaces: right-aligned and quieter" — drop the "and quieter"
+claim (they are no longer dimmed).
+
+- [ ] **Step 2: Verify**
+
+Run: `cargo test -p tonk-worker --test standard_library`
+Expected: PASS (YAML still parses/lowers).
+
+- [ ] **Step 3: Commit**
+
+```bash
+jj commit -m "feat(fab): unify text size, weight, and ink across the control"
+```
