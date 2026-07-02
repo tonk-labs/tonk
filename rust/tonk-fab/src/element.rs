@@ -10,24 +10,31 @@
 //! - Telescope collapse/expand: the bar rests EXPANDED (all segments shown).
 //!   A plain click on the circle toggles it — the segments after the cap
 //!   animate their `max-width` open/closed, staggered, so the bar unfolds from
-//!   / retracts into the circle. A DOUBLE click toggles pause/resume of sync
-//!   (the circle is the pause switch, matching the control-panel wireframe).
+//!   / retracts into the circle.
 //! - Drag: `pointerdown` (not on an interactive descendant) starts a free drag,
-//!   capturing the grab offset; `pointermove` sets the element's own
-//!   `left`/`top`; `pointerup` SNAPS the FAB to the nearest of the four corners
-//!   — by swapping its `fab-dock-*` classes and persisting the dock as a profile
-//!   claim via `window.tonk.transact(...)`. The dock classes are the only thing
-//!   Rust sets: the view stylesheet (profile.yaml) owns the resting pixel
-//!   position AND the submenu open-direction (down from a top dock, up from a
-//!   bottom one; into the viewport horizontally). A press that never moves past
-//!   a small threshold is a click.
+//!   capturing the grab offset; promotion closes any open menu and drops the
+//!   `fab-dock-*` classes; `pointermove` sets the element's own `left`/`top`
+//!   and, every move, resyncs the `fab-mirror` host class LIVE from the drag
+//!   HANDLE's current center (the circle cap — held fixed across mirror
+//!   flips), so the visual right-anchored flip previews the eventual snap
+//!   continuously, not just at drop; `pointerup` SNAPS the FAB to the corner
+//!   nearest the HANDLE'S CENTER (the same anchor, so the drop always
+//!   matches what the live mirror was just showing) — by swapping its
+//!   `fab-dock-*` classes, resyncing `fab-mirror` from the dock, and
+//!   persisting the dock as a profile claim via `window.tonk.transact(...)`.
+//!   The view stylesheet (profile.yaml) owns the resting pixel position and
+//!   the menus' vertical open-direction (both keyed off `fab-dock-*`, which
+//!   only exist at rest); the visual right-anchored flips key off
+//!   `fab-mirror` instead, since that is the class still present mid-drag. A
+//!   press that never moves past a small threshold is a click.
 //! - On connect it wraps each collapsible segment for the telescope, restores
 //!   the persisted dock (or a default top-left), and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, dock_claim_json, nearest_dock, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, mirrored, nearest_dock,
+    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -36,7 +43,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlElement, PointerEvent, window};
+use web_sys::{Element, HtmlElement, MutationObserver, MutationObserverInit, PointerEvent, window};
 
 // web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
 // features we have, so we call them via js_sys::Function from the global.
@@ -101,6 +108,7 @@ impl CustomElement for TonkFab {
             wrap_telescope_tiles(this);
             attach_drag(this);
             attach_gestures(this);
+            preload_menu_widths(this);
         }
         // Restore the persisted position and apply it to our own style.
         restore_position(this);
@@ -109,14 +117,19 @@ impl CustomElement for TonkFab {
     fn disconnected_callback(&mut self, this: &HtmlElement) {
         // Cancel any pending timers so their closures don't fire against a
         // detached element.
-        for key in ["settleTimer", "tapTimer", "editTimer"] {
-            if let Some(id_str) = this.dataset().get(key) {
-                if let Ok(id) = id_str.parse::<i32>() {
-                    clear_timeout(id);
-                }
-                this.dataset().delete(key);
+        if let Some(id_str) = this.dataset().get("settleTimer") {
+            if let Ok(id) = id_str.parse::<i32>() {
+                clear_timeout(id);
             }
+            this.dataset().delete("settleTimer");
         }
+
+        // Drop any in-flight press: the window-scoped drag listeners outlive
+        // a clone remount, and a press left armed on the old element would
+        // let its stale `finish_drag` persist a phantom dock on the next
+        // buttons-up move.
+        this.dataset().delete("fabPressing");
+        this.dataset().delete("fabMoved");
     }
 
     fn attribute_changed_callback(
@@ -178,13 +191,13 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
     fab.class_list().add_2("fab--anim", "fab--settled").ok();
 }
 
-/// Attach the FAB's NATIVE click/dblclick gesture listeners. Because only the
-/// circle is draggable (see `attach_drag`), the pointer is never captured over a
-/// segment, so the browser's own `click`/`dblclick` fire normally — no manual
-/// tap detection, no timers. The listeners sit on the `<tonk-fab>` host and
-/// route by the event target:
+/// Attach the FAB's NATIVE click gesture listener. Because only the circle is
+/// draggable (see `attach_drag`), the pointer is never captured over a
+/// segment, so the browser's own `click` fires normally — no manual tap
+/// detection, no timers. The listener sits on the `<tonk-fab>` host and
+/// routes by the event target:
 ///
-/// - CIRCLE cap: `click` folds/expands the bar, `dblclick` pauses/resumes sync.
+/// - CIRCLE cap: `click` folds/expands the bar.
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -196,12 +209,7 @@ fn attach_gestures(element: &HtmlElement) {
             return;
         };
         if t.closest(".fab__cap-l").ok().flatten().is_some() {
-            // Only the FIRST click of a click sequence folds the bar; the second
-            // click of a double (`detail == 2`) is left for `dblclick` to pause,
-            // so a double-click doesn't fold-then-fold back.
-            if e.detail() <= 1 {
-                toggle_telescope(&el_click);
-            }
+            toggle_telescope(&el_click);
         } else if t
             .closest(".fab__menu, .fab__share-menu")
             .ok()
@@ -216,40 +224,265 @@ fn attach_gestures(element: &HtmlElement) {
         }
     });
 
-    let el_dbl = element.clone();
-    let on_dbl = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
-        // Double-clicking the circle pauses/resumes sync (its ring already shows
-        // the state). The browser fires one `click` (which folds once) before
-        // this `dblclick`; reverse that fold so a double-click reads as ONLY a
-        // pause, not a fold. Double-click on editables is handled by the editable.
-        if let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok())
-            && t.closest(".fab__cap-l").ok().flatten().is_some()
-        {
-            toggle_telescope(&el_dbl);
-            trigger_pause_toggle(&el_dbl);
-        }
-    });
-
     let target: &web_sys::EventTarget = element.unchecked_ref();
     target
         .add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref())
         .ok();
-    target
-        .add_event_listener_with_callback("dblclick", on_dbl.as_ref().unchecked_ref())
-        .ok();
     on_click.forget();
-    on_dbl.forget();
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
 /// closing the other menu (matched by `other_sel`) so only one is open at a time.
 /// The open-direction is CSS, keyed off the FAB's `fab-dock-*` class.
+///
+/// On open the segment is widened (an eased inline `min-width`) to the menu's
+/// natural width when the menu is the wider of the two — the stylesheet's
+/// `width: 100%` then makes menu and rung exactly equal. The stamped
+/// `min-width` RATCHETS: it is never cleared, so a column keeps its width
+/// across open/close and across the other menu's toggles, and only grows —
+/// re-measured on each open — when a wider element has entered the menu.
+/// (Clearing on close made the bar's columns visibly resize depending on
+/// which dropdown was open.)
 fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
+    // No menu work while the bar is mid-drag (a second pointer's click): the
+    // dock classes that anchor an open menu are stripped during a drag, so an
+    // open here would float unanchored mid-bar.
+    if element
+        .query_selector(".fab.dragging")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
     if let Some(other) = element.query_selector(other_sel).ok().flatten() {
         other.class_list().remove_1("is-open").ok();
     }
     let opening = !seg.class_list().contains("is-open");
     seg.class_list().toggle_with_force("is-open", opening).ok();
+    if opening {
+        equalize_menu_width(seg);
+    }
+}
+
+/// Measure the menu's natural (max-content) width — momentarily overriding
+/// the stylesheet's `width: 100%`, reading the box, restoring — and stamp the
+/// segment's inline `min-width` to the RATCHETED target (never below a prior
+/// stamp — see `ratchet_min_width`). Works whether the menu is open or
+/// closed: a closed menu (`display: none`) is forced measurable — laid out at
+/// its natural width, invisible and out of the paint — then restored, all
+/// within one task, so nothing flashes. Called on open (`toggle_menu`), at
+/// connect and on content mutation (`preload_menu_widths`, `observe_menu`),
+/// and once fonts finish loading (`refresh_on_fonts_ready`). On the
+/// first-ever stamp, pins the segment's current rendered width and flushes
+/// layout before the target, so the 0.2s `min-width` ease has a numeric start
+/// instead of animating from the unanimatable `auto`.
+fn equalize_menu_width(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let natural = menu_natural_width(seg, &menu);
+    let seg_el = seg.unchecked_ref::<HtmlElement>();
+    let segment = seg.get_bounding_client_rect().width();
+    // A prior ratchet stamp, read back off the inline style ("260px" → 260.0).
+    let stamped = seg_el
+        .style()
+        .get_property_value("min-width")
+        .ok()
+        .and_then(|v| v.strip_suffix("px").and_then(|n| n.parse::<f64>().ok()));
+    if let Some(min_width) = ratchet_min_width(natural, segment, stamped) {
+        // Give the 0.2s ease a NUMERIC start on the first stamp: `min-width`
+        // rests at `auto` (not animatable), so pin the current rendered width
+        // and flush layout before stamping the target — otherwise the first
+        // (and, ratcheted, usually only) widening snaps instead of easing.
+        if stamped.is_none() {
+            let _ = seg_el
+                .style()
+                .set_property("min-width", &format!("{segment}px"));
+            let _ = seg_el.offset_width();
+        }
+        let _ = seg_el
+            .style()
+            .set_property("min-width", &format!("{min_width}px"));
+    }
+}
+
+/// Measure the menu's natural (max-content) width, open or closed — a closed
+/// menu (`display: none`) is momentarily forced measurable, invisible and out
+/// of the paint (`visibility: hidden`); everything is restored before return.
+/// Synchronous within one task, so nothing flashes.
+fn menu_natural_width(seg: &Element, menu: &Element) -> f64 {
+    let style = menu.unchecked_ref::<HtmlElement>().style();
+    // A closed menu is `display: none` (no boxes). Force it measurable —
+    // invisible and out of the paint (`visibility: hidden`), laid out at its
+    // natural width — then restore. All within one task, so no flash.
+    let closed = !seg.class_list().contains("is-open");
+    if closed {
+        let _ = style.set_property("display", "flex");
+        let _ = style.set_property("visibility", "hidden");
+    }
+    let _ = style.set_property("width", "max-content");
+    let natural = menu.get_bounding_client_rect().width();
+    let _ = style.remove_property("width");
+    if closed {
+        let _ = style.remove_property("display");
+        let _ = style.remove_property("visibility");
+    }
+    natural
+}
+
+/// Restamp `seg`'s width from a FRESH measurement, replacing any ratcheted
+/// stamp in both directions — the one-time correction for stamps taken
+/// against fallback-font metrics before the Plex face landed. The min-width
+/// transition eases the correction, riding the font swap's own reflow.
+fn restamp_menu_width(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let natural = menu_natural_width(seg, &menu);
+    if let Some(min_width) = corrected_min_width(natural) {
+        let _ = seg
+            .unchecked_ref::<HtmlElement>()
+            .style()
+            .set_property("min-width", &format!("{min_width}px"));
+    }
+}
+
+/// The two dropdown-owning segments.
+const MENU_SEGMENTS: [&str; 2] = [".fab__repo", ".fab__share"];
+
+/// The `fab-mirror` host class carrying the visual right-anchored flips —
+/// separate from the `fab-dock-*` classes (position + menu vertical
+/// direction) because a drag removes those while the mirror must track the
+/// bar LIVE across the midline.
+const MIRROR_CLASS: &str = "fab-mirror";
+
+/// The grab handle's (circle cap's) viewport center, or `None` if the bar
+/// hasn't rendered one. The handle is the drag's anchor: the flip
+/// compensation holds it fixed, so decisions keyed on it are stable across
+/// mirror flips (the bar's own center moves by nearly a bar-width per flip
+/// and would oscillate).
+fn handle_center(el: &HtmlElement) -> Option<(f64, f64)> {
+    el.query_selector(".fab__cap-l").ok().flatten().map(|c| {
+        let r = c.get_bounding_client_rect();
+        (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0)
+    })
+}
+
+/// Set the mirror from the drag HANDLE's current center: mirrored on the
+/// right half of the viewport, upright on the left. Called per drag move
+/// (apply_dock owns the resting sync). Falls back to the bar-rect center
+/// only if the handle is missing.
+///
+/// A flip row-reverses the bar inside its fixed box, which would teleport
+/// the circle — the grab handle under the pointer — to the bar's other end.
+/// So a mid-drag flip SHIFTS the bar by the handle's measured displacement
+/// (its center before vs after the class toggle): the handle stays put, the
+/// bar swings around it. The shift is folded into the drag's stored
+/// `fabStartLeft` so the next pointer delta doesn't undo it. Because the
+/// flip decision is keyed on the handle — the very point the compensation
+/// holds fixed — a compensated flip cannot re-cross the threshold that
+/// triggered it: no oscillation, no hysteresis needed. (Keying on the bar's
+/// own center would oscillate: the compensation moves it by nearly a
+/// bar-width, straight back across the midline.)
+fn apply_mirror_from_handle(el: &HtmlElement) {
+    let rect = el.get_bounding_client_rect();
+    let before = handle_center(el);
+    let anchor_x = before.map_or(rect.left() + rect.width() / 2.0, |(x, _)| x);
+    let want = mirrored(anchor_x, viewport_width());
+    if el.class_list().contains(MIRROR_CLASS) == want {
+        return;
+    }
+    el.class_list().toggle_with_force(MIRROR_CLASS, want).ok();
+    // Compensate only while actually dragging: at promotion (and any
+    // non-drag call) the bar is at rest geometry and no pointer is anchored.
+    if el.dataset().get("fabMoved").is_none() {
+        return;
+    }
+    let (Some(before), Some(after)) = (before, handle_center(el)) else {
+        return;
+    };
+    let shift = before.0 - after.0;
+    if shift != 0.0 {
+        let left = rect.left() + shift;
+        let _ = el.style().set_property("left", &format!("{left}px"));
+        let start = read_data_f64(el, "fabStartLeft") + shift;
+        el.dataset().set("fabStartLeft", &start.to_string()).ok();
+    }
+}
+
+/// Close both dropdowns (the ratcheted widths stay). A drag drops the
+/// `fab-dock-*` classes that give an open menu its vertical anchor, so an
+/// open menu would float mid-bar; dragging with a menu open isn't a state
+/// the chrome supports.
+fn close_menus(el: &HtmlElement) {
+    for sel in MENU_SEGMENTS {
+        if let Some(seg) = el.query_selector(sel).ok().flatten() {
+            seg.class_list().remove_1("is-open").ok();
+        }
+    }
+}
+
+/// Stamp both segments' ratcheted widths up front and keep them fresh, so a
+/// dropdown OPEN never changes the bar: rows render asynchronously (a
+/// MutationObserver per menu re-ratchets as content lands) and the Plex face
+/// loads asynchronously (a font swap changes metrics but fires no mutation,
+/// so `document.fonts.ready` triggers one more pass).
+fn preload_menu_widths(element: &HtmlElement) {
+    for sel in MENU_SEGMENTS {
+        if let Some(seg) = element.query_selector(sel).ok().flatten() {
+            equalize_menu_width(&seg);
+            observe_menu(&seg);
+        }
+    }
+    refresh_on_fonts_ready(element);
+}
+
+/// Re-ratchet `seg`'s width whenever its menu's content changes (rows arrive
+/// from live subscriptions well after connect). The observer lives as long as
+/// the page (closure forgotten) — one FAB, two menus, so no accounting.
+fn observe_menu(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let seg_for_cb = seg.clone();
+    let cb = Closure::<dyn FnMut(js_sys::Array, web_sys::MutationObserver)>::new(
+        move |_records: js_sys::Array, _obs: web_sys::MutationObserver| {
+            equalize_menu_width(&seg_for_cb);
+        },
+    );
+    if let Ok(observer) = MutationObserver::new(cb.as_ref().unchecked_ref()) {
+        let init = MutationObserverInit::new();
+        init.set_child_list(true);
+        init.set_subtree(true);
+        init.set_character_data(true);
+        observer.observe_with_options(&menu, &init).ok();
+    }
+    cb.forget();
+}
+
+/// One authoritative restamp once the fonts land: measurements taken before
+/// this point (connect, mutation) used the fallback face, which typically
+/// OVER-reports condensed Plex's metrics — and the ratchet those passes use
+/// can only widen, never correct an over-wide stamp back down. This pass
+/// restamps from a fresh measurement in both directions instead of ratcheting.
+fn refresh_on_fonts_ready(element: &HtmlElement) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let ready = match document.fonts().ready() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let el = element.clone();
+    spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
+        for sel in MENU_SEGMENTS {
+            if let Some(seg) = el.query_selector(sel).ok().flatten() {
+                restamp_menu_width(&seg);
+            }
+        }
+    });
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
@@ -401,80 +634,22 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     element.dataset().set("settleTimer", &id.to_string()).ok();
 }
 
-/// The circle's double-click — pause or resume, whichever the current state
-/// isn't. `tonk:pause-sync` is a single TOGGLE command, so the same submit both
-/// pauses and resumes; only the confirmation UX differs by direction:
-///
-/// - When SYNCED, we open the `#fab-pause-sync` confirm dialog — pausing has a
-///   consequence (changes stop propagating), so we confirm first.
-/// - When already PAUSED, we resume IMMEDIATELY — resuming is safe and needs no
-///   confirmation — by submitting the toggle form directly (the same form the
-///   dialog's "Pause sync" button submits).
-///
-/// The live state comes off the `<ui-sync-status>` disc, whose subscription
-/// stamps a `.sync--paused` modifier class as the status changes.
-fn trigger_pause_toggle(element: &HtmlElement) {
-    if is_sync_paused(element) {
-        submit_pause_form(element);
-    } else {
-        open_pause_dialog(element);
-    }
-}
-
-/// Whether sync is currently paused, read from the `<ui-sync-status>` disc's
-/// state modifier class (`.sync--paused`), which its subscription keeps live.
-fn is_sync_paused(element: &HtmlElement) -> bool {
-    element
-        .query_selector(".sync--paused")
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-/// Open the pause-sync confirm dialog. We call the WebAwesome dialog's `.show()`
-/// (not just `open`) so the guest's modal wiring — which listens for `wa-show`
-/// to size the sealed iframe — fires, the same path a `data-dialog="open …"`
-/// control triggers. Falls back to the `open` attribute if `.show()` is absent.
-fn open_pause_dialog(element: &HtmlElement) {
-    let Some(dialog) = element.query_selector("#fab-pause-sync").ok().flatten() else {
-        return;
-    };
-    if let Ok(show) = Reflect::get(dialog.as_ref(), &"show".into())
-        && let Ok(show) = show.dyn_into::<Function>()
-    {
-        let _ = show.call0(dialog.as_ref());
-    } else {
-        let _ = dialog.set_attribute("open", "");
-    }
-}
-
-/// Resume directly: submit the toggle form the dialog's Pause button targets,
-/// which carries the `onsubmit=tonk:pause-sync` binding routed to the space
-/// branch. `requestSubmit()` (not `submit()`) so the form's `submit` event —
-/// which the command delegation listens for — actually fires.
-fn submit_pause_form(element: &HtmlElement) {
-    let Some(form) = element
-        .query_selector("#fab-pause-sync-form")
-        .ok()
-        .flatten()
-    else {
-        return;
-    };
-    if let Ok(request_submit) = Reflect::get(form.as_ref(), &"requestSubmit".into())
-        && let Ok(request_submit) = request_submit.dyn_into::<Function>()
-    {
-        let _ = request_submit.call0(form.as_ref());
-    }
-}
-
 /// Attach pointer event listeners for free drag-and-drop. The element moves
 /// itself (its own `position: fixed` `left`/`top`); there is no iframe to relay
 /// to.
 ///
-/// - `pointerdown` (not on an interactive descendant): capture the grab offset,
-///   set pointer capture.
-/// - `pointermove`: set the element's `left`/`top` to follow the pointer.
-/// - `pointerup`: clamp to keep the circle on-screen and persist x/y.
+/// `pointerdown` stays on the element (only a press starting on the circle cap
+/// should arm a drag), but `pointermove`, `pointerup`, and `pointercancel` are
+/// attached to the guest `window` instead: a fast flick can outrun the element
+/// before its first `pointermove` fires (capture is only taken once the press
+/// passes the drag threshold), so element-scoped listeners can lose the
+/// pointer mid-drag and never see the release, leaving `fabPressing` stuck set
+/// so a later hover resumes a phantom drag. The FAB's overlay iframe is pinned
+/// full-viewport while dragging, so the window sees every pointer event;
+/// captured events (post-threshold) still bubble there too. `on_move` also
+/// carries a stale-press guard: if a move event arrives with no buttons held,
+/// the release was already lost, so the drag is finished right there instead
+/// of waiting for a `pointerup` that will never come.
 fn attach_drag(element: &HtmlElement) {
     let el_down = element.clone();
     let on_down = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
@@ -524,6 +699,13 @@ fn attach_drag(element: &HtmlElement) {
         if el_move.dataset().get("fabPressing").is_none() {
             return;
         }
+        // A press with NO button still held means the pointerup was lost
+        // (fast flick released outside the element before capture was taken):
+        // finish the drag here so a later hover can't resume a phantom press.
+        if e.buttons() == 0 {
+            finish_drag(&el_move, e.pointer_id());
+            return;
+        }
         let dx = e.client_x() as f64 - read_data_f64(&el_move, "fabDownX");
         let dy = e.client_y() as f64 - read_data_f64(&el_move, "fabDownY");
         // Promote to a DRAG once past the dead zone; take capture only then, so a
@@ -537,6 +719,9 @@ fn attach_drag(element: &HtmlElement) {
             if let Some(fab) = el_move.query_selector(".fab").ok().flatten() {
                 fab.class_list().add_1("dragging").ok();
             }
+            // A drag can't support an open menu (see `close_menus`): the
+            // dock classes it's about to drop are the menu's vertical anchor.
+            close_menus(&el_move);
             // Drop the dock class so the stylesheet's `.fab-dock-*` position
             // (which pins `bottom`/`top`) stops fighting the inline `left`/`top`
             // that now tracks the pointer 1:1.
@@ -544,11 +729,15 @@ fn attach_drag(element: &HtmlElement) {
             for c in DOCK_CLASSES {
                 cl.remove_1(c).ok();
             }
+            // The dock classes just vanished — resync the mirror from the
+            // live handle immediately so it doesn't flash upright for one frame.
+            apply_mirror_from_handle(&el_move);
         }
         e.prevent_default();
         let left = read_data_f64(&el_move, "fabStartLeft") + dx;
         let top = read_data_f64(&el_move, "fabStartTop") + dy;
         track_position(&el_move, left, top);
+        apply_mirror_from_handle(&el_move);
     });
 
     let el_up = element.clone();
@@ -556,43 +745,71 @@ fn attach_drag(element: &HtmlElement) {
         if el_up.dataset().get("fabPressing").is_none() {
             return;
         }
-        el_up.dataset().delete("fabPressing");
-        let moved = el_up.dataset().get("fabMoved").is_some();
-        // A press that never moved is a plain click — leave it to native
-        // click/dblclick; do nothing here.
-        if !moved {
+        finish_drag(&el_up, e.pointer_id());
+    });
+
+    let el_cancel = element.clone();
+    let on_cancel = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
+        if el_cancel.dataset().get("fabPressing").is_none() {
             return;
         }
-        el_up.release_pointer_capture(e.pointer_id()).ok();
-        if let Some(fab) = el_up.query_selector(".fab").ok().flatten() {
-            fab.class_list().remove_1("dragging").ok();
-        }
-        // Snap to the corner nearest where the pointer was released — the
-        // release point's viewport half on each axis picks the dock.
-        let dock = nearest_dock(
-            e.client_x() as f64,
-            e.client_y() as f64,
-            viewport_width(),
-            viewport_height(),
-        );
-        apply_dock(&el_up, dock);
-        persist_dock(dock);
+        finish_drag(&el_cancel, e.pointer_id());
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();
     target
         .add_event_listener_with_callback("pointerdown", on_down.as_ref().unchecked_ref())
         .ok();
-    target
-        .add_event_listener_with_callback("pointermove", on_move.as_ref().unchecked_ref())
-        .ok();
-    target
-        .add_event_listener_with_callback("pointerup", on_up.as_ref().unchecked_ref())
-        .ok();
-
+    // WINDOW-scoped move/up/cancel: a fast flick outruns the element before
+    // its first pointermove fires (capture is only taken past the drag
+    // threshold), so element-scoped listeners lose the pointer mid-drag and
+    // never see the release. The overlay iframe is pinned full-viewport while
+    // dragging, so the window sees every event. Captured events (post
+    // threshold) still bubble here.
+    if let Some(win) = window() {
+        let wtarget: &web_sys::EventTarget = win.unchecked_ref();
+        for (name, cb) in [
+            ("pointermove", on_move.as_ref()),
+            ("pointerup", on_up.as_ref()),
+            ("pointercancel", on_cancel.as_ref()),
+        ] {
+            wtarget
+                .add_event_listener_with_callback(name, cb.unchecked_ref())
+                .ok();
+        }
+    }
     on_down.forget();
     on_move.forget();
     on_up.forget();
+    on_cancel.forget();
+}
+
+/// Finish a press: clear the press flags and — if the press had been promoted
+/// to a drag — release capture, drop the dragging class, and snap/persist the
+/// dock nearest the HANDLE'S CENTER (falling back to the bar-rect center if
+/// the handle is missing). The handle is what you drag, and it is the anchor
+/// the mirror preview keys on (`apply_mirror_from_handle`), so the snap
+/// always agrees with the live preview the bar has been showing throughout
+/// the drag. Shared by `pointerup`, `pointercancel`, and the stale-press
+/// guard in `pointermove`.
+fn finish_drag(el: &HtmlElement, pointer_id: i32) {
+    el.dataset().delete("fabPressing");
+    let moved = el.dataset().get("fabMoved").is_some();
+    if !moved {
+        return;
+    }
+    el.release_pointer_capture(pointer_id).ok();
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list().remove_1("dragging").ok();
+    }
+    let rect = el.get_bounding_client_rect();
+    let (center_x, center_y) = handle_center(el).unwrap_or((
+        rect.left() + rect.width() / 2.0,
+        rect.top() + rect.height() / 2.0,
+    ));
+    let dock = nearest_dock(center_x, center_y, viewport_width(), viewport_height());
+    apply_dock(el, dock);
+    persist_dock(dock);
 }
 
 /// The viewport height in CSS px, defaulting if unavailable.
@@ -632,9 +849,10 @@ fn track_position(el: &HtmlElement, left: f64, top: f64) {
 
 /// Dock the FAB by swapping its `fab-dock-*` classes and clearing any drag-time
 /// inline offsets, so the view stylesheet's `.fab-dock-*` rules own the resting
-/// pixel position (and the submenu open-direction). Used at drop and on restore.
-/// Anchoring by class — not a fixed pixel offset — keeps the FAB pinned to its
-/// corner when the viewport resizes.
+/// pixel position (and the submenu open-direction), and sync the `fab-mirror`
+/// class from the dock. Used at drop and on restore. Anchoring by class — not
+/// a fixed pixel offset — keeps the FAB pinned to its corner when the
+/// viewport resizes.
 fn apply_dock(el: &HtmlElement, dock: Dock) {
     let style = el.style();
     let _ = style.remove_property("left");
@@ -648,6 +866,11 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
     for c in dock.css_classes() {
         cl.add_1(c).ok();
     }
+    // Sync the mirror from the dock, not the rect — at rest the dock IS the
+    // truth (a drag drives it from the live handle instead; see
+    // `apply_mirror_from_handle`).
+    cl.toggle_with_force(MIRROR_CLASS, dock.css_classes()[1] == "fab-dock-right")
+        .ok();
 }
 
 /// Persist `dock` by calling `window.tonk.transact(request)`. The request is the

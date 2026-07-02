@@ -182,7 +182,9 @@ view/directory!:
              so it updates live as the background sync drain reconciles — unlike
              the old `<tonk-sync-badge>`, which fetched once on mount (and on
              commit/toggle, neither of which fires on the Hub) and froze on a
-             stale reading. Read-only: pause lives in the space topbar. -->
+             stale reading. Read-only: sync pausing currently has no chrome
+             affordance (the `tonk:pause-sync` command remains for a future
+             one). -->
         <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
       </a>
     </div>
@@ -435,27 +437,6 @@ view/directory!: &profile/fab/view
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
-      <!-- Pause-sync confirm dialog + form — opened by DOUBLE-CLICKING the FAB
-           circle (element.rs `trigger_pause_toggle`). The DIALOG lives on the
-           FAB's own profile/meta branch (like the create-space dialog above), so
-           it's plain chrome here. Only the FORM is wrapped in the space's nested
-           `<tonk-repository name={space}>` context, because `tonk:pause-sync`
-           flips the durable `enabled` boolean on the space's OWN replica and so
-           must resolve + dispatch on the space's content branch (binding it on
-           profile/meta would target the wrong repo). The dialog's button submits
-           the repo-scoped form by id via WebAwesome's external `form=` attribute.
-           The command is a toggle, so the same dialog resumes when paused. -->
-      <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
-        <tonk-display model="tonk:repository" view="tonk:view/fab-pause"></tonk-display>
-      </tonk-branch></tonk-repository></tonk-host>
-      <wa-dialog id="fab-pause-sync" label="Pause sync?" class="fab__dialog">
-        <p>Your changes won't reach other devices and agents until you resume. Local edits are buffered; incoming edits are queued.</p>
-        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="fab-pause-sync-form" data-dialog="close" autofocus>
-          <wa-icon slot="start" name="pause"></wa-icon>
-          Pause sync
-        </wa-button>
-      </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
 
@@ -509,7 +490,10 @@ view/directory!: &profile/fab/view
           --fab-pill: color-mix(in oklab, var(--fab-pill-solid) 80%, transparent);
           --fab-pill-hover: color-mix(in oklab, var(--fab-pill-solid) 92%, transparent);
           --fab-ink: var(--wa-color-surface-default, #1a1a1a);
-          font-family: var(--wa-font-family-body, sans-serif);
+          /* The FAB is set in IBM Plex Sans Condensed throughout — the app's
+             display face (already shipped + inlined into the sealed iframe by
+             the portal bridge), condensed so the bar stays tight. */
+          font-family: "IBM Plex Sans Condensed", var(--wa-font-family-heading, sans-serif);
           font-size: 16px;
           white-space: nowrap;
           position: relative;
@@ -554,13 +538,17 @@ view/directory!: &profile/fab/view
         }
         .fab__cap-l { border-radius: 36px 0 0 36px; }
         .fab__cap-r { border-radius: 0 36px 36px 0; }
-        /* Right-docked: the circle is the anchor welded to the right edge, so
+        /* Mirrored: the circle is the anchor welded to the right edge, so
            reverse the row (circle becomes the rightmost child) and the segments
            telescope leftward from it. The outer corners swap accordingly — the
-           circle cap rounds on its RIGHT, the far share cap on its LEFT. */
-        .fab--dock-right { flex-direction: row-reverse; }
-        .fab--dock-right .fab__cap-l { border-radius: 0 36px 36px 0; }
-        .fab--dock-right .fab__cap-r { border-radius: 36px 0 0 36px; }
+           circle cap rounds on its RIGHT, the far share cap on its LEFT.
+           `.fab-mirror` is its own host class, set by element.rs from the
+           horizontal dock at rest and LIVE from the bar's center while
+           dragging — the dock classes vanish during a drag, so this can't key
+           off them. */
+        .fab-mirror .fab { flex-direction: row-reverse; }
+        .fab-mirror .fab__cap-l { border-radius: 0 36px 36px 0; }
+        .fab-mirror .fab__cap-r { border-radius: 36px 0 0 36px; }
         /* The grab-handle cap: a fixed 36px square (round-left) holding just the
            sync disc, centred. It is the drag handle; collapsing shrinks the whole
            bar to this cap alone (a floating disc). */
@@ -624,9 +612,14 @@ view/directory!: &profile/fab/view
            border-radius eases in step with the telescope. */
         .fab--anim .fab__cap-l { transition: border-radius 0.4s ease; }
         .fab--anim.fab--collapsed .fab__cap-l { border-radius: 50%; }
+        /* Ease the equalize-on-open widening (the inline `min-width`
+           element.rs stamps when a dropdown opens) so the rung unfolds
+           rather than snaps; background keeps its existing hover fade. */
+        .fab__repo, .fab__share { transition: background 0.15s ease, min-width 0.2s ease; }
         @media (prefers-reduced-motion: reduce) {
           .fab--anim .fab__tele,
           .fab--anim .fab__cap-l { transition: none; }
+          .fab__repo, .fab__share { transition: background 0.15s ease; }
         }
         /* While dragging, the host `<tonk-fab>` is pinned `position: fixed`
            (set inline by element.rs) inside the full-viewport iframe. Suppress
@@ -654,9 +647,8 @@ view/directory!: &profile/fab/view
           display: inline-flex;
           align-items: center;
           line-height: 1;
-          font-weight: 500;
           color: var(--fab-ink);
-          max-width: 16ch;
+          max-width: 15ch;
           overflow: hidden;
           text-overflow: ellipsis;
         }
@@ -673,7 +665,7 @@ view/directory!: &profile/fab/view
           display: inline-block;
           font: inherit;
           color: inherit;
-          max-width: 16ch;
+          max-width: 15ch;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -710,7 +702,7 @@ view/directory!: &profile/fab/view
           align-items: center;
           line-height: 1;
           color: var(--fab-ink);
-          max-width: 16ch;
+          max-width: 24ch;
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -736,7 +728,7 @@ view/directory!: &profile/fab/view
           font: inherit;
           color: inherit;
           min-width: 2ch;
-          max-width: 16ch;
+          max-width: 24ch;
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -776,31 +768,33 @@ view/directory!: &profile/fab/view
           right: auto;
           display: none;
           flex-direction: column;
-          gap: 6px;
-          /* At LEAST as wide as the trigger (`min-width: 100%` of the positioned
-             `.fab__repo`), but grows to fit its widest row (`width: max-content`)
-             so labels like "all repos" aren't clipped. A pathologically long
-             space name is capped by `max-width` and ellipsised inside its row
-             (`.fab__menu-item` below). Anchored at `left: 0` so it grows
-             rightward; the share roster re-anchors right (`.fab__share-menu`). */
-          min-width: 100%;
-          width: max-content;
-          max-width: 280px;
+          gap: 7px;
+          /* Exactly as wide as the trigger segment. When the menu's natural
+             width exceeds the segment's, element.rs stamps a matching inline
+             `min-width` on the segment as the menu opens (never cleared — a
+             column only ratchets wider), so rung and dropdown always read as
+             one column; rows ellipsise within it. Anchored at `left: 0`; the
+             share roster re-anchors right (`.fab__share-menu`). */
+          width: 100%;
           z-index: 100;
         }
         /* Dropdowns open AWAY from the docked edge — down from the top dock, up
            from the bottom, and horizontally into the viewport (rightward from a
            left dock, leftward from a right dock) — so they always unfold into
-           view. Direction is keyed off the FAB's `fab-dock-*` classes (set by
-           element.rs); no JS measuring. */
-        .fab-dock-top .fab__menu { top: 100%; margin-top: 6px; }
-        .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 6px; }
-        .fab-dock-right .fab__menu { left: auto; right: 0; }
+           view. Vertical direction is keyed off the FAB's `fab-dock-*` classes
+           (set by element.rs; no JS measuring) — those persist at rest.
+           Horizontal anchoring keys off `.fab-mirror` instead: a drag drops the
+           `fab-dock-*` classes, but the mirror keeps tracking the bar's center
+           live, so an open menu (closed at drag start — see `close_menus`)
+           still re-anchors correctly the moment the bar docks again. */
+        .fab-dock-top .fab__menu { top: 100%; margin-top: 7px; }
+        .fab-dock-bottom .fab__menu { bottom: 100%; margin-bottom: 7px; }
+        .fab-mirror .fab__menu { left: auto; right: 0; }
         /* The dropdown belongs to the repo name segment: hidden until the
            segment is CLICKED (element.rs toggles `is-open`), matching the
            wireframe where segments open their menus on click, not hover. */
         .fab__repo.is-open .fab__menu { display: flex; }
-        /* Invisible hover-bridge over the 6px gap so the pointer can travel from
+        /* Invisible hover-bridge over the 7px gap so the pointer can travel from
            the trigger to the menu without the hover dropping. On the same edge
            the menu opens from — above it for the bottom dock, below for the top. */
         .fab-dock-top .fab__menu::before {
@@ -808,16 +802,16 @@ view/directory!: &profile/fab/view
           position: absolute;
           left: 0;
           right: 0;
-          top: -6px;
-          height: 6px;
+          top: -7px;
+          height: 7px;
         }
         .fab-dock-bottom .fab__menu::before {
           content: "";
           position: absolute;
           left: 0;
           right: 0;
-          bottom: -6px;
-          height: 6px;
+          bottom: -7px;
+          height: 7px;
         }
         /* The space roster renders its rows inside a single `<tonk-display>`
            wrapper, so the menu's flex `gap` can't reach them. `display:contents`
@@ -836,11 +830,9 @@ view/directory!: &profile/fab/view
           box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -2px 6px rgba(20,22,8,.10);
           color: var(--fab-ink);
           text-decoration: none;
-          font-size: 13px;
-          font-family: var(--wa-font-family-code, monospace);
           transition: background 0.15s ease;
-          /* Clip a pathologically long space name to the menu's `max-width`
-             cap instead of stretching the dropdown indefinitely. */
+          /* Clip a pathologically long space name to the menu's
+             segment-equalized width instead of stretching the dropdown. */
           overflow: hidden;
           white-space: nowrap;
           text-overflow: ellipsis;
@@ -850,7 +842,7 @@ view/directory!: &profile/fab/view
         .fab__menu-item:hover {
           background: var(--fab-pill-hover);
         }
-        /* `all repos` / `new` — actions, not spaces: right-aligned and quieter,
+        /* `all repos` / `new` — actions, not spaces: right-aligned,
            rendered as a button/anchor that match the roster cards' type. */
         .fab__menu-item--action {
           display: flex;
@@ -861,11 +853,8 @@ view/directory!: &profile/fab/view
           border: 0;
           cursor: pointer;
           font: inherit;
-          font-family: var(--wa-font-family-code, monospace);
-          color: color-mix(in oklab, var(--fab-ink) 70%, transparent);
         }
         .fab__menu-glyph {
-          font-size: 14px;
           line-height: 1;
         }
         /* ── Share / invite ─────────────────────────────────────────────
@@ -968,6 +957,19 @@ view/directory!: &profile/fab/view
         /* The roster opens when the share segment is CLICKED (element.rs
            toggles `is-open`), like the repo switcher above. */
         .fab__share.is-open .fab__share-menu { display: flex; }
+        /* Mirrored: the bar is row-reversed, so the share zone is the LEFT
+           end — its roster flips to anchor left (the repo switcher already
+           re-anchors right via `.fab-mirror .fab__menu`). Row alignment
+           mirrors with it: actions and member cards read from the bar's outer
+           edge inward on both orientations. Keyed off `.fab-mirror`, not the
+           dock, so it tracks the live drag preview, not just the resting
+           corner. */
+        .fab-mirror .fab__share-menu { left: 0; right: auto; }
+        .fab-mirror .fab__menu-item--action { justify-content: flex-start; }
+        .fab-mirror .fab__menu-item--member { text-align: left; }
+        /* Telescope tiles clip toward the circle, so the unfold reads from
+           the circle outward when mirrored too. */
+        .fab-mirror .fab--anim .fab__tele { justify-content: flex-start; }
         /* Member cards: right-aligned names, matching the wireframe roster. */
         .fab__menu-item--member { text-align: right; }
       </style>

@@ -268,8 +268,9 @@ command!: &tonk/load
       the: xyz.tonk.site/path
       as: text
 
-# Toggle auto-sync for the space in scope. The sync chip submits this (via the
-# confirm dialog when pausing, directly via the resume overlay when paused).
+# Toggle auto-sync for the space in scope. No chrome currently submits this —
+# the FAB's double-click pause gesture was removed as unintuitive — but the
+# command and its worker handler stay for a future, visible affordance.
 # `time` carries the click timestamp so each submit is a distinct transient and
 # reliably re-fires the toggle handler. The worker reads the origin repo, flips
 # the durable `enabled` preference, and publishes the matching status — the
@@ -284,7 +285,7 @@ command!: &tonk/pause-sync
       as: float
     marker:
       description: |
-          Per-command marker read from the pause form's `data-pause-sync`.
+          Per-command marker read from a pause affordance's `data-pause-sync`.
           Gives `tonk:pause-sync` an attribute no other command carries, so
           this transient does not also decode as `tonk:invite`.
       the: dom.event.current-target.dataset/pause-sync
@@ -779,41 +780,6 @@ view/directory!:
     <form class="fab__share-form" data-invite="tonk:invite" onsubmit=tonk:invite>
       <button type="submit" class="fab__share-trigger">share</button>
     </form>
-
-# A named view kind for the FAB's pause-sync form — a distinct RDF attribute
-# (`xyz.tonk.view/fab-pause`) so it doesn't collide with `tonk:repository`'s
-# `fab-share` directory view. Selected explicitly via `view=tonk:view/fab-pause`.
-concept!: &view/fab-pause
-  this: tonk:view/fab-pause
-  description: A view kind holding the FAB's pause-sync form.
-  with:
-    model:
-      description: Concept this view renders.
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template — the hidden pause-sync form.
-      the: xyz.tonk.view/fab-pause
-      cardinality: one
-      as: text
-
-# The FAB's pause-sync FORM, authored on the SPACE branch (a `tonk:repository`
-# view) for the SAME reason the share form is (above): mounted via
-# `<tonk-display model="tonk:repository" view="tonk:view/fab-pause">` inside the
-# FAB's nested `<tonk-repository name={space}>`, its `tonk:pause-sync` claim
-# dispatches from this display's host — INSIDE the repository — so
-# `<tonk-repository>` annotates the claim with the space's content branch. A
-# bare form in the FAB's own profile/meta template dispatched its claim on the
-# FAB host (outside the nested repository), so the pause landed on profile/meta
-# and did nothing. The dialog itself stays in the FAB (profile) chrome; its
-# button submits this form by id via WebAwesome's external `form=` attribute.
-# `data-pause-sync` is the marker `tonk:pause-sync` decodes against.
-view/fab-pause!:
-  this: id:tonk:repository/fab-pause
-  model: tonk:repository
-  display: |
-    <form id="fab-pause-sync-form" data-pause-sync="tonk:pause-sync" onsubmit=tonk:pause-sync></form>
 
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than

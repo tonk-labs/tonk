@@ -161,8 +161,9 @@ impl Dock {
 
 /// Pick the corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
-/// right, keyed off the FAB center `(center_x, center_y)`. The exact midlines
-/// fall to the bottom / right dock.
+/// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
+/// handle's center, the same anchor `mirrored` reads. The exact midlines fall
+/// to the bottom / right dock.
 pub fn nearest_dock(center_x: f64, center_y: f64, vw: f64, vh: f64) -> Dock {
     match (center_x < vw / 2.0, center_y < vh / 2.0) {
         (true, true) => Dock::TopLeft,
@@ -170,6 +171,13 @@ pub fn nearest_dock(center_x: f64, center_y: f64, vw: f64, vh: f64) -> Dock {
         (true, false) => Dock::BottomLeft,
         (false, false) => Dock::BottomRight,
     }
+}
+
+/// Whether the bar shows MIRRORED (right-anchored) at this horizontal center.
+/// The exact midline mirrors, matching `nearest_dock`'s midline-to-right
+/// choice, so the live drag preview always agrees with the eventual snap.
+pub fn mirrored(center_x: f64, vw: f64) -> bool {
+    center_x >= vw / 2.0
 }
 
 /// The telescope animation duration, in milliseconds — each tile's
@@ -240,6 +248,75 @@ pub fn dock_claim_json(dock: Dock) -> Value {
             }
         }]
     })
+}
+
+/// The inline `min-width` (px) to stamp on a bar segment when its dropdown
+/// opens: the menu's natural (max-content) width when that EXCEEDS the
+/// segment, so the rung widens — whitespace filling around its label — and
+/// the menu (styled `width: 100%`) lands exactly as wide as the rung. `None`
+/// when the segment is already at least as wide (the menu's `width: 100%`
+/// alone matches them). Only ever widens; a menu narrower than its segment
+/// never shrinks the bar.
+pub fn menu_min_width(menu_natural: f64, segment: f64) -> Option<f64> {
+    (menu_natural > segment).then(|| menu_natural.ceil())
+}
+
+/// The ratcheted `min-width` for a segment whose menu just opened: the
+/// equalized target when the menu outmeasures the segment's current rendered
+/// width, never below an already-stamped value (mid-transition the rect
+/// under-reports, and a shrunken menu must not narrow the column). `None`
+/// means leave any existing stamp untouched.
+pub fn ratchet_min_width(menu_natural: f64, segment: f64, stamped: Option<f64>) -> Option<f64> {
+    let target = menu_min_width(menu_natural, segment)?;
+    Some(stamped.map_or(target, |prior| target.max(prior)))
+}
+
+/// The AUTHORITATIVE `min-width` for the one fonts-ready restamp: the menu's
+/// fresh real-metrics width, ceiled, replacing any ratcheted stamp in BOTH
+/// directions — measurements taken before the font landed used the fallback
+/// face (typically wider than condensed Plex), and the never-shrink ratchet
+/// cannot correct an over-wide stamp downward. `None` (an unrendered, empty
+/// menu) leaves the existing stamp untouched.
+pub fn corrected_min_width(menu_natural: f64) -> Option<f64> {
+    (menu_natural > 0.0).then(|| menu_natural.ceil())
+}
+
+#[cfg(test)]
+mod mirror {
+    use super::*;
+
+    #[test]
+    fn a_center_left_of_the_midline_is_not_mirrored() {
+        assert!(!mirrored(499.9, 1000.0));
+    }
+
+    #[test]
+    fn a_center_right_of_the_midline_is_mirrored() {
+        assert!(mirrored(500.1, 1000.0));
+    }
+
+    #[test]
+    fn the_midline_mirrors_like_nearest_dock_falls_right() {
+        // Consistent with `nearest_dock`, whose exact midline docks right.
+        assert!(mirrored(500.0, 1000.0));
+    }
+}
+
+#[cfg(test)]
+mod corrected {
+    use super::*;
+
+    #[test]
+    fn a_rendered_menu_restamps_to_its_ceiled_width() {
+        assert_eq!(corrected_min_width(220.4), Some(221.0));
+    }
+
+    #[test]
+    fn an_empty_menu_clears_nothing() {
+        // Zero means the menu has no rendered rows yet — leave the current
+        // stamp alone rather than collapsing the column.
+        assert_eq!(corrected_min_width(0.0), None);
+    }
 }
 
 #[cfg(test)]
@@ -485,5 +562,51 @@ mod persist {
             "xyz.tonk.fab/dock"
         );
         assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+}
+
+#[cfg(test)]
+mod menu {
+    use super::*;
+
+    #[test]
+    fn a_wider_menu_widens_the_segment() {
+        // Fractional natural widths round UP so the stamped min-width never
+        // undershoots the menu by a subpixel.
+        assert_eq!(menu_min_width(220.4, 120.0), Some(221.0));
+    }
+
+    #[test]
+    fn a_narrower_or_equal_menu_leaves_the_segment_alone() {
+        assert_eq!(menu_min_width(80.0, 120.0), None);
+        assert_eq!(menu_min_width(120.0, 120.0), None);
+    }
+}
+
+#[cfg(test)]
+mod ratchet {
+    use super::*;
+
+    #[test]
+    fn a_first_stamp_takes_the_equalized_target() {
+        assert_eq!(ratchet_min_width(220.4, 120.0, None), Some(221.0));
+    }
+
+    #[test]
+    fn a_prior_stamp_is_never_regressed() {
+        // Mid-transition rect (120) under-reports a prior 260 stamp; a
+        // shrunken menu (221 natural) must not narrow the column.
+        assert_eq!(ratchet_min_width(220.4, 120.0, Some(260.0)), Some(260.0));
+    }
+
+    #[test]
+    fn a_wider_menu_raises_a_prior_stamp() {
+        assert_eq!(ratchet_min_width(300.0, 120.0, Some(260.0)), Some(300.0));
+    }
+
+    #[test]
+    fn a_menu_narrower_than_the_segment_leaves_the_stamp_alone() {
+        assert_eq!(ratchet_min_width(80.0, 120.0, Some(260.0)), None);
+        assert_eq!(ratchet_min_width(80.0, 120.0, None), None);
     }
 }
