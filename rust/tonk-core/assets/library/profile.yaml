@@ -1200,6 +1200,9 @@ view/directory!: &profile/fab/view
           line-height: 1;
           gap: 6px;
           white-space: nowrap;
+          /* Slotted into <wa-copy-button>, so it inherits WebAwesome's body
+             font (not the FAB's) — pin it back to the FAB face. */
+          font-family: "IBM Plex Sans Condensed", var(--wa-font-family-heading, sans-serif);
         }
         /* The "Copied!" success state. WebAwesome tints its success slot green
            (`var(--wa-color-success-on-quiet)`), tuned for a light background and
