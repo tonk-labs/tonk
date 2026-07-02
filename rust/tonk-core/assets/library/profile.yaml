@@ -218,7 +218,9 @@ view/directory!:
         .onb-kick { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .13em;
           text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px; }
         .onb-head h3 { font-family: var(--font-display); font-weight: 300; font-size: 38px;
-          letter-spacing: -1.3px; margin: 0 0 12px; color: var(--ink); }
+          letter-spacing: -1.3px; margin: 0 0 12px; color: var(--ink);
+          /* opt out of the global heading "headline-cover" dark box */
+          background: none; padding: 0; display: block; }
         .onb-lede { font-size: 16px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
         .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; }
         .onb-choice { background: #fff; border: 1.5px solid var(--ink); padding: 24px; cursor: pointer;
@@ -301,7 +303,7 @@ view/directory!:
       </div>
 
       <div class="spot-overlay">
-        <form class="onb-overlay-body" onsubmit=space/create>
+        <form class="onb-overlay-body" onsubmit=space/create data-close-toggle="space-wizard">
           <!-- paging radios: which screen shows -->
           <input class="onb-nav" type="radio" name="__onb" id="onb-start" checked>
           <input class="onb-nav" type="radio" name="__onb" id="onb-tmpl">
