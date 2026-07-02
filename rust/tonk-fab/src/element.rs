@@ -434,10 +434,18 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
 /// itself (its own `position: fixed` `left`/`top`); there is no iframe to relay
 /// to.
 ///
-/// - `pointerdown` (not on an interactive descendant): capture the grab offset,
-///   set pointer capture.
-/// - `pointermove`: set the element's `left`/`top` to follow the pointer.
-/// - `pointerup`: clamp to keep the circle on-screen and persist x/y.
+/// `pointerdown` stays on the element (only a press starting on the circle cap
+/// should arm a drag), but `pointermove`, `pointerup`, and `pointercancel` are
+/// attached to the guest `window` instead: a fast flick can outrun the element
+/// before its first `pointermove` fires (capture is only taken once the press
+/// passes the drag threshold), so element-scoped listeners can lose the
+/// pointer mid-drag and never see the release, leaving `fabPressing` stuck set
+/// so a later hover resumes a phantom drag. The FAB's overlay iframe is pinned
+/// full-viewport while dragging, so the window sees every pointer event;
+/// captured events (post-threshold) still bubble there too. `on_move` also
+/// carries a stale-press guard: if a move event arrives with no buttons held,
+/// the release was already lost, so the drag is finished right there instead
+/// of waiting for a `pointerup` that will never come.
 fn attach_drag(element: &HtmlElement) {
     let el_down = element.clone();
     let on_down = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
@@ -487,6 +495,13 @@ fn attach_drag(element: &HtmlElement) {
         if el_move.dataset().get("fabPressing").is_none() {
             return;
         }
+        // A press with NO button still held means the pointerup was lost
+        // (fast flick released outside the element before capture was taken):
+        // finish the drag here so a later hover can't resume a phantom press.
+        if e.buttons() == 0 {
+            finish_drag(&el_move, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+            return;
+        }
         let dx = e.client_x() as f64 - read_data_f64(&el_move, "fabDownX");
         let dy = e.client_y() as f64 - read_data_f64(&el_move, "fabDownY");
         // Promote to a DRAG once past the dead zone; take capture only then, so a
@@ -519,43 +534,62 @@ fn attach_drag(element: &HtmlElement) {
         if el_up.dataset().get("fabPressing").is_none() {
             return;
         }
-        el_up.dataset().delete("fabPressing");
-        let moved = el_up.dataset().get("fabMoved").is_some();
-        // A press that never moved is a plain click — leave it to native
-        // click/dblclick; do nothing here.
-        if !moved {
+        finish_drag(&el_up, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+    });
+
+    let el_cancel = element.clone();
+    let on_cancel = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
+        if el_cancel.dataset().get("fabPressing").is_none() {
             return;
         }
-        el_up.release_pointer_capture(e.pointer_id()).ok();
-        if let Some(fab) = el_up.query_selector(".fab").ok().flatten() {
-            fab.class_list().remove_1("dragging").ok();
-        }
-        // Snap to the corner nearest where the pointer was released — the
-        // release point's viewport half on each axis picks the dock.
-        let dock = nearest_dock(
-            e.client_x() as f64,
-            e.client_y() as f64,
-            viewport_width(),
-            viewport_height(),
-        );
-        apply_dock(&el_up, dock);
-        persist_dock(dock);
+        finish_drag(&el_cancel, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();
     target
         .add_event_listener_with_callback("pointerdown", on_down.as_ref().unchecked_ref())
         .ok();
-    target
-        .add_event_listener_with_callback("pointermove", on_move.as_ref().unchecked_ref())
-        .ok();
-    target
-        .add_event_listener_with_callback("pointerup", on_up.as_ref().unchecked_ref())
-        .ok();
-
+    // WINDOW-scoped move/up/cancel: a fast flick outruns the element before
+    // its first pointermove fires (capture is only taken past the drag
+    // threshold), so element-scoped listeners lose the pointer mid-drag and
+    // never see the release. The overlay iframe is pinned full-viewport while
+    // dragging, so the window sees every event. Captured events (post
+    // threshold) still bubble here.
+    if let Some(win) = window() {
+        let wtarget: &web_sys::EventTarget = win.unchecked_ref();
+        for (name, cb) in [
+            ("pointermove", on_move.as_ref()),
+            ("pointerup", on_up.as_ref()),
+            ("pointercancel", on_cancel.as_ref()),
+        ] {
+            wtarget
+                .add_event_listener_with_callback(name, cb.unchecked_ref())
+                .ok();
+        }
+    }
     on_down.forget();
     on_move.forget();
     on_up.forget();
+    on_cancel.forget();
+}
+
+/// Finish a press at viewport point `(x, y)`: clear the press flags and — if
+/// the press had been promoted to a drag — release capture, drop the dragging
+/// class, and snap/persist the nearest dock. Shared by `pointerup`,
+/// `pointercancel`, and the stale-press guard in `pointermove`.
+fn finish_drag(el: &HtmlElement, pointer_id: i32, x: f64, y: f64) {
+    el.dataset().delete("fabPressing");
+    let moved = el.dataset().get("fabMoved").is_some();
+    if !moved {
+        return;
+    }
+    el.release_pointer_capture(pointer_id).ok();
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list().remove_1("dragging").ok();
+    }
+    let dock = nearest_dock(x, y, viewport_width(), viewport_height());
+    apply_dock(el, dock);
+    persist_dock(dock);
 }
 
 /// The viewport height in CSS px, defaulting if unavailable.
