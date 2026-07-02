@@ -550,3 +550,302 @@ Expected: PASS (YAML still parses/lowers).
 ```bash
 jj commit -m "feat(fab): unify text size, weight, and ink across the control"
 ```
+
+---
+
+### Task 8: Window-scoped drag listeners + stale-press guard (spec §6)
+
+**Files:**
+- Modify: `rust/tonk-fab/src/element.rs` (`attach_drag`)
+
+**Interfaces:** none new; `nearest_dock`/`apply_dock`/`persist_dock` are consumed unchanged.
+
+- [ ] **Step 1: Restructure `attach_drag`**
+
+Keep the `on_down` closure exactly as is, attached to the ELEMENT. Extract the
+shared drag-finish into a helper and attach `on_move`, `on_up`, and a new
+`pointercancel` listener to the guest WINDOW:
+
+```rust
+/// Finish a press at viewport point `(x, y)`: clear the press flags and — if
+/// the press had been promoted to a drag — release capture, drop the dragging
+/// class, and snap/persist the nearest dock. Shared by `pointerup`,
+/// `pointercancel`, and the stale-press guard in `pointermove`.
+fn finish_drag(el: &HtmlElement, pointer_id: i32, x: f64, y: f64) {
+    el.dataset().delete("fabPressing");
+    let moved = el.dataset().get("fabMoved").is_some();
+    if !moved {
+        return;
+    }
+    el.release_pointer_capture(pointer_id).ok();
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list().remove_1("dragging").ok();
+    }
+    let dock = nearest_dock(x, y, viewport_width(), viewport_height());
+    apply_dock(el, dock);
+    persist_dock(dock);
+}
+```
+
+In `on_move`, right after the existing `fabPressing` early-return, add the
+stale-press guard:
+
+```rust
+        // A press with NO button still held means the pointerup was lost
+        // (fast flick released outside the element before capture was taken):
+        // finish the drag here so a later hover can't resume a phantom press.
+        if e.buttons() == 0 {
+            finish_drag(&el_move, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+            return;
+        }
+```
+
+Rewrite `on_up` to delegate:
+
+```rust
+    let el_up = element.clone();
+    let on_up = Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
+        if el_up.dataset().get("fabPressing").is_none() {
+            return;
+        }
+        finish_drag(&el_up, e.pointer_id(), e.client_x() as f64, e.client_y() as f64);
+    });
+```
+
+Add an `on_cancel` closure with the identical body (a cancelled pointer ends
+the drag where it stands).
+
+Attach: `pointerdown` on the element (unchanged); `pointermove`, `pointerup`,
+`pointercancel` on the window —
+
+```rust
+    let target: &web_sys::EventTarget = element.unchecked_ref();
+    target
+        .add_event_listener_with_callback("pointerdown", on_down.as_ref().unchecked_ref())
+        .ok();
+    // WINDOW-scoped move/up/cancel: a fast flick outruns the element before
+    // its first pointermove fires (capture is only taken past the drag
+    // threshold), so element-scoped listeners lose the pointer mid-drag and
+    // never see the release. The overlay iframe is pinned full-viewport while
+    // dragging, so the window sees every event. Captured events (post
+    // threshold) still bubble here.
+    if let Some(win) = window() {
+        let wtarget: &web_sys::EventTarget = win.unchecked_ref();
+        for (name, cb) in [
+            ("pointermove", on_move.as_ref()),
+            ("pointerup", on_up.as_ref()),
+            ("pointercancel", on_cancel.as_ref()),
+        ] {
+            wtarget
+                .add_event_listener_with_callback(name, cb.unchecked_ref())
+                .ok();
+        }
+    }
+    on_down.forget();
+    on_move.forget();
+    on_up.forget();
+    on_cancel.forget();
+```
+
+Update `attach_drag`'s doc comment: listeners' new homes and why (fast-flick
+loss + lost-release phantom drag), and document the guard.
+
+- [ ] **Step 2: Verify**
+
+Run: `cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`
+Expected: clean.
+Run: `cargo test -p tonk-fab`
+Expected: 23/23 pass (no logic changes).
+
+- [ ] **Step 3: Commit**
+
+```bash
+jj commit -m "fix(fab): survive fast drags with window-scoped pointer listeners"
+```
+
+---
+
+### Task 9: Right-dock mirroring (spec §7, CSS only)
+
+**Files:**
+- Modify: `rust/tonk-core/assets/library/profile.yaml` (FAB `<style>` block)
+
+**Interfaces:** none — presentational CSS keyed off the existing host `fab-dock-right` class.
+
+- [ ] **Step 1: Re-key the dead `.fab--dock-right` rules**
+
+The three rules around line 545 use `.fab--dock-right`, a class nothing sets.
+Re-key them to the host class (the comment above them stays):
+
+```css
+        .fab-dock-right .fab { flex-direction: row-reverse; }
+        .fab-dock-right .fab__cap-l { border-radius: 0 36px 36px 0; }
+        .fab-dock-right .fab__cap-r { border-radius: 36px 0 0 36px; }
+```
+
+- [ ] **Step 2: Complete the mirror**
+
+AFTER the existing `.fab__share.is-open .fab__share-menu { display: flex; }`
+rule (so the flip wins its specificity/source-order ties), add:
+
+```css
+        /* Mirrored on a right dock: the bar is row-reversed, so the share
+           zone is the LEFT end — its roster flips to anchor left (the repo
+           switcher already re-anchors right via `.fab-dock-right .fab__menu`).
+           Row alignment mirrors with it: actions and member cards read from
+           the bar's outer edge inward on both docks. */
+        .fab-dock-right .fab__share-menu { left: 0; right: auto; }
+        .fab-dock-right .fab__menu-item--action { justify-content: flex-start; }
+        .fab-dock-right .fab__menu-item--member { text-align: left; }
+        /* Telescope tiles clip toward the circle, so the unfold reads from
+           the circle outward on a right dock too. */
+        .fab-dock-right .fab--anim .fab__tele { justify-content: flex-start; }
+```
+
+- [ ] **Step 3: Verify**
+
+Run: `cargo test -p tonk-worker --test standard_library`
+Expected: PASS 3/3.
+
+- [ ] **Step 4: Commit**
+
+```bash
+jj commit -m "feat(fab): mirror the bar and menus on a right dock"
+```
+
+---
+
+### Task 10: Preload menu widths (spec §8)
+
+**Files:**
+- Modify: `rust/tonk-fab/Cargo.toml` (web-sys features: `MutationObserver`, `MutationObserverInit`, `FontFaceSet`)
+- Modify: `rust/tonk-fab/src/element.rs`
+
+**Interfaces:**
+- Consumes: `crate::logic::ratchet_min_width` (unchanged) via the existing `equalize_menu_width`.
+- Produces: nothing later tasks reference.
+
+- [ ] **Step 1: Make `equalize_menu_width` measurable while closed**
+
+In `equalize_menu_width`, the menu is `display: none` unless open. Before the
+`width: max-content` measurement, force it measurable when closed, and restore
+after (all inline, synchronous — nothing paints):
+
+```rust
+    let style = menu.unchecked_ref::<HtmlElement>().style();
+    // A closed menu is `display: none` (no boxes). Force it measurable —
+    // invisible and out of the paint (`visibility: hidden`), laid out at its
+    // natural width — then restore. All within one task, so no flash.
+    let closed = !seg.class_list().contains("is-open");
+    if closed {
+        let _ = style.set_property("display", "flex");
+        let _ = style.set_property("visibility", "hidden");
+    }
+    let _ = style.set_property("width", "max-content");
+    let natural = menu.get_bounding_client_rect().width();
+    let _ = style.remove_property("width");
+    if closed {
+        let _ = style.remove_property("display");
+        let _ = style.remove_property("visibility");
+    }
+```
+
+Update its doc comment (measures open or closed; preload + observer callers).
+
+- [ ] **Step 2: Preload on connect, observe mutations, refresh on font load**
+
+Add to `connected_callback`, inside the `!already_bound` block after
+`attach_gestures(this)`: `preload_menu_widths(this);`
+
+```rust
+/// The two dropdown-owning segments.
+const MENU_SEGMENTS: [&str; 2] = [".fab__repo", ".fab__share"];
+
+/// Stamp both segments' ratcheted widths up front and keep them fresh, so a
+/// dropdown OPEN never changes the bar: rows render asynchronously (a
+/// MutationObserver per menu re-ratchets as content lands) and the Plex face
+/// loads asynchronously (a font swap changes metrics but fires no mutation,
+/// so `document.fonts.ready` triggers one more pass).
+fn preload_menu_widths(element: &HtmlElement) {
+    for sel in MENU_SEGMENTS {
+        if let Some(seg) = element.query_selector(sel).ok().flatten() {
+            equalize_menu_width(&seg);
+            observe_menu(&seg);
+        }
+    }
+    refresh_on_fonts_ready(element);
+}
+```
+
+`observe_menu`: one observer per menu, re-ratcheting on any content change.
+Mirror the MutationObserver construction pattern already used in
+`rust/tonk-display/src/fallback.rs` (same web-sys version):
+
+```rust
+/// Re-ratchet `seg`'s width whenever its menu's content changes (rows arrive
+/// from live subscriptions well after connect). The observer lives as long as
+/// the page (closure forgotten) — one FAB, two menus, so no accounting.
+fn observe_menu(seg: &Element) {
+    let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
+        return;
+    };
+    let seg_for_cb = seg.clone();
+    let cb = Closure::<dyn FnMut(js_sys::Array, web_sys::MutationObserver)>::new(
+        move |_records: js_sys::Array, _obs: web_sys::MutationObserver| {
+            equalize_menu_width(&seg_for_cb);
+        },
+    );
+    if let Ok(observer) = web_sys::MutationObserver::new(cb.as_ref().unchecked_ref()) {
+        let init = web_sys::MutationObserverInit::new();
+        init.set_child_list(true);
+        init.set_subtree(true);
+        init.set_character_data(true);
+        observer.observe_with_options(&menu, &init).ok();
+    }
+    cb.forget();
+}
+```
+
+(If the workspace web-sys exposes builder-style `child_list(&mut ...)` instead
+of `set_child_list`, follow whichever tonk-display uses — match, don't fight,
+the pinned version.)
+
+```rust
+/// One more ratchet pass once the fonts land: measurements taken against the
+/// fallback face under-report the condensed Plex metrics.
+fn refresh_on_fonts_ready(element: &HtmlElement) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let ready = match document.fonts().ready() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let el = element.clone();
+    spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
+        for sel in MENU_SEGMENTS {
+            if let Some(seg) = el.query_selector(sel).ok().flatten() {
+                equalize_menu_width(&seg);
+            }
+        }
+    });
+}
+```
+
+Add the three web-sys features to `rust/tonk-fab/Cargo.toml` alphabetically in
+the existing feature list: `"FontFaceSet"`, `"MutationObserver"`,
+`"MutationObserverInit"`.
+
+- [ ] **Step 3: Verify**
+
+Run: `cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`
+Expected: clean.
+Run: `cargo test -p tonk-fab && cargo test -p tonk-worker --test standard_library && cargo clippy --all -- -D warnings`
+Expected: all pass/clean.
+
+- [ ] **Step 4: Commit**
+
+```bash
+jj commit -m "feat(fab): preload ratcheted menu widths at connect"
+```

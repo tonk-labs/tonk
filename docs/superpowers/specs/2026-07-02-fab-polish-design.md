@@ -85,6 +85,46 @@ circle remains a status indicator + fold toggle + drag handle.
   concept) if nothing else references them; the `tonk:pause-sync` command
   itself stays — it is space-branch machinery a future affordance rewires.
 
+## 6. Drag robustness (amendment, 2026-07-02 live review)
+
+Fast flicks lose the FAB: the `pointermove`/`pointerup` listeners sit on the
+element and capture is only taken after a 4px move event reaches the element,
+so a fast pointer outruns the FAB before any move event fires, and the
+`pointerup` lands outside it — `fabPressing` is never cleared and a later
+hover resumes a phantom drag.
+
+- Move the `pointermove` / `pointerup` listeners (plus a new `pointercancel`)
+  to the guest WINDOW; `pointerdown` stays on the element (circle only).
+- Stale-press guard: a `pointermove` with `fabPressing` set but
+  `e.buttons() == 0` means the release was lost — finish the drag (snap to the
+  nearest dock if it had moved, else just clear the press).
+- `pointercancel` finishes the drag the same way.
+- The threshold-time `set_pointer_capture` stays (it keeps events flowing when
+  the pointer leaves the browser window; captured events still bubble to the
+  window listeners).
+
+## 7. Right-dock mirroring (amendment, 2026-07-02 live review)
+
+When docked right, the whole control mirrors along the x-axis. The
+`row-reverse` + cap-radius CSS for this already exists but is DEAD — keyed on
+`.fab--dock-right`, a class nothing sets (element.rs stamps `fab-dock-right`
+on the `<tonk-fab>` host). Re-key those three rules to `.fab-dock-right .fab`
+descendants, and complete the mirror: the share roster (now the bar's left
+end) anchors left, action rows justify flex-start, member cards align left,
+and telescope tiles anchor content toward the circle
+(`justify-content: flex-start`) so the unfold reads from the circle outward.
+
+## 8. Preloaded menu widths (amendment, 2026-07-02 live review)
+
+Opening a dropdown should never change the bar's widths — the ratchet stamps
+should already be there. On connect, measure each menu's natural width even
+while closed (inline `display: flex; visibility: hidden; width: max-content`,
+read, restore — synchronous, so nothing paints) and stamp the ratcheted
+segment `min-width`. Re-measure and re-ratchet when a menu's content mutates
+(one MutationObserver per menu — rows render asynchronously) and once when
+`document.fonts.ready` resolves (a font swap changes metrics but fires no
+mutation). The on-open equalize stays as a cheap no-op fallback.
+
 ## Testing
 
 - `cargo clippy --all -- -D warnings` (native lint gate).
