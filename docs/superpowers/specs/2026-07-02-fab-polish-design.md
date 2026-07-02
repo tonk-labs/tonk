@@ -46,6 +46,12 @@ roster.
   exception. If it still feels jumpy in practice, the fallback design is a
   MutationObserver per menu that keeps the rung at the widest-row width
   permanently (no on-open change).
+- **Amended (2026-07-02, live review):** clear-on-close proved jumpy — segment
+  widths visibly changed depending on which dropdown was open. The equalized
+  `min-width` now RATCHETS: it is stamped on open when the menu's natural width
+  exceeds the segment's current rendered width, and is never cleared — a
+  column's width only grows, and only when a wider element enters (re-measured
+  on each open). The `clear_menu_width` helper is removed.
 - The telescope's settled state already leaves tiles at `max-width: none`, so
   a widened segment reflows the bar along its docked direction — the same
   behavior as the growing invite link.
@@ -54,6 +60,10 @@ roster.
 
 Profile and repo names stay clamped at `16ch` with ellipsis. The width
 equalization above absorbs the rest.
+
+**Amended (2026-07-02, live review):** the caps differ per segment — profile
+name clamps at `15ch`, repo name at `24ch` (both the static label and its
+inline editable).
 
 ## 5. Remove pause-sync (for now)
 

@@ -414,3 +414,81 @@ Checklist, in a space (`/space/<id>`):
 - [ ] **Step 2: Report**
 
 State plainly what passed and anything that didn't (with what was observed). If the widening still reads jumpy in practice, note it — the spec's fallback is the MutationObserver always-equal variant, a separate follow-up.
+
+---
+
+### Task 6: Ratchet segment widths + per-segment name caps (live-review amendment)
+
+Live review found segment widths visibly changing depending on which dropdown
+was open — the clear-on-close behavior from Task 3. Amendment (spec §3/§4
+amendments, 2026-07-02): the equalized `min-width` ratchets (never cleared;
+only grows, re-measured on each open), and the name caps become 15ch (profile)
+/ 24ch (repo).
+
+**Files:**
+- Modify: `rust/tonk-fab/src/element.rs` (`toggle_menu`, delete `clear_menu_width`)
+- Modify: `rust/tonk-core/assets/library/profile.yaml` (menu comment + four max-width caps)
+
+**Interfaces:**
+- Consumes: `crate::logic::menu_min_width` (unchanged — its "only widen" contract is exactly the ratchet comparison against the segment's current rendered width).
+- Produces: nothing later tasks reference.
+
+- [ ] **Step 1: Ratchet in element.rs**
+
+Replace `toggle_menu` with:
+
+```rust
+/// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
+/// closing the other menu (matched by `other_sel`) so only one is open at a time.
+/// The open-direction is CSS, keyed off the FAB's `fab-dock-*` class.
+///
+/// On open the segment is widened (an eased inline `min-width`) to the menu's
+/// natural width when the menu is the wider of the two — the stylesheet's
+/// `width: 100%` then makes menu and rung exactly equal. The stamped
+/// `min-width` RATCHETS: it is never cleared, so a column keeps its width
+/// across open/close and across the other menu's toggles, and only grows —
+/// re-measured on each open — when a wider element has entered the menu.
+/// (Clearing on close made the bar's columns visibly resize depending on
+/// which dropdown was open.)
+fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
+    if let Some(other) = element.query_selector(other_sel).ok().flatten() {
+        other.class_list().remove_1("is-open").ok();
+    }
+    let opening = !seg.class_list().contains("is-open");
+    seg.class_list().toggle_with_force("is-open", opening).ok();
+    if opening {
+        equalize_menu_width(seg);
+    }
+}
+```
+
+Delete the `clear_menu_width` function and its doc comment entirely. Leave
+`equalize_menu_width` as is — measuring against the segment's CURRENT rendered
+width (which includes any previously stamped `min-width`) is what makes the
+stamp a ratchet.
+
+- [ ] **Step 2: Update the menu comment + caps in profile.yaml**
+
+In the `.fab__menu` comment, replace the parenthetical "(cleared on close)"
+with "(never cleared — a column only ratchets wider)".
+
+Change four `max-width` values:
+- `.fab__name` rule: `max-width: 16ch;` → `max-width: 15ch;`
+- `.fab__name-input` rule: `max-width: 16ch;` → `max-width: 15ch;`
+- `.fab__space` rule: `max-width: 16ch;` → `max-width: 24ch;`
+- `.fab__space tonk-editable` rule: `max-width: 16ch;` → `max-width: 24ch;`
+
+- [ ] **Step 3: Verify**
+
+Run: `cargo clippy -p tonk-fab --target wasm32-unknown-unknown -- -D warnings`
+Expected: clean (catches a now-unused function if the delete missed a call).
+Run: `cargo test -p tonk-fab && cargo test -p tonk-worker --test standard_library`
+Expected: PASS.
+Run: `cargo clippy --all -- -D warnings`
+Expected: clean.
+
+- [ ] **Step 4: Commit**
+
+```bash
+jj commit -m "feat(fab): ratchet equalized segment widths and retune name caps"
+```
