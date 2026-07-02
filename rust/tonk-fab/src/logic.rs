@@ -253,6 +253,16 @@ pub fn menu_min_width(menu_natural: f64, segment: f64) -> Option<f64> {
     (menu_natural > segment).then(|| menu_natural.ceil())
 }
 
+/// The ratcheted `min-width` for a segment whose menu just opened: the
+/// equalized target when the menu outmeasures the segment's current rendered
+/// width, never below an already-stamped value (mid-transition the rect
+/// under-reports, and a shrunken menu must not narrow the column). `None`
+/// means leave any existing stamp untouched.
+pub fn ratchet_min_width(menu_natural: f64, segment: f64, stamped: Option<f64>) -> Option<f64> {
+    let target = menu_min_width(menu_natural, segment)?;
+    Some(stamped.map_or(target, |prior| target.max(prior)))
+}
+
 #[cfg(test)]
 mod dock {
     use super::*;
@@ -514,5 +524,33 @@ mod menu {
     fn a_narrower_or_equal_menu_leaves_the_segment_alone() {
         assert_eq!(menu_min_width(80.0, 120.0), None);
         assert_eq!(menu_min_width(120.0, 120.0), None);
+    }
+}
+
+#[cfg(test)]
+mod ratchet {
+    use super::*;
+
+    #[test]
+    fn a_first_stamp_takes_the_equalized_target() {
+        assert_eq!(ratchet_min_width(220.4, 120.0, None), Some(221.0));
+    }
+
+    #[test]
+    fn a_prior_stamp_is_never_regressed() {
+        // Mid-transition rect (120) under-reports a prior 260 stamp; a
+        // shrunken menu (221 natural) must not narrow the column.
+        assert_eq!(ratchet_min_width(220.4, 120.0, Some(260.0)), Some(260.0));
+    }
+
+    #[test]
+    fn a_wider_menu_raises_a_prior_stamp() {
+        assert_eq!(ratchet_min_width(300.0, 120.0, Some(260.0)), Some(300.0));
+    }
+
+    #[test]
+    fn a_menu_narrower_than_the_segment_leaves_the_stamp_alone() {
+        assert_eq!(ratchet_min_width(80.0, 120.0, Some(260.0)), None);
+        assert_eq!(ratchet_min_width(80.0, 120.0, None), None);
     }
 }

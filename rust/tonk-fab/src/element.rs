@@ -26,7 +26,7 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, dock_claim_json, menu_min_width, nearest_dock, telescope_delay_ms,
+    DOCK_CLASSES, Dock, dock_claim_json, nearest_dock, ratchet_min_width, telescope_delay_ms,
     telescope_settle_ms,
 };
 use custom_elements::CustomElement;
@@ -241,9 +241,13 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
 
 /// Measure the just-opened menu's natural (max-content) width — momentarily
 /// overriding the stylesheet's `width: 100%`, reading the box, restoring —
-/// and stamp the segment's inline `min-width` when the menu is wider. Runs
-/// after `is-open` lands (the menu must be laid out to measure) but within
-/// the same task, so nothing paints at the unmeasured width.
+/// and stamp the segment's inline `min-width` to the RATCHETED target (never
+/// below a prior stamp — see `ratchet_min_width`). Runs after `is-open` lands
+/// (the menu must be laid out to measure) but within the same task, so
+/// nothing paints at the unmeasured width. On the first-ever stamp, pins the
+/// segment's current rendered width and flushes layout before the target, so
+/// the 0.2s `min-width` ease has a numeric start instead of animating from
+/// the unanimatable `auto`.
 fn equalize_menu_width(seg: &Element) {
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
@@ -252,10 +256,26 @@ fn equalize_menu_width(seg: &Element) {
     let _ = style.set_property("width", "max-content");
     let natural = menu.get_bounding_client_rect().width();
     let _ = style.remove_property("width");
+    let seg_el = seg.unchecked_ref::<HtmlElement>();
     let segment = seg.get_bounding_client_rect().width();
-    if let Some(min_width) = menu_min_width(natural, segment) {
-        let _ = seg
-            .unchecked_ref::<HtmlElement>()
+    // A prior ratchet stamp, read back off the inline style ("260px" → 260.0).
+    let stamped = seg_el
+        .style()
+        .get_property_value("min-width")
+        .ok()
+        .and_then(|v| v.strip_suffix("px").and_then(|n| n.parse::<f64>().ok()));
+    if let Some(min_width) = ratchet_min_width(natural, segment, stamped) {
+        // Give the 0.2s ease a NUMERIC start on the first stamp: `min-width`
+        // rests at `auto` (not animatable), so pin the current rendered width
+        // and flush layout before stamping the target — otherwise the first
+        // (and, ratcheted, usually only) widening snaps instead of easing.
+        if stamped.is_none() {
+            let _ = seg_el
+                .style()
+                .set_property("min-width", &format!("{segment}px"));
+            let _ = seg_el.offset_width();
+        }
+        let _ = seg_el
             .style()
             .set_property("min-width", &format!("{min_width}px"));
     }
