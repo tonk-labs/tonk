@@ -90,6 +90,9 @@ fn attach_listeners() {
         .add_event_listener_with_callback("activate", on_activate.as_ref().unchecked_ref());
     on_activate.forget();
 
+    // Dispatchers own the privacy contract: `detail.props` is
+    // forwarded verbatim, so payloads must stay content-free
+    // (hashes and counts only) — see docs/telemetry.md.
     let on_custom = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         let Some(custom) = event.dyn_ref::<web_sys::CustomEvent>() else {
             return;

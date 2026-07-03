@@ -22,14 +22,14 @@ before a profile exists report as `tonk:anonymous`.
 
 | Event | Properties |
 |---|---|
-| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`; eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
+| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
 
 ### Web app
 
 | Event | Properties |
 |---|---|
 | `app_loaded` | `version` |
-| `$pageview` | `route` — the path with every non-literal segment replaced by a hash (e.g. `/space/1a2b3c4d5e6f7a8b/view/9c8d7e6f5a4b3c2d`) |
+| `$pageview` | `route` — the path with every non-literal segment replaced by a hash (e.g. `/space/1a2b3c4d5e6f7a8b/view/9c8d7e6f5a4b3c2d`); ``$current_url`` carries the same normalized value |
 | `commit` | none (fired on the existing `tonk:committed` event) |
 | `sheet_activated` | none |
 | `panic` | `message` (first line of the panic message) |
@@ -38,11 +38,17 @@ Autocapture and session recording are disabled. PostHog runs
 cookieless (`persistence: "memory"`); no third-party script is loaded
 (the bundle is self-hosted).
 
+The web shell also listens for a generic `tonk:analytics` DOM event
+(`detail: { name, props }`) so future components can emit events
+without new dependencies. Nothing dispatches it today; any future
+dispatcher is responsible for keeping its payload content-free
+(hashes and counts only), like every event above.
+
 ## Turning it off
 
 - CLI: `tonk telemetry off` (persisted), or `DO_NOT_TRACK=1`, or
   `TONK_TELEMETRY=0` per invocation. `tonk telemetry` shows the
-  effective state.
+  effective state. The persisted choice lives at ``<platform data dir>/tonk/telemetry.json`` (``TONK_TELEMETRY_STATE`` overrides the directory).
 - Web: run `localStorage.setItem("tonk:telemetry", "off")` in the
   console and reload. (A settings toggle is a planned follow-up.)
 - Builds without a `TONK_POSTHOG_KEY` baked in send nothing at all —
