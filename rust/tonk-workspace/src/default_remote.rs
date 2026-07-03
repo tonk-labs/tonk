@@ -1,13 +1,14 @@
-//! `<tonk-default-remote>` — a button that fills a sibling form input
-//! with this server's UCAN access-service URL.
+//! `<tonk-default-remote>` — fills a sibling form input with this server's
+//! UCAN access-service URL.
 //!
 //! The create / enable-sync forms collect a remote URL the user can
 //! type. Most of the time they want *this* server, but notation has no
 //! `window.origin` and no inline JS, so a static template can't encode
-//! `origin + /ucan/`. This dumb element bridges that gap: it renders a
-//! button and, on click, writes `location.origin + "/ucan/"` into the
-//! form control named by its `field` attribute (default `remote`),
-//! resolved within the closest `<form>`.
+//! `origin + /ucan/`. This dumb element bridges that gap: by default it
+//! renders a button and, on click, writes the URL into the form control
+//! named by its `field` attribute (default `remote`), resolved within the
+//! closest `<form>`. With the `auto` attribute, it writes the URL on connect
+//! and renders no button, for flows where the default server is policy.
 //!
 //! Like [`super::share`], it holds no app policy — just the
 //! origin-resolution a static template can't do. The button's label is
@@ -35,6 +36,9 @@ const ACCESS_SERVICE_PATH: &str = "/ucan/";
 /// The form-control `name` filled when the element sets no `field`.
 const DEFAULT_FIELD: &str = "remote";
 
+/// Attribute that makes the element silently fill the target on connect.
+const AUTO_ATTR: &str = "auto";
+
 /// Fallback button label when the element carries no text.
 const DEFAULT_LABEL: &str = "Use this server";
 
@@ -59,6 +63,10 @@ impl CustomElement for TonkDefaultRemote {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        if this.has_attribute(AUTO_ATTR) {
+            fill_default(this);
+            return;
+        }
         ensure_button(this);
         install_click(this, &self.click);
     }
@@ -123,14 +131,19 @@ fn ensure_button(this: &HtmlElement) -> Option<Element> {
     Some(button)
 }
 
+/// Resolve and fill the default remote URL, if this page can determine it.
+fn fill_default(this: &HtmlElement) {
+    if let Some(url) = default_remote_url() {
+        fill_target(this, &url);
+    }
+}
+
 /// Install the click listener: resolve `origin + /ucan/` and write it
 /// into the form control named by the element's `field` attribute.
 fn install_click(this: &HtmlElement, slot: &ClickClosure) {
     let host = this.clone();
     let listener = Closure::wrap(Box::new(move |_event: Event| {
-        if let Some(url) = default_remote_url() {
-            fill_target(&host, &url);
-        }
+        fill_default(&host);
     }) as Box<dyn FnMut(Event)>);
 
     let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
@@ -246,5 +259,40 @@ mod tests {
 
         labeled.remove();
         bare.remove();
+    }
+
+    /// With `auto`, the element fills the field as soon as it connects and
+    /// does not render the manual button.
+    #[dialog_common::test]
+    async fn it_auto_fills_without_rendering_a_button() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let form = document.create_element("form").unwrap();
+        let element = document.create_element("tonk-default-remote").unwrap();
+        element.set_attribute("field", "remote").unwrap();
+        element.set_attribute("auto", "").unwrap();
+        let input = document.create_element("input").unwrap();
+        input.set_attribute("name", "remote").unwrap();
+        form.append_child(&input).unwrap();
+        form.append_child(&element).unwrap();
+        body.append_child(&form).unwrap();
+
+        let value = js_sys::Reflect::get(input.as_ref(), &JsValue::from_str("value"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let origin = window().unwrap().location().origin().unwrap();
+        assert_eq!(value, format!("{origin}/ucan/"));
+        assert!(
+            element
+                .query_selector(".workspace__default-remote")
+                .unwrap()
+                .is_none(),
+            "auto mode should not render a manual button"
+        );
+
+        form.remove();
     }
 }
