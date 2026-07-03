@@ -39,6 +39,7 @@ web-sys = { workspace = true, features = [
     "EventInit",
     "EventTarget",
     "HtmlElement",
+    "HtmlFormElement",
     "HtmlTemplateElement",
     "MutationObserver",
     "MutationObserverInit",

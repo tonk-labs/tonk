@@ -128,6 +128,50 @@ fn handle_event(event: &Event, attr_name: &str, descriptors: &Descriptors, host:
             log_error(format!("event handler: tonk-claim: {}", e.message));
         }
     });
+    maybe_dismiss_overlay(event);
+}
+
+/// Opt-in overlay dismissal on the winning binding's event. The delegate
+/// only runs on events the browser actually dispatched, so on a `submit`
+/// this fires solely once native constraint validation passed — closing
+/// on a valid submit, never on an attempt a `required` field rejected.
+/// `event.target()` is the `<form>` for a `submit` and the activated
+/// element otherwise, so `closest` finds the marker either way. Two
+/// markers, each a no-op unless present:
+/// - `[data-close-dialog]` closes the element's nearest `<wa-dialog>`
+///   (Web Awesome's `open` property → its animated close).
+/// - `[data-close-radio="<id>"]` checks the radio with that id — used to
+///   select the "closed" state of a CSS-radio-group overlay, which both
+///   hides it and (since the other states deselect) resets its paging.
+///   When the marked element is itself a `<form>`, its fields are also
+///   reset so the next open starts blank.
+fn maybe_dismiss_overlay(event: &Event) {
+    let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+        return;
+    };
+    if let Some(marked) = target.closest("[data-close-dialog]").ok().flatten()
+        && let Some(dialog) = marked.closest("wa-dialog").ok().flatten()
+    {
+        let _ = js_sys::Reflect::set(
+            dialog.as_ref(),
+            &wasm_bindgen::JsValue::from_str("open"),
+            &wasm_bindgen::JsValue::FALSE,
+        );
+    }
+    if let Some(marked) = target.closest("[data-close-radio]").ok().flatten()
+        && let Some(id) = marked.get_attribute("data-close-radio")
+        && let Some(doc) = marked.owner_document()
+        && let Some(radio) = doc.get_element_by_id(&id)
+    {
+        let _ = js_sys::Reflect::set(
+            radio.as_ref(),
+            &wasm_bindgen::JsValue::from_str("checked"),
+            &wasm_bindgen::JsValue::TRUE,
+        );
+        if let Some(form) = marked.dyn_ref::<web_sys::HtmlFormElement>() {
+            form.reset();
+        }
+    }
 }
 
 /// Walk ancestors of `event.target` in innermost-first order,

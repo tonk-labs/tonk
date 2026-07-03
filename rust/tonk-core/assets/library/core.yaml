@@ -79,120 +79,94 @@ view/directory!:
 # WORKSPACE
 # ============================================================
 
-# The `artifact` concept. Binds an entity to a model and a view,
-# plus the tab metadata (title, icon) the viewer shell shows. Its
-# (entity, model, view) map one-to-one onto
-# `<tonk-display entity model view>`. Pinned to `tonk:artifact` so
-# the viewer can query artifacts by a stable concept entity.
-concept!: &artifact
-  this: tonk:artifact
-  description: An entity displayed as a sheet/tab in the viewer.
+# The blank canvas: what a lean (no-template) repo renders. It is the
+# default target of the `tonk/space` alias (below). Mirrors the mock's
+# "your starting layout is in place" frame: a connect-an-agent prompt
+# (the same `tonk:invite` mint the share path uses, rendered via the
+# `tonk:agent-invite` prompt view).
+concept!: &blank
+  this: tonk:blank
+  description: A lean repo's starting canvas — connect an agent or build by hand.
   with:
-    title:
-      description: Title shown in the tab
-      the: xyz.tonk.artifact/title
-      cardinality: one
-      as: text
-    subtitle:
-      description: Dimmed metadata line shown after the name in the card header
-      the: xyz.tonk.artifact/subtitle
-      cardinality: one
-      as: text
-    icon:
-      description: Icon shown in the tab
-      the: xyz.tonk.artifact/icon
-      cardinality: one
-      as: text
-    entity:
-      description: Entity displayed in the sheet
-      the: xyz.tonk.artifact/entity
-      cardinality: one
-      as: entity
-    model:
-      description: Model concept used to display the entity
-      the: xyz.tonk.artifact/model
-      cardinality: one
-      as: entity
-    view:
-      description: View concept used to display the entity
-      the: xyz.tonk.artifact/view
+    subject:
+      description: The repository's subject DID (the replica's subject).
+      the: dialog.origin/subject
       cardinality: one
       as: entity
 
-# The `empty-artifact` concept: a freshly created, not-yet-configured
-# sheet. It carries only a `title` (the typed name) on the shared
-# `xyz.tonk.artifact/title` attribute, and its view renders the
-# "empty artifact" canvas (a deeplink to hand to an agent, plus
-# instructions). Pinned to `tonk:empty-artifact` so the create rule can
-# point a new sheet's `model` at it by a stable URI.
-concept!: &empty-artifact
-  this: tonk:empty-artifact
-  description: A newly created, not-yet-configured sheet awaiting content.
-  with:
-    title:
-      description: The artifact's name, shown on the empty canvas
-      the: xyz.tonk.artifact/title
-      cardinality: one
-      as: text
-
-# The `sheet` concept: one tab in a workspace. A sheet is an
-# artifact (same title/icon/entity/model/view fields, same attribute
-# URIs) plus an `order` lexicographic key that positions the tab. So
-# every sheet is also a valid artifact; the extra `order` field is
-# what makes it a workspace member.
-concept!: &workspace/sheet
-  this: tonk:sheet
-  description: A workspace tab - an artifact plus a lexicographic order key.
-  with:
-    title:
-      description: Title shown in the tab
-      the: xyz.tonk.artifact/title
-      cardinality: one
-      as: text
-    subtitle:
-      description: Dimmed metadata line shown after the name in the card header
-      the: xyz.tonk.artifact/subtitle
-      cardinality: one
-      as: text
-    icon:
-      description: Icon shown in the tab
-      the: xyz.tonk.artifact/icon
-      cardinality: one
-      as: text
-    entity:
-      description: Entity displayed in the sheet
-      the: xyz.tonk.artifact/entity
-      cardinality: one
-      as: entity
-    model:
-      description: Model concept used to display the entity
-      the: xyz.tonk.artifact/model
-      cardinality: one
-      as: entity
-    view:
-      description: View concept used to display the entity
-      the: xyz.tonk.artifact/view
-      cardinality: one
-      as: entity
-    order:
-      description: Lexicographic order key positioning the tab
-      the: xyz.tonk.sheet/order
-      cardinality: one
-      as: text
-
-# Tab selection. Clicking a tab fires the transient `activate-sheet`
-# command, reading which sheet was clicked from the binder's `activate`
-# event detail. The inductive rule below points the binder's
-# cardinality-one `active` field at the clicked sheet (replacing the
-# prior selection). The command itself is swept after the cycle - only
-# the `active` pointer persists.
-command!: &workspace/activate-sheet
-  description: A request to make `sheet` the active sheet of the binder.
-  with:
-    sheet:
-      description: The sheet to activate, from the binder's `activate` event detail
-      the: dom.event.detail/sheet
-      as: entity
+view!:
+  this: id:tonk:blank/view
+  model: tonk:blank
+  display: |
+    <div class="blank-canvas">
+      <style>
+        .blank-canvas {
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          min-height: 100dvh;
+          gap: var(--wa-space-2xl);
+          width: 100%;
+          max-width: 620px;
+          margin: 0 auto;
+          padding: var(--wa-space-3xl) var(--wa-space-2xl);
+          color: var(--wa-color-text-normal);
+          font-family: var(--wa-font-family-body);
+        }
+        .blank-canvas__label {
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-xs);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--wa-color-text-quiet);
+        }
+        .blank-canvas__title {
+          margin: 0;
+          padding: 0;
+          background: transparent;
+          color: var(--wa-color-text-normal);
+          font-family: var(--wa-font-family-body);
+          font-size: var(--wa-font-size-2xl);
+          font-weight: var(--wa-font-weight-normal);
+          letter-spacing: -0.02em;
+        }
+        .blank-canvas__deeplink {
+          display: flex;
+          flex-direction: column;
+          gap: var(--wa-space-xs);
+          align-items: flex-start;
+        }
+        .blank-canvas__instr {
+          display: flex;
+          flex-direction: column;
+          gap: var(--wa-space-2xs);
+          padding-left: var(--wa-space-m);
+          border-left: 2px solid var(--wa-color-brand-fill-loud);
+          font-size: var(--wa-font-size-m);
+          line-height: var(--wa-line-height-normal);
+          color: var(--wa-color-text-quiet);
+        }
+        .blank-canvas__instr p { margin: 0; }
+      </style>
+      <span class="blank-canvas__label">no template &middot; empty view</span>
+      <h1 class="blank-canvas__title">your starting layout is in place</h1>
+      <section class="blank-canvas__deeplink">
+        <div class="blank-canvas__label">agent link &middot; paste into your agent</div>
+        <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
+        <tonk-origin>
+          <tonk-display
+            bind:subject="entity"
+            bind:base="data-base"
+            model=tonk:agent-invite
+            data-page="this repo">
+            <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
+          </tonk-display>
+        </tonk-origin>
+      </section>
+      <div class="blank-canvas__instr">
+        <p>Keep building by hand, or paste this link into your agent to take it further.</p>
+      </div>
+    </div>
 
 # The Enable-sync command. Submitting the sync chip's "Enable sync" form
 # asserts this transient command; the worker's `CreateSpaceHandler`
@@ -848,7 +822,7 @@ view!:
       value={name}
       data-subject={this}
       onchange=tonk/rename-repository
-      aria-label="Repository name"
+      aria-label="Spot name"
     ></tonk-editable>
 
 # ============================================================
@@ -874,25 +848,6 @@ concept!: &tonk/identity
       the: xyz.tonk.identity/name
       cardinality: one
       as: text
-
-# The chip view: sigil + an inline-editable name. Editing commits on
-# blur/Enter exactly like the repository-title banner, dispatching the
-# worker-backed `profile/rename` command. `data-rename` carries the
-# marker that distinguishes this transient from `tonk/rename-repository`.
-view!:
-  this: id:tonk:identity/chip
-  model: tonk:identity
-  display: |
-    <span class="workspace__identity">
-      <tonk-sigil class="workspace__identity-avatar" did={did}></tonk-sigil>
-      <tonk-editable
-        class="workspace__identity-name"
-        value={name}
-        data-rename="tonk:profile"
-        onchange=profile/rename
-        aria-label="Your name"
-      ></tonk-editable>
-    </span>
 
 # Rename the signed-in member (set their display name). The editable
 # chip input dispatches this on commit (blur/Enter); `name` reads the
@@ -943,177 +898,6 @@ view/label!:
   model: tonk:repository
   display: |
     {name}
-
-# Tab close. Clicking a tab's close button fires the transient
-# `close-sheet` command carrying just the closed sheet. The rule below
-# retracts the sheet's `order` so it no longer matches the sheet
-# directory (the tab disappears; the underlying artifact survives).
-# Reassigning the live selection to a neighbour is the binder element's
-# job: on close it moves `active` to the neighbour and dispatches an
-# `activate` (the single `active` writer), so no `next` field and no
-# reassign rule are needed here.
-command!: &workspace/close-sheet
-  description: A request to close `sheet`, demoting it back to a plain artifact.
-  with:
-    sheet:
-      description: |
-        The sheet to close, from the binder's `close` event detail.
-        Carried on a close-specific attribute (`dom.event.detail/closed`),
-        NOT `dom.event.detail/sheet` - the latter is what the
-        `activate-sheet` command reads, so reusing it here would make a
-        close also read as an activate request and select the closed
-        tab.
-      the: dom.event.detail/closed
-      as: entity
-
-# A minimal projection of a sheet's `order` key - the one field a
-# `tonk:sheet` carries over a plain `artifact`. A `retract!:` rule over
-# this dissociates exactly the `order` triple, rather than re-asserting
-# the whole `tonk:sheet` (which would force binding every field).
-concept!: &workspace/sheet-order
-  description: A sheet's order key, as a standalone fact.
-  with:
-    order:
-      description: Lexicographic order key positioning the tab
-      the: xyz.tonk.sheet/order
-      cardinality: one
-      as: text
-
-# Retract the order: when `close-sheet` fires, drop the closed sheet's
-# `order` triple. The sheet's artifact facts (title/entity/model/...)
-# persist - only the `order` that made it a `tonk:sheet` is removed, so
-# the directory query (which requires `order`) no longer matches it and
-# the tab disappears. The artifact could be re-promoted to a sheet
-# later by re-asserting an `order`.
-rule!:
-  description: Demotes a closed sheet back to a plain artifact
-  retract!: workspace/sheet-order
-  when:
-    - assert: workspace/close-sheet
-      where: { sheet: ?this }
-    - assert: workspace/sheet-order
-      where: { this: ?this, order: ?order }
-
-# The sheet-mount view (default view for `workspace/sheet`): wraps the
-# sheet's content in a `<tonk-sheet>` carrying its metadata as
-# attributes. `<tonk-sheet>` projects the card header from
-# `title`/`subtitle`/`icon` and `<tonk-sheet-binder>` projects the tab
-# strip from the same attributes; the view supplies only the
-# attributes and the content. The sheet's content renders directly
-# from the sheet's own `entity`/`model`/`view` fields - a sheet is
-# self-describing, so no intermediate concept is needed.
-
-
-
-view!:
-  this: id:tonk-workspace/sheet-mount
-  model: tonk:sheet
-  display: |
-    <tonk-sheet sheet={this} order={order} title={title} subtitle={subtitle} icon={icon}>
-      <tonk-display entity={entity} model={model} view={view} />
-    </tonk-sheet>
-
-# The empty-artifact canvas: what a freshly created sheet renders until
-# it has real content. Mirrors the wireframe's "empty artifact
-# (terminal)" frame - the artifact name, an agent-link row to hand to an
-# agent, and a short instructional block. Styling uses the app's Web
-# Awesome tokens so it follows the active theme.
-view!:
-  this: tonk:empty-artifact/view
-  model: tonk:empty-artifact
-  display: |
-    <div class="empty-artifact">
-      <style>
-        .empty-artifact {
-          display: flex;
-          flex-direction: column;
-          gap: var(--wa-space-2xl);
-          width: 100%;
-          max-width: 620px;
-          margin: 0 auto;
-          padding: var(--wa-space-3xl) var(--wa-space-2xl);
-          color: var(--wa-color-text-normal);
-          font-family: var(--wa-font-family-body);
-        }
-        /* The artifact name, large and light, with a file glyph. The
-           app stylesheet gives every `h1` an inverted "headline cover"
-           background; override it back to plain text here so the title
-           reads as a heading, not a highlighted block. */
-        .empty-artifact__title {
-          display: flex;
-          align-items: center;
-          gap: var(--wa-space-s);
-          margin: 0;
-          padding: 0;
-          background: transparent;
-          color: var(--wa-color-text-normal);
-          font-family: var(--wa-font-family-body);
-          font-size: var(--wa-font-size-2xl);
-          font-weight: var(--wa-font-weight-normal);
-          letter-spacing: -0.02em;
-        }
-        .empty-artifact__glyph { color: var(--wa-color-text-quiet); flex: none; }
-        /* The agent-link panel: an uppercase mono label over the
-           declarative invite. `<tonk-origin>` + `<tonk-display
-           model=tonk:agent-invite>` mint on mount and render the prompt
-           (see the `id:agent-invite/prompt` view). */
-        .empty-artifact__deeplink {
-          display: flex;
-          flex-direction: column;
-          gap: var(--wa-space-xs);
-          align-items: flex-start;
-        }
-        .empty-artifact__deeplink-label {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-xs);
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
-          color: var(--wa-color-text-quiet);
-        }
-        /* A quoted instructional block with a brand left-accent bar. */
-        .empty-artifact__instr {
-          display: flex;
-          flex-direction: column;
-          gap: var(--wa-space-2xs);
-          padding-left: var(--wa-space-m);
-          border-left: 2px solid var(--wa-color-brand-fill-loud);
-          font-size: var(--wa-font-size-m);
-          line-height: var(--wa-line-height-normal);
-          color: var(--wa-color-text-quiet);
-        }
-        .empty-artifact__instr p { margin: 0; }
-        .empty-artifact__instr b { color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-semibold); }
-      </style>
-      <h1 class="empty-artifact__title">
-        <wa-icon class="empty-artifact__glyph" name="file" variant="regular"></wa-icon>
-        {title}
-      </h1>
-      <section class="empty-artifact__deeplink">
-        <div class="empty-artifact__deeplink-label">agent link &middot; paste into your agent</div>
-        <!-- Mint a repo invite on mount via the same `tonk:invite` command
-             the repo-share dialog uses. `<tonk-origin>` supplies the real
-             host origin (`data-base`) and the repo subject DID (`entity`,
-             via `bind:subject`) so the sealed guest can resolve the
-             `tonk:invitation` join without reading `window` or the routing
-             ancestors itself. The default `id:invitation/link` view renders
-             the assembled URL + copy button; until both halves land, the
-             `no-entity` slot shows a pending affordance. -->
-        <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
-        <tonk-origin>
-          <tonk-display
-            bind:subject="entity"
-            bind:base="data-base"
-            model=tonk:agent-invite
-            data-page="{title}">
-            <div slot="no-entity" class="empty-artifact__deeplink-label">Generating link…</div>
-          </tonk-display>
-        </tonk-origin>
-      </section>
-      <div class="empty-artifact__instr">
-        <p>Paste this link into your agent's chat to start building.</p>
-        <p>The agent will edit <b>{title}</b> directly &mdash; you'll see changes here as they happen.</p>
-      </div>
-    </div>
 
 # ============================================================
 # BOARD
@@ -1487,110 +1271,14 @@ concept!: &space
       cardinality: one
       as: entity
 
-
-# Set the binder shell as the space's default view. The space route mounts
+# The space's default content: the blank canvas. The space route mounts
 # `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
-# `tonk/space` to `tonk:binder`, so the single-mode `tonk:shell` view (the topbar
-# over the sheet binder) renders for that one replica's binder.
+# `tonk/space` to `tonk:blank`. Seeding `sheets.yaml` re-asserts this
+# alias to `tonk:binder` (name! is cardinality-one), so a sheets repo
+# renders the binder instead.
 name!:
   this: id:tonk/space
-  entity: tonk:binder
-
-command!: &workspace/create-sheet
-  description: Create a new sheet in the workspace
-  with:
-    name:
-      description: Name of the artifact, from the binder's `create` event detail
-      the: dom.event.detail/name
-      as: text
-    order:
-      description: |
-        Lexicographic order key for the new tab, computed by the binder
-        (after the last existing tab) and carried on the `create` event
-        detail.
-      the: dom.event.detail/order
-      as: text
-    # The command entity is derived from its fields, so a per-event
-    # nonce keeps successive creates (same name/order) distinct. The
-    # binder stamps it on the event detail as a whole-number token;
-    # `dom.event/time-stamp` itself is fractional and won't coerce to an
-    # unsigned integer. Not ideal, but it mints unique entities and lets
-    # us switch to a revision-based approach later.
-    time:
-      description: A monotonic integer nonce, from the binder's event detail
-      the: dom.event.detail/time
-      as: unsigned-integer
-
-
-# A created sheet is self-describing: its `entity` is the sheet entity
-# itself (`?this`), its `model` is `tonk:empty-artifact`, and its `view`
-# is the built-in default. The companion rule below asserts the
-# `empty-artifact` title against that same entity, so the empty-artifact
-# canvas can render the sheet's name. `entity: ?this` is expressed as an
-# equality between two variables, which unifies the head's `entity`
-# field with the command's `this`.
-rule!:
-  description: Creates a new workspace sheet
-  assert!: workspace/sheet
-  when:
-    - assert: workspace/create-sheet
-      where:
-        this: ?this
-        name: ?title
-        order: ?order
-    - assert: ==
-      where:
-        this: ?entity
-        is: ?this
-    - assert: ==
-      where:
-        this: ?model
-        is: tonk:empty-artifact
-    - assert: ==
-      where:
-        this: ?view
-        is: tonk:view
-    - assert: ==
-      where:
-        this: ?subtitle
-        is: ""
-    - assert: ==
-      where:
-        this: ?icon
-        is: "blank"
-
-# Give the new sheet entity its empty-artifact title (the typed name),
-# so the empty-artifact view bound to it shows the artifact name.
-rule!:
-  description: Titles the new sheet's empty-artifact entity
-  assert!: empty-artifact
-  when:
-    - assert: workspace/create-sheet
-      where:
-        this: ?this
-        name: ?title
-        order: ?order
-
-rule!:
-  description: Activates the freshly created sheet
-  assert!: tonk/binder
-  when:
-    - assert: workspace/create-sheet
-      where:
-        this: ?active
-        name: ?title
-        order: ?order
-    # The binder is the replica's (bound through `tonk/replica`); record
-    # its default `active` at the new sheet so creating lands the user on
-    # the new empty artifact (the head's `active` field unifies with the
-    # created sheet `?active`). `subject` carries the replica's identity so
-    # the partial update keeps the binder's required field.
-    - assert: tonk/replica
-      where:
-        this: ?this
-        subject: ?subject
-
-
+  entity: tonk:blank
 
 concept!: &tonk/replica
   this: tonk:replica
@@ -1773,23 +1461,17 @@ concept!: &workspace/shell
       cardinality: one
       as: entity
 
-# The shell's content portal carries the guest markup verbatim from the former
-# Leptos `TonkSpaceSealed` body, with ONE change: the guest renders
-# `model=tonk:space/route` (the space's content concept) directly rather than
-# `model=tonk:site`. The shell already IS the site's matched `{concept}`, so a
-# nested `model=tonk:site` would re-resolve to the shell and recurse the portal.
-# `tonk:space/route` picks the tab's `replica` off the same site entity (filled
-# by `data-tonk-entity="site"`) and renders `tonk/space` — identical content to
-# before, now composed by the shell. The proxy `<tonk-host>` inside the guest is
-# the IO owner; its query/subscribe events relay over `window.tonk` to the outer
-# bridge. The `.display-view-slot` chain is the bare-route fill-height layout.
+# The shell mounts the space's content via the `tonk/space` alias on the active
+# replica. The alias resolves to `tonk:blank` by default (lean repo, no
+# template); seeding `sheets.yaml` overrides it to `tonk:binder`. The
+# `.display-view-slot` wrapper is the bare-route fill-height layout.
 view!: &workspace/shell/view
   this: id:tonk:workspace/shell/view
   model: tonk:workspace/shell
   display: |
     <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
       <div class='display-view-slot'>
-        <tonk-display entity={replica} model=tonk:binder />
+        <tonk-display entity={replica} model=tonk/space />
       </div>
     </div>
 
@@ -1945,441 +1627,6 @@ route!: &route/directory
   path: "/{*model}"
   concept: tonk:directory/route
 
-# The workspace shell — the single-mode view for `model: tonk:binder`. Rendered
-# for ONE concrete replica (the binder instance IS the replica entity), so
-# `{this}`/`{subject}`/`{active}` resolve to that tab's replica. The route mounts
-# it via `<tonk-display entity={replica} model=tonk/space>` (tonk/space aliases
-# tonk:binder), so the shell is scoped to this tab's replica, not folded over
-# every replica.
-view!:
-  this: tonk:shell
-  model: tonk:binder
-  display: |
-    <div class="workspace-directory">
-      <style>
-        /* The route gives this view root (`.workspace-directory`) a
-           viewport-min height. Flex-fill the nested `<tonk-display>`
-           rendering chain so that height reaches the workspace, which
-           then fills the page (tab strip at the bottom) — the same fill
-           the seamless carousel applies to its slides. Without it the
-           nested wrapper sits at content height and the workspace stops
-           short. (`<style>` lives on this `<div>` rather than inside
-           `<tonk-display>`, which discards child markup when it renders
-           its resolved view.) */
-        .workspace-directory {
-          display: flex;
-          flex-direction: column;
-          /* The view root owns its fill: the route gives the slot a
-             viewport box and the pass-through display chain flexes height
-             down to here, but the route indirection means this root is no
-             longer the slot's direct child, so it claims the viewport
-             height itself rather than relying on a positional app rule. */
-          min-height: 100dvh;
-        }
-        .workspace-directory > tonk-display,
-        .workspace-directory > tonk-display > tonk-view {
-          display: flex;
-          flex-direction: column;
-          flex: 1 1 auto;
-          min-height: 0;
-        }
-        .workspace-directory > tonk-display > tonk-view > * {
-          flex: 1 1 auto;
-          min-height: 0;
-        }
-        /* `<tonk-display>` hides a non-active lifecycle-state slot child by
-           setting the `hidden` attribute. The UA `[hidden]{display:none}`
-           rule is weak, so any `display:` a layout rule applies to the
-           slot child would defeat it (leaving the pending spinner showing
-           under the resolved view). Force it. */
-        tonk-display > [slot][hidden] {
-          display: none !important;
-        }
-
-      </style>
-
-      <tonk-display model=workspace/sheet data-binder={this} data-active={active} />
-    </div>
-
-
-view/directory!:
-  this: tonk:sheet-binder
-  model: tonk:sheet
-  display: |
-    <div class="workspace">
-      <style>
-        /* Styling uses the app's Web Awesome design tokens (--wa-*)
-           rather than hardcoded colours, so the viewer follows the
-           active theme and light/dark automatically. */
-        .workspace {
-          display: flex;
-          flex-direction: column;
-          /* Content-driven by default: as a board tile the workspace
-             takes only the space it needs. When it is the page's own
-             view, the route gives the view root a viewport-min height
-             (see the `.display-route` rule in the app stylesheet), so
-             the tab strip pins to the bottom there. */
-          font-family: var(--wa-font-family-body);
-          color: var(--wa-color-text-normal);
-          /* Transparent so the page's dot-grid paper shows through
-             (matching the wireframe). */
-          background: transparent;
-        }
-        /* The binder fills the space below the top bar: the active sheet
-           panel fills the rest, the projected tab strip pins to the
-           bottom. */
-        .workspace__binder {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
-          min-height: 0;
-        }
-
-        /* The view mounts each sheet through a `<tonk-display>` wrapper;
-           those wrappers are the binder's flex children (the panels).
-           The active panel FILLS the available height; the rest
-           collapse (their inner <tonk-sheet> is `hidden`). Scrolling
-           happens inside the sheet's card. */
-        .workspace__binder > tonk-display {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
-          min-height: 0;
-          padding: var(--wa-space-l);
-          box-sizing: border-box;
-          order: 1;
-        }
-        .workspace__binder > tonk-display:not(:has(tonk-sheet:not([hidden]))) {
-          display: none;
-        }
-        .workspace__binder > tonk-display > tonk-view {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
-          min-height: 0;
-        }
-
-        /* The sheet card: a header strip the sheet projects from its
-           attributes, over the sheet's content. Transparent body so the
-           page's dot-grid shows through; bordered frame. */
-        .workspace__binder tonk-sheet {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
-          min-height: 0;
-          color: inherit;
-          font-family: inherit;
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          background: transparent;
-          overflow: hidden;
-        }
-        /* The card body: everything after the projected header. The
-           sheet's content <tonk-display> is the last child; it scrolls. */
-        .workspace__binder tonk-sheet > tonk-display {
-          flex: 1;
-          min-height: 0;
-          overflow: auto;
-        }
-        .workspace__binder tonk-sheet > tonk-display > tonk-view {
-          display: block;
-          min-height: 100%;
-        }
-        /* A portal sheet: `<tonk-portal>`'s iframe has no intrinsic
-           content height, so a percentage height collapses it to the
-           iframe's default 150px — a percentage can't resolve against
-           the flex-grown content display (its height is not "definite"
-           in that sense). Carry the height down the whole portal
-           sub-chain by flex instead, the same fill the directory chain
-           uses: the content display and its view each fill by `flex: 1`,
-           and the portal fills the view. No percentages, so nothing to
-           collapse. */
-        .workspace__binder tonk-sheet > tonk-display:has(> tonk-view > tonk-portal) {
-          display: flex;
-          flex-direction: column;
-        }
-        .workspace__binder tonk-sheet > tonk-display > tonk-view:has(> tonk-portal) {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
-          min-height: 0;
-        }
-        .workspace__binder tonk-sheet > tonk-display > tonk-view > tonk-portal {
-          display: block;
-          flex: 1;
-          min-height: 0;
-          /* Positioning context for the iframe below. */
-          position: relative;
-        }
-        /* `<tonk-portal>` sizes its iframe `height: 100%`, but that
-           percentage can't resolve against the portal's flex-grown
-           height (flex-grown is not "definite" for a replaced element's
-           percentage), so the iframe collapses to its intrinsic 150px.
-           Absolutely positioning it fills the portal: an abs box's
-           percentage height resolves against its containing block's used
-           height, flex-grown or not. */
-        .workspace__binder tonk-sheet > tonk-display > tonk-view > tonk-portal > iframe {
-          position: absolute;
-          inset: 0;
-        }
-
-        /* The card header the sheet projects (status dot + name +
-           subtitle). A surface fill so it reads as chrome over the
-           transparent body. */
-        .tonk-sheet__head {
-          display: flex;
-          align-items: center;
-          gap: var(--wa-space-s);
-          flex: none;
-          padding: var(--wa-space-s) var(--wa-space-m);
-          background: var(--wa-color-surface-raised);
-          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-        }
-        .tonk-sheet__dot {
-          width: 7px; height: 7px; border-radius: 50%;
-          background: currentColor; flex: none;
-        }
-        .tonk-sheet__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold); }
-        .tonk-sheet__meta { font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
-
-        /* The bottom tab strip the binder projects. Equal-width bullet
-           segments separated by rules; the active tab gets a brand
-           accent top bar. The binder sets the CSS `order` per tab. */
-        .tonk-sheet-binder__tabs {
-          display: flex;
-          align-items: stretch;
-          flex: none;
-          height: 48px;
-          order: 2;
-          /* Left inset so the first tab aligns with the sheet card's
-             left edge (the panel padding above). */
-          padding-left: var(--wa-space-l);
-          /* A surface fill matching the top bar (not the darker lowered
-             surface). */
-          background: var(--wa-color-surface-raised);
-          border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-        }
-        /* Tabs are content-width (short), left-aligned, separated by
-           rules — not stretched to fill the strip (the wireframe). */
-        .tonk-sheet-binder__tab {
-          flex: none;
-          display: inline-flex;
-          align-items: center;
-          gap: var(--wa-space-s);
-          padding: 0 var(--wa-space-l);
-          font: inherit;
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-quiet);
-          background: transparent;
-          border: none;
-          border-right: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          border-top: 2px solid transparent;
-          cursor: pointer;
-          white-space: nowrap;
-        }
-        /* The leading status bullet (hollow when inactive). */
-        .tonk-sheet-binder__tab::before {
-          content: "";
-          width: 7px; height: 7px;
-          border-radius: 50%;
-          border: var(--wa-border-width-s) solid currentColor;
-          background: transparent;
-          flex: none;
-        }
-        .tonk-sheet-binder__tab:hover {
-          color: var(--wa-color-text-normal);
-          background: var(--wa-color-neutral-fill-quiet);
-        }
-
-        /* Active tab: brand-accent top bar, raised surface, filled
-           bullet, normal-weight bright text — the selected sheet. */
-        .tonk-sheet-binder__tab.is-active {
-          color: var(--wa-color-text-normal);
-          font-weight: var(--wa-font-weight-semibold);
-          background: var(--wa-color-surface-default);
-          border-top-color: var(--wa-color-brand-fill-loud);
-        }
-        .tonk-sheet-binder__tab.is-active::before {
-          background: var(--wa-color-brand-fill-loud);
-          border-color: var(--wa-color-brand-fill-loud);
-        }
-
-        /* The close button the binder appends to each tab. A small
-           `×` glyph after the title, hidden until the tab is hovered
-           (the wireframe's editor-tab behaviour). It brightens to the
-           danger colour on its own hover. */
-        .tonk-sheet-binder__close {
-          width: 16px; height: 16px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          flex: none;
-          font-size: var(--wa-font-size-m);
-          line-height: 1;
-          color: var(--wa-color-text-quiet);
-          border-radius: var(--wa-border-radius-s);
-          visibility: hidden;
-          cursor: pointer;
-        }
-        .tonk-sheet-binder__tab:hover .tonk-sheet-binder__close,
-        .tonk-sheet-binder__tab.is-active .tonk-sheet-binder__close {
-          visibility: visible;
-        }
-        .tonk-sheet-binder__close:hover {
-          color: var(--wa-color-danger-on-quiet);
-          background: var(--wa-color-danger-fill-quiet);
-        }
-
-        /* The "+" add-sheet button the binder appends after the tabs. A
-           dashed-border square that solidifies and brightens on hover,
-           matching the wireframe's `tab-strip__add`. */
-        .tonk-sheet-binder__add {
-          align-self: center;
-          flex: none;
-          margin-left: var(--wa-space-s);
-          width: 28px; height: 28px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          font-size: var(--wa-font-size-l);
-          line-height: 1;
-          color: var(--wa-color-text-quiet);
-          background: transparent;
-          border: var(--wa-border-width-s) dashed var(--wa-color-surface-border);
-          border-radius: var(--wa-border-radius-s);
-          cursor: pointer;
-        }
-        .tonk-sheet-binder__add:hover {
-          color: var(--wa-color-text-normal);
-          border-style: solid;
-          border-color: var(--wa-color-text-normal);
-        }
-
-        /* The inline create form the binder swaps in for the "+" button
-           while naming a new sheet: an underlined name input plus
-           create / esc controls, with a brand-accent top bar like an
-           active tab. */
-        .tonk-sheet-binder__create {
-          align-self: stretch;
-          display: inline-flex;
-          align-items: center;
-          gap: var(--wa-space-s);
-          margin-left: var(--wa-space-s);
-          padding: 0 var(--wa-space-m);
-          border-top: 2px solid var(--wa-color-brand-fill-loud);
-          background: var(--wa-color-surface-default);
-        }
-        .tonk-sheet-binder__create-input {
-          min-width: 160px;
-          padding: var(--wa-space-2xs) 0;
-          font: inherit;
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-normal);
-          background: transparent;
-          border: none;
-          border-bottom: var(--wa-border-width-s) solid var(--wa-color-text-normal);
-          outline: none;
-        }
-        .tonk-sheet-binder__create-input::placeholder { color: var(--wa-color-text-quiet); }
-        .tonk-sheet-binder__create-commit,
-        .tonk-sheet-binder__create-cancel {
-          flex: none;
-          font: inherit;
-          cursor: pointer;
-          border: none;
-          border-radius: var(--wa-border-radius-s);
-          padding: var(--wa-space-2xs) var(--wa-space-s);
-        }
-        .tonk-sheet-binder__create-commit {
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-brand-on-loud);
-          background: var(--wa-color-brand-fill-loud);
-        }
-        .tonk-sheet-binder__create-cancel {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-xs);
-          color: var(--wa-color-text-quiet);
-          background: transparent;
-        }
-        .tonk-sheet-binder__create-cancel:hover { color: var(--wa-color-text-normal); }
-
-
-        /* Empty state. The binder reveals `[slot="empty"]` and flags
-           itself `data-empty` when it has no sheets. The launchpad fills
-           the canvas area above the (add-only) tab strip, centered over
-           the dot-grid paper - matching the wireframe's "empty repo"
-           frame. The binder hides it (`hidden`) whenever a sheet exists. */
-        .workspace-launchpad {
-          flex: 1 1 auto;
-          order: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          min-height: 0;
-          padding: var(--wa-space-2xl);
-        }
-        .workspace-launchpad[hidden] { display: none; }
-        .workspace-launchpad__inner {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: var(--wa-space-m);
-          max-width: 28rem;
-          text-align: center;
-        }
-        /* Opt out of the global heading highlight-cover (the dark filled
-           box from styles.css `h1..h6`): a plain heading in the normal
-           text colour reads correctly in both light and dark. */
-        .workspace-launchpad__title {
-          display: block;
-          margin: 0;
-          padding: 0;
-          background: none;
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-2xl);
-          font-weight: var(--wa-font-weight-bold);
-          letter-spacing: normal;
-          color: var(--wa-color-text-normal);
-        }
-        .workspace-launchpad__hint {
-          margin: 0;
-          color: var(--wa-color-text-quiet);
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-s);
-        }
-        /* The prominent "add artifact" button: a hatched/dashed frame
-           that solidifies on hover, echoing the strip's "+" add control
-           and the wireframe's center call to action. */
-        .workspace-launchpad__add {
-          margin-top: var(--wa-space-s);
-          padding: var(--wa-space-s) var(--wa-space-l);
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-m);
-          font-weight: var(--wa-font-weight-semibold);
-          color: var(--wa-color-text-normal);
-          background: transparent;
-          border: var(--wa-border-width-s) dashed var(--wa-color-surface-border);
-          border-radius: var(--wa-border-radius-s);
-          cursor: pointer;
-        }
-        .workspace-launchpad__add:hover {
-          border-style: solid;
-          border-color: var(--wa-color-text-normal);
-          background: var(--wa-color-neutral-fill-quiet);
-        }
-      </style>
-
-      <tonk-sheet-binder class="workspace__binder" default-active={dom.host/data-active} onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
-        <div slot="empty" class="workspace-launchpad" hidden>
-          <div class="workspace-launchpad__inner">
-            <h1 class="workspace-launchpad__title">nothing here yet.</h1>
-            <p class="workspace-launchpad__hint">start by creating an artifact &mdash; the agent will fill it.</p>
-            <button type="button" class="workspace-launchpad__add" data-create>+ add artifact</button>
-          </div>
-        </div>
-        <tonk-display entity={this} model=tonk:sheet />
-      </tonk-sheet-binder>
-    </div>
-
 command!: &tonk/initialize
   description: Initialize a freshly created or joined replica
   with:
@@ -2387,47 +1634,6 @@ command!: &tonk/initialize
        description: Reason to initialize the replica
        as: text
        the: xyz.tonk.init/reason
-
-concept!: &tonk/binder
-  this: tonk:binder
-  description: A binder view of the the tonk replica
-  with:
-    subject:
-      description: |
-        The repository's subject DID. The binder and the replica share
-        an entity, so the binder carries the replica's `subject` and the
-        shell view can read `{subject}` directly to mount the
-        repository-name banner — no bridge view needed.
-      the: dialog.origin/subject
-      as: entity
-  maybe:
-    active:
-      description: |
-        The binder's default/initial sheet selection — like a form
-        control's `defaultValue`. Optional: a freshly created or joined
-        replica has selected no tab yet, so the field is simply absent
-        and the binder falls back to the first sheet by order. The
-        binder element owns the LIVE selection in its own DOM state
-        (instant on click); this field only seeds the initial selection
-        on mount and records the latest pick so it survives a reload.
-      the: xyz.tonk.binder/active
-      as: entity
-
-# Tab selection: when an `activate-sheet` command fires, record the
-# clicked sheet as the binder's default `active` selection (replacing the
-# prior one). The binder is the replica's (one per device, bound through
-# `tonk/replica`), so the command needs only the sheet — no binder id
-# plumbed through the DOM. The shell view reads `{active}` straight off
-# the binder model to seed the live tab; the binder element owns the live
-# selection thereafter, so this write only persists the default for the
-# next mount.
-rule!:
-  assert!: tonk/binder
-  when:
-    - assert: workspace/activate-sheet
-      where: { sheet: ?active }
-    - assert: tonk/replica
-      where: { this: ?this, subject: ?subject }
 
 rule!:
   assert!: tonk/repository
