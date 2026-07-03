@@ -37,6 +37,7 @@
 //! trust boundary, exactly as it is for views and portals.
 
 use custom_elements::CustomElement;
+use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlElement, window};
 
 /// The custom element. Stateless: all bookkeeping lives in the
@@ -101,6 +102,14 @@ fn load(this: &HtmlElement) {
     let _ = script.set_attribute("type", "module");
     let _ = script.set_attribute("data-tonk-component", &hash);
     script.set_text_content(Some(&source));
+    // Dynamically inserted scripts default to `async` (run in
+    // whatever order they finish), but components load as a set and
+    // one module frequently defines helpers the next one uses.
+    // Forcing in-order execution makes mount order (directory row
+    // order) the execution order — deterministic for authors.
+    if let Some(script) = script.dyn_ref::<web_sys::HtmlScriptElement>() {
+        script.set_async(false);
+    }
     // Appending a created script element is the execution path —
     // unlike innerHTML/clone insertion, the spec runs it (module
     // semantics: deferred to the next microtask checkpoint).
