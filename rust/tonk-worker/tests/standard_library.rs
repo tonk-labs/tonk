@@ -30,6 +30,10 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
+/// The sheets template — seeded on top of core when chosen. Must lower
+/// self-contained (it re-declares the core concepts it references).
+const SHEETS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/sheets.yaml");
+
 /// The served showcase demo, embedded at compile time.
 const DEMO_LIBRARY: &str = include_str!("../../tonk-core/assets/library/demo.yaml");
 
@@ -66,6 +70,40 @@ fn it_lowers_the_standard_library() {
 #[test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+}
+
+#[test]
+fn it_lowers_core_concatenated_with_the_sheets_template() {
+    // The worker never seeds sheets.yaml alone: for the `sheets`
+    // template it concatenates core.yaml ahead of it into ONE document
+    // and evaluates the whole thing in a single commit. The template
+    // therefore relies on the concepts core declares (tonk:view,
+    // tonk:view/directory, tonk:replica) and must not redeclare them —
+    // duplicate anchors are rejected within a document. Analyze the
+    // same concatenation the seed builds so that collision is caught
+    // here rather than at first launch.
+    let seeded = format!("{STANDARD_LIBRARY}\n{SHEETS_LIBRARY}");
+    assert_library_lowers("core.yaml + sheets.yaml (sheets template)", &seeded);
+}
+
+#[test]
+fn it_defaults_the_space_alias_to_blank_in_core() {
+    assert!(
+        STANDARD_LIBRARY.contains("entity: tonk:blank"),
+        "core.yaml must seed the default tonk/space -> tonk:blank alias",
+    );
+    assert!(
+        !STANDARD_LIBRARY.contains("model: tonk:sheet"),
+        "core.yaml must not carry the sheets workspace after the split",
+    );
+}
+
+#[test]
+fn it_overrides_the_space_alias_to_binder_in_sheets() {
+    assert!(
+        SHEETS_LIBRARY.contains("entity: tonk:binder"),
+        "sheets.yaml must override tonk/space -> tonk:binder",
+    );
 }
 
 #[test]

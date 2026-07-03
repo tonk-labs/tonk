@@ -89,6 +89,15 @@ command!: &space/create
         kebab→camel-cased.
       the: dom.event.current-target.elements.remote/value
       as: text
+    template:
+      description: >
+        Which template to seed: "sheets" for the tabbed workspace, or
+        blank/absent for the lean default (the blank canvas). Read from
+        the wizard's `template` control on submit, exactly as `name` and
+        `remote` are. The worker's CreateSpaceHandler reads it via
+        template_from_facts; an older form that omits it decodes as blank.
+      the: dom.event.current-target.elements.template/value
+      as: text
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -141,52 +150,237 @@ view/directory!:
   this: id:tonk:space/directory
   model: space
   display: |
-    <div class="hub">
-      <header class="hub-header">
-        <h1 class="hub-title">Spaces</h1>
-        <wa-button class="hub-new" variant="neutral" data-dialog="open space-create">New space</wa-button>
+    <div class="spot">
+      <style>
+        /* Scoped design tokens for the launcher (mock's Control Panel set).
+           Kept on .spot so they don't leak into WA-styled views. */
+        .spot {
+          --ink: #131313; --ink-soft: #3A3A38; --ink-faint: #777570;
+          --rule: #CCCCCC; --rule-soft: #E0E0E0; --paper: #FFFFFF;
+          --accent: #C71F86; --accent-press: #9E1568;
+          --lime: #DEFF1A; --band: #E7E5DB;
+          --font-display: "Gestalte", "Times New Roman", Georgia, serif;
+          --font-ui: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+          --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+          position: relative; min-height: 100dvh; background: var(--paper);
+          color: var(--ink); font-family: var(--font-ui);
+          display: flex; flex-direction: column; padding: 26px 38px 30px;
+        }
+        /* header: brand (logo + lime badge) left, New space link right */
+        .spot-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex: none; }
+        .spot-brand { display: flex; align-items: center; gap: 12px; }
+        .spot-logo { height: 42px; width: auto; display: block; }
+        .spot-badge { font-family: var(--font-ui); font-weight: 600; font-size: 19px;
+          color: var(--ink); background: var(--lime); padding: 3px 11px; line-height: 1.1; }
+        .spot-new { background: none; border: none; cursor: pointer; font-family: var(--font-ui);
+          font-size: 18px; color: var(--ink); padding: 1px 0; }
+        .spot-new:hover { color: var(--accent); }
+        /* list — vertically centered */
+        .spot-list { flex: 1; display: flex; flex-direction: column; justify-content: center;
+          gap: 0; max-width: 880px; width: 100%; margin: 0 auto; padding: 30px 0; }
+        .spot-dir-head { font-family: var(--font-display); font-size: 22px; font-weight: 700;
+          letter-spacing: -.5px; color: var(--ink); padding: 0 0 10px;
+          border-bottom: 1.5px solid var(--ink); margin-bottom: 8px; }
+        .srow { display: grid; grid-template-columns: 56px minmax(0,1fr) auto; align-items: stretch;
+          background: transparent; text-decoration: none; color: var(--ink); font-family: var(--font-ui); }
+        .srow > span { display: flex; align-items: center; padding: 18px 0; font-size: 15px; white-space: nowrap; }
+        .srow-dot { justify-content: center; }
+        .srow-name { padding-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .srow-open { padding-left: 24px; font-family: var(--font-mono); font-size: 12.5px;
+          color: var(--ink-faint); justify-content: flex-end; }
+        .srow:hover { background: var(--band); }
+        .srow:hover .srow-open { color: var(--accent-press); }
+        /* hide the profile's self-replica row */
+        .srow[data-kind="tonk:profile"] { display: none; }
+        /* dim the row while the content branch is still seeding */
+        .srow[data-status="tonk:blank"] .srow-name { opacity: .6; }
+        /* Wizard state is ONE radio group: wiz-closed (default) hides the
+           overlay; wiz-start/wiz-tmpl/wiz-agent open it at a screen. "New
+           spot" targets wiz-start, so reopening always resets to the start —
+           never the last page. */
+        .spot-wiz { position: absolute; opacity: 0; pointer-events: none; }
+        .spot-overlay { display: none; position: fixed; inset: 0; z-index: 50;
+          background: var(--paper); color: var(--ink); font-family: var(--font-ui); }
+        #wiz-start:checked ~ .spot-overlay,
+        #wiz-tmpl:checked ~ .spot-overlay,
+        #wiz-agent:checked ~ .spot-overlay { display: block; }
+        .spot-untitled { color: var(--ink-faint); }
+        /* chooser paging: the wiz radios (siblings of .spot-overlay) switch screens */
+        .onb-screen { display: none; position: absolute; inset: 0; flex-direction: column;
+          align-items: center; justify-content: center; gap: 34px; padding: 60px 40px; }
+        #wiz-start:checked ~ .spot-overlay .onb-screen--start { display: flex; }
+        #wiz-tmpl:checked ~ .spot-overlay .onb-screen--details,
+        #wiz-agent:checked ~ .spot-overlay .onb-screen--details { display: flex; }
+        .onb-tpl { display: none; }
+        .onb-close { position: absolute; right: 24px; top: 20px; background: none; border: none;
+          cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: var(--ink-soft); }
+        .onb-close:hover { color: var(--accent-press); }
+        .onb-back { position: absolute; left: 24px; top: 20px; background: none; border: none;
+          cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: var(--ink-soft); }
+        .onb-back:hover { color: var(--accent-press); }
+        .onb-head { text-align: center; max-width: 560px; }
+        .onb-kick { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .13em;
+          text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px; }
+        .onb-head h3 { font-family: var(--font-display); font-weight: 300; font-size: 38px;
+          letter-spacing: -1.3px; margin: 0 0 12px; color: var(--ink);
+          /* opt out of the global heading "headline-cover" dark box */
+          background: none; padding: 0; display: block; }
+        .onb-lede { font-size: 16px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
+        .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; }
+        .onb-choice { background: #fff; border: 1.5px solid var(--ink); padding: 24px; cursor: pointer;
+          text-align: left; display: flex; flex-direction: column; gap: 10px; font-family: var(--font-ui); }
+        .onb-choice:hover { box-shadow: 6px 6px 0 rgba(0,0,0,.14); transform: translate(-1px,-1px); }
+        .onb-choice:hover .onb-choice__cta { color: var(--accent-press); }
+        .onb-choice__art { height: 78px; border: 1.5px solid var(--ink); display: flex;
+          align-items: center; justify-content: center; gap: 12px; margin-bottom: 6px; overflow: hidden; }
+        .onb-art--tmpl { background: #3f74f0; }
+        .onb-art--agent { background: #f6f6f1; }
+        .onb-swatch { width: 30px; height: 46px; background: #fff; border: 1.5px solid var(--ink); }
+        .onb-lines { display: flex; flex-direction: column; gap: 7px; width: 96px; }
+        .onb-lines i { height: 6px; background: rgba(0,0,0,.5); display: block; }
+        .onb-lines i:last-child { width: 62%; }
+        .onb-prompt { display: flex; flex-direction: column; gap: 7px; width: 150px; padding: 0 8px; }
+        .onb-prompt i { height: 6px; background: var(--ink); opacity: .7; display: block; }
+        .onb-prompt i:nth-child(2) { width: 88%; } .onb-prompt i:nth-child(3) { width: 72%; }
+        .onb-prompt i:last-child { width: 40%; opacity: .4; }
+        .onb-choice__name { font-family: var(--font-display); font-weight: 400; font-size: 22px;
+          letter-spacing: -.4px; color: var(--ink); }
+        .onb-choice__desc { font-size: 13.5px; line-height: 1.45; color: var(--ink-soft); }
+        .onb-choice__cta { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
+        /* details screen: template picker (template path only) + name + create */
+        .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; justify-content: center; }
+        #wiz-tmpl:checked ~ .spot-overlay .onb-grid { display: grid; }
+        .onb-agent-note { display: none; text-align: center; }
+        #wiz-agent:checked ~ .spot-overlay .onb-agent-note { display: block; }
+        .tmpl { background: #fff; border: 1.5px solid var(--ink); padding: 18px; cursor: pointer;
+          text-align: left; display: flex; flex-direction: column; gap: 8px; font-family: var(--font-ui); }
+        .tmpl:hover { box-shadow: 5px 5px 0 rgba(0,0,0,.14); transform: translate(-1px,-1px); }
+        .tmpl-name { font-family: var(--font-display); font-weight: 400; font-size: 20px;
+          letter-spacing: -.4px; color: var(--ink); }
+        .tmpl-desc { font-size: 13px; line-height: 1.4; color: var(--ink-soft); }
+        #tpl-sheets:checked ~ .onb-screen--details .tmpl[data-for="tpl-sheets"],
+        #tpl-blank:checked  ~ .onb-screen--details .tmpl[data-for="tpl-blank"] {
+          box-shadow: inset 0 0 0 1.5px var(--ink); border-color: var(--ink);
+        }
+        .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
+        .onb-name, .onb-remote { display: flex; flex-direction: column; gap: 6px; }
+        .onb-lab { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .12em;
+          text-transform: uppercase; color: var(--ink-soft); }
+        .onb-input { font-family: var(--font-ui); font-size: 16px; padding: 12px 14px;
+          border: 1.5px solid var(--ink); background: #fff; color: var(--ink); }
+        .onb-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+        .onb-create { font-family: var(--font-mono); font-size: 14px; padding: 12px 22px;
+          background: var(--ink); color: #fff; border: 1.5px solid var(--ink); cursor: pointer; }
+        .onb-create:hover { background: var(--accent-press); border-color: var(--accent-press); }
+      </style>
+
+      <!-- wizard state radio group: closed by default; each open state is a
+           distinct screen so "New spot" (→ wiz-start) always resets to start -->
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-closed" checked>
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-start">
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-tmpl">
+      <input class="spot-wiz" type="radio" name="__wiz" id="wiz-agent">
+
+      <header class="spot-top">
+        <div class="spot-brand">
+          <img class="spot-logo" src="/images/tonk-logo.svg" alt="Tonk">
+          <span class="spot-badge">spot</span>
+        </div>
+        <label class="spot-new" for="wiz-start">New spot</label>
       </header>
-      <wa-dialog id="space-create" label="New space" class="hub-dialog">
-        <form id="space-create-form" class="hub-form" onsubmit=space/create>
-          <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
-          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
-          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
-        </form>
-        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="space-create-form" data-dialog="close">Create</wa-button>
-      </wa-dialog>
-      <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
-        <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
-        <span class="hub-card__body">
-          <span class="hub-card__name">
+
+      <div class="spot-list">
+        <div class="spot-dir-head">Directory</div>
+        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
+          <span class="srow-dot"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="srow-name">
             <tonk-host>
               <tonk-repository name={subject}>
                 <tonk-branch name="main">
                   <tonk-display entity={subject} model=tonk:repository view=tonk:view/label>
-                    <span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span>
-                    <span slot="no-model" class="hub-card__untitled" hidden>Untitled</span>
-                    <span slot="no-view" class="hub-card__untitled" hidden>Untitled</span>
-                    <span slot="loading" class="hub-card__untitled" hidden>Untitled</span>
+                    <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
+                    <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
+                    <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
+                    <span slot="loading" class="spot-untitled" hidden>Untitled</span>
                   </tonk-display>
                 </tonk-branch>
               </tonk-repository>
             </tonk-host>
           </span>
-          <span class="hub-card__url">/space/{subject}</span>
-          <span class="hub-card__status"></span>
-        </span>
-        <!-- Sync status: the host-chrome `<ui-sync-status>` element (defined in
-             Rust, space-agnostic — a space can't redefine or break it), scoped
-             to this card's space branch via the `<tonk-repository>` ancestor. It
-             SUBSCRIBES to the `tonk:sync` `state:here` status the worker stamps,
-             so it updates live as the background sync drain reconciles — unlike
-             the old `<tonk-sync-badge>`, which fetched once on mount (and on
-             commit/toggle, neither of which fires on the Hub) and froze on a
-             stale reading. Read-only: sync pausing currently has no chrome
-             affordance (the `tonk:pause-sync` command remains for a future
-             one). -->
-        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
-      </a>
+          <span class="srow-open">open</span>
+        </a>
+      </div>
+
+      <div class="spot-overlay">
+        <form class="onb-overlay-body" onsubmit=space/create data-close-radio="wiz-closed">
+          <!-- chosen template, carried into space/create; default blank -->
+          <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
+          <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
+
+          <!-- Screen 1: start chooser (navigation only, no submit) -->
+          <div class="onb-screen onb-screen--start">
+            <label class="onb-close" for="wiz-closed">close</label>
+            <div class="onb-head">
+              <div class="onb-kick">new spot</div>
+              <h3>How do you want to start?</h3>
+              <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
+            </div>
+            <div class="onb-choices">
+              <label class="onb-choice" for="wiz-tmpl">
+                <div class="onb-choice__art onb-art--tmpl">
+                  <div class="onb-swatch"></div>
+                  <div class="onb-lines"><i></i><i></i><i></i></div>
+                </div>
+                <div class="onb-choice__name">From a template</div>
+                <div class="onb-choice__desc">Seed the view with a ready-made layout.</div>
+                <div class="onb-choice__cta">choose a template &rsaquo;</div>
+              </label>
+              <label class="onb-choice" for="wiz-agent">
+                <div class="onb-choice__art onb-art--agent">
+                  <div class="onb-prompt"><i></i><i></i><i></i><i></i></div>
+                </div>
+                <div class="onb-choice__name">Build with an agent</div>
+                <div class="onb-choice__desc">Start blank; hand the spot to an agent from inside it.</div>
+                <div class="onb-choice__cta">name it &rsaquo;</div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Screen 2: details — the only submit. Name (required, visible)
+               + template picker (template path) or agent note (agent path). -->
+          <div class="onb-screen onb-screen--details">
+            <label class="onb-back" for="wiz-start">&lsaquo; back</label>
+            <label class="onb-close" for="wiz-closed">close</label>
+            <div class="onb-head">
+              <div class="onb-kick">new spot</div>
+              <h3>Name your spot</h3>
+            </div>
+            <div class="onb-grid">
+              <label class="tmpl" data-for="tpl-sheets" for="tpl-sheets">
+                <div class="tmpl-name">Sheets</div>
+                <div class="tmpl-desc">A tabbed workspace of artifacts.</div>
+              </label>
+              <label class="tmpl" data-for="tpl-blank" for="tpl-blank">
+                <div class="tmpl-name">Blank</div>
+                <div class="tmpl-desc">An empty canvas to build by hand or with an agent.</div>
+              </label>
+            </div>
+            <p class="onb-agent-note onb-lede">An agent will build this spot from a blank canvas.</p>
+            <div class="onb-fields">
+              <div class="onb-name">
+                <label class="onb-lab" for="onb-name-input">Spot name</label>
+                <input class="onb-input" id="onb-name-input" name="name" placeholder="e.g. pictures" autocomplete="off" required>
+              </div>
+              <div class="onb-remote">
+                <label class="onb-lab" for="onb-remote-input">Sync server (optional)</label>
+                <input class="onb-input" id="onb-remote-input" name="remote" placeholder="leave blank for a local-only spot">
+              </div>
+              <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+              <button class="onb-create" type="submit">Create spot</button>
+            </div>
+          </div>
+        </form>
+      </div>
     </div>
 
 # ============================================================
@@ -364,7 +558,7 @@ view/directory!: &profile/fab/view
           <ui-dropdown class="fab__menu" exclude={dom.host/data-space}>
             <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
             <a class="fab__menu-item fab__menu-item--action" href="/">
-              <span class="fab__menu-glyph" aria-hidden="true">↰</span> all repos
+              <span class="fab__menu-glyph" aria-hidden="true">↰</span> all spots
             </a>
             <button class="fab__menu-item fab__menu-item--action" type="button" data-dialog="open fab-space-create">
               <span class="fab__menu-glyph" aria-hidden="true">+</span> new
@@ -428,14 +622,83 @@ view/directory!: &profile/fab/view
            the iframe overlay, and so the `space/create` command + the
            `<tonk-default-remote>` resolve on this same profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
-      <wa-dialog id="fab-space-create" label="New space" class="fab__dialog">
-        <form id="fab-space-create-form" class="fab__form" onsubmit=space/create>
-          <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
-          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
-          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+      <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog">
+        <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create data-close-dialog>
+          <style>
+            /* CSS-paged wizard: a hidden radio per screen drives which
+               .wizard__screen shows. The form submits once at the end, so
+               every control (name, template, remote) is in the same form
+               and read via dom.event.current-target.elements.* . */
+            .wizard__nav { position: absolute; opacity: 0; pointer-events: none; }
+            .wizard__screen { display: none; flex-direction: column; gap: var(--wa-space-m); }
+            #wiz-start:checked    ~ .wizard__screen--start    { display: flex; }
+            #wiz-template:checked ~ .wizard__screen--template { display: flex; }
+            .wizard__cards { display: flex; gap: var(--wa-space-m); }
+            .wizard__card {
+              flex: 1; display: block; padding: var(--wa-space-l);
+              border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+              border-radius: var(--wa-border-radius-m); cursor: pointer; text-align: left;
+              font: inherit; background: var(--wa-color-surface-default);
+            }
+            .wizard__card:hover { border-color: var(--wa-color-text-normal); }
+            /* Highlight the chosen template card so the selection is legible. */
+            #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
+            #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
+              border-color: var(--wa-color-text-normal);
+              box-shadow: inset 0 0 0 1px var(--wa-color-text-normal);
+            }
+            .wizard__card h3 { margin: 0 0 var(--wa-space-2xs); font-size: var(--wa-font-size-l); max-width: 100%; }
+            .wizard__card p { margin: 0; font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
+            .wizard__template { display: none; }
+          </style>
+
+          <!-- screen radios -->
+          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-start" checked>
+          <input class="wizard__nav" type="radio" name="__wizard" id="wiz-template">
+
+          <!-- the chosen template, carried into space/create; default blank -->
+          <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
+          <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
+
+          <!-- Screen 1: name + how to start -->
+          <div class="wizard__screen wizard__screen--start">
+            <wa-input name="name" label="Spot name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+            <div class="wizard__cards">
+              <label class="wizard__card" for="wiz-template">
+                <h3>Start from a template</h3>
+                <p>Seed the view with a ready-made layout.</p>
+              </label>
+              <label class="wizard__card" for="fab-agent-submit">
+                <h3>Build with an agent</h3>
+                <p>Start blank; hand the spot to an agent from inside it.</p>
+              </label>
+              <!-- Hidden submit the card's <label> drives, so the card renders
+                   like the sibling <label> cards. A native <button> laid its
+                   heading's dark box outside the card border. -->
+              <input type="submit" id="fab-agent-submit" form="fab-space-create-form"
+                     style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
+            </div>
+            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only spot"></wa-input>
+            <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+          </div>
+
+          <!-- Screen 2: pick a template -->
+          <div class="wizard__screen wizard__screen--template">
+            <div class="wizard__cards">
+              <label class="wizard__card" for="tpl-sheets">
+                <h3>Sheets</h3>
+                <p>A tabbed workspace of artifacts.</p>
+              </label>
+              <label class="wizard__card" for="tpl-blank">
+                <h3>Blank</h3>
+                <p>An empty canvas to build by hand or with an agent.</p>
+              </label>
+            </div>
+            <wa-button type="submit" form="fab-space-create-form" variant="primary">Create spot</wa-button>
+            <label for="wiz-start" class="wizard__card" style="text-align:center;">&lsaquo; back to start options</label>
+          </div>
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="fab-space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
       <style>
         :host, tonk-fab { display: block; }
@@ -813,11 +1076,12 @@ view/directory!: &profile/fab/view
           bottom: -7px;
           height: 7px;
         }
-        /* The space roster renders its rows inside a single `<tonk-display>`
-           wrapper, so the menu's flex `gap` can't reach them. `display:contents`
-           lifts the roster anchors into the menu's flex flow so every row —
-           roster and action alike — gets the same gap. */
-        .fab__menu > tonk-display { display: contents; }
+        /* The spot roster renders its rows inside a `<tonk-display>`/`<tonk-view>`
+           pair, so the menu's flex `gap` can't reach them unless BOTH collapse.
+           `display:contents` on the pair lifts the roster anchors into the menu's
+           flex flow so every row — roster and action alike — shares the 7px gap. */
+        .fab__menu > tonk-display,
+        .fab__menu > tonk-display > tonk-view { display: contents; }
         /* Each row is its own floating card in the SAME material as the bar
            segments — the inverted cream `--fab-pill` with `--fab-ink` text (the
            wireframe's `.cp-nav-row` reuses the bar's `--pill`), so the dropdown
@@ -936,6 +1200,9 @@ view/directory!: &profile/fab/view
           line-height: 1;
           gap: 6px;
           white-space: nowrap;
+          /* Slotted into <wa-copy-button>, so it inherits WebAwesome's body
+             font (not the FAB's) — pin it back to the FAB face. */
+          font-family: "IBM Plex Sans Condensed", var(--wa-font-family-heading, sans-serif);
         }
         /* The "Copied!" success state. WebAwesome tints its success slot green
            (`var(--wa-color-success-on-quiet)`), tuned for a light background and
