@@ -204,6 +204,16 @@ enum Command {
         #[command(subcommand)]
         command: ShareCommand,
     },
+
+    /// Show or change anonymous usage telemetry. `status` (default)
+    /// prints the effective state and why; `on` / `off` persist the
+    /// choice.
+    #[command(after_help = "Examples:\n  tonk telemetry\n  tonk telemetry off")]
+    Telemetry {
+        /// One of: status, on, off. Omit for status.
+        #[arg(value_name = "ACTION")]
+        action: Option<TelemetryAction>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -386,6 +396,13 @@ impl From<FormatArg> for Format {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum TelemetryAction {
+    Status,
+    On,
+    Off,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
@@ -408,6 +425,7 @@ async fn main() {
         Command::Join { url } => claim_invite(url).await,
         Command::Remote { command } => remote_op(command).await,
         Command::Share { command } => share_op(command).await,
+        Command::Telemetry { action } => telemetry_op(action),
     };
     std::process::exit(exit.into_raw());
 }
@@ -1102,6 +1120,40 @@ async fn print_schema() -> ExitCode {
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
+    }
+}
+
+fn telemetry_op(action: Option<TelemetryAction>) -> ExitCode {
+    use tonk_cli::telemetry;
+    match action.unwrap_or(TelemetryAction::Status) {
+        TelemetryAction::Status => {
+            let settings = telemetry::load();
+            let env_off = tonk_analytics::env_opt_out(|key| std::env::var(key).ok());
+            let has_key = tonk_analytics::api_key().is_some();
+            let effective = settings.enabled && !env_off && has_key;
+            println!("telemetry: {}", if effective { "on" } else { "off" });
+            if !settings.enabled {
+                println!("  disabled via `tonk telemetry off`");
+            }
+            if env_off {
+                println!("  disabled via DO_NOT_TRACK / TONK_TELEMETRY");
+            }
+            if !has_key {
+                println!("  no API key in this build (nothing is ever sent)");
+            }
+            ExitCode::Success
+        }
+        action @ (TelemetryAction::On | TelemetryAction::Off) => {
+            let enabled = action == TelemetryAction::On;
+            let settings = telemetry::Settings { enabled, notice_shown: true };
+            match telemetry::store(&settings) {
+                Ok(()) => {
+                    println!("telemetry {}", if enabled { "on" } else { "off" });
+                    ExitCode::Success
+                }
+                Err(e) => print_error(format!("could not persist telemetry setting: {e}")),
+            }
+        }
     }
 }
 

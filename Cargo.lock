@@ -4795,6 +4795,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-analytics",
  "tonk-evaluator",
  "tonk-invite",
  "tonk-notation",

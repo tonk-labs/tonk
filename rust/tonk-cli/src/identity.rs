@@ -42,6 +42,13 @@ pub async fn reset() -> Result<Profile> {
     open().await
 }
 
+/// Whether a profile already exists on disk. Telemetry uses this to
+/// avoid creating a profile as a side effect of computing a hashed
+/// distinct id for a command that never touches the profile.
+pub fn exists() -> bool {
+    profile_dir().map(|dir| dir.is_dir()).unwrap_or(false)
+}
+
 /// Filesystem path to the profile directory. `tonk identity
 /// --reset` calls `remove_dir_all` on this path; nothing else
 /// inside the crate depends on the on-disk layout.
