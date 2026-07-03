@@ -432,7 +432,11 @@ mod tests {
         // A non-readiness attribute change must not fire mount.
         wrapper.set_attribute("data-state", "loading").unwrap();
         tick().await;
-        assert_eq!(seen.get(), 0, "no fire while the readiness marker is absent");
+        assert_eq!(
+            seen.get(),
+            0,
+            "no fire while the readiness marker is absent"
+        );
 
         // Marker lands -> fires once.
         wrapper.set_attribute(DISPLAY_BOUND_ATTR, "").unwrap();
