@@ -533,6 +533,14 @@ async fn prepare_share(
             branch: site::BRANCH_NAME.to_owned(),
         });
     }
+    // The upstream may have advanced since our last sync — a member
+    // joining writes a membership commit, for instance — which would
+    // make a bare push fail non-fast-forward. Pull-before-push
+    // reconciles first, mirroring `tonk eval`'s auto-sync. Best-effort:
+    // a pull failure still lets the push run and surface the real error.
+    if let Err(e) = sync::pull(site).await {
+        eprintln!("warning: pull before share failed: {e}");
+    }
     sync::push(site).await.map_err(ShareError::PushFailed)?;
     Ok(remote_record)
 }
