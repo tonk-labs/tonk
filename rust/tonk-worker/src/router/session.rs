@@ -303,7 +303,13 @@ async fn stamp_site_on(
     );
     let mut overlay = branch.overlay().assert(stamp);
     for (name, value) in matched.params.iter() {
-        match site_param_claim(&entity, name, value) {
+        // Decode captured params so both URL spellings of a value stamp the same
+        // fact — a raw `/space/did:key:z…` and its `encodeURIComponent`'d
+        // `/space/did%3Akey%3Az…` are equivalent per URL semantics, but the route
+        // matcher captures the segment verbatim. Without this, an encoded link
+        // stamps a `:`-less string that fails entity-URI validation downstream.
+        let value = percent_decode(value);
+        match site_param_claim(&entity, name, &value) {
             Some(claim) => overlay = overlay.assert(claim),
             None => tonk_common::log!("register_site: bad site param attribute for {name}"),
         }
@@ -336,6 +342,18 @@ async fn stamp_site_on(
 /// route model's field descriptors (and threads the `as:` types through
 /// `tonk_router::Route::with_types`), the value type comes from the field itself
 /// and this name table goes away. An unknown param name defaults to string.
+/// Percent-decode a captured route param using the browser's own
+/// `decodeURIComponent`, so URL-encoded links round-trip to the same value the
+/// raw form would (`did%3Akey%3Az…` → `did:key:z…`). On a malformed escape the
+/// raw value is returned unchanged.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn percent_decode(value: &str) -> String {
+    js_sys::decode_uri_component(value)
+        .ok()
+        .and_then(|decoded| decoded.as_string())
+        .unwrap_or_else(|| value.to_owned())
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn site_param_claim(
     site: &dialog_artifacts::Entity,
