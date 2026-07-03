@@ -208,4 +208,40 @@ mod tests {
         client.capture(crate::event::CLI_COMMAND_RUN, Map::new());
         client.flush(Duration::from_millis(300)).await;
     }
+
+    #[dialog_common::test]
+    fn from_env_gates_on_enabled_flag_key_and_opt_out() {
+        // SAFETY: process-global env mutation; this is the only test
+        // in the crate that touches these variables, and the other
+        // tests construct clients via `Client::new` without reading
+        // the environment, so parallel test threads don't observe it.
+        unsafe {
+            std::env::remove_var("DO_NOT_TRACK");
+            std::env::remove_var("TONK_TELEMETRY");
+            std::env::remove_var("TONK_POSTHOG_KEY");
+            std::env::remove_var("TONK_POSTHOG_ENDPOINT");
+            std::env::remove_var("TONK_POSTHOG_HOST");
+        }
+        // No runtime key (and test builds bake none in) => disabled.
+        assert!(!Client::from_env("tonk:abc".to_owned(), true).is_enabled());
+
+        unsafe { std::env::set_var("TONK_POSTHOG_KEY", "test-key") };
+        // Caller's own switch wins even with a key present.
+        assert!(!Client::from_env("tonk:abc".to_owned(), false).is_enabled());
+        assert!(Client::from_env("tonk:abc".to_owned(), true).is_enabled());
+
+        unsafe { std::env::set_var("DO_NOT_TRACK", "1") };
+        assert!(!Client::from_env("tonk:abc".to_owned(), true).is_enabled());
+
+        unsafe {
+            std::env::remove_var("DO_NOT_TRACK");
+            std::env::set_var("TONK_TELEMETRY", "off");
+        }
+        assert!(!Client::from_env("tonk:abc".to_owned(), true).is_enabled());
+
+        unsafe {
+            std::env::remove_var("TONK_TELEMETRY");
+            std::env::remove_var("TONK_POSTHOG_KEY");
+        }
+    }
 }
