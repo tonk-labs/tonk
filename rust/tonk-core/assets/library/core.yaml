@@ -155,7 +155,7 @@ view!:
         <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
         <tonk-origin>
           <tonk-display
-            bind:subject="entity"
+            entity={subject}
             bind:base="data-base"
             model=tonk:agent-invite
             data-page="this repo">
