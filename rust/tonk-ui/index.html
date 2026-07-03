@@ -72,6 +72,13 @@
             data-webawesome="/webawesome"
         ></script>
 
+        <!-- PostHog analytics, self-hosted (no external CDN, matching
+       the font policy above). The bundle only defines window.posthog;
+       it is initialized — or left dormant — by the ui binary via
+       tonk-analytics, and only when a TONK_POSTHOG_KEY was baked in
+       at build time. Opt-out: localStorage "tonk:telemetry" = "off". -->
+        <script defer src="/posthog/posthog.js"></script>
+
         <!-- Inherit the OS light/dark preference. Web Awesome picks up its
        theme from `.wa-light` / `.wa-dark` on the root element; toggle
        the class immediately (before paint) and keep it in sync with
@@ -201,6 +208,7 @@
        place on a `core.yaml` edit and reloads on a real code change;
        paired with `no_autoreload = true` in Trunk.toml. -->
         <link data-trunk rel="copy-file" href="./assets/hot-swap.js" />
+        <link data-trunk rel="copy-dir" href="./assets/posthog" />
         <!-- The standard library (built-in concepts, views, commands,
        rules + demo content). Served as a static asset so the service
        worker can fetch and seed it at repository creation, instead of
