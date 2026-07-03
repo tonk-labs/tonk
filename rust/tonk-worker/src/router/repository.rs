@@ -1190,6 +1190,11 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const SHEETS_LIBRARY_URL: &str = "/library/sheets.yaml";
 
+/// URL of the served wiki-template asset, appended on top of the
+/// scaffold when the `wiki` template is chosen.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const WIKI_LIBRARY_URL: &str = "/library/wiki.yaml";
+
 /// URL of the served showcase-demo notation asset (`demo.yaml`),
 /// copied into the dist alongside `core.yaml`. Seeded on top of the
 /// scaffold, but only into the default `home` repository, so every
@@ -1209,10 +1214,12 @@ const DEFAULT_REPOSITORY_NAME: &str = "home";
 /// The ordered list of library documents to concatenate and seed for a
 /// new repo. Core is always first. The `sheets` template appends the
 /// sheets workspace (which overrides the `tonk/space` alias to the
-/// binder). The default `home` repo gets sheets + the showcase demo, so
-/// it keeps opening into the populated binder. Every other template
-/// value (including `blank`, `agent`, or an unknown one) is core alone —
-/// the lean default that renders the blank canvas.
+/// binder); the `wiki` template appends the wiki (tree + block canvas,
+/// same alias override). The default `home` repo gets sheets + the
+/// showcase demo, so it keeps opening into the populated binder. Every
+/// other template value (including `blank`, `agent`, or an unknown
+/// one) is core alone — the lean default that renders the blank
+/// canvas.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn seed_library_urls(template: Option<&str>, display_name: &str) -> Vec<&'static str> {
     if display_name == DEFAULT_REPOSITORY_NAME {
@@ -1220,6 +1227,7 @@ fn seed_library_urls(template: Option<&str>, display_name: &str) -> Vec<&'static
     }
     match template {
         Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
+        Some("wiki") => vec![STANDARD_LIBRARY_URL, WIKI_LIBRARY_URL],
         _ => vec![STANDARD_LIBRARY_URL],
     }
 }
@@ -2887,9 +2895,17 @@ mod seed_library_urls_tests {
     }
 
     #[test]
-    fn it_seeds_core_for_an_unknown_template() {
+    fn it_appends_wiki_for_the_wiki_template() {
         assert_eq!(
             seed_library_urls(Some("wiki"), "anything"),
+            vec!["/library/core.yaml", "/library/wiki.yaml"],
+        );
+    }
+
+    #[test]
+    fn it_seeds_core_for_an_unknown_template() {
+        assert_eq!(
+            seed_library_urls(Some("garden"), "anything"),
             vec!["/library/core.yaml"],
         );
     }

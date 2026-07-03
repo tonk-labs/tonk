@@ -259,6 +259,7 @@ view/directory!:
           letter-spacing: -.4px; color: var(--ink); }
         .tmpl-desc { font-size: 13px; line-height: 1.4; color: var(--ink-soft); }
         #tpl-sheets:checked ~ .onb-screen--details .tmpl[data-for="tpl-sheets"],
+        #tpl-wiki:checked   ~ .onb-screen--details .tmpl[data-for="tpl-wiki"],
         #tpl-blank:checked  ~ .onb-screen--details .tmpl[data-for="tpl-blank"] {
           box-shadow: inset 0 0 0 1.5px var(--ink); border-color: var(--ink);
         }
@@ -316,6 +317,7 @@ view/directory!:
           <!-- chosen template, carried into space/create; default blank -->
           <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
           <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
+          <input class="onb-tpl" type="radio" name="template" value="wiki" id="tpl-wiki">
 
           <!-- Screen 1: start chooser (navigation only, no submit) -->
           <div class="onb-screen onb-screen--start">
@@ -359,6 +361,10 @@ view/directory!:
               <label class="tmpl" data-for="tpl-sheets" for="tpl-sheets">
                 <div class="tmpl-name">Sheets</div>
                 <div class="tmpl-desc">A tabbed workspace of artifacts.</div>
+              </label>
+              <label class="tmpl" data-for="tpl-wiki" for="tpl-wiki">
+                <div class="tmpl-name">Wiki</div>
+                <div class="tmpl-desc">Linked pages of editable blocks, with comments.</div>
               </label>
               <label class="tmpl" data-for="tpl-blank" for="tpl-blank">
                 <div class="tmpl-name">Blank</div>
