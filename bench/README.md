@@ -18,6 +18,7 @@ from-scratch`) that fixes the highest-leverage problem each iteration.
 | `smoke` | `scenarios/smoke/task.md` | Plumbing check — scripted known-good asserts, no episode spend |
 | `artifact-conversion` | `scenarios/artifact-conversion/task.md` | Agent converts a fixture HTML/JS artifact into tonk concepts+views; judged against `reference.png` |
 | `from-scratch` | `scenarios/from-scratch/task.md` | Agent builds a habit tracker from nothing through tonk |
+| `wiki-conversion` | `scenarios/wiki-conversion/task.md` | Agent converts the Grove wiki (page tree, block canvas, wikilinks, comments) into tonk concepts+views+components; judged against `reference.png` |
 
 ### Baseline measurements (2026-06-10)
 
