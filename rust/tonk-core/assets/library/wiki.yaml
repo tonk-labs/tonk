@@ -1514,9 +1514,7 @@ view!:
           background: var(--wa-color-surface-raised);
           font-size: var(--wa-font-size-s);
         }
-        /* Extra top inset so the floating app pill (the FAB) clears
-           the search box. */
-        .wt-head { display: flex; flex-direction: column; gap: var(--wa-space-s); padding: 64px var(--wa-space-m) var(--wa-space-m); }
+        .wt-head { display: flex; flex-direction: column; gap: var(--wa-space-s); padding: var(--wa-space-m); }
         .wt-search {
           font: inherit; color: inherit;
           padding: var(--wa-space-2xs) var(--wa-space-s);
