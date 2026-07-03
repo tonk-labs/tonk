@@ -53,6 +53,7 @@ tonk-portal = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-sigil = { workspace = true, features = ["web"] }
 tonk-worker = { workspace = true }
+tonk-analytics = { workspace = true }
 url = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
@@ -83,7 +84,7 @@ getrandom_0_3 = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
-features = ["BroadcastChannel", "MessageEvent", "Window"]
+features = ["BroadcastChannel", "CustomEvent", "MessageEvent", "Window"]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.

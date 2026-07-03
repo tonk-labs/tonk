@@ -6,6 +6,12 @@
 /// API client for interacting with the Tonk service worker.
 pub mod api;
 
+/// PostHog wiring for the shell page: panic hook, pageviews, and
+/// DOM-event listeners. Wasm-only — depends on `tonk_analytics::web`,
+/// which only exists for `wasm32-unknown-unknown`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod analytics;
+
 /// UI components for the Tonk application.
 pub mod components;
 

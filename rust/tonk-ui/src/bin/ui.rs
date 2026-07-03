@@ -10,7 +10,9 @@ use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
 async fn main() {
-    console_error_panic_hook::set_once();
+    // Panic hook + (when a key is baked in and the user hasn't opted
+    // out) posthog init, pageviews, and DOM-event listeners.
+    tonk_ui::analytics::install();
 
     // The outermost page is a thin SW relay: it registers only the IO-owning
     // `<tonk-host>` and the `<tonk-site>` router, then mounts one `<tonk-site>`.
