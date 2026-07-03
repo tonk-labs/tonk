@@ -43,13 +43,16 @@
 use custom_elements::CustomElement;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{CustomEvent, CustomEventInit, Event, HtmlElement, Url, window};
+use web_sys::{
+    CustomEvent, CustomEventInit, HtmlElement, MutationObserver, MutationObserverInit, Url, window,
+};
 
-/// Per-element state. Holds the `tonk-display:bound` listener (removed on
-/// disconnect) and a fired-once guard.
+/// Per-element state. Holds the `MutationObserver` watching the enclosing
+/// display's readiness marker (disconnected on disconnect) and its callback.
 #[derive(Default)]
 pub(crate) struct TonkPage {
-    bound_listener: Option<Closure<dyn FnMut(Event)>>,
+    observer: Option<MutationObserver>,
+    _callback: Option<Closure<dyn FnMut()>>,
 }
 
 impl CustomElement for TonkPage {
@@ -67,56 +70,61 @@ impl CustomElement for TonkPage {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // Fire `mount` only once the host `<tonk-display>`'s event delegate
-        // is INSTALLED — not on raw connect. The delegate attaches its
-        // listeners asynchronously *after* the template renders (which is
-        // what mounts this element), so a `mount` fired on connect would
-        // hit no listener. The display announces install with
-        // `tonk-display:bound`; we wait for that, then fire once.
+        // Fire `mount` only once the `<tonk-display>` whose event delegate
+        // handles this page's `onmount` binding is actually listening —
+        // never on raw connect, when the delegate is still installing
+        // asynchronously (after the template renders) and a `mount` would
+        // hit no listener.
         //
-        // Chrome mounts before its delegate binds, so this ordering always
-        // holds for a `<tonk-page>` inside a view.
+        // That handler is the nearest ancestor `<tonk-display>`. It marks its
+        // delegate installed with a persistent `data-bound` attribute (see
+        // `DISPLAY_BOUND_ATTR`). We wait on that MARKER, not on the display's
+        // one-shot `tonk-display:bound` event: the event is fragile — it can
+        // fire before this element connects, or be missed when a view
+        // reconcile swaps the page across the announcement (the exact failure
+        // that stranded `onmount` forever). The marker is a persistent fact a
+        // `MutationObserver` cannot miss.
+        //
+        // So: check the marker synchronously on connect (it may already be
+        // set — e.g. we reconnected after the delegate installed), and
+        // otherwise observe the enclosing display until it appears.
+        // `try_fire_mount` fires only while the marker is present, and `fired`
+        // makes it exactly once.
         let host = this.clone();
-        // Fire-once guard, checked and set *before* dispatching `mount`.
-        // The page carries several `<tonk-display>`s, each announcing its
-        // own `tonk-display:bound`, and dispatching `mount` can synchronously
-        // trigger more renders/binds — so the listener can re-enter. Setting
-        // the flag first makes every re-entry an immediate no-op.
         let fired = std::rc::Rc::new(std::cell::Cell::new(false));
-        let listener = Closure::wrap(Box::new(move |_event: Event| {
-            if fired.replace(true) {
-                return;
-            }
-            if let Some(detail) = location_detail() {
-                dispatch_mount(&host, &detail);
-            }
-        }) as Box<dyn FnMut(Event)>);
 
-        // Listen on the document during the capture phase so we catch the
-        // `tonk-display:bound` event dispatched on the ancestor host (it
-        // does not bubble down).
-        if let Some(document) = window().and_then(|w| w.document()) {
-            let options = web_sys::AddEventListenerOptions::new();
-            options.set_capture(true);
-            let _ = document.add_event_listener_with_callback_and_add_event_listener_options(
-                "tonk-display:bound",
-                listener.as_ref().unchecked_ref(),
-                &options,
-            );
+        try_fire_mount(&host, &fired);
+        if fired.get() {
+            return;
         }
-        self.bound_listener = Some(listener);
+
+        let Some(display) = host.closest("tonk-display").ok().flatten() else {
+            return;
+        };
+        let callback = {
+            let host = host.clone();
+            let fired = fired.clone();
+            Closure::wrap(Box::new(move || {
+                try_fire_mount(&host, &fired);
+            }) as Box<dyn FnMut()>)
+        };
+        let Ok(observer) = MutationObserver::new(callback.as_ref().unchecked_ref()) else {
+            return;
+        };
+        let init = MutationObserverInit::new();
+        init.set_attributes(true);
+        init.set_attribute_filter(&js_sys::Array::of1(&JsValue::from_str(DISPLAY_BOUND_ATTR)));
+        let _ = observer.observe_with_options(&display, &init);
+
+        self.observer = Some(observer);
+        self._callback = Some(callback);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        if let Some(listener) = self.bound_listener.take()
-            && let Some(document) = window().and_then(|w| w.document())
-        {
-            let _ = document.remove_event_listener_with_callback_and_bool(
-                "tonk-display:bound",
-                listener.as_ref().unchecked_ref(),
-                true,
-            );
+        if let Some(observer) = self.observer.take() {
+            observer.disconnect();
         }
+        self._callback = None;
     }
 }
 
@@ -203,6 +211,48 @@ fn set(object: &js_sys::Object, key: &str, value: &str) {
     let _ = js_sys::Reflect::set(object, &JsValue::from_str(key), &JsValue::from_str(value));
 }
 
+/// The persistent readiness marker a `<tonk-display>` stamps on its host
+/// once its event delegate is installed. DOM contract shared with
+/// `BOUND_ATTR` in the `tonk-display` crate — keep the string in sync.
+const DISPLAY_BOUND_ATTR: &str = "data-bound";
+
+/// Whether the nearest ancestor `<tonk-display>` — the one whose delegate
+/// handles this page's `onmount` binding — has installed its delegate, i.e.
+/// carries the readiness marker. `false` when there is no such ancestor
+/// (nothing would handle the command) or it has not bound yet.
+fn enclosing_display_ready(host: &HtmlElement) -> bool {
+    host.closest("tonk-display")
+        .ok()
+        .flatten()
+        .is_some_and(|display| display.has_attribute(DISPLAY_BOUND_ATTR))
+}
+
+/// Dispatch `mount` exactly once, and only after the enclosing display's
+/// delegate is ready to receive it. A no-op if already fired, if that
+/// display has not bound yet, or if the location can't be read — the marker
+/// observer will call again when the display's `data-bound` next changes.
+fn try_fire_mount(host: &HtmlElement, fired: &std::rc::Rc<std::cell::Cell<bool>>) {
+    if fired.get() {
+        return;
+    }
+    if !enclosing_display_ready(host) {
+        return;
+    }
+    if fired.replace(true) {
+        return;
+    }
+    // `mount` is a lifecycle signal — fire it once the enclosing display's
+    // delegate is ready. The location detail is best-effort: the top page and
+    // the `/join` flow carry a real URL, but inside a deeply nested sealed
+    // guest (the space view is `blob:null` inside `about:srcdoc`) the location
+    // is opaque and the host forwards no origin, so there is nothing to parse.
+    // The command bound here (e.g. `tonk:invite`) reads no `dom.event.detail`
+    // fields, so fire with an empty detail rather than stranding it — never
+    // firing was the bug that hung the "generating link" canvas.
+    let detail = location_detail().unwrap_or_default();
+    dispatch_mount(host, &detail);
+}
+
 /// Dispatch a bubbling `mount` `CustomEvent` carrying `detail` from `host`.
 fn dispatch_mount(host: &HtmlElement, detail: &js_sys::Object) {
     let init = CustomEventInit::new();
@@ -237,18 +287,28 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// A connected `<tonk-page>` fires `mount` only after the host's
-    /// delegate announces install via `tonk-display:bound` — NOT on raw
-    /// connect (the delegate isn't listening yet then). The mount event
-    /// bubbles and carries the parsed location.
+    /// Let queued `MutationObserver` microtasks flush before asserting.
+    async fn tick() {
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            let _ = window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// A `<tonk-page>` fires `mount` once its enclosing `<tonk-display>` marks
+    /// its delegate installed (`data-bound`) — not on raw connect, when the
+    /// marker is still absent. The observer picks up the marker landing after
+    /// connect; the event bubbles and carries the parsed location.
     #[dialog_common::test]
-    async fn it_dispatches_mount_after_the_host_delegate_binds() {
+    async fn it_fires_when_the_display_marks_bound_after_connect() {
         register();
         let document = window().unwrap().document().unwrap();
         let body = document.body().unwrap();
 
-        // A wrapper to catch the bubbled event, like a <tonk-display> host.
-        let wrapper = document.create_element("div").unwrap();
+        // The enclosing display whose delegate would handle `onmount`.
+        let wrapper = document.create_element("tonk-display").unwrap();
         body.append_child(&wrapper).unwrap();
 
         let seen: std::rc::Rc<std::cell::RefCell<Option<js_sys::Object>>> =
@@ -268,21 +328,21 @@ mod tests {
         let page = document.create_element("tonk-page").unwrap();
         wrapper.append_child(&page).unwrap();
 
-        // Nothing yet — the page waits for the delegate-ready signal.
+        // Not on connect: the display hasn't marked its delegate ready.
         assert!(
             seen.borrow().is_none(),
-            "tonk-page must NOT fire mount on connect, before the delegate binds"
+            "tonk-page must NOT fire mount before its display marks bound"
         );
 
-        // The host's delegate announces it's installed.
-        wrapper
-            .dispatch_event(&CustomEvent::new("tonk-display:bound").unwrap())
-            .unwrap();
+        // The display installs its delegate: the marker lands. The page's
+        // observer picks it up on the next microtask.
+        wrapper.set_attribute(DISPLAY_BOUND_ATTR, "").unwrap();
+        tick().await;
 
         let detail = seen.borrow().clone();
         assert!(
             detail.is_some(),
-            "tonk-page must dispatch a bubbling mount event once the delegate binds"
+            "tonk-page must dispatch a bubbling mount once its display marks bound"
         );
         let detail = detail.unwrap();
 
@@ -304,6 +364,91 @@ mod tests {
                 .is_some(),
             "detail.searchParams should be a plain object",
         );
+
+        wrapper.remove();
+        drop(closure);
+    }
+
+    /// When the enclosing display is *already* marked bound at connect — the
+    /// marker predated this element, or a prior instance set it before a view
+    /// reconcile replaced the page — the page fires `mount` synchronously on
+    /// connect. This is the case the old event-only wait stranded.
+    #[dialog_common::test]
+    async fn it_fires_on_connect_when_the_display_is_already_bound() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let wrapper = document.create_element("tonk-display").unwrap();
+        wrapper.set_attribute(DISPLAY_BOUND_ATTR, "").unwrap();
+        body.append_child(&wrapper).unwrap();
+
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let seen_cb = seen.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: Event| {
+            seen_cb.set(seen_cb.get() + 1);
+        }) as Box<dyn FnMut(Event)>);
+        wrapper
+            .add_event_listener_with_callback("mount", closure.as_ref().unchecked_ref())
+            .unwrap();
+
+        let page = document.create_element("tonk-page").unwrap();
+        wrapper.append_child(&page).unwrap();
+
+        assert_eq!(
+            seen.get(),
+            1,
+            "page must fire mount on connect when its display is already bound"
+        );
+
+        wrapper.remove();
+        drop(closure);
+    }
+
+    /// The page never fires while the marker is absent (a benign attribute
+    /// change is not the readiness signal), fires once the marker lands, and
+    /// then exactly once even as the marker toggles across a delegate rebuild.
+    #[dialog_common::test]
+    async fn it_fires_exactly_once_and_never_while_unmarked() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let wrapper = document.create_element("tonk-display").unwrap();
+        body.append_child(&wrapper).unwrap();
+
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let seen_cb = seen.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: Event| {
+            seen_cb.set(seen_cb.get() + 1);
+        }) as Box<dyn FnMut(Event)>);
+        wrapper
+            .add_event_listener_with_callback("mount", closure.as_ref().unchecked_ref())
+            .unwrap();
+
+        let page = document.create_element("tonk-page").unwrap();
+        wrapper.append_child(&page).unwrap();
+
+        // A non-readiness attribute change must not fire mount.
+        wrapper.set_attribute("data-state", "loading").unwrap();
+        tick().await;
+        assert_eq!(
+            seen.get(),
+            0,
+            "no fire while the readiness marker is absent"
+        );
+
+        // Marker lands -> fires once.
+        wrapper.set_attribute(DISPLAY_BOUND_ATTR, "").unwrap();
+        tick().await;
+        assert_eq!(seen.get(), 1, "fires once the display marks bound");
+
+        // Marker clears then re-lands (a delegate rebuild) -> still once.
+        wrapper.remove_attribute(DISPLAY_BOUND_ATTR).unwrap();
+        tick().await;
+        wrapper.set_attribute(DISPLAY_BOUND_ATTR, "").unwrap();
+        tick().await;
+        assert_eq!(seen.get(), 1, "mount must fire exactly once");
 
         wrapper.remove();
         drop(closure);
