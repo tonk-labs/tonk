@@ -47,6 +47,14 @@ tonk share view my-page
 tonk share display alice --view person-card
 ```
 
+## Telemetry
+
+Release builds send one anonymous `cli_command_run` event per
+invocation (command name, duration, exit class — never document
+content, paths, or URLs). `tonk telemetry off`, `DO_NOT_TRACK=1`, or
+`TONK_TELEMETRY=0` disable it; builds without a baked-in key send
+nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
+
 ## How it works
 
 ### The `.tonk/` site
