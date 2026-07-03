@@ -767,7 +767,7 @@ component!:
           this.innerHTML =
             '<div class="wt-head">' +
             '<input class="wt-search" placeholder="Search pages…">' +
-            '<button type="button" class="wt-new">+ New page</button>' +
+            '<button type="button" class="wt-new" data-act="new">+ New page</button>' +
             '</div><div class="wt-list"></div>';
           this.querySelector('.wt-search').addEventListener('input', (e) => {
             this.query = e.target.value.toLowerCase(); this.render();
@@ -853,10 +853,7 @@ component!:
               for (const c of kids.get(p.id) || []) walk(c, depth + 1);
           };
           for (const r of roots) if (ids.has(r.id)) walk(r, 0);
-          out.push('<button type="button" class="wt-newrow" data-act="new">+ New page</button>');
           list.innerHTML = out.join('');
-          const newBtn = this.querySelector('.wt-new');
-          if (newBtn) newBtn.dataset.act = 'new';
         }
       });
     })();
@@ -889,6 +886,7 @@ component!:
           this.__init = true;
           this.pendingFocus = null;
           this.menu = null;
+          this.blockSelIds = null;
           this.innerHTML =
             '<div class="we-page">' +
             '<div class="we-title" contenteditable="true" spellcheck="false"></div>' +
@@ -900,6 +898,13 @@ component!:
           this.addEventListener('input', (e) => this.onInput(e), true);
           this.addEventListener('keydown', (e) => this.onKeydown(e), true);
           this.addEventListener('focusout', (e) => this.onBlur(e));
+          // Whole-block drag selection is tracked at the document level
+          // so a drag that leaves the editor still ends cleanly.
+          this.addEventListener('mousedown', (e) => this.onMouseDown(e));
+          this.__wikiMove = (e) => this.onMouseMove(e);
+          this.__wikiUp = () => this.onMouseUp();
+          document.addEventListener('mousemove', this.__wikiMove);
+          document.addEventListener('mouseup', this.__wikiUp);
           window.addEventListener('wiki:jump', (e) => this.jump(e.detail.block));
           arm();
         }
@@ -960,6 +965,7 @@ component!:
               wrap.prepend(el);
             }
             el.className = 'we-block we-' + b.type;
+            if (this.blockSelIds && this.blockSelIds.has(b.id)) el.classList.add('is-selected');
             el.dataset.order = b.order;
             el.dataset.type = b.type;
             const marker = el.querySelector('.we-marker');
@@ -1010,6 +1016,79 @@ component!:
           const lib = globalThis.__wikiLib;
           // See createAt: an empty payload would be dropped.
           lib.emit(this, 'edit', { edit: id, editText: ce.innerHTML || '<br>' });
+        }
+        clearBlockSel() {
+          if (this.blockSelIds) {
+            for (const el of this.querySelectorAll('.we-block.is-selected'))
+              el.classList.remove('is-selected');
+            this.blockSelIds = null;
+          }
+          this.classList.remove('is-block-selecting');
+        }
+        onMouseDown(e) {
+          if (e.button !== 0) return;
+          // Any fresh press drops a prior cross-block selection.
+          this.clearBlockSel();
+          const ce = e.target.closest ? e.target.closest('.we-ce') : null;
+          const block = e.target.closest ? e.target.closest('.we-block') : null;
+          this.dragAnchor = (ce && block) ? block : null;
+          this.dragging = !!this.dragAnchor;
+        }
+        onMouseMove(e) {
+          if (!this.dragging || !this.dragAnchor || !this.isConnected) return;
+          if (e.buttons === 0) { this.dragging = false; return; }
+          const hit = document.elementFromPoint(e.clientX, e.clientY);
+          const block = hit && hit.closest ? hit.closest('.we-block') : null;
+          // Still inside the anchor block: leave native (single-block)
+          // selection alone so drag-to-copy within a block still works.
+          if (!block || block === this.dragAnchor) {
+            if (this.blockSelIds) this.clearBlockSel();
+            return;
+          }
+          // Crossed into another block: switch to whole-block selection.
+          this.selectBlockRange(this.dragAnchor, block);
+          const sel = window.getSelection();
+          if (sel) sel.removeAllRanges();
+          e.preventDefault();
+        }
+        onMouseUp() {
+          if (this.dragging && this.blockSelIds && this.blockSelIds.size > 1)
+            this.commitBlockRange();
+          this.dragging = false;
+          this.dragAnchor = null;
+        }
+        selectBlockRange(a, b) {
+          const wrap = this.querySelector('.we-blocks');
+          if (!wrap) return;
+          const all = Array.from(wrap.querySelectorAll('.we-block'));
+          let i = all.indexOf(a), j = all.indexOf(b);
+          if (i < 0 || j < 0) return;
+          if (i > j) { const t = i; i = j; j = t; }
+          const ids = new Set();
+          all.forEach((el, k) => {
+            const on = k >= i && k <= j;
+            el.classList.toggle('is-selected', on);
+            if (on) ids.add(el.dataset.block);
+          });
+          this.blockSelIds = ids;
+          this.classList.add('is-block-selecting');
+        }
+        commitBlockRange() {
+          // Lay a real Range across the selected blocks so the native
+          // clipboard copies every block's text; the .is-selected wash
+          // is the visible cue (the native highlight is hidden by CSS).
+          const sel = Array.from(this.querySelectorAll('.we-block.is-selected'));
+          if (sel.length < 2) return;
+          const first = sel[0].querySelector('.we-ce');
+          const last = sel[sel.length - 1].querySelector('.we-ce');
+          if (!first || !last) return;
+          try {
+            const range = document.createRange();
+            range.setStart(first, 0);
+            range.setEnd(last, last.childNodes.length);
+            const s = window.getSelection();
+            s.removeAllRanges(); s.addRange(range);
+          } catch (_) {}
         }
         onClick(e) {
           const lib = globalThis.__wikiLib;
@@ -1102,6 +1181,25 @@ component!:
         }
         onKeydown(e) {
           const lib = globalThis.__wikiLib;
+          if (this.blockSelIds) {
+            const mod = e.metaKey || e.ctrlKey;
+            if (e.key === 'Escape') {
+              e.preventDefault(); this.clearBlockSel();
+              const s = window.getSelection(); if (s) s.removeAllRanges();
+              return;
+            }
+            if (!mod && (e.key === 'Backspace' || e.key === 'Delete')) {
+              e.preventDefault();
+              for (const id of this.blockSelIds) lib.emit(this, 'deleteblock', { deleteBlock: id });
+              this.clearBlockSel();
+              const s = window.getSelection(); if (s) s.removeAllRanges();
+              return;
+            }
+            // Let copy / select-all ride the native range we laid down.
+            if (mod && 'cCaA'.includes(e.key)) return;
+            // Any other key abandons the block selection and edits on.
+            this.clearBlockSel();
+          }
           if (e.target.classList && e.target.classList.contains('we-title')) {
             if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
             return;
@@ -1426,15 +1524,14 @@ view!:
           border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
           outline: none;
         }
-        .wt-new, .wt-newrow {
+        .wt-new {
           font: inherit; text-align: left; cursor: pointer;
           padding: var(--wa-space-2xs) var(--wa-space-s);
           color: var(--wa-color-text-quiet);
           background: transparent;
           border: var(--wa-border-width-s) dashed var(--wa-color-surface-border);
         }
-        .wt-new:hover, .wt-newrow:hover { color: var(--wa-color-text-normal); border-style: solid; }
-        .wt-newrow { margin: var(--wa-space-s) var(--wa-space-m); }
+        .wt-new:hover { color: var(--wa-color-text-normal); border-style: solid; }
         .wt-list { display: flex; flex-direction: column; gap: 1px; padding: 0 var(--wa-space-xs); }
         .wt-row {
           display: flex; align-items: center; gap: var(--wa-space-2xs);
@@ -1479,19 +1576,37 @@ view!:
           padding: 2px 0;
           line-height: var(--wa-line-height-normal);
         }
+        /* A full-height gutter that reaches from the text to the
+           buttons, so the hover target never breaks as the cursor
+           travels left; fading (not display:none) keeps it in layout
+           and clickable the whole way across. */
         .we-gut {
-          position: absolute; left: -58px; top: 2px;
-          display: none; gap: 1px;
+          position: absolute; left: -84px; top: 0; bottom: 0; width: 84px;
+          display: flex; align-items: flex-start; justify-content: flex-end;
+          gap: 2px; padding: 1px 6px 0 0;
+          opacity: 0; pointer-events: none;
+          transition: opacity 120ms ease;
         }
-        .we-block:hover .we-gut { display: inline-flex; }
+        .we-block:hover .we-gut { opacity: 1; pointer-events: auto; }
         .we-g {
-          width: 18px; height: 18px; padding: 0;
+          width: 24px; height: 24px; padding: 0;
           display: inline-flex; align-items: center; justify-content: center;
-          font-size: var(--wa-font-size-xs); line-height: 1; cursor: pointer;
+          font-size: var(--wa-font-size-s); line-height: 1; cursor: pointer;
           color: var(--wa-color-text-quiet);
           background: none; border: none;
+          border-radius: var(--wa-border-radius-s);
+          transition: background 100ms ease, color 100ms ease, scale 100ms ease;
         }
         .we-g:hover { color: var(--wa-color-text-normal); background: var(--wa-color-neutral-fill-quiet); }
+        .we-g:active { scale: 0.94; }
+        /* Whole-block (Notion-style) drag selection: our wash is the
+           cue; the real cross-block Range that backs copy is hidden. */
+        .we-block.is-selected {
+          background: var(--wa-color-brand-fill-quiet);
+          border-radius: var(--wa-border-radius-s);
+        }
+        wiki-editor.is-block-selecting ::selection { background: transparent; }
+        wiki-editor.is-block-selecting .we-ce { caret-color: transparent; }
         .we-marker {
           flex: none; min-width: 18px; text-align: right;
           color: var(--wa-color-text-quiet);
@@ -1529,9 +1644,10 @@ view!:
           cursor: pointer;
         }
         .we-append {
+          display: inline-block;
           margin-top: var(--wa-space-m);
           color: var(--wa-color-text-quiet);
-          cursor: text; font-size: var(--wa-font-size-s);
+          cursor: pointer; font-size: var(--wa-font-size-s);
         }
         .we-append:hover { color: var(--wa-color-text-normal); }
         .we-menu {
