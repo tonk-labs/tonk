@@ -30,8 +30,9 @@ Run `tonk guide <topic>` — e.g. `tonk guide notation`:
 
 - `notation`  — asserted-notation syntax: queries, assertions, names,
                 `this:`, fields, blanks, joins, built-ins.
-- `views`     — display templates, `<tonk-display>`, and how a view
-                resolves from a model.
+- `views`     — display templates, `<tonk-display>`, how a view
+                resolves from a model, and web components
+                (`component!:`) for behaviour templates can't express.
 - `events`    — interactivity: effects, rules, transient concepts, and
                 `on<event>=<concept>` DOM bindings.
 - `workspace` — building sheets for the tonk-ui workspace shell

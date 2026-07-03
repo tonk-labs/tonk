@@ -136,12 +136,52 @@ Rules of the translation:
   posted and the event falls through to the next matching
   binding. Only a `the:` that doesn't address the event at all
   is silently dropped.
+- An **empty string** reads as "blank = omit" (like an empty form
+  field), so a required field that resolves to `""` also drops the
+  whole command, silently. If a field can legitimately be empty,
+  send a sentinel from the component (e.g. `<br>` for empty rich
+  text) rather than `""`.
 - The `as:` type drives coercion: `text` → string, `entity` →
   string parsed as a URI (rejected if it has no `:`),
   `unsigned-integer` / `signed-integer` / `float` → number,
   `boolean` → the JS value must already be a boolean (e.g.
   `event.shiftKey`); a non-boolean fails to resolve rather than
   being coerced.
+
+### One command, one shape — don't share detail attributes
+
+Commands are matched **structurally**: a rule premise `assert:
+<command>` matches ANY transient carrying all of that command's
+attributes — not just transients posted under that command's name. So
+two commands that read the same event attributes are the same shape,
+and one event fires both rules:
+
+```yaml
+# WRONG: same shape — a "navigate" event also fires the delete rule.
+command!: &activate-page
+  with:
+    page: { the: dom.event.detail/page, as: entity }
+command!: &delete-page
+  with:
+    page: { the: dom.event.detail/page, as: entity }
+```
+
+Give each command verb-specific attributes, and make sure no
+command's attribute set is a subset of what another event carries:
+
+```yaml
+command!: &activate-page
+  with:
+    page: { the: dom.event.detail/activate, as: entity }
+command!: &delete-page
+  with:
+    page: { the: dom.event.detail/delete, as: entity }
+```
+
+(The event *detail* keys follow: `detail: { activate: <uri> }` vs
+`detail: { delete: <uri> }`.) The built-in sheets binder does exactly
+this — `dom.event.detail/sheet` for activation, a separate
+`dom.event.detail/closed` for closing.
 
 ### Passing view context via `data-*`
 
