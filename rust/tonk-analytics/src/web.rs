@@ -45,6 +45,7 @@ extern "C" {
 /// returns `false` every other function in this module stays inert.
 pub fn init() -> bool {
     let Some(key) = crate::api_key() else {
+        ENABLED.store(false, Ordering::Relaxed);
         return false;
     };
     let live = ph_init(&key, &crate::host());
