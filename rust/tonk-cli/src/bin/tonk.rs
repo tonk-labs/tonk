@@ -403,9 +403,75 @@ enum TelemetryAction {
     Off,
 }
 
+/// Static command/subcommand names for telemetry. Only these strings
+/// (never argument values) are ever reported.
+fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
+    match command {
+        Command::Init { .. } => ("init", None),
+        Command::Identity { .. } => ("identity", None),
+        Command::Eval(_) => ("eval", None),
+        Command::Guide { .. } => ("guide", None),
+        Command::Schema => ("schema", None),
+        Command::Concepts => ("concepts", None),
+        Command::Views => ("views", None),
+        Command::Migrate { .. } => ("migrate", None),
+        Command::Export { .. } => ("export", None),
+        Command::Render { .. } => ("render", None),
+        Command::Import { .. } => ("import", None),
+        Command::Push => ("push", None),
+        Command::Pull => ("pull", None),
+        Command::Status => ("status", None),
+        Command::Invite { .. } => ("invite", None),
+        Command::Join { .. } => ("join", None),
+        Command::Remote { command } => (
+            "remote",
+            Some(match command {
+                RemoteCommand::Add { .. } => "add",
+                RemoteCommand::List => "list",
+                RemoteCommand::SetUpstream { .. } => "set-upstream",
+            }),
+        ),
+        Command::Share { command } => (
+            "share",
+            Some(match command {
+                ShareCommand::Concept { .. } => "concept",
+                ShareCommand::View { .. } => "view",
+                ShareCommand::Display { .. } => "display",
+            }),
+        ),
+        Command::Telemetry { .. } => ("telemetry", None),
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
+
+    // The telemetry subcommand itself is never tracked — toggling
+    // must not race its own event, and opt-out should be silent.
+    let mut recorder = match &cli.command {
+        Command::Telemetry { .. } => None,
+        command => {
+            let (name, subcommand) = descriptor(command);
+            tonk_cli::telemetry::begin(name, subcommand).await
+        }
+    };
+    if let (Some(recorder), Command::Eval(args)) = (recorder.as_mut(), &cli.command) {
+        recorder.property(
+            "source",
+            match (&args.command, &args.path) {
+                (Some(_), _) => "inline",
+                (None, Some(path)) if path == "-" => "stdin",
+                (None, Some(_)) => "file",
+                (None, None) => "stdin",
+            },
+        );
+        recorder.property("format", format!("{:?}", args.format).to_lowercase());
+        recorder.property("dry_run", args.dry_run);
+        recorder.property("quiet", args.quiet);
+    }
+
+    let started = std::time::Instant::now();
     let exit = match cli.command {
         Command::Init { label } => init(label).await,
         Command::Identity { reset } => identity(reset).await,
@@ -427,6 +493,10 @@ async fn main() {
         Command::Share { command } => share_op(command).await,
         Command::Telemetry { action } => telemetry_op(action),
     };
+
+    if let Some(recorder) = recorder {
+        recorder.finish(exit, started.elapsed()).await;
+    }
     std::process::exit(exit.into_raw());
 }
 

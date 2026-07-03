@@ -37,6 +37,10 @@ path = "tests/transfer.rs"
 name = "render"
 path = "tests/render.rs"
 
+[[test]]
+name = "telemetry"
+path = "tests/telemetry.rs"
+
 [features]
 integration-tests = []
 
