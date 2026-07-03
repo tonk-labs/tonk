@@ -1176,6 +1176,45 @@ view!:
   display: |
     <tonk-portal html:content={content} />
 
+# A web component carried as branch data. `module` is a JS module the
+# `<tonk-component>` element executes once per document realm — the
+# place a template defines its own custom elements
+# (`customElements.get('x-foo') || customElements.define('x-foo', …)`)
+# and then uses them in any view, no shell change required. Unlike a
+# `portal` (an isolated iframe realm), a component's definitions share
+# the realm with every view on the branch, so they compose with
+# `{field}` bindings and the CustomEvent -> command pipeline.
+concept!: &component
+  description: A JS module defining web components for the branch's views
+  with:
+    module:
+      description: |
+        JS module source. Runs once per realm; guard definitions with
+        `customElements.get(name) ||` since a name can't be redefined
+        (replacing a component takes effect on the next page load).
+      the: xyz.tonk.component/module
+      cardinality: one
+      as: text
+
+# The bridge from the `component` concept to the `<tonk-component>`
+# loader element. The single-entity view loads one module; the
+# directory view is what templates mount (a hidden
+# `<tonk-display model=component />` in their shell view) to load
+# every component asserted on the branch.
+view!:
+  this: tonk:component
+  model: component
+  display: |
+    <tonk-component module={module} />
+
+view/directory!:
+  this: tonk:component/directory
+  model: component
+  display: |
+    <div class="component-loader" hidden>
+      <tonk-component subject={this} module={module}></tonk-component>
+    </div>
+
 concept!: &db/session:
   this: concept:session
   description: Database session information
