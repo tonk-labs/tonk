@@ -946,14 +946,37 @@ async fn blob_op(command: BlobCommand) -> ExitCode {
                 }
             }
         }
-        BlobCommand::Cat { reference: _ } => {
-            eprintln!("error: `tonk blob cat` is not yet implemented");
-            ExitCode::IoError
+        BlobCommand::Cat { reference } => {
+            let mut stdout = tokio::io::stdout();
+            match blob::cat(&site, &reference, &mut stdout).await {
+                Ok(_) => ExitCode::Success,
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
         }
-        BlobCommand::Ls => {
-            eprintln!("error: `tonk blob ls` is not yet implemented");
-            ExitCode::IoError
-        }
+        BlobCommand::Ls => match blob::ls(&site).await {
+            Ok(rows) => {
+                print_blob_ls(&rows);
+                ExitCode::Success
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                err.exit_code()
+            }
+        },
+    }
+}
+
+fn print_blob_ls(rows: &[blob::LsRow]) {
+    for row in rows {
+        println!(
+            "{uri}  {size}  {content_type}",
+            uri = row.entity.as_str(),
+            size = row.size,
+            content_type = row.content_type.as_deref().unwrap_or("-"),
+        );
     }
 }
 

@@ -6,12 +6,15 @@
 //! metadata (content type, file name) as ordinary facts on that
 //! entity using the `tonk:blob` concept's attributes
 //! (`xyz.tonk.blob/content-type`, `xyz.tonk.blob/name`) from the
-//! standard library. Cat/Ls land in a later task.
+//! standard library. `cat` reads a blob's bytes back out by
+//! reference; `ls` enumerates every blob in the branch's index
+//! with its size and (if asserted) content type.
 
 use std::path::Path;
 
-use dialog_artifacts::Entity;
+use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_query::Attribute;
+use dialog_reactor::BranchSession;
 use thiserror::Error;
 
 use crate::site::TonkSite;
@@ -149,6 +152,134 @@ pub async fn add(
         size,
         content_type,
     })
+}
+
+/// Write a blob's bytes to `out`, returning the number of bytes
+/// written.
+///
+/// `reference` must be a `blob:<hash>` [`Entity`] URI, as returned
+/// by [`add`]. A reference that doesn't parse as a `blob:` entity
+/// is rejected before touching the branch. A well-formed reference
+/// that isn't available locally or from the remote surfaces as
+/// [`BlobError::NotFound`].
+pub async fn cat(
+    site: &TonkSite,
+    reference: &str,
+    out: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> Result<u64, BlobError> {
+    let entity: Entity = reference
+        .parse()
+        .map_err(|e| BlobError::Site(format!("invalid reference: {e}")))?;
+    let hash = entity
+        .blob_hash()
+        .ok_or_else(|| BlobError::Site(format!("not a blob reference: {reference}")))?;
+    let digest = dialog_common::Blake3Hash::from(hash);
+
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
+    let mut reader = session
+        .handle()
+        .read_blob(&digest, None)
+        .perform(&site.operator)
+        .await
+        .map_err(|e| BlobError::NotFound(format!("{reference}: {e}")))?;
+
+    use tokio::io::AsyncWriteExt as _;
+    let mut written = 0u64;
+    while let Some(chunk) = reader
+        .next()
+        .await
+        .map_err(|e| BlobError::Site(format!("read: {e}")))?
+    {
+        written += chunk.len() as u64;
+        out.write_all(&chunk).await?;
+    }
+    out.flush().await?;
+    Ok(written)
+}
+
+/// One row of [`ls`]: a blob's entity, size, and content type (if
+/// the `xyz.tonk.blob/content-type` fact was ever asserted on it).
+pub struct LsRow {
+    /// The blob's `blob:<hash>` entity.
+    pub entity: Entity,
+    /// Size in bytes, from the branch's blob index.
+    pub size: u64,
+    /// Asserted MIME type, if any.
+    pub content_type: Option<String>,
+}
+
+/// Enumerate every blob referenced by the branch's current tree,
+/// paired with its size and (best-effort) content type.
+pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
+    let listed = session
+        .handle()
+        .list_blobs()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| BlobError::Site(format!("list blobs: {e}")))?;
+
+    let mut rows = Vec::with_capacity(listed.len());
+    for (hash, record) in listed {
+        let entity = Entity::from_blob(&hash)
+            .map_err(|e| BlobError::Site(format!("blob entity: {e}")))?;
+        let content_type = query_content_type(&session, &site.operator, &entity).await?;
+        rows.push(LsRow {
+            entity,
+            size: record.size,
+            content_type,
+        });
+    }
+    Ok(rows)
+}
+
+/// Look up the `xyz.tonk.blob/content-type` fact for `entity`,
+/// returning `None` if it was never asserted.
+///
+/// Goes straight at the branch's raw claims index
+/// (`Branch::claims().select(ArtifactSelector)`) rather than the
+/// `Query::<Concept>`-and-`try_vec` surface `remote.rs` uses for
+/// `RemoteConcept`: that surface exists to bind several attributes
+/// of a whole concept at once via a `#[derive(Concept)]` struct,
+/// which would mean inventing a one-field concept type just to ask
+/// "what's the value of this single attribute on this single
+/// entity". `ArtifactSelector::new().the(..).of(..)` expresses
+/// exactly that constraint directly, with no extra type needed.
+async fn query_content_type(
+    session: &BranchSession,
+    operator: &dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+    entity: &Entity,
+) -> Result<Option<String>, BlobError> {
+    use futures_util::StreamExt as _;
+
+    let selector = ArtifactSelector::new()
+        .the(ContentType::the().into())
+        .of(entity.clone());
+
+    let artifacts = session
+        .handle()
+        .claims()
+        .select(selector)
+        .perform(operator)
+        .await
+        .map_err(|e| BlobError::Site(format!("content-type query: {e}")))?;
+    let mut artifacts = Box::pin(artifacts);
+
+    match artifacts.next().await {
+        Some(Ok(artifact)) => {
+            let value = String::try_from(artifact.is)
+                .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))?;
+            Ok(Some(value))
+        }
+        Some(Err(e)) => Err(BlobError::Site(format!("content-type query: {e}"))),
+        None => Ok(None),
+    }
 }
 
 /// MIME type of a blob's content. Matches the standard library's
