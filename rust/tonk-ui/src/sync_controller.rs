@@ -20,7 +20,7 @@
 //! Each pass does one of two things, decided by the per-repository pause
 //! preference: a full **sync** (pull then push every upstream branch, then a
 //! status check). A `LocalCommit` additionally registers a durable
-//! Background-Sync tag (`tonk-sync:{repo}`) so the push survives the tab
+//! Background-Sync tag (a single bare `sync`) so the push survives the tab
 //! closing, where the browser supports it.
 //!
 //! Pause is NOT a controller concern: it lives as a durable fact
@@ -94,12 +94,11 @@ extern "C" {
     async fn tonkRegisterSync(tag: &str) -> Result<JsValue, JsValue>;
 }
 
-/// The background-sync tag for `repo`. The worker parses the repo back
-/// out of it ([`tonk_worker::repo_from_sync_tag`]); the identity has
-/// to ride in the tag because a `sync` event delivers only a string.
-fn sync_tag(repo: &str) -> String {
-    format!("tonk-sync:{repo}")
-}
+/// The Background-Sync tag. A single bare tag: the SW's `onsync` drains the
+/// whole work-queue (every dirty + open repo) regardless of tag, so it needs
+/// no per-repo identity. Registering the same tag repeatedly coalesces into
+/// one pending sync.
+const SYNC_TAG: &str = "sync";
 
 /// Whether this browser offers one-shot Background Sync. Chromium does;
 /// Safari and Firefox don't, and there a `LocalCommit` skips the durable
@@ -168,10 +167,9 @@ impl Controller {
         // so the push survives the tab closing — then still runs an in-page
         // sync now. Other triggers just sync in-page.
         if trigger == Trigger::LocalCommit && sync_manager_available() {
-            let tag = sync_tag(&repo);
-            log!("sync[local-commit] {repo} → register background sync '{tag}'");
+            log!("sync[local-commit] {repo} → register background sync '{SYNC_TAG}'");
             spawn_local(async move {
-                if let Err(err) = tonkRegisterSync(&tag).await {
+                if let Err(err) = tonkRegisterSync(SYNC_TAG).await {
                     log!(
                         "sync[local-commit] background register rejected ({err:?}); syncing in-page"
                     );
@@ -286,7 +284,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_builds_a_sync_tag_the_worker_can_parse() {
-        assert_eq!(sync_tag("home"), "tonk-sync:home");
+    fn it_registers_a_single_bare_sync_tag() {
+        assert_eq!(SYNC_TAG, "sync");
     }
 }

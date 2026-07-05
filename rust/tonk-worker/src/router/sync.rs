@@ -287,22 +287,6 @@ fn is_head_moved(error: &crate::reactor::ReactorError) -> bool {
     error.to_string().contains("Version mismatch")
 }
 
-/// Tag prefix every durable background sync carries; the repository
-/// name follows the colon. A `sync` event delivers only this string
-/// and the worker has no notion of an "active repository", so the
-/// repo identity has to ride along in the tag.
-const SYNC_TAG_PREFIX: &str = "tonk-sync:";
-
-/// Parse the repository name out of a background-sync tag.
-///
-/// Tags are `tonk-sync:{repo}`. Anything not matching that shape — a
-/// bare or differently-prefixed tag, an empty repo — yields `None`,
-/// so a malformed tag becomes a no-op rather than an error.
-pub fn repo_from_sync_tag(tag: &str) -> Option<&str> {
-    tag.strip_prefix(SYNC_TAG_PREFIX)
-        .filter(|repo| !repo.is_empty())
-}
-
 /// Branch names in `branches` that have an upstream, sorted for a
 /// stable sweep order. Branches without an upstream have nowhere to
 /// sync to, so they're skipped. Shared with the in-page sweep so the
@@ -822,7 +806,7 @@ pub async fn sync(
 
 /// The set of repositories that have local commits not yet pushed.
 ///
-/// The service worker owns *what* needs syncing; the page only pokes *when*
+/// The service worker owns *what* needs syncing; the page only polls *when*
 /// (`POST /api/sync`). A commit enqueues its repo here (from the transact
 /// handler, where the route is known); a successful drain clears it. The pull
 /// side is not tracked — [`drain`] pulls every currently-open repository so a
@@ -871,9 +855,11 @@ impl SyncQueue {
 /// per-repo [`sync_repository`] sweep, which pulls+pushes each upstream branch
 /// and honors the durable pause preference.
 ///
-/// This is the single parameterless drain the page's `<tonk-host>` heartbeat
-/// pokes (`POST /api/sync`) and the SW's own post-commit `event.waitUntil`
-/// push run through. Branches are synced per-repo; repos run sequentially here
+/// Two callers reach this: the per-fetch `schedule_sync_drain` (debounced,
+/// generation-ticketed — the path the `<tonk-host>` idle poll to `POST
+/// /api/sync` rides on, since `on_fetch` schedules it) and the SW's own
+/// Background-Sync `onsync` (a discrete OS event with no fetch to hook, so it
+/// drains directly). Branches are synced per-repo; repos run sequentially here
 /// (the reactor serializes branch state anyway), priority-ordered by activity.
 pub async fn drain_sync(state: &AppState) {
     // Dirty repos first (push priority), then every other open repo (pull).
@@ -907,6 +893,24 @@ pub async fn drain_sync(state: &AppState) {
             tonk.sync_queue.requeue(&repo, now);
         }
     }
+}
+
+/// `POST /api/sync` — the idle heartbeat's poll endpoint.
+///
+/// Deliberately does NO work of its own: the drain is scheduled by the SW's
+/// `on_fetch`, which runs `schedule_sync_drain` for EVERY request (debounced,
+/// generation-ticketed) before routing. So merely *reaching* this route already
+/// enqueued a coalesced drain on the event's `wait_until`. Draining here too
+/// would fire a second, un-debounced drain and stack it on the scheduled one —
+/// so the poll participates in the same scheduling machinery precisely by
+/// leaving the drain to `on_fetch`.
+///
+/// The page's `<tonk-host>` idle loop polls this so an otherwise-idle tab (only
+/// open subscriptions, no other traffic) keeps generating the request the
+/// heartbeat rides on. Always `200`.
+#[wasm_compat]
+pub async fn drain() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
 }
 
 /// A millisecond wall-clock stamp for activity priority. `Date.now()` in the SW
@@ -949,22 +953,6 @@ mod tests {
             upstream: None,
             revision: None,
         }
-    }
-
-    #[dialog_common::test]
-    fn it_parses_the_repo_from_a_well_formed_tag() {
-        assert_eq!(repo_from_sync_tag("tonk-sync:home"), Some("home"));
-    }
-
-    #[dialog_common::test]
-    fn it_ignores_a_tag_without_the_sync_prefix() {
-        assert_eq!(repo_from_sync_tag("home"), None);
-        assert_eq!(repo_from_sync_tag("other-tag"), None);
-    }
-
-    #[dialog_common::test]
-    fn it_ignores_a_prefix_only_tag_with_an_empty_repo() {
-        assert_eq!(repo_from_sync_tag("tonk-sync:"), None);
     }
 
     #[dialog_common::test]

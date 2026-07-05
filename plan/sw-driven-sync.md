@@ -20,9 +20,50 @@ already sees every commit and knows which branches are open) and leaves the
 page responsible only for the *when* it cannot supply itself: the pull
 heartbeat. Pushes are self-driven SW-side via `event.waitUntil`.
 
+## Revision — as shipped (BUG-36)
+
+The original design below assumed *ordinary request traffic IS the heartbeat*:
+`on_fetch` schedules a debounced drain for every request, so a live tab keeps
+pulling for free. Two things about the shipped system broke that premise, and
+the fix restores it:
+
+1. **A booted, idle space makes no fetches.** The `/space` route renders in a
+   sealed guest whose data-plane (query/subscribe/transact) is relayed to the
+   top-page `<tonk-host>`, which *does* issue real `fetch`es (so they DO hit
+   `on_fetch` and DO schedule a drain — the relay is not the problem). But once
+   boot settles, the tab holds only long-lived SSE subscriptions and issues no
+   *new* fetch. No fetch → no scheduled drain → upstream edits never pull. This
+   is exactly the "idle backstop" the original design flagged and left open.
+
+2. **The heartbeat that would have covered it was dead.** The in-page 20s
+   interval only mounted from the now-orphaned `TonkSpaceSealed` path.
+
+**Shipped fix:**
+
+- **`POST /api/sync` exists but does NO work of its own.** It is a cheap request
+  whose *only* purpose is to be a fetch the SW's `on_fetch` hooks — so reaching
+  it schedules the standard debounced, generation-ticketed drain. The handler
+  returns `200` and does NOT call `drain_sync` (that would fire a second,
+  un-debounced drain and stack it). The poll thus **participates in the existing
+  scheduling machinery** rather than forcing a sync.
+- **The top-page `<tonk-host>` runs an idle poll loop** (`idle_sync.rs`):
+  `requestIdleCallback` re-arming every ~1s (2× the SW debounce) fires `POST
+  /api/sync`; it also polls immediately on `visibilitychange→visible` and
+  `online`. A hidden tab self-throttles (browsers cap `requestIdleCallback` to
+  ~1/10s when hidden), so no explicit visibility gating; Safari (no
+  `requestIdleCallback`) falls back to `setTimeout`. Only the top-page host
+  installs it — the sealed guest's proxy host relays up, so one loop per tab.
+- **`SYNC_DEBOUNCE_MS` lowered 2000 → 500** so reactive pulls feel near-immediate;
+  it is now the real rate-limiter on drain frequency.
+- **Background Sync tag collapsed to a bare `"sync"`.** `onsync` drains the whole
+  queue regardless of tag, so the per-repo `tonk-sync:{repo}` identity (and
+  `repo_from_sync_tag` / `SYNC_TAG_PREFIX`) is gone. `onsync` is a discrete OS
+  event with no fetch to hook, so it still calls `drain_sync` directly — the one
+  path that legitimately drains without the debounce.
+
 ## Design
 
-### Split of responsibility (revised — no poke endpoint, no page heartbeat)
+### Split of responsibility (revised — no poll endpoint, no page heartbeat)
 
 The page needs no sync responsibility at all. Every request the page already
 makes (query, subscribe, navigation, transact) flows through the SW's
@@ -37,13 +78,13 @@ makes (query, subscribe, navigation, transact) flows through the SW's
   push AND pull. A burst of boot queries collapses into one drain via the
   debounce; an idle drain (nothing dirty, all up to date) is just a cheap
   fetch+classify per open branch.
-- **No `POST /api/sync` poke endpoint, no sync-specific page machinery.** The
+- **No `POST /api/sync` poll endpoint, no sync-specific page machinery.** The
   page makes requests; that's the cadence. The Background Sync registration
   stays as the tab-closed backstop (fires the same drain).
 - **Idle backstop (not special).** A tab sitting with zero requests (no
   interaction, no live subscription traffic) would never trigger a drain, so
   upstream changes wouldn't pull. So the page still needs *some* low-frequency
-  traffic — but NOT a dedicated sync poke: any ordinary periodic request works,
+  traffic — but NOT a dedicated sync poll: any ordinary periodic request works,
   because `on_fetch` schedules the drain for every request. Reuse an existing
   endpoint (e.g. a periodic `/api/.../sync/status` read the chip already wants,
   or a profile/identity ping) rather than inventing a sync-specific route. The
@@ -114,7 +155,7 @@ status route. The queue may still hold a paused branch; the drain no-ops it.
   spawned work settles.
 - On commit, the transact handler `.spawn`s a **debounced** push drain of the
   just-committed repo into the bucket. Debounce collapses an edit burst into one
-  push. This makes pushes survive the tab backgrounding without any page poke.
+  push. This makes pushes survive the tab backgrounding without any page poll.
 
 ### 2b. Per-branch incremental status (NOT gated on the whole drain)
 
@@ -143,7 +184,7 @@ waiting for every space in the drain to complete.
   `<tonk-host>` ancestor and not inside a sealed guest) — nested sealed-guest
   hosts relay up, so one heartbeat covers the page. Avoids N redundant timers
   across nested iframes.
-- No per-repo bookkeeping in the page. The poke is parameterless.
+- No per-repo bookkeeping in the page. The poll is parameterless.
 - Keep the Background Sync registration on commit (tab-close durability); its
   SW `sync` handler calls the same `drain_sync`.
 

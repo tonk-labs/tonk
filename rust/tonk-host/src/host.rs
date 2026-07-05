@@ -15,6 +15,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use web_sys::{HtmlElement, window};
 
+use crate::idle_sync::{self, IdleSync};
 use crate::navigate::{self, NavigateListener};
 use crate::ops::{self, InstalledListener};
 use crate::query_cache::QueryCache;
@@ -55,6 +56,10 @@ pub(crate) struct TonkHost {
     /// `navigator.serviceWorker` `message` listener that performs
     /// worker-requested navigations (the main-thread navigate provider).
     navigate: RefCell<Option<NavigateListener>>,
+    /// Idle sync heartbeat: polls `POST /api/sync` on a `requestIdleCallback`
+    /// loop (and on refocus/reconnect) so an idle tab still pulls upstream
+    /// changes. Only the top-page host installs it.
+    idle_sync: RefCell<Option<IdleSync>>,
 }
 
 impl CustomElement for TonkHost {
@@ -77,6 +82,9 @@ impl CustomElement for TonkHost {
         // ask the page to redirect by posting `{ type: "navigate", href }`
         // to its client, and this listener performs it.
         *self.navigate.borrow_mut() = navigate::install();
+        // Install the idle sync heartbeat so an idle tab keeps pulling upstream
+        // changes even when it makes no other requests.
+        *self.idle_sync.borrow_mut() = idle_sync::install();
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -84,6 +92,9 @@ impl CustomElement for TonkHost {
         ops::detach_all(this, &listeners);
         if let Some(navigate) = self.navigate.borrow_mut().take() {
             navigate.remove();
+        }
+        if let Some(idle_sync) = self.idle_sync.borrow_mut().take() {
+            idle_sync.remove();
         }
         if let Some(state) = self.state.borrow_mut().take() {
             let mut s = state.borrow_mut();
