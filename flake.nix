@@ -96,7 +96,7 @@
         # fine. An empty string compiles analytics to a no-op. The EU
         # ingestion host is the crate default, so no host var is needed.
         # See docs/telemetry.md.
-        posthogKey = "";
+        posthogKey = "phc_dPEh0Tb5GFMZtykYV6Yg8VEHqJeAutrL7frEMYKmRuW";
 
         # Rewrite Nix store libiconv to the macOS system equivalent
         # so the binary works on machines without Nix installed
