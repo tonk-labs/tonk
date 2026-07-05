@@ -103,6 +103,9 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
     if let Some(sub) = subcommand {
         properties.insert("subcommand".to_owned(), Value::from(sub));
     }
+    // Same dimension the web app registers as a posthog super
+    // property; keeps all surfaces separable on one dashboard axis.
+    properties.insert("environment".to_owned(), Value::from("cli"));
     Some(Recorder { client, properties })
 }
 

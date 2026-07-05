@@ -22,7 +22,7 @@ before a profile exists report as `tonk:anonymous`.
 
 | Event | Properties |
 |---|---|
-| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
+| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
 
 ### Web app
 
@@ -33,6 +33,12 @@ before a profile exists report as `tonk:anonymous`.
 | `commit` | none (fired on the existing `tonk:committed` event) |
 | `sheet_activated` | none |
 | `panic` | `message` (first line of the panic message) |
+
+Every web event additionally carries an `environment` super property
+derived from the hostname: `production` (hub.tonk.xyz), `staging`
+(staging.tonk.xyz), or `dev` (anything else). The marketing site's
+own snippet registers `environment = "website"` in its repo, so all
+surfaces share one filterable dimension within the PostHog project.
 
 Autocapture and session recording are disabled. PostHog runs
 cookieless (`persistence: "memory"`); no third-party script is loaded

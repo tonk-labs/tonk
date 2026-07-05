@@ -76,6 +76,7 @@ fn guide_posts_one_command_run_event() {
     assert!(request.contains("\"command\":\"guide\""));
     assert!(request.contains("\"success\":true"));
     assert!(request.contains("\"duration_ms\""));
+    assert!(request.contains("\"environment\":\"cli\""));
 
     // First run printed the notice; second run must not.
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

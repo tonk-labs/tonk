@@ -59,6 +59,17 @@ export function ph_init(key, host) {
                 return payload;
             },
         });
+        // Super property on every event: which deployment this is.
+        // Dashboards filter/break down on it to keep production,
+        // staging, dev, and the marketing site (which registers
+        // environment = "website" in its own repo) apart within the
+        // shared PostHog project.
+        var host = location.hostname;
+        var environment =
+            host === "hub.tonk.xyz" ? "production"
+            : host === "staging.tonk.xyz" ? "staging"
+            : "dev";
+        window.posthog.register({ environment: environment });
         return true;
     } catch (e) {
         return false;
