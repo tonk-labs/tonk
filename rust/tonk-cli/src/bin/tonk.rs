@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use tonk_cli::auto_sync;
+use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::eval::{self, EvalError, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
 use tonk_cli::migrate::{self, Mode as MigrateMode};
@@ -198,6 +199,12 @@ enum Command {
         command: RemoteCommand,
     },
 
+    /// Store and inspect content-addressed blobs (images, files).
+    Blob {
+        #[command(subcommand)]
+        command: BlobCommand,
+    },
+
     /// Push to the upstream and produce a launcher URL that
     /// lands the recipient on a live view of local data.
     Share {
@@ -340,6 +347,31 @@ enum RemoteCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum BlobCommand {
+    /// Ingest a file into the blob store and print its blob:<hash>
+    /// reference. Asserts content-type (and file name) facts.
+    #[command(after_help = "Examples:\n  tonk blob add photo.png\n  tonk blob add data.bin --type application/octet-stream")]
+    Add {
+        /// File to ingest.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Override the MIME type (default: inferred from extension).
+        #[arg(long = "type", value_name = "MIME")]
+        content_type: Option<String>,
+    },
+    /// Write a blob's bytes to stdout.
+    #[command(after_help = "Examples:\n  tonk blob cat blob:zAbc...")]
+    Cat {
+        /// The blob:<hash> reference.
+        #[arg(value_name = "BLOB_URI")]
+        reference: String,
+    },
+    /// List blobs in the index with size and content type.
+    #[command(after_help = "Examples:\n  tonk blob ls")]
+    Ls,
+}
+
 #[derive(Args, Debug)]
 #[command(
     after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --format json\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
@@ -440,6 +472,14 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             }),
         ),
         Command::Telemetry { .. } => ("telemetry", None),
+        Command::Blob { command } => (
+            "blob",
+            Some(match command {
+                BlobCommand::Add { .. } => "add",
+                BlobCommand::Cat { .. } => "cat",
+                BlobCommand::Ls => "ls",
+            }),
+        ),
     }
 }
 
@@ -490,6 +530,7 @@ async fn main() {
         Command::Invite { base_url, remote } => mint_invite(base_url, remote).await,
         Command::Join { url } => claim_invite(url).await,
         Command::Remote { command } => remote_op(command).await,
+        Command::Blob { command } => blob_op(command).await,
         Command::Share { command } => share_op(command).await,
         Command::Telemetry { action } => telemetry_op(action),
     };
@@ -880,6 +921,48 @@ fn print_remote_list(records: &[RemoteRecord]) {
             subject = record.subject,
         );
     }
+}
+
+async fn blob_op(command: BlobCommand) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match command {
+        BlobCommand::Add { file, content_type } => {
+            match blob::add(&site, &file, content_type).await {
+                Ok(outcome) => {
+                    print_blob_add_outcome(&outcome);
+                    ExitCode::Success
+                }
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
+        }
+        BlobCommand::Cat { reference: _ } => {
+            eprintln!("error: `tonk blob cat` is not yet implemented");
+            ExitCode::IoError
+        }
+        BlobCommand::Ls => {
+            eprintln!("error: `tonk blob ls` is not yet implemented");
+            ExitCode::IoError
+        }
+    }
+}
+
+fn print_blob_add_outcome(outcome: &BlobAddOutcome) {
+    println!("{}", outcome.entity.as_str());
+    eprintln!(
+        "  content-type: {}, size: {} bytes",
+        outcome.content_type, outcome.size
+    );
 }
 
 async fn share_op(command: ShareCommand) -> ExitCode {
