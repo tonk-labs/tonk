@@ -99,28 +99,23 @@ pub async fn add(
         .and_then(|n| n.to_str())
         .map(str::to_owned);
 
-    let mut file = tokio::fs::File::open(path).await?;
+    let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
 
-    // Hand-rolled read loop rather than `tokio_util::io::ReaderStream`:
-    // `write_blob` wants `Stream<Item = Vec<u8>>` (no `Result`), and
-    // reading the whole file into fixed-size chunks up front is no
-    // more work than adapting a fallible reader-stream and filtering
-    // out its `Result` wrapper. `write_blob` reads the stream exactly
-    // once either way.
-    use tokio::io::AsyncReadExt as _;
-    const CHUNK_SIZE: usize = 64 * 1024;
-    let mut chunks = Vec::new();
-    loop {
-        let mut buf = vec![0u8; CHUNK_SIZE];
-        let n = file.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        buf.truncate(n);
-        chunks.push(buf);
-    }
-    let source = futures_util::stream::iter(chunks);
+    // Stream the file lazily: `write_blob` now takes a fallible stream
+    // (`Stream<Item = Result<Vec<u8>, dialog_effects::blob::BlobError>>`),
+    // so a mid-read I/O error propagates through `write_blob` (and
+    // surfaces here as `BlobError::Site`) instead of either buffering
+    // the whole file up front to check for it, or silently dropping it
+    // by filtering a fallible reader-stream down to an infallible one
+    // (which would ingest a truncated file "successfully" under a
+    // valid hash). The whole file is never held in memory at once.
+    use futures_util::StreamExt as _;
+    let source = tokio_util::io::ReaderStream::new(file).map(|chunk| {
+        chunk
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| dialog_effects::blob::BlobError::Io(e.to_string()))
+    });
 
     let session = site
         .branch()
