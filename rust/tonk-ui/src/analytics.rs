@@ -78,8 +78,8 @@ fn attach_listeners() {
 
     let on_popstate =
         Closure::<dyn FnMut(web_sys::Event)>::new(move |_| capture_current_pageview());
-    let _ = window
-        .add_event_listener_with_callback("popstate", on_popstate.as_ref().unchecked_ref());
+    let _ =
+        window.add_event_listener_with_callback("popstate", on_popstate.as_ref().unchecked_ref());
     on_popstate.forget();
 
     // Local commits: the worker announces every durable transact /
@@ -104,7 +104,10 @@ fn attach_listeners() {
                     .as_string()
                     .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
                     .and_then(|value| {
-                        value.get("branch").and_then(|b| b.as_str()).map(str::to_owned)
+                        value
+                            .get("branch")
+                            .and_then(|b| b.as_str())
+                            .map(str::to_owned)
                     })
                     .map(|b| match b.as_str() {
                         "main" | "meta" => b,
@@ -130,8 +133,8 @@ fn attach_listeners() {
             &serde_json::json!({}),
         );
     });
-    let _ = window
-        .add_event_listener_with_callback("activate", on_activate.as_ref().unchecked_ref());
+    let _ =
+        window.add_event_listener_with_callback("activate", on_activate.as_ref().unchecked_ref());
     on_activate.forget();
 
     // Dispatchers own the privacy contract: `detail.props` is

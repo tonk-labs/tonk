@@ -11,7 +11,9 @@ use std::time::Duration;
 /// content-length body), reply 200, send the raw request over `tx`.
 fn serve_once(listener: TcpListener, tx: mpsc::Sender<String>) {
     std::thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else { return };
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
         let mut buffer = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
@@ -45,7 +47,11 @@ fn serve_once(listener: TcpListener, tx: mpsc::Sender<String>) {
 
 /// Run `tonk guide` with telemetry pointed at `endpoint` and state
 /// isolated in `state_dir`. `extra_env` overrides for opt-out cases.
-fn run_tonk_guide(state_dir: &std::path::Path, endpoint: &str, extra_env: &[(&str, &str)]) -> Output {
+fn run_tonk_guide(
+    state_dir: &std::path::Path,
+    endpoint: &str,
+    extra_env: &[(&str, &str)],
+) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tonk"));
     cmd.arg("guide")
         .env("TONK_TELEMETRY_STATE", state_dir)
@@ -70,7 +76,9 @@ fn guide_posts_one_command_run_event() {
     let output = run_tonk_guide(state.path(), &endpoint, &[]);
     assert!(output.status.success());
 
-    let request = rx.recv_timeout(Duration::from_secs(5)).expect("request arrives");
+    let request = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request arrives");
     assert!(request.starts_with("POST /batch/"));
     assert!(request.contains("\"cli_command_run\""));
     assert!(request.contains("\"command\":\"guide\""));
@@ -80,7 +88,10 @@ fn guide_posts_one_command_run_event() {
 
     // First run printed the notice; second run must not.
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(stderr.contains("tonk telemetry off"), "notice on first run: {stderr}");
+    assert!(
+        stderr.contains("tonk telemetry off"),
+        "notice on first run: {stderr}"
+    );
 }
 
 #[dialog_common::test]
@@ -98,7 +109,10 @@ fn do_not_track_sends_nothing() {
         "no request may reach the endpoint under DO_NOT_TRACK=1"
     );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(!stderr.contains("tonk telemetry off"), "no notice when opted out");
+    assert!(
+        !stderr.contains("tonk telemetry off"),
+        "no notice when opted out"
+    );
 }
 
 #[dialog_common::test]

@@ -1215,7 +1215,10 @@ fn telemetry_op(action: Option<TelemetryAction>) -> ExitCode {
         }
         action @ (TelemetryAction::On | TelemetryAction::Off) => {
             let enabled = action == TelemetryAction::On;
-            let settings = telemetry::Settings { enabled, notice_shown: true };
+            let settings = telemetry::Settings {
+                enabled,
+                notice_shown: true,
+            };
             match telemetry::store(&settings) {
                 Ok(()) => {
                     println!("telemetry {}", if enabled { "on" } else { "off" });

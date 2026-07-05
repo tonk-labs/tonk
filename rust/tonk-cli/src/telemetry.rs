@@ -32,7 +32,10 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: true, notice_shown: false }
+        Self {
+            enabled: true,
+            notice_shown: false,
+        }
     }
 }
 
@@ -58,7 +61,9 @@ pub fn load() -> Settings {
 
 /// Persist settings, creating the parent directory if needed.
 pub fn store(settings: &Settings) -> std::io::Result<()> {
-    let Some(path) = state_path() else { return Ok(()) };
+    let Some(path) = state_path() else {
+        return Ok(());
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -84,7 +89,7 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
     }
     let distinct = if crate::identity::exists() {
         match crate::identity::open().await {
-            Ok(profile) => tonk_analytics::distinct_id(&profile.did().to_string()),
+            Ok(profile) => tonk_analytics::distinct_id(profile.did().as_ref()),
             Err(_) => "tonk:anonymous".to_owned(),
         }
     } else {
@@ -96,7 +101,10 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
     }
     if !settings.notice_shown {
         eprintln!("{NOTICE}");
-        let _ = store(&Settings { notice_shown: true, ..settings });
+        let _ = store(&Settings {
+            notice_shown: true,
+            ..settings
+        });
     }
     let mut properties = Map::new();
     properties.insert("command".to_owned(), Value::from(command));
@@ -161,7 +169,10 @@ mod tests {
         // SAFETY: tests in this mod run on one thread per process
         // invocation; nothing else reads this var concurrently.
         unsafe { std::env::set_var("TONK_TELEMETRY_STATE", dir.path()) };
-        let settings = Settings { enabled: false, notice_shown: true };
+        let settings = Settings {
+            enabled: false,
+            notice_shown: true,
+        };
         store(&settings).expect("store");
         let loaded = load();
         assert!(!loaded.enabled);

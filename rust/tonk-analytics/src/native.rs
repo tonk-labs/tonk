@@ -35,14 +35,21 @@ pub struct Client {
 impl Client {
     /// A client that ignores everything.
     pub fn disabled() -> Self {
-        Self { config: None, events: Vec::new() }
+        Self {
+            config: None,
+            events: Vec::new(),
+        }
     }
 
     /// A client with explicit config — used by tests and by
     /// [`Client::from_env`].
     pub fn new(host: String, api_key: String, distinct_id: String) -> Self {
         Self {
-            config: Some(Config { host, api_key, distinct_id }),
+            config: Some(Config {
+                host,
+                api_key,
+                distinct_id,
+            }),
             events: Vec::new(),
         }
     }
@@ -97,8 +104,12 @@ impl Client {
     /// errors and timeouts are swallowed: telemetry must never fail
     /// or slow a command beyond the cap.
     pub async fn flush(self, timeout: Duration) {
-        let Some(payload) = self.payload() else { return };
-        let Some(config) = self.config.as_ref() else { return };
+        let Some(payload) = self.payload() else {
+            return;
+        };
+        let Some(config) = self.config.as_ref() else {
+            return;
+        };
         let url = format!("{}/batch/", config.host.trim_end_matches('/'));
         let send = reqwest::Client::new().post(url).json(&payload).send();
         let _ = tokio::time::timeout(timeout, send).await;

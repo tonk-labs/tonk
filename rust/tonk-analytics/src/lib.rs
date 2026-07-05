@@ -162,7 +162,11 @@ mod tests {
         assert!(!normalized.contains("xyz"));
         assert_eq!(
             normalized,
-            format!("/space/{}/view/{}", anonymize("main@notes:abc123"), anonymize("xyz"))
+            format!(
+                "/space/{}/view/{}",
+                anonymize("main@notes:abc123"),
+                anonymize("xyz")
+            )
         );
     }
 
