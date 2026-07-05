@@ -13,8 +13,10 @@
 use std::path::Path;
 
 use dialog_artifacts::{ArtifactSelector, Entity};
+use dialog_effects::blob::BlobError as UpstreamBlobError;
 use dialog_query::Attribute;
 use dialog_reactor::BranchSession;
+use dialog_repository::CommitError;
 use thiserror::Error;
 
 use crate::site::TonkSite;
@@ -179,12 +181,22 @@ pub async fn cat(
         .branch()
         .await
         .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
-    let mut reader = session
+    let mut reader = match session
         .handle()
         .read_blob(&digest, None)
         .perform(&site.operator)
         .await
-        .map_err(|e| BlobError::NotFound(format!("{reference}: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(CommitError::Blob(UpstreamBlobError::NotFound(_))) => {
+            return Err(BlobError::NotFound(format!(
+                "blob not available locally or from the remote: {reference}"
+            )));
+        }
+        Err(e) => {
+            return Err(BlobError::Site(format!("read blob: {e}")));
+        }
+    };
 
     use tokio::io::AsyncWriteExt as _;
     let mut written = 0u64;
