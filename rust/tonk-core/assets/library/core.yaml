@@ -1675,3 +1675,25 @@ view/directory!:
   model: dialog:diagnose
   display: |
     <tonk-tree></tonk-tree>
+
+# ============================================================
+# BLOB
+# ============================================================
+
+# Extrinsic metadata for content-addressed blobs. The entity IS the
+# blob reference (`blob:<base58-hash>`); intrinsic metadata (size)
+# lives in the repository's blob index, not in facts.
+concept!: &blob
+  this: tonk:blob
+  description: A content-addressed binary blob (image, file, media)
+  with:
+    content-type:
+      description: MIME type of the blob's content
+      the: xyz.tonk.blob/content-type
+      cardinality: one
+      as: text
+    name:
+      description: Human-readable file name (optional)
+      the: xyz.tonk.blob/name
+      cardinality: one
+      as: text
