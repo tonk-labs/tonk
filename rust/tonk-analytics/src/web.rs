@@ -20,8 +20,37 @@ export function ph_init(key, host) {
             autocapture: false,
             capture_pageview: false,
             disable_session_recording: true,
+            capture_performance: false,
+            capture_dead_clicks: false,
+            capture_heatmaps: false,
             persistence: "memory",
             person_profiles: "identified_only",
+            // posthog-js enriches every event (and $set/$set_once
+            // person props) with the real page URL and referrer; the
+            // app's routes embed space/entity names, so the
+            // normalize_path guarantee is re-enforced here: drop the
+            // raw-URL fields and let the pre-normalized `route`
+            // property stand in for $current_url.
+            sanitize_properties: function (props) {
+                var strip = function (obj) {
+                    if (!obj) return;
+                    delete obj.$pathname;
+                    delete obj.$referrer;
+                    delete obj.$referring_domain;
+                    for (var key in obj) {
+                        if (key.indexOf("$initial_") === 0) delete obj[key];
+                    }
+                };
+                strip(props);
+                strip(props.$set);
+                strip(props.$set_once);
+                if (props.route) {
+                    props.$current_url = props.route;
+                } else {
+                    delete props.$current_url;
+                }
+                return props;
+            },
         });
         return true;
     } catch (e) {

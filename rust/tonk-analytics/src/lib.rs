@@ -4,7 +4,7 @@
 //!
 //! - Native (CLI): [`native::Client`] queues events and POSTs one
 //!   `/batch` request, best-effort within a caller-supplied timeout.
-//! - Browser (web app): [`web`] bridges to the self-hosted posthog-js
+//! - Browser (web app): `web` bridges to the self-hosted posthog-js
 //!   bundle loaded by `tonk-ui`'s `index.html`.
 //!
 //! Everything here is content-free by construction: identifiers are
