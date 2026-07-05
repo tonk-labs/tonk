@@ -36,8 +36,8 @@ pub mod event {
     pub const PANIC: &str = "panic";
 }
 
-/// Default PostHog ingestion host (US cloud).
-pub const DEFAULT_HOST: &str = "https://us.i.posthog.com";
+/// Default PostHog ingestion host (EU cloud).
+pub const DEFAULT_HOST: &str = "https://eu.i.posthog.com";
 
 /// Stable, anonymous PostHog `distinct_id` for a profile DID:
 /// `tonk:<sha256-hex>`. The raw DID never leaves the machine; hashing

@@ -58,6 +58,12 @@ dispatcher is responsible for keeping its payload content-free
 
 Set `TONK_POSTHOG_KEY` (a PostHog *project API key* — public by
 design) and optionally `TONK_POSTHOG_HOST` (default
-`https://us.i.posthog.com`) in the environment of the release build.
+`https://eu.i.posthog.com`) in the environment of the release build.
 `TONK_POSTHOG_KEY`/`TONK_POSTHOG_HOST` are also read at runtime, and
 `TONK_POSTHOG_ENDPOINT` overrides the host for integration tests.
+
+The nix packages (`tonk-cli`, `tonk-ui`, and therefore
+`tonk-cloudflare-artifacts`) bake the key in from the `posthogKey`
+binding in `flake.nix`, so `wrangler deploy` release builds carry it
+automatically; dev-shell `cargo`/`trunk` builds stay key-less unless
+the env var is exported.

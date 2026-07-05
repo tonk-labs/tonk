@@ -90,6 +90,14 @@
           wasm-bindgen-cli
           ;
 
+        # PostHog project API key, baked into release binaries at compile
+        # time (rust/tonk-analytics reads it via option_env!). Project API
+        # keys are public-by-design client keys, so committing one here is
+        # fine. An empty string compiles analytics to a no-op. The EU
+        # ingestion host is the crate default, so no host var is needed.
+        # See docs/telemetry.md.
+        posthogKey = "";
+
         # Rewrite Nix store libiconv to the macOS system equivalent
         # so the binary works on machines without Nix installed
         darwinBinaryFixup = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
@@ -271,12 +279,14 @@
           tonk-cli = buildCrate {
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
+            TONK_POSTHOG_KEY = posthogKey;
             fixupPhase = darwinBinaryFixup;
           };
 
           tonk-ui = buildTrunkCrate {
             pname = "tonk-ui";
             trunkConfig = "./rust/tonk-ui/Trunk.toml";
+            TONK_POSTHOG_KEY = posthogKey;
           };
 
           tonk-access-service = buildWasmCrate {
