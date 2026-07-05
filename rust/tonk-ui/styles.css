@@ -110,6 +110,15 @@ wa-tree-item:not(:defined) {
 
 /* Control Panel launcher faces — self-hosted like the others. Gestalte
    (display) is shipped as OpenType; IBM Plex Sans/Mono as woff2. */
+/* GestalteName — a separate wordmark cut, used ONLY for the "tonk" wordmark
+   (the launcher brand). Ships as TrueType at its single weight (500). */
+@font-face {
+    font-family: "GestalteName";
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url("/fonts/gestaltename-500.ttf") format("truetype");
+}
 @font-face {
     font-family: "Gestalte";
     font-style: normal;
@@ -147,28 +156,29 @@ wa-tree-item:not(:defined) {
 }
 
 /* Brand accent → yellow-green, matching the control-panel wireframe
-   (`#cbd70c`). The shoelace palette ships a blue brand; remap the brand
-   semantic tokens (fills, borders, on-colors) to a chartreuse scale so
-   accents read yellow-green in both light and dark. `#cbd70c` is bright,
-   so `on-loud` is DARK ink (not white) to stay legible on the fill. */
+   (`#DEFF1A`). The shoelace palette ships a blue brand; remap the brand
+   semantic tokens (fills, borders, on-colors) to a chartreuse scale built
+   around `#DEFF1A` so accents read yellow-green in both light and dark. The
+   brand is a bright lime, so `on-loud` is DARK ink (not white) to stay
+   legible on the fill; quiet/normal are pale tints of the same hue. */
 :root,
 .wa-light,
 .wa-dark {
-    --wa-color-brand-fill-quiet: #f7fbdd;
-    --wa-color-brand-fill-normal: #e6ef9a;
-    --wa-color-brand-fill-loud: #cbd70c;
-    --wa-color-brand-border-quiet: #e6ef9a;
-    --wa-color-brand-border-normal: #d3df46;
-    --wa-color-brand-border-loud: #cbd70c;
+    --wa-color-brand-fill-quiet: #f9fddd;
+    --wa-color-brand-fill-normal: #eef99c;
+    --wa-color-brand-fill-loud: #deff1a;
+    --wa-color-brand-border-quiet: #eef99c;
+    --wa-color-brand-border-normal: #d3e84a;
+    --wa-color-brand-border-loud: #deff1a;
     --wa-color-brand-on-quiet: #5c6608;
     --wa-color-brand-on-normal: #41490a;
-    --wa-color-brand-on-loud: #1a1c05;
+    --wa-color-brand-on-loud: #2a3005;
 }
 .wa-dark {
-    --wa-color-brand-fill-quiet: #2a2e08;
-    --wa-color-brand-fill-normal: #454d0d;
-    --wa-color-brand-fill-loud: #cbd70c;
-    --wa-color-brand-on-quiet: #e6ef9a;
+    --wa-color-brand-fill-quiet: #2e3406;
+    --wa-color-brand-fill-normal: #4a530d;
+    --wa-color-brand-fill-loud: #deff1a;
+    --wa-color-brand-on-quiet: #eef99c;
 }
 
 html,
@@ -180,7 +190,7 @@ body {
 
 body {
     font-family: var(--wa-font-body);
-    background-color: #f0f0f0;
+    background-color: var(--wa-color-surface-default);
     color: var(--wa-color-text-normal);
 }
 
@@ -470,8 +480,8 @@ tonk-display > .site-pending:not([hidden]) {
 }
 .workspace__title-input:focus {
     outline: none;
-    border-color: var(--wa-color-brand-fill-loud, #0070f3);
-    background: var(--wa-color-surface-default, #fff);
+    border-color: var(--wa-color-brand-fill-loud);
+    background: var(--wa-color-surface-default);
 }
 /* The live sync chip (`<tonk-sync-state>` renders this span with one
    `is-*` modifier). Layout on the base class, colour on the modifier. */
@@ -549,9 +559,9 @@ tonk-display > .site-pending:not([hidden]) {
     box-sizing: border-box;
     overflow: hidden;
     border-radius: 50%;
-    border: 1.5px solid #1c1c1c;
-    background: #fff;
-    color: #1c1c1c;
+    border: 1.5px solid var(--wa-color-text-normal);
+    background: var(--wa-color-surface-default);
+    color: var(--wa-color-text-normal);
     flex: none;
 }
 .workspace__identity-name {
@@ -567,12 +577,12 @@ tonk-display > .site-pending:not([hidden]) {
     cursor: text;
 }
 .workspace__identity-name:hover {
-    border-color: var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
+    border-color: var(--wa-color-surface-border);
 }
 .workspace__identity-name:focus {
     outline: none;
-    border-color: var(--wa-color-brand-fill-loud, #0070f3);
-    background: var(--wa-color-surface-default, #fff);
+    border-color: var(--wa-color-brand-fill-loud);
+    background: var(--wa-color-surface-default);
 }
 /* The share (`<tonk-share>`) and pause/resume (`<tonk-sync-toggle>`)
    controls: icon-only ghost buttons that brighten on hover. */
@@ -1274,7 +1284,7 @@ tonk-notation .tonk-cm-variable {
    diagnostic: a red wavy underline (the editor's "this is wrong" cue),
    wrapped in a `<wa-tooltip>` that names the absent attribute on hover. */
 tonk-notation .tonk-notation-error {
-    text-decoration: underline wavy var(--wa-color-danger-fill-loud, #d33);
+    text-decoration: underline wavy var(--wa-color-danger-fill-loud);
     text-decoration-skip-ink: none;
     text-underline-offset: 3px;
     cursor: help;
