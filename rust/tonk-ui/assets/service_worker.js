@@ -160,9 +160,9 @@ self.onmessage = event => {
     );
 };
 
-// Background Sync API event handler. The tag carries the repository
-// identity (`tonk-sync:{repo}`); a rejected promise here tells the
-// user agent to retry the sync with backoff.
+// Background Sync API event handler. A single bare `sync` tag: the worker
+// drains the whole queue regardless, so the tag carries no identity. A
+// rejected promise here tells the user agent to retry the sync with backoff.
 self.onsync = event => {
     log("Background sync event:", event.tag);
     event.waitUntil(

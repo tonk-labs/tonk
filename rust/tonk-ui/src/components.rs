@@ -215,15 +215,14 @@ mod tests {
         // Check remote branch state before sync
         let _inspect_result = driver.execute(inspect_script, vec![]).await?;
 
-        // Register sync using the Background Sync API. The tag carries
-        // the repository identity (`tonk-sync:{repo}`) so the worker's
-        // `sync` event handler knows which repo's upstream branches to
-        // sweep.
+        // Register sync using the Background Sync API. A single bare `sync`
+        // tag: the worker's `onsync` drains the whole work-queue (every dirty
+        // and open repo), so it needs no per-repo identity in the tag.
         driver
             .execute(
                 r#"
                 const registration = await navigator.serviceWorker.ready;
-                await registration.sync.register('tonk-sync:home');
+                await registration.sync.register('sync');
                 "#,
                 vec![],
             )

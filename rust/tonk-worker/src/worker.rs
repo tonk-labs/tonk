@@ -421,17 +421,110 @@ mod route_for_tests {
             "bridge module must bypass the rewrite, got {r:?}",
         );
     }
+
+    // The scheduler's clock is passed in (not `Date::now()`), so these drive it
+    // with fixed timestamps — no real time, fully deterministic.
+
+    #[dialog_common::test]
+    fn it_coalesces_a_burst_into_the_last_ticket() {
+        let s = SyncScheduler::default();
+        // Three requests in the same instant: only the last ticket is current,
+        // so the first two wake and no-op, the last drains.
+        let t1 = s.next(0.0);
+        let t2 = s.next(0.0);
+        let t3 = s.next(0.0);
+        let wake = SYNC_DEBOUNCE_MS as f64;
+        assert!(
+            !s.should_drain(t1, wake),
+            "superseded ticket must not drain"
+        );
+        assert!(
+            !s.should_drain(t2, wake),
+            "superseded ticket must not drain"
+        );
+        assert!(s.should_drain(t3, wake), "latest ticket drains");
+    }
+
+    #[dialog_common::test]
+    fn it_forces_a_drain_when_traffic_never_settles() {
+        let s = SyncScheduler::default();
+        // A request arrives every 100ms, faster than the 500ms debounce, so no
+        // ticket is ever the latest when it wakes. Without the cap this starves
+        // forever; with it, once the burst has been pending SYNC_MAX_WAIT_MS an
+        // earlier ticket drains despite the newer requests.
+        let first = s.next(0.0);
+        for i in 1..=40 {
+            s.next(i as f64 * 100.0);
+        }
+        // `first` woke long ago and is not the latest — but the burst began at
+        // t=0 and we're now past the cap, so it drains.
+        assert!(
+            s.should_drain(first, SYNC_MAX_WAIT_MS as f64),
+            "max-wait cap must force a drain under continuous traffic",
+        );
+        // Just before the cap, the same non-latest ticket must NOT drain.
+        assert!(
+            !s.should_drain(first, SYNC_MAX_WAIT_MS as f64 - 1.0),
+            "before the cap, a superseded ticket still defers",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_restarts_the_cap_clock_after_a_drain() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        // Drain at the trailing edge, which clears the burst clock.
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+        s.begin_drain();
+        s.end_drain();
+        // A fresh burst after the drain starts a NEW cap clock at t=10_000. Use a
+        // superseded ticket (t2, then t3 bumps the generation) so `is_latest` is
+        // false and only the cap can trigger a drain — that's what proves the
+        // clock reset. If the cap still measured from wall-clock zero, t2 would
+        // already be past the cap; it must instead measure from t=10_000.
+        let t2 = s.next(10_000.0);
+        let _t3 = s.next(10_050.0);
+        assert!(
+            !s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64 - 1.0),
+            "cap must measure from the post-drain burst start, not wall-clock zero",
+        );
+        assert!(
+            s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64),
+            "once the new burst passes the cap, a superseded ticket drains",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_never_overlaps_two_drains() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        s.begin_drain();
+        // While a drain is in flight, even a past-the-cap ticket must wait.
+        assert!(
+            !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0),
+            "in_flight guard must block a second concurrent drain",
+        );
+        s.end_drain();
+    }
 }
 
-/// Trailing-edge debounce coordinator for the background sync drain.
+/// Trailing-edge debounce coordinator for the background sync drain, with a
+/// max-wait cap so continuous traffic can't defer the drain forever.
 ///
 /// Every `on_fetch` bumps `generation` and captures its value, then schedules a
-/// drain after a quiet window. After the window the request drains ONLY if its
-/// captured generation still equals the current one — i.e. no newer request
-/// arrived to supersede it. So a burst of requests collapses into a single
-/// trailing-edge drain (the last request wins); earlier ones wake and no-op.
-/// `in_flight` guards against two drains overlapping if a new winner fires while
-/// the previous drain is still running.
+/// drain after a quiet window. After the window the request drains if its
+/// captured generation is still current (no newer request superseded it) —
+/// bursts collapse into one trailing-edge drain, the last request wins.
+///
+/// The trap that alone leaves open: a tab making requests *faster* than the
+/// debounce window keeps bumping the generation, so no ticket is ever the last
+/// one and the drain starves indefinitely. So `pending_since` stamps when the
+/// current un-drained burst began; once it has waited [`SYNC_MAX_WAIT_MS`], a
+/// woken ticket drains even though newer requests exist. Cleared on every drain,
+/// so the cap measures from the first request after the last drain.
+///
+/// `in_flight` guards against two drains overlapping if a new winner (or a
+/// max-wait firing) starts while the previous drain is still running.
 ///
 /// Single-threaded SW, so plain `Cell`s behind `Rc` — no atomics needed.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -439,29 +532,68 @@ mod route_for_tests {
 struct SyncScheduler {
     generation: std::rc::Rc<std::cell::Cell<u64>>,
     in_flight: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Wall-clock ms when the current un-drained burst began, or `None` when the
+    /// last drain cleared it. The max-wait cap measures from here.
+    pending_since: std::rc::Rc<std::cell::Cell<Option<f64>>>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl SyncScheduler {
     /// Bump the generation and return the new value — the caller's ticket. The
-    /// caller drains only if this ticket is still current after the debounce.
-    fn next(&self) -> u64 {
+    /// caller drains only if this ticket is still current after the debounce (or
+    /// the max-wait cap has elapsed). `now` starts the burst clock if this is
+    /// the first request since the last drain.
+    fn next(&self, now: f64) -> u64 {
+        if self.pending_since.get().is_none() {
+            self.pending_since.set(Some(now));
+        }
         let next = self.generation.get().wrapping_add(1);
         self.generation.set(next);
         next
     }
 
-    /// Whether `ticket` is still the latest scheduled drain (nothing superseded
-    /// it) and no drain is already running.
-    fn should_drain(&self, ticket: u64) -> bool {
-        self.generation.get() == ticket && !self.in_flight.get()
+    /// Whether a woken ticket should drain now. True when no drain is already
+    /// running AND either the ticket is still the latest (normal trailing edge)
+    /// or the current burst has been pending past [`SYNC_MAX_WAIT_MS`] (the cap,
+    /// so continuous traffic can't starve the drain).
+    fn should_drain(&self, ticket: u64, now: f64) -> bool {
+        if self.in_flight.get() {
+            return false;
+        }
+        let is_latest = self.generation.get() == ticket;
+        let capped = self
+            .pending_since
+            .get()
+            .is_some_and(|since| now - since >= SYNC_MAX_WAIT_MS as f64);
+        is_latest || capped
+    }
+
+    /// Mark a drain as started: take the `in_flight` guard and clear the burst
+    /// clock so the max-wait cap restarts from the next request.
+    fn begin_drain(&self) {
+        self.in_flight.set(true);
+        self.pending_since.set(None);
+    }
+
+    /// Release the `in_flight` guard once a drain finishes.
+    fn end_drain(&self) {
+        self.in_flight.set(false);
     }
 }
 
 /// Quiet window before a request's scheduled sync drain fires. A burst of boot
-/// queries collapses into one drain at the trailing edge.
+/// queries collapses into one drain at the trailing edge. Kept short so a
+/// reactive pull (and the `<tonk-host>` idle poll every ~2× this) feels
+/// near-immediate; it is the real rate-limiter on drain frequency.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const SYNC_DEBOUNCE_MS: i32 = 2_000;
+const SYNC_DEBOUNCE_MS: i32 = 500;
+
+/// Max-wait cap on the trailing-edge debounce: however continuous the request
+/// traffic, a drain fires at least this often. Without it, a tab making
+/// requests faster than [`SYNC_DEBOUNCE_MS`] resets the window every time and
+/// the drain never runs. Measured from the first request after the last drain.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_MAX_WAIT_MS: i32 = 3_000;
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -720,9 +852,11 @@ impl TonkServiceWorker {
     /// `onsync` event — the tab-closed backstop for the in-fetch drain.
     ///
     /// The SW owns the sync work-queue (repos with un-pushed commits) and knows
-    /// every open repo, so the event needs no per-repo identity: the tag is just
-    /// `"sync"`. The handler drains the queue — push the dirty set, pull every
-    /// open repo — exactly like the per-fetch `event.waitUntil` drain.
+    /// every open repo, so the event needs no per-repo identity: the tag is a
+    /// single bare `"sync"`, ignored here. This funnels to the same
+    /// [`drain_sync`](crate::router::drain_sync) as `POST /api/sync` and the
+    /// per-fetch `event.waitUntil` drain — push the dirty set, pull every open
+    /// repo.
     ///
     /// # Returns
     ///
@@ -743,16 +877,16 @@ impl TonkServiceWorker {
 ///
 /// Bumps the scheduler's generation, captures the ticket, and hands
 /// `event.wait_until` a promise that sleeps the debounce window and then drains
-/// ONLY if the ticket is still current (no newer request superseded it) and no
-/// drain is already running. `wait_until` keeps the SW alive through the sleep,
-/// so the trailing-edge drain actually runs even when the originating request
-/// finished long before. Failures are swallowed — a background drain never
-/// rejects the fetch.
+/// if the ticket is still current (no newer request superseded it) OR the
+/// max-wait cap has elapsed, and no drain is already running. `wait_until` keeps
+/// the SW alive through the sleep, so the trailing-edge drain actually runs even
+/// when the originating request finished long before. Failures are swallowed —
+/// a background drain never rejects the fetch.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
     use wasm_bindgen::JsCast;
 
-    let ticket = scheduler.next();
+    let ticket = scheduler.next(js_sys::Date::now());
     let scheduler = scheduler.clone();
     let state = state.clone();
 
@@ -760,13 +894,14 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         // Quiet window: a burst of requests collapses into one drain.
         let _ = crate::sleep(web_time::Duration::from_millis(SYNC_DEBOUNCE_MS as u64)).await;
 
-        if !scheduler.should_drain(ticket) {
-            // A newer request superseded us, or a drain is already running.
+        if !scheduler.should_drain(ticket, js_sys::Date::now()) {
+            // A newer request superseded us (and the max-wait cap hasn't
+            // elapsed), or a drain is already running.
             return Ok(JsValue::UNDEFINED);
         }
-        scheduler.in_flight.set(true);
+        scheduler.begin_drain();
         crate::router::drain_sync(&state).await;
-        scheduler.in_flight.set(false);
+        scheduler.end_drain();
         Ok(JsValue::UNDEFINED)
     });
 
