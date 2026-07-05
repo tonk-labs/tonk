@@ -67,6 +67,10 @@ impl Default for FabGeom {
     }
 }
 
+/// A stored `message`-event listener closure, retained so it can be removed
+/// and dropped on disconnect.
+type MessageListener = RefCell<Option<Closure<dyn FnMut(MessageEvent)>>>;
+
 /// The FAB portal custom element. Holds the shared [`PortalState`] and
 /// the per-instance [`FabGeom`]; both are `None`/default until
 /// `connected_callback` builds them.
@@ -76,7 +80,7 @@ pub struct TonkFabPortal {
     geom: RefCell<FabGeom>,
     /// The `message` listener installed by `connected_callback`. Stored so
     /// `disconnected_callback` can remove it and drop the closure.
-    message_listener: RefCell<Option<Closure<dyn FnMut(MessageEvent)>>>,
+    message_listener: MessageListener,
 }
 
 impl CustomElement for TonkFabPortal {
