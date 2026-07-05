@@ -31,7 +31,12 @@ async fn it_honors_an_explicit_content_type_override() -> Result<()> {
     let file = test.parent.join("data.bin");
     tokio::fs::write(&file, b"arbitrary bytes").await?;
 
-    let outcome = blob::add(&test.site, &file, Some("application/octet-stream".to_string())).await?;
+    let outcome = blob::add(
+        &test.site,
+        &file,
+        Some("application/octet-stream".to_string()),
+    )
+    .await?;
     assert_eq!(outcome.content_type, "application/octet-stream");
     Ok(())
 }
@@ -55,7 +60,11 @@ async fn it_cats_a_blob_back() -> Result<()> {
         Err(blob::BlobError::NotFound(_))
     ));
     // A non-blob URI is rejected up front.
-    assert!(blob::cat(&test.site, "id:alice", &mut Vec::new()).await.is_err());
+    assert!(
+        blob::cat(&test.site, "id:alice", &mut Vec::new())
+            .await
+            .is_err()
+    );
     Ok(())
 }
 

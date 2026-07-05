@@ -253,8 +253,7 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
 
     // Write a blob and reference it from a fact.
     let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
-    let chunks: Vec<Result<Vec<u8>, _>> =
-        payload.chunks(16384).map(|c| Ok(c.to_vec())).collect();
+    let chunks: Vec<Result<Vec<u8>, _>> = payload.chunks(16384).map(|c| Ok(c.to_vec())).collect();
     let hash = branch
         .write_blob(stream::iter(chunks))
         .perform(&operator)
@@ -300,7 +299,10 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
 
     let branch_b = repo_b.branch("main").open().perform(&operator_b).await?;
     let upstream_b = origin_b.branch("main").open().perform(&operator_b).await?;
-    branch_b.set_upstream(upstream_b).perform(&operator_b).await?;
+    branch_b
+        .set_upstream(upstream_b)
+        .perform(&operator_b)
+        .await?;
 
     // Bob pulls the revision, then lazily hydrates the bytes he never wrote.
     assert!(
@@ -316,7 +318,10 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
     while let Some(chunk) = reader.next().await? {
         out.extend(chunk);
     }
-    assert_eq!(out, payload, "hydrated blob bytes should match the original");
+    assert_eq!(
+        out, payload,
+        "hydrated blob bytes should match the original"
+    );
 
     Ok(())
 }

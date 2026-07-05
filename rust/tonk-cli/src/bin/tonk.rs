@@ -351,7 +351,9 @@ enum RemoteCommand {
 enum BlobCommand {
     /// Ingest a file into the blob store and print its blob:<hash>
     /// reference. Asserts content-type (and file name) facts.
-    #[command(after_help = "Examples:\n  tonk blob add photo.png\n  tonk blob add data.bin --type application/octet-stream")]
+    #[command(
+        after_help = "Examples:\n  tonk blob add photo.png\n  tonk blob add data.bin --type application/octet-stream"
+    )]
     Add {
         /// File to ingest.
         #[arg(value_name = "FILE")]

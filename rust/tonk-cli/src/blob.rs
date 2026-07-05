@@ -99,10 +99,7 @@ pub async fn add(
             .map(mime_for_extension)
             .unwrap_or_else(|| "application/octet-stream".to_string())
     });
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_owned);
+    let name = path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
 
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
@@ -239,8 +236,8 @@ pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
 
     let mut rows = Vec::with_capacity(listed.len());
     for (hash, record) in listed {
-        let entity = Entity::from_blob(&hash)
-            .map_err(|e| BlobError::Site(format!("blob entity: {e}")))?;
+        let entity =
+            Entity::from_blob(&hash).map_err(|e| BlobError::Site(format!("blob entity: {e}")))?;
         let content_type = query_content_type(&session, &site.operator, &entity).await?;
         rows.push(LsRow {
             entity,
