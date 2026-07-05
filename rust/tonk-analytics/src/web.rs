@@ -25,13 +25,15 @@ export function ph_init(key, host) {
             capture_heatmaps: false,
             persistence: "memory",
             person_profiles: "identified_only",
-            // posthog-js enriches every event (and $set/$set_once
-            // person props) with the real page URL and referrer; the
-            // app's routes embed space/entity names, so the
+            // posthog-js enriches every event (and the $set/$set_once
+            // person-property blocks, which $identify carries at the
+            // event's top level) with the real page URL and referrer;
+            // the app's routes embed space/entity names, so the
             // normalize_path guarantee is re-enforced here: drop the
             // raw-URL fields and let the pre-normalized `route`
             // property stand in for $current_url.
-            sanitize_properties: function (props) {
+            before_send: function (payload) {
+                if (!payload) return payload;
                 var strip = function (obj) {
                     if (!obj) return;
                     delete obj.$pathname;
@@ -41,15 +43,20 @@ export function ph_init(key, host) {
                         if (key.indexOf("$initial_") === 0) delete obj[key];
                     }
                 };
-                strip(props);
-                strip(props.$set);
-                strip(props.$set_once);
-                if (props.route) {
-                    props.$current_url = props.route;
-                } else {
-                    delete props.$current_url;
+                strip(payload.$set);
+                strip(payload.$set_once);
+                var props = payload.properties;
+                if (props) {
+                    strip(props);
+                    strip(props.$set);
+                    strip(props.$set_once);
+                    if (props.route) {
+                        props.$current_url = props.route;
+                    } else {
+                        delete props.$current_url;
+                    }
                 }
-                return props;
+                return payload;
             },
         });
         return true;
