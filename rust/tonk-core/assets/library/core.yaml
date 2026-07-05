@@ -1693,7 +1693,7 @@ concept!: &blob
       cardinality: one
       as: text
     name:
-      description: Human-readable file name (optional)
+      description: Human-readable file name
       the: xyz.tonk.blob/name
       cardinality: one
       as: text
