@@ -28,7 +28,7 @@
 //!   `fab-mirror` instead, since that is the class still present mid-drag. A
 //!   press that never moves past a small threshold is a click.
 //! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted dock (or a default top-left), and applies its classes.
+//!   the persisted dock (or a default bottom-right), and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
@@ -907,11 +907,11 @@ fn persist_dock(dock: Dock) {
 }
 
 /// On connect, query the persisted FAB dock from `window.tonk.query(...)` and
-/// apply its class. Falls back to the default (top-left) dock if none is stored.
+/// apply its class. Falls back to the default (bottom-right) dock if none is stored.
 fn restore_position(this: &HtmlElement) {
     // Position at the default dock immediately so the FAB is placed on first
     // paint; the async query below swaps in the persisted dock if one exists.
-    apply_dock(this, Dock::TopLeft);
+    apply_dock(this, Dock::BottomRight);
 
     let query_body = serde_json::json!({
         "terms": {
@@ -1005,9 +1005,9 @@ fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
     Dock::from_symbol(&sym)
 }
 
-/// Apply the default dock (top-left) to the element.
+/// Apply the default dock (bottom-right) to the element.
 fn default_position(this: &HtmlElement) {
-    apply_dock(this, Dock::TopLeft);
+    apply_dock(this, Dock::BottomRight);
 }
 
 /// Register `<tonk-fab>` with the page's custom element registry. Idempotent.

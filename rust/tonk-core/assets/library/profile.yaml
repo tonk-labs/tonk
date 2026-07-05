@@ -78,24 +78,26 @@ command!: &space/create
       as: text
     remote:
       description: >
-        Optional sync URL, read from the form's `remote` input. The
+        Sync URL, read from the form's hidden `remote` input. The
         worker's `CreateSpaceHandler` matches on `name` alone (so this
         command keeps decoding against an older profile descriptor that
-        lacks this field), and reads `remote` opportunistically: blank
-        creates a local-only space, a URL is attached after creation as
-        the `origin` remote with `main` tracking `origin/main`. The
-        `<tonk-default-remote>` button fills it with this server. Single
+        lacks this field), and reads `remote` opportunistically: the Hub
+        form defaults it to this server via `<tonk-default-remote auto>`;
+        if that URL cannot be resolved, blank still creates a local-only
+        space. A URL is attached after creation as the `origin` remote
+        with `main` tracking `origin/main`. Single
         word `remote` (not `remote-url`) because read-path segments are
         kebab→camel-cased.
       the: dom.event.current-target.elements.remote/value
       as: text
     template:
       description: >
-        Which template to seed: "sheets" for the tabbed workspace, or
-        blank/absent for the lean default (the blank canvas). Read from
-        the wizard's `template` control on submit, exactly as `name` and
-        `remote` are. The worker's CreateSpaceHandler reads it via
-        template_from_facts; an older form that omits it decodes as blank.
+        Which template to seed: "wiki" for linked pages, "sheets" for
+        the tabbed workspace, or blank/absent for the lean default (the
+        blank canvas). Read from the wizard's `template` control on
+        submit, exactly as `name` and `remote` are. The worker's
+        CreateSpaceHandler reads it via template_from_facts; an older
+        form that omits it decodes as blank.
       the: dom.event.current-target.elements.template/value
       as: text
     prevent-default:
@@ -248,22 +250,35 @@ view/directory!:
         .onb-choice__desc { font-size: 13.5px; line-height: 1.45; color: var(--ink-soft); }
         .onb-choice__cta { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
         /* details screen: template picker (template path only) + name + create */
-        .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; justify-content: center; }
+        .onb-grid { display: none; grid-template-columns: repeat(3, minmax(0,300px)); gap: 18px; justify-content: center; }
         #wiz-tmpl:checked ~ .spot-overlay .onb-grid { display: grid; }
         .onb-agent-note { display: none; text-align: center; }
         #wiz-agent:checked ~ .spot-overlay .onb-agent-note { display: block; }
         .tmpl { background: #fff; border: 1.5px solid var(--ink); padding: 18px; cursor: pointer;
           text-align: left; display: flex; flex-direction: column; gap: 8px; font-family: var(--font-ui); }
         .tmpl:hover { box-shadow: 5px 5px 0 rgba(0,0,0,.14); transform: translate(-1px,-1px); }
+        .tmpl__art { height: 96px; border: 1.5px solid var(--ink); margin-bottom: 6px;
+          display: flex; align-items: center; justify-content: center; background: #fbfbf7; overflow: hidden; }
+        .tmpl__art--wiki { align-items: flex-start; flex-direction: column; gap: 8px; padding: 18px 20px; }
+        .tmpl__art--wiki .title { width: 112px; height: 14px; background: var(--ink); display: block; margin-bottom: 2px; }
+        .tmpl__art--wiki i { height: 7px; background: #d7d3c2; display: block; width: 100%; }
+        .tmpl__art--wiki i:nth-of-type(4) { width: 72%; }
+        .tmpl__art--sheets { padding: 20px 22px; }
+        .tmpl__art--sheets .grid { width: 100%; height: 54px;
+          background:
+            linear-gradient(#d7d3c2 1.5px, transparent 1.5px) 0 0 / 100% 18px,
+            linear-gradient(90deg, transparent calc(33.333% - .75px), #d7d3c2 calc(33.333% - .75px), #d7d3c2 calc(33.333% + .75px), transparent calc(33.333% + .75px), transparent calc(66.666% - .75px), #d7d3c2 calc(66.666% - .75px), #d7d3c2 calc(66.666% + .75px), transparent calc(66.666% + .75px));
+          border-bottom: 1.5px solid #d7d3c2; display: block; }
         .tmpl-name { font-family: var(--font-display); font-weight: 400; font-size: 20px;
           letter-spacing: -.4px; color: var(--ink); }
         .tmpl-desc { font-size: 13px; line-height: 1.4; color: var(--ink-soft); }
         #tpl-sheets:checked ~ .onb-screen--details .tmpl[data-for="tpl-sheets"],
+        #tpl-wiki:checked   ~ .onb-screen--details .tmpl[data-for="tpl-wiki"],
         #tpl-blank:checked  ~ .onb-screen--details .tmpl[data-for="tpl-blank"] {
           box-shadow: inset 0 0 0 1.5px var(--ink); border-color: var(--ink);
         }
         .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
-        .onb-name, .onb-remote { display: flex; flex-direction: column; gap: 6px; }
+        .onb-name { display: flex; flex-direction: column; gap: 6px; }
         .onb-lab { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .12em;
           text-transform: uppercase; color: var(--ink-soft); }
         .onb-input { font-family: var(--font-ui); font-size: 16px; padding: 12px 14px;
@@ -286,7 +301,7 @@ view/directory!:
           <img class="spot-logo" src="/images/tonk-logo.svg" alt="Tonk">
           <span class="spot-badge">spot</span>
         </div>
-        <label class="spot-new" for="wiz-start">New spot</label>
+        <label class="spot-new" for="wiz-start">+ new spot</label>
       </header>
 
       <div class="spot-list">
@@ -316,6 +331,9 @@ view/directory!:
           <!-- chosen template, carried into space/create; default blank -->
           <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
           <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
+          <input class="onb-tpl" type="radio" name="template" value="wiki" id="tpl-wiki">
+          <input type="hidden" name="remote" value="">
+          <tonk-default-remote field="remote" auto></tonk-default-remote>
 
           <!-- Screen 1: start chooser (navigation only, no submit) -->
           <div class="onb-screen onb-screen--start">
@@ -356,7 +374,15 @@ view/directory!:
               <h3>Name your spot</h3>
             </div>
             <div class="onb-grid">
+              <label class="tmpl" data-for="tpl-wiki" for="tpl-wiki">
+                <div class="tmpl__art tmpl__art--wiki">
+                  <span class="title"></span><i></i><i></i><i></i><i></i>
+                </div>
+                <div class="tmpl-name">Wiki</div>
+                <div class="tmpl-desc">Linked pages of editable blocks, with comments.</div>
+              </label>
               <label class="tmpl" data-for="tpl-sheets" for="tpl-sheets">
+                <div class="tmpl__art tmpl__art--sheets"><span class="grid"></span></div>
                 <div class="tmpl-name">Sheets</div>
                 <div class="tmpl-desc">A tabbed workspace of artifacts.</div>
               </label>
@@ -371,11 +397,6 @@ view/directory!:
                 <label class="onb-lab" for="onb-name-input">Spot name</label>
                 <input class="onb-input" id="onb-name-input" name="name" placeholder="e.g. pictures" autocomplete="off" required>
               </div>
-              <div class="onb-remote">
-                <label class="onb-lab" for="onb-remote-input">Sync server (optional)</label>
-                <input class="onb-input" id="onb-remote-input" name="remote" placeholder="leave blank for a local-only spot">
-              </div>
-              <tonk-default-remote field="remote">Use this server</tonk-default-remote>
               <button class="onb-create" type="submit">Create spot</button>
             </div>
           </div>
@@ -620,14 +641,15 @@ view/directory!: &profile/fab/view
       <!-- Create-space modal. Lives inside `<tonk-fab>` so the guest's
            `wa-show`/`wa-after-hide` listeners (element.rs `attach_modal`) drive
            the iframe overlay, and so the `space/create` command + the
-           `<tonk-default-remote>` resolve on this same profile/meta branch.
+           `<tonk-default-remote>` resolves the default sync URL on this same
+           profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
       <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog">
         <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create data-close-dialog>
           <style>
             /* CSS-paged wizard: a hidden radio per screen drives which
                .wizard__screen shows. The form submits once at the end, so
-               every control (name, template, remote) is in the same form
+               every control (name, template, hidden remote) is in the same form
                and read via dom.event.current-target.elements.* . */
             .wizard__nav { position: absolute; opacity: 0; pointer-events: none; }
             .wizard__screen { display: none; flex-direction: column; gap: var(--wa-space-m); }
@@ -641,8 +663,34 @@ view/directory!: &profile/fab/view
               font: inherit; background: var(--wa-color-surface-default);
             }
             .wizard__card:hover { border-color: var(--wa-color-text-normal); }
+            .wizard__art {
+              height: 84px; border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+              margin-block-end: var(--wa-space-s); display: flex; align-items: center;
+              justify-content: center; background: var(--wa-color-surface-lowered); overflow: hidden;
+            }
+            .wizard__art--wiki {
+              align-items: flex-start; flex-direction: column; gap: var(--wa-space-2xs);
+              padding: var(--wa-space-m);
+            }
+            .wizard__art--wiki .title {
+              width: 42%; height: 10px; background: var(--wa-color-text-normal);
+              display: block; margin-block-end: var(--wa-space-3xs);
+            }
+            .wizard__art--wiki i {
+              height: 5px; width: 100%; display: block; background: var(--wa-color-neutral-fill-normal);
+            }
+            .wizard__art--wiki i:nth-of-type(4) { width: 72%; }
+            .wizard__art--sheets { padding: var(--wa-space-m); }
+            .wizard__art--sheets .grid {
+              width: 100%; height: 42px; display: block;
+              background:
+                linear-gradient(var(--wa-color-neutral-fill-normal) 1px, transparent 1px) 0 0 / 100% 14px,
+                linear-gradient(90deg, transparent calc(33.333% - .5px), var(--wa-color-neutral-fill-normal) calc(33.333% - .5px), var(--wa-color-neutral-fill-normal) calc(33.333% + .5px), transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), var(--wa-color-neutral-fill-normal) calc(66.666% - .5px), var(--wa-color-neutral-fill-normal) calc(66.666% + .5px), transparent calc(66.666% + .5px));
+              border-bottom: 1px solid var(--wa-color-neutral-fill-normal);
+            }
             /* Highlight the chosen template card so the selection is legible. */
             #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
+            #tpl-wiki:checked   ~ .wizard__screen--template label[for="tpl-wiki"],
             #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
               border-color: var(--wa-color-text-normal);
               box-shadow: inset 0 0 0 1px var(--wa-color-text-normal);
@@ -659,6 +707,9 @@ view/directory!: &profile/fab/view
           <!-- the chosen template, carried into space/create; default blank -->
           <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
           <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
+          <input class="wizard__template" type="radio" name="template" value="wiki" id="tpl-wiki">
+          <input type="hidden" name="remote" value="">
+          <tonk-default-remote field="remote" auto></tonk-default-remote>
 
           <!-- Screen 1: name + how to start -->
           <div class="wizard__screen wizard__screen--start">
@@ -678,14 +729,20 @@ view/directory!: &profile/fab/view
               <input type="submit" id="fab-agent-submit" form="fab-space-create-form"
                      style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
             </div>
-            <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only spot"></wa-input>
-            <tonk-default-remote field="remote">Use this server</tonk-default-remote>
           </div>
 
           <!-- Screen 2: pick a template -->
           <div class="wizard__screen wizard__screen--template">
             <div class="wizard__cards">
+              <label class="wizard__card" for="tpl-wiki">
+                <div class="wizard__art wizard__art--wiki">
+                  <span class="title"></span><i></i><i></i><i></i><i></i>
+                </div>
+                <h3>Wiki</h3>
+                <p>Linked pages of editable blocks, with comments.</p>
+              </label>
               <label class="wizard__card" for="tpl-sheets">
+                <div class="wizard__art wizard__art--sheets"><span class="grid"></span></div>
                 <h3>Sheets</h3>
                 <p>A tabbed workspace of artifacts.</p>
               </label>
