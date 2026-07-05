@@ -30,7 +30,7 @@ before a profile exists report as `tonk:anonymous`.
 |---|---|
 | `app_loaded` | `version` |
 | `$pageview` | `route` — the path with every non-literal segment replaced by a hash (e.g. `/space/1a2b3c4d5e6f7a8b/view/9c8d7e6f5a4b3c2d`); ``$current_url`` carries the same normalized value |
-| `commit` | none (fired on the existing `tonk:committed` event) |
+| `commit` | `branch` (`main` / `meta`; anything else reports as `other`) — fired on the worker's `tonk:local-commit` broadcast for every durable transact/evaluate commit; only the visible tab records it |
 | `sheet_activated` | none |
 | `panic` | `message` (first line of the panic message) |
 

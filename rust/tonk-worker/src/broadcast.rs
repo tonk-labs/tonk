@@ -18,6 +18,15 @@
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 
+/// Fixed-name channel announcing every durable *local* data commit
+/// (`/transact`, `/evaluate`), whatever the repo. The per-endpoint
+/// channels follow the "channel name == endpoint path" convention for
+/// UI refresh; this one exists for cross-cutting listeners (the
+/// top-level page's analytics) that cannot enumerate per-repo
+/// channel names. Sync-driven head moves deliberately do not post
+/// here — it means "someone wrote locally", not "the head moved".
+pub const LOCAL_COMMIT_CHANNEL: &str = "tonk:local-commit";
+
 /// A change announcement posted on the endpoint's broadcast channel.
 ///
 /// Carries the branch that was committed to and the [`Revision`]

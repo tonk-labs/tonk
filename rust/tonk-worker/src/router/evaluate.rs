@@ -155,6 +155,13 @@ pub async fn evaluate(
                 revision: revision.clone(),
             },
         );
+        broadcast(
+            crate::broadcast::LOCAL_COMMIT_CHANNEL,
+            &Notification {
+                branch: path.branch.clone(),
+                revision: revision.clone(),
+            },
+        );
     }
     result
 }
@@ -177,7 +184,25 @@ pub async fn evaluate_profile(
     log!("evaluate profile branch={}", path.branch);
     let tonk_state = state.write().await;
     let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-    evaluate_on_branch(&tonk_state, tonk_branch, body, query).await
+    let result = evaluate_on_branch(&tonk_state, tonk_branch, body, query).await;
+
+    // Same durable-commit gate as [`evaluate`]: pure queries and dry
+    // runs leave the head unchanged and announce nothing. The profile
+    // routes have no per-endpoint announcement to mirror, so only the
+    // cross-cutting local-commit channel is posted.
+    if let Ok(Json(response)) = &result
+        && let Some(revision) = &response.revision_after
+        && response.revision_before.as_ref() != Some(revision)
+    {
+        broadcast(
+            crate::broadcast::LOCAL_COMMIT_CHANNEL,
+            &Notification {
+                branch: path.branch.clone(),
+                revision: revision.clone(),
+            },
+        );
+    }
+    result
 }
 
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a

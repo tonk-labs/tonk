@@ -28,7 +28,8 @@ pub mod event {
     /// PostHog's built-in pageview event, captured manually with a
     /// normalized route.
     pub const PAGEVIEW: &str = "$pageview";
-    /// A local commit landed (web; from the `tonk:committed` event).
+    /// A local commit landed (web; from the worker's
+    /// `tonk:local-commit` broadcast).
     pub const COMMIT: &str = "commit";
     /// A workspace sheet tab was activated.
     pub const SHEET_ACTIVATED: &str = "sheet_activated";

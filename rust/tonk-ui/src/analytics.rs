@@ -8,8 +8,11 @@
 //!
 //! - `popstate` → `$pageview` (the `navigate` command pushes state
 //!   then fires `popstate`, so this sees every route change);
-//! - `tonk:committed` → `commit` (dispatched by the workspace sync
-//!   elements, the inspector, and the worker's join flow);
+//! - the worker's `tonk:local-commit` BroadcastChannel → `commit`.
+//!   Not the `tonk:committed` window event: its dispatchers live in
+//!   sealed guest iframes whose window events never reach this page,
+//!   while a BroadcastChannel crosses that boundary (and tabs — see
+//!   the visibility gate at the listener);
 //! - `activate` → `sheet_activated` (bubbles from `<tonk-sheet-binder>`);
 //! - `tonk:analytics` → generic channel: any element may dispatch
 //!   `CustomEvent("tonk:analytics", { bubbles: true, composed: true,
@@ -79,12 +82,47 @@ fn attach_listeners() {
         .add_event_listener_with_callback("popstate", on_popstate.as_ref().unchecked_ref());
     on_popstate.forget();
 
-    let on_commit = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        tonk_analytics::web::capture(tonk_analytics::event::COMMIT, &serde_json::json!({}));
-    });
-    let _ = window
-        .add_event_listener_with_callback("tonk:committed", on_commit.as_ref().unchecked_ref());
-    on_commit.forget();
+    // Local commits: the worker announces every durable transact /
+    // evaluate commit on this fixed channel (tonk-worker's
+    // `broadcast::LOCAL_COMMIT_CHANNEL`). BroadcastChannel reaches
+    // every tab of the origin, so only the visible tab captures —
+    // otherwise N open tabs would each record the same commit.
+    if let Ok(channel) = web_sys::BroadcastChannel::new("tonk:local-commit") {
+        let on_commit = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
+            move |event: web_sys::MessageEvent| {
+                let visible = web_sys::window()
+                    .and_then(|w| w.document())
+                    .map(|d| d.visibility_state() == web_sys::VisibilityState::Visible)
+                    .unwrap_or(true);
+                if !visible {
+                    return;
+                }
+                // The payload's branch is capped to a closed vocabulary
+                // so a future user-named branch can't leak.
+                let branch = event
+                    .data()
+                    .as_string()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                    .and_then(|value| {
+                        value.get("branch").and_then(|b| b.as_str()).map(str::to_owned)
+                    })
+                    .map(|b| match b.as_str() {
+                        "main" | "meta" => b,
+                        _ => "other".to_owned(),
+                    })
+                    .unwrap_or_else(|| "unknown".to_owned());
+                tonk_analytics::web::capture(
+                    tonk_analytics::event::COMMIT,
+                    &serde_json::json!({ "branch": branch }),
+                );
+            },
+        );
+        channel.set_onmessage(Some(on_commit.as_ref().unchecked_ref()));
+        on_commit.forget();
+        // The channel handle must stay alive for the subscription to
+        // keep firing; it lives for the page like the listeners above.
+        std::mem::forget(channel);
+    }
 
     let on_activate = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
         tonk_analytics::web::capture(

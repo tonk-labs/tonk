@@ -84,7 +84,14 @@ getrandom_0_3 = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
-features = ["BroadcastChannel", "CustomEvent", "MessageEvent", "Window"]
+features = [
+    "BroadcastChannel",
+    "CustomEvent",
+    "Document",
+    "MessageEvent",
+    "VisibilityState",
+    "Window",
+]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.
