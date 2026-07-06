@@ -864,6 +864,15 @@ component!:
 # convert, `/` opens the type menu, `[[` opens the link menu. Edits
 # debounce into `edit` events; the focused block ignores incoming row
 # echoes so the caret never fights the subscription.
+#
+# Structural edits are optimistic — the engine roundtrip must never
+# gate the next keystroke. Enter/merge/delete mutate the DOM and move
+# the caret synchronously, then emit the command; render() adopts the
+# engine's row into the in-flight element by order key when the echo
+# lands (`data-optimistic` marks the unadopted ones). Edits typed into
+# an unadopted block are held (`__dirty`) and flushed on adoption;
+# deletions of unadopted blocks are cancelled by order and retracted
+# when their row shows up.
 component!:
   this: id:wiki/component/editor
   module: |
@@ -884,9 +893,13 @@ component!:
           };
           if (this.__init) { arm(); return; }
           this.__init = true;
-          this.pendingFocus = null;
           this.menu = null;
           this.blockSelIds = null;
+          // Optimistic bookkeeping: rows whose retraction is in flight
+          // (skip them) and order keys of blocks deleted before their
+          // create echoed back (retract those rows on arrival).
+          this.deleted = new Set();
+          this.canceled = new Set();
           this.innerHTML =
             '<div class="we-page">' +
             '<div class="we-title" contenteditable="true" spellcheck="false"></div>' +
@@ -920,7 +933,6 @@ component!:
           return (set && pages.some((p) => p.id === set))
             ? set : (pages.find((p) => !p.parent) || pages[0] || {}).id;
         }
-        ce(id) { return this.querySelector('.we-block[data-block="' + id + '"] .we-ce'); }
         focused() {
           const el = document.activeElement;
           return el && el.classList && el.classList.contains('we-ce')
@@ -942,37 +954,85 @@ component!:
           const meta = lib.pages().find((p) => p.id === page);
           if (meta && document.activeElement !== title) title.textContent = meta.title;
           const blocks = lib.blocks(page);
+          // Forget optimistic deletions whose retraction has landed.
+          if (this.deleted.size) {
+            const live = new Set(blocks.map((b) => b.id));
+            for (const d of Array.from(this.deleted)) if (!live.has(d)) this.deleted.delete(d);
+          }
           const seen = new Set();
           let num = 0;
           let prev = null;
+          // Unadopted optimistic elements are transparent to the
+          // ordering pass — they sit between engine-backed rows until
+          // their create echoes back.
+          const backReal = (n) => {
+            let s = n.previousElementSibling;
+            while (s && s.hasAttribute('data-optimistic')) s = s.previousElementSibling;
+            return s;
+          };
           for (const b of blocks) {
+            if (this.deleted.has(b.id)) continue;
+            if (this.canceled.has(b.order)) {
+              // Deleted while its create was in flight: retract the
+              // row the moment it shows up.
+              this.canceled.delete(b.order);
+              this.deleted.add(b.id);
+              lib.emit(this, 'deleteblock', { deleteBlock: b.id });
+              continue;
+            }
             seen.add(b.id);
             num = b.type === 'numbered' ? num + 1 : 0;
             let el = wrap.querySelector('.we-block[data-block="' + b.id + '"]');
             if (!el) {
-              el = document.createElement('div');
-              el.dataset.block = b.id;
-              el.innerHTML =
-                '<span class="we-gut">' +
-                '<button type="button" class="we-g" data-act="comment" title="Comment">&#9998;</button>' +
-                '<button type="button" class="we-g" data-act="add" title="Add below">+</button>' +
-                '<button type="button" class="we-g" data-act="menu" title="Block menu">&#8942;</button>' +
-                '</span><span class="we-marker"></span><div class="we-body"></div>';
-              prev ? prev.after(el) : wrap.prepend(el);
-            } else if (prev && el.previousElementSibling !== prev) {
-              prev.after(el);
-            } else if (!prev && wrap.firstElementChild !== el) {
-              wrap.prepend(el);
+              // Adopt the optimistic element this row echoes.
+              const opt = wrap.querySelector(
+                '.we-block[data-optimistic][data-order="' + b.order + '"]');
+              if (opt) {
+                el = opt;
+                el.dataset.block = b.id;
+                el.removeAttribute('data-optimistic');
+                // Flush everything that happened while the create was
+                // in flight: a type turn, inserted wikilinks, typed
+                // content.
+                if (el.__turnType) {
+                  const t = el.__turnType;
+                  el.__turnType = null;
+                  lib.emit(this, 'turnblock', { turn: b.id, turnType: t });
+                }
+                if (el.__links) {
+                  for (const to of el.__links)
+                    lib.emit(this, 'linkadd', { linkFrom: b.id, linkPage: page, linkTo: to });
+                  el.__links = null;
+                }
+                if (el.__dirty) {
+                  el.__dirty = false;
+                  const oce = el.querySelector('.we-ce');
+                  if (oce) this.emitEdit(oce);
+                }
+              }
             }
-            el.className = 'we-block we-' + b.type;
+            if (!el) {
+              el = this.buildBlock(b.id, b.type);
+              prev ? prev.after(el) : wrap.prepend(el);
+            } else if (prev && backReal(el) !== prev) {
+              prev.after(el);
+            } else if (!prev) {
+              let first = wrap.firstElementChild;
+              while (first && first.hasAttribute('data-optimistic')) first = first.nextElementSibling;
+              if (first !== el) wrap.prepend(el);
+            }
+            if (el.__expectType === b.type) el.__expectType = null;
+            const type = (el.__expectType &&
+              performance.now() - (el.__expectTypeAt || 0) < 5000) ? el.__expectType : b.type;
+            el.className = 'we-block we-' + type;
             if (this.blockSelIds && this.blockSelIds.has(b.id)) el.classList.add('is-selected');
             el.dataset.order = b.order;
-            el.dataset.type = b.type;
+            el.dataset.type = type;
             const marker = el.querySelector('.we-marker');
             marker.textContent =
-              b.type === 'bulleted' ? '•' : b.type === 'numbered' ? num + '.' : '';
+              type === 'bulleted' ? '•' : type === 'numbered' ? num + '.' : '';
             const body = el.querySelector('.we-body');
-            if (b.type === 'divider') {
+            if (type === 'divider') {
               body.innerHTML = '<hr>';
             } else {
               let ce = body.querySelector('.we-ce');
@@ -980,21 +1040,18 @@ component!:
                 body.innerHTML = '<div class="we-ce" contenteditable="true" spellcheck="true"></div>';
                 ce = body.firstElementChild;
               }
-              // Never clobber the block being typed in; everything
-              // else mirrors the row (remote edits land live).
-              if (document.activeElement !== ce && ce.innerHTML !== b.text) ce.innerHTML = b.text;
+              // Never clobber the block being typed in, nor one whose
+              // local edit is still in flight (until its echo lands or
+              // 5s passes); everything else mirrors the row (remote
+              // edits land live).
+              if (ce.__expect === b.text) ce.__expect = null;
+              const held = ce.__expect && performance.now() - (ce.__expectAt || 0) < 5000;
+              if (document.activeElement !== ce && !held && ce.innerHTML !== b.text) ce.innerHTML = b.text;
             }
             prev = el;
           }
           for (const el of Array.from(wrap.querySelectorAll('.we-block')))
-            if (!seen.has(el.dataset.block)) el.remove();
-          if (this.pendingFocus) {
-            const hit = blocks.find((b) => b.order === this.pendingFocus);
-            if (hit) {
-              const ce = this.ce(hit.id);
-              if (ce) { this.pendingFocus = null; this.place(ce, 'start'); }
-            }
-          }
+            if (!seen.has(el.dataset.block) && !el.hasAttribute('data-optimistic')) el.remove();
         }
         place(ce, at) {
           ce.focus();
@@ -1012,10 +1069,94 @@ component!:
           return r.toString();
         }
         blockOf(node) { return node && node.closest ? node.closest('.we-block') : null; }
-        emitEdit(id, ce) {
+        isOptimistic(el) { return !!(el && el.hasAttribute('data-optimistic')); }
+        buildBlock(id, type) {
+          const el = document.createElement('div');
+          el.dataset.block = id;
+          el.className = 'we-block we-' + type;
+          el.innerHTML =
+            '<span class="we-gut">' +
+            '<button type="button" class="we-g" data-act="comment" title="Comment">&#9998;</button>' +
+            '<button type="button" class="we-g" data-act="add" title="Add below">+</button>' +
+            '<button type="button" class="we-g" data-act="menu" title="Block menu">&#8942;</button>' +
+            '</span><span class="we-marker"></span><div class="we-body">' +
+            '<div class="we-ce" contenteditable="true" spellcheck="true"></div></div>';
+          return el;
+        }
+        // Optimistically insert a block after `anchor` (or append when
+        // the page has none): the element appears and takes the caret
+        // NOW; render() adopts the engine's row into it when the
+        // createblock echo lands.
+        insertBlock(anchor, type, html) {
           const lib = globalThis.__wikiLib;
-          // See createAt: an empty payload would be dropped.
-          lib.emit(this, 'edit', { edit: id, editText: ce.innerHTML || '<br>' });
+          const wrap = this.querySelector('.we-blocks');
+          const next = anchor ? anchor.nextElementSibling : null;
+          const order = lib.between(anchor ? anchor.dataset.order : '',
+            next ? next.dataset.order : '');
+          const el = this.buildBlock('opt:' + order, type);
+          el.setAttribute('data-optimistic', '');
+          el.dataset.order = order;
+          el.dataset.type = type;
+          if (type === 'bulleted') el.querySelector('.we-marker').textContent = '•';
+          anchor ? anchor.after(el) : wrap.append(el);
+          const ce = el.querySelector('.we-ce');
+          if (html) ce.innerHTML = html;
+          this.place(ce, 'start');
+          // '' would be dropped by the event reader (empty string =
+          // blank = omit), killing the whole command; <br> is the
+          // canonical empty contenteditable value.
+          lib.emit(this, 'createblock', {
+            blockPage: this.page, blockOrder: order, blockType: type,
+            blockText: ce.innerHTML || '<br>', time: Date.now() });
+          return el;
+        }
+        // Change a block's type, deferring the command when the block's
+        // create is still in flight (no entity to turn yet); the local
+        // class/type flip makes the conversion feel instant either way.
+        turnBlock(el, type) {
+          const lib = globalThis.__wikiLib;
+          el.className = 'we-block we-' + type;
+          el.dataset.type = type;
+          // Hold the new type against stale row echoes, same as __expect
+          // holds text (see render).
+          el.__expectType = type;
+          el.__expectTypeAt = performance.now();
+          if (this.isOptimistic(el)) {
+            el.__turnType = type;
+          } else {
+            lib.emit(this, 'turnblock', { turn: el.dataset.block, turnType: type });
+          }
+        }
+        // Optimistically remove a block: the element goes away now and
+        // the row is skipped until its retraction lands. A block whose
+        // create is still in flight has no entity to retract yet —
+        // cancel it by order and retract the row when it arrives.
+        removeBlock(el) {
+          const lib = globalThis.__wikiLib;
+          if (this.isOptimistic(el)) {
+            this.canceled.add(el.dataset.order);
+          } else {
+            lib.emit(this, 'deleteblock', { deleteBlock: el.dataset.block });
+            this.deleted.add(el.dataset.block);
+          }
+          el.remove();
+        }
+        emitEdit(ce) {
+          const lib = globalThis.__wikiLib;
+          const el = this.blockOf(ce);
+          // No entity to edit until the create echoes back; hold the
+          // content and flush on adoption (see render).
+          if (this.isOptimistic(el)) { el.__dirty = true; return; }
+          // See insertBlock: an empty payload would be dropped.
+          const payload = ce.innerHTML || '<br>';
+          // Remember what we sent so a stale row echo can't clobber
+          // the local content while this edit is in flight.
+          ce.__expect = payload;
+          ce.__expectAt = performance.now();
+          // The block id is read at emit time, never captured earlier:
+          // a deferred emit may fire after adoption swapped the
+          // optimistic id for the engine's.
+          lib.emit(this, 'edit', { edit: el.dataset.block, editText: payload });
         }
         clearBlockSel() {
           if (this.blockSelIds) {
@@ -1104,58 +1245,35 @@ component!:
           if (g) {
             const el = this.blockOf(g);
             const id = el.dataset.block;
-            if (g.dataset.act === 'add') this.createAfter(el, 'text', '');
+            if (g.dataset.act === 'add') this.insertBlock(el, 'text', '');
             else if (g.dataset.act === 'comment')
               window.dispatchEvent(new CustomEvent('wiki:compose', { detail: { block: id, page: this.page } }));
             else if (g.dataset.act === 'menu') this.openMenu(el, 'block');
             return;
           }
           if (e.target.closest('.we-append')) {
-            const lb = globalThis.__wikiLib.blocks(this.page);
-            this.createAt(globalThis.__wikiLib.after(lb), 'text', '');
+            const wrap = this.querySelector('.we-blocks');
+            this.insertBlock(wrap ? wrap.lastElementChild : null, 'text', '');
           }
           if (!e.target.closest('.we-menu')) this.closeMenu();
-        }
-        createAt(order, type, text) {
-          const lib = globalThis.__wikiLib;
-          this.pendingFocus = order;
-          // '' would be dropped by the event reader (empty string =
-          // blank = omit), killing the whole command; <br> is the
-          // canonical empty contenteditable value.
-          lib.emit(this, 'createblock', {
-            blockPage: this.page, blockOrder: order, blockType: type,
-            blockText: text || '<br>', time: Date.now() });
-        }
-        createAfter(el, type, text) {
-          const lib = globalThis.__wikiLib;
-          const next = el.nextElementSibling;
-          this.createAt(lib.between(el.dataset.order, next ? next.dataset.order : ''), type, text);
         }
         onInput(e) {
           const ce = e.target.closest ? e.target.closest('.we-ce') : null;
           if (!ce) return;
           const el = this.blockOf(ce);
-          const id = el.dataset.block;
           const pre = this.preCaret(ce);
           // Markdown prefixes (a trailing space commits them).
           const plain = ce.textContent;
           const md = [[/^#\s$/, 'h1'], [/^##\s$/, 'h2'], [/^###\s$/, 'h3'],
-            [/^[-*]\s$/, 'bulleted'], [/^1[.)]\s$/, 'numbered']];
+            [/^[-*]\s$/, 'bulleted'], [/^1[.)]\s$/, 'numbered'],
+            [/^---$/, 'divider']];
           for (const [re, type] of md) {
             if (re.test(plain) && el.dataset.type === 'text') {
-              const lib = globalThis.__wikiLib;
               ce.innerHTML = '';
-              lib.emit(this, 'turnblock', { turn: id, turnType: type });
-              lib.emit(this, 'edit', { edit: id, editText: '<br>' });
+              this.turnBlock(el, type);
+              this.emitEdit(ce);
               return;
             }
-          }
-          if (/^---$/.test(plain) && el.dataset.type === 'text') {
-            const lib = globalThis.__wikiLib;
-            ce.innerHTML = '';
-            lib.emit(this, 'turnblock', { turn: id, turnType: 'divider' });
-            lib.emit(this, 'edit', { edit: id, editText: '<br>' });
-            return;
           }
           // Menus: `/` filter and `[[` link lookup, from caret text.
           const slash = pre.match(/(?:^|\s)\/([a-z0-9]*)$/i);
@@ -1164,13 +1282,13 @@ component!:
           else if (slash) this.openMenu(el, 'slash', slash[1]);
           else this.closeMenu();
           clearTimeout(this.__t);
-          this.__t = setTimeout(() => this.emitEdit(id, ce), 350);
+          this.__t = setTimeout(() => this.emitEdit(ce), 350);
         }
         onBlur(e) {
           const ce = e.target.closest ? e.target.closest('.we-ce') : null;
           if (ce) {
             clearTimeout(this.__t);
-            this.emitEdit(this.blockOf(ce).dataset.block, ce);
+            this.emitEdit(ce);
             return;
           }
           if (e.target.classList && e.target.classList.contains('we-title')) {
@@ -1190,7 +1308,10 @@ component!:
             }
             if (!mod && (e.key === 'Backspace' || e.key === 'Delete')) {
               e.preventDefault();
-              for (const id of this.blockSelIds) lib.emit(this, 'deleteblock', { deleteBlock: id });
+              for (const id of this.blockSelIds) {
+                const bel = this.querySelector('.we-block[data-block="' + id + '"]');
+                if (bel) this.removeBlock(bel);
+              }
               this.clearBlockSel();
               const s = window.getSelection(); if (s) s.removeAllRanges();
               return;
@@ -1207,7 +1328,6 @@ component!:
           const ce = e.target.closest ? e.target.closest('.we-ce') : null;
           if (!ce) return;
           const el = this.blockOf(ce);
-          const id = el.dataset.block;
           if (this.menu && ['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(e.key)) {
             e.preventDefault();
             this.navMenu(e.key);
@@ -1215,24 +1335,36 @@ component!:
           }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            const pre = this.preCaret(ce);
-            const full = ce.textContent;
-            const tail = full.slice(pre.length);
             // Keep list type across the split; everything else splits
             // to a plain text block.
             const type = ['bulleted', 'numbered'].includes(el.dataset.type)
               ? el.dataset.type : 'text';
-            ce.textContent = pre;
+            // Split the DOM at the caret — a Range, not a text slice,
+            // so inline markup (wikilinks) survives on both halves —
+            // and move the caret into the new block synchronously.
+            const sel = window.getSelection();
+            let tailHtml = '';
+            if (sel.rangeCount) {
+              if (!sel.isCollapsed) sel.deleteFromDocument();
+              const cur = sel.getRangeAt(0);
+              const r = document.createRange();
+              r.setStart(cur.endContainer, cur.endOffset);
+              r.setEnd(ce, ce.childNodes.length);
+              const d = document.createElement('div');
+              d.appendChild(r.extractContents());
+              tailHtml = d.innerHTML;
+            }
+            if (!ce.firstChild) ce.innerHTML = '<br>';
             clearTimeout(this.__t);
-            this.emitEdit(id, ce);
-            this.createAfter(el, type, lib.esc(tail));
+            this.emitEdit(ce);
+            this.insertBlock(el, type, tailHtml);
           } else if (e.key === 'Backspace') {
             const pre = this.preCaret(ce);
             if (pre === '') {
               const prev = el.previousElementSibling;
               if (ce.textContent === '') {
                 e.preventDefault();
-                lib.emit(this, 'deleteblock', { deleteBlock: id });
+                this.removeBlock(el);
                 if (prev) {
                   const pce = prev.querySelector('.we-ce');
                   if (pce) this.place(pce, 'end');
@@ -1240,11 +1372,19 @@ component!:
               } else if (prev && prev.querySelector('.we-ce')) {
                 e.preventDefault();
                 const pce = prev.querySelector('.we-ce');
-                const merged = (pce.innerHTML === '<br>' ? '' : pce.innerHTML) + ce.innerHTML;
-                lib.emit(this, 'edit', { edit: prev.dataset.block, editText: merged });
-                lib.emit(this, 'deleteblock', { deleteBlock: id });
-                pce.innerHTML = merged;
-                this.place(pce, 'end');
+                // Merge at a marker so the caret lands at the join
+                // point, then strip the marker before emitting.
+                pce.innerHTML = (pce.innerHTML === '<br>' ? '' : pce.innerHTML)
+                  + '<span data-join></span>' + ce.innerHTML;
+                pce.focus();
+                const j = pce.querySelector('[data-join]');
+                const r = document.createRange();
+                r.setStartBefore(j); r.collapse(true);
+                const s = window.getSelection();
+                s.removeAllRanges(); s.addRange(r);
+                j.remove();
+                this.emitEdit(pce);
+                this.removeBlock(el);
               }
             }
           }
@@ -1271,7 +1411,9 @@ component!:
                 { act: 'delete', arg: '', label: 'Delete' }]);
           }
           if (!items.length) { this.closeMenu(); return; }
-          this.menu = { block: el.dataset.block, kind, index: 0 };
+          // Hold the element, not its id: adoption may swap the id
+          // between opening the menu and picking an item.
+          this.menu = { el, kind, index: 0 };
           menu.innerHTML = items.map((it, i) =>
             '<div class="we-mi' + (i === 0 ? ' is-hot' : '') + '" data-menu-act="' + it.act +
             '" data-arg="' + it.arg + '">' + lib.esc(it.label) + '</div>').join('');
@@ -1299,34 +1441,44 @@ component!:
           const state = this.menu;
           this.closeMenu();
           if (!state || !item) return;
-          const el = this.querySelector('.we-block[data-block="' + state.block + '"]');
+          const el = state.el && state.el.isConnected ? state.el : null;
           const ce = el && el.querySelector('.we-ce');
           const act = item.dataset.menuAct, arg = item.dataset.arg;
+          if (!el) return;
           if (act === 'turn') {
             if (ce && state.kind === 'slash')
               ce.innerHTML = ce.innerHTML.replace(/(?:^|\s)\/[a-z0-9]*$/i, '');
             if (arg === 'divider' && ce) ce.innerHTML = '';
-            lib.emit(this, 'turnblock', { turn: state.block, turnType: arg });
-            if (ce) this.emitEdit(state.block, ce);
+            this.turnBlock(el, arg);
+            if (ce) this.emitEdit(ce);
           } else if (act === 'link') {
             const target = lib.pages().find((p) => p.id === arg);
             if (ce && target) {
               ce.innerHTML = ce.innerHTML.replace(/\[\[[^\]]*$/,
                 '<a class="wikilink" data-page="' + arg + '">' + lib.esc(target.title) + '</a>&nbsp;');
               this.place(ce, 'end');
-              this.emitEdit(state.block, ce);
-              lib.emit(this, 'linkadd', { linkFrom: state.block, linkPage: this.page, linkTo: arg });
+              this.emitEdit(ce);
+              if (this.isOptimistic(el)) {
+                // Defer the backlink fact until the block exists.
+                (el.__links = el.__links || []).push(arg);
+              } else {
+                lib.emit(this, 'linkadd', {
+                  linkFrom: el.dataset.block, linkPage: this.page, linkTo: arg });
+              }
             }
           } else if (act === 'delete') {
-            lib.emit(this, 'deleteblock', { deleteBlock: state.block });
+            this.removeBlock(el);
           } else if (act === 'up' || act === 'down') {
+            // An unadopted block's order key is its adoption identity;
+            // re-keying it would orphan the pending create. Skip.
+            if (this.isOptimistic(el)) return;
             const sib = act === 'up' ? el.previousElementSibling : el.nextElementSibling;
             if (sib) {
               const beyond = act === 'up' ? sib.previousElementSibling : sib.nextElementSibling;
               const a = act === 'up' ? (beyond ? beyond.dataset.order : '') : sib.dataset.order;
               const b = act === 'up' ? sib.dataset.order : (beyond ? beyond.dataset.order : '');
               lib.emit(this, 'moveblock', {
-                move: state.block, moveOrder: lib.between(a, b) });
+                move: el.dataset.block, moveOrder: lib.between(a, b) });
             }
           }
         }
