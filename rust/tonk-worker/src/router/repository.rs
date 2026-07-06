@@ -1103,11 +1103,15 @@ async fn remove_replica_from_profile(
 }
 
 /// Delete a space's local storage: its IndexedDB database (archive,
-/// memory, credential, certificate object stores) and its OPFS blob
-/// subtree. The names are the storage loader's `Directory::Current`
-/// mapping for a repository space (see dialog-storage's IndexedDb and
-/// FileSystem providers): the database is named exactly the routing
-/// key, the blobs live under `current/<key>`.
+/// memory, credential, certificate object stores) and, best-effort, an
+/// OPFS blob subtree at `current/<key>` — the path dialog-storage's
+/// FileSystem provider would use under its `Directory::Current`
+/// mapping, if a `WebSpace` wired one up. At the currently pinned
+/// dialog-storage revision it doesn't: the web space keeps everything
+/// in the IndexedDB database, so the OPFS removal below is a
+/// forward-compatible no-op that quietly settles via its `catch` when
+/// the directory doesn't exist. The database name is exactly the
+/// routing key.
 ///
 /// Inline JS rather than web-sys: `deleteDatabase` and recursive
 /// `removeEntry` have no plumbing here, and the whole operation is two
@@ -3335,6 +3339,15 @@ mod tests {
         use tonk_schema::prelude::DidExt as _;
 
         let (_app, state, _key) = fresh_repo("test-remove-self").await;
+
+        // The harness never runs the worker boot path, so seed the
+        // self-replica record the assertion below expects.
+        {
+            let tonk = state.read().await;
+            super::bootstrap_profile_meta(&tonk)
+                .await
+                .expect("bootstrap profile meta");
+        }
 
         let profile_did = {
             let tonk = state.read().await;
