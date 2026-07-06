@@ -32,7 +32,7 @@ logic is split out so it can be unit-tested natively.
 ## Top-bar and form controls
 
 - **`<tonk-share>`** renders an icon button that, on click, resolves the repo from
-  the nearest `<tonk-repository>` ancestor and dispatches a bubbling, composed
+  the nearest `with` ancestor and dispatches a bubbling, composed
   `tonk:share` `CustomEvent` carrying `{ repo }` for the app shell to handle.
 - **`<tonk-invite>`** mints an artifact-scoped invite link via
   `POST /api/repository/{repo}/invite` (with an artifact-targeted `base_url`,
@@ -40,7 +40,7 @@ logic is split out so it can be unit-tested natively.
   is stored: the link's fragment is a private-key seed, so re-clicking mints a
   fresh one.
 - **`<tonk-sync-state>`** is the background-sync status pill and pause/resume
-  button in one. It resolves repo/branch from `<tonk-repository>` / `<tonk-branch>`
+  button in one. It resolves repo/branch from the nearest `with="branch@repo"`
   ancestors, reads the `sync/status` route, and shows `synced`, `syncing`, or
   `paused`. Clicking flips the per-repo `tonk:auto-sync:{repo}` `localStorage`
   preference; for a branch with no upstream it instead reveals an "Enable sync"

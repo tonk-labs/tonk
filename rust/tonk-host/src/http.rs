@@ -1,10 +1,10 @@
 //! Low-level HTTP / SSE primitives the host uses to talk to
 //! the worker.
 //!
-//! These functions are the fetch-transport path. The
-//! bridge-transport path (via `globalThis.tonk`) lives in
-//! [`crate::bridge`]; [`crate::sse::open_sse`] picks the right
-//! one at runtime.
+//! These functions are the transport, everywhere: in a sealed guest
+//! `window.fetch` is the portal bootstrap's override, which relays
+//! each host-relative request to the outer frame and streams the
+//! response back.
 
 use bytes::BytesMut;
 use futures::StreamExt as _;
@@ -13,7 +13,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use wasm_streams::ReadableStream;
-use web_sys::{AbortController, Headers, Request, RequestInit, Response, Window, window};
+use web_sys::{AbortController, Headers, RequestInit, Response, Window, window};
 
 use crate::error::{ErrorDetail, ErrorKind};
 use crate::ready;
@@ -54,10 +54,14 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
+    // Fetch the relative URL as a STRING, not a `Request` — a `Request`
+    // resolves `url` against `document.baseURI` at construction, turning the
+    // host-relative path absolute; inside a sealed guest the overridden
+    // `window.fetch` relays only host-relative strings reliably (the
+    // absolute form needs the bridge context's origin, which races the
+    // `ready` envelope). See `post_site_to`.
     let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+    let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
     let resp: Response = resp_value
@@ -207,12 +211,14 @@ pub(crate) async fn frame_stream(
     init.set_body(&JsValue::from_str(body));
     init.set_signal(Some(&abort.signal()));
 
-    let request = Request::new_with_str_and_init(url, &init).map_err(|e| {
-        ErrorDetail::new(ErrorKind::Network, format!("Request construction: {e:?}"))
-    })?;
-
+    // Fetch the relative URL as a STRING, not a `Request` — a `Request`
+    // resolves `url` against `document.baseURI` at construction, turning the
+    // host-relative path absolute; inside a sealed guest the overridden
+    // `window.fetch` relays only host-relative strings reliably (the
+    // absolute form needs the bridge context's origin, which races the
+    // `ready` envelope). See `post_site_to`.
     let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+    let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
     let resp: Response = resp_value
@@ -349,10 +355,14 @@ pub(crate) async fn post_text(
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
+    // Fetch the relative URL as a STRING, not a `Request` — a `Request`
+    // resolves `url` against `document.baseURI` at construction, turning the
+    // host-relative path absolute; inside a sealed guest the overridden
+    // `window.fetch` relays only host-relative strings reliably (the
+    // absolute form needs the bridge context's origin, which races the
+    // `ready` envelope). See `post_site_to`.
     let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+    let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
     let resp: Response = resp_value

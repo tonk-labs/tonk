@@ -33,8 +33,8 @@
 //! [`PortalState`] and posts `ready { context }` back. The per-port
 //! dispatcher then translates each inbound envelope into the existing
 //! `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events on the
-//! `<tonk-portal>` element, which bubble through the routing ancestors
-//! to `<tonk-host>`. Subscription frames arrive back through the
+//! `<tonk-portal>` element, which bubble to the installed host on the
+//! document. Subscription frames arrive back through the
 //! portal's `reset` / `error` methods (the same seam `<tonk-display>`
 //! uses) and are posted to the iframe as `subscribe-event` /
 //! `subscribe-error` envelopes.
@@ -45,6 +45,7 @@ use std::rc::Rc;
 
 use js_sys::{Object, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
+use tonk_host::location::{Allow, Location};
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -72,14 +73,18 @@ pub(crate) struct PortalState {
     /// The current port's `onmessage` dispatcher, kept alive for the
     /// port's lifetime. Replaced on each handshake.
     _dispatcher: Option<Closure<dyn FnMut(MessageEvent)>>,
-    /// Whether this portal may relay a guest-supplied per-query repository
-    /// route (cross-repo reads). A **privilege of the trusted portal element**,
-    /// set host-side at construction — NOT something the guest can assert.
-    /// `<tonk-fab-portal>` sets it; the generic `<tonk-portal>` leaves it
-    /// `false`, so a synced/untrusted content guest's forwarded route is
-    /// ignored and it stays pinned to its handshake context. See
-    /// `handle_query` / `forwarded_route`.
-    cross_repo: bool,
+    /// The portal's own routing context (its `with`). Relayed guest
+    /// operations with no forwarded route are pinned to it explicitly;
+    /// `allow`'s `self` entry resolves to it.
+    with: Option<Location>,
+    /// Which locations this portal permits its guest to reach. A
+    /// **privilege of the trusted portal element**, set host-side at
+    /// construction — NOT something the guest can assert. `<tonk-site>`
+    /// derives it from its `allow` attribute; `<tonk-fab-portal>` grants
+    /// `*`; the generic `<tonk-portal>` grants `self`, so a
+    /// synced/untrusted content guest's forwarded route is denied with a
+    /// typed error. See `forwarded_route`.
+    allow: Allow,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -102,14 +107,16 @@ impl PortalState {
             subs: BTreeMap::new(),
             port: None,
             _dispatcher: None,
-            cross_repo: false,
+            with: None,
+            allow: Allow::none(),
         }
     }
 
-    /// Grant this portal the cross-repo relay privilege. Called once, host-side,
-    /// by the trusted `<tonk-fab-portal>` element during `connect_portal`.
-    pub(crate) fn set_cross_repo(&mut self, cross_repo: bool) {
-        self.cross_repo = cross_repo;
+    /// Set this portal's routing context and reach. Called once, host-side,
+    /// by the trusted portal element during `connect_portal`.
+    pub(crate) fn set_route(&mut self, with: Option<Location>, allow: Allow) {
+        self.with = with;
+        self.allow = allow;
     }
 
     /// Cancel and forget every live subscription. Dropping each
@@ -130,17 +137,13 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
-  // Merge an optional per-call routing context ({space,branch,profile}) into an
-  // envelope. The guest's <tonk-host> proxy passes the space/branch/profile its
-  // in-guest <tonk-repository>/<tonk-branch> ancestors resolved. The host
-  // honors it ONLY for a privileged (cross-repo) portal; for a normal portal
-  // it is ignored, so this is always safe to send.
+  // Merge an optional per-call routing context ({with}) into an envelope.
+  // The guest relay passes the `branch@repo` location its in-guest `with`
+  // ancestry resolved. The host parses it and honors it ONLY when the
+  // portal's `allow` permits it (denied with a typed error otherwise), so
+  // this is always safe to send.
   function withRoute(extra,ctx){
-    if(ctx){
-      if(ctx.space){ extra.space=ctx.space; }
-      if(ctx.branch){ extra.branch=ctx.branch; }
-      if(ctx.profile){ extra.profile=ctx.profile; }
-    }
+    if(ctx&&ctx.with){ extra.with=ctx.with; }
     return extra;
   }
   // The request-context headers every relayed /api fetch carries, so the SW can
@@ -172,8 +175,8 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
     transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
-    // {document, transact}; the parent relays it to the host's real <tonk-host>
-    // consumer, which performs the typed evaluate and returns its parsed result.
+    // {document, transact}; the parent relays it to the installed host's
+    // consumer path, which performs the typed evaluate and returns its parsed result.
     evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
     // Navigate the HOST page: the opaque guest can't touch parent.location
     // and has no router, so a link click posts its href here and the parent
@@ -1066,7 +1069,7 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
 
     let ready = Object::new();
     set_v1(&ready, "ready");
-    let _ = Reflect::set(&ready, &"context".into(), &build_context(host));
+    let _ = Reflect::set(&ready, &"context".into(), &build_context(host, state));
     let _ = port.post_message(&ready);
 }
 
@@ -1089,7 +1092,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&data),
-            "fetch" => handle_host_fetch(&port, &data),
+            "fetch" => handle_host_fetch(&state, &port, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -1108,7 +1111,13 @@ fn handle_query(
         Ok(b) => b,
         Err(msg) => return post_error(port, "query-error", &id, &msg),
     };
-    let (space, branch, profile) = forwarded_route(state, data);
+    let (space, branch, profile) = match forwarded_route(state, data) {
+        Ok(route) => route,
+        Err(denied) => {
+            tonk_common::log!("portal query {}", denied.message());
+            return post_error(port, "query-error", &id, &denied.message());
+        }
+    };
     let host = host.clone();
     let port = port.clone();
     spawn_local(async move {
@@ -1127,30 +1136,68 @@ fn handle_query(
     });
 }
 
-/// The guest-supplied per-query `(space, branch)` route, honored ONLY for a
-/// privileged (`cross_repo`) portal. For a normal portal this returns
-/// `(None, None)` — the relayed route is ignored and the query stays pinned to
-/// the portal's handshake/ancestor context. The privilege is the trusted
-/// portal element's, set host-side (`PortalState::cross_repo`); a guest can
-/// forward a route but cannot grant itself the privilege to have it honored.
+/// A forwarded route the portal refuses to relay. `Denied` is
+/// deliberately a distinct variant rather than a collapse to `None`: it
+/// is the seam for a future capability-request flow, where an un-listed
+/// request prompts to extend `allow` rather than simply failing.
+#[derive(Debug)]
+enum Refused {
+    /// The forwarded `with` did not parse.
+    Malformed {
+        spec: String,
+        error: tonk_host::location::ParseError,
+    },
+    /// The forwarded route parsed but is not in the portal's `allow`.
+    Denied { requested: Location },
+}
+
+impl Refused {
+    fn message(&self) -> String {
+        match self {
+            Refused::Malformed { spec, error } => {
+                format!("malformed forwarded with {spec:?}: {error}")
+            }
+            Refused::Denied { requested } => {
+                format!("denied: route {requested} is not permitted by this site's allow")
+            }
+        }
+    }
+}
+
+/// Resolve the route for a relayed guest operation.
+///
+/// - No forwarded route → the portal's own `with` (the pinned default).
+/// - A forwarded route (the guest's resolved `with` context) → honored
+///   only if this portal's `allow` permits it; otherwise a typed
+///   [`Denied`], which the caller posts back as an error envelope —
+///   never a silent coercion to the pinned context.
+///
+/// The privilege is the trusted portal element's, set host-side
+/// (`PortalState::set_route`); a guest can forward a route but cannot
+/// grant itself the reach to have it honored.
 fn forwarded_route(
     state: &Rc<RefCell<PortalState>>,
     data: &JsValue,
-) -> (Option<String>, Option<String>, bool) {
-    if !state.borrow().cross_repo {
-        return (None, None, false);
-    }
-    let space = get_str(data, "space").filter(|s| !s.is_empty());
-    let branch = get_str(data, "branch").filter(|s| !s.is_empty());
-    let profile = get_bool(data, "profile");
-    (space, branch, profile)
-}
+) -> Result<(Option<String>, Option<String>, bool), Refused> {
+    let s = state.borrow();
 
-/// Read a boolean field from an envelope, defaulting to `false`.
-fn get_bool(data: &JsValue, key: &str) -> bool {
-    Reflect::get(data, &JsValue::from_str(key))
-        .map(|v| v.is_truthy())
-        .unwrap_or(false)
+    let Some(spec) = get_str(data, "with").filter(|w| !w.is_empty()) else {
+        // No forwarded route: pin to the portal's own context, explicitly —
+        // there are no ambient DOM ancestors to fall back on.
+        return Ok(match &s.with {
+            Some(own) => tonk_host::route_of(own),
+            None => (None, None, false),
+        });
+    };
+
+    let requested: Location = spec
+        .parse()
+        .map_err(|error| Refused::Malformed { spec, error })?;
+    if s.allow.permits(&requested) {
+        Ok(tonk_host::route_of(&requested))
+    } else {
+        Err(Refused::Denied { requested })
+    }
 }
 
 fn handle_transact(
@@ -1163,7 +1210,13 @@ fn handle_transact(
         return;
     };
     let request = Reflect::get(data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    let (space, branch, profile) = forwarded_route(state, data);
+    let (space, branch, profile) = match forwarded_route(state, data) {
+        Ok(route) => route,
+        Err(denied) => {
+            tonk_common::log!("portal transact {}", denied.message());
+            return post_error(port, "transact-error", &id, &denied.message());
+        }
+    };
     let host = host.clone();
     let port = port.clone();
     spawn_local(async move {
@@ -1182,11 +1235,11 @@ fn handle_transact(
     });
 }
 
-/// Relay an `evaluate` envelope to the host's real `<tonk-host>` consumer, which
+/// Relay an `evaluate` envelope to the installed host's consumer path, which
 /// performs the typed evaluate (POST `/evaluate?transact=`) and returns the
-/// parsed JSON result. The guest's inspector dispatches `tonk-evaluate`; its
-/// proxy host relays here, so the inspector uses the same host consumer API as
-/// the in-page editor — no direct HTTP, no hand-rolled response types.
+/// parsed JSON result. The guest's inspector dispatches `tonk-evaluate`; the
+/// guest relay forwards here, so the inspector uses the same host consumer API
+/// as the in-page editor — no direct HTTP, no hand-rolled response types.
 fn handle_evaluate(host: &Element, port: &MessagePort, data: &JsValue) {
     let Some(id) = get_str(data, "id") else {
         return;
@@ -1220,7 +1273,13 @@ fn handle_subscribe(
         Ok(b) => b,
         Err(msg) => return post_error(port, "subscribe-error", &id, &msg),
     };
-    let (space, branch, profile) = forwarded_route(state, data);
+    let (space, branch, profile) = match forwarded_route(state, data) {
+        Ok(route) => route,
+        Err(denied) => {
+            tonk_common::log!("portal subscribe {}", denied.message());
+            return post_error(port, "subscribe-error", &id, &denied.message());
+        }
+    };
 
     let tag = {
         let mut s = state.borrow_mut();
@@ -1269,15 +1328,15 @@ fn handle_unsubscribe(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
 
 /// Navigate the host page to `href`. The sealed guest can't touch its
 /// parent's location, so a link click inside it posts the href here and the
-/// trusted parent performs the real navigation. `window.location.assign`
-/// (rather than a router push) so the in-page router re-resolves the route.
+/// trusted parent performs the navigation — as a client-side route change
+/// (`pushState` + `popstate`), never a reload: the top `<tonk-site>` re-routes
+/// its path in place and the running guest re-renders via its `tonk:site`
+/// subscription.
 fn handle_navigate(data: &JsValue) {
     let Some(href) = get_str(data, "href").filter(|h| !h.is_empty()) else {
         return;
     };
-    if let Some(location) = window().map(|w| w.location()) {
-        let _ = location.assign(&href);
-    }
+    tonk_host::navigate_to(&href);
 }
 
 /// Perform a same-origin fetch on the host and stream the response back. The
@@ -1292,8 +1351,13 @@ fn handle_navigate(data: &JsValue) {
 /// round-trip through wasm. The guest rebuilds a real streaming `Response`
 /// from those, so its overridden `window.fetch` is faithful (`.text()`,
 /// `.blob()`, `.arrayBuffer()`, `.body` all work) and binary-safe.
+///
+/// Branch data-plane paths are gated by this portal's `with`/`allow`
+/// before the fetch runs — with the guest's IO riding plain `fetch`,
+/// this relay IS the reach chokepoint, for the elements' requests and
+/// for raw guest `fetch()` calls alike.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
+fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
     let Some(id) = get_str(data, "id") else {
         return;
     };
@@ -1303,6 +1367,19 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
     if !path.starts_with('/') || path.starts_with("//") {
         return post_error(port, "fetch-error", &id, "path must be host-relative");
     };
+    if let Some(requested) = data_plane_location(&path, state) {
+        let s = state.borrow();
+        let permitted = s
+            .with
+            .as_ref()
+            .is_some_and(|own| own.same_reach(&requested))
+            || s.allow.permits(&requested);
+        if !permitted {
+            let denied = Refused::Denied { requested };
+            tonk_common::log!("portal fetch {}", denied.message());
+            return post_error(port, "fetch-error", &id, &denied.message());
+        }
+    }
     // The guest forwards the full request so POST query/subscribe/transact work,
     // not just GET. Build the `RequestInit` (method, headers, body) and fetch the
     // bare relative path as a STRING — never a `Request`, which would resolve the
@@ -1322,6 +1399,48 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
     });
+}
+
+/// The branch data-plane location a relayed path targets, if any:
+/// `/api/repository/{repo}/branch/{branch}/…` or
+/// `/api/profile/branch/{branch}/…`. Non-data-plane paths (assets, the
+/// guest bundle, `/api/sync`, repo metadata) return `None` and relay
+/// ungated, as before.
+///
+/// The profile endpoint is singular and its URL carries no name, so a
+/// profile path canonicalizes to the portal's own profile name when the
+/// portal is profile-pinned, else the worker's default (`tonk`).
+fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<Location> {
+    use tonk_host::location::Repo;
+    if let Some(rest) = path.strip_prefix("/api/repository/") {
+        let mut segments = rest.split('/');
+        let repo = segments.next().filter(|s| !s.is_empty())?;
+        if segments.next() != Some("branch") {
+            return None;
+        }
+        let branch = segments.next().filter(|s| !s.is_empty())?;
+        return Some(Location {
+            repo: Repo::Named(repo.to_owned()),
+            branch: Some(branch.to_owned()),
+        });
+    }
+    if let Some(rest) = path.strip_prefix("/api/profile/branch/") {
+        let branch = rest.split('/').next().filter(|s| !s.is_empty())?;
+        let name = state
+            .borrow()
+            .with
+            .as_ref()
+            .and_then(|own| match &own.repo {
+                Repo::Profile(name) => Some(name.clone()),
+                Repo::Named(_) => None,
+            })
+            .unwrap_or_else(|| "tonk".to_owned());
+        return Some(Location {
+            repo: Repo::Profile(name),
+            branch: Some(branch.to_owned()),
+        });
+    }
+    None
 }
 
 /// Build a `Request` for a relayed guest fetch from the envelope's
@@ -1692,13 +1811,12 @@ fn read_descriptor(host: &Element) -> Option<String> {
 /// Build the `context` object (`{ this, model, origin, repo, branch }`) the
 /// iframe receives in its `ready` envelope. `this`/`model` come from the
 /// host's attributes; `origin` is the host page's real origin (the opaque
-/// guest's is `"null"`); `repo`/`branch` come from the portal's
-/// `<tonk-repository>`/`<tonk-branch>` ancestors — those routing elements
-/// live OUTSIDE the iframe, so a guest control that would normally resolve
-/// its repo via `closest("tonk-repository")` reads it from the context
+/// guest's is `"null"`); `repo`/`branch` come from the portal's `with`
+/// context — which lives OUTSIDE the iframe, so a guest control that would
+/// normally resolve its repo via a `with` ancestor reads it from the context
 /// instead. Anything needing a same-origin URL or the scoped repo reads it
 /// from `window.tonk.context` rather than the DOM/`window.location`.
-fn build_context(host: &Element) -> Object {
+fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
     let model = host.get_attribute("model").unwrap_or_default();
@@ -1727,20 +1845,20 @@ fn build_context(host: &Element) -> Object {
         .as_ref()
         .and_then(|l| l.hash().ok())
         .unwrap_or_default();
-    let repo = host
-        .closest("tonk-repository")
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute("name"))
-        .unwrap_or_default();
-    let branch = host
-        .closest("tonk-branch")
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute("name"))
+    let (repo, branch, with) = state
+        .borrow()
+        .with
+        .as_ref()
+        .map(|with| {
+            (
+                with.space().unwrap_or_default().to_owned(),
+                with.effective_branch().to_owned(),
+                with.to_string(),
+            )
+        })
         .unwrap_or_default();
     // The host's per-tab `site` entity (`site:<uuid>`). The guest's data queries
-    // are ultimately issued by the host's `<tonk-host>` over HTTP, which stamps
+    // are ultimately issued by the installed host over HTTP, which stamps
     // THIS site on `X-Tonk-Site` — so the SW keys this tab's `tonk:site` facts by
     // it, not by the guest's own `guest:…` id. Guest content that renders the
     // routing indirection binds `entity` to this so it resolves the facts the SW
@@ -1754,6 +1872,9 @@ fn build_context(host: &Element) -> Object {
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
+    // The pinned context as one `branch@repo` location: the guest host's
+    // fallback route for consumers with no `with` of their own.
+    let _ = Reflect::set(&context, &"with".into(), &JsValue::from_str(&with));
     let _ = Reflect::set(&context, &"site".into(), &JsValue::from_str(&site));
     context
 }
@@ -1901,9 +2022,101 @@ mod tests {
         "count": { "the": "counter/count", "as": "UnsignedInteger", "cardinality": "one" }
     }}"#;
 
-    // --- FakeHost: a stand-in `<tonk-host>` ancestor ----------------
+    // --- forwarded_route: the allow chokepoint -------------------------
 
-    /// A minimal stand-in for `<tonk-host>`: a container that answers the
+    /// A portal state pinned to `with` and granting `allow`.
+    fn routed_state(with: Option<&str>, allow: &str) -> Rc<RefCell<PortalState>> {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        state.borrow_mut().set_route(
+            with.map(|w| w.parse().expect("with parses")),
+            allow.parse().expect("allow parses"),
+        );
+        state
+    }
+
+    /// An envelope carrying (only) a forwarded `with` route.
+    fn route_envelope(with: Option<&str>) -> JsValue {
+        let data = Object::new();
+        if let Some(with) = with {
+            let _ = Reflect::set(&data, &"with".into(), &JsValue::from_str(with));
+        }
+        data.into()
+    }
+
+    #[dialog_common::test]
+    fn it_pins_an_unrouted_operation_to_the_portals_with() {
+        let state = routed_state(Some("meta@profile:tonk"), "*");
+        let route = forwarded_route(&state, &route_envelope(None)).expect("pinned route");
+        assert_eq!(route, (None, Some("meta".into()), true));
+
+        let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
+        let route = forwarded_route(&state, &route_envelope(None)).expect("pinned route");
+        assert_eq!(
+            route,
+            (Some("did:key:zA".into()), Some("main".into()), false)
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_honors_a_forwarded_route_the_allow_lists() {
+        let state = routed_state(Some("meta@profile:tonk"), "*");
+        let route =
+            forwarded_route(&state, &route_envelope(Some("did:key:zB"))).expect("honored route");
+        assert_eq!(route, (Some("did:key:zB".into()), None, false));
+
+        // The sealed shape: allow lists exactly the portal's own location,
+        // and a bare-repo request normalizes to the same reach.
+        let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
+        let route = forwarded_route(&state, &route_envelope(Some("did:key:zA")))
+            .expect("own reach honored");
+        assert_eq!(route, (Some("did:key:zA".into()), None, false));
+    }
+
+    #[dialog_common::test]
+    fn it_denies_a_forwarded_route_outside_the_allow() {
+        let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
+        let refused = forwarded_route(&state, &route_envelope(Some("main@did:key:zEve")))
+            .expect_err("off-repo route must be refused");
+        assert!(
+            refused.message().starts_with("denied:"),
+            "expected a typed denial, got: {}",
+            refused.message(),
+        );
+        // Another branch of the SAME repo is still outside the allow.
+        let refused = forwarded_route(&state, &route_envelope(Some("draft@did:key:zA")))
+            .expect_err("off-branch route must be refused");
+        assert!(refused.message().starts_with("denied:"));
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_a_malformed_forwarded_route() {
+        let state = routed_state(Some("main@did:key:zA"), "*");
+        let refused = forwarded_route(&state, &route_envelope(Some("main@")))
+            .expect_err("malformed route must be refused");
+        assert!(
+            refused.message().starts_with("malformed"),
+            "expected a malformed refusal, got: {}",
+            refused.message(),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_denies_every_forwarded_route_for_an_unpinned_portal() {
+        // A portal with no `with` of its own (and thus `Allow::none()`)
+        // relays nothing the guest asks for.
+        let state = routed_state(None, "*");
+        // `*` still honors — the grant is the caller's choice…
+        assert!(forwarded_route(&state, &route_envelope(Some("did:key:zB"))).is_ok());
+        // …but the generic-portal default (no with → none) denies all.
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let refused = forwarded_route(&state, &route_envelope(Some("did:key:zB")))
+            .expect_err("default portal must deny forwarded routes");
+        assert!(refused.message().starts_with("denied:"));
+    }
+
+    // --- FakeHost: a stand-in installed host --------------------------
+
+    /// A minimal stand-in for the installed host: a container that answers the
     /// consumer events the relay dispatches with canned data, captures
     /// the live subscription's consumer + tag, and records cancellation.
     struct FakeHost {
@@ -2164,7 +2377,7 @@ mod tests {
 
     /// A host-shaped subscription frame: `Vec<Conclusion>` serialized
     /// with `serde-wasm-bindgen` (which renders maps as JS `Map`s), as
-    /// `<tonk-host>` delivers them.
+    /// the installed host delivers them.
     fn host_frame(this: &str, count: i128) -> JsValue {
         use ipld_core::ipld::Ipld;
         let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();

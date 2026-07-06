@@ -21,10 +21,27 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use tonk_host::location::{Allow, Location};
 use web_sys::{Element, HtmlElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::shared::{connect_portal, install_method_shims, reload_portal};
+
+/// Parse an optional `with` attribute off a portal element. A malformed
+/// value is logged and treated as absent rather than failing the mount —
+/// the portal then runs sealed on the ambient context.
+pub(crate) fn portal_with(this: &HtmlElement) -> Option<Location> {
+    let value = this
+        .get_attribute("with")
+        .filter(|v| !v.is_empty() && !v.contains('{'))?;
+    match value.parse() {
+        Ok(location) => Some(location),
+        Err(error) => {
+            tonk_common::log!("tonk-portal: malformed with={value:?}: {error}");
+            None
+        }
+    }
+}
 
 /// The custom element. Holds the shared [`PortalState`]; `None` until
 /// `connected_callback` builds it.
@@ -45,10 +62,15 @@ impl CustomElement for TonkPortal {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // `false`: a generic content portal renders synced/untrusted markup,
-        // so it must NOT be able to escape its handshake repo context. A
-        // guest-forwarded route is ignored for this portal.
-        connect_portal(this, &self.inner, false, |iframe| {
+        // An optional `with` pins the portal's context; a malformed value is
+        // logged and treated as absent (the portal stays on the ambient
+        // context). The allow list is exactly the pinned context (or
+        // nothing): a generic content portal renders synced/untrusted
+        // markup, so it must NOT be able to escape its pinned context — a
+        // guest-forwarded off-context route is denied.
+        let with = portal_with(this);
+        let allow = with.clone().map(Allow::only).unwrap_or_else(Allow::none);
+        connect_portal(this, &self.inner, with, allow, |iframe| {
             // The iframe always fills its container. `flex: 1` + `align-self:
             // stretch` make it fill a flex-column host (the display-route layout)
             // without needing a definite-height ancestor for `height: 100%`.

@@ -92,6 +92,7 @@ web-sys = { workspace = true, features = [
     "ServiceWorkerGlobalScope",
     "WorkerGlobalScope",
     "WorkerLocation",
+    "WorkerNavigator",
 ] }
 web-time = { workspace = true }
 

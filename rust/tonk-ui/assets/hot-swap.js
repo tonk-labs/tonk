@@ -242,13 +242,17 @@
 
       /* HIDDEN at rest: the whole pill scales to nothing (the conjure).
          A hover-zone behind it (z-index 0) holds the hover in the corner
-         so the pill (z-index 1) scales back and stays clickable. */
+         so the pill (z-index 1) scales back and stays clickable. The zone
+         hugs the TRUE corner (negative offsets cancel the .notification
+         margin) and stays within the 16px gutter the FAB never enters —
+         any bigger and it blankets the FAB's bottom-right dock, eating
+         its drag pointerdowns. */
       .notification.hide .pill { transform: scale(0); position: relative; z-index: 1; }
       .notification.hide::after {
         content: "";
         position: absolute;
-        bottom: 0; right: 0;
-        width: 8em; height: 3em;
+        bottom: -10px; right: -10px;
+        width: 16px; height: 16px;
         pointer-events: all;
         z-index: 0;
       }
@@ -416,21 +420,23 @@
 
   // Re-seed by re-evaluating the library document through the page's
   // own routing context, not a guessed repo/branch. Each mounted
-  // `<tonk-branch>` carries its resolved space/branch; dispatching the
-  // `tonk-evaluate` event on it bubbles to the `<tonk-host>` ancestor,
-  // which routes the document to exactly the branch that element's
-  // views read. Re-asserting is idempotent (stable entity URIs), so
-  // only the edits land.
+  // `with="branch@repo"` element carries its resolved context;
+  // dispatching the `tonk-evaluate` event on it bubbles to the
+  // installed host on the document, which routes the document to
+  // exactly the branch that element's views read. Re-asserting is
+  // idempotent (stable entity URIs), so only the edits land.
   //
-  // If several branches are mounted, every one is re-seeded — each is
+  // If several contexts are mounted, every one is re-seeded — each is
   // a distinct context a view might be rendering against.
   const reseed = async (library) => {
-    const branches = [...document.querySelectorAll("tonk-branch")]
+    const branches = [...document.querySelectorAll("[with]")]
+      .filter((el) => !el.getAttribute("with").includes("{"))
     if (branches.length === 0) {
-      // No branch mounted in this view (e.g. the repo landing page) —
-      // there is nothing to re-seed here, which is not a failure. The
-      // fetched library is cached; the next view with a branch picks it
-      // up. Return quietly rather than flagging an error.
+      // No routing context mounted in this view (e.g. the repo landing
+      // page) — there is nothing to re-seed here, which is not a
+      // failure. The fetched library is cached; the next view with a
+      // context picks it up. Return quietly rather than flagging an
+      // error.
       return
     }
 
@@ -445,9 +451,9 @@
       branch.dispatchEvent(event)
       // The host calls preventDefault() and writes detail.result (a
       // promise) when it handles the event; an unprevented event means
-      // no <tonk-host> ancestor caught it.
+      // no installed host caught it.
       if (!event.defaultPrevented || !detail.result) {
-        throw new Error("tonk-evaluate not handled (no <tonk-host> ancestor)")
+        throw new Error("tonk-evaluate not handled (no tonk host installed)")
       }
       const result = await detail.result
       console.debug("[hot-swap] reseed", {
@@ -741,11 +747,11 @@
   }
 
   // Wait for at least one routing context to mount, so a load-time
-  // reseed has a `<tonk-branch>` to dispatch on. Returns false if none
+  // reseed has a `with=` element to dispatch on. Returns false if none
   // appears within the window (e.g. a page with no tonk views).
   const awaitBranch = async () => {
     for (let attempt = 0; attempt < 40; attempt++) {
-      if (document.querySelector("tonk-branch")) return true
+      if (document.querySelector("[with]")) return true
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
     return false

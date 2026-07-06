@@ -197,7 +197,8 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
 /// detection, no timers. The listener sits on the `<tonk-fab>` host and
 /// routes by the event target:
 ///
-/// - CIRCLE cap: `click` folds/expands the bar.
+/// - CIRCLE cap: `click` folds/expands the bar; alt/option-`click` toggles
+///   pause ⇄ resume of sync (the cap's ring already shows the state).
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -209,7 +210,11 @@ fn attach_gestures(element: &HtmlElement) {
             return;
         };
         if t.closest(".fab__cap-l").ok().flatten().is_some() {
-            toggle_telescope(&el_click);
+            if e.alt_key() {
+                submit_pause_form(&el_click);
+            } else {
+                toggle_telescope(&el_click);
+            }
         } else if t
             .closest(".fab__menu, .fab__share-menu")
             .ok()
@@ -229,6 +234,27 @@ fn attach_gestures(element: &HtmlElement) {
         .add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref())
         .ok();
     on_click.forget();
+}
+
+/// Toggle pause ⇄ resume: submit the hidden pause form (`tonk:view/fab-pause`,
+/// mounted space-scoped by the FAB template), whose `onsubmit=tonk:pause-sync`
+/// binding fires the toggle command against the space's content branch.
+/// `requestSubmit()` (not `submit()`) so the form's `submit` event — which the
+/// command delegation listens for — actually fires. The cap's
+/// `<ui-sync-status>` ring reflects the result via its live subscription.
+fn submit_pause_form(element: &HtmlElement) {
+    let Some(form) = element
+        .query_selector("#fab-pause-sync-form")
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    if let Ok(request_submit) = Reflect::get(form.as_ref(), &"requestSubmit".into())
+        && let Ok(request_submit) = request_submit.dyn_into::<Function>()
+    {
+        let _ = request_submit.call0(form.as_ref());
+    }
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -921,7 +947,7 @@ fn restore_position(this: &HtmlElement) {
         "predicate": {
             "description": "Persisted FAB dock (profile-meta claim).",
             "with": {
-                "dock": { "the": "xyz.tonk.fab/dock", "cardinality": "one", "as": "entity" }
+                "dock": { "the": "xyz.tonk.fab/dock", "cardinality": "one", "as": "Entity" }
             }
         }
     });

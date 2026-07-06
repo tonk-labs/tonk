@@ -1168,13 +1168,13 @@ mod tests {
             host.inner_html(),
         );
 
-        // Each row carries its own `with=<this>` debug attribute and the
+        // Each row carries its own `data-this=<this>` debug attribute and the
         // per-conclusion `{name}` resolved against that conclusion. Rows
         // are keyed in sorted-`this` order (zAlice < zBob).
         let first = items.item(0).unwrap();
         let first_el = first.dyn_ref::<Element>().expect("element");
         assert_eq!(
-            first_el.get_attribute("with").as_deref(),
+            first_el.get_attribute("data-this").as_deref(),
             Some("did:key:zAlice")
         );
         assert_eq!(first_el.text_content().as_deref(), Some("Alice"));
@@ -1182,7 +1182,7 @@ mod tests {
         let second = items.item(1).unwrap();
         let second_el = second.dyn_ref::<Element>().expect("element");
         assert_eq!(
-            second_el.get_attribute("with").as_deref(),
+            second_el.get_attribute("data-this").as_deref(),
             Some("did:key:zBob")
         );
         assert_eq!(second_el.text_content().as_deref(), Some("Bob"));
@@ -1203,7 +1203,7 @@ mod tests {
         let only = items.item(0).unwrap();
         let only_el = only.dyn_ref::<Element>().expect("element");
         assert_eq!(
-            only_el.get_attribute("with").as_deref(),
+            only_el.get_attribute("data-this").as_deref(),
             Some("did:key:zAlice")
         );
         assert_eq!(only_el.text_content().as_deref(), Some("Alice"));

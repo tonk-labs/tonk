@@ -3,7 +3,7 @@ name = "tonk-host"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "<tonk-host>, <tonk-repository>, <tonk-branch> — IO ownership and routing context for tonk custom elements."
+description = "IO ownership and `with` routing context for tonk custom elements."
 license.workspace = true
 
 [lib]
@@ -40,6 +40,9 @@ web-sys = { workspace = true, features = [
   "HtmlElement",
   "Location",
   "MessageEvent",
+  "MutationObserver",
+  "MutationObserverInit",
+  "MutationRecord",
   "Navigator",
   "Node",
   "ReadableStream",

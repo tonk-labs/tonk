@@ -18,10 +18,9 @@
 //! spec), so a backgrounded tab self-limits without any explicit gating. Where
 //! `requestIdleCallback` is unavailable (Safari) it falls back to `setTimeout`.
 //!
-//! Only the real top-page `<tonk-host>` installs this. The sealed guest runs a
-//! proxy host that relays over `window.tonk`; its fetches already reach the top
-//! page (and thus `on_fetch`) through the bridge, so one heartbeat per tab is
-//! enough.
+//! Only the top page's installed host runs this. The sealed guest installs a
+//! relay over `window.tonk`; its fetches already reach the top page (and thus
+//! `on_fetch`) through the bridge, so one heartbeat per tab is enough.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -34,49 +33,47 @@ use web_sys::{RequestInit, VisibilityState, window};
 const SYNC_ENDPOINT: &str = "/api/sync";
 
 /// How long after an idle poll before arming the next one, on a visible tab.
-/// Twice the SW drain debounce: the debounce is the real rate-limiter, this
-/// just keeps the pump primed.
-const IDLE_REARM_MS: i32 = 1_000;
+/// The heartbeat only covers the "tab open but making no requests" gap, so a
+/// relaxed cadence suffices — refocus and reconnect poll immediately via
+/// their own listeners, and any real traffic schedules the SW drain anyway.
+/// (Was 1s, which read as non-stop `/api/sync` chatter in the network panel.)
+const IDLE_REARM_MS: i32 = 10_000;
 
-/// A handle owning the installed idle-sync listeners and loop. Dropping it (or
-/// calling [`remove`](IdleSync::remove)) stops the `requestIdleCallback` loop
-/// and detaches the `visibilitychange` / `online` listeners.
+/// A handle owning the installed idle-sync listeners and loop. Held for the
+/// page's lifetime by the installed host.
 pub(crate) struct IdleSync {
-    /// Flips true on teardown; the self-rescheduling idle loop checks it and
-    /// stops instead of arming another callback.
-    disposed: Rc<Cell<bool>>,
-    /// Kept alive so the listeners stay registered; detached in [`remove`].
-    visibility: Closure<dyn FnMut()>,
-    online: Closure<dyn FnMut()>,
+    /// Kept so the self-rescheduling idle loop's teardown flag stays
+    /// reachable should teardown ever return; never flipped today (the host
+    /// installs once for the page's lifetime).
+    _disposed: Rc<Cell<bool>>,
+    /// Kept alive so the listeners stay registered.
+    _visibility: Closure<dyn FnMut()>,
+    _online: Closure<dyn FnMut()>,
+    _offline: Closure<dyn FnMut()>,
 }
 
-impl IdleSync {
-    /// Detach the event listeners and stop the idle loop.
-    pub(crate) fn remove(self) {
-        self.disposed.set(true);
-        if let Some(win) = window() {
-            let doc = win.document();
-            if let Some(doc) = doc {
-                let _ = doc.remove_event_listener_with_callback(
-                    "visibilitychange",
-                    self.visibility.as_ref().unchecked_ref(),
-                );
-            }
-            let _ = win.remove_event_listener_with_callback(
-                "online",
-                self.online.as_ref().unchecked_ref(),
-            );
-        }
-    }
-}
-
-/// Fire one `POST /api/sync`, fire-and-forget. Failures are ignored: a missed
-/// poll just means the next one (or ordinary traffic) reconciles.
-fn poll() {
+/// Fire one `POST /api/sync?why=<trigger>`, fire-and-forget. `why` names the
+/// trigger (`idle` / `visible` / `online` / `offline`) so the network panel —
+/// and the SW's drain-cause log — show what initiated each poll. Failures
+/// are ignored: a missed poll just means the next one (or ordinary traffic)
+/// reconciles.
+///
+/// NOT guarded on connectivity here: the request is SW-served (never
+/// reaches the network), and the `offline` trigger exists precisely to
+/// reach the SW while offline so it stamps `sync:offline`. The steady
+/// triggers guard at their call sites via [`online`].
+fn poll(why: &str) {
     let Some(win) = window() else { return };
     let init = RequestInit::new();
     init.set_method("POST");
-    let _ = win.fetch_with_str_and_init(SYNC_ENDPOINT, &init);
+    let _ = win.fetch_with_str_and_init(&format!("{SYNC_ENDPOINT}?why={why}"), &init);
+}
+
+/// Whether the browser reports connectivity. The idle loop and refocus
+/// polls skip while offline — there is no upstream to pull from, and the
+/// `online`/`offline` listeners poll on each transition.
+fn online() -> bool {
+    window().map(|w| w.navigator().on_line()).unwrap_or(true)
 }
 
 /// Arm the next idle poll via `requestIdleCallback`, re-arming itself until the
@@ -95,7 +92,9 @@ fn arm(disposed: Rc<Cell<bool>>) {
         if disposed_for_cb.get() {
             return;
         }
-        poll();
+        if online() {
+            poll("idle");
+        }
         // Space the next idle poll by IDLE_REARM_MS, then arm another idle
         // callback. `requestIdleCallback` can fire back-to-back on a busy
         // visible tab, so this timer is what bounds the idle cadence.
@@ -150,8 +149,9 @@ pub(crate) fn install() -> Option<IdleSync> {
             }
             if let Some(doc) = window().and_then(|w| w.document())
                 && doc.visibility_state() == VisibilityState::Visible
+                && online()
             {
-                poll();
+                poll("visible");
             }
         }) as Box<dyn FnMut()>)
     };
@@ -163,19 +163,35 @@ pub(crate) fn install() -> Option<IdleSync> {
         let disposed = disposed.clone();
         Closure::wrap(Box::new(move || {
             if !disposed.get() {
-                poll();
+                poll("online");
             }
         }) as Box<dyn FnMut()>)
     };
     win.add_event_listener_with_callback("online", online.as_ref().unchecked_ref())
         .ok()?;
 
+    // One poll when connectivity is LOST: the request is SW-served, so it
+    // still lands, and it is the only thing that wakes the SW to stamp
+    // `sync:offline` — with the steady polls paused, no other request
+    // would reach it until connectivity returns.
+    let offline = {
+        let disposed = disposed.clone();
+        Closure::wrap(Box::new(move || {
+            if !disposed.get() {
+                poll("offline");
+            }
+        }) as Box<dyn FnMut()>)
+    };
+    win.add_event_listener_with_callback("offline", offline.as_ref().unchecked_ref())
+        .ok()?;
+
     // Kick the steady idle loop.
     arm(disposed.clone());
 
     Some(IdleSync {
-        disposed,
-        visibility,
-        online,
+        _disposed: disposed,
+        _visibility: visibility,
+        _online: online,
+        _offline: offline,
     })
 }

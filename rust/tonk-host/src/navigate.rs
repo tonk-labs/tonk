@@ -1,11 +1,11 @@
-//! Main-thread navigate provider for `<tonk-host>`.
+//! Main-thread navigate provider, installed with the host.
 //!
 //! A worker-side command (e.g. `tonk:join` on success) can't perform a
 //! navigation itself: the service worker has no `window`, and a transient
 //! command never lands in a branch a subscription could observe. So the
 //! worker posts a `{ type: "navigate", href }` message to the originating
-//! client, and this listener — installed on `navigator.serviceWorker` by
-//! `<tonk-host>` — performs the redirect with `window.location.assign`.
+//! client, and this listener — installed on `navigator.serviceWorker` at
+//! host install — performs the redirect with `window.location.assign`.
 //!
 //! This is the page-side half of Elm's `pushUrl`, routed through the
 //! platform's worker→page channel rather than through branch state. It is
@@ -17,22 +17,10 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CustomEvent, CustomEventInit, MessageEvent, window};
 
-/// A handle owning the installed `message` listener. Dropping it (or calling
-/// [`remove`](NavigateListener::remove)) detaches the listener.
+/// A handle owning the installed `message` listener, held for the page's
+/// lifetime by the installed host.
 pub(crate) struct NavigateListener {
-    closure: Closure<dyn FnMut(MessageEvent)>,
-}
-
-impl NavigateListener {
-    /// Detach the listener from `navigator.serviceWorker`.
-    pub(crate) fn remove(self) {
-        if let Some(container) = service_worker_container() {
-            let _ = container.remove_event_listener_with_callback(
-                "message",
-                self.closure.as_ref().unchecked_ref(),
-            );
-        }
-    }
+    _closure: Closure<dyn FnMut(MessageEvent)>,
 }
 
 /// Install a `navigator.serviceWorker` `message` listener that handles
@@ -56,7 +44,7 @@ pub(crate) fn install() -> Option<NavigateListener> {
     container
         .add_event_listener_with_callback("message", closure.as_ref().unchecked_ref())
         .ok()?;
-    Some(NavigateListener { closure })
+    Some(NavigateListener { _closure: closure })
 }
 
 /// Read `href` out of a `{ type: "navigate", href }` message, or `None` when
@@ -104,7 +92,10 @@ fn dispatch_committed() {
 /// updates the tab's site in the overlay, whose subscription re-renders the
 /// view — the route change propagates as a data change, not a page load. Falls
 /// back to a real `location.assign` only if history isn't available.
-fn navigate_to(href: &str) {
+///
+/// Public: the portal bridge performs a guest's relayed link click through
+/// this too, so an in-guest navigation stays a client-side route change.
+pub fn navigate_to(href: &str) {
     use wasm_bindgen::JsValue;
     let Some(win) = window() else {
         return;

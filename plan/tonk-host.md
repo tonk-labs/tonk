@@ -1,5 +1,11 @@
 # `<tonk-host>` — IO ownership and routing context for tonk elements
 
+> **Status:** superseded by `plan/tonk-routing-attributes.md`. The host is
+> no longer an element: `tonk_host::install()` attaches the operation
+> listeners to `document` at boot, and the `<tonk-repository>` /
+> `<tonk-branch>` annotators are replaced by the `with="branch@repo"`
+> attribute. The event protocol below is unchanged.
+
 ## Problem
 
 Three custom elements (`<tonk-display>`, `<tonk-concept>`,

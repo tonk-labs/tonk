@@ -1,22 +1,24 @@
-//! `<tonk-host>` + `<tonk-repository>` + `<tonk-branch>` — IO
-//! ownership and routing context for tonk custom elements.
+//! IO ownership and `with` routing context for tonk custom
+//! elements.
 //!
-//! See `plan/tonk-host.md` at the repository root for the design.
+//! See `plan/tonk-routing-attributes.md` at the repository root for
+//! the design.
 //!
 //! Architecture:
 //!
-//! - **`<tonk-host>`** owns transport, phase-1 cache, subscription
-//!   dedup, and the registry of live consumer subscriptions.
-//!   Page-level singleton. Lives outside `<Routes>`.
-//! - **`<tonk-repository name="…">`** annotates `detail.space` on
-//!   outbound consumer events as they bubble.
-//! - **`<tonk-branch name="…">`** annotates `detail.branch` on
-//!   outbound consumer events as they bubble.
+//! - **`install()`** — called once at app boot. Attaches the
+//!   operation-event listeners to `document` (the host has no
+//!   element; bubbling consumer events reach the document for
+//!   free), owns the subscription registry, and installs the
+//!   navigate provider, the idle-sync heartbeat, and the `with`
+//!   observer.
+//! - **`with="branch@repo"`** — the routing context, carried on a
+//!   consumer or any ancestor. Resolved at handle time via
+//!   [`resolve_with`]; see [`location`] for the grammar.
 //!
 //! Consumer elements (e.g. `<tonk-display>`) dispatch one of five
-//! operation events on
-//! themselves; the events bubble up through routing elements
-//! (which annotate context) to the host (which performs IO).
+//! operation events on themselves; the events bubble to the
+//! document, where the installed host performs IO.
 //!
 //! Event names: `tonk-subscribe`, `tonk-query`, `tonk-claim`,
 //! `tonk-evaluate`, `tonk-unsubscribe`. All bubble + composed.
@@ -25,9 +27,12 @@
 
 // Target-independent — `ErrorDetail` / `ErrorKind` are plain
 // data types used by both native tests in consumer crates and
-// the wasm-side host element. The event-name constants are
-// likewise pure data.
+// the wasm-side host. The event-name constants are likewise pure
+// data.
 pub mod error;
+// Target-independent — the `branch@repo` / `allow` grammar for the
+// routing attributes. Pure data + parsing, natively testable.
+pub mod location;
 
 /// Event names that form the wire contract between consumers
 /// and the host.
@@ -42,25 +47,20 @@ pub mod events {
     pub const EVALUATE: &str = "tonk-evaluate";
     /// Close a previously-opened subscription.
     pub const UNSUBSCRIBE: &str = "tonk-unsubscribe";
-    /// Dispatched by routing elements (`<tonk-branch>`,
-    /// `<tonk-repository>`) on `attributeChangedCallback`. The host
-    /// catches it and orchestrates a depth-staggered refresh of
-    /// affected subscriptions.
-    pub const CONTEXT_REFRESH: &str = "tonk-context-refresh";
 
     /// All four operation event names. Consumer crates install the
     /// depth annotator on this set.
     pub const OPERATIONS: &[&str] = &[SUBSCRIBE, QUERY, CLAIM, EVALUATE];
 }
 
-// Wasm-only — the actual element implementations, transport,
-// and event-dispatch glue all assume a browser environment.
-#[cfg(target_arch = "wasm32")]
-mod branch;
+// Wasm-only — the installed host, transport, and event-dispatch
+// glue all assume a browser environment.
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consumer;
+#[cfg(target_arch = "wasm32")]
+mod context;
 #[cfg(target_arch = "wasm32")]
 mod depth;
 #[cfg(target_arch = "wasm32")]
@@ -72,15 +72,11 @@ mod idle_sync;
 #[cfg(target_arch = "wasm32")]
 mod navigate;
 #[cfg(target_arch = "wasm32")]
+pub use navigate::navigate_to;
+#[cfg(target_arch = "wasm32")]
 mod ops;
 #[cfg(target_arch = "wasm32")]
-pub use ops::read_context_from_ancestors;
-// LRU for `tonk-query` responses. The production callers live in
-// `host.rs` / `ops.rs` (both wasm-only), but the unit tests run
-// natively via `dialog_common::test`, so the module is also
-// pulled in for `cfg(test)` builds.
-#[cfg(any(target_arch = "wasm32", test))]
-mod query_cache;
+pub use context::{resolve_with, route_of};
 // Service-worker readiness gate. The wasm implementation awaits
 // `globalThis.serviceWorkerActivates`; on native the module
 // exposes the same `wait()` symbol as an immediate no-op so
@@ -91,8 +87,6 @@ pub mod ready;
 #[cfg(target_arch = "wasm32")]
 mod registry;
 #[cfg(target_arch = "wasm32")]
-mod repository;
-#[cfg(target_arch = "wasm32")]
 pub mod sse;
 #[cfg(target_arch = "wasm32")]
 mod url;
@@ -100,27 +94,21 @@ mod url;
 #[cfg(target_arch = "wasm32")]
 pub use depth::{DepthAnnotator, install_depth_annotator};
 
-/// Register all three custom elements with the page.
-/// Idempotent — calling more than once is harmless.
+/// Install the host on the top page: document-level operation
+/// listeners, the navigate provider, the idle-sync heartbeat, and
+/// the `with` observer. Idempotent — calling more than once is
+/// harmless.
 #[cfg(target_arch = "wasm32")]
-pub fn register() {
-    host::register();
-    repository::register();
-    branch::register();
+pub fn install() {
+    host::install();
 }
 
-/// Register ONLY the passive routing annotators — `<tonk-repository>` and
-/// `<tonk-branch>` — without the IO-owning `<tonk-host>`. Idempotent.
-///
-/// These elements do no IO: they merely annotate `detail.space` /
-/// `detail.branch` on outbound operation events as they bubble. The sealed
-/// iframe guest registers its OWN proxy `<tonk-host>` (which relays over
-/// `window.tonk`), so it must NOT register the real `<tonk-host>` here — but it
-/// still needs these annotators so a nested `<tonk-repository name=…>` can
-/// scope a query to another repository. The guest proxy then forwards the
-/// annotated route to the host bridge (honored only for a privileged portal).
+/// Install only the IO surface (operation listeners + the `with`
+/// observer) — the sealed guest's host. IO goes through plain
+/// `fetch`, which the portal bootstrap's override relays to the
+/// outer frame; the top-page-only effects (navigate provider,
+/// idle-sync heartbeat) are skipped. Idempotent.
 #[cfg(target_arch = "wasm32")]
-pub fn register_routing_elements() {
-    repository::register();
-    branch::register();
+pub fn install_io() {
+    host::install_io();
 }

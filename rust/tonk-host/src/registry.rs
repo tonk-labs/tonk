@@ -126,10 +126,4 @@ impl Registry {
             .map(|(id, _)| *id)
             .collect()
     }
-
-    /// Drop all entries. Their abort handles are dropped, which
-    /// cancels every upstream subscription.
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-    }
 }

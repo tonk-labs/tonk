@@ -52,7 +52,7 @@ impl CustomElement for TonkInspectorElement {
             this.set_inner_html(
                 "<div class=\"tonk-inspector\">\
                    <section class=\"error\">no repository in context \
-                   (nest under &lt;tonk-repository&gt;)</section>\
+                   (nest under a with=&quot;branch@repo&quot; element)</section>\
                  </div>",
             );
             return;
@@ -335,25 +335,20 @@ impl NotebookCell {
     }
 }
 
-/// Resolve `(repo, branch)` from the nearest `<tonk-repository>` /
-/// `<tonk-branch>` ancestors. `None` until both are found.
+/// Resolve `(repo, branch)` from the nearest `with="branch@repo"`
+/// ancestor (including `el` itself). `None` when absent, unstamped, or a
+/// profile context (the inspector evaluates against
+/// `/api/repository/{repo}/…`, which a profile location cannot name).
 fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
-    let mut repo: Option<String> = None;
-    let mut branch: Option<String> = None;
-    let mut node = el.parent_element();
-    while let Some(current) = node {
-        let tag = current.tag_name().to_ascii_lowercase();
-        if branch.is_none() && tag == "tonk-branch" {
-            branch = current.get_attribute("name").filter(|s| !s.is_empty());
-        } else if repo.is_none() && tag == "tonk-repository" {
-            repo = current.get_attribute("name").filter(|s| !s.is_empty());
-        }
-        if repo.is_some() && branch.is_some() {
-            break;
-        }
-        node = current.parent_element();
-    }
-    Some((repo?, branch?))
+    let location: tonk_host::location::Location = el
+        .closest("[with]")
+        .ok()
+        .flatten()
+        .and_then(|e| e.get_attribute("with"))
+        .filter(|v| !v.is_empty() && !v.contains('{'))
+        .and_then(|v| v.parse().ok())?;
+    let repo = location.space()?.to_owned();
+    Some((repo, location.effective_branch().to_owned()))
 }
 
 /// Evaluate `document` against the branch via the `<tonk-host>` consumer.

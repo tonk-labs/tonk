@@ -27,6 +27,8 @@ pub use repository::{
 
 mod sync;
 pub use dialog_repository::Revision;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use sync::mark_offline;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };

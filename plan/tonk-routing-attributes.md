@@ -52,15 +52,25 @@ A location is written `<branch>@<repo>`:
 
 - `main@did:key:zAlice` — the `main` branch of Alice's repository.
 - `did:key:zAlice` — a bare repo means that repo's **default branch**.
-- `meta@profile` — `profile` is a **reserved repo token** meaning the
+- `meta@profile:tonk` — a `profile:<name>` repo token means the
   profile-as-repository endpoint (`/api/profile/branch/…`), distinct
-  from any `did:key`. It routes to the profile endpoint, not to a named
-  repository.
+  from any `did:key`. The name (`tonk`, the profile the worker opens)
+  is carried for forward compatibility; the endpoint is singular
+  today. There is no bare `profile` token — it parses as an error
+  pointing at `profile:<name>`. Future: address the profile by its
+  `did:key` like any repository (the top window can learn it at
+  boot), retiring the prefix entirely.
 
-`allow` additionally accepts two reserved tokens:
+`allow` additionally accepts one reserved token:
 
-- `*` — reach anything (the privileged case; today's `cross_repo=true`).
-- `self` — reach exactly this site's own `with` (the sealed case).
+- `*` — reach anything (the privileged case; the old `cross_repo=true`).
+
+The sealed case is the embedder listing the site's own `with`
+explicitly (`allow="main@{id}"` next to `with="main@{id}"`) — the same
+binding wired into two attributes. There is deliberately no `self`
+sentinel: whoever can write `with` can write the same value into
+`allow`, and dropping the sentinel keeps the allow list a plain set of
+locations with nothing to resolve against.
 
 Both attributes parse to a structured form **at connect time**, not
 per-request. A malformed `with`/`allow` is a visible error at mount,
@@ -76,13 +86,13 @@ self-describing.
 
 ```html
 <!-- top / profile site, minted by the host at boot -->
-<tonk-site with="meta@profile" allow="*">…</tonk-site>
+<tonk-site with="meta@profile:tonk" allow="*">…</tonk-site>
 
 <!-- a sealed space site, opened at /space/{id} -->
-<tonk-site with="main@did:key:zAlice" allow="self">…</tonk-site>
+<tonk-site with="main@did:key:zAlice" allow="main@did:key:zAlice">…</tonk-site>
 
 <!-- a nested router site within the same space -->
-<tonk-site with="main@did:key:zAlice" allow="self" path={rest}>…</tonk-site>
+<tonk-site with="main@{id}" allow="main@{id}" path={rest}>…</tonk-site>
 ```
 
 Requiring both eliminates every "what does absence mean on a site"
@@ -96,7 +106,7 @@ required-both rule removes.
 
 `with` and `allow` are **independent**. A nested site inherits nothing
 from its parent: it declares its own `with` and its own `allow`.
-Privilege never leaks downward — a bare-ish `<tonk-site allow="self">`
+Privilege never leaks downward — a site allowing only its own location
 inside a `<tonk-site allow="*">` parent is sealed, even though its
 parent is privileged. Each site re-declares its own reach.
 
@@ -107,11 +117,11 @@ on a consumer (consumers grant no reach) and is not read there.
 
 - **Absent `with`** → inherit the enclosing site's `with`. This is the
   common case: the vast majority of displays in the profile carry no
-  `with` and render against `meta@profile`.
+  `with` and render against `meta@profile:tonk`.
 - **Present `with`** → a *request* for that location, honored only if
   the enclosing site's `allow` permits it. Inside a `allow="*"` profile
-  site the request is honored; inside a sealed `allow="self"` space
-  site the same request is denied.
+  site the request is honored; inside a sealed space site (allow =
+  exactly its own location) the same request is denied.
 
 ```html
 <!-- inherits the enclosing site's context -->
@@ -122,79 +132,116 @@ on a consumer (consumers grant no reach) and is not read there.
 <ui-sync-status with="main@did:key:zBob"></ui-sync-status>
 ```
 
-### `<tonk-host>`
+### `<tonk-host>` — removed entirely
 
-Becomes a boot-time singleton again (its original design intent).
-Installed once at app startup, attached to the document; consumer
-events bubble to it. Removed from every template. The sealed guest
-keeps its own `<tonk-host>` relay proxy (`rust/tonk-guest/src/guest_host.rs`)
-unchanged — the guest still needs an ancestor to catch consumer events
-and relay them over `window.tonk`.
+There is no `<tonk-host>` element at all, not even a boot singleton.
+The element has zero DOM semantics: it is only an ancestor event
+target for the bubbling consumer events, a holder of `HostState`
+(subscription registry + query LRU), and the installer of the
+navigate / idle-sync listeners (both already standalone installs).
+All of that becomes a boot-time `tonk_host::install()`: the operation
+listeners attach to `document` (bubbling events reach it for free),
+state lives in a `thread_local`, and a document-level
+`MutationObserver` on the `with` attribute drives the existing
+depth-staggered subscription refresh (replacing the routing elements'
+`attributeChangedCallback` → `tonk-context-refresh` flow).
+
+The same reasoning removes the guest's `<tonk-host>` relay proxy
+(`rust/tonk-guest/src/guest_host.rs`) — and with it the whole
+per-operation envelope relay. The guest installs the REAL host IO
+surface (`tonk_host::install_io()`, operation listeners + `with`
+observer, no top-page effects): consumer events are serviced in the
+guest document over plain `fetch`/SSE, and the portal bootstrap's
+`window.fetch` override relays each request to the outer frame as
+HTTP. Events never cross the iframe boundary; only HTTP does.
+`window.tonk` remains sugar for app code. A consumer with no `with`
+in its tree falls back to the portal's pinned context, delivered by
+the bridge as `context.with`. `<tonk-host>` then ceases to exist
+everywhere — custom-element registry, templates, and the guest
+content minted by `site_content.rs`.
+
+Consumers resolve their context from the nearest ancestor (including
+self) carrying a `with` attribute, innermost wins; one resolver in
+`tonk-host`, shared by the real host's handlers (reading from
+`event.target` at handle time) and the guest relay's route
+forwarding. This keeps grouped wrappers expressible as a plain
+`<span with="main@{subject}">…</span>` and generalizes
+`tonk-workspace`'s `repo_from_ancestor`.
 
 ## Enforcement
 
 The trust model is unchanged in shape and already shipped; only the
 granularity and the deny behavior change.
 
-- The **guest enforces nothing.** `guest_host` relays the descendant's
-  requested `(space, branch)` verbatim over `window.tonk`. A malicious
-  guest that skipped enforcement would gain nothing, so enforcement in
-  the guest is worthless.
-- The **trusted host side decides.** `PortalState`'s envelope
-  dispatcher receives the relayed request and checks it against the
-  site's `allow` before handing it to the real `<tonk-host>`.
+- The **guest enforces nothing.** Its element IO is plain `fetch`
+  against explicit `/api/…` URLs (built from its `with` resolution or
+  the pinned `context.with`), relayed verbatim; `window.tonk` sugar
+  forwards its resolved location string. A malicious guest that
+  skipped local checks would gain nothing, so enforcement in the
+  guest is worthless.
+- The **trusted host side decides**, at two chokepoints in
+  `rust/tonk-portal/src/bridge.rs`: `handle_host_fetch` gates every
+  relayed branch data-plane URL (`/api/repository/{repo}/branch/…`,
+  `/api/profile/branch/…`) against the portal's `with`/`allow` —
+  covering the elements' fetches and raw guest `fetch()` calls alike —
+  and `forwarded_route` gates the `window.tonk` envelope path the
+  same way.
 
-The single chokepoint is `forwarded_route` in
-`rust/tonk-portal/src/bridge.rs`. Migration:
+Migration at `forwarded_route`:
 
 1. Replace `PortalState.cross_repo: bool` with the parsed `allow`
    list. `connect_portal` (`shared.rs`) takes the `allow` spec instead
    of a `bool`; `<tonk-site>` derives it from its `allow` attribute
    instead of `site.rs:248` passing a hardcoded `true`.
-2. `forwarded_route` matches the requested `(branch, repo)` against the
+2. `forwarded_route` matches the requested location against the
    `allow` list:
-   - request matches an `allow` entry (`*`, `self`==the site's `with`,
-     or an explicit `branch@repo`) → honor it, relay onward.
+   - request matches an `allow` entry (`*` or an explicit
+     `branch@repo`) → honor it, relay onward.
    - request is absent → use the site's own `with` (the pinned
-     default). Unchanged.
-   - request is present but **not** permitted → return a **typed
-     denial**, and `post_error` back over the port so the guest's
-     consumer renders a failure state. This replaces today's silent
-     coercion (`return (None, None, false)`), which serves the pinned
-     context under a mismatched assumption.
+     default), stamped explicitly — there are no ambient DOM
+     ancestors to fall back on.
+   - request is present but **not** permitted (or malformed) → return
+     a **typed refusal**, and `post_error` back over the port so the
+     guest's consumer renders a failure state. This replaces today's
+     silent coercion (`return (None, None, false)`), which serves the
+     pinned context under a mismatched assumption.
 
-The typed denial (`Denied { requested: BranchRepo }`) is deliberately
-not collapsed to `None`: it is the seam for a future *capability
-request* flow, where an un-listed request prompts to extend `allow`
-rather than simply failing. Today it errors; the shape leaves room to
-escalate later without touching the chokepoint again.
+The typed refusal (`Refused::Denied { requested: Location }`) is
+deliberately not collapsed to `None`: it is the seam for a future
+*capability request* flow, where an un-listed request prompts to
+extend `allow` rather than simply failing. Today it errors; the shape
+leaves room to escalate later without touching the chokepoint again.
 
 ### Behavior change to watch
 
 Flipping `connect_portal`'s hardcoded `true` to an `allow`-derived
 value **tightens** every existing site. Today all sites are effectively
-`allow="*"`. After migration, a space site is `allow="self"` and will,
-for the first time, deny a guest that forwards an off-repo route. Land
-the typed-denial path with logging first to surface anything currently
-relying on the silent-coercion pin (there should be nothing, but the
-capability exists today).
+`allow="*"`. After migration, a space site allows only its own
+location and will, for the first time, deny a guest that forwards an
+off-repo route. Land the typed-denial path with logging first to
+surface anything currently relying on the silent-coercion pin (there
+should be nothing, but the capability exists today).
 
 ## Migration
 
-1. **Grammar + parser** — a `Location` (`branch@repo`, with `profile`
-   reserved) and an `Allow` list (`*`, `self`, explicit locations).
-   Parse at connect; error on malformed. Lives host-side (likely
-   `rust/tonk-host` or a shared crate both `tonk-host` and
-   `tonk-portal` depend on).
-2. **`<tonk-host>` singleton** — install once at boot; drop the
-   per-call-site mounts.
+1. **Grammar + parser** — a `Location` (`branch@repo`, with
+   `profile:<name>` for the profile endpoint) and an `Allow` list
+   (`*` or explicit locations). Parse at connect; error on malformed.
+   Lives in `rust/tonk-host/src/location.rs` (target-independent,
+   natively tested).
+2. **De-element `tonk-host`** — `tonk_host::install()` at boot
+   (document listeners + navigate + idle-sync + `with` observer);
+   delete the `TonkHost` element and the guest proxy element (the
+   guest installs its relay on `document` at `start()`); drop the
+   `<tonk-host>` wrapper from `site_content.rs` guest content and
+   every per-call-site mount.
 3. **`<tonk-site with= allow=>`** — read both attributes (required),
    register with `with` as handshake context, pass `allow` to
    `connect_portal`.
 4. **`forwarded_route`** — `allow` match + typed denial + error-back.
 5. **Consumers** — optional `with`; absent inherits, present requests.
-   Fold the annotator behavior onto the consumer (or keep one thin
-   internal annotator that reads `with`).
+   Context resolves via the shared nearest-`[with]`-ancestor resolver
+   at handle time; the bubble-phase annotator elements are deleted.
 6. **Templates** — rewrite `profile.yaml`'s ~8 triples to bare
    consumers (inheriting `meta@profile`) or `with=`-carrying chips;
    rewrite the two `<tonk-site>`-wrapped-in-triple routes to
@@ -205,17 +252,53 @@ capability exists today).
 
 ## Final surface
 
-Three elements, two attributes:
+One routing element, two attributes:
 
 - **`<tonk-site with="…" allow="…">`** — context + reach boundary +
   router + isolation. Both attributes required.
 - **consumers** (`<tonk-display>`, `ui-sync-status`, …) — optional
-  `with`; absent inherits the enclosing site, present is a request
-  gated by that site's `allow`.
-- **`<tonk-host>`** — boot singleton, invisible in templates; guest
-  keeps its relay proxy.
+  `with` (on themselves or a plain wrapper element); absent inherits
+  the enclosing site, present is a request gated by that site's
+  `allow`.
 
-`<tonk-repository>` and `<tonk-branch>` disappear from templates. The
+`<tonk-host>`, `<tonk-repository>`, and `<tonk-branch>` disappear —
+from templates and from the custom-element registry. The host is a
+boot-time `install()`; the guest relay is a document-level listener
+set installed at guest `start()`. The
 enforcement seam (`forwarded_route`) is reused, migrated from an
 all-or-nothing bool to an `allow` ACL, with silent coercion replaced by
 an explicit typed denial that doubles as the future escalation hook.
+
+Also removed in passing: the host's query-response LRU. The reactor
+already multiplexes subscriptions per `(branch, query)` hash — the hot
+path — and the resolved-response cache had an incomplete invalidation
+story (flushed on this page's writes only, never on sync pulls, other
+tabs, or worker-side commands). One-shots are same-machine SW
+round-trips; if a mount stampede ever shows up, reintroduce just the
+in-flight promise-coalescing layer, which is small and staleness-free.
+
+## Future ideas (deliberately not bundled here)
+
+- **Profile by DID.** The `profile:<name>` token exists because the
+  profile endpoint (`/api/profile/branch/…`) is a separate namespace
+  from `/api/repository/{repo}`. If the worker serves the profile
+  repository under its own `did:key` (and the top window reads that
+  DID at boot, e.g. off `GET /api/profile`), the prefix retires and a
+  profile location becomes an ordinary `meta@did:key:…`.
+- **Cross-source `<tonk-display>`.** A display resolves view + model +
+  entity data all against one context. `ui-sync-status` exists only
+  because we could not say "take the concept and view from the
+  profile, subscribe to the data in the target repo". A per-facet
+  source (e.g. `with` for the data subscription, a separate location
+  for view/model resolution) would let a stdlib view render foreign
+  data without a bespoke host element per case.
+- **Data plane on the space URL.** Instead of rewriting a location
+  into `/api/repository/{repo}/branch/{branch}/{query|transact|…}`,
+  send the operation to the space's own URL
+  (`/space/did:key:…/branch/main/`) and let method + content type
+  distinguish query / subscribe / transact (SSE `Accept` already
+  distinguishes subscribe today). Then a location IS a URL prefix,
+  and a `<tonk-site>` resolves its route paths by ordinary URL
+  resolution against its own `with` — no separate rewrite layer.
+  The URL builder (`url.rs`) and the worker route table are the only
+  seams; the `Location` grammar is unchanged by it.

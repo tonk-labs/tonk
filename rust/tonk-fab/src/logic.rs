@@ -236,7 +236,7 @@ pub fn dock_claim_json(dock: Dock) -> Value {
                             "dock": {
                                 "the": "xyz.tonk.fab/dock",
                                 "cardinality": "one",
-                                "as": "entity"
+                                "as": "Entity"
                             }
                         }
                     }

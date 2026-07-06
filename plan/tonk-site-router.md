@@ -1,5 +1,10 @@
 # `<tonk-site>` — a routing portal
 
+> **Status:** shipped, then amended by `plan/tonk-routing-attributes.md` —
+> `<tonk-site>` now carries its own `with="branch@repo"` / `allow="…"`
+> attributes (both required) instead of reading `<tonk-repository>` /
+> `<tonk-branch>` ancestors, which no longer exist.
+
 Converged design from the FAB/de-Leptos redesign discussion. Goal: collapse
 routing, the FAB, and the de-Leptos shell into one recursive element, and shrink
 the SW to a pure data API.

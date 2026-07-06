@@ -4,8 +4,9 @@
 //! carries are covered by a native unit test — `site.rs` itself is
 //! `wasm32`-only.
 
-/// The guest document a `<tonk-site>` renders in its sealed iframe: a
-/// `<tonk-host>` wrapping the `tonk:site` display for `site`.
+/// The guest document a `<tonk-site>` renders in its sealed iframe: the
+/// `tonk:site` display for `site`. (The guest runtime installs its relay
+/// on the document at `start()`, so no wrapper element is needed.)
 ///
 /// The display carries `slot="loading"` / `slot="no-entity"` placeholders.
 /// There is a window (route match + stamp, ~1s) between the iframe booting
@@ -20,12 +21,10 @@
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn guest_content(site: &str) -> String {
     format!(
-        "<tonk-host>\
-         <tonk-display entity='{site}' model='tonk:site'>\
+        "<tonk-display entity='{site}' model='tonk:site'>\
          <div slot='loading' hidden class='site-pending'><wa-spinner></wa-spinner></div>\
          <div slot='no-entity' hidden class='site-pending'><wa-spinner></wa-spinner></div>\
-         </tonk-display>\
-         </tonk-host>"
+         </tonk-display>"
     )
 }
 

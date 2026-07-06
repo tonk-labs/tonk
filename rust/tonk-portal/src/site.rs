@@ -1,30 +1,36 @@
-//! `<tonk-site path="…">` — a sealed routing element.
+//! `<tonk-site with="…" allow="…" path="…">` — the sealed routing element.
 //!
 //! `<tonk-site>` is a portal that routes: it registers a per-tab site for its
-//! path on the branch named by its **ancestor** `<tonk-repository>` /
-//! `<tonk-branch>` context, then renders the matched route inside its own sealed
-//! iframe (reusing the portal machinery). It is the recursive unit of the UI —
-//! the top page mounts one, a space's chrome mounts a nested one for the repo,
-//! and so on; each owns one isolation boundary.
+//! path on the branch its `with` attribute names, then renders the matched
+//! route inside its own sealed iframe (reusing the portal machinery). It is
+//! the recursive unit of the UI — the top page mounts one, a space's chrome
+//! mounts a nested one for the repo, and so on; each owns one isolation
+//! boundary.
+//!
+//! `with` (the context, `branch@repo`) and `allow` (the reach its guest may
+//! ask for: `*`, `self`, or explicit locations) are **both required** — a
+//! site missing or malforming either renders a visible error at connect.
+//! There is no inheritance and no defaulting: every site is fully
+//! self-describing, so privilege never leaks downward.
 //!
 //! Flow on connect (and on navigation):
-//! 1. Resolve `(repository, branch, profile)` from ancestor routing elements and
-//!    the path from the `path` attribute (a nested router) or `window.location`
-//!    (the top page).
-//! 2. `POST /api/{repository/{repo}|profile}/branch/{branch}/site` with the path
-//!    → the SW stamps the tab's `tonk:site` on that branch (matching the path
-//!    against its `route!` table) and returns the `site:<client-id>` entity.
-//! 3. Set the iframe `content` to `<tonk-host><tonk-repository …><tonk-branch …>
-//!    <tonk-display entity={site} model=tonk:site></…>` and bring up the sealed
-//!    iframe via [`connect_portal`]. The guest's `<tonk-display>` subscribes to
-//!    the site and renders the matched `{concept}`; a later route change restamps
-//!    the site, and the subscription re-renders — downward propagation with no
-//!    custom channel.
+//! 1. Parse `with` + `allow`; take the path from the `path` attribute (a
+//!    nested router; the top page's mount keeps it synced to the location).
+//! 2. Assert the transient `tonk:load` claim routed at `with` → the SW
+//!    stamps the tab's `tonk:site` on that branch (matching the path
+//!    against its `route!` table).
+//! 3. Set the iframe `content` to the `tonk:site` display and bring up the
+//!    sealed iframe via [`connect_portal`], passing `with`/`allow` so the
+//!    bridge pins un-routed guest operations and enforces the reach. The
+//!    guest's `<tonk-display>` subscribes to the site and renders the
+//!    matched `{concept}`; a later route change restamps the site, and the
+//!    subscription re-renders — downward propagation with no custom channel.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use tonk_host::location::{Allow, Location};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlElement, HtmlIFrameElement, window};
@@ -50,7 +56,7 @@ impl CustomElement for TonkSite {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["path"]
+        &["path", "with", "allow"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -74,14 +80,17 @@ impl CustomElement for TonkSite {
         old: Option<String>,
         new: Option<String>,
     ) {
-        // Re-resolve on a client-side navigation: the chrome sets/updates/removes
-        // `path` in place when the route's `{rest}` changes (e.g.
-        // `/space/{id}/inspector` → `/space/{id}` removes it), and the `<tonk-site>`
+        // Re-resolve on a client-side navigation or a re-stamped context: the
+        // chrome sets/updates/removes `path` in place when the route's `{rest}`
+        // changes (e.g. `/space/{id}/inspector` → `/space/{id}` removes it), and
+        // a template re-stamp can rewrite `with`/`allow`. The `<tonk-site>`
         // re-asserts `tonk:load` against the same site entity so the live
-        // subscription re-renders. The initial value is handled by
-        // `connected_callback`, so skip the upgrade-time callback (old == None on
-        // first set) to avoid a double render.
-        if name == "path" && old.is_some() && old != new {
+        // subscription re-renders. The initial values are handled by
+        // `connected_callback`, so skip the first-set callback — NOTE the
+        // `custom-elements` JS shim coerces a null `oldValue` to `""`, so a
+        // first set arrives as `Some("")`, never `None`.
+        let first_set = old.as_deref().is_none_or(str::is_empty);
+        if matches!(name.as_str(), "path" | "with" | "allow") && !first_set && old != new {
             resolve_and_render(this, self.inner.clone());
         }
     }
@@ -102,11 +111,73 @@ fn teardown(cell: &StateCell) {
     }
 }
 
-/// Resolve the path + ancestor context, register the site, and bring up the
-/// sealed iframe rendering the matched route. Best-effort: a failed registration
+/// Read and parse a required routing attribute off the site. `Ok(None)`
+/// means an unresolved template placeholder (skip this render — the real
+/// frame re-sets the attribute and re-runs); `Err` is the visible-error
+/// case (missing or malformed).
+fn required_attribute<T: std::str::FromStr>(
+    host: &HtmlElement,
+    name: &str,
+) -> Result<Option<T>, String>
+where
+    T::Err: std::fmt::Display,
+{
+    let Some(value) = host.get_attribute(name).filter(|v| !v.is_empty()) else {
+        return Err(format!("missing required {name} attribute"));
+    };
+    if value.contains('{') {
+        return Ok(None);
+    }
+    value
+        .parse()
+        .map(Some)
+        .map_err(|error| format!("malformed {name}={value:?}: {error}"))
+}
+
+/// Render a visible mount error into the site element. A site missing or
+/// malforming `with`/`allow` must fail loudly at connect — never a silent
+/// deny at query time.
+fn render_site_error(host: &HtmlElement, message: &str) {
+    tonk_common::log!("tonk-site: {message}");
+    host.set_text_content(Some(&format!("tonk-site: {message}")));
+    let _ = host.set_attribute("data-state", "malformed");
+}
+
+/// Resolve the path + the `with`/`allow` attributes, register the site, and
+/// bring up the sealed iframe rendering the matched route. A missing or
+/// malformed `with`/`allow` renders a visible error; a failed registration
 /// leaves the element empty rather than throwing.
 fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     let host = this.clone();
+
+    // Attribute callbacks fire on `setAttribute` even before the element is
+    // connected, i.e. mid-way through the mounter writing the attribute set.
+    // Only a connected site renders; `connected_callback` runs the first
+    // real pass once the element (with all its attributes) is in the tree.
+    if !host.is_connected() {
+        return;
+    }
+
+    // Both routing attributes are REQUIRED: every site is fully
+    // self-describing (no inheritance, no defaulting), so privilege never
+    // leaks downward. An unresolved `{…}` placeholder in either skips this
+    // render; the stamped frame re-sets the attribute and re-runs.
+    let with: Location = match required_attribute(&host, "with") {
+        Ok(Some(with)) => with,
+        Ok(None) => return,
+        Err(message) => return render_site_error(&host, &message),
+    };
+    let allow: Allow = match required_attribute(&host, "allow") {
+        Ok(Some(allow)) => allow,
+        Ok(None) => return,
+        Err(message) => return render_site_error(&host, &message),
+    };
+    // Clear a previous pass's visible error (a re-stamp can heal a
+    // malformed site) so the error text never lingers next to the iframe.
+    if host.get_attribute("data-state").as_deref() == Some("malformed") {
+        host.set_text_content(None);
+        let _ = host.remove_attribute("data-state");
+    }
     // `<tonk-site>` routes the `path` attribute it is given, defaulting to the
     // branch root (`/`) when absent. It NEVER reads `window.location` itself —
     // the top-level mount is given the document path explicitly (by `ui.rs`, which
@@ -140,12 +211,12 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     let site = site_entity(&host);
 
     // Register the site by asserting a transient `tonk:load { this: site, path }`
-    // through the regular transact API. `<tonk-site>` does NOT read any routing
-    // context itself — it dispatches `tonk-claim` on itself and the surrounding
-    // `<tonk-repository>`/`<tonk-branch>` annotate the origin repo/branch ON THE
-    // EVENT (the same mechanism that routes every query/transact); the host
-    // relays it up. The SW's `LoadHandler` matches by the `path` attribute,
-    // matches the route, and stamps `tonk:site` onto `site`.
+    // through the regular transact API. The claim dispatches bare on this
+    // element, so it resolves against the site's own `with` attribute — at
+    // the top page via the installed host, in a guest via the relay's
+    // forwarded route (judged by the enclosing portal's `allow`). The SW's
+    // `LoadHandler` matches `path` against the route table and stamps
+    // `tonk:site` onto `site`.
     let request = load_claim(&site, &path);
     // Defer BOTH the claim and the iframe bring-up off this turn. `resolve_and_render`
     // runs synchronously inside `connected_callback` / `attribute_changed_callback`,
@@ -163,9 +234,18 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // delivers the frame and the content renders. Awaiting the claim's `/transact`
     // round-trip before the bring-up serialized the two — the iframe sat idle for
     // the whole round-trip before it even started booting — so overlap them.
+    // Every resolve rebuilds the sealed iframe. Re-routing IN PLACE (reusing
+    // a live same-reach iframe and letting the guest's `tonk:site`
+    // subscription re-render) would save the guest reboot on navigation, but
+    // it depends on the render diff re-applying attribute bindings on
+    // retained elements — the chrome's nested `<tonk-site with="main@{id}">`
+    // and the FAB's `data-space={id}` are not restamped today, so a
+    // same-route navigation (space A → space B) leaves the old space
+    // rendered. Rebuild until that diff gap is fixed; the navigation itself
+    // is still a client-side pushState, never a page reload.
     let host_for_task = host.clone();
     spawn_local(async move {
-        render_in_iframe(&host_for_task, &cell, &site);
+        render_in_iframe(&host_for_task, &cell, &site, with, allow);
         if let Err(error) =
             tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
         {
@@ -216,18 +296,22 @@ fn load_claim(site: &str, path: &str) -> wasm_bindgen::JsValue {
     JSON::parse(&body).unwrap_or(wasm_bindgen::JsValue::NULL)
 }
 
-/// Build the guest content (`<tonk-host>` + the `tonk:site` display) and bring up
-/// the sealed iframe via [`connect_portal`]. The iframe always renders in
-/// `runtime` mode (the guest needs our element runtime). If an iframe already
-/// exists (a re-resolve), tear it down first so the new content replaces it.
+/// Build the guest content (the `tonk:site` display) and bring up the sealed
+/// iframe via [`connect_portal`]. The iframe always renders in `runtime` mode
+/// (the guest needs our element runtime). If an iframe already exists (a
+/// re-resolve), tear it down first so the new content replaces it.
 ///
-/// The guest content carries NO `<tonk-repository>`/`<tonk-branch>`: the guest's
-/// `<tonk-host>` proxy relays its `<tonk-display>`'s queries up to the parent,
-/// where the surrounding `<tonk-repository>`/`<tonk-branch>` (this `<tonk-site>`'s
-/// own ancestors) annotate them — the same routing every consumer gets. So the
-/// `tonk:site` display resolves against exactly the branch the site was stamped
-/// on, without `<tonk-site>` knowing or injecting that context.
-fn render_in_iframe(host: &HtmlElement, cell: &StateCell, site: &str) {
+/// The guest content carries no routing context of its own: the guest relay
+/// forwards its `<tonk-display>`'s queries up to the parent, where the bridge
+/// pins them to this site's `with`. So the `tonk:site` display resolves
+/// against exactly the branch the site was stamped on.
+fn render_in_iframe(
+    host: &HtmlElement,
+    cell: &StateCell,
+    site: &str,
+    with: Location,
+    allow: Allow,
+) {
     // The display carries slotted placeholders for the pre-stamp window so it
     // shows a quiet spinner instead of flashing its loud `no-entity`
     // concept-mismatch dump while the SW is still stamping `tonk:site`.
@@ -240,25 +324,30 @@ fn render_in_iframe(host: &HtmlElement, cell: &StateCell, site: &str) {
     let _ = host.set_attribute("content", &content);
     let _ = host.set_attribute("runtime", "");
 
-    // `<tonk-site>` is a trusted element we mount with a known repo/branch (or
-    // the profile); its guest queries exactly the branch the site was stamped
-    // on. So it grants the cross-repo relay privilege — the guest's
-    // `<tonk-repository>`/`profile` context is honored when routing its queries
-    // (the containment is the site's branch, not a fixed handshake context).
-    connect_portal(host, cell.as_ref(), true, |iframe: &HtmlIFrameElement| {
-        let style = iframe.style();
-        // `<tonk-site>` itself is `display: contents` (a transparent routing
-        // element), so the iframe sizes against the surrounding layout, not the
-        // element. `100dvh`/`100%` are viewport-/parent-relative so the iframe
-        // fills regardless of nesting (top-level body child, or a flex slot in a
-        // space chrome) instead of collapsing to the iframe's intrinsic ~150px.
-        let _ = style.set_property("width", "100%");
-        let _ = style.set_property("height", "100dvh");
-        let _ = style.set_property("flex", "1 1 auto");
-        let _ = style.set_property("align-self", "stretch");
-        let _ = style.set_property("border", "0");
-        let _ = style.set_property("display", "block");
-    });
+    // The site's parsed `with`/`allow` become the bridge's routing context
+    // and reach: un-routed guest operations are pinned to `with`, and a
+    // forwarded route is honored only if `allow` permits it (typed denial
+    // otherwise).
+    connect_portal(
+        host,
+        cell.as_ref(),
+        Some(with),
+        allow,
+        |iframe: &HtmlIFrameElement| {
+            let style = iframe.style();
+            // `<tonk-site>` itself is `display: contents` (a transparent routing
+            // element), so the iframe sizes against the surrounding layout, not the
+            // element. `100dvh`/`100%` are viewport-/parent-relative so the iframe
+            // fills regardless of nesting (top-level body child, or a flex slot in a
+            // space chrome) instead of collapsing to the iframe's intrinsic ~150px.
+            let _ = style.set_property("width", "100%");
+            let _ = style.set_property("height", "100dvh");
+            let _ = style.set_property("flex", "1 1 auto");
+            let _ = style.set_property("align-self", "stretch");
+            let _ = style.set_property("border", "0");
+            let _ = style.set_property("display", "block");
+        },
+    );
 }
 
 /// Register `<tonk-site>`. Idempotent. Installs the page-level `hello` /

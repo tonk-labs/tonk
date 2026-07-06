@@ -13,9 +13,9 @@
 //! old `<tonk-sync-badge>`, which one-shot-fetched on mount + commit + toggle
 //! (none of which recur on the Hub, so it froze on a stale reading).
 //!
-//! Resolves its space from the nearest `<tonk-repository name=…>` ancestor and
-//! subscribes through that routing context — the same way every consumer
-//! reaches the worker. Read-only: no pause affordance (that stays on the
+//! Resolves its space from its `with="branch@repo"` attribute (or the nearest
+//! `with` ancestor) and subscribes through that routing context — the same way
+//! every consumer reaches the worker. Read-only: no pause affordance (that stays on the
 //! topbar chip). The `.sync` / `.disc` CSS lives in the app stylesheet, so the
 //! disc styles wherever this mounts; the caller sizes it with `font-size`.
 
@@ -26,6 +26,7 @@ use custom_elements::CustomElement;
 use js_sys::{JSON, Reflect};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, window};
 
 use tonk_host::consumer::{self, Subscription};
@@ -53,7 +54,7 @@ pub(crate) struct UiSyncStatus {
 impl CustomElement for UiSyncStatus {
     fn shadow() -> bool {
         // Light DOM: the disc's CSS lives in the app stylesheet, and the
-        // element resolves its `<tonk-repository>` ancestor via `closest`.
+        // element's `with` context resolves through the light tree.
         false
     }
 
@@ -79,24 +80,35 @@ impl CustomElement for UiSyncStatus {
         let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
         *self.reset.borrow_mut() = Some(reset);
 
-        // Subscribe to the sync status at `state:here`, routed through the
-        // `<tonk-repository>` / `<tonk-branch>` ancestors (which annotate the
-        // event with the space repo/branch, like every other consumer).
-        let consumer: Element = this.clone().into();
-        match status_query_body() {
-            Ok(body) => {
-                let tag = JsValue::from_str(SUB_TAG);
-                match consumer::subscribe(&consumer, &body, Some(&tag)) {
-                    Ok(sub) => *self.subscription.borrow_mut() = Some(sub),
-                    Err(err) => {
-                        // No `<tonk-host>` ancestor / dispatch failure: leave
-                        // the pending disc; nothing to subscribe to.
-                        tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+        // Subscribe on a microtask, NOT synchronously: when a render pass
+        // runs inside an outer custom-element reaction, the reaction queue
+        // delivers this callback only after that reaction finishes — by
+        // which time the diff may have detached this element again, and a
+        // dispatch from a detached tree never reaches the document
+        // listeners. By microtask time the DOM has settled; skip if no
+        // longer connected (a real re-connection re-runs this callback).
+        let subscription = self.subscription.clone();
+        let host = this.clone();
+        spawn_local(async move {
+            if !host.is_connected() || subscription.borrow().is_some() {
+                return;
+            }
+            let consumer: Element = host.into();
+            match status_query_body() {
+                Ok(body) => {
+                    let tag = JsValue::from_str(SUB_TAG);
+                    match consumer::subscribe(&consumer, &body, Some(&tag)) {
+                        Ok(sub) => *subscription.borrow_mut() = Some(sub),
+                        Err(err) => {
+                            // Dispatch failure: leave the pending disc;
+                            // nothing to subscribe to.
+                            tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+                        }
                     }
                 }
+                Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
             }
-            Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
-        }
+        });
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -134,21 +146,17 @@ fn status_query_body() -> Result<JsValue, String> {
 /// load, so it's a brief gap, and clearing would flicker.
 fn on_frame(host: &HtmlElement, payload: JsValue) {
     // payload is an array of conclusions: [{ this, fields: { status } }, …].
-    let Some(first) = js_sys::Array::from(&payload)
-        .get(0)
-        .dyn_ref::<JsValue>()
-        .cloned()
-    else {
-        return;
-    };
-    if first.is_undefined() || first.is_null() {
-        return;
-    }
+    let conclusions = js_sys::Array::from(&payload);
+    let first = conclusions.get(0);
     // `conclusion.fields.status` is the status entity (e.g. "sync:idle").
-    let status = Reflect::get(&first, &"fields".into())
-        .ok()
-        .and_then(|fields| Reflect::get(&fields, &"status".into()).ok())
-        .and_then(|s| s.as_string());
+    let status = (!first.is_undefined() && !first.is_null())
+        .then(|| {
+            Reflect::get(&first, &"fields".into())
+                .ok()
+                .and_then(|fields| Reflect::get(&fields, &"status".into()).ok())
+                .and_then(|s| s.as_string())
+        })
+        .flatten();
     if let Some(status) = status {
         paint(host, &status);
     }

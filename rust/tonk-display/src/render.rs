@@ -13,7 +13,7 @@
 //!   keys rows by the conclusion's `this`, clones the repeat element
 //!   (or, when no single element encloses the references, the whole
 //!   fragment), renders the repeat body against that conclusion, and
-//!   stamps `with=<this>` on the clone so the repeat boundary is
+//!   stamps `data-this=<this>` on the clone so the repeat boundary is
 //!   inspectable.
 //!
 //! Inside a repeat row, cardinality-many *subject fields* still iterate
@@ -294,7 +294,7 @@ fn mount_repeat(
             // Whole-fragment repeat — a multi-root fragment with no
             // single enclosing element (e.g. `<h1>{a}</h1><p>{b}</p>`).
             // There is no element to clone-per-conclusion or stamp
-            // `with=` on, so the lead conclusion renders once over the
+            // `data-this=` on, so the lead conclusion renders once over the
             // fragment's own nodes (matching the historical
             // clone-whole-fragment contract). Single-root templates
             // never reach here: `this_repeat_root` returns the root
@@ -456,7 +456,7 @@ fn update_repeat(
                 &member,
                 &BTreeMap::new(),
             );
-            stamp_with(&row.root, &member.this);
+            stamp_this(&row.root, &member.this);
         } else if let Some(new_row) = build_repeat_row(document, plan, template, &member) {
             let next_anchor = mounted
                 .rows
@@ -479,7 +479,7 @@ fn update_repeat(
 
 /// Clone one repeat row from the pristine template and render its body
 /// against `member`. The returned row is **detached**; the caller
-/// inserts it with a single `insertBefore`. Stamps `with=<this>` on the
+/// inserts it with a single `insertBefore`. Stamps `data-this=<this>` on the
 /// clone.
 ///
 /// `plan.path` selects what to clone: a specific element, or (for a
@@ -526,7 +526,7 @@ fn build_repeat_row(
         &BTreeMap::new(),
     );
 
-    stamp_with(&row_root, &member.this);
+    stamp_this(&row_root, &member.this);
 
     Some(MountedRow {
         root: row_root,
@@ -534,12 +534,13 @@ fn build_repeat_row(
     })
 }
 
-/// Stamp `with=<this>` on a repeat row's root element so the repeat
-/// boundary is inspectable. No-op when the root isn't an element (a
-/// whole-fragment clone yielding a fragment).
-fn stamp_with(root: &Node, this: &str) {
+/// Stamp `data-this=<this>` on a repeat row's root element so the repeat
+/// boundary is inspectable. (Not `with=` — that is the routing-context
+/// attribute, and a row subject is usually not a repository.) No-op when
+/// the root isn't an element (a whole-fragment clone yielding a fragment).
+fn stamp_this(root: &Node, this: &str) {
     if let Some(el) = root.dyn_ref::<Element>() {
-        let _ = el.set_attribute("with", this);
+        let _ = el.set_attribute("data-this", this);
     }
 }
 
@@ -969,14 +970,14 @@ mod tests {
             .collect()
     }
 
-    /// `with=` attribute of every `<li>`, in DOM order — confirms each row
+    /// `data-this=` attribute of every `<li>`, in DOM order — confirms each row
     /// is keyed to the right subject after batched inserts.
     fn li_withs(host: &Element) -> Vec<String> {
         let lis = host.query_selector_all("li").expect("query li");
         (0..lis.length())
             .filter_map(|i| lis.item(i))
             .filter_map(|n| n.dyn_into::<Element>().ok())
-            .filter_map(|e| e.get_attribute("with"))
+            .filter_map(|e| e.get_attribute("data-this"))
             .collect()
     }
 

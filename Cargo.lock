@@ -5151,6 +5151,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+ "tonk-host",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
