@@ -28,8 +28,7 @@ pub use repository::{
 mod sync;
 pub use dialog_repository::Revision;
 pub use sync::{
-    SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, repo_from_sync_tag,
-    sync_repository,
+    SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
@@ -181,6 +180,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(repository::attach_remote),
         )
         // Sync operations
+        // The single parameterless drain: the page's idle heartbeat pokes this
+        // and the SW's Background-Sync `onsync` reaches the same drain here.
+        .route("/api/sync", post(sync::drain))
         .route(
             "/api/repository/{repo}/branch/{branch}/sync",
             post(sync::sync),
@@ -573,6 +575,37 @@ pub mod tests {
             .await
             .expect("Failed to read response body");
         assert_eq!(body.as_ref(), b"Hello, Tonk!");
+    }
+
+    /// `POST /api/sync` is the idle heartbeat's poll target. It must do NO work
+    /// of its own — the drain is scheduled by the SW's `on_fetch` seeing the
+    /// request, so the route only has to exist and ack. Even with no repository
+    /// open it returns `200 {"ok": true}` immediately (it never touches state),
+    /// which is exactly why a poll participates in the debounce instead of
+    /// forcing a fresh drain per call.
+    #[dialog_common::test]
+    async fn it_acks_the_idle_sync_poll_without_draining() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+
+        let request = Request::builder()
+            .uri("/api/sync")
+            .method("POST")
+            .body(Body::empty())
+            .expect("Failed to build request");
+
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("Failed to execute request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("Failed to read response body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("response body is JSON");
+        assert_eq!(json, serde_json::json!({ "ok": true }));
     }
 
     #[dialog_common::test]

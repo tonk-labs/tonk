@@ -577,9 +577,10 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
         css.push('\n');
         css.push_str(&app_css);
     }
-    // Inline `@font-face url("/fonts/*.woff2")` as `data:` URLs: a
-    // null-origin guest can't fetch the fonts (CORS-blocked), so the host
-    // (same-origin) fetches each woff2 and base64-embeds it.
+    // Inline `@font-face url("/fonts/*")` as `data:` URLs: a null-origin guest
+    // can't fetch the fonts (CORS-blocked), so the host (same-origin) fetches
+    // each face and base64-embeds it. Handles woff2/woff/otf/ttf — the launcher
+    // ships Gestalte as `.otf`, so limiting this to woff2 left it unstyled.
     css = inline_fonts(&css).await;
     // The bundled Web Awesome components (esbuild, no dynamic/relative
     // imports), imported by the guest before its content upgrades. Fetched as
@@ -649,26 +650,50 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     Ok((payload.into(), transfer.into()))
 }
 
-/// Replace every `url("/fonts/<name>.woff2")` in `css` with a
-/// `url("data:font/woff2;base64,…")` so the sealed guest needs no font
-/// fetch. Fonts whose fetch/encode fails are left as-is (degrade to a
-/// fallback face).
+/// Map a `/fonts/*` file extension to its `data:` MIME type. Any file under
+/// `/fonts/` is inlined regardless of extension; this only picks a precise
+/// MIME for the known font formats and falls back to a generic font MIME for
+/// anything else, so a new face drops in without touching this code.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn font_mime(path: &str) -> &'static str {
+    match path
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("otf") => "font/otf",
+        Some("ttf") => "font/ttf",
+        Some("eot") => "application/vnd.ms-fontobject",
+        // Unknown extension: a generic font MIME still renders (browsers sniff
+        // the actual format from the bytes), so an arbitrary face still works.
+        _ => "font/otf",
+    }
+}
+
+/// Replace every `url("/fonts/<name>.<ext>")` in `css` with a
+/// `url("data:<mime>;base64,…")` so the sealed guest needs no font fetch.
+/// Inlines ANY file under `/fonts/`, not a fixed set of extensions. Fonts
+/// whose fetch/encode fails are left as-is (degrade to a fallback face).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn inline_fonts(css: &str) -> String {
-    // Collect distinct `/fonts/*.woff2` paths.
+    // Collect distinct `/fonts/*` paths — the path runs up to the closing
+    // quote / paren of the `url(...)` argument.
     let mut paths: Vec<String> = Vec::new();
     let mut rest = css;
     while let Some(i) = rest.find("/fonts/") {
         let tail = &rest[i..];
-        if let Some(end) = tail.find(".woff2") {
-            let path = tail[..end + 6].to_owned();
+        let end = tail.find(['"', '\'', ')']).unwrap_or(tail.len());
+        // Skip a bare `/fonts/` with no filename (end at the slash itself).
+        if end > "/fonts/".len() {
+            let path = tail[..end].to_owned();
             if !paths.contains(&path) {
                 paths.push(path);
             }
-            rest = &tail[end + 6..];
-        } else {
-            break;
         }
+        rest = &tail[end.max(1)..];
     }
 
     let mut out = css.to_owned();
@@ -676,9 +701,8 @@ async fn inline_fonts(css: &str) -> String {
         if let Ok(buffer) = fetch_array_buffer(&path).await
             && let Some(b64) = array_buffer_to_base64(&buffer)
         {
-            let data_url = format!("data:font/woff2;base64,{b64}");
-            // Replace both quoted forms `"<path>"` (the CSS uses
-            // double quotes around the url argument).
+            let data_url = format!("data:{};base64,{b64}", font_mime(&path));
+            // Replace the path wherever it appears as a url argument.
             out = out.replace(&path, &data_url);
         }
     }

@@ -267,15 +267,15 @@ fn render_in_iframe(host: &HtmlElement, cell: &StateCell, site: &str) {
 /// element runtime through it.
 pub fn register() {
     crate::bridge::install_message_listener();
-    if let Some(win) = window() {
-        if win.custom_elements().get("tonk-site").is_undefined() {
-            TonkSite::define("tonk-site");
-            // Install the `reset` / `update` / `error` prototype shims that route
-            // a host subscription's frames into this portal's per-instance
-            // delegates (and thus out to the sealed guest as `subscribe-event`).
-            // Without these the host calls `consumer.reset(...)` on a `<tonk-site>`
-            // that has no such method and the frame is silently dropped.
-            install_method_shims("tonk-site");
-        }
+    if let Some(win) = window()
+        && win.custom_elements().get("tonk-site").is_undefined()
+    {
+        TonkSite::define("tonk-site");
+        // Install the `reset` / `update` / `error` prototype shims that route
+        // a host subscription's frames into this portal's per-instance
+        // delegates (and thus out to the sealed guest as `subscribe-event`).
+        // Without these the host calls `consumer.reset(...)` on a `<tonk-site>`
+        // that has no such method and the frame is silently dropped.
+        install_method_shims("tonk-site");
     }
 }
