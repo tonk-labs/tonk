@@ -165,6 +165,26 @@ impl Reactor {
         }
     }
 
+    /// Drop one repository's cached handles and active subscribers —
+    /// the per-repo analog of [`shutdown`](Self::shutdown). Used when a
+    /// space is removed: the background sync sweep builds its repo set
+    /// from this cache, so eviction is what actually stops the space
+    /// from syncing, and clearing each branch's subscriber map ends its
+    /// SSE streams (see `shutdown` for why removing the cache entry
+    /// alone isn't enough). No-op when the repo isn't cached.
+    pub fn evict(&self, name: &str) {
+        let Some(repo) = self.repos.write().remove(name) else {
+            return;
+        };
+        let branches = {
+            let mut map = repo.branches().write();
+            std::mem::take(&mut *map)
+        };
+        for (_, branch) in branches {
+            branch.clear_subscribers();
+        }
+    }
+
     /// Reconcile the cached handle for `repo`/`branch` with durable
     /// storage after its upstream/remote wiring changed on a *separate*
     /// repository handle.
