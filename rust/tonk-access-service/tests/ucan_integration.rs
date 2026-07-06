@@ -258,7 +258,7 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
         .write_blob(stream::iter(chunks))
         .perform(&operator)
         .await?;
-    let blob_entity = Entity::from_blob(&(*hash.as_bytes()))?;
+    let blob_entity = Entity::from_blob(hash.as_bytes())?;
     branch
         .transaction()
         .assert(Name::of(blob_entity).is("vacation.png".to_string()))
