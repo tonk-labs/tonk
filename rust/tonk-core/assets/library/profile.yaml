@@ -93,11 +93,12 @@ command!: &space/create
     template:
       description: >
         Which template to seed: "wiki" for linked pages, "sheets" for
-        the tabbed workspace, or blank/absent for the lean default (the
-        blank canvas). Read from the wizard's `template` control on
-        submit, exactly as `name` and `remote` are. The worker's
-        CreateSpaceHandler reads it via template_from_facts; an older
-        form that omits it decodes as blank.
+        the tabbed workspace, "board" for the card canvas, or
+        blank/absent for the lean default (the blank canvas). Read from
+        the wizard's `template` control on submit, exactly as `name`
+        and `remote` are. The worker's CreateSpaceHandler reads it via
+        template_from_facts; an older form that omits it decodes as
+        blank.
       the: dom.event.current-target.elements.template/value
       as: text
     prevent-default:
@@ -273,9 +274,9 @@ view/directory!:
            in a <label> so a click toggles the driving radio. The card carries
            the surface/border/hover; the label only forwards the click. */
         .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; }
-        /* The template picker: a 3-up grid of card <label>s, shown once the
-           template path is chosen. */
-        .onb-grid { display: none; grid-template-columns: repeat(3, minmax(0,280px));
+        /* The template picker: a grid of card <label>s (2x2 at four
+           templates), shown once the template path is chosen. */
+        .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,280px));
           gap: 18px; justify-content: center; }
         #wiz-tmpl:checked ~ .spot-overlay .onb-grid { display: grid; }
         /* Screen-1 choice cards: a <label> wrapping a wa-card. The wa-card owns
@@ -323,6 +324,7 @@ view/directory!:
            card via the general-sibling combinator into the grid. */
         #tpl-wiki:checked   ~ .onb-grid .onb-tcard[data-for="tpl-wiki"],
         #tpl-sheets:checked ~ .onb-grid .onb-tcard[data-for="tpl-sheets"],
+        #tpl-board:checked  ~ .onb-grid .onb-tcard[data-for="tpl-board"],
         #tpl-blank:checked  ~ .onb-grid .onb-tcard[data-for="tpl-blank"] {
           border-color: var(--wa-color-brand-fill-loud);
           box-shadow: inset 0 0 0 1px var(--wa-color-brand-fill-loud);
@@ -362,6 +364,11 @@ view/directory!:
           display: block; margin-bottom: 2px; }
         .tmpl__art--wiki i { height: 7px; background: var(--wa-color-neutral-fill-normal); display: block; width: 100%; }
         .tmpl__art--wiki i:nth-of-type(4) { width: 72%; }
+        .tmpl__art--board { align-items: flex-start; gap: 10px; padding: 16px 18px; }
+        .tmpl__art--board .col { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+        .tmpl__art--board .col i { display: block; width: 100%; height: 12px;
+          background: var(--wa-color-neutral-fill-normal); }
+        .tmpl__art--board .col i.tall { height: 30px; }
         .tmpl__art--sheets { padding: 20px 22px; }
         .tmpl__art--sheets .grid { width: 100%; height: 54px; display: block;
           background:
@@ -480,6 +487,7 @@ view/directory!:
             <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
             <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
             <input class="onb-tpl" type="radio" name="template" value="wiki" id="tpl-wiki">
+            <input class="onb-tpl" type="radio" name="template" value="board" id="tpl-board">
             <div class="onb-grid">
               <label class="onb-tcard" data-for="tpl-wiki" for="tpl-wiki">
                 <div class="tmpl__art tmpl__art--wiki">
@@ -492,6 +500,15 @@ view/directory!:
                 <div class="tmpl__art tmpl__art--sheets"><span class="grid"></span></div>
                 <div class="onb-card__name">Sheets</div>
                 <div class="onb-card__desc">A tabbed workspace of artifacts.</div>
+              </label>
+              <label class="onb-tcard" data-for="tpl-board" for="tpl-board">
+                <div class="tmpl__art tmpl__art--board">
+                  <div class="col"><i class="tall"></i><i></i></div>
+                  <div class="col"><i></i><i></i><i></i></div>
+                  <div class="col"><i></i><i class="tall"></i></div>
+                </div>
+                <div class="onb-card__name">Board</div>
+                <div class="onb-card__desc">Columns of text, checklist and table cards on a pannable canvas.</div>
               </label>
               <label class="onb-tcard" data-for="tpl-blank" for="tpl-blank">
                 <div class="onb-card__name">Blank</div>
@@ -784,6 +801,17 @@ view/directory!: &profile/fab/view
               height: 5px; width: 100%; display: block; background: var(--wa-color-neutral-fill-normal);
             }
             .wizard__art--wiki i:nth-of-type(4) { width: 72%; }
+            .wizard__art--board {
+              align-items: flex-start; gap: var(--wa-space-2xs); padding: var(--wa-space-m);
+            }
+            .wizard__art--board .col {
+              flex: 1; display: flex; flex-direction: column; gap: var(--wa-space-2xs);
+            }
+            .wizard__art--board .col i {
+              display: block; width: 100%; height: 9px;
+              background: var(--wa-color-neutral-fill-normal);
+            }
+            .wizard__art--board .col i.tall { height: 22px; }
             .wizard__art--sheets { padding: var(--wa-space-m); }
             .wizard__art--sheets .grid {
               width: 100%; height: 42px; display: block;
@@ -795,6 +823,7 @@ view/directory!: &profile/fab/view
             /* Highlight the chosen template card so the selection is legible. */
             #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
             #tpl-wiki:checked   ~ .wizard__screen--template label[for="tpl-wiki"],
+            #tpl-board:checked  ~ .wizard__screen--template label[for="tpl-board"],
             #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
               border-color: var(--wa-color-text-normal);
               box-shadow: inset 0 0 0 1px var(--wa-color-text-normal);
@@ -812,6 +841,7 @@ view/directory!: &profile/fab/view
           <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
           <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
           <input class="wizard__template" type="radio" name="template" value="wiki" id="tpl-wiki">
+          <input class="wizard__template" type="radio" name="template" value="board" id="tpl-board">
           <input type="hidden" name="remote" value="">
           <tonk-default-remote field="remote" auto></tonk-default-remote>
 
@@ -849,6 +879,15 @@ view/directory!: &profile/fab/view
                 <div class="wizard__art wizard__art--sheets"><span class="grid"></span></div>
                 <h3>Sheets</h3>
                 <p>A tabbed workspace of artifacts.</p>
+              </label>
+              <label class="wizard__card" for="tpl-board">
+                <div class="wizard__art wizard__art--board">
+                  <div class="col"><i class="tall"></i><i></i></div>
+                  <div class="col"><i></i><i></i><i></i></div>
+                  <div class="col"><i></i><i class="tall"></i></div>
+                </div>
+                <h3>Board</h3>
+                <p>Columns of cards on a pannable canvas.</p>
               </label>
               <label class="wizard__card" for="tpl-blank">
                 <h3>Blank</h3>

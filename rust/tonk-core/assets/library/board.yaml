@@ -1,0 +1,2266 @@
+# Tonk board template.
+#
+# A pannable card canvas (after the "Card Canvas" gooey-low-fi mock):
+# columns of cards laid out on a dot-grid strip, where each card is a
+# markdown text note, a checklist, or a small table. Keyboard-first
+# (arrows move focus, enter edits, 1/2/3 add cards, w cycles column
+# width), with pointer drag to reorder cards across columns and a
+# drag handle to set a card's height. Seeded on top of core.yaml only
+# when the "board" template is chosen at repo creation. Overrides the
+# default `tonk/space` alias so the space route mounts the board
+# shell.
+#
+# core.yaml is always concatenated ahead of this template into one
+# seed document, so the concepts this template depends on (tonk:view,
+# tonk:view/directory, tonk:replica, the `component` loader concept)
+# are already declared there and must not be redeclared here.
+#
+# Architecture (same as the wiki template): the interactive surface
+# is a web component (`<board-canvas>`) carried as a `component!:`
+# row and loaded by the shell's hidden `<tonk-display model=component />`.
+# Branch data flows INTO it as invisible "data row" directory views
+# (plain divs with `data-*` attributes) that the component reads and
+# observes; actions flow OUT as bubbling CustomEvents wired
+# declaratively on the component element (`on<event>=<command>` +
+# `dom.event.detail/*`). The component never mutates inside a
+# `<tonk-display>` subtree — it builds its own DOM.
+#
+# Cross-references between instances use component-minted TEXT KEYS,
+# not entities, wherever the referring side may not have seen the
+# referred row yet: a card points at its column by the column's `key`
+# (minted client-side), so "create a column and a card in it" is two
+# independent commands with no entity-prediction. Commands that
+# target an EXISTING instance (edit/move/resize/delete a card) carry
+# the entity read off its data row.
+
+# ============================================================
+# CONCEPTS
+# ============================================================
+
+# The board root, bound to the replica entity exactly like the wiki
+# root: it shares `dialog.origin/subject` with `tonk/replica`, so
+# every replica IS a board row and the shell view can render for it
+# without any extra seeding. `name` is the board title shown in the
+# top bar; absent until first renamed (the component falls back to
+# "untitled board"). Named `board/canvas` (not plain `board`) because
+# core.yaml already claims the `board` anchor and the `tonk:board`
+# entity for the legacy hierarchical board/column/tile stack; the
+# `name` attribute is shared with it deliberately (same meaning).
+concept!: &board/canvas
+  this: tonk:board/canvas
+  description: A card-canvas board view of the tonk replica.
+  with:
+    subject:
+      description: The repository's subject DID (shared with tonk/replica)
+      the: dialog.origin/subject
+      as: entity
+  maybe:
+    name:
+      description: The board title; absent until first renamed
+      the: xyz.tonk.board/name
+      cardinality: one
+      as: text
+
+# A column on the board. `key` is a component-minted opaque token the
+# column's cards point at (see the header note on text keys). `width`
+# is one of "1/4" | "1/3" | "1/2" | "2/3" — a fraction of the
+# viewport. `order` is a lexicographic key sorting columns
+# left-to-right.
+concept!: &board/column
+  this: tonk:board/column
+  description: A board column - a keyed, ordered, width-classed card stack.
+  with:
+    key:
+      description: Opaque token cards reference the column by
+      the: xyz.tonk.board.column/key
+      cardinality: one
+      as: text
+    width:
+      description: Column width class ("1/4", "1/3", "1/2" or "2/3")
+      the: xyz.tonk.board.column/width
+      cardinality: one
+      as: text
+    order:
+      description: Lexicographic key ordering the column on the strip
+      the: xyz.tonk.board.column/order
+      cardinality: one
+      as: text
+
+# Single-field projections of a column, so rules can upsert one field
+# (width) or retract the one fact whose absence unmatches the column
+# from the strip (delete) without re-binding every field.
+concept!: &board/column-width
+  description: A column's width class, as a standalone fact.
+  with:
+    width:
+      description: Column width class
+      the: xyz.tonk.board.column/width
+      cardinality: one
+      as: text
+
+concept!: &board/column-order
+  description: A column's order key, as a standalone fact.
+  with:
+    order:
+      description: Lexicographic column order key
+      the: xyz.tonk.board.column/order
+      cardinality: one
+      as: text
+
+# A card on the board. `column` is the owning column's text `key`.
+# `kind` is one of: text | checklist | table. `content` is a JSON
+# document holding the kind-specific payload:
+#   text      {"markdown": "..."}
+#   checklist {"title": "...", "items": [{"text": "...", "done": false}, ...]}
+#   table     {"header": ["...", ...], "rows": [["...", ...], ...]}
+# `height` is "auto" or a pixel count as text (a manual height set by
+# dragging the card's bottom edge).
+concept!: &board/card
+  this: tonk:board/card
+  description: A board card - a text, checklist or table cell in a column.
+  with:
+    column:
+      description: The `key` of the column the card sits in
+      the: xyz.tonk.board.card/column
+      cardinality: one
+      as: text
+    order:
+      description: Lexicographic key ordering the card in its column
+      the: xyz.tonk.board.card/order
+      cardinality: one
+      as: text
+    kind:
+      description: Card kind (text, checklist, table)
+      the: xyz.tonk.board.card/kind
+      cardinality: one
+      as: text
+    content:
+      description: Kind-specific payload, as a JSON document
+      the: xyz.tonk.board.card/content
+      cardinality: one
+      as: text
+    height:
+      description: '"auto" or a manual pixel height as text'
+      the: xyz.tonk.board.card/height
+      cardinality: one
+      as: text
+
+# Single-field card projections, for the same reason as the column
+# ones: partial upserts (edit content, resize, move) and the delete
+# retraction.
+concept!: &board/card-content
+  description: A card's content JSON, as a standalone fact.
+  with:
+    content:
+      description: Kind-specific payload, as a JSON document
+      the: xyz.tonk.board.card/content
+      cardinality: one
+      as: text
+
+concept!: &board/card-height
+  description: A card's height, as a standalone fact.
+  with:
+    height:
+      description: '"auto" or a manual pixel height as text'
+      the: xyz.tonk.board.card/height
+      cardinality: one
+      as: text
+
+concept!: &board/card-order
+  description: A card's order key, as a standalone fact.
+  with:
+    order:
+      description: Lexicographic card order key
+      the: xyz.tonk.board.card/order
+      cardinality: one
+      as: text
+
+# A card's placement (column + order) as one projection, so a move
+# lands both fields in a single upsert.
+concept!: &board/card-place
+  description: A card's placement (column key + order), as a standalone fact.
+  with:
+    column:
+      description: The `key` of the column the card sits in
+      the: xyz.tonk.board.card/column
+      cardinality: one
+      as: text
+    order:
+      description: Lexicographic key ordering the card in its column
+      the: xyz.tonk.board.card/order
+      cardinality: one
+      as: text
+
+# ============================================================
+# COMMANDS (transient, event-derived)
+# ============================================================
+#
+# Every command reads its fields from a command-specific
+# `dom.event.detail/*` attribute — never shared across commands
+# (except the `time` nonce) — so one event can never read as another
+# (the close-vs-activate lesson from the sheets template).
+
+command!: &board/rename
+  description: Rename the board to `name`.
+  with:
+    name:
+      description: The new board title
+      the: dom.event.detail/board-name
+      as: text
+
+command!: &board/create-column
+  description: Create a new column.
+  with:
+    key:
+      description: Component-minted opaque token for the column
+      the: dom.event.detail/col-key
+      as: text
+    width:
+      description: Initial width class
+      the: dom.event.detail/col-width
+      as: text
+    order:
+      description: Column order key, computed by the component
+      the: dom.event.detail/col-order
+      as: text
+    time:
+      description: A monotonic integer nonce from the component
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+command!: &board/set-column-width
+  description: Set the column with key `column` to width class `width`.
+  with:
+    column:
+      description: The `key` of the column to re-class
+      the: dom.event.detail/width-column
+      as: text
+    width:
+      description: The new width class
+      the: dom.event.detail/width-value
+      as: text
+
+command!: &board/delete-column
+  description: Remove the (empty) column with key `column` from the strip.
+  with:
+    column:
+      description: The `key` of the column to delete
+      the: dom.event.detail/delete-column
+      as: text
+
+command!: &board/create-card
+  description: Create a new card in the column with key `column`.
+  with:
+    column:
+      description: The `key` of the column the card lands in
+      the: dom.event.detail/card-column
+      as: text
+    order:
+      description: Card order key, computed by the component
+      the: dom.event.detail/card-order
+      as: text
+    kind:
+      description: Card kind (text, checklist, table)
+      the: dom.event.detail/card-kind
+      as: text
+    content:
+      description: Initial content JSON
+      the: dom.event.detail/card-content
+      as: text
+    time:
+      description: A monotonic integer nonce from the component
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+command!: &board/edit-card
+  description: Replace `card`'s content JSON.
+  with:
+    card:
+      description: The edited card
+      the: dom.event.detail/edit-card
+      as: entity
+    content:
+      description: The new content JSON
+      the: dom.event.detail/edit-content
+      as: text
+
+command!: &board/move-card
+  description: Re-place `card` into column `column` at `order`.
+  with:
+    card:
+      description: The card to move
+      the: dom.event.detail/move-card
+      as: entity
+    column:
+      description: The `key` of the destination column
+      the: dom.event.detail/move-column
+      as: text
+    order:
+      description: The new order key, computed by the component
+      the: dom.event.detail/move-order
+      as: text
+
+command!: &board/resize-card
+  description: Set `card`'s manual height (or "auto").
+  with:
+    card:
+      description: The card to resize
+      the: dom.event.detail/resize-card
+      as: entity
+    height:
+      description: '"auto" or the new pixel height as text'
+      the: dom.event.detail/resize-height
+      as: text
+
+command!: &board/delete-card
+  description: Remove `card` from the board.
+  with:
+    card:
+      description: The card to delete
+      the: dom.event.detail/delete-card
+      as: entity
+
+# ============================================================
+# RULES
+# ============================================================
+
+# Rename: record the typed title on the replica's board row. The
+# board is the replica's (bound through `tonk/replica`), so the
+# command needs only the name.
+rule!:
+  description: Renames the board
+  assert!: board/canvas
+  when:
+    - assert: board/rename
+      where: { name: ?name }
+    - assert: tonk/replica
+      where: { this: ?this, subject: ?subject }
+
+# Column lifecycle. The created column's entity is the command entity
+# (`?this` flows from the command match into the head).
+rule!:
+  description: Creates a column
+  assert!: board/column
+  when:
+    - assert: board/create-column
+      where: { this: ?this, key: ?key, width: ?width, order: ?order }
+
+# Width update: resolve the column entity from its key, then upsert
+# just the width.
+rule!:
+  description: Re-classes a column's width
+  assert!: board/column-width
+  when:
+    - assert: board/set-column-width
+      where: { column: ?key, width: ?width }
+    - assert: board/column
+      where: { this: ?this, key: ?key, width: ?old, order: ?order }
+
+# Deleting a column retracts its `order` — the one fact whose absence
+# unmatches it from the strip directory. Its other facts persist.
+# The component only issues this for columns it has just emptied.
+rule!:
+  description: Removes a deleted column from the strip
+  retract!: board/column-order
+  when:
+    - assert: board/delete-column
+      where: { column: ?key }
+    - assert: board/column
+      where: { this: ?this, key: ?key, width: ?width, order: ?order }
+
+# Card lifecycle. A created card starts at automatic height.
+rule!:
+  description: Creates a card
+  assert!: board/card
+  when:
+    - assert: board/create-card
+      where: { this: ?this, column: ?column, order: ?order, kind: ?kind, content: ?content }
+    - assert: ==
+      where: { this: ?height, is: "auto" }
+
+rule!:
+  description: Replaces an edited card's content
+  assert!: board/card-content
+  when:
+    - assert: board/edit-card
+      where: { card: ?this, content: ?content }
+
+rule!:
+  description: Moves a card to a new column/position
+  assert!: board/card-place
+  when:
+    - assert: board/move-card
+      where: { card: ?this, column: ?column, order: ?order }
+
+rule!:
+  description: Sets a card's manual height
+  assert!: board/card-height
+  when:
+    - assert: board/resize-card
+      where: { card: ?this, height: ?height }
+
+rule!:
+  description: Removes a deleted card from its column
+  retract!: board/card-order
+  when:
+    - assert: board/delete-card
+      where: { card: ?this }
+    - assert: board/card-order
+      where: { this: ?this, order: ?order }
+
+# ============================================================
+# DATA-ROW VIEWS (invisible; feed the component)
+# ============================================================
+#
+# Each directory view renders one bare `data-*` div per instance.
+# The component reads and observes these rows; the `.board-data`
+# pane in the shell hides them. `subject={this}` marks the repeat
+# root.
+
+view/directory!:
+  this: tonk:board/column-rows
+  model: tonk:board/column
+  display: |
+    <div class="board-column-rows">
+      <div class="board-column-row" subject={this} data-column={this} data-key={key} data-width={width} data-order={order}></div>
+    </div>
+
+view/directory!:
+  this: tonk:board/card-rows
+  model: tonk:board/card
+  display: |
+    <div class="board-card-rows">
+      <div class="board-card-row" subject={this} data-card={this} data-col={column} data-order={order} data-kind={kind} data-content={content} data-height={height}></div>
+    </div>
+
+# ============================================================
+# COMPONENTS
+# ============================================================
+#
+# Loaded once per realm by the shell's `<tonk-display model=component />`.
+# Same conventions as the wiki components:
+#   - read state from the hidden data rows (document-wide queries),
+#     re-render on a debounced MutationObserver tick;
+#   - never touch DOM inside a `<tonk-display>`;
+#   - dispatch bubbling CustomEvents; the shell view wires each event
+#     type to a command on the component element;
+#   - optimistic local echo: every emitted mutation is also recorded
+#     in a `pending*` map consulted while reading the rows, so the UI
+#     answers instantly and reconciles when the fact round-trips
+#     (entries clear on echo or after an 8s expiry).
+
+# Shared helpers: row reading + lexicographic order keys. Loaded
+# before the widget (components load in directory order; this row's
+# stable `this:` sorts first by design — but the widget also guards
+# on the helper's presence, so order is a nicety, not a contract).
+component!:
+  this: id:board/component/00-lib
+  module: |
+    (() => {
+      if (globalThis.__boardLib) return;
+      const rows = (sel) => Array.from(document.querySelectorAll(sel));
+      const byOrder = (a, b) =>
+        (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1);
+      globalThis.__boardLib = {
+        columns() {
+          return rows('.board-column-row').map((r) => ({
+            id: r.dataset.column, key: r.dataset.key || '',
+            width: r.dataset.width || '1/3', order: r.dataset.order || '',
+          })).sort(byOrder);
+        },
+        cards() {
+          return rows('.board-card-row').map((r) => ({
+            id: r.dataset.card, column: r.dataset.col || '',
+            order: r.dataset.order || '', kind: r.dataset.kind || 'text',
+            content: r.dataset.content || '{}',
+            height: r.dataset.height || 'auto',
+          })).sort(byOrder);
+        },
+        // A key strictly between `a` and `b` ('' = open bound), over
+        // the alphabet a-z. Sorting always tiebreaks on id, so a rare
+        // degenerate key stays harmless.
+        between(a, b) {
+          a = a || ''; b = b || '';
+          let out = '';
+          for (let i = 0; ; i++) {
+            const ca = i < a.length ? a.charCodeAt(i) : 96;
+            const cb = b && i < b.length ? b.charCodeAt(i) : 123;
+            if (ca === cb) { out += a[i]; continue; }
+            const m = Math.floor((ca + cb) / 2);
+            if (m > ca) return out + String.fromCharCode(m);
+            out += String.fromCharCode(ca === 96 ? 97 : ca);
+            b = '';
+          }
+        },
+        after(list) {
+          const last = list.length ? list[list.length - 1].order : '';
+          return globalThis.__boardLib.between(last, '');
+        },
+        // Watch the data rows and call `fn` on a debounced tick.
+        // Observes the whole body (robust against the renderer
+        // replacing the data pane wholesale) but ignores mutation
+        // batches that originate inside the widget itself.
+        watch(host, fn) {
+          globalThis.__boardLib.unwatch(host);
+          let t = null;
+          const kick = () => { clearTimeout(t); t = setTimeout(fn, 30); };
+          const inWidget = (m) => {
+            const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+            return el && el.closest && el.closest('board-canvas');
+          };
+          const mo = new MutationObserver((ms) => { if (!ms.every(inWidget)) kick(); });
+          mo.observe(document.body, { subtree: true, childList: true,
+            attributes: true, attributeFilter: [
+              'data-key', 'data-width', 'data-order', 'data-col',
+              'data-kind', 'data-content', 'data-height'] });
+          host.__boardMo = mo;
+          kick();
+        },
+        unwatch(host) {
+          if (host.__boardMo) { host.__boardMo.disconnect(); host.__boardMo = null; }
+        },
+        emit(host, type, detail) {
+          host.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
+        },
+        esc(s) {
+          return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        },
+      };
+    })();
+
+# The card canvas itself: `<board-canvas>`. One element owns the whole
+# surface — top bar (title + add buttons + help), pannable dot-grid
+# strip, column chips, per-column add buttons, absolutely positioned
+# cards (text / checklist / table), pointer drag with slot preview,
+# height-resize handle, keyboard navigation and a help overlay. A
+# vanilla port of the "Card Canvas" DCLogic mock: layout is derived
+# per render from measured content heights; cards move by CSS
+# transform transitions.
+component!:
+  this: id:board/component/canvas
+  module: |
+    (() => {
+      if (customElements.get('board-canvas')) return;
+      const WIDTHS = ['1/4', '1/3', '1/2', '2/3'];
+      const FR = { '1/4': 0.25, '1/3': 1 / 3, '1/2': 0.5, '2/3': 2 / 3 };
+      const GLYPH = { '1/4': '¼', '1/3': '⅓', '1/2': '½', '2/3': '⅔' };
+      const GAP = 18, PADX = 40, TOP = 34, CHIPH = 24, MOTION = 300, EXP = 8000;
+      const EASE = 'cubic-bezier(0.4, 0, 0.2, 1)';
+      const TR = 'transform ' + MOTION + 'ms ' + EASE + ', width ' + MOTION + 'ms ' + EASE +
+        ', height ' + MOTION + 'ms ' + EASE;
+      let uidN = 0;
+      const DEFAULTS = {
+        text: () => ({ markdown: '' }),
+        checklist: () => ({ title: '', items: [{ text: '', done: false }] }),
+        table: () => ({ header: ['', ''], rows: [['', ''], ['', '']] }),
+      };
+      // Coerce a parsed content document into the kind's shape; never
+      // trust stored JSON (an agent may have written it by hand).
+      // `_k` is a transient per-item identity for focus + FLIP, never
+      // serialized back out.
+      const normalize = (kind, d) => {
+        d = d && typeof d === 'object' ? d : {};
+        if (kind === 'checklist') {
+          const raw = Array.isArray(d.items) && d.items.length ? d.items : [{ text: '', done: false }];
+          return {
+            title: typeof d.title === 'string' ? d.title : '',
+            items: raw.map((it) => ({
+              text: it && typeof it.text === 'string' ? it.text : '',
+              done: !!(it && it.done),
+              _k: (it && it._k) || 'k' + (++uidN),
+            })),
+          };
+        }
+        if (kind === 'table') {
+          let header = Array.isArray(d.header) ? d.header.map((v) => String(v == null ? '' : v)) : [];
+          if (!header.length) header = ['', ''];
+          let rowsIn = Array.isArray(d.rows) ? d.rows : [];
+          if (!rowsIn.length) rowsIn = [[]];
+          const rows = rowsIn.map((r) => {
+            const o = (Array.isArray(r) ? r : []).map((v) => String(v == null ? '' : v)).slice(0, header.length);
+            while (o.length < header.length) o.push('');
+            return o;
+          });
+          return { header, rows };
+        }
+        return { markdown: typeof d.markdown === 'string' ? d.markdown : '' };
+      };
+      const serialize = (data) => JSON.stringify(data, (k, v) => (k === '_k' ? undefined : v));
+      // Minimal markdown (headings, bold/italic/code, lists), as
+      // escaped HTML strings.
+      const mdInline = (s) => {
+        const esc = globalThis.__boardLib.esc;
+        let out = ''; let m; let last = 0;
+        const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+        while ((m = re.exec(s))) {
+          if (m.index > last) out += esc(s.slice(last, m.index));
+          const t = m[0];
+          if (t.startsWith('**')) out += '<strong>' + esc(t.slice(2, -2)) + '</strong>';
+          else if (t.startsWith('`')) out += '<code>' + esc(t.slice(1, -1)) + '</code>';
+          else out += '<em>' + esc(t.slice(1, -1)) + '</em>';
+          last = m.index + t.length;
+        }
+        if (last < s.length) out += esc(s.slice(last));
+        return out;
+      };
+      const mdToHtml = (md) => {
+        const out = []; let list = null;
+        const flush = () => {
+          if (list) { out.push('<' + list.t + ' class="bc-md-list">' + list.items.join('') + '</' + list.t + '>'); list = null; }
+        };
+        String(md || '').split('\n').forEach((raw) => {
+          const t = raw.trim(); let m;
+          if (!t) { flush(); return; }
+          if ((m = /^(#{1,3})\s+(.*)$/.exec(t))) { flush(); out.push('<div class="bc-md-h' + m[1].length + '">' + mdInline(m[2]) + '</div>'); return; }
+          if ((m = /^[-*]\s+(.*)$/.exec(t))) {
+            if (!list || list.t !== 'ul') { flush(); list = { t: 'ul', items: [] }; }
+            list.items.push('<li>' + mdInline(m[1]) + '</li>'); return;
+          }
+          if ((m = /^\d+[.)]\s+(.*)$/.exec(t))) {
+            if (!list || list.t !== 'ol') { flush(); list = { t: 'ol', items: [] }; }
+            list.items.push('<li>' + mdInline(m[1]) + '</li>'); return;
+          }
+          flush(); out.push('<p>' + mdInline(t) + '</p>');
+        });
+        flush();
+        return out.length ? out.join('') : '<p class="bc-md-empty">empty text card — enter to edit</p>';
+      };
+
+      customElements.define('board-canvas', class extends HTMLElement {
+        static get observedAttributes() { return ['name']; }
+
+        connectedCallback() {
+          // Re-arm the data watch + viewport observer on EVERY
+          // connect (a re-connect ran disconnectedCallback).
+          const arm = () => {
+            const lib = globalThis.__boardLib;
+            if (!lib) { setTimeout(arm, 40); return; }
+            if (!this.isConnected) return;
+            lib.watch(this, () => this.sync());
+            if (this._ro) this._ro.disconnect();
+            this._ro = new ResizeObserver(() => this.readViewport());
+            this._ro.observe(this.canvasEl);
+            this.readViewport();
+          };
+          if (this.__init) { arm(); return; }
+          this.__init = true;
+          // Local, never-persisted UI state. NB the keyboard cursor is
+          // `this.cursor`, not `this.focus` — an own `focus` property
+          // would shadow HTMLElement.focus().
+          this.cursor = { ci: 0, ki: 0, mode: 'navigate' };
+          this.pan = { x: 0, y: 0 };
+          this.vw = 1280; this.vh = 800;
+          this.measured = new Map();
+          this.model = { name: 'untitled board', columns: [] };
+          this.pendingContent = new Map();  // card id -> {json, at}
+          this.pendingPlace = new Map();    // card id -> {column, order, at}
+          this.pendingHeight = new Map();   // card id -> {height, at}
+          this.pendingWidth = new Map();    // column key -> {width, at}
+          this.pendingGone = new Map();     // card id -> at
+          this.pendingColGone = new Map();  // column key -> at
+          this.pendingCols = [];            // [{key, width, order, at}]
+          this.pendingName = null;
+          this.pendingCreateFocus = null;   // {column, order, at}
+          this.pendingEditFocus = null;     // card id
+          this.pendingItem = null;          // {id, idx}
+          this.helpOpen = false;
+          this.editingTitle = false;
+          this.drag = null; this.resizing = null; this.addMenu = null;
+          this.cardEls = new Map(); this.chipEls = new Map(); this.addEls = new Map();
+          this._editT = new Map();
+          this._n = 0;
+          if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
+          this.innerHTML =
+            '<div class="bc-bar">' +
+            '<button type="button" class="bc-title" title="rename board"></button>' +
+            '<input class="bc-title-input" data-role="title-input" hidden>' +
+            '<span class="bc-bar-sep">|</span>' +
+            '<button type="button" class="bc-bar-add" data-tpl="text" title="add text card below focus (1) — alt+click: new column (shift+1)">+ text</button>' +
+            '<button type="button" class="bc-bar-add" data-tpl="checklist" title="add checklist below focus (2) — alt+click: new column (shift+2)">+ checklist</button>' +
+            '<button type="button" class="bc-bar-add" data-tpl="table" title="add table below focus (3) — alt+click: new column (shift+3)">+ table</button>' +
+            '<span class="bc-bar-flex"></span>' +
+            '<span class="bc-bar-hint">alt+click adds a new column</span>' +
+            '<button type="button" class="bc-bar-help" title="keyboard shortcuts (?)">?</button>' +
+            '</div>' +
+            '<div class="bc-canvas">' +
+            '<div class="bc-strip"><div class="bc-slot" hidden></div><div class="bc-menu" hidden></div></div>' +
+            '<div class="bc-empty" hidden><div class="bc-empty-card">' +
+            '<span class="bc-empty-kick">empty board</span>' +
+            '<p>Add your first card from the toolbar, or press 1, 2 or 3.<br>Press ? for shortcuts.</p>' +
+            '</div></div>' +
+            '</div>' +
+            '<div class="bc-helpov" hidden><div class="bc-helpov-card">' +
+            '<div class="bc-helpov-head"><span>keyboard</span><span class="bc-bar-flex"></span>' +
+            '<button type="button" class="bc-helpov-close" title="close">×</button></div>' +
+            '<div class="bc-helpov-grid">' +
+            '<span><kbd>←</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd></span><span>move focus</span>' +
+            '<span><kbd>alt</kbd>+<kbd>shift</kbd>+<kbd>arrows</kbd></span><span>move the card — reorder, or eject into the adjacent / a new column</span>' +
+            '<span><kbd>enter</kbd> / <kbd>esc</kbd></span><span>edit card / back to navigate</span>' +
+            '<span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></span><span>add text / checklist / table below focus</span>' +
+            '<span><kbd>shift</kbd>+<kbd>1/2/3</kbd></span><span>same, in a new column to the right</span>' +
+            '<span><kbd>w</kbd> / <kbd>shift</kbd>+<kbd>w</kbd></span><span>cycle column width ¼ → ⅓ → ½ → ⅔</span>' +
+            '<span><kbd>del</kbd></span><span>delete card (empty columns close up)</span>' +
+            '<span><kbd>alt</kbd>+<kbd>shift</kbd>+<kbd>↑↓</kbd> in item</span><span>reorder checklist item · checked items sink to the bottom</span>' +
+            '<span><kbd>drag card</kbd></span><span>reorder / move between columns / past the last column for a new one</span>' +
+            '<span><kbd>drag bottom edge</kbd></span><span>set card height · double-click resets to auto</span>' +
+            '<span><kbd>+ add</kbd></span><span>button under each column adds there · "+ add column" past the last one</span>' +
+            '<span><kbd>?</kbd></span><span>toggle this help</span>' +
+            '</div></div></div>';
+          this.canvasEl = this.querySelector('.bc-canvas');
+          this.stripEl = this.querySelector('.bc-strip');
+          this.__dragMove = (e) => this.onDragMove(e);
+          this.__dragUp = () => this.onDragEnd();
+          this.addEventListener('click', (e) => this.onClick(e));
+          this.addEventListener('input', (e) => this.onInput(e));
+          this.addEventListener('change', (e) => this.onChange(e));
+          this.addEventListener('keydown', (e) => this.onKeyDown(e));
+          this.addEventListener('focusout', (e) => this.onFocusOut(e));
+          this.canvasEl.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            this.setPan(this.pan.x + e.deltaX, this.pan.y + e.deltaY, false);
+          }, { passive: false });
+          this.canvasEl.addEventListener('pointerdown', (e) => this.onCanvasPointerDown(e));
+          arm();
+        }
+        disconnectedCallback() {
+          const lib = globalThis.__boardLib;
+          lib && lib.unwatch(this);
+          if (this._ro) this._ro.disconnect();
+        }
+        attributeChangedCallback() { if (this.__init) this.sync(); }
+
+        // ---------- helpers ----------
+        nonce() { this._n = Math.max(Date.now(), this._n + 1); return this._n; }
+        uid(p) { return (p || 'k') + '-' + Date.now().toString(36) + '-' + (++uidN); }
+        emitCmd(type, detail) { globalThis.__boardLib.emit(this, type, detail); }
+        focusHost() { HTMLElement.prototype.focus.call(this, { preventScroll: true }); }
+        focusedCard() {
+          const col = this.model.columns[this.cursor.ci];
+          return (col || { cards: [] }).cards[this.cursor.ki] || null;
+        }
+        isEditing(id) {
+          const fc = this.focusedCard();
+          return !!fc && fc.id === id && this.cursor.mode === 'edit';
+        }
+        findCard(id) {
+          const cols = this.model.columns;
+          for (let ci = 0; ci < cols.length; ci++) {
+            const ki = cols[ci].cards.findIndex((c) => c.id === id);
+            if (ki >= 0) return { card: cols[ci].cards[ki], col: cols[ci], ci, ki };
+          }
+          return null;
+        }
+        sync() { this.readModel(); this.render(); }
+
+        // ---------- model (rows + optimistic echo) ----------
+        readModel() {
+          const lib = globalThis.__boardLib;
+          if (!lib) return;
+          const now = Date.now();
+          const attr = this.getAttribute('name') || '';
+          if (this.pendingName && (this.pendingName.v === attr || now - this.pendingName.at > EXP)) this.pendingName = null;
+          const prevById = this._cardById || new Map();
+          const cols = []; const byKey = new Map();
+          for (const c of lib.columns()) {
+            if (this.pendingColGone.has(c.key)) {
+              if (now - this.pendingColGone.get(c.key) > EXP) this.pendingColGone.delete(c.key);
+              else continue;
+            }
+            const pw = this.pendingWidth.get(c.key);
+            if (pw) {
+              if (pw.width === c.width || now - pw.at > EXP) this.pendingWidth.delete(c.key);
+              else c.width = pw.width;
+            }
+            const col = { id: c.id, key: c.key, width: c.width, order: c.order, cards: [] };
+            cols.push(col); byKey.set(col.key, col);
+          }
+          // Columns we created that haven't echoed yet.
+          this.pendingCols = this.pendingCols.filter((p) => {
+            if (byKey.has(p.key) || now - p.at > EXP) return false;
+            const col = { id: 'pending:' + p.key, key: p.key, width: p.width, order: p.order, cards: [] };
+            cols.push(col); byKey.set(p.key, col);
+            return true;
+          });
+          cols.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+          const byId = new Map();
+          for (const cd of lib.cards()) {
+            if (this.pendingGone.has(cd.id)) {
+              if (now - this.pendingGone.get(cd.id) > EXP) this.pendingGone.delete(cd.id);
+              else continue;
+            }
+            const pp = this.pendingPlace.get(cd.id);
+            if (pp) {
+              if ((pp.column === cd.column && pp.order === cd.order) || now - pp.at > EXP) this.pendingPlace.delete(cd.id);
+              else { cd.column = pp.column; cd.order = pp.order; }
+            }
+            const pc = this.pendingContent.get(cd.id);
+            if (pc) {
+              if (pc.json === cd.content || now - pc.at > EXP) this.pendingContent.delete(cd.id);
+              else cd.content = pc.json;
+            }
+            const ph = this.pendingHeight.get(cd.id);
+            if (ph) {
+              if (ph.height === cd.height || now - ph.at > EXP) this.pendingHeight.delete(cd.id);
+              else cd.height = ph.height;
+            }
+            // Reuse the previous parse when the JSON is unchanged, so
+            // checklist `_k` identities survive echoes (stable focus
+            // and FLIP keys).
+            const prev = prevById.get(cd.id);
+            if (prev && prev.content === cd.content && prev.kind === cd.kind) cd.data = prev.data;
+            else { let p = null; try { p = JSON.parse(cd.content); } catch (x) { p = null; } cd.data = normalize(cd.kind, p); }
+            byId.set(cd.id, cd);
+            const col = byKey.get(cd.column);
+            if (col) col.cards.push(cd);
+          }
+          for (const col of cols)
+            col.cards.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+          this._cardById = byId;
+          this.model = { name: this.pendingName ? this.pendingName.v : (attr || 'untitled board'), columns: cols };
+        }
+
+        // ---------- layout (derived, never stored) ----------
+        layout(cols, opts) {
+          opts = opts || {};
+          const vw = this.vw, vh = this.vh;
+          const cap = Math.floor(vh * 0.8);
+          const cards = new Map(); const colsOut = [];
+          let x = PADX; let maxH = 0; let slotRect = null;
+          const dragH = opts.dragH || 140;
+          const cardTop = TOP + CHIPH + 10;
+          cols.forEach((col, ci) => {
+            const w = Math.max(200, Math.round((FR[col.width] || 1 / 3) * vw) - GAP);
+            let y = cardTop;
+            const list = col.cards.filter((c) => c.id !== opts.skipId);
+            let inserted = false;
+            list.forEach((card, idx) => {
+              if (opts.slot && opts.slot.type === 'cell' && opts.slot.ci === ci && opts.slot.ki === idx) {
+                slotRect = { x, y, w, h: dragH }; y += dragH + GAP; inserted = true;
+              }
+              const mh = this.measured.get(card.id) || 140;
+              const manual = card.height !== 'auto' && card.height !== '';
+              const h = manual
+                ? Math.max(90, Math.min(Number(card.height) || 140, Math.round(vh * 0.95)))
+                : Math.min(mh, cap);
+              cards.set(card.id, { x, y, w, h, manual });
+              y += h + GAP;
+            });
+            if (opts.slot && opts.slot.type === 'cell' && opts.slot.ci === ci && !inserted) {
+              slotRect = { x, y, w, h: dragH }; y += dragH + GAP;
+            }
+            colsOut.push({ ci, x, w, key: col.key, width: col.width, btnY: y === cardTop ? y : y - GAP + 10 });
+            maxH = Math.max(maxH, y + 24);
+            x += w + GAP;
+          });
+          if (opts.slot && opts.slot.type === 'newcol') {
+            const w = Math.max(200, Math.round(FR['1/3'] * vw) - GAP);
+            slotRect = { x, y: cardTop, w, h: dragH };
+            x += w + GAP;
+          }
+          const addCol = { x, y: cardTop, w: 150, h: 28 };
+          return { cards, cols: colsOut, stripW: Math.max(x - GAP, addCol.x + addCol.w) + PADX,
+            maxH: maxH + 30, slotRect, addCol, cap };
+        }
+
+        // ---------- mutations (emit + optimistic echo) ----------
+        updCard(id, fn, opts) {
+          opts = opts || {};
+          const hit = this.findCard(id);
+          if (!hit) return;
+          fn(hit.card.data, hit);
+          const json = serialize(hit.card.data);
+          hit.card.content = json;
+          this.pendingContent.set(id, { json, at: Date.now() });
+          if (opts.struct) {
+            const el = this.cardEls.get(id);
+            if (el) el.__structN = (el.__structN || 0) + 1;
+          }
+          if (opts.now) this.fireEdit(id); else this.scheduleEdit(id);
+          this.render();
+        }
+        scheduleEdit(id) {
+          clearTimeout(this._editT.get(id));
+          this._editT.set(id, setTimeout(() => this.fireEdit(id), 350));
+        }
+        fireEdit(id) {
+          clearTimeout(this._editT.get(id));
+          this._editT.delete(id);
+          const pc = this.pendingContent.get(id);
+          if (!pc) return;
+          pc.at = Date.now();
+          this.emitCmd('editcard', { editCard: id, editContent: pc.json });
+        }
+        flushEdits() { for (const id of Array.from(this._editT.keys())) this.fireEdit(id); }
+        newColumn(order) {
+          const key = this.uid('col');
+          this.emitCmd('createcolumn', { colKey: key, colWidth: '1/3', colOrder: order, time: this.nonce() });
+          this.pendingCols.push({ key, width: '1/3', order, at: Date.now() });
+          return key;
+        }
+        addCard(tpl, spec) {
+          spec = spec || {};
+          const lib = globalThis.__boardLib;
+          const cols = this.model.columns;
+          let colKey, order;
+          if (spec.newCol || !cols.length) {
+            const colOrder = spec.atEnd || !cols.length
+              ? lib.after(cols)
+              : lib.between(
+                  (cols[Math.min(this.cursor.ci, cols.length - 1)] || {}).order || '',
+                  (cols[Math.min(this.cursor.ci, cols.length - 1) + 1] || {}).order || '');
+            colKey = this.newColumn(colOrder);
+            order = 'm';
+          } else {
+            const ci = Math.min(spec.ci != null ? spec.ci : this.cursor.ci, cols.length - 1);
+            const col = cols[ci];
+            colKey = col.key;
+            if (spec.append) order = lib.after(col.cards);
+            else {
+              const ki = Math.min(this.cursor.ki, col.cards.length - 1);
+              order = lib.between(
+                col.cards[ki] ? col.cards[ki].order : '',
+                col.cards[ki + 1] ? col.cards[ki + 1].order : '');
+            }
+          }
+          const content = JSON.stringify((DEFAULTS[tpl] || DEFAULTS.text)());
+          this.emitCmd('createcard', {
+            cardColumn: colKey, cardOrder: order, cardKind: tpl,
+            cardContent: content, time: this.nonce() });
+          this.pendingCreateFocus = { column: colKey, order, at: Date.now() };
+          this.addMenu = null;
+          this.sync();
+        }
+        deleteCard(ci, ki) {
+          const col = this.model.columns[ci];
+          if (!col || !col.cards[ki]) return;
+          const card = col.cards[ki];
+          this.spawnGhost(card.id);
+          this.emitCmd('deletecard', { deleteCard: card.id });
+          this.pendingGone.set(card.id, Date.now());
+          if (col.cards.length === 1 && col.key) {
+            this.emitCmd('deletecolumn', { deleteColumn: col.key });
+            this.pendingColGone.set(col.key, Date.now());
+          }
+          this.sync();
+        }
+        placeCard(hit, colKey, order) {
+          this.emitCmd('movecard', { moveCard: hit.card.id, moveColumn: colKey, moveOrder: order });
+          this.pendingPlace.set(hit.card.id, { column: colKey, order, at: Date.now() });
+          if (hit.col.key !== colKey && hit.col.cards.length === 1 && hit.col.key) {
+            this.emitCmd('deletecolumn', { deleteColumn: hit.col.key });
+            this.pendingColGone.set(hit.col.key, Date.now());
+          }
+        }
+        refocusOn(id) {
+          const hit = this.findCard(id);
+          if (hit) this.cursor = { ci: hit.ci, ki: hit.ki, mode: 'navigate' };
+          this.render();
+        }
+        moveFocus(dx, dy) {
+          const cols = this.model.columns;
+          if (!cols.length) return;
+          let { ci, ki } = this.cursor;
+          ci = Math.min(Math.max(ci, 0), cols.length - 1);
+          ki = Math.min(Math.max(ki, 0), cols[ci].cards.length - 1);
+          if (dx) { ci = Math.min(Math.max(ci + dx, 0), cols.length - 1); ki = Math.min(ki, cols[ci].cards.length - 1); }
+          if (dy) { ki = Math.min(Math.max(ki + dy, 0), cols[ci].cards.length - 1); }
+          this.cursor = { ci, ki: Math.max(0, ki), mode: 'navigate' };
+          this.render();
+        }
+        moveCard(dx, dy) {
+          const lib = globalThis.__boardLib;
+          const cols = this.model.columns;
+          const f = this.cursor;
+          const col = cols[f.ci];
+          if (!col || !col.cards[f.ki]) return;
+          const hit = { card: col.cards[f.ki], col, ci: f.ci, ki: f.ki };
+          if (dy) {
+            const nk = f.ki + dy;
+            if (nk < 0 || nk >= col.cards.length) return;
+            const sib = col.cards[nk];
+            const beyond = col.cards[nk + dy];
+            const a = dy > 0 ? sib.order : (beyond ? beyond.order : '');
+            const b = dy > 0 ? (beyond ? beyond.order : '') : sib.order;
+            this.placeCard(hit, col.key, lib.between(a, b));
+          } else if (dx) {
+            const ti = f.ci + dx;
+            if (ti < 0 || ti >= cols.length) {
+              if (col.cards.length === 1) return; // already its own column at the edge
+              const colOrder = ti < 0 ? lib.between('', cols[0].order) : lib.after(cols);
+              this.placeCard(hit, this.newColumn(colOrder), 'm');
+            } else {
+              const t = cols[ti];
+              const ki = Math.min(f.ki, t.cards.length);
+              this.placeCard(hit, t.key, lib.between(
+                ki > 0 ? t.cards[ki - 1].order : '',
+                ki < t.cards.length ? t.cards[ki].order : ''));
+            }
+          }
+          this.sync();
+          this.refocusOn(hit.card.id);
+        }
+        cycleWidth(ci, d) {
+          const col = this.model.columns[ci];
+          if (!col || !col.key) return;
+          const i = WIDTHS.indexOf(col.width);
+          const w = WIDTHS[(i + d + WIDTHS.length) % WIDTHS.length];
+          this.emitCmd('setcolumnwidth', { widthColumn: col.key, widthValue: w });
+          this.pendingWidth.set(col.key, { width: w, at: Date.now() });
+          this.sync();
+        }
+        enterEdit() {
+          const fc = this.focusedCard();
+          if (!fc) return;
+          this.pendingEditFocus = fc.id;
+          this.cursor = Object.assign({}, this.cursor, { mode: 'edit' });
+          this.render();
+        }
+        toNavigate() {
+          this.flushEdits();
+          this.cursor = Object.assign({}, this.cursor, { mode: 'navigate' });
+          this.render();
+          this.focusHost();
+        }
+
+        // ---------- pan ----------
+        setPan(x, y, smooth) {
+          const L = this.lastLayout || { stripW: 600, maxH: 400 };
+          const maxX = Math.max(-PADX, L.stripW - this.vw + PADX);
+          const maxY = Math.max(-TOP, L.maxH - this.vh + 30);
+          x = Math.min(Math.max(x, -PADX), maxX);
+          y = Math.min(Math.max(y, -TOP), maxY);
+          this.pan = { x, y };
+          const s = this.stripEl, c = this.canvasEl;
+          if (!s) return;
+          s.style.transition = smooth ? 'transform ' + MOTION + 'ms ' + EASE : 'none';
+          s.style.transform = 'translate3d(' + (-x) + 'px,' + (-y) + 'px,0)';
+          if (c) {
+            c.style.transition = smooth ? 'background-position ' + MOTION + 'ms ' + EASE : 'none';
+            c.style.backgroundPosition = (-x) + 'px ' + (-y) + 'px';
+          }
+        }
+        onCanvasPointerDown(e) {
+          if (this.addMenu && !(e.target.closest && e.target.closest('.bc-menu,.bc-addbtn'))) {
+            this.addMenu = null; this.render();
+          }
+          if (e.button !== 0) return;
+          if (e.target !== this.canvasEl && e.target !== this.stripEl) return;
+          e.preventDefault();
+          this.focusHost();
+          const sx = e.clientX, sy = e.clientY, px = this.pan.x, py = this.pan.y;
+          const move = (ev) => { this.setPan(px - (ev.clientX - sx), py - (ev.clientY - sy), false); };
+          const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            if (this.canvasEl) this.canvasEl.style.cursor = '';
+          };
+          if (this.canvasEl) this.canvasEl.style.cursor = 'grabbing';
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up);
+        }
+        followFocus() {
+          const fc = this.focusedCard();
+          const L = this.lastLayout;
+          if (!fc || !L) { this._lastFocusKey = null; return; }
+          const r = L.cards.get(fc.id);
+          if (!r) return;
+          const key = fc.id + ':' + Math.round(r.x) + ':' + Math.round(r.y);
+          if (key === this._lastFocusKey) return;
+          this._lastFocusKey = key;
+          if (this.drag || this.resizing) return;
+          const M = 28;
+          let px = this.pan.x, py = this.pan.y;
+          if (r.x - M < px) px = r.x - M;
+          else if (r.x + r.w + M > px + this.vw) px = r.x + r.w + M - this.vw;
+          const topBound = r.y - M - CHIPH - 10;
+          if (topBound < py) py = topBound;
+          else if (r.y + Math.min(r.h, this.vh - 2 * M) + M > py + this.vh)
+            py = r.y + Math.min(r.h, this.vh - 2 * M) + M - this.vh;
+          if (px !== this.pan.x || py !== this.pan.y) this.setPan(px, py, true);
+        }
+        readViewport() {
+          if (!this.canvasEl || !this.canvasEl.isConnected) return;
+          const r = this.canvasEl.getBoundingClientRect();
+          const vw = Math.round(r.width), vh = Math.round(r.height);
+          if (vw < 40 || vh < 40) return; // detached / unlaid-out — never poison state
+          if (Math.abs(vw - this.vw) > 1 || Math.abs(vh - this.vh) > 1) {
+            this.vw = vw; this.vh = vh;
+            this.render();
+          }
+        }
+
+        // ---------- card pointer: focus, drag ----------
+        onCardPointerDown(e, el) {
+          if (e.button !== 0) return;
+          const id = el.dataset.cardId;
+          const pos = this.findCard(id);
+          if (!pos) return;
+          const editingThis = this.isEditing(id);
+          if (!editingThis) {
+            const f = this.cursor;
+            if (f.ci !== pos.ci || f.ki !== pos.ki || f.mode !== 'navigate') {
+              this.cursor = { ci: pos.ci, ki: pos.ki, mode: 'navigate' };
+              this.render();
+            }
+          }
+          if (editingThis) return;
+          const interactive = e.target.closest && e.target.closest('input,textarea,button,a,[data-nodrag]');
+          if (interactive) { e.preventDefault(); this.focusHost(); return; }
+          e.preventDefault();
+          this.focusHost();
+          const r = el.getBoundingClientRect();
+          this._dragPtr = { id, sx: e.clientX, sy: e.clientY,
+            ox: e.clientX - r.left, oy: e.clientY - r.top, active: false, raf: 0 };
+          window.addEventListener('pointermove', this.__dragMove);
+          window.addEventListener('pointerup', this.__dragUp);
+        }
+        onDragMove(e) {
+          const p = this._dragPtr;
+          if (!p) return;
+          p.cx = e.clientX; p.cy = e.clientY;
+          if (!p.active) {
+            if (Math.hypot(e.clientX - p.sx, e.clientY - p.sy) < 5) return;
+            p.active = true;
+          }
+          if (p.raf) return;
+          p.raf = requestAnimationFrame(() => {
+            p.raf = 0;
+            if (!this._dragPtr || !this._dragPtr.active || !this.canvasEl) return;
+            const cr = this.canvasEl.getBoundingClientRect();
+            const gx = p.cx - cr.left + this.pan.x;
+            const gy = p.cy - cr.top + this.pan.y;
+            this.drag = { id: p.id, x: gx - p.ox, y: gy - p.oy, slot: this.slotFor(gx, gy, p.id) };
+            this.render();
+          });
+        }
+        slotFor(px, py, skipId) {
+          const L = this.layout(this.model.columns, { skipId });
+          for (const c of L.cols) {
+            if (px < c.x + c.w + GAP / 2) {
+              const colCards = this.model.columns[c.ci].cards.filter((cd) => cd.id !== skipId);
+              let ki = 0;
+              for (const cd of colCards) {
+                const r = L.cards.get(cd.id);
+                if (r && py > r.y + r.h / 2) ki++;
+              }
+              return { type: 'cell', ci: c.ci, ki };
+            }
+          }
+          return { type: 'newcol' };
+        }
+        onDragEnd() {
+          window.removeEventListener('pointermove', this.__dragMove);
+          window.removeEventListener('pointerup', this.__dragUp);
+          const p = this._dragPtr;
+          this._dragPtr = null;
+          const d = this.drag;
+          this.drag = null;
+          if (!p || !p.active) { this.render(); return; }
+          if (!d || !d.slot) { this.render(); return; }
+          const hit = this.findCard(d.id);
+          if (!hit) { this.render(); return; }
+          const lib = globalThis.__boardLib;
+          let colKey, order;
+          if (d.slot.type === 'newcol') {
+            colKey = this.newColumn(lib.after(this.model.columns));
+            order = 'm';
+          } else {
+            const col = this.model.columns[Math.min(d.slot.ci, this.model.columns.length - 1)];
+            colKey = col.key;
+            const list = col.cards.filter((c) => c.id !== d.id);
+            const ki = Math.min(d.slot.ki, list.length);
+            order = lib.between(
+              ki > 0 ? list[ki - 1].order : '',
+              ki < list.length ? list[ki].order : '');
+          }
+          this.placeCard(hit, colKey, order);
+          this.sync();
+          this.refocusOn(d.id);
+        }
+        onCardDblClick(e, el) {
+          if (e.target.closest && e.target.closest('input,textarea,button,[data-nodrag]')) return;
+          const pos = this.findCard(el.dataset.cardId);
+          if (!pos) return;
+          this.pendingEditFocus = pos.card.id;
+          this.cursor = { ci: pos.ci, ki: pos.ki, mode: 'edit' };
+          this.render();
+        }
+
+        // ---------- resize ----------
+        onResizeDown(e, id) {
+          if (e.button !== 0) return;
+          e.preventDefault(); e.stopPropagation();
+          const r = this.lastLayout && this.lastLayout.cards.get(id);
+          if (!r) return;
+          const pos = this.findCard(id);
+          if (pos) this.cursor = { ci: pos.ci, ki: pos.ki, mode: 'navigate' };
+          this.resizing = id;
+          this.focusHost();
+          const sy = e.clientY, sh = r.h;
+          let raf = 0, last = sh;
+          const move = (ev) => {
+            if (raf) return;
+            raf = requestAnimationFrame(() => {
+              raf = 0;
+              const hit = this.findCard(id);
+              if (!hit) return;
+              last = Math.max(90, Math.min(sh + ev.clientY - sy, Math.round(this.vh * 0.95)));
+              hit.card.height = String(last);
+              this.render();
+            });
+          };
+          const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            this.resizing = null;
+            this.pendingHeight.set(id, { height: String(last), at: Date.now() });
+            this.emitCmd('resizecard', { resizeCard: id, resizeHeight: String(last) });
+            this.sync();
+          };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up);
+        }
+        resetHeight(id) {
+          this.pendingHeight.set(id, { height: 'auto', at: Date.now() });
+          this.emitCmd('resizecard', { resizeCard: id, resizeHeight: 'auto' });
+          this.sync();
+        }
+
+        // ---------- events: click / input / change / keys ----------
+        onClick(e) {
+          if (e.target.closest('.bc-title')) { this.startTitleEdit(); return; }
+          if (e.target.closest('.bc-bar-help') || e.target.closest('.bc-helpov-close')) {
+            this.helpOpen = !this.helpOpen; this.render(); this.focusHost(); return;
+          }
+          const ov = e.target.closest('.bc-helpov');
+          if (ov && !e.target.closest('.bc-helpov-card')) {
+            this.helpOpen = false; this.render(); this.focusHost(); return;
+          }
+          const bar = e.target.closest('.bc-bar-add');
+          if (bar) { this.addCard(bar.dataset.tpl, { newCol: e.altKey }); return; }
+          const chip = e.target.closest('.bc-chip');
+          if (chip) {
+            const ci = Number(chip.dataset.ci);
+            const col = this.model.columns[ci];
+            if (col) {
+              this.cursor = { ci, ki: Math.max(0, Math.min(this.cursor.ki, col.cards.length - 1)), mode: 'navigate' };
+              this.cycleWidth(ci, 1);
+            }
+            this.focusHost();
+            return;
+          }
+          const ab = e.target.closest('.bc-addbtn');
+          if (ab) {
+            e.stopPropagation();
+            const menu = { ci: Number(ab.dataset.ci), newCol: ab.dataset.newcol === '1',
+              mx: Number(ab.dataset.mx), my: Number(ab.dataset.my) };
+            const same = this.addMenu && this.addMenu.mx === menu.mx && this.addMenu.my === menu.my;
+            this.addMenu = same ? null : menu;
+            this.render();
+            this.focusHost();
+            return;
+          }
+          const mi = e.target.closest('.bc-menu-item');
+          if (mi) {
+            e.stopPropagation();
+            const menu = this.addMenu;
+            this.addMenu = null;
+            if (menu) this.addCard(mi.dataset.tpl,
+              menu.newCol ? { newCol: true, atEnd: true } : { ci: menu.ci, append: true });
+            else this.render();
+            return;
+          }
+          const del = e.target.closest('.bc-del');
+          if (del) {
+            e.stopPropagation();
+            const pos = this.findCard(del.dataset.cardId);
+            if (pos) this.deleteCard(pos.ci, pos.ki);
+            this.focusHost();
+            return;
+          }
+          const role = e.target.closest('[data-role]');
+          if (!role) return;
+          const id = role.dataset.cardId;
+          if (role.dataset.role === 'cl-remove') {
+            e.stopPropagation();
+            const idx = Number(role.dataset.idx);
+            this.captureFlip(id);
+            this.updCard(id, (d) => { d.items.splice(idx, 1); if (!d.items.length) d.items.push({ text: '', done: false, _k: 'k' + (++uidN) }); }, { now: true, struct: true });
+          } else if (role.dataset.role === 'cl-add') {
+            let n = 0;
+            this.updCard(id, (d) => { d.items.push({ text: '', done: false, _k: 'k' + (++uidN) }); n = d.items.length - 1; }, { now: true, struct: true });
+            this.pendingItem = { id, idx: n };
+            this.render();
+          } else if (role.dataset.role === 'tbl-op') {
+            const op = role.dataset.op;
+            this.updCard(id, (d) => {
+              if (op === 'addrow') d.rows.push(new Array(d.header.length).fill(''));
+              if (op === 'addcol') { d.header.push(''); d.rows.forEach((r) => r.push('')); }
+            }, { now: true, struct: true });
+          } else if (role.dataset.role === 'tbl-delrow') {
+            e.stopPropagation();
+            const ri = Number(role.dataset.ri);
+            this.updCard(id, (d) => { if (d.rows.length > 1) d.rows.splice(ri, 1); }, { now: true, struct: true });
+          } else if (role.dataset.role === 'tbl-delcol') {
+            e.stopPropagation();
+            const cx = Number(role.dataset.cx);
+            this.updCard(id, (d) => {
+              if (d.header.length > 1) { d.header.splice(cx, 1); d.rows.forEach((r) => r.splice(cx, 1)); }
+            }, { now: true, struct: true });
+          }
+        }
+        onInput(e) {
+          const t = e.target;
+          const role = t.dataset && t.dataset.role;
+          if (!role || role === 'title-input') return;
+          const id = t.dataset.cardId;
+          if (role === 'md') {
+            this.updCard(id, (d) => { d.markdown = t.value; });
+            t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px';
+          } else if (role === 'cl-title') {
+            this.updCard(id, (d) => { d.title = t.value; });
+          } else if (role === 'cl-item') {
+            const idx = Number(t.dataset.idx);
+            this.updCard(id, (d) => { if (d.items[idx]) d.items[idx].text = t.value; });
+          } else if (role === 'tbl-head') {
+            const cx = Number(t.dataset.cx);
+            this.updCard(id, (d) => { d.header[cx] = t.value; });
+          } else if (role === 'tbl-cell') {
+            const ri = Number(t.dataset.ri), cx = Number(t.dataset.cx);
+            this.updCard(id, (d) => { if (d.rows[ri]) d.rows[ri][cx] = t.value; });
+          }
+        }
+        onChange(e) {
+          const t = e.target;
+          if (!t.dataset || t.dataset.role !== 'cl-done') return;
+          const id = t.dataset.cardId;
+          const idx = Number(t.dataset.idx);
+          const v = t.checked;
+          this.captureFlip(id);
+          this.updCard(id, (d) => {
+            const items = d.items;
+            if (!items[idx]) return;
+            const [it] = items.splice(idx, 1);
+            it.done = v;
+            if (v) items.push(it); // checked items sink to the bottom
+            else {
+              const fi = items.findIndex((x) => x.done);
+              items.splice(fi < 0 ? items.length : fi, 0, it);
+            }
+          }, { now: true, struct: true });
+        }
+        onKeyDown(e) {
+          const k = e.key;
+          const t = e.target;
+          if (t.dataset && t.dataset.role === 'title-input') {
+            if (k === 'Enter') { e.preventDefault(); t.blur(); }
+            else if (k === 'Escape') { e.preventDefault(); this._titleCancel = true; t.blur(); }
+            e.stopPropagation();
+            return;
+          }
+          if (k === 'Escape') {
+            if (this.helpOpen) { e.preventDefault(); this.helpOpen = false; this.render(); this.focusHost(); return; }
+            if (this.addMenu) { e.preventDefault(); this.addMenu = null; this.render(); return; }
+            if (this.cursor.mode === 'edit') { e.preventDefault(); this.toNavigate(); }
+            return;
+          }
+          if (t.dataset && t.dataset.role === 'cl-item') {
+            this.onItemKeyDown(e, t);
+            if (e.defaultPrevented) return;
+          }
+          if (t.dataset && t.dataset.role === 'cl-title' && k === 'Enter') {
+            e.preventDefault();
+            const el = this.cardEls.get(t.dataset.cardId);
+            const first = el && el.querySelector('input[data-role="cl-item"]');
+            if (first) first.focus();
+            return;
+          }
+          const inText = t && t.matches && t.matches('input:not([type="checkbox"]), textarea');
+          if (inText) return;
+          if (k === '?') { e.preventDefault(); this.helpOpen = !this.helpOpen; this.render(); return; }
+          if (this.helpOpen) return;
+          const nav = this.cursor.mode === 'navigate';
+          const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+          if (arrows[k]) {
+            e.preventDefault();
+            const [dx, dy] = arrows[k];
+            if (e.altKey && e.shiftKey) this.moveCard(dx, dy);
+            else if (nav) this.moveFocus(dx, dy);
+            return;
+          }
+          if (!nav) return;
+          if (k === 'Enter') { e.preventDefault(); this.enterEdit(); return; }
+          if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); this.deleteCard(this.cursor.ci, this.cursor.ki); return; }
+          if (k === 'w' || k === 'W') { e.preventDefault(); this.cycleWidth(this.cursor.ci, e.shiftKey ? -1 : 1); return; }
+          const digits = { Digit1: 'text', Digit2: 'checklist', Digit3: 'table' };
+          if (digits[e.code]) { e.preventDefault(); this.addCard(digits[e.code], { newCol: e.shiftKey }); return; }
+        }
+        onItemKeyDown(e, t) {
+          const id = t.dataset.cardId;
+          const idx = Number(t.dataset.idx);
+          if (e.altKey && e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault();
+            const ni = idx + (e.key === 'ArrowUp' ? -1 : 1);
+            this.captureFlip(id);
+            this.updCard(id, (d) => {
+              if (ni < 0 || ni >= d.items.length) return;
+              const [x] = d.items.splice(idx, 1);
+              d.items.splice(ni, 0, x);
+            }, { now: true, struct: true });
+            this.pendingItem = { id, idx: Math.max(0, Math.min(ni, 1e9)) };
+            this.render();
+            return;
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            this.captureFlip(id);
+            this.updCard(id, (d) => d.items.splice(idx + 1, 0, { text: '', done: false, _k: 'k' + (++uidN) }), { now: true, struct: true });
+            this.pendingItem = { id, idx: idx + 1 };
+            this.render();
+          } else if (e.key === 'Backspace' && t.value === '') {
+            e.preventDefault();
+            this.captureFlip(id);
+            this.updCard(id, (d) => { if (d.items.length > 1) d.items.splice(idx, 1); }, { now: true, struct: true });
+            this.pendingItem = { id, idx: Math.max(0, idx - 1) };
+            this.render();
+          }
+        }
+        onFocusOut(e) {
+          const t = e.target;
+          if (t && t.dataset && t.dataset.role === 'title-input') { this.commitTitle(t); return; }
+          if (t && t.dataset && t.dataset.cardId && this._editT.has(t.dataset.cardId))
+            this.fireEdit(t.dataset.cardId);
+        }
+
+        // ---------- title ----------
+        startTitleEdit() {
+          this._titleCancel = false;
+          this.editingTitle = true;
+          const inp = this.querySelector('.bc-title-input');
+          inp.value = this.model.name;
+          this.renderBar();
+          requestAnimationFrame(() => { inp.focus(); inp.select(); });
+        }
+        commitTitle(inp) {
+          if (!this.editingTitle) return;
+          const cancel = this._titleCancel;
+          this._titleCancel = false;
+          this.editingTitle = false;
+          if (!cancel) {
+            const name = inp.value.trim() || 'untitled board';
+            if (name !== this.model.name) {
+              this.emitCmd('rename', { boardName: name });
+              this.pendingName = { v: name, at: Date.now() };
+              this.model.name = name;
+            }
+          }
+          this.renderBar();
+          this.focusHost();
+        }
+
+        // ---------- FLIP for checklist rows (sink / reorder) ----------
+        captureFlip(id) {
+          const el = this.cardEls.get(id);
+          if (!el) { this._flip = null; return; }
+          const tops = new Map();
+          el.querySelectorAll('[data-itemk]').forEach((n) => tops.set(n.dataset.itemk, n.getBoundingClientRect().top));
+          this._flip = tops.size ? { id, tops } : null;
+        }
+        applyFlip() {
+          if (!this._flip) return;
+          const f = this._flip;
+          this._flip = null;
+          const el = this.cardEls.get(f.id);
+          if (!el) return;
+          el.querySelectorAll('[data-itemk]').forEach((n) => {
+            const old = f.tops.get(n.dataset.itemk);
+            if (old == null) return;
+            const dy = old - n.getBoundingClientRect().top;
+            if (Math.abs(dy) < 2) return;
+            n.style.transition = 'none';
+            n.style.transform = 'translateY(' + dy + 'px)';
+            requestAnimationFrame(() => {
+              n.style.transition = 'transform ' + MOTION + 'ms ' + EASE;
+              n.style.transform = '';
+              setTimeout(() => { n.style.transition = ''; }, MOTION + 60);
+            });
+          });
+        }
+        spawnGhost(id) {
+          const r = this.lastLayout && this.lastLayout.cards.get(id);
+          if (!r || !this.stripEl) return;
+          const g = document.createElement('div');
+          g.className = 'bc-ghost';
+          g.style.transform = 'translate3d(' + r.x + 'px,' + r.y + 'px,0)';
+          g.style.width = r.w + 'px';
+          g.style.height = r.h + 'px';
+          this.stripEl.appendChild(g);
+          setTimeout(() => g.remove(), MOTION + 60);
+        }
+
+        // ---------- render ----------
+        render() {
+          if (!this.__init || !this.stripEl) return;
+          const now = Date.now();
+          // Land the cursor on a card we just created, once its row
+          // (or optimistic column) shows up in the model.
+          if (this.pendingCreateFocus) {
+            const p = this.pendingCreateFocus;
+            if (now - p.at > EXP) this.pendingCreateFocus = null;
+            else {
+              const cols = this.model.columns;
+              for (let ci = 0; ci < cols.length && this.pendingCreateFocus; ci++) {
+                if (cols[ci].key !== p.column) continue;
+                const ki = cols[ci].cards.findIndex((c) => c.order === p.order);
+                if (ki >= 0) {
+                  this.cursor = { ci, ki, mode: 'edit' };
+                  this.pendingEditFocus = cols[ci].cards[ki].id;
+                  this.pendingCreateFocus = null;
+                }
+              }
+            }
+          }
+          // Clamp the cursor to the model's bounds.
+          const cols = this.model.columns;
+          if (cols.length) {
+            const ci = Math.min(Math.max(this.cursor.ci, 0), cols.length - 1);
+            const ki = Math.min(Math.max(this.cursor.ki, 0), Math.max(cols[ci].cards.length - 1, 0));
+            if (ci !== this.cursor.ci || ki !== this.cursor.ki)
+              this.cursor = { ci, ki, mode: 'navigate' };
+          }
+          this.renderBar();
+          const dragging = this.drag;
+          const dragH = dragging
+            ? ((this.lastLayout && this.lastLayout.cards.get(dragging.id))
+              ? this.lastLayout.cards.get(dragging.id).h
+              : (this.measured.get(dragging.id) || 140))
+            : 140;
+          const L = this.layout(this.model.columns,
+            dragging ? { skipId: dragging.id, slot: dragging.slot, dragH } : {});
+          const prevLayout = this.lastLayout;
+          this.lastLayout = L;
+          this.renderChips(L);
+          this.renderAddBtns(L, dragging);
+          this.renderSlot(L, dragging);
+          this.renderCards(L, prevLayout, dragging, dragH);
+          this.renderMenu();
+          this.querySelector('.bc-empty').hidden = this.model.columns.length > 0;
+          this.querySelector('.bc-helpov').hidden = !this.helpOpen;
+          this.applyFlip();
+          this.measure();
+          this.resolvePendingFocus();
+          this.setPan(this.pan.x, this.pan.y, false);
+          this.followFocus();
+        }
+        renderBar() {
+          const btn = this.querySelector('.bc-title');
+          const inp = this.querySelector('.bc-title-input');
+          if (!btn || !inp) return;
+          btn.hidden = this.editingTitle;
+          inp.hidden = !this.editingTitle;
+          if (!this.editingTitle) btn.textContent = this.model.name || 'untitled board';
+        }
+        renderChips(L) {
+          const seen = new Set();
+          L.cols.forEach((c) => {
+            const col = this.model.columns[c.ci];
+            const key = col.key || ('i' + c.ci);
+            seen.add(key);
+            let el = this.chipEls.get(key);
+            if (!el) {
+              el = document.createElement('button');
+              el.type = 'button';
+              el.className = 'bc-chip';
+              this.stripEl.appendChild(el);
+              this.chipEls.set(key, el);
+            }
+            el.dataset.ci = c.ci;
+            el.textContent = GLYPH[col.width] || col.width;
+            el.title = 'column width ' + col.width + ' — click (or w) to cycle';
+            el.classList.toggle('is-focused', this.cursor.ci === c.ci);
+            el.style.transform = 'translate3d(' + c.x + 'px,' + TOP + 'px,0)';
+            el.style.width = c.w + 'px';
+          });
+          for (const [k, el] of Array.from(this.chipEls)) {
+            if (!seen.has(k)) { el.remove(); this.chipEls.delete(k); }
+          }
+        }
+        renderAddBtns(L, dragging) {
+          const seen = new Set();
+          const put = (key, label, title, ci, newCol, x, y, w) => {
+            seen.add(key);
+            let el = this.addEls.get(key);
+            if (!el) {
+              el = document.createElement('button');
+              el.type = 'button';
+              el.className = 'bc-addbtn';
+              this.stripEl.appendChild(el);
+              this.addEls.set(key, el);
+            }
+            el.textContent = label;
+            el.title = title;
+            el.dataset.ci = ci;
+            el.dataset.newcol = newCol ? '1' : '';
+            el.dataset.mx = x;
+            el.dataset.my = y + 34;
+            el.style.transform = 'translate3d(' + x + 'px,' + y + 'px,0)';
+            el.style.width = w + 'px';
+          };
+          L.cols.forEach((c) => {
+            put('add:' + (c.key || c.ci), '+ add', 'add a card to this column',
+              c.ci, false, c.x, c.btnY, c.w);
+          });
+          if (!dragging) {
+            put('newcol', this.model.columns.length ? '+ add column' : '+ add first card',
+              'add a card in a new column', -1, true, L.addCol.x, L.addCol.y, L.addCol.w);
+          }
+          for (const [k, el] of Array.from(this.addEls)) {
+            if (!seen.has(k)) { el.remove(); this.addEls.delete(k); }
+          }
+        }
+        renderSlot(L, dragging) {
+          const slot = this.querySelector('.bc-slot');
+          if (!slot) return;
+          if (dragging && L.slotRect) {
+            slot.hidden = false;
+            slot.style.transform = 'translate3d(' + L.slotRect.x + 'px,' + L.slotRect.y + 'px,0)';
+            slot.style.width = L.slotRect.w + 'px';
+            slot.style.height = L.slotRect.h + 'px';
+          } else {
+            slot.hidden = true;
+          }
+        }
+        renderMenu() {
+          const menu = this.querySelector('.bc-menu');
+          if (!menu) return;
+          if (!this.addMenu) { menu.hidden = true; return; }
+          menu.innerHTML =
+            '<span class="bc-menu-label">' + (this.addMenu.newCol ? 'new column' : 'add card') + '</span>' +
+            ['text', 'checklist', 'table'].map((t) =>
+              '<button type="button" class="bc-menu-item" data-tpl="' + t + '">' + t + '</button>').join('');
+          menu.style.transform = 'translate3d(' + this.addMenu.mx + 'px,' + this.addMenu.my + 'px,0)';
+          menu.hidden = false;
+        }
+        renderCards(L, prevLayout, dragging, dragH) {
+          const seen = new Set();
+          this.model.columns.forEach((col, ci) => {
+            col.cards.forEach((card, ki) => {
+              const isDrag = dragging && dragging.id === card.id;
+              let r = L.cards.get(card.id);
+              if (isDrag) {
+                const w = (prevLayout && prevLayout.cards.get(card.id))
+                  ? prevLayout.cards.get(card.id).w
+                  : (L.cols[ci] ? L.cols[ci].w : 300);
+                r = { x: dragging.x, y: dragging.y, w, h: dragH, manual: card.height !== 'auto' };
+              }
+              if (!r) return;
+              seen.add(card.id);
+              const focused = this.cursor.ci === ci && this.cursor.ki === ki;
+              const editing = focused && this.cursor.mode === 'edit';
+              let el = this.cardEls.get(card.id);
+              if (!el) {
+                el = this.buildCard(card.id);
+                this.stripEl.appendChild(el);
+                this.cardEls.set(card.id, el);
+              }
+              const noAnim = isDrag || this.resizing === card.id;
+              el.style.transform = 'translate3d(' + r.x + 'px,' + r.y + 'px,0)';
+              el.style.width = r.w + 'px';
+              el.style.height = r.h + 'px';
+              el.style.transition = noAnim ? 'none' : TR + ', box-shadow 150ms ' + EASE;
+              el.style.zIndex = isDrag ? 60 : (focused ? 2 : 1);
+              el.classList.toggle('is-focused', focused && !isDrag);
+              el.classList.toggle('is-drag', !!isDrag);
+              el.classList.toggle('is-editing', editing);
+              el.querySelector('.bc-kind').textContent = card.kind;
+              el.querySelector('.bc-edit-hint').hidden = !editing;
+              el.querySelector('.bc-manual').hidden = !r.manual;
+              // Rebuild the content subtree only when its signature
+              // changes: in view mode that is the content JSON; in edit
+              // mode only explicit structural bumps (so typing never
+              // clobbers the focused input).
+              const sig = card.kind + '|' + (editing
+                ? 'edit:' + (el.__structN || 0)
+                : 'view:' + card.content);
+              if (el.__sig !== sig) {
+                el.__sig = sig;
+                this.buildContent(el, card, editing);
+              }
+            });
+          });
+          for (const [id, el] of Array.from(this.cardEls)) {
+            if (!seen.has(id)) { el.remove(); this.cardEls.delete(id); }
+          }
+        }
+        buildCard(id) {
+          const el = document.createElement('div');
+          el.className = 'bc-card';
+          el.dataset.cardId = id;
+          el.innerHTML =
+            '<div class="bc-card-head">' +
+            '<span class="bc-kind"></span>' +
+            '<span class="bc-edit-hint" hidden>· edit — esc to exit</span>' +
+            '<span class="bc-bar-flex"></span>' +
+            '<span class="bc-manual" hidden title="manual height — double-click the bottom edge to reset">↕</span>' +
+            '<button type="button" class="bc-del" data-nodrag="1" data-card-id="' + id + '" title="delete card (del)">×</button>' +
+            '</div>' +
+            '<div class="bc-scroll"><div class="bc-inner" data-measure="1" data-card-id="' + id + '"></div></div>' +
+            '<div class="bc-resize" data-nodrag="1" title="drag to set height · double-click to reset to auto"></div>';
+          el.addEventListener('pointerdown', (e) => this.onCardPointerDown(e, el));
+          el.addEventListener('dblclick', (e) => this.onCardDblClick(e, el));
+          const rz = el.querySelector('.bc-resize');
+          rz.addEventListener('pointerdown', (e) => this.onResizeDown(e, id));
+          rz.addEventListener('dblclick', (e) => { e.stopPropagation(); this.resetHeight(id); });
+          return el;
+        }
+        buildContent(el, card, editing) {
+          const esc = globalThis.__boardLib.esc;
+          const inner = el.querySelector('.bc-inner');
+          const d = card.data;
+          const id = card.id;
+          if (card.kind === 'checklist') {
+            let out = editing
+              ? '<input class="bc-cl-title" data-role="cl-title" data-card-id="' + id + '" value="' + esc(d.title) + '" placeholder="checklist title">'
+              : '<div class="bc-cl-title-shown">' + esc(d.title || 'checklist') + '</div>';
+            out += '<div class="bc-cl-items">' + d.items.map((it, idx) =>
+              '<div class="bc-cl-item" data-itemk="' + esc(it._k) + '">' +
+              '<input type="checkbox" data-role="cl-done" data-card-id="' + id + '" data-idx="' + idx + '"' +
+              (it.done ? ' checked' : '') + ' title="toggle — works in navigate mode too">' +
+              (editing
+                ? '<input class="bc-cl-text" data-role="cl-item" data-card-id="' + id + '" data-idx="' + idx + '" value="' + esc(it.text) + '" placeholder="item">' +
+                  '<button type="button" class="bc-cl-x" tabindex="-1" data-nodrag="1" data-role="cl-remove" data-card-id="' + id + '" data-idx="' + idx + '" title="remove item">×</button>'
+                : '<span class="bc-cl-shown' + (it.done ? ' is-done' : '') + '">' + esc(it.text || '(empty)') + '</span>') +
+              '</div>').join('') + '</div>';
+            if (editing) out += '<button type="button" class="bc-mini" data-role="cl-add" data-card-id="' + id + '">+ item</button>';
+            inner.innerHTML = out;
+            return;
+          }
+          if (card.kind === 'table') {
+            const canDelCol = d.header.length > 1;
+            const canDelRow = d.rows.length > 1;
+            let out = '<div class="bc-tbl"><div class="bc-tbl-head">' +
+              d.header.map((val, cx) =>
+                '<div class="bc-tbl-hc">' +
+                (editing
+                  ? '<input data-role="tbl-head" data-card-id="' + id + '" data-cx="' + cx + '" value="' + esc(val) + '" placeholder="col">' +
+                    (canDelCol
+                      ? '<button type="button" tabindex="-1" class="bc-tbl-x" data-role="tbl-delcol" data-card-id="' + id + '" data-cx="' + cx + '" title="remove column">×</button>'
+                      : '')
+                  : '<span>' + (esc(val) || '&nbsp;') + '</span>') +
+                '</div>').join('') +
+              (editing ? '<div class="bc-tbl-gut"></div>' : '') +
+              '</div>' +
+              d.rows.map((row, ri) =>
+                '<div class="bc-tbl-row">' +
+                row.map((val, cx) =>
+                  '<div class="bc-tbl-c">' +
+                  (editing
+                    ? '<input data-role="tbl-cell" data-card-id="' + id + '" data-ri="' + ri + '" data-cx="' + cx + '" value="' + esc(val) + '">'
+                    : '<span>' + (esc(val) || '&nbsp;') + '</span>') +
+                  '</div>').join('') +
+                (editing
+                  ? '<div class="bc-tbl-gut">' +
+                    (canDelRow
+                      ? '<button type="button" tabindex="-1" class="bc-tbl-x" data-role="tbl-delrow" data-card-id="' + id + '" data-ri="' + ri + '" title="remove row">×</button>'
+                      : '') +
+                    '</div>'
+                  : '') +
+                '</div>').join('') +
+              '</div>';
+            if (editing) {
+              out += '<div class="bc-tbl-ops">' +
+                '<button type="button" class="bc-mini" data-role="tbl-op" data-op="addrow" data-card-id="' + id + '">+ row</button>' +
+                '<button type="button" class="bc-mini" data-role="tbl-op" data-op="addcol" data-card-id="' + id + '">+ col</button>' +
+                '<span class="bc-tbl-hint">× on a row / column removes it</span>' +
+                '</div>';
+            }
+            inner.innerHTML = out;
+            return;
+          }
+          // text
+          if (editing) {
+            inner.innerHTML = '<textarea class="bc-md-ta" data-autosize="1" data-role="md" data-card-id="' + id + '" placeholder="markdown — # heading · - list · **bold**"></textarea>';
+            inner.firstElementChild.value = d.markdown || '';
+          } else {
+            inner.innerHTML = '<div class="bc-md">' + mdToHtml(d.markdown) + '</div>';
+          }
+        }
+        measure() {
+          if (this._measuring || !this.stripEl) return;
+          this.stripEl.querySelectorAll('textarea[data-autosize]').forEach((t) => {
+            t.style.height = 'auto';
+            t.style.height = t.scrollHeight + 'px';
+          });
+          let changed = false;
+          this.stripEl.querySelectorAll('[data-measure]').forEach((n) => {
+            const id = n.dataset.cardId;
+            const h = n.offsetHeight + 28;
+            if (Math.abs((this.measured.get(id) || 0) - h) > 1) {
+              this.measured.set(id, h);
+              changed = true;
+            }
+          });
+          if (changed) {
+            this._measuring = true;
+            this.render();
+            this._measuring = false;
+          }
+        }
+        resolvePendingFocus() {
+          if (this.pendingEditFocus) {
+            const id = this.pendingEditFocus;
+            const el = this.cardEls.get(id);
+            if (el && this.isEditing(id)) {
+              this.pendingEditFocus = null;
+              requestAnimationFrame(() => {
+                const t = el.querySelector('textarea, input:not([type="checkbox"])');
+                if (t) {
+                  t.focus();
+                  if (t.setSelectionRange && typeof t.value === 'string') {
+                    const n = t.value.length;
+                    try { t.setSelectionRange(n, n); } catch (x) {}
+                  }
+                }
+              });
+            }
+          }
+          if (this.pendingItem) {
+            const p = this.pendingItem;
+            const el = this.cardEls.get(p.id);
+            if (el) {
+              this.pendingItem = null;
+              requestAnimationFrame(() => {
+                const t = el.querySelector('input[data-role="cl-item"][data-idx="' + p.idx + '"]');
+                if (t) t.focus();
+              });
+            }
+          }
+        }
+      });
+    })();
+
+# ============================================================
+# THE SHELL
+# ============================================================
+#
+# The single-mode view for `model: tonk:board/canvas` — rendered for one
+# concrete replica, exactly like the wiki shell. The hidden
+# `.board-data` pane mounts the component loader and the data-row
+# directories; the visible surface is the `<board-canvas>` component
+# with its command wiring. Styling uses the app's Web Awesome tokens
+# (--wa-*) so the board follows the active theme and light/dark
+# automatically.
+view!:
+  this: tonk:board/shell
+  model: tonk:board/canvas
+  display: |
+    <div class="board-root">
+      <style>
+        .board-root {
+          display: flex;
+          flex-direction: column;
+          min-height: 100dvh;
+          max-height: 100dvh;
+          font-family: var(--wa-font-family-body);
+          font-size: 13px;
+          line-height: 1.5;
+          color: var(--wa-color-text-normal);
+          background: transparent;
+        }
+        .board-data { display: none; }
+
+        board-canvas {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          min-height: 0;
+          outline: none;
+        }
+
+        /* -- top bar --------------------------------------------- */
+        .bc-bar {
+          flex: none;
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          height: 44px;
+          padding: 0 var(--wa-space-m);
+          background: var(--wa-color-surface-raised);
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          position: relative;
+          z-index: 5;
+        }
+        .bc-title {
+          border: none; background: transparent; color: inherit;
+          font: inherit; font-weight: var(--wa-font-weight-semibold);
+          cursor: text; padding: 2px 6px;
+        }
+        .bc-title:hover { background: var(--wa-color-neutral-fill-quiet); }
+        .bc-title-input {
+          width: 240px;
+          font: inherit; color: inherit;
+          padding: var(--wa-space-2xs) var(--wa-space-s);
+          background: var(--wa-color-surface-default);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          outline: none;
+        }
+        .bc-bar-sep { color: var(--wa-color-surface-border); padding: 0 2px; }
+        .bc-bar-add {
+          font: inherit; cursor: pointer;
+          padding: var(--wa-space-2xs) var(--wa-space-s);
+          color: var(--wa-color-text-quiet);
+          background: transparent;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        .bc-bar-add:hover { color: var(--wa-color-text-normal); border-color: var(--wa-color-text-normal); }
+        .bc-bar-flex { flex: 1; }
+        .bc-bar-hint { font-size: 11px; color: var(--wa-color-text-quiet); }
+        .bc-bar-help {
+          width: 26px; height: 26px; padding: 0;
+          display: inline-flex; align-items: center; justify-content: center;
+          font: inherit; cursor: pointer;
+          color: var(--wa-color-text-quiet);
+          background: transparent; border: none;
+          border-radius: var(--wa-border-radius-s);
+        }
+        .bc-bar-help:hover { color: var(--wa-color-text-normal); background: var(--wa-color-neutral-fill-quiet); }
+
+        /* -- canvas + strip --------------------------------------- */
+        .bc-canvas {
+          flex: 1; min-height: 0;
+          position: relative;
+          overflow: hidden;
+          background-image: radial-gradient(circle,
+            color-mix(in srgb, var(--wa-color-text-normal) 22%, transparent) 1.25px,
+            transparent 1.35px);
+          background-size: 15px 15px;
+        }
+        .bc-strip {
+          position: absolute; left: 0; top: 0; width: 0; height: 0;
+          will-change: transform;
+        }
+
+        /* -- column chips + add buttons ---------------------------- */
+        .bc-chip, .bc-addbtn {
+          position: absolute; left: 0; top: 0; box-sizing: border-box;
+          display: flex; align-items: center; justify-content: center;
+          height: 24px; padding: 0;
+          font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+          color: var(--wa-color-text-quiet);
+          background: color-mix(in srgb, var(--wa-color-surface-default) 72%, transparent);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+            width 300ms cubic-bezier(0.4, 0, 0.2, 1),
+            border-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+          z-index: 1;
+        }
+        .bc-chip.is-focused {
+          color: var(--wa-color-text-normal);
+          border-color: var(--wa-color-brand-fill-loud);
+        }
+        .bc-chip:hover, .bc-addbtn:hover {
+          color: var(--wa-color-text-normal);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        .bc-addbtn { height: 28px; }
+
+        /* -- add menu ---------------------------------------------- */
+        .bc-menu {
+          position: absolute; left: 0; top: 0; z-index: 70;
+          min-width: 150px;
+          display: flex; flex-direction: column;
+          background: var(--wa-color-surface-raised);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          box-shadow: var(--wa-shadow-m);
+        }
+        .bc-menu[hidden] { display: none; }
+        .bc-menu-label {
+          padding: var(--wa-space-2xs) var(--wa-space-m);
+          font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+          color: var(--wa-color-text-quiet);
+        }
+        .bc-menu-item {
+          font: inherit; text-align: left; cursor: pointer;
+          padding: var(--wa-space-2xs) var(--wa-space-m);
+          color: var(--wa-color-text-normal);
+          background: none; border: none;
+        }
+        .bc-menu-item:hover { background: var(--wa-color-neutral-fill-quiet); }
+
+        /* -- drop slot + leave ghost -------------------------------- */
+        .bc-slot {
+          position: absolute; left: 0; top: 0; box-sizing: border-box;
+          border: var(--wa-border-width-m) dashed var(--wa-color-brand-fill-loud);
+          background: color-mix(in srgb, var(--wa-color-brand-fill-loud) 8%, transparent);
+          transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+            width 300ms cubic-bezier(0.4, 0, 0.2, 1),
+            height 300ms cubic-bezier(0.4, 0, 0.2, 1);
+          z-index: 0; pointer-events: none;
+        }
+        .bc-slot[hidden] { display: none; }
+        .bc-ghost {
+          position: absolute; left: 0; top: 0; box-sizing: border-box;
+          background: var(--wa-color-surface-default);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          animation: bc-leave 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          pointer-events: none; z-index: 1;
+        }
+        @keyframes bc-enter {
+          from { opacity: 0; scale: 0.97; }
+          to { opacity: 1; scale: 1; }
+        }
+        @keyframes bc-leave {
+          to { opacity: 0; scale: 0.95; }
+        }
+
+        /* -- cards -------------------------------------------------- */
+        .bc-card {
+          position: absolute; left: 0; top: 0; box-sizing: border-box;
+          display: flex; flex-direction: column; overflow: hidden;
+          background: var(--wa-color-surface-default);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          animation: bc-enter 200ms cubic-bezier(0.4, 0, 0.2, 1);
+          user-select: none;
+          cursor: default;
+        }
+        .bc-card.is-editing { user-select: text; cursor: auto; }
+        .bc-card.is-focused { box-shadow: 0 0 0 2px var(--wa-color-brand-fill-loud); }
+        .bc-card.is-drag {
+          opacity: 0.95;
+          box-shadow: 0 0 0 2px var(--wa-color-brand-fill-loud), var(--wa-shadow-m);
+        }
+        .bc-card-head {
+          display: flex; align-items: center; gap: 6px;
+          height: 26px; padding: 0 6px 0 10px; flex: none;
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        .bc-kind {
+          font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+          color: var(--wa-color-text-quiet);
+        }
+        .bc-edit-hint { font-size: 11px; color: var(--wa-color-brand-on-quiet); }
+        .bc-manual { font-size: 11px; color: var(--wa-color-text-quiet); }
+        .bc-del {
+          border: none; background: transparent;
+          color: var(--wa-color-text-quiet);
+          font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 4px;
+        }
+        .bc-del:hover { color: var(--wa-color-danger-on-quiet); }
+        .bc-scroll { flex: 1; min-height: 0; overflow: auto; }
+        .bc-inner { padding: 10px 12px 12px; }
+        .bc-resize {
+          position: absolute; left: 0; right: 0; bottom: 0; height: 7px;
+          cursor: ns-resize;
+        }
+        .bc-resize:hover { background: color-mix(in srgb, var(--wa-color-brand-fill-loud) 20%, transparent); }
+
+        /* -- text cards (markdown) ----------------------------------- */
+        .bc-md { overflow-wrap: anywhere; }
+        .bc-md p { margin: 0 0 8px; }
+        .bc-md code {
+          font-family: var(--wa-font-family-code);
+          font-size: 12px; padding: 0 3px;
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        .bc-md-h1, .bc-md-h2, .bc-md-h3 {
+          line-height: 1.3; margin: 10px 0 6px;
+          background: none; padding: 0; color: inherit;
+        }
+        .bc-md-h1:first-child, .bc-md-h2:first-child, .bc-md-h3:first-child { margin-top: 0; }
+        .bc-md-h1 { font-size: 16px; font-weight: 700; }
+        .bc-md-h2 { font-size: 14px; font-weight: 600; }
+        .bc-md-h3 { font-size: 13px; font-weight: 600; }
+        .bc-md-list { margin: 2px 0 8px; padding-left: 20px; }
+        ul.bc-md-list { list-style: square; }
+        ol.bc-md-list { list-style: decimal; }
+        .bc-md-list li { margin: 1px 0; }
+        .bc-md-empty { color: var(--wa-color-text-quiet); margin: 0; }
+        .bc-md-ta {
+          display: block; width: 100%; min-height: 42px;
+          border: none; outline: none; background: transparent;
+          color: inherit; font: inherit; resize: none; padding: 0;
+          overflow: hidden; box-sizing: border-box;
+        }
+
+        /* -- checklist cards ------------------------------------------ */
+        .bc-cl-title, .bc-cl-title-shown {
+          display: block; width: 100%; box-sizing: border-box;
+          font-family: inherit; font-size: 13px; font-weight: 600;
+          color: inherit; padding: 0 0 6px 0;
+          border: none; outline: none; background: transparent;
+        }
+        .bc-cl-items { display: flex; flex-direction: column; gap: 4px; }
+        .bc-cl-item { display: flex; align-items: flex-start; gap: 8px; }
+        .bc-cl-item input[type="checkbox"] { flex: none; margin: 3px 0 0; accent-color: var(--wa-color-brand-fill-loud); }
+        .bc-cl-text {
+          flex: 1; min-width: 0;
+          border: none; outline: none; background: transparent;
+          color: inherit; font: inherit; padding: 0;
+        }
+        .bc-cl-shown { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .bc-cl-shown.is-done { text-decoration: line-through; color: var(--wa-color-text-quiet); }
+        .bc-cl-x {
+          border: none; background: transparent;
+          color: var(--wa-color-text-quiet);
+          font-size: 12px; line-height: 1.5; cursor: pointer; padding: 0 2px;
+        }
+        .bc-cl-x:hover { color: var(--wa-color-danger-on-quiet); }
+        .bc-mini {
+          margin-top: 6px; height: 24px; padding: 0 8px;
+          font: inherit; font-size: 12px; cursor: pointer;
+          color: var(--wa-color-text-quiet);
+          background: transparent; border: none;
+        }
+        .bc-mini:hover { color: var(--wa-color-text-normal); background: var(--wa-color-neutral-fill-quiet); }
+
+        /* -- table cards ----------------------------------------------- */
+        .bc-tbl {
+          font-size: 12px;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        .bc-tbl-head {
+          display: flex; align-items: stretch;
+          border-bottom: var(--wa-border-width-m) solid var(--wa-color-surface-border);
+          background: color-mix(in srgb, var(--wa-color-brand-fill-loud) 6%, var(--wa-color-surface-default));
+        }
+        .bc-tbl-hc {
+          flex: 1; min-width: 0; padding: 4px 6px; font-weight: 600;
+          display: flex; align-items: center; gap: 2px;
+        }
+        .bc-tbl-hc span, .bc-tbl-c span {
+          display: block; min-width: 0; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap;
+        }
+        .bc-tbl-row {
+          display: flex; align-items: center;
+          border-bottom: var(--wa-border-width-s) solid
+            color-mix(in srgb, var(--wa-color-surface-border) 55%, transparent);
+        }
+        .bc-tbl-row:hover { background: color-mix(in srgb, var(--wa-color-brand-fill-loud) 8%, var(--wa-color-surface-default)); }
+        .bc-tbl-c { flex: 1; min-width: 0; padding: 4px 6px; }
+        .bc-tbl-hc input, .bc-tbl-c input {
+          width: 100%; min-width: 30px;
+          border: none; outline: none; background: transparent;
+          color: inherit; font: inherit; padding: 0;
+        }
+        .bc-tbl-hc input { font-weight: 600; }
+        .bc-tbl-gut { flex: none; width: 16px; display: flex; justify-content: center; }
+        .bc-tbl-x {
+          border: none; background: transparent;
+          color: var(--wa-color-text-quiet);
+          font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;
+        }
+        .bc-tbl-x:hover { color: var(--wa-color-danger-on-quiet); }
+        .bc-tbl-ops { display: flex; gap: 4px; margin-top: 8px; align-items: center; }
+        .bc-tbl-ops .bc-mini { margin-top: 0; }
+        .bc-tbl-hint { font-size: 11px; color: var(--wa-color-text-quiet); padding-left: 4px; }
+
+        /* -- empty state ------------------------------------------------ */
+        .bc-empty {
+          position: absolute; inset: 0;
+          display: flex; align-items: center; justify-content: center;
+          pointer-events: none;
+        }
+        .bc-empty[hidden] { display: none; }
+        .bc-empty-card {
+          width: 360px; max-width: 86%; padding: 26px;
+          display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+          background: var(--wa-color-surface-default);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          pointer-events: auto;
+        }
+        .bc-empty-kick {
+          font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+          color: var(--wa-color-text-quiet);
+        }
+        .bc-empty-card p { margin: 0; font-size: 12px; color: var(--wa-color-text-quiet); }
+
+        /* -- help overlay ------------------------------------------------ */
+        .bc-helpov {
+          position: fixed; inset: 0; z-index: 20;
+          background: color-mix(in srgb, var(--wa-color-text-normal) 25%, transparent);
+          display: flex; align-items: center; justify-content: center;
+        }
+        .bc-helpov[hidden] { display: none; }
+        .bc-helpov-card {
+          width: 480px; max-width: 92%; max-height: 88%; overflow: auto;
+          background: var(--wa-color-surface-raised);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          box-shadow: var(--wa-shadow-m);
+        }
+        .bc-helpov-head {
+          display: flex; align-items: center;
+          padding: 12px 18px; font-weight: 600;
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        .bc-helpov-close {
+          border: none; background: transparent;
+          color: var(--wa-color-text-quiet);
+          font-size: 14px; cursor: pointer; padding: 2px 4px;
+        }
+        .bc-helpov-close:hover { color: var(--wa-color-text-normal); }
+        .bc-helpov-grid {
+          padding: 16px 18px;
+          display: grid; grid-template-columns: auto 1fr; gap: 9px 18px;
+          font-size: 12px; align-items: baseline;
+        }
+        .bc-helpov-grid > span:nth-child(even) { color: var(--wa-color-text-quiet); }
+        .bc-helpov-grid kbd {
+          display: inline-block;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          background: var(--wa-color-neutral-fill-quiet);
+          color: var(--wa-color-text-normal);
+          font-family: var(--wa-font-family-code);
+          padding: 0 5px; font-size: 11px; line-height: 18px; white-space: nowrap;
+        }
+      </style>
+
+      <div class="board-data" hidden>
+        <tonk-display model=component></tonk-display>
+        <tonk-display model=tonk:board/column></tonk-display>
+        <tonk-display model=tonk:board/card></tonk-display>
+      </div>
+
+      <board-canvas name={name}
+        onrename=board/rename
+        oncreatecolumn=board/create-column
+        onsetcolumnwidth=board/set-column-width
+        ondeletecolumn=board/delete-column
+        oncreatecard=board/create-card
+        oneditcard=board/edit-card
+        onmovecard=board/move-card
+        onresizecard=board/resize-card
+        ondeletecard=board/delete-card></board-canvas>
+    </div>
+
+# Route the space to the board shell: the space route mounts
+# `<tonk-display entity={replica} model=tonk/space>`; this alias
+# resolves `tonk/space` to `tonk:board/canvas`, so the shell renders
+# for that replica (overriding core.yaml's default `tonk:blank`).
+name!:
+  this: id:tonk/space
+  entity: tonk:board/canvas
+
+# ============================================================
+# STARTER CONTENT
+# ============================================================
+#
+# One column, one text card — enough that the fresh repo opens into
+# a living canvas instead of an empty pane. Stable `id:` URIs keep
+# re-seeding idempotent. Order keys deliberately sit mid-alphabet so
+# there is always room to insert before them.
+
+board/column!:
+  this: id:board/col-main
+  key: "main"
+  width: "1/3"
+  order: "m"
+
+board/card!:
+  this: id:board/welcome
+  column: "main"
+  order: "m"
+  kind: "text"
+  content: '{"markdown":"# Welcome to your board\n\nCards live in columns on a pannable canvas.\n\n- press **1**, **2** or **3** to add a text, checklist or table card\n- **enter** edits the focused card, **esc** goes back to navigate\n- drag cards between columns, or past the last column for a new one\n- press **?** for all the shortcuts"}'
+  height: "auto"
