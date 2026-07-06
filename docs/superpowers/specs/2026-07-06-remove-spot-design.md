@@ -36,7 +36,7 @@ using the same CSS state tricks as the create wizard:
   and offers:
   - cancel — a `<label for="rm-closed">`,
   - delete — the submit button of
-    `<form onsubmit=space/remove data-subject={subject}
+    `<form onsubmit=space/remove data-remove={subject}
     data-close-radio="rm-closed">`. `data-close-radio` re-checks `rm-closed`
     on submit (existing tonk-display delegate behavior), closing the overlay.
 
@@ -47,23 +47,28 @@ command!: &space/remove
   description: A request to remove a space from this profile and delete its local data.
   with:
     subject:
-      description: The space's subject DID, read from the form's data-subject.
-      the: dom.event.current-target.dataset/subject
+      description: The space's subject DID, read from the form's data-remove.
+      the: dom.event.current-target.dataset/remove
       as: entity
     prevent-default:
       the: dom.event.do/prevent-default
 ```
 
 The `subject` value is a did:key — it carries `:`, so the event layer
-delivers it as an `Entity` (same as the invite/pause-sync markers). No other
-command reads `dataset/subject`, so the field doubles as the command's
-distinct shape; no separate marker attribute is needed.
+delivers it as an `Entity` (same as the invite/pause-sync markers). The
+attribute is deliberately `dataset/remove`, NOT `dataset/subject`: the
+`tonk/rename-repository` transient (core.yaml) already carries
+`dataset/subject`, and command decode ignores extra facts, so a remove
+command matched on `subject` alone would also decode every rename —
+deleting the space being renamed. The distinctly named attribute is read
+by no other command, so it doubles as the command's unique shape; no
+separate marker attribute is needed.
 
 ## Schema (tonk-schema)
 
-- New attribute `domain::command::remove::Subject(pub Entity)` on domain
+- New attribute `domain::command::remove::Remove(pub Entity)` on domain
   `dom.event.current-target.dataset` (derived attribute
-  `dom.event.current-target.dataset/subject`).
+  `dom.event.current-target.dataset/remove`).
 - New command struct `RemoveSpace { this, subject }` implementing
   `Command`, alongside `CreateSpace`/`PauseSync` — matching the fields the
   yaml command actually declares.
@@ -74,23 +79,30 @@ A `RemoveSpaceHandler` registered in the command registry beside
 `CreateSpaceHandler`, wasm-gated the same way. On a decoded command it:
 
 1. **Retracts the replica record.** Re-derives the replica entity via
-   `Replica::new(profile_did, subject)` — no read needed — and, in one
+   `Replica::new(profile_did, subject)`, selects every claim `of` that
+   entity on the profile meta branch, and retracts them all in one
    transaction through the reactor's profile-repository handle (the cached
-   handle every Hub read goes through), retracts the `Replica` instance and
-   every stamp the write paths assert on that entity: `SpaceStatus`,
-   `SpaceKind`, `ReplicaSyncEnabled`, `ReplicaSyncStatus`, branch records
-   (`Replica::branch(..)`), and the legacy `Name` where present. Commits,
-   runs scheduled polls, and broadcasts `/api/profile` — mirroring
-   `record_replica_in_profile` in reverse.
-2. **Detaches the live system.** Drops the reactor's cached repository and
-   branch handles for the subject. The background sync loop reads replica
-   records to decide what to sync, so it skips the space from the next tick
-   with no extra bookkeeping.
-3. **Deletes local storage, best-effort.** Removes the space's IndexedDB
-   database(s) and its OPFS blob subtree, deriving names/paths the same way
-   the storage loader derives the space `Location` from
-   `(profile_did, local_name)`. Errors are logged and swallowed. Native
-   builds no-op, exactly like `spawn_seed`.
+   handle every Hub read goes through). The claim sweep covers every stamp
+   regardless of vintage — `Replica` fields, `SpaceStatus`, a migration's
+   `SpaceKind`, a legacy `name` — without knowing current values. (Sync
+   stamps live elsewhere: `ReplicaSyncEnabled` on the space's own content
+   branch, which dies with the storage; `ReplicaSyncStatus` is overlay-only
+   on a singleton.) Commits, runs scheduled polls, and broadcasts
+   `/api/profile` — mirroring `record_replica_in_profile` in reverse.
+2. **Detaches the live system.** Evicts the repository from the reactor's
+   cache (a new `Reactor::evict(name)`, the per-repo analog of `shutdown`:
+   removes the cache entry and clears each branch's subscribers). This is
+   the step that actually stops syncing — the background sweep builds its
+   repo set from the reactor cache plus the dirty queue, not from replica
+   records — and it ends the removed row's SSE streams.
+3. **Deletes local storage, best-effort.** A repository space maps to
+   `Location { directory: Current, name: <routing key> }`, which on the web
+   is the IndexedDB database named exactly the routing key plus the OPFS
+   blob directory `current/<key>`. An inline-JS helper deletes both
+   (`indexedDB.deleteDatabase` + `removeEntry(key, { recursive: true })`);
+   the existing `patch_idb_versionchange` makes the worker's own pooled
+   connection close itself so the delete completes. Errors are logged and
+   swallowed. The handler is wasm-gated, so native builds carry none of it.
 
 The Hub form commits on the profile meta branch, so the handler reads
 identity from state (like `CreateSpaceHandler`), not from the command's
