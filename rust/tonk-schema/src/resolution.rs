@@ -222,8 +222,11 @@ impl ResolveAttribute<'_> {
     ///
     /// A name reference is resolved to an entity first; the entity
     /// is then reconstructed from its `dialog.attribute/*` facts.
-    /// Returns `None` when the name has no published claim, or the
-    /// entity carries no attribute facts.
+    /// An entity that carries no attribute facts but does carry a
+    /// published-name referent (an `id:<name>` URI used directly)
+    /// is chased one step: the referent is the attribute, exactly
+    /// as if the reference had been the bare name. Returns `None`
+    /// when neither yields attribute facts.
     pub async fn perform<Env: QueryEnv>(
         self,
         env: &Env,
@@ -232,11 +235,23 @@ impl ResolveAttribute<'_> {
             return Ok(None);
         };
 
-        let Some(attribute) = AttributeByEntity::new(entity)
+        let attribute = match AttributeByEntity::new(entity.clone())
             .resolve(&self.source, env)
             .await?
-        else {
-            return Ok(None);
+        {
+            Some(attribute) => attribute,
+            None => {
+                let Some(referent) = lookup_referent(&entity, &self.source, env).await? else {
+                    return Ok(None);
+                };
+                let Some(attribute) = AttributeByEntity::new(referent)
+                    .resolve(&self.source, env)
+                    .await?
+                else {
+                    return Ok(None);
+                };
+                attribute
+            }
         };
 
         Ok(Some(AttributeDefinition {
@@ -244,6 +259,26 @@ impl ResolveAttribute<'_> {
             descriptor: attribute.descriptor,
         }))
     }
+}
+
+/// Read the `dialog.name/referent` claim attached to `entity`, if
+/// any — the one-step name indirection behind `id:<name>` URIs.
+async fn lookup_referent<Env: QueryEnv>(
+    entity: &Entity,
+    source: &Source<'_>,
+    env: &Env,
+) -> Result<Option<Entity>, ResolveError> {
+    use dialog_query::{Output as _, Query, Term};
+    let rows: Vec<Name> = source
+        .select(Query::<Name> {
+            this: Term::from(entity.clone()),
+            entity: Term::<Entity>::var("__referent"),
+        })
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|e| ResolveError::query(format!("referent lookup failed: {e:?}")))?;
+    Ok(rows.into_iter().next().map(|row| row.entity.0))
 }
 
 /// Resolve a [`Target`] to the entity it names — a direct entity

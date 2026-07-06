@@ -1123,6 +1123,144 @@ mod tests {
         txn
     }
 
+    /// Repro for BUG-maybe-name-resolution: a `maybe:` map must
+    /// resolve attribute references exactly like `with:` does —
+    /// both by published name and by `id:` URI. The attributes are
+    /// published in an *earlier commit*, so resolution must go
+    /// through the branch tables, not document-local scope.
+    #[dialog_common::test]
+    async fn it_resolves_branch_attribute_references_in_maybe_blocks() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let docs = [
+            // Commit 1: publish two attributes on the branch.
+            r#"attribute!: &foo/bar
+  description: "an attr"
+  the: io.foo/bar
+  as: text
+  cardinality: one
+
+attribute!: &foo/title
+  description: "title"
+  the: io.foo/title
+  as: text
+  cardinality: one
+"#,
+            // Commit 2: reference foo/bar by NAME under `maybe:`.
+            r#"concept!: &by-name
+  description: "x"
+  with:
+    title: foo/title
+  maybe:
+    bar: foo/bar
+"#,
+            // Commit 3: reference foo/bar by `id:` URI under `maybe:`.
+            r#"concept!: &by-uri
+  description: "x"
+  with:
+    title: foo/title
+  maybe:
+    bar: id:foo/bar
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics for {doc:?}: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// Repro for BUG-domain-head-cardinality-many: a
+    /// `cardinality: many` attribute must accumulate values when
+    /// asserted through a domain head (`repro.demo!:`), exactly as
+    /// it does through a concept head. The domain head used to
+    /// synthesize a cardinality-one descriptor, so each write
+    /// replaced the prior value (last-write-wins).
+    #[dialog_common::test]
+    async fn it_accumulates_many_valued_attributes_through_domain_heads() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let docs = [
+            // Publish the many-valued attribute.
+            r#"attribute!: &edge
+  description: "A many-valued entity edge"
+  the: repro.demo/edge
+  as: entity
+  cardinality: many
+"#,
+            // Two domain-head writes against the same entity, in
+            // separate commits.
+            r#"repro.demo!:
+  this: id:a
+  edge: id:b
+"#,
+            r#"repro.demo!:
+  this: id:a
+  edge: id:c
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics for {doc:?}: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        // Both edges must be stored: cardinality-many accumulates.
+        let a: dialog_artifacts::Entity = "id:a".parse()?;
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("repro.demo/edge"))
+                    .of(Term::<dialog_artifacts::Entity>::from(a))
+                    .is(Term::<dialog_artifacts::Entity>::var("edge")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let mut edges: Vec<String> = claims
+            .iter()
+            .map(|claim| format!("{:?}", claim.is))
+            .collect();
+        edges.sort();
+        assert_eq!(
+            claims.len(),
+            2,
+            "a cardinality-many attribute accumulates through a domain head; stored: {edges:?}"
+        );
+        Ok(())
+    }
+
     /// End-to-end: install concepts + attributes on the branch,
     /// then submit a notation document that declares a `rule!:`
     /// plus a transient `ping!:` assertion. The analyzer lifts

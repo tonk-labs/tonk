@@ -23,7 +23,7 @@
 //!   the rule already carries its resolved [`Effect`] and the
 //!   stored source bytes; the planner just hands it through.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
@@ -289,22 +289,33 @@ pub enum ThisIntent {
     Uri(Entity),
 }
 
-/// `xyz.tonk …:` head — claim domains have no schema, so the
-/// descriptor is synthesized at planning time from `parameters`.
+/// `xyz.tonk …:` head — claim domains have no schema of their own,
+/// so the descriptor is synthesized at planning time from
+/// `parameters`, honoring any *declared* attributes the analyzer
+/// resolved off the branch.
 #[derive(Debug, Clone)]
 pub struct DomainApplication {
     /// The claim domain prefix (`xyz.tonk`).
     pub domain: String,
     /// Field-name → term. Each parameter becomes a
-    /// `<domain>/<field>` attribute on the synthesized
-    /// descriptor (cardinality `one`, no value-type constraint).
+    /// `<domain>/<field>` attribute on the synthesized descriptor.
     pub parameters: Parameters,
+    /// Field-name → the *declared* attribute descriptor, for
+    /// fields whose `<domain>/<field>` attribute is published on
+    /// the branch. Resolved at analysis time; the synthesized
+    /// descriptor takes cardinality and value type from here, so a
+    /// `cardinality: many` attribute accumulates through a domain
+    /// head exactly as through a concept head. Fields without an
+    /// entry fall back to the schema-less default (cardinality
+    /// `one`, no value-type constraint).
+    pub attributes: BTreeMap<String, dialog_query::AttributeDescriptor>,
 }
 
 impl From<DomainApplication> for ConceptQuery {
     /// Synthesize a [`dialog_query::ConceptDescriptor`] with one
-    /// `<domain>/<key>` attribute per parameter (no value-type
-    /// constraint) and apply `parameters` to it.
+    /// `<domain>/<key>` attribute per parameter — the declared
+    /// descriptor when the branch has one, a schema-less default
+    /// otherwise — and apply `parameters` to it.
     fn from(d: DomainApplication) -> Self {
         use dialog_query::{
             AttributeDescriptor, Cardinality as DialogCardinality, ConceptDescriptor,
@@ -314,6 +325,10 @@ impl From<DomainApplication> for ConceptQuery {
         let mut entries: Vec<(String, AttributeDescriptor)> = Vec::new();
         for name in d.parameters.keys() {
             if name == "this" {
+                continue;
+            }
+            if let Some(declared) = d.attributes.get(name) {
+                entries.push((name.clone(), declared.clone()));
                 continue;
             }
             let uri = format!("{}/{}", d.domain, name);

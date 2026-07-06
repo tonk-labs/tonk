@@ -48,6 +48,11 @@ pub(crate) struct Scope {
     /// Used when a concept body references an attribute via URI
     /// instead of by name.
     pub(crate) in_doc_attributes_by_entity: Mutex<HashMap<String, AttributeDefinition>>,
+    /// Selector id (`domain/name`) → branch-declared attribute.
+    /// Populated by the graph's resolve phase for claim-domain
+    /// head fields; consulted when synthesizing the domain's
+    /// descriptor so declared cardinality and value type govern.
+    pub(crate) attributes_by_id: Mutex<HashMap<String, AttributeDefinition>>,
     /// Reverse index: concept entity → resolved concept.
     pub(crate) in_doc_concepts_by_entity: Mutex<HashMap<String, ConceptDefinition>>,
     /// Name → entity for symbols the graph resolved to a plain
@@ -87,6 +92,7 @@ impl Scope {
             in_doc_attributes: Mutex::new(HashMap::new()),
             in_doc_concepts: Mutex::new(HashMap::new()),
             in_doc_attributes_by_entity: Mutex::new(HashMap::new()),
+            attributes_by_id: Mutex::new(HashMap::new()),
             in_doc_concepts_by_entity: Mutex::new(HashMap::new()),
             named_entities: Mutex::new(HashMap::new()),
             resolved_rules: Mutex::new(HashMap::new()),
@@ -162,6 +168,23 @@ impl Scope {
             .insert(attribute.entity.to_string(), attribute);
     }
 
+    /// Record a branch-resolved attribute under the *reference*
+    /// entity the document used, alongside its own entity. The two
+    /// differ when the reference was an `id:<name>` URI whose
+    /// published-name referent the resolver chased: parse-time
+    /// lookups use the document's form, so the definition must be
+    /// findable under that key too.
+    pub(crate) fn record_attribute_reference(
+        &self,
+        reference: &Entity,
+        attribute: AttributeDefinition,
+    ) {
+        self.in_doc_attributes_by_entity
+            .lock()
+            .insert(reference.to_string(), attribute.clone());
+        self.record_attribute(None, attribute);
+    }
+
     /// Record an in-document `concept!` definition.
     pub(crate) fn record_concept(&self, name: Option<&str>, concept: ConceptDefinition) {
         if let Some(name) = name {
@@ -214,6 +237,29 @@ impl Scope {
             .lock()
             .get(&entity.to_string())
             .cloned()
+    }
+
+    /// Record a branch-declared attribute under its selector id
+    /// (`domain/name`), for claim-domain head fields.
+    pub(crate) fn record_attribute_by_id(&self, id: &str, attribute: AttributeDefinition) {
+        self.attributes_by_id
+            .lock()
+            .insert(id.to_owned(), attribute);
+    }
+
+    /// Sync attribute-by-selector-id lookup. In-doc declarations
+    /// win over branch-resolved ones: a document that (re)declares
+    /// `attribute!: … the: <id>` sees its own definition.
+    pub(crate) fn attribute_by_id(&self, id: &str) -> Option<AttributeDefinition> {
+        if let Some(found) = self
+            .in_doc_attributes
+            .lock()
+            .values()
+            .find(|def| format!("{}/{}", def.descriptor.domain(), def.descriptor.name()) == id)
+        {
+            return Some(found.clone());
+        }
+        self.attributes_by_id.lock().get(id).cloned()
     }
 
     /// Look up a bare symbol to an entity using only the populated
