@@ -37,6 +37,9 @@ const SHEETS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/sheets
 /// The wiki template — seeded on top of core when chosen, like sheets.
 const WIKI_LIBRARY: &str = include_str!("../../tonk-core/assets/library/wiki.yaml");
 
+/// The board template — seeded on top of core when chosen, like sheets.
+const BOARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/board.yaml");
+
 /// The served showcase demo, embedded at compile time.
 const DEMO_LIBRARY: &str = include_str!("../../tonk-core/assets/library/demo.yaml");
 
@@ -100,10 +103,28 @@ fn it_lowers_core_concatenated_with_the_wiki_template() {
 }
 
 #[test]
+fn it_lowers_core_concatenated_with_the_board_template() {
+    // Same single-document seed as sheets and wiki: core.yaml is
+    // concatenated ahead of board.yaml, so the template must reuse
+    // core's concepts (tonk:view, tonk:view/directory, tonk:replica,
+    // `component`) without redeclaring their anchors.
+    let seeded = format!("{STANDARD_LIBRARY}\n{BOARD_LIBRARY}");
+    assert_library_lowers("core.yaml + board.yaml (board template)", &seeded);
+}
+
+#[test]
 fn it_overrides_the_space_alias_to_the_wiki_in_wiki() {
     assert!(
         WIKI_LIBRARY.contains("entity: tonk:wiki"),
         "wiki.yaml must override tonk/space -> tonk:wiki",
+    );
+}
+
+#[test]
+fn it_overrides_the_space_alias_to_the_board_in_board() {
+    assert!(
+        BOARD_LIBRARY.contains("entity: tonk:board/canvas"),
+        "board.yaml must override tonk/space -> tonk:board/canvas",
     );
 }
 
