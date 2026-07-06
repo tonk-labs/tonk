@@ -17,6 +17,7 @@
 //!   attribute and concept as a re-submittable notation document.
 //! - [`migrate`] — copy a `.carry/` directory to `.tonk/`.
 //! - [`guide`] — the asserted-notation reference, baked in.
+//! - [`telemetry`] — anonymous usage telemetry (PostHog), opt-out.
 
 pub mod auto_sync;
 pub mod eval;
@@ -31,6 +32,7 @@ pub mod schema;
 pub mod share;
 pub mod site;
 pub mod sync;
+pub mod telemetry;
 pub mod transfer;
 pub mod views;
 

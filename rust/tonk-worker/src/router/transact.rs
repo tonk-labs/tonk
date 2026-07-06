@@ -26,6 +26,7 @@ use tonk_schema::claim::{Claim, TransactRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::broadcast::{LOCAL_COMMIT_CHANNEL, Notification, broadcast};
 use crate::reactor::{BranchReference, ReactorError};
 
 /// Path parameters for the repository-scoped route.
@@ -92,6 +93,7 @@ pub async fn transact(
         let tonk_state = state.read().await;
         tonk_state.sync_queue.mark_dirty(&path.repo, now_millis());
     }
+    announce_local_commit(&path.branch, &response.0);
     // Dispatch any transient commands (now that the state lock is
     // released, so each command's `execute` can re-acquire it) and then
     // drain the polls this request scheduled. `dispatch` always drains —
@@ -140,6 +142,7 @@ pub async fn transact_profile(
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
+    announce_local_commit(&path.branch, &response.0);
     // Profile-branch commits carry an empty `repo` origin: the profile
     // repository is not in the named-repo namespace, and no command
     // dispatched here loads an origin repository by name. The originating
@@ -157,6 +160,24 @@ pub async fn transact_profile(
     // their writes to subscribers when they land.
     spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
     Ok(response)
+}
+
+/// Announce a durable commit on [`LOCAL_COMMIT_CHANNEL`] so
+/// cross-cutting listeners (the page's analytics) hear about writes
+/// to any repo without subscribing to per-endpoint channels. A no-op
+/// transact leaves the head unchanged and announces nothing.
+fn announce_local_commit(branch: &str, response: &TransactResponse) {
+    if let Some(revision) = &response.revision_after
+        && response.revision_before.as_ref() != Some(revision)
+    {
+        broadcast(
+            LOCAL_COMMIT_CHANNEL,
+            &Notification {
+                branch: branch.to_owned(),
+                revision: revision.clone(),
+            },
+        );
+    }
 }
 
 /// Run [`super::dispatch`] as detached background work so it never blocks the
