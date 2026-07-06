@@ -45,6 +45,17 @@ fn serve_once(listener: TcpListener, tx: mpsc::Sender<String>) {
     });
 }
 
+/// Path to the `tonk` binary under test. The compile-time
+/// `CARGO_BIN_EXE_tonk` points into the sandbox the tests were BUILT
+/// in; when CI runs them from a `cargo nextest archive` on another
+/// machine that path is gone, and nextest supplies the remapped
+/// location at runtime instead.
+fn tonk_bin() -> std::path::PathBuf {
+    std::env::var_os("NEXTEST_BIN_EXE_tonk")
+        .map(Into::into)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into())
+}
+
 /// Run `tonk guide` with telemetry pointed at `endpoint` and state
 /// isolated in `state_dir`. `extra_env` overrides for opt-out cases.
 fn run_tonk_guide(
@@ -52,7 +63,7 @@ fn run_tonk_guide(
     endpoint: &str,
     extra_env: &[(&str, &str)],
 ) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tonk"));
+    let mut cmd = Command::new(tonk_bin());
     cmd.arg("guide")
         .env("TONK_TELEMETRY_STATE", state_dir)
         .env("TONK_POSTHOG_KEY", "test-key")
