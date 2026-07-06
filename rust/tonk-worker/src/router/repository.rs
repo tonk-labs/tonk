@@ -1069,8 +1069,8 @@ async fn remove_replica_from_profile(
         .transaction();
     let mut found = false;
     while let Some(artifact) = stream.next().await {
-        let artifact = artifact
-            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+        let artifact =
+            artifact.map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
         found = true;
         transaction = transaction.retract(super::claim::RawClaim {
             the: artifact.the,
@@ -3359,9 +3359,7 @@ mod tests {
 
         let remaining = profile_replicas(&state).await;
         assert!(
-            remaining
-                .iter()
-                .any(|r| r.subject.0 == profile_did.this()),
+            remaining.iter().any(|r| r.subject.0 == profile_did.this()),
             "the self-replica record must survive"
         );
     }
