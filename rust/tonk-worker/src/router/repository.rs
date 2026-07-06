@@ -915,6 +915,19 @@ async fn run_profile_rename(
 /// the reactor cache, and storage, reached through state rather than
 /// carried by the decoded command.
 ///
+/// `run` refuses any transient whose origin repo is non-empty. This is
+/// the first *destructive* command reachable through shape-matched
+/// cross-branch dispatch: `dom.event.current-target.dataset/remove` is
+/// just an attribute name, so the same-shaped fact committed on ANY
+/// content branch — a joined space's own notation, or a same-origin
+/// POST to that repo's `/transact` — would otherwise let it name and
+/// delete any space by DID, regardless of where the command actually
+/// fired. The Hub's delete form commits on the profile branch, whose
+/// origin `repo` is always empty (`transact_profile` in `transact.rs`
+/// never names a repo — the same reasoning `transact_profile`'s
+/// sealed-guest check relies on), so refusing a non-empty origin is
+/// exactly "only the Hub can fire this."
+///
 /// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct RemoveSpaceHandler {
@@ -968,6 +981,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
             let Some(subject) = subject else {
                 return;
             };
+            // See the type doc: only the profile branch (empty origin
+            // repo) may fire this. A non-empty origin means the fact came
+            // from a content branch — matched by shape, not by who asked —
+            // so it is ignored rather than trusted to remove anything.
+            if !env.origin().repo.is_empty() {
+                log!(
+                    "RemoveSpace ignored: origin '{}' is not the profile branch",
+                    env.origin().repo
+                );
+                return;
+            }
             log!("command RemoveSpace subject={}", subject);
             let subject: Did = match subject.to_string().parse() {
                 Ok(did) => did,
@@ -990,13 +1014,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 ///    truth, so the spot disappears immediately. This is the commit
 ///    point; everything after is cleanup.
 /// 2. Evict the repository from the reactor cache
-///    ([`Reactor::evict`](crate::Reactor::evict)). The background sync
-///    sweep builds its repo set from that cache (NOT from replica
-///    records), so eviction is what actually stops syncing; it also
-///    ends the removed row's SSE streams.
+///    ([`Reactor::evict`](crate::Reactor::evict)) and forget it in the
+///    sync work-queue ([`SyncQueue::forget`](crate::router::SyncQueue::forget)).
+///    The background sync sweep unions the reactor cache with the dirty
+///    set (see `drain_sync`), so both must drop the repo — a leftover
+///    dirty stamp alone would resurrect it on the next drain even after
+///    eviction.
 /// 3. Delete local storage ([`delete_space_storage`]) — best-effort
 ///    and outside the state lock; a failure only orphans invisible
-///    bytes, so it is logged, never surfaced.
+///    bytes, so it is logged, never surfaced. Re-evicted once more
+///    afterward (see below) since the unlocked delete leaves a window
+///    for a concurrent drain to re-acquire the repo.
 ///
 /// The self-replica (subject == profile) is refused: its row is hidden
 /// chrome in the Hub, and deleting the profile's own storage would take
@@ -1015,10 +1043,25 @@ async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), Repos
         // subscription reflects the removal (mirrors set_replica_status).
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         tonk.reactor.evict(subject.repo_key());
+        // Same repo, same lock: a dirty stamp left in the sync queue would
+        // otherwise survive eviction and, on the next drain, get folded
+        // into the pull set that resurrects the reactor cache entry.
+        tonk.sync_queue.forget(subject.repo_key());
     }
     // Storage cleanup after the lock is released — the delete awaits
     // browser IO and must not stall other requests.
     let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(subject.repo_key())).await;
+
+    // The delete ran unlocked, so a concurrent `drain_sync` could have
+    // reached in and re-acquired the repo (e.g. to pull) while it was in
+    // flight — resurrecting the cache entry and, since the IDB open races
+    // the delete, potentially recreating an empty database right behind
+    // it. Re-evict now that the delete has settled to drop any such
+    // handle.
+    {
+        let tonk = state.write().await;
+        tonk.reactor.evict(subject.repo_key());
+    }
     Ok(())
 }
 
@@ -1365,6 +1408,70 @@ fn spawn_seed(
 ) {
 }
 
+/// Whether `subject` still has a recorded [`Replica`] on the profile's
+/// meta branch. The replica entity is content-derived from `(profile,
+/// subject)` — the same hash [`Replica::new`] uses (see
+/// [`set_replica_status`]) — so its presence is checked directly rather
+/// than searched for.
+///
+/// Guards [`seed_and_initialize`] against a `RemoveSpace` landing
+/// mid-seed: [`remove_replica_from_profile`] retracts exactly this
+/// record, so its absence means the space was removed while this seed
+/// was in flight (either on the awaited create path or the detached
+/// [`spawn_seed`] path).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn replica_still_recorded(tonk: &TonkState, subject: &Did) -> Result<bool, RepositoryError> {
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
+    let rows: Vec<Replica> = meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::from(entity),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("replica query: {e}")))?;
+    Ok(!rows.is_empty())
+}
+
+/// If `subject`'s replica record is gone (see
+/// [`replica_still_recorded`]), evict the repo from the reactor cache
+/// (a mid-seed removal already evicted once, but the seed may have
+/// re-acquired it since) and log; the caller returns early without
+/// seeding or stamping. `stage` names the point being skipped, for the
+/// log line.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn bail_if_space_removed(
+    tonk: &TonkState,
+    subject: &Did,
+    key: &str,
+    stage: &str,
+) -> Result<bool, RepositoryError> {
+    if replica_still_recorded(tonk, subject).await? {
+        return Ok(false);
+    }
+    log!(
+        "seed '{}': replica record gone (space removed mid-seed), skipping {}",
+        key,
+        stage
+    );
+    tonk.reactor.evict(key);
+    Ok(true)
+}
+
 /// Seed the standard library into every branch, then flip the
 /// replica's status to `initialized`. Runs in the background after
 /// `put_repository` has already responded.
@@ -1377,6 +1484,21 @@ async fn seed_and_initialize(
     branches: &[String],
     template: Option<&str>,
 ) -> Result<(), RepositoryError> {
+    // The seed can run long after the replica record was asserted (the
+    // detached `spawn_seed` path, or just a slow library fetch on the
+    // awaited create path), leaving a window for the user to remove the
+    // space before it lands. Without this guard the seed would re-insert
+    // the evicted reactor cache entry, recreate the just-deleted database
+    // with seeded content, and re-stamp `SpaceStatus` on a retracted
+    // entity. Checked again below, right before each status flip, since
+    // removal can also land in the gap opened by the fetch/seed loop.
+    {
+        let tonk = state.read().await;
+        if bail_if_space_removed(&tonk, subject, key, "seed").await? {
+            return Ok(());
+        }
+    }
+
     if !branches.is_empty() {
         // Fetch every library document this repo seeds — core, then the
         // chosen template, then (home only) the showcase demo. Concatenated
@@ -1407,9 +1529,17 @@ async fn seed_and_initialize(
                 branch_name
             );
         }
+        // Cheap re-check right before stamping: the fetch/seed loop above
+        // awaited, opening another window for a removal to land.
+        if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
+            return Ok(());
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
         let tonk = state.read().await;
+        if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
+            return Ok(());
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
     log!("Repository '{}' initialized", key);
@@ -3330,6 +3460,14 @@ mod tests {
                 "the repo must be evicted from the reactor cache"
             );
         }
+
+        // Idempotent: a repeated submit (e.g. a double-click before the
+        // Hub row disappears) finds no replica record and no cached repo —
+        // `remove_replica_from_profile`'s "nothing recorded" branch and a
+        // no-op `evict` — and is a logged no-op, not an error.
+        super::remove_space_inner(&state, &subject)
+            .await
+            .expect("a repeated remove is a no-op, not an error");
     }
 
     /// The self-replica (subject == profile) is refused: deleting the
@@ -4001,6 +4139,72 @@ mod tests {
             rows.len(),
             1,
             "state:self must be re-stamped after invite clears the overlay",
+        );
+    }
+
+    /// Build a one-entity transient `RemoveSpace{this, subject}` batch —
+    /// the facts the Hub's delete-confirm form asserts. Mirrors
+    /// `profile_rename_transient`: the `data-remove` marker attribute
+    /// (`dom.event.current-target.dataset/remove`) carries the target
+    /// subject DID as its value and is the command's whole payload (see
+    /// `tonk_schema::command::RemoveSpace`).
+    fn remove_space_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_artifacts::Changes {
+        use dialog_artifacts::{Entity, Statement};
+        use dialog_query::the;
+        use tonk_schema::prelude::DidExt as _;
+
+        let entity: Entity = of.parse().expect("entity URI");
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("dom.event.current-target.dataset/remove")
+            .of(entity)
+            .is(subject.this())
+            .assert(&mut changes);
+        changes
+    }
+
+    /// `RemoveSpace` is refused unless it fired on the profile branch
+    /// (empty origin repo) — the gate closing the finding that a
+    /// same-shaped `dom.event.current-target.dataset/remove` fact
+    /// committed on ANY content branch (a joined space's own notation, or
+    /// a same-origin POST to that repo's `/transact`) could otherwise name
+    /// and delete any space by DID. Fired here with a non-empty origin, as
+    /// that cross-branch dispatch would produce; the replica record must
+    /// survive untouched.
+    #[dialog_common::test]
+    async fn it_ignores_remove_space_from_a_non_profile_origin() {
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-remove-non-profile-origin").await;
+
+        let subject: dialog_varsig::Did = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            repository.did()
+        };
+
+        let changes = remove_space_transient("did:key:zRemoveWrongOrigin", &subject);
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: "somerepo".to_string(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            remaining.iter().any(|r| r.subject.0 == subject.this()),
+            "a RemoveSpace fired from a non-profile origin must not remove the replica",
         );
     }
 }

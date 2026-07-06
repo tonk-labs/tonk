@@ -465,7 +465,11 @@ view/directory!:
              a row's radio opens its overlay, and opening another row's
              closes the first. The confirm form's data-close-radio re-checks
              rm-closed on submit; cancel is a plain label for it. -->
-        <input class="spot-wiz" type="radio" name="__rm" id="rm-closed" checked>
+        <!-- tabindex=-1: these radios are visually hidden chrome (the × label
+             and the overlay's own buttons are the interactive path); without
+             it Tab would land on an invisible control that opens a
+             destructive overlay. -->
+        <input class="spot-wiz" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
         <!-- `data-id={this}` designates the repeat row — the wrapper (not
              the <a>), so the remove affordance and confirm overlay repeat
              with the row while staying outside the link: hovering or
@@ -476,7 +480,7 @@ view/directory!:
              means its main branch; honored because the profile site is
              `allow="*"`. -->
         <div class="srow-wrap" data-kind={kind} data-status={status} data-id={this}>
-          <input class="spot-wiz" type="radio" name="__rm" id="rm-{subject}">
+          <input class="spot-wiz" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
           <a class="srow" href="/space/{subject}">
             <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
             <span class="srow-name">
