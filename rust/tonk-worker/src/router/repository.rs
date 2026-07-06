@@ -904,6 +904,240 @@ async fn run_profile_rename(
     Ok(())
 }
 
+/// Post-commit handler for the [`RemoveSpace`] command.
+///
+/// Fired when the user confirms a Hub row's delete overlay. Removal is
+/// device-local and ordered so the visible state commits first and
+/// cleanup is best-effort behind it — see [`remove_space_inner`].
+///
+/// A custom handler (not a plain `Provider<RemoveSpace>`) for the same
+/// reason as [`CreateSpaceHandler`]: the work needs the profile handle,
+/// the reactor cache, and storage, reached through state rather than
+/// carried by the decoded command.
+///
+/// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct RemoveSpaceHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RemoveSpaceHandler {
+    /// Cache `RemoveSpace`'s trigger attributes (its `subject` field) so
+    /// the registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::RemoveSpace::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::RemoveSpace::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock), then
+        // hand the owned subject + an env clone to the `'static` future.
+        let subject = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::RemoveSpace::decode(entity, facts))
+            .map(|command| command.subject.0);
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(subject) = subject else {
+                return;
+            };
+            log!("command RemoveSpace subject={}", subject);
+            let subject: Did = match subject.to_string().parse() {
+                Ok(did) => did,
+                Err(error) => {
+                    log!("RemoveSpace: '{}' is not a DID: {}", subject, error);
+                    return;
+                }
+            };
+            if let Err(error) = remove_space_inner(env.state(), &subject).await {
+                log!("RemoveSpace '{}' failed: {}", subject, error);
+            }
+        })
+    }
+}
+
+/// Remove a space device-locally, in three ordered steps:
+///
+/// 1. Retract its replica record from the profile meta branch
+///    ([`remove_replica_from_profile`]) — the Hub row's source of
+///    truth, so the spot disappears immediately. This is the commit
+///    point; everything after is cleanup.
+/// 2. Evict the repository from the reactor cache
+///    ([`Reactor::evict`](crate::Reactor::evict)). The background sync
+///    sweep builds its repo set from that cache (NOT from replica
+///    records), so eviction is what actually stops syncing; it also
+///    ends the removed row's SSE streams.
+/// 3. Delete local storage ([`delete_space_storage`]) — best-effort
+///    and outside the state lock; a failure only orphans invisible
+///    bytes, so it is logged, never surfaced.
+///
+/// The self-replica (subject == profile) is refused: its row is hidden
+/// chrome in the Hub, and deleting the profile's own storage would take
+/// every space with it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), RepositoryError> {
+    {
+        let tonk = state.write().await;
+        if *subject == tonk.profile.did() {
+            return Err(RepositoryError::Internal(
+                "refusing to remove the profile's self-replica".to_string(),
+            ));
+        }
+        remove_replica_from_profile(&tonk, subject).await?;
+        // Drain the poll the retraction scheduled so the Hub's meta
+        // subscription reflects the removal (mirrors set_replica_status).
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        tonk.reactor.evict(subject.repo_key());
+    }
+    // Storage cleanup after the lock is released — the delete awaits
+    // browser IO and must not stall other requests.
+    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(subject.repo_key())).await;
+    Ok(())
+}
+
+/// Retract every fact keyed on `subject`'s replica entity from the
+/// profile repository's meta branch — the reverse of
+/// [`record_replica_in_profile`]. Selecting the entity's actual claims
+/// (rather than re-asserting typed concepts to retract) sweeps every
+/// stamp regardless of vintage — the `Replica` fields, `SpaceStatus`,
+/// a migration's `SpaceKind`, a legacy `name` — without knowing their
+/// current values.
+///
+/// Reads and writes through the reactor's cached profile handle for the
+/// same reason `record_replica_in_profile` does: the Hub reads through
+/// that handle, so a commit on a separate handle would be invisible to
+/// it. Broadcasts `/api/profile` like the record path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn remove_replica_from_profile(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
+    let stream = meta
+        .handle()
+        .claims()
+        .select(ArtifactSelector::new().of(entity.clone()))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
+    tokio::pin!(stream);
+
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .transaction();
+    let mut found = false;
+    while let Some(artifact) = stream.next().await {
+        let artifact = artifact
+            .map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+        found = true;
+        transaction = transaction.retract(super::claim::RawClaim {
+            the: artifact.the,
+            of: artifact.of,
+            is: artifact.is,
+            unique: false,
+        });
+    }
+    if !found {
+        // Nothing recorded — a stale row or a repeated submit. Not an
+        // error: the desired end state (no record) already holds.
+        log!("remove replica: no facts for {} in profile meta", entity);
+        return Ok(());
+    }
+
+    let revision = transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("retract replica record: {e}")))?;
+
+    broadcast(
+        "/api/profile",
+        &Notification {
+            branch: META_BRANCH.to_string(),
+            revision,
+        },
+    );
+    Ok(())
+}
+
+/// Delete a space's local storage: its IndexedDB database (archive,
+/// memory, credential, certificate object stores) and its OPFS blob
+/// subtree. The names are the storage loader's `Directory::Current`
+/// mapping for a repository space (see dialog-storage's IndexedDb and
+/// FileSystem providers): the database is named exactly the routing
+/// key, the blobs live under `current/<key>`.
+///
+/// Inline JS rather than web-sys: `deleteDatabase` and recursive
+/// `removeEntry` have no plumbing here, and the whole operation is two
+/// promise chains. Never rejects — each half settles on error/absence.
+/// `onblocked` also resolves: the worker's own pooled connection closes
+/// itself on the `versionchange` the delete fires (see
+/// [`crate::patch_idb_versionchange`]), after which the browser
+/// completes the delete; waiting for the completion event would hang if
+/// another tab pins the database open.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function delete_space_storage(name) {
+    const database = new Promise((resolve) => {
+        const request = indexedDB.deleteDatabase(name);
+        request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    const blobs = navigator.storage.getDirectory()
+        .then((root) => root.getDirectoryHandle('current'))
+        .then((dir) => dir.removeEntry(name, { recursive: true }))
+        .catch(() => {});
+    return Promise.all([database, blobs]);
+}
+"#)]
+extern "C" {
+    /// Delete the IndexedDB database and OPFS blob directory for a
+    /// space's routing key. Resolves once both halves settle; never
+    /// rejects.
+    fn delete_space_storage(name: &str) -> js_sys::Promise;
+}
+
 /// Toggle the durable `enabled` preference on the replica and publish the
 /// matching live status to the chip's overlay.
 ///
@@ -3020,6 +3254,103 @@ mod tests {
         assert!(founder.is_self, "founder is the active profile");
         assert!(founder.invited_by.is_none(), "founder has no inviter");
         assert!(founder.name.is_some(), "founder is named");
+    }
+
+    /// All `Replica` rows on the profile meta branch (any kind), read
+    /// through the reactor's cached profile handle — the same handle
+    /// the Hub and the removal path use.
+    async fn profile_replicas(state: &AppState) -> Vec<tonk_schema::Replica> {
+        use dialog_query::{Output as _, Query, Term};
+        let tonk = state.read().await;
+        let meta = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::META_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile meta acquires");
+        meta.handle()
+            .query()
+            .select(Query::<tonk_schema::Replica> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                profile: Term::var("profile"),
+                kind: Term::var("kind"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("replica query")
+    }
+
+    /// Removing a space retracts its replica record from the profile
+    /// meta branch and evicts the repo from the reactor cache (which is
+    /// what drops it from the background sync sweep).
+    #[dialog_common::test]
+    async fn it_removes_a_space_from_the_profile_index() {
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-remove-space").await;
+
+        let subject: dialog_varsig::Did = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            repository.did()
+        };
+        let recorded = profile_replicas(&state).await;
+        assert!(
+            recorded.iter().any(|r| r.subject.0 == subject.this()),
+            "the fresh repo must be recorded before removal"
+        );
+
+        super::remove_space_inner(&state, &subject)
+            .await
+            .expect("remove succeeds");
+
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            !remaining.iter().any(|r| r.subject.0 == subject.this()),
+            "the replica record must be gone after removal"
+        );
+        {
+            let tonk = state.read().await;
+            assert!(
+                !tonk.reactor.repos().read().contains_key(&key),
+                "the repo must be evicted from the reactor cache"
+            );
+        }
+    }
+
+    /// The self-replica (subject == profile) is refused: deleting the
+    /// profile's own storage would take every space with it.
+    #[dialog_common::test]
+    async fn it_refuses_to_remove_the_self_replica() {
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, _key) = fresh_repo("test-remove-self").await;
+
+        let profile_did = {
+            let tonk = state.read().await;
+            tonk.profile.did()
+        };
+        super::remove_space_inner(&state, &profile_did)
+            .await
+            .expect_err("removing the self-replica must fail");
+
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            remaining
+                .iter()
+                .any(|r| r.subject.0 == profile_did.this()),
+            "the self-replica record must survive"
+        );
     }
 
     /// Build a one-entity transient `ProfileRename{this, name, marker}`
