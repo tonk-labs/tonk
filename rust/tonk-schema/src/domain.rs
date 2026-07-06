@@ -313,6 +313,27 @@ pub mod command {
         pub struct Rename(pub Entity);
     }
 
+    /// Attributes the `space/remove` command reads from its submit event.
+    pub mod remove {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The subject DID of the space to remove, read from the Hub
+        /// confirm form's `data-remove` attribute. Deliberately NOT
+        /// `dataset/subject`: the declarative `tonk/rename-repository`
+        /// transient (core.yaml) already carries `dataset/subject`, and
+        /// a remove command matched on `subject` alone would ALSO decode
+        /// every rename — deleting the space being renamed. The
+        /// distinctly named attribute is both the payload and the
+        /// command's unique shape, so no separate marker field is
+        /// needed. An `Entity` because the value (a did:key) carries a
+        /// `:` — see the invite marker note. Derived attribute:
+        /// `dom.event.current-target.dataset/remove`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Remove(pub Entity);
+    }
+
     /// Attributes the `tonk:join` command reads from the `<tonk-page>`
     /// `mount` event's `detail` — a flat, URL-shaped record (fields mirror
     /// the DOM `URL` interface). The service worker can't see the `#hash`,

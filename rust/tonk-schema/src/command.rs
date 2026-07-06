@@ -197,6 +197,40 @@ impl Command for ProfileRename {
     type Output = ();
 }
 
+/// Request to remove a space from this device: retract its replica
+/// record from the profile meta branch (the Hub row's source of
+/// truth), detach it from the reactor/sync, and delete its local
+/// storage.
+///
+/// Asserted transiently when the user confirms a Hub row's delete
+/// overlay (`<form onsubmit=space/remove data-remove={subject}>` in
+/// `profile.yaml`). Removal is device-local: a synced space can be
+/// rejoined via an invite link; server-side data is untouched.
+///
+/// Deliberately a single matched field, like [`CreateSpace`], so an
+/// older profile descriptor keeps decoding it. The field also doubles
+/// as the command's distinct shape: `dataset/remove` is read by no
+/// other command, whereas a `dataset/subject` field would also match
+/// every `tonk/rename-repository` transient (which carries
+/// `dataset/subject`) and turn each rename into a deletion — see
+/// [`crate::domain::command::remove::Remove`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RemoveSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The subject DID of the space to remove, from `data-remove`.
+    pub subject: crate::domain::command::remove::Remove,
+}
+
+/// `RemoveSpace` is a [`dialog_capability::Command`]; the worker
+/// registers a custom `RemoveSpaceHandler` (the work needs the profile
+/// handle, the reactor cache, and storage — state the decoded command
+/// doesn't carry).
+impl Command for RemoveSpace {
+    type Input = Self;
+    type Output = ();
+}
+
 /// The durable fact a `tonk:invite` handler asserts: the public
 /// delegation chain it minted, **keyed by the membership DID** (`this`).
 ///
