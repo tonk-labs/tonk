@@ -159,6 +159,25 @@ impl Dock {
     }
 }
 
+/// Resolve the persisted dock from a `/query` result (a `Conclusion[]` JSON
+/// value, the shape `window.tonk.query` yields).
+///
+/// A conclusion row is `{ this, fields: { dock, … } }`, so the projected
+/// `dock` symbol lives under `fields` — reading it off the row directly
+/// (an easy mistake that strands the dock at its default) finds nothing.
+/// Falls back to a flat `row.dock` so a change in the projection shape
+/// degrades to the default rather than a silent mismatch. `None` when the
+/// result is empty, malformed, or names an unknown dock symbol.
+pub fn dock_from_conclusions(rows: &Value) -> Option<Dock> {
+    let first = rows.as_array()?.first()?;
+    let symbol = first
+        .get("fields")
+        .and_then(|fields| fields.get("dock"))
+        .or_else(|| first.get("dock"))
+        .and_then(Value::as_str)?;
+    Dock::from_symbol(symbol)
+}
+
 /// Pick the corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
 /// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
@@ -229,9 +248,9 @@ pub fn dock_claim_json(dock: Dock) -> Value {
             "op": "assert",
             "application": {
                 "predicate": {
-                    "kind": "transient",
+                    "kind": "durable",
                     "concept": {
-                        "description": "Persisted FAB dock (profile-meta claim).",
+                        "description": "Persisted FAB dock (profile claim).",
                         "with": {
                             "dock": {
                                 "the": "xyz.tonk.fab/dock",
@@ -555,13 +574,46 @@ mod persist {
         assert_eq!(v["claims"][0]["op"], "assert");
         let app = &v["claims"][0]["application"];
         assert_eq!(app["parameters"]["dock"], "tonk:bottom-left");
-        // verify predicate shape matches claim.rs serde derive
-        assert_eq!(app["predicate"]["kind"], "transient");
+        // The dock is a durable profile choice: it must survive commits,
+        // not evaporate as a transient at the timestep it's written.
+        assert_eq!(app["predicate"]["kind"], "durable");
         assert_eq!(
             app["predicate"]["concept"]["with"]["dock"]["the"],
             "xyz.tonk.fab/dock"
         );
         assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+
+    #[test]
+    fn reads_the_dock_from_a_conclusion_row() {
+        // The exact `Conclusion[]` shape `window.tonk.query` returns: the
+        // projected `dock` lives under `fields`, not on the row. Reading it
+        // off the row directly is the regression that stranded restore at
+        // its default even though the fact was persisted.
+        let rows = json!([{
+            "this": "state:fab",
+            "fields": { "this": "state:fab", "dock": "tonk:bottom-left" }
+        }]);
+        assert_eq!(dock_from_conclusions(&rows), Some(Dock::BottomLeft));
+    }
+
+    #[test]
+    fn reads_the_dock_from_a_flat_row() {
+        // Fallback shape: a flat `row.dock` still resolves, so a projection
+        // change degrades to a working read rather than a silent default.
+        let rows = json!([{ "dock": "tonk:top-right" }]);
+        assert_eq!(dock_from_conclusions(&rows), Some(Dock::TopRight));
+    }
+
+    #[test]
+    fn empty_result_has_no_dock() {
+        assert_eq!(dock_from_conclusions(&json!([])), None);
+    }
+
+    #[test]
+    fn unknown_symbol_has_no_dock() {
+        let rows = json!([{ "fields": { "dock": "tonk:middle" } }]);
+        assert_eq!(dock_from_conclusions(&rows), None);
     }
 }
 

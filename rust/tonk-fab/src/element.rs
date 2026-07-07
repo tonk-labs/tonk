@@ -33,8 +33,8 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, mirrored, nearest_dock,
-    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, dock_from_conclusions, mirrored,
+    nearest_dock, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -956,7 +956,7 @@ fn restore_position(this: &HtmlElement) {
             "dock": { "?": { "name": "dock" } }
         },
         "predicate": {
-            "description": "Persisted FAB dock (profile-meta claim).",
+            "description": "Persisted FAB dock (profile claim).",
             "with": {
                 "dock": { "the": "xyz.tonk.fab/dock", "cardinality": "one", "as": "Entity" }
             }
@@ -1028,18 +1028,14 @@ fn restore_position(this: &HtmlElement) {
     }
 }
 
-/// Extract the first row's `dock` from a `Conclusion[]` value returned by
-/// `window.tonk.query(...)` and resolve it to a `Dock`.
+/// Extract the persisted dock from a `Conclusion[]` value returned by
+/// `window.tonk.query(...)`. Decodes the JS value to JSON and delegates the
+/// row-shape parsing to [`dock_from_conclusions`], which is unit-tested
+/// against the `{ this, fields: { dock } }` conclusion shape.
 fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
-    let arr = rows.dyn_ref::<js_sys::Array>()?;
-    let first = arr.get(0);
-    if first.is_undefined() || first.is_null() {
-        return None;
-    }
-    let sym = Reflect::get(&first, &"dock".into())
-        .ok()
-        .and_then(|v| v.as_string())?;
-    Dock::from_symbol(&sym)
+    let json = js_sys::JSON::stringify(rows).ok()?.as_string()?;
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    dock_from_conclusions(&value)
 }
 
 /// Apply the default dock (bottom-right) to the element.
