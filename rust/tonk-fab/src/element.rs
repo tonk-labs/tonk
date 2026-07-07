@@ -221,7 +221,18 @@ fn attach_gestures(element: &HtmlElement) {
             .flatten()
             .is_some()
         {
-            // A click inside an open menu acts on that menu's own row.
+            // A click inside an open menu acts on that menu's own row. If
+            // it hit an actionable item (a space link, "all spots", "new"),
+            // the interaction is complete — retract the dropdown so it
+            // doesn't sit open over the next view.
+            if t.closest(".fab__menu a, .fab__menu button")
+                .ok()
+                .flatten()
+                .is_some()
+                && let Some(seg) = el_click.query_selector(".fab__repo.is-open").ok().flatten()
+            {
+                let _ = seg.class_list().remove_1("is-open");
+            }
         } else if let Some(seg) = t.closest(".fab__repo").ok().flatten() {
             toggle_menu(&el_click, &seg, ".fab__share");
         } else if let Some(seg) = t.closest(".fab__share").ok().flatten() {

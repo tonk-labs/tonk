@@ -157,6 +157,14 @@ impl Renderer {
         &self.event_bindings
     }
 
+    /// The host attributes this template consumes via `{dom.host/<attr>}`
+    /// — the render inputs the owning display must watch for changes so a
+    /// restamped attribute (e.g. the FAB's `data-space` on a space switch)
+    /// re-applies through the binding diff.
+    pub fn host_attributes(&self) -> std::collections::BTreeSet<String> {
+        tonk_template::host_attributes(&self.plan)
+    }
+
     /// Apply an entity frame. First call mounts; subsequent calls
     /// reconcile in place — touch only the nodes whose rendered value
     /// changed and add/remove repeat rows whose subject set differs.

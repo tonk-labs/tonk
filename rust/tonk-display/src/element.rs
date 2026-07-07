@@ -28,7 +28,7 @@ use std::rc::Rc;
 use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
-use js_sys::{Function, Reflect};
+use js_sys::{Array, Function, Promise, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
@@ -36,8 +36,12 @@ use tonk_schema::conclusion::Conclusion;
 use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
+use web_sys::{
+    CustomEvent, CustomEventInit, Element, HtmlElement, MutationObserver, MutationObserverInit,
+    MutationRecord, Node, window,
+};
 
 use crate::resolve::{
     directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_model_query,
@@ -170,6 +174,12 @@ struct Inner {
     /// event that bubbles up through this element. Dropped on
     /// disconnect.
     depth_annotator: Option<tonk_host::DepthAnnotator>,
+    /// Watches the host's own attributes that mounted views consume via
+    /// `{dom.host/<attr>}` (advertised by each slide as
+    /// `data-host-bindings`). A genuine value change replays the cached
+    /// frame through every slide's binding diff, so `dom.host/*` is a
+    /// live render input rather than a mount-time snapshot.
+    host_watch: Option<HostAttrWatch>,
     /// The model concept's descriptor JSON, handed to a `<tonk-portal>`
     /// so its no-argument `tonk.subscribe()` can build the scoped-entity
     /// query. Set on every connect; only read when a view frame routes
@@ -216,6 +226,7 @@ impl Inner {
             delegate: None,
             delegate_generation: 0,
             depth_annotator: None,
+            host_watch: None,
             portal_descriptor: None,
             portal_model: None,
             view_descriptor: None,
@@ -238,6 +249,8 @@ impl Inner {
         // Drop the delegate — its impl removes listeners from the
         // host on Drop.
         self.delegate.take();
+        // Disconnect the host-attribute watcher.
+        self.host_watch.take();
     }
 }
 
@@ -1125,6 +1138,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // descriptor resolves are async and reacquire the state.
     drop(s);
     schedule_delegate_refresh(host, state);
+    refresh_host_watch(host, state);
 
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
 }
@@ -1207,6 +1221,8 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
             // embedder can tell "rendered the way I intended" from
             // "rendered through the generic fallback".
             state::set(&host, State::DefaultView);
+            drop(s);
+            refresh_host_watch(&host, &state);
         }
     });
 }
@@ -1255,6 +1271,7 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
     // The notation dump is the ultimate `_:_` fallback — also
     // `default-view`, not a model-specific render.
     state::set(host, State::DefaultView);
+    refresh_host_watch(host, state);
 }
 
 /// Diff a portal-mode view frame. Single-mode only, so at most one
@@ -1799,6 +1816,123 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
 /// no `this` binding, so when JS calls `el.render(detail)` the
 /// closure sees `(this=detail, detail=undefined)` and silently
 /// no-ops. Going straight to `draw` sidesteps that.
+/// The installed host-attribute watcher: a `MutationObserver` on the
+/// display host filtered to EXACTLY the attributes its mounted views read
+/// via `{dom.host/<attr>}`. Dropping it disconnects the observer.
+struct HostAttrWatch {
+    observer: MutationObserver,
+    _closure: Closure<dyn FnMut(Array, MutationObserver)>,
+    /// The watched set, so a refresh with an unchanged union skips the
+    /// reinstall.
+    attrs: std::collections::BTreeSet<String>,
+}
+
+impl Drop for HostAttrWatch {
+    fn drop(&mut self) {
+        self.observer.disconnect();
+    }
+}
+
+/// (Re)install the host-attribute watcher from the union of every mounted
+/// slide's advertised `data-host-bindings`. Deferred one microtask: a
+/// slide mounted inside a custom-element reaction has not run its
+/// `connected_callback` (which advertises the set) yet.
+fn refresh_host_watch(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(Promise::resolve(&JsValue::UNDEFINED)).await;
+        let attrs: std::collections::BTreeSet<String> = {
+            let s = state.borrow();
+            if s.disposed {
+                return;
+            }
+            s.slides
+                .values()
+                .filter_map(|slide| slide.view_el.get_attribute("data-host-bindings"))
+                .flat_map(|v| v.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+                .collect()
+        };
+        if state
+            .borrow()
+            .host_watch
+            .as_ref()
+            .is_some_and(|watch| watch.attrs == attrs)
+        {
+            return;
+        }
+        let watch = if attrs.is_empty() {
+            None
+        } else {
+            install_host_watch(&host, &state, attrs)
+        };
+        state.borrow_mut().host_watch = watch;
+    });
+}
+
+/// Build and attach the watcher. The closure holds a `Weak` back-reference
+/// — the watcher lives inside `Inner`, so a strong `Rc` would cycle and
+/// leak the display state.
+fn install_host_watch(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    attrs: std::collections::BTreeSet<String>,
+) -> Option<HostAttrWatch> {
+    let weak = Rc::downgrade(state);
+    let host_cb = host.clone();
+    let closure = Closure::wrap(
+        Box::new(move |records: Array, _observer: MutationObserver| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            // Replay only on a genuine value change: the render diff restamps
+            // attributes wholesale, and a same-value write must not re-render.
+            let changed = records.iter().any(|record| {
+                let Ok(record) = record.dyn_into::<MutationRecord>() else {
+                    return false;
+                };
+                let Some(name) = record.attribute_name() else {
+                    return false;
+                };
+                record.old_value() != host_cb.get_attribute(&name)
+            });
+            if changed {
+                replay_host_frame(&host_cb, &state);
+            }
+        }) as Box<dyn FnMut(Array, MutationObserver)>,
+    );
+    let observer = MutationObserver::new(closure.as_ref().unchecked_ref()).ok()?;
+    let init = MutationObserverInit::new();
+    init.set_attributes(true);
+    init.set_attribute_old_value(true);
+    let filter = Array::new();
+    for attr in &attrs {
+        filter.push(&JsValue::from_str(attr));
+    }
+    init.set_attribute_filter(&filter);
+    observer.observe_with_options(host, &init).ok()?;
+    Some(HostAttrWatch {
+        observer,
+        _closure: closure,
+        attrs,
+    })
+}
+
+/// Replay the cached entity frame through every slide against the host's
+/// CURRENT attributes. `call_render` reaches each mounted renderer's
+/// update path, whose per-binding diff writes only the values that
+/// changed — an incremental update, never a remount.
+fn replay_host_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let s = state.borrow();
+    if s.disposed || s.slides.is_empty() {
+        return;
+    }
+    let detail = augmented_detail(host, &s.last_frame, s.directory);
+    for slide in s.slides.values() {
+        call_render(&slide.view_el, &detail);
+    }
+}
+
 fn call_render(el: &Element, detail: &JsValue) {
     let Ok(draw) = Reflect::get(el.as_ref(), &"draw".into()) else {
         return;
