@@ -2960,7 +2960,10 @@ mod tests {
         }
 
         // A transport `error` frame on a live subscription drives the
-        // display to `offline` with a loud danger callout.
+        // display to `offline` QUIETLY: the rendered content stays (no
+        // callout replaces it — the interruption is a hiccup, not a render
+        // failure), and the host-side reconnect heals the state with the
+        // next frame.
         #[dialog_common::test]
         async fn it_goes_offline_on_a_subscription_error() {
             let host =
@@ -2984,14 +2987,9 @@ mod tests {
                 Some("offline"),
                 "a transport error is `offline`",
             );
-            assert_eq!(
-                display
-                    .query_selector("wa-callout")
-                    .unwrap()
-                    .expect("offline surfaces a callout")
-                    .get_attribute("variant")
-                    .as_deref(),
-                Some("danger"),
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "an interruption must NOT replace content with a callout"
             );
         }
 
