@@ -96,6 +96,9 @@ while IFS= read -r line; do
   if [ "$line" = "home" ]; then
     url="$BENCH_URL/"
     name="$(printf '%02d-home' "$n")"
+  elif [ "$line" = "space" ]; then
+    url="$BENCH_URL/space/$SPACE_NAME/"
+    name="$(printf '%02d-space' "$n")"
   elif printf '%s' "$line" | grep -q '^display:'; then
     view_name="${line#display:}"
     name="$(printf '%02d-display-%s' "$n" "$view_name")"
