@@ -26,6 +26,7 @@ cleanup() {
 
 for i in $(seq 1 "$RUNS"); do
   RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-${i}-$SCENARIO_NAME"
+  unset EPISODE_DIR EPISODE_BIN EPISODE_PATH_SANDBOX EPISODE_RUNNER EPISODE_SANDBOX
   mkdir -p "$RUN_DIR"
   export RUN_DIR SCENARIO SCENARIO_NAME
   export BENCH_PORT="${BENCH_PORT:-8787}"
@@ -49,9 +50,25 @@ for i in $(seq 1 "$RUNS"); do
   export SPACE_NAME
   echo "run: space addressed as $SPACE_NAME" >&2
 
+  # Scenario hooks: scenario.env exports episode knobs (runner, dir,
+  # sandbox); prepare.sh does scenario-specific setup (seed data, mint
+  # an invite, build a registry or a prompt). Both are optional.
+  if [ -f "$SCENARIO/scenario.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$SCENARIO/scenario.env"
+    set +a
+  fi
+  if [ -x "$SCENARIO/prepare.sh" ]; then
+    "$SCENARIO/prepare.sh"
+  fi
+
+  EPISODE_DIR="${EPISODE_DIR:-$RUN_DIR/site}"
+  export EPISODE_DIR
+
   episode_status=0
   if [ "$SCRIPTED" = 1 ]; then
-    ( cd "$RUN_DIR/site" && TONK="$ROOT/target/release/tonk" bash "$SCENARIO/scripted.sh" ) \
+    ( cd "$EPISODE_DIR" && TONK="$ROOT/target/release/tonk" bash "$SCENARIO/scripted.sh" ) \
       || episode_status=$?
   else
     "$ROOT/bench/bin/episode.sh" || episode_status=$?
