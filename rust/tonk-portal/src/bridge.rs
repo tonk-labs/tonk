@@ -1591,29 +1591,18 @@ async fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Respo
     drain_body_to_port(port, env, &body);
 }
 
-/// Whether this browser can transfer a `ReadableStream` over `postMessage`.
-/// Detected once by probing a throwaway `MessageChannel` (the result is
-/// cached): Safari before 27 throws `DataCloneError`, every other current
-/// browser succeeds.
+/// Whether to transfer a `ReadableStream` over `postMessage` — DISABLED.
+///
+/// Chrome supports the transfer, but a service-worker restart makes every
+/// relayed subscription reconnect at once, and the resulting burst of
+/// stream transfers into sealed (opaque-origin) frames correlates with the
+/// whole renderer crashing. The credit-based chunked path
+/// ([`drain_body_to_port`], originally the Safari fallback) carries the
+/// same bytes over plain `postMessage` and has never crashed, so it is the
+/// transport everywhere until the transfer path is exonerated.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn streams_are_transferable() -> bool {
-    thread_local! {
-        static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
-    }
-    SUPPORTED.with(|cell| {
-        *cell.get_or_init(|| {
-            let Ok(channel) = web_sys::MessageChannel::new() else {
-                return false;
-            };
-            let stream = web_sys::ReadableStream::new().unwrap_or_else(|_| JsValue::NULL.into());
-            let transfer = js_sys::Array::new();
-            transfer.push(&stream);
-            channel
-                .port1()
-                .post_message_with_transferable(&JsValue::NULL, &transfer)
-                .is_ok()
-        })
-    })
+    false
 }
 
 /// Drain `body` into a fresh `MessageChannel`, transferring the guest's end on

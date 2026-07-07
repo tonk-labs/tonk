@@ -107,6 +107,11 @@ impl Registry {
 
     /// Mutable access to the entry map. Exposed so the refresh
     /// path can update `abort` / `space` / `branch` in place.
+    /// Whether the registry holds no live subscription.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub(crate) fn entries_mut(&mut self) -> &mut BTreeMap<EntryId, Entry> {
         &mut self.entries
     }

@@ -84,13 +84,45 @@ fn install_inner(page_effects: bool) {
         // drains while the page holds live subscriptions.)
         _navigate: page_effects.then(navigate::install).flatten(),
         _observer: WithObserver::install(&document, state.clone()),
-        _state: state,
+        _state: state.clone(),
     };
     INSTALLED.with(|cell| *cell.borrow_mut() = Some(installed));
+    if page_effects {
+        spawn_keepalive(state);
+    }
     tonk_common::log!(
         "tonk-host: installed (page_effects={page_effects}) on {}",
         document.url().unwrap_or_default()
     );
+}
+
+/// Keep the service worker alive while this page holds live
+/// subscriptions. An SSE response body does NOT extend the worker's
+/// lifetime, and SW-internal timers don't either — so without page
+/// events the browser terminates the worker (~30s idle), closing every
+/// stream and forcing an endless reconnect/re-stamp churn the nested
+/// guests heal slower than it repeats. A `POST /api/sync?why=keepalive`
+/// every 10s is a real fetch event: it extends the worker's lifetime and
+/// rides the same debounced drain scheduling as any other request.
+/// Skipped while the page holds no subscriptions (nothing to keep alive
+/// for — the browser may reclaim the worker) or is offline. Top page
+/// only: guests relay through it, so its keepalive covers the tab.
+fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            crate::ops::wait_ms(10_000).await;
+            if state.borrow().registry.is_empty() {
+                continue;
+            }
+            let Some(win) = window() else { return };
+            if !win.navigator().on_line() {
+                continue;
+            }
+            let init = web_sys::RequestInit::new();
+            init.set_method("POST");
+            let _ = win.fetch_with_str_and_init("/api/sync?why=keepalive", &init);
+        }
+    });
 }
 
 /// Document-wide observer of `with` attribute mutations. A changed
