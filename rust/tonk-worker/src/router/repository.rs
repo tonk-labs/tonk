@@ -744,23 +744,33 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
         use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously only to confirm this is a `PauseSync`; it
-        // carries no payload the handler needs (the repo comes from the
-        // origin, the toggle is read from durable state).
-        let is_pause = facts
+        // Decode synchronously to read the target space off the command — the
+        // handler flips THAT space's replica, not the dispatch origin's, so the
+        // command can be dispatched from the profile branch. The repo key is
+        // the space DID's suffix; a space's content branch is always `main`.
+        let target = facts
             .first()
             .map(|artifact| artifact.of.clone())
             .and_then(|entity| tonk_schema::command::PauseSync::decode(entity, facts))
-            .is_some();
+            .and_then(|command| {
+                command
+                    .space
+                    .0
+                    .to_string()
+                    .parse::<dialog_varsig::Did>()
+                    .ok()
+            })
+            .map(|did| did.repo_key().to_owned());
         let env = env.clone();
 
         Box::pin(async move {
-            if !is_pause {
+            let Some(repo) = target else {
+                log!("PauseSync: no/unparseable target space, skipping");
                 return;
-            }
-            let repo = env.origin().repo.clone();
-            let branch = env.origin().branch.clone();
+            };
+            let branch = CONTENT_BRANCH.to_string();
             log!("command PauseSync repo={} branch={}", repo, branch);
 
             if let Err(error) = run_pause_sync(&env, &repo, &branch).await {

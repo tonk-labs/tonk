@@ -639,6 +639,31 @@ command!: &profile/rename
       the: dom.event.current-target.dataset/rename
       as: entity
 
+# Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
+# `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
+# PROFILE branch (not on each space's branch) and dispatched on the profile
+# context, so the FAB's pause affordance depends on nothing seeded per-space —
+# older spaces missing a `fab-pause` view no longer break it. The `space` field
+# names WHICH replica to flip; the worker's PauseSyncHandler reads it in place
+# of the dispatch origin. `time` makes each click a distinct transient so the
+# toggle reliably re-fires; `marker` keeps the shape distinct from `tonk:invite`.
+command!: &tonk/pause-sync
+  this: tonk:pause-sync
+  description: Toggle auto-sync (pause ⇄ resume) for a space.
+  with:
+    time:
+      description: The click's timestamp; makes each dispatch a distinct transient.
+      the: dom.event/time-stamp
+      as: float
+    space:
+      description: The target space DID — the replica whose auto-sync is flipped.
+      the: xyz.tonk.pause-sync/space
+      as: entity
+    marker:
+      description: Per-command marker keeping the shape distinct from tonk:invite.
+      the: dom.event.current-target.dataset/pause-sync
+      as: entity
+
 # A no-entity directory view over the single profile-name row → an inline
 # editable bound to the name. Mounted in the FAB bar via
 # `<tonk-display model="tonk:profile/name">`. The `<tonk-editable>` commits on
@@ -674,16 +699,12 @@ view/directory!: &profile/fab/view
              context the repo-name display below uses). It subscribes to the
              space's `state:here` sync status and updates as the background drain
              reconciles. When collapsed the whole bar shrinks to just this cap
-             (a floating disc); dragging grabs it. `.fab__circle` sizes the disc. -->
-        <span class="fab__seg fab__cap-l fab__circle"><ui-sync-status with={dom.host/data-space}></ui-sync-status></span>
-        <!-- Hidden pause-sync form, submitted by alt/option-click on the cap
-             (element.rs). Lives in a SPACE-branch view (core.yaml's
-             `tonk:view/fab-pause`) mounted inside the space's `with` context —
-             so its `onsubmit=tonk:pause-sync` binding both resolves its
-             descriptor AND routes its claim to the space's content branch,
-             where the worker's handler flips the durable preference. The
-             cap's `<ui-sync-status>` ring shows the resulting paused state. -->
-        <tonk-display class="fab__pause" with={dom.host/data-space} model="tonk:repository" view="tonk:view/fab-pause" hidden></tonk-display>
+             (a floating disc); dragging grabs it. `.fab__circle` sizes the disc.
+             `onpause=tonk:pause-sync` wires the alt/option-click pause gesture:
+             the element dispatches that PROFILE-branch command carrying its own
+             space (from `with`), so pause needs nothing seeded on the space —
+             no hidden form, no space-side view. -->
+        <span class="fab__seg fab__cap-l fab__circle"><ui-sync-status with={dom.host/data-space} onpause="tonk:pause-sync"></ui-sync-status></span>
         <!-- ACCOUNT — its own segment (wireframe's `mr_oats`): the signed-in
              profile name, an inline editable that renames the profile. Shown
              whenever the bar is expanded (no disclosure gate). -->

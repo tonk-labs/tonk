@@ -13,11 +13,14 @@
 //! old `<tonk-sync-badge>`, which one-shot-fetched on mount + commit + toggle
 //! (none of which recur on the Hub, so it froze on a stale reading).
 //!
-//! Resolves its space from its `with="branch@repo"` attribute (or the nearest
-//! `with` ancestor) and subscribes through that routing context — the same way
-//! every consumer reaches the worker. Read-only: no pause affordance (that stays on the
-//! topbar chip). The `.sync` / `.disc` CSS lives in the app stylesheet, so the
-//! disc styles wherever this mounts; the caller sizes it with `font-size`.
+//! Resolves its space from its `with="branch@repo"` attribute and subscribes
+//! through that routing context — the same way every consumer reaches the
+//! worker. Read-only: it renders the disc but dispatches nothing. The FAB's
+//! alt/option-click pause reads this element's `with`/`onpause` and dispatches
+//! from its own handler (the cap's `<ui-sync-status>` is cloned, so a listener
+//! on it wouldn't reliably fire — see `tonk-fab`). The `.sync` / `.disc` CSS
+//! lives in the app stylesheet, so the disc styles wherever this mounts; the
+//! caller sizes it with `font-size`.
 
 use std::cell::RefCell;
 use std::rc::Rc;

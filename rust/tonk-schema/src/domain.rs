@@ -271,19 +271,29 @@ pub mod command {
         pub struct Invite(pub Entity);
     }
 
-    /// Attributes the `tonk:pause-sync` command reads from its submit event.
+    /// Attributes the `tonk:pause-sync` command carries.
     pub mod pause_sync {
         use super::super::Entity;
         use super::Attribute;
 
-        /// The per-command marker read from a `data-pause-sync` attribute on
-        /// the pause form — `tonk:pause-sync`'s distinct attribute, so it never
-        /// shares a shape with `tonk:invite` (see [`super::invite::Invite`]).
-        /// The derived attribute is `dom.event.current-target.dataset/pause-sync`.
-        /// An `Entity` for the same reason as the invite marker.
+        /// The per-command marker — `tonk:pause-sync`'s distinct attribute, so
+        /// it never shares a shape with `tonk:invite` (see
+        /// [`super::invite::Invite`]). An `Entity` for the same reason as the
+        /// invite marker. The derived attribute is
+        /// `dom.event.current-target.dataset/pause-sync`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.dataset")]
         pub struct PauseSync(pub Entity);
+
+        /// The target space DID (its subject `did:key`). The pause affordance
+        /// (the FAB's `<ui-sync-status>`) carries this so the command names the
+        /// space to pause explicitly, rather than the handler reading it off
+        /// the dispatch origin. That lets the command be defined and dispatched
+        /// on the PROFILE branch — the FAB depends on nothing seeded per-space.
+        /// The derived attribute is `xyz.tonk.pause-sync/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.pause-sync")]
+        pub struct Space(pub Entity);
     }
 
     /// Attributes the `profile/rename` command reads from the identity
