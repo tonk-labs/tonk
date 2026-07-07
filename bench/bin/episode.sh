@@ -6,13 +6,22 @@
 #
 # Env: ROOT, RUN_DIR, SCENARIO
 # Optional (from scenario.env): EPISODE_DIR, EPISODE_BIN,
-#   EPISODE_PATH_SANDBOX, EPISODE_RUNNER, EPISODE_SANDBOX, CODEX_MODEL
+#   EPISODE_PATH_SANDBOX, EPISODE_RUNNER, EPISODE_SANDBOX, CODEX_MODEL,
+#   EPISODE_HOME
 set -euo pipefail
 
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; SCENARIO="${SCENARIO:?}"
 EPISODE_DIR="${EPISODE_DIR:-$RUN_DIR/site}"
 EPISODE_TIMEOUT="${EPISODE_TIMEOUT:-1200}"   # seconds
 EPISODE_RUNNER="${EPISODE_RUNNER:-claude}"
+REAL_HOME="$HOME"
+
+# EPISODE_HOME isolates the episode's HOME (keeps it from touching the
+# real ~/.claude, ~/.codex, ~/.cargo state or shell history). Unset by
+# default: behavior is then byte-identical to before this var existed.
+if [ -n "${EPISODE_HOME:-}" ]; then
+  mkdir -p "$EPISODE_HOME"
+fi
 
 # The prompt is the generated $RUN_DIR/prompt.md when a prepare hook
 # built one (cold-onboard renders the live core.yaml invite copy);
@@ -37,16 +46,32 @@ fi
 # run through a login shell that re-sources system paths, so the
 # sandbox holds only if tonk isn't globally installed: guard it.
 EPISODE_PATH="$PATH"
-if [ "${EPISODE_PATH_SANDBOX:-0}" = 1 ]; then
-  if command -v tonk >/dev/null 2>&1; then
-    echo "episode: EPISODE_PATH_SANDBOX=1 but 'tonk' is globally installed at $(command -v tonk); the cold-start scenario would be invalid. Uninstall it or drop the sandbox." >&2
-    exit 1
-  fi
-else
+if [ "${EPISODE_PATH_SANDBOX:-0}" != 1 ]; then
   EPISODE_PATH="$ROOT/target/release:$EPISODE_PATH"
 fi
 if [ -n "${EPISODE_BIN:-}" ]; then
   EPISODE_PATH="$EPISODE_BIN:$EPISODE_PATH"
+fi
+
+# Sandbox guard: tonk must be genuinely unreachable via the path the
+# episode will actually see. Under EPISODE_HOME, codex runs commands
+# through a login shell (zsh -lc) with HOME=$EPISODE_HOME, which
+# re-sources system paths (e.g. ~/.zprofile can pull in ~/.cargo/bin) —
+# so check reachability that way rather than via `command -v` in this
+# shell's real $HOME. Without EPISODE_HOME, the direct check still
+# applies, since that's the HOME the episode will actually run under.
+if [ "${EPISODE_PATH_SANDBOX:-0}" = 1 ]; then
+  if [ -n "${EPISODE_HOME:-}" ]; then
+    if env HOME="$EPISODE_HOME" PATH="$EPISODE_PATH" zsh -lc 'command -v tonk' >/dev/null 2>&1; then
+      echo "episode: EPISODE_PATH_SANDBOX=1 but 'tonk' is reachable under EPISODE_HOME=$EPISODE_HOME via the login shell (e.g. pulled in by ~/.zprofile); the cold-start scenario would be invalid." >&2
+      exit 1
+    fi
+  else
+    if command -v tonk >/dev/null 2>&1; then
+      echo "episode: EPISODE_PATH_SANDBOX=1 but 'tonk' is globally installed at $(command -v tonk); the cold-start scenario would be invalid. Uninstall it or drop the sandbox." >&2
+      exit 1
+    fi
+  fi
 fi
 
 date +%s > "$RUN_DIR/episode-start"
@@ -70,8 +95,15 @@ if [ -n "${BENCH_USE_API_KEY:-}" ]; then
 fi
 
 run_claude() {
+  local HOME_ENV=()
+  if [ -n "${EPISODE_HOME:-}" ]; then
+    HOME_ENV=(
+      HOME="$EPISODE_HOME"
+      CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$REAL_HOME/.claude}"
+    )
+  fi
   ( cd "$EPISODE_DIR" && \
-    env "${KEY_ENV[@]}" \
+    env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
     timeout -k 30 "$EPISODE_TIMEOUT" claude -p "$(cat "$PROMPT_FILE")" \
       --output-format stream-json --verbose \
@@ -80,8 +112,21 @@ run_claude() {
 }
 
 run_codex() {
+  local HOME_ENV=()
+  if [ -n "${EPISODE_HOME:-}" ]; then
+    HOME_ENV=(
+      HOME="$EPISODE_HOME"
+      CODEX_HOME="${CODEX_HOME:-$REAL_HOME/.codex}"
+    )
+  fi
+  # tonk keeps its profile at "$HOME/Library/Application Support/dialog"
+  # (Directory::Profile); workspace-write denies unlisted paths by
+  # default, so grant it explicitly. Under EPISODE_HOME this is the
+  # episode's profile dir, not the real one.
+  local EP_PROFILE_DIR="${EPISODE_HOME:-$REAL_HOME}/Library/Application Support/dialog"
+  mkdir -p "$EP_PROFILE_DIR"
   ( cd "$EPISODE_DIR" && \
-    env "${KEY_ENV[@]}" \
+    env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
     timeout -k 30 "$EPISODE_TIMEOUT" codex exec --json \
       -m "${CODEX_MODEL:-gpt-5.5}" \
@@ -89,6 +134,7 @@ run_codex() {
       -s "${EPISODE_SANDBOX:-workspace-write}" \
       -c sandbox_workspace_write.network_access=true \
       --add-dir "$RUN_DIR" \
+      --add-dir "$EP_PROFILE_DIR" \
       - < "$PROMPT_FILE" \
   ) > "$RUN_DIR/episode.jsonl" 2> "$RUN_DIR/episode.stderr"
 }
