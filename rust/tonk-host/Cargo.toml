@@ -50,7 +50,9 @@ web-sys = { workspace = true, features = [
   "Request",
   "RequestInit",
   "Response",
+  "ServiceWorker",
   "ServiceWorkerContainer",
+  "ServiceWorkerRegistration",
   "VisibilityState",
   "Window",
 ] }

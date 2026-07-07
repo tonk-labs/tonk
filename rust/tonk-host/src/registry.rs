@@ -47,6 +47,12 @@ pub(crate) struct Entry {
     pub depth: u32,
     /// Upstream transport handle. Dropping it cancels the SSE.
     pub abort: Option<EventSource>,
+    /// Set when the stream announced an INTENTIONAL drop
+    /// (`{"control":"update-pending"}`): a newer service worker is about
+    /// to take over. The close-side reconnect then holds for the
+    /// controller change (long fallback only) instead of dialing the
+    /// outgoing worker on the usual short timer. Cleared on re-issue.
+    pub awaiting_controller: bool,
 }
 
 /// The host's subscription table.
@@ -110,6 +116,11 @@ impl Registry {
     /// Whether the registry holds no live subscription.
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Every live entry id.
+    pub(crate) fn ids(&self) -> Vec<EntryId> {
+        self.entries.keys().copied().collect()
     }
 
     pub(crate) fn entries_mut(&mut self) -> &mut BTreeMap<EntryId, Entry> {

@@ -49,6 +49,7 @@ type ResetClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 pub(crate) struct UiSyncStatus {
     subscription: Rc<RefCell<Option<Subscription>>>,
     reset: Rc<RefCell<Option<ResetClosure>>>,
+    error: Rc<RefCell<Option<ResetClosure>>>,
 }
 
 impl CustomElement for UiSyncStatus {
@@ -79,6 +80,18 @@ impl CustomElement for UiSyncStatus {
             }));
         let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
         *self.reset.borrow_mut() = Some(reset);
+
+        // A transport error on the subscription means the worker is gone
+        // (stopped, updating, network down): paint the hollow offline ring
+        // so the disc COMMUNICATES the disconnect. The reconnect's next
+        // frame repaints the real status, so this heals on its own.
+        let host_for_error = this.clone();
+        let error: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |_payload: JsValue, _opts: JsValue| {
+                paint(&host_for_error, "sync:offline");
+            }));
+        let _ = Reflect::set(this, &"__tonkError".into(), error.as_ref());
+        *self.error.borrow_mut() = Some(error);
 
         // Subscribe on a microtask, NOT synchronously: when a render pass
         // runs inside an outer custom-element reaction, the reaction queue
@@ -115,6 +128,7 @@ impl CustomElement for UiSyncStatus {
         // Dropping the subscription cancels the upstream host subscription.
         self.subscription.borrow_mut().take();
         self.reset.borrow_mut().take();
+        self.error.borrow_mut().take();
     }
 }
 
@@ -237,4 +251,9 @@ fn install_reset_shim() {
         "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
     );
     let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let error_fn = js_sys::Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
 }

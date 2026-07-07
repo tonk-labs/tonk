@@ -41,6 +41,7 @@ struct Installed {
     _listeners: Vec<InstalledListener>,
     _navigate: Option<NavigateListener>,
     _observer: Option<WithObserver>,
+    _controller: Option<ControllerWatch>,
 }
 
 thread_local! {
@@ -84,6 +85,9 @@ fn install_inner(page_effects: bool) {
         // drains while the page holds live subscriptions.)
         _navigate: page_effects.then(navigate::install).flatten(),
         _observer: WithObserver::install(&document, state.clone()),
+        _controller: page_effects
+            .then(|| ControllerWatch::install(state.clone()))
+            .flatten(),
         _state: state.clone(),
     };
     INSTALLED.with(|cell| *cell.borrow_mut() = Some(installed));
@@ -94,6 +98,28 @@ fn install_inner(page_effects: bool) {
         "tonk-host: installed (page_effects={page_effects}) on {}",
         document.url().unwrap_or_default()
     );
+}
+
+/// Refreshes every subscription the moment a new service worker takes
+/// over (`controllerchange`): the old worker's streams are dead or about
+/// to be, and one immediate pass beats trickling back on jittered retry
+/// timers. Top page only — sealed guests have no service-worker container;
+/// their streams ride this page's relays and heal with it.
+struct ControllerWatch {
+    _closure: Closure<dyn FnMut()>,
+}
+
+impl ControllerWatch {
+    fn install(state: Rc<RefCell<HostState>>) -> Option<Self> {
+        let container = window()?.navigator().service_worker();
+        let closure = Closure::wrap(Box::new(move || {
+            ops::refresh_all(&state);
+        }) as Box<dyn FnMut()>);
+        container
+            .add_event_listener_with_callback("controllerchange", closure.as_ref().unchecked_ref())
+            .ok()?;
+        Some(Self { _closure: closure })
+    }
 }
 
 /// Keep the service worker alive while this page holds live
@@ -118,11 +144,35 @@ fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
             if !win.navigator().on_line() {
                 continue;
             }
+            // A pending update means the CURRENT worker is on its way out:
+            // poking it would extend the very lifetime `skipWaiting` is
+            // waiting to end. Hold the keepalive until the takeover; the
+            // controller-change refresh re-establishes everything.
+            if update_pending().await {
+                continue;
+            }
             let init = web_sys::RequestInit::new();
             init.set_method("POST");
             let _ = win.fetch_with_str_and_init("/api/sync?why=keepalive", &init);
         }
     });
+}
+
+/// Whether a newer service worker is installing or waiting to take over.
+async fn update_pending() -> bool {
+    let Some(win) = window() else {
+        return false;
+    };
+    let Ok(registration) =
+        wasm_bindgen_futures::JsFuture::from(win.navigator().service_worker().get_registration())
+            .await
+    else {
+        return false;
+    };
+    let Ok(registration) = registration.dyn_into::<web_sys::ServiceWorkerRegistration>() else {
+        return false;
+    };
+    registration.waiting().is_some() || registration.installing().is_some()
 }
 
 /// Document-wide observer of `with` attribute mutations. A changed

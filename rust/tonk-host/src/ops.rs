@@ -99,6 +99,46 @@ fn retry_error_ms() -> i32 {
     3_000 + (js_sys::Math::random() * 3_000.0) as i32
 }
 
+/// The control frame an intentional drop sends before closing — the
+/// worker is about to be replaced; hold the reconnect for the controller
+/// change instead of dialing the outgoing worker on the short timer.
+const UPDATE_PENDING_FRAME: &str = r#"{"control":"update-pending"}"#;
+
+/// Long-fallback reconnect delay for a held entry: the top page reconnects
+/// everything on `controllerchange`, so this only backstops contexts that
+/// cannot observe it (sealed guests) or a takeover that never lands.
+fn retry_held_ms() -> i32 {
+    20_000 + (js_sys::Math::random() * 10_000.0) as i32
+}
+
+/// Handle a control frame on a subscription stream. Returns `true` when the
+/// frame was a control message (consumed here, not delivered).
+fn handle_control_frame(state: &Rc<RefCell<HostState>>, entry_id: EntryId, frame: &str) -> bool {
+    if frame.trim() != UPDATE_PENDING_FRAME {
+        return false;
+    }
+    let mut s = state.borrow_mut();
+    if let Some(entry) = s.registry.entries_mut().get_mut(&entry_id) {
+        entry.awaiting_controller = true;
+    }
+    true
+}
+
+/// The close-side reconnect delay for `entry_id`: held entries wait the
+/// long fallback, ordinary closes the short jittered one.
+fn close_delay_ms(state: &Rc<RefCell<HostState>>, entry_id: EntryId) -> i32 {
+    let held = state
+        .borrow()
+        .registry
+        .get(entry_id)
+        .is_some_and(|entry| entry.awaiting_controller);
+    if held {
+        retry_held_ms()
+    } else {
+        retry_close_ms()
+    }
+}
+
 /// Re-issue the subscription for `entry_id` after `delay_ms`, via the same
 /// re-resolution path a context refresh uses — so the reconnect picks up
 /// the consumer's current `with` ancestry. A cancelled entry or a
@@ -108,6 +148,22 @@ fn schedule_resubscribe(state: &Rc<RefCell<HostState>>, entry_id: EntryId, delay
     spawn_local(async move {
         wait_ms(delay_ms).await;
         refresh_entry(&state, entry_id).await;
+    });
+}
+
+/// Re-issue EVERY live subscription. Called on `controllerchange`: a new
+/// service worker just took over, the old worker's streams are gone (or
+/// serving their final frame), and an immediate refresh beats waiting out
+/// each entry's jittered retry timer — the page heals in one pass instead
+/// of trickling back over seconds.
+pub(crate) fn refresh_all(state: &Rc<RefCell<HostState>>) {
+    let ids = state.borrow().registry.ids();
+    let state = state.clone();
+    spawn_local(async move {
+        for id in ids {
+            yield_microtask().await;
+            refresh_entry(&state, id).await;
+        }
     });
 }
 
@@ -395,6 +451,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             tag: tag_js.clone(),
             depth,
             abort: None,
+            awaiting_controller: false,
         })
     };
 
@@ -408,6 +465,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
         let body = query_ipld;
         let consumer_frame = consumer_for_spawn.clone();
         let tag_frame = tag_for_spawn.clone();
+        let state_frame = state_for_spawn.clone();
         let consumer_err = consumer_for_spawn.clone();
         let tag_err = tag_for_spawn.clone();
         let state_err = state_for_spawn.clone();
@@ -416,6 +474,9 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             &url,
             &body,
             move |frame: &str| {
+                if handle_control_frame(&state_frame, entry_id, frame) {
+                    return;
+                }
                 if !consumer_frame.is_connected() {
                     return;
                 }
@@ -458,8 +519,10 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             move || {
                 // Clean server close (the SW releasing in-flight streams on
                 // update): reconnect silently — the subscription isn't over,
-                // its transport is.
-                schedule_resubscribe(&state_close, entry_id, retry_close_ms());
+                // its transport is. A close announced as INTENTIONAL holds
+                // for the controller change instead.
+                let delay = close_delay_ms(&state_close, entry_id);
+                schedule_resubscribe(&state_close, entry_id, delay);
             },
         )
         .await;
@@ -592,6 +655,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
                 e.abort.take();
                 e.space = space.clone();
                 e.branch = branch.clone();
+                // A fresh issue starts unheld; a new intentional-drop
+                // signal re-marks it.
+                e.awaiting_controller = false;
             }
         } else {
             return;
@@ -608,6 +674,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     let tag_frame = tag.clone();
     let state_err = state.clone();
     let state_close = state.clone();
+    let state_frame = state.clone();
     let consumer_err = consumer.clone();
     let tag_err = tag.clone();
     // The first frame after this reopen carries `reconnect: true` — see
@@ -617,6 +684,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
         &url,
         &body_ipld,
         move |frame: &str| {
+            if handle_control_frame(&state_frame, entry_id, frame) {
+                return;
+            }
             if !consumer_frame.is_connected() {
                 return;
             }
@@ -651,7 +721,8 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             schedule_resubscribe(&state_err, entry_id, retry_error_ms());
         },
         move || {
-            schedule_resubscribe(&state_close, entry_id, retry_close_ms());
+            let delay = close_delay_ms(&state_close, entry_id);
+            schedule_resubscribe(&state_close, entry_id, delay);
         },
     )
     .await;
