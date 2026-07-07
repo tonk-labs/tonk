@@ -45,33 +45,78 @@ if [ ! -s "$T" ]; then
     tool_calls:           0,
     bash_calls:           0,
     failed_tool_results:  0,
-    repeated_commands:    []
+    repeated_commands:    [],
+    journey: {
+      cmds_before_join:       null,
+      cmds_before_first_eval: null,
+      doc_fetches:            0,
+      ask_user_calls:         0
+    }
   }' > "$RUN_DIR/metrics.json"
   jq . "$RUN_DIR/metrics.json" >&2
   exit 0
 fi
 
-jq -s \
-  --argjson wall "$wall" \
-  --argjson exit_code "$exit_code" '
-  (map(select(.type == "result")) | first) as $result |
-  ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]) as $tools |
-  ([.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)]) as $errors |
-  ([$tools[] | select(.name == "Bash") | .input.command]) as $cmds |
-  {
-    wall_seconds:         $wall,
-    episode_exit:         $exit_code,
-    num_turns:            ($result.num_turns // null),
-    duration_ms:          ($result.duration_ms // null),
-    tokens: {
-      input:              ($result.usage.input_tokens // null),
-      output:             ($result.usage.output_tokens // null),
-      cache_read:         ($result.usage.cache_read_input_tokens // null)
-    },
-    tool_calls:           ($tools | length),
-    bash_calls:           ($cmds | length),
-    failed_tool_results:  ($errors | length),
-    repeated_commands:    ($cmds | group_by(.) | map(select(length > 1) | {command: .[0], times: length}))
-  }' "$T" > "$RUN_DIR/metrics.json"
+first_type="$(head -1 "$T" | jq -r '.type // empty')"
+
+JOURNEY_DEF='
+  def journey($cmds):
+    ($cmds | to_entries) as $e |
+    {
+      cmds_before_join:        (($e | map(select(.value | test("tonk +join"))) | first | .key) // null),
+      cmds_before_first_eval:  (($e | map(select(.value | test("tonk +eval"))) | first | .key) // null),
+      doc_fetches:             ([$cmds[] | select(test("tonk +guide|llms(-full)?\\.txt"))] | length),
+      ask_user_calls:          ([$cmds[] | select(test("(^|[ /;&|])ask-user( |$|\")"))] | length)
+    };
+'
+
+if [ "$first_type" = "thread.started" ]; then
+  jq -s \
+    --argjson wall "$wall" \
+    --argjson exit_code "$exit_code" "$JOURNEY_DEF"'
+    ([.[] | select(.type == "item.completed") | .item | select(.type == "command_execution")]) as $execs |
+    ([$execs[].command]) as $cmds |
+    ([.[] | select(.type == "turn.completed") | .usage] | map(select(. != null))) as $usages |
+    {
+      wall_seconds:         $wall,
+      episode_exit:         $exit_code,
+      num_turns:            ([.[] | select(.type == "turn.completed")] | length),
+      duration_ms:          null,
+      tokens: {
+        input:              (if ($usages|length) > 0 then ($usages | map(.input_tokens // 0) | add) else null end),
+        output:             (if ($usages|length) > 0 then ($usages | map(.output_tokens // 0) | add) else null end),
+        cache_read:         (if ($usages|length) > 0 then ($usages | map(.cached_input_tokens // 0) | add) else null end)
+      },
+      tool_calls:           ($execs | length),
+      bash_calls:           ($execs | length),
+      failed_tool_results:  ([$execs[] | select(.status == "failed" or ((.exit_code // 0) != 0))] | length),
+      repeated_commands:    ($cmds | group_by(.) | map(select(length > 1) | {command: .[0], times: length})),
+      journey:              journey($cmds)
+    }' "$T" > "$RUN_DIR/metrics.json"
+else
+  jq -s \
+    --argjson wall "$wall" \
+    --argjson exit_code "$exit_code" "$JOURNEY_DEF"'
+    (map(select(.type == "result")) | first) as $result |
+    ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]) as $tools |
+    ([.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)]) as $errors |
+    ([$tools[] | select(.name == "Bash") | .input.command]) as $cmds |
+    {
+      wall_seconds:         $wall,
+      episode_exit:         $exit_code,
+      num_turns:            ($result.num_turns // null),
+      duration_ms:          ($result.duration_ms // null),
+      tokens: {
+        input:              ($result.usage.input_tokens // null),
+        output:             ($result.usage.output_tokens // null),
+        cache_read:         ($result.usage.cache_read_input_tokens // null)
+      },
+      tool_calls:           ($tools | length),
+      bash_calls:           ($cmds | length),
+      failed_tool_results:  ($errors | length),
+      repeated_commands:    ($cmds | group_by(.) | map(select(length > 1) | {command: .[0], times: length})),
+      journey:              journey($cmds)
+    }' "$T" > "$RUN_DIR/metrics.json"
+fi
 
 jq . "$RUN_DIR/metrics.json" >&2
