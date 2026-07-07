@@ -53,8 +53,9 @@ use super::repository::{
 };
 use crate::{TonkWorkerError, worker::TonkState};
 
-/// Name of the meta branch on the profile repository.
-const META_BRANCH: &str = "meta";
+/// The single branch the profile repository lives on (`main`; the
+/// profile has no content/meta split).
+const PROFILE_BRANCH: &str = "main";
 
 /// Default upstream branch wired up when the invite carries a
 /// `remote=` URL.
@@ -426,7 +427,7 @@ async fn find_replica_for_subject(
     let profile_meta = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -540,7 +541,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
     {

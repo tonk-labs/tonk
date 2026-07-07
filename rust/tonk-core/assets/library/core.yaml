@@ -1316,9 +1316,9 @@ concept!: &db/branch:
       as: entity
 
 # A space (replica) the profile has access to. These records live on
-# the profile repository's meta branch — one per repository this device
+# the profile repository's main branch — one per repository this device
 # has joined or created. The Tonk Hub at `/` queries them on the profile
-# meta branch (`with="meta@profile:tonk"`) so the user can pick which space to open.
+# main branch (`with="main@profile:tonk"`) so the user can pick which space to open.
 concept!: &space
   this: tonk:space
   description: A repository this profile can open, by its local name.

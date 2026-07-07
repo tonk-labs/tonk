@@ -15,9 +15,9 @@
 # `model: space` resolves to the `&space` anchor here.
 
 # A space (replica) the profile has access to. These records live on
-# the profile repository's meta branch — one per repository this device
-# has joined or created. The Hub queries them on the profile meta branch
-# (the top site's `with="meta@profile:tonk"` context) so the user can pick
+# the profile repository's main branch — one per repository this device
+# has joined or created. The Hub queries them on the profile main branch
+# (the top site's `with="main@profile:tonk"` context) so the user can pick
 # which space to open.
 concept!: &space
   this: tonk:space
@@ -532,8 +532,8 @@ view/directory!:
 # FAB — floating action button view (rendered in the FAB portal iframe)
 # ============================================================
 #
-# These declarations live on profile/meta because the FAB portal is
-# scoped to the profile branch (`with="meta@profile:tonk"`). The
+# These declarations live on the profile branch because the FAB portal is
+# scoped to it (`with="main@profile:tonk"`). The
 # guest renders `tonk:profile/fab` via a `<tonk-display>` mounted
 # by the shell's FAB portal content string.
 #
@@ -1596,7 +1596,7 @@ view!: &join/failure-view
 # ============================================================
 #
 # The profile is itself a routable target: `<tonk-site path=…>` posts to
-# `/api/profile/branch/meta/site`, the SW asserts this tab's `tonk:site` on this
+# `/api/profile/branch/main/site`, the SW asserts this tab's `tonk:site` on this
 # branch (matching the path against the `route!` table below), and the element
 # renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
 # matched `{concept}` on the same site entity — the same indirection a space uses.
@@ -1729,6 +1729,60 @@ view!: &join/route-view
       <tonk-display model="tonk:join/status"></tonk-display>
     </div>
 
+# The /inspector and /diagnose routes: the same query-inspector and
+# search-tree views a space exposes, but pinned to the PROFILE branch so
+# you can explore the profile DB (the hub's replicas, the member name,
+# sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
+# repository from their own `with` — here the profile endpoint — so they
+# query `/api/profile/branch/main/query` rather than a named space.
+route!: &route/inspector
+  this: id:tonk:route/inspector
+  path: "/inspector"
+  concept: tonk:inspector/route
+
+concept!: &inspector/route
+  this: tonk:inspector/route
+  description: The /inspector page — a query inspector over the profile DB.
+  with:
+    # A route model must declare at least one field; the view doesn't read
+    # it (the inspector needs no entity — it inspects the whole branch).
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &inspector/route-view
+  this: id:tonk:inspector/route/view
+  model: tonk:inspector/route
+  display: |
+    <div class="display-view-slot">
+      <tonk-inspector with="main@profile:tonk" source=home></tonk-inspector>
+    </div>
+
+route!: &route/diagnose
+  this: id:tonk:route/diagnose
+  path: "/diagnose"
+  concept: tonk:diagnose/route
+
+concept!: &diagnose/route
+  this: tonk:diagnose/route
+  description: The /diagnose page — the search-tree inspector over the profile DB.
+  with:
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &diagnose/route-view
+  this: id:tonk:diagnose/route/view
+  model: tonk:diagnose/route
+  display: |
+    <div class="display-view-slot">
+      <tonk-tree with="main@profile:tonk"></tonk-tree>
+    </div>
+
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
 # full-size repo portal with the FAB floating on top — and hands the rest of the
 # path to a NESTED `<tonk-site>` inside the portal, which routes it against the
@@ -1779,4 +1833,4 @@ view!: &space-view
   model: tonk:space/chrome
   display: |
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-    <tonk-display with="meta@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>
+    <tonk-display with="main@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>

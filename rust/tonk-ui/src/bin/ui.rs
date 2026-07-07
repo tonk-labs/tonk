@@ -50,15 +50,15 @@ fn mount_root() {
     let Some(body) = document.body() else {
         return;
     };
-    // `<tonk-site with="meta@profile:tonk" allow="*">`: `with` routes the site's
-    // `tonk:load` claim and its guest's queries at the profile meta branch —
+    // `<tonk-site with="main@profile:tonk" allow="*">`: `with` routes the site's
+    // `tonk:load` claim and its guest's queries at the profile's main branch —
     // the profile's route! table picks what to render. `allow="*"` makes this
     // the privileged site: its guest (the trusted profile chrome) may reach
     // into any space (hub cards, sync chips, the FAB space list).
     let Ok(site) = document.create_element("tonk-site") else {
         return;
     };
-    let _ = site.set_attribute("with", "meta@profile:tonk");
+    let _ = site.set_attribute("with", "main@profile:tonk");
     let _ = site.set_attribute("allow", "*");
     // `<tonk-site>` never reads `window.location`; the page owns the document
     // path. Set it as `path` and keep it current on navigation (popstate /

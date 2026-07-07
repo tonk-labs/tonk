@@ -98,7 +98,7 @@ impl CustomElement for TonkTreeElement {
 
 /// Resolve the repo/branch, build the panes, and kick off the root load.
 fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
-    let Some((repo, branch)) = resolve(this) else {
+    let Some(location) = resolve(this) else {
         mount_error(
             this,
             "no repository in context (set with=\"branch@repo\" or mount inside a routed <tonk-display>)",
@@ -108,7 +108,7 @@ fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
 
     let shadow = ensure_shadow(this);
     let state = Rc::new(RefCell::new(State {
-        loader: Loader::new(&repo, &branch),
+        loader: Loader::new(&location),
         nodes: HashMap::new(),
         children: HashMap::new(),
         root: None,
@@ -140,19 +140,21 @@ fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
     });
 }
 
-/// Resolve `repo`/`branch` from attributes or the nearest `with`
-/// ancestor. A profile context has no repository segment, so it does
-/// not satisfy the tree (which queries `/api/repository/{repo}/…`).
-fn resolve(this: &HtmlElement) -> Option<(String, String)> {
-    let context = own_with(this);
-    let repo = this
-        .get_attribute("repo")
-        .or_else(|| context.as_ref().and_then(|c| c.space().map(str::to_owned)))?;
-    let branch = this
-        .get_attribute("branch")
-        .or_else(|| context.as_ref().and_then(|c| c.branch().map(str::to_owned)))
-        .unwrap_or_else(|| "main".to_owned());
-    Some((repo, branch))
+/// Resolve the routing [`Location`] the tree queries against. An
+/// explicit `repo`/`branch` attribute pair names a space directly;
+/// otherwise the element's own `with` context (a named space or the
+/// profile endpoint) drives it. Returns `None` only when neither is
+/// present, so the tree can inspect either a space or the profile DB.
+fn resolve(this: &HtmlElement) -> Option<tonk_host::location::Location> {
+    use tonk_host::location::{Location, Repo};
+    if let Some(repo) = this.get_attribute("repo") {
+        let branch = this.get_attribute("branch");
+        return Some(Location {
+            repo: Repo::Named(repo),
+            branch,
+        });
+    }
+    own_with(this)
 }
 
 /// This element's OWN parsed `with` context, skipping an unstamped `{…}`

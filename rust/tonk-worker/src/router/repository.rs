@@ -35,10 +35,17 @@ use tonk_schema::{
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
-/// Name of the meta branch every repository has alongside its
-/// content branches. The meta branch stores schema concepts
-/// describing the repository itself (see [`tonk_schema`]).
+/// Name of the device-local meta branch every *space* repository has
+/// alongside its content branch. It stores local bookkeeping — the
+/// local [`Replica`] record, remotes config, and branch enumeration —
+/// that must never replicate (see [`tonk_schema`]).
 const META_BRANCH: &str = "meta";
+
+/// The single branch the *profile* repository lives on. The profile
+/// has no content/meta split (its whole state is device-local hub
+/// bookkeeping), so it uses `main` like any repository's default
+/// branch rather than a separate meta branch.
+const PROFILE_BRANCH: &str = "main";
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -870,7 +877,7 @@ async fn run_profile_rename(
     // 1. Persist the override on the profile meta branch.
     tonk.reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(tonk_schema::ProfileName::new(
             profile_entity,
@@ -1092,7 +1099,7 @@ async fn remove_replica_from_profile(
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
@@ -1108,7 +1115,7 @@ async fn remove_replica_from_profile(
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction();
     let mut found = false;
     while let Some(artifact) = stream.next().await {
@@ -1138,7 +1145,7 @@ async fn remove_replica_from_profile(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: META_BRANCH.to_string(),
+            branch: PROFILE_BRANCH.to_string(),
             revision,
         },
     );
@@ -1427,7 +1434,7 @@ async fn replica_still_recorded(tonk: &TonkState, subject: &Did) -> Result<bool,
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
@@ -2111,7 +2118,7 @@ async fn record_replica_in_profile(
     let revision = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(replica)
         .assert(status)
@@ -2132,7 +2139,7 @@ async fn record_replica_in_profile(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: META_BRANCH.to_string(),
+            branch: PROFILE_BRANCH.to_string(),
             revision,
         },
     );
@@ -2163,7 +2170,7 @@ async fn set_replica_status(
     let revision = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(stamp)
         .commit()
@@ -2178,7 +2185,7 @@ async fn set_replica_status(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: META_BRANCH.to_string(),
+            branch: PROFILE_BRANCH.to_string(),
             revision,
         },
     );
@@ -2209,7 +2216,7 @@ pub(super) async fn mark_replica_initialized(
 /// `(profile, subject)` / `(replica, name)`), so re-asserting the
 /// same facts produces the same entities and attribute values and
 /// the dialog layer deduplicates.
-pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryError> {
+pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> {
     let profile_did = tonk.profile.did();
     let replica = Replica::new(profile_did.clone(), profile_did);
 
@@ -2219,17 +2226,17 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
     // `Repository::from` handle would leave the reader stale.
     tonk.reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
+        .assert(replica.branch(PROFILE_BRANCH))
         .commit()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to bootstrap profile meta: {}", e))
+            RepositoryError::Internal(format!("Failed to bootstrap profile branch: {}", e))
         })?;
-    log!("Profile meta bootstrapped");
+    log!("Profile branch bootstrapped");
 
     // Stamp a durable display name (the deterministic petname) when none is
     // stored yet, so the FAB's sealed profile-branch `<tonk-display
@@ -2253,18 +2260,18 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
     Ok(())
 }
 
-/// Fetch and seed the lean profile library onto the profile meta
+/// Fetch and seed the lean profile library onto the profile
 /// branch. SW-only — the fetch needs a service-worker scope.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
     let library = fetch_standard_library(PROFILE_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-    super::evaluate::evaluate_profile_body(tonk, META_BRANCH, library, true)
+    super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, library, true)
         .await
         .map(|_| ())
         .map_err(|e| {
-            RepositoryError::Internal(format!("seed standard library on profile meta: {e}"))
+            RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
         })
 }
 
@@ -3399,7 +3406,7 @@ mod tests {
         let meta = tonk
             .reactor
             .profile_repository()
-            .branch(super::META_BRANCH)
+            .branch(super::PROFILE_BRANCH)
             .acquire(&tonk.operator)
             .await
             .expect("profile meta acquires");
@@ -3479,7 +3486,7 @@ mod tests {
         let (_app, state, _key) = fresh_repo("test-remove-self").await;
 
         // The harness never runs the worker boot path — and can't call
-        // `bootstrap_profile_meta`, whose library fetch needs a real
+        // `bootstrap_profile`, whose library fetch needs a real
         // service-worker registration — so seed just the self-replica
         // record the assertion below expects, mirroring the bootstrap's
         // own transaction.
@@ -3489,10 +3496,10 @@ mod tests {
             let replica = super::Replica::new(profile_did.clone(), profile_did);
             tonk.reactor
                 .profile_repository()
-                .branch(super::META_BRANCH)
+                .branch(super::PROFILE_BRANCH)
                 .transaction()
                 .assert(replica.clone())
-                .assert(replica.branch(super::META_BRANCH))
+                .assert(replica.branch(super::PROFILE_BRANCH))
                 .commit()
                 .perform(&tonk.operator)
                 .await
@@ -3667,7 +3674,7 @@ mod tests {
             &state,
             crate::router::CommandOrigin {
                 repo: String::new(),
-                branch: "meta".to_string(),
+                branch: "main".to_string(),
                 client: None,
             },
             changes,

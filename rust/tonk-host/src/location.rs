@@ -5,7 +5,7 @@
 //!
 //! - `main@did:key:zAlice` — the `main` branch of Alice's repository.
 //! - `did:key:zAlice` — a bare repo means its default branch.
-//! - `meta@profile:tonk` — a `profile:<name>` repo token names the
+//! - `main@profile:tonk` — a `profile:<name>` repo token names the
 //!   profile-as-repository endpoint (`/api/profile/branch/…`), not a
 //!   named repository. The name (`tonk`, the profile the worker
 //!   opens) is carried for forward compatibility; today the profile
@@ -198,7 +198,7 @@ pub enum ParseError {
     EmptyBranch(String),
     /// A `branch@` token with nothing after the `@`.
     EmptyRepo(String),
-    /// A profile token without a name (`profile` / `meta@profile:`).
+    /// A profile token without a name (`profile` / `main@profile:`).
     ProfileNeedsName(String),
     /// An empty `allow` attribute — a site must declare its reach.
     EmptyAllow,
@@ -251,9 +251,9 @@ mod tests {
 
     #[dialog_common::test]
     fn it_parses_a_named_profile_token() {
-        let location: Location = "meta@profile:tonk".parse().unwrap();
+        let location: Location = "main@profile:tonk".parse().unwrap();
         assert_eq!(location.repo, Repo::Profile("tonk".into()));
-        assert_eq!(location.branch(), Some("meta"));
+        assert_eq!(location.branch(), Some("main"));
         assert_eq!(location.space(), None);
         assert!(location.profile());
     }
@@ -261,16 +261,16 @@ mod tests {
     #[dialog_common::test]
     fn it_rejects_a_profile_token_without_a_name() {
         assert_eq!(
-            "meta@profile".parse::<Location>(),
-            Err(ParseError::ProfileNeedsName("meta@profile".into()))
+            "main@profile".parse::<Location>(),
+            Err(ParseError::ProfileNeedsName("main@profile".into()))
         );
         assert_eq!(
             "profile".parse::<Location>(),
             Err(ParseError::ProfileNeedsName("profile".into()))
         );
         assert_eq!(
-            "meta@profile:".parse::<Location>(),
-            Err(ParseError::ProfileNeedsName("meta@profile:".into()))
+            "main@profile:".parse::<Location>(),
+            Err(ParseError::ProfileNeedsName("main@profile:".into()))
         );
     }
 
@@ -290,7 +290,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_round_trips_locations_through_display() {
-        for token in ["main@did:key:zAlice", "did:key:zAlice", "meta@profile:tonk"] {
+        for token in ["main@did:key:zAlice", "did:key:zAlice", "main@profile:tonk"] {
             let location: Location = token.parse().unwrap();
             assert_eq!(location.to_string(), token);
         }

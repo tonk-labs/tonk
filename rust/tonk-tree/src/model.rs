@@ -67,16 +67,25 @@ pub struct Loader {
 }
 
 impl Loader {
-    pub fn new(repo: &str, branch: &str) -> Self {
-        // A HOST-RELATIVE URL (no origin prefix) so the request routes correctly
-        // everywhere: on a normal page it resolves same-origin; inside a sealed
-        // (opaque-origin) guest `window.location.origin` is the string "null", so
-        // an absolute URL would be `null/api/…` and fail — but the guest's
-        // `window.fetch` proxy reroutes host-relative `/api/…` paths over the
-        // bridge to the host's real origin (where the SW serves them).
-        Self {
-            url: format!("/api/repository/{repo}/branch/{branch}/query"),
-        }
+    /// Build a loader for a routing [`Location`] — a named space
+    /// (`/api/repository/{repo}/branch/{branch}/query`) or the profile
+    /// endpoint (`/api/profile/branch/{branch}/query`). The profile has
+    /// no repository segment, so a `main@profile:tonk` context targets
+    /// the parallel profile surface rather than a named repo.
+    ///
+    /// A HOST-RELATIVE URL (no origin prefix) so the request routes correctly
+    /// everywhere: on a normal page it resolves same-origin; inside a sealed
+    /// (opaque-origin) guest `window.location.origin` is the string "null", so
+    /// an absolute URL would be `null/api/…` and fail — but the guest's
+    /// `window.fetch` proxy reroutes host-relative `/api/…` paths over the
+    /// bridge to the host's real origin (where the SW serves them).
+    pub fn new(location: &tonk_host::location::Location) -> Self {
+        let branch = location.effective_branch();
+        let url = match location.space() {
+            Some(repo) => format!("/api/repository/{repo}/branch/{branch}/query"),
+            None => format!("/api/profile/branch/{branch}/query"),
+        };
+        Self { url }
     }
 
     /// POST a formula query and return the decoded rows.

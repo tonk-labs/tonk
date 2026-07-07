@@ -100,7 +100,7 @@ pub(crate) async fn post_site(path: &str) -> Result<String, ErrorDetail> {
 /// `POST` a per-branch `/site` endpoint (`url`) to register this document's site
 /// on an explicit branch and read back the `site:<client-id>` entity. Like
 /// [`post_site`] but the branch is named in `url` (e.g.
-/// `/api/profile/branch/meta/site`), so the SW does no document-path routing —
+/// `/api/profile/branch/main/site`), so the SW does no document-path routing —
 /// it matches `path` against that branch's route table. The path rides both the
 /// `X-Tonk-Path` header (legacy `/api/site` reads it there) and the JSON body
 /// (the per-branch endpoint reads `{path}`), so one builder serves both.
