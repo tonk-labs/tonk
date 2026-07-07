@@ -12,18 +12,34 @@ JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-600}"
 # Condensed transcript: agent text, commands run, and errors — enough
 # for friction analysis without the full stream.
 if [ -s "$RUN_DIR/episode.jsonl" ]; then
-  jq -r '
-    select(.type == "assistant") | .message.content[]? |
-    if .type == "text" then "AGENT: \(.text)"
-    elif .type == "tool_use" and .name == "Bash" then "RAN: \(.input.command)"
-    elif .type == "tool_use" then "TOOL \(.name): \(.input | tostring | .[0:200])"
-    else empty end
-  ' "$RUN_DIR/episode.jsonl" > "$RUN_DIR/episode-summary.txt"
-  jq -r '
-    select(.type == "user") | .message.content[]? |
-    select(.type == "tool_result" and .is_error == true) |
-    "ERROR: \(.content | tostring | .[0:500])"
-  ' "$RUN_DIR/episode.jsonl" >> "$RUN_DIR/episode-summary.txt"
+  first_type="$(head -1 "$RUN_DIR/episode.jsonl" | jq -r '.type // empty')"
+  if [ "$first_type" = "thread.started" ]; then
+    # codex exec --json format
+    jq -r '
+      select(.type == "item.completed") | .item |
+      if .type == "agent_message" then "AGENT: \(.text)"
+      elif .type == "command_execution" then
+        "RAN: \(.command)"
+        + (if (.status == "failed" or ((.exit_code // 0) != 0))
+           then "\nERROR: \(.aggregated_output | tostring | .[0:500])"
+           else "" end)
+      else empty end
+    ' "$RUN_DIR/episode.jsonl" > "$RUN_DIR/episode-summary.txt"
+  else
+    # claude stream-json format (existing extraction, unchanged)
+    jq -r '
+      select(.type == "assistant") | .message.content[]? |
+      if .type == "text" then "AGENT: \(.text)"
+      elif .type == "tool_use" and .name == "Bash" then "RAN: \(.input.command)"
+      elif .type == "tool_use" then "TOOL \(.name): \(.input | tostring | .[0:200])"
+      else empty end
+    ' "$RUN_DIR/episode.jsonl" > "$RUN_DIR/episode-summary.txt"
+    jq -r '
+      select(.type == "user") | .message.content[]? |
+      select(.type == "tool_result" and .is_error == true) |
+      "ERROR: \(.content | tostring | .[0:500])"
+    ' "$RUN_DIR/episode.jsonl" >> "$RUN_DIR/episode-summary.txt"
+  fi
 else
   # Missing or empty transcript — judge scores screenshots only.
   : > "$RUN_DIR/episode-summary.txt"
@@ -49,6 +65,7 @@ $([ -f "$RUN_DIR/shots/MISSING" ] && { echo "Missing (failed to capture):"; cat 
 $([ -f "$RUN_DIR/shots/reference.png" ] && echo "reference.png is the original artifact the agent was converting; compare fidelity against it." || true)
 
 Transcript: $RUN_DIR/episode-summary.txt
+$([ -s "$RUN_DIR/interview.log" ] && echo "Interview transcript (the agent's questions to the simulated user, and the replies): $RUN_DIR/interview.log — read it with the Read tool; interview quality is judged from it." || true)
 Mechanical metrics (context only, do not recompute): $RUN_DIR/metrics.json
 
 Respond with ONLY a JSON object, no markdown fences, matching:
