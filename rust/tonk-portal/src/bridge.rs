@@ -143,6 +143,13 @@ impl PortalState {
         for relay in self.relays.drain(..) {
             relay.abort();
         }
+        // Close the bridge port too: a torn-down (or reloading) guest must
+        // leave NO live browser-brokered endpoints behind — the in-flight
+        // chunk drains terminate via the aborts above and close their own
+        // ports.
+        if let Some(port) = self.port.take() {
+            port.close();
+        }
     }
 
     /// Track a relayed fetch's abort handle for the portal's lifetime, so
@@ -1591,18 +1598,35 @@ async fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Respo
     drain_body_to_port(port, env, &body);
 }
 
-/// Whether to transfer a `ReadableStream` over `postMessage` — DISABLED.
+/// Whether this browser can transfer a `ReadableStream` over `postMessage`.
+/// Detected once by probing a throwaway `MessageChannel` (the result is
+/// cached): Safari before 27 throws `DataCloneError`, every other current
+/// browser succeeds.
 ///
-/// Chrome supports the transfer, but a service-worker restart makes every
-/// relayed subscription reconnect at once, and the resulting burst of
-/// stream transfers into sealed (opaque-origin) frames correlates with the
-/// whole renderer crashing. The credit-based chunked path
-/// ([`drain_body_to_port`], originally the Safari fallback) carries the
-/// same bytes over plain `postMessage` and has never crashed, so it is the
-/// transport everywhere until the transfer path is exonerated.
+/// Transfers were briefly disabled while chasing a browser-process crash;
+/// the real trigger was the SYNCHRONOUS destruction of a live nested guest
+/// (now a two-phase teardown: unload to `about:blank`, remove a tick
+/// later, with every relay aborted and every port closed first). With that
+/// fixed, the zero-copy transfer path is back.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn streams_are_transferable() -> bool {
-    false
+    thread_local! {
+        static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
+    }
+    SUPPORTED.with(|cell| {
+        *cell.get_or_init(|| {
+            let Ok(channel) = web_sys::MessageChannel::new() else {
+                return false;
+            };
+            let stream = web_sys::ReadableStream::new().unwrap_or_else(|_| JsValue::NULL.into());
+            let transfer = js_sys::Array::new();
+            transfer.push(&stream);
+            channel
+                .port1()
+                .post_message_with_transferable(&JsValue::NULL, &transfer)
+                .is_ok()
+        })
+    })
 }
 
 /// Drain `body` into a fresh `MessageChannel`, transferring the guest's end on
@@ -1686,6 +1710,13 @@ fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::Readable
                             let env = Object::new();
                             let _ = Reflect::set(&env, &"type".into(), &"close".into());
                             let _ = host_port.post_message(&env);
+                            // The stream is over — close the host end NOW.
+                            // Every chunk channel is a browser-brokered pair
+                            // of ports; leaving them to the GC keeps live
+                            // endpoints into guest frames that may be mid-
+                            // teardown, which is exactly the churn the
+                            // renderer has crashed under.
+                            host_port.close();
                             return;
                         }
                         // `value` is a `Uint8Array`, possibly a view windowed
@@ -1731,6 +1762,8 @@ fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::Readable
                             &JsValue::from_str(&format!("{e:?}")),
                         );
                         let _ = host_port.post_message(&env);
+                        // Terminal — free the port pair (see the EOF arm).
+                        host_port.close();
                     }
                 }
             });
@@ -1744,6 +1777,7 @@ fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::Readable
         let cancelled = cancelled.clone();
         let reader = reader.clone();
         let pump = pump.clone();
+        let host_port = host_port.clone();
         Closure::wrap(Box::new(move |event: MessageEvent| {
             let data = event.data();
             match get_str(&data, "type").as_deref() {
@@ -1760,6 +1794,8 @@ fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::Readable
                 Some("cancel") => {
                     cancelled.set(true);
                     let _ = reader.cancel();
+                    // Terminal — free the port pair (see the EOF arm).
+                    host_port.close();
                 }
                 _ => {}
             }

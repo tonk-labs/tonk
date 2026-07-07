@@ -105,6 +105,13 @@ impl CustomElement for TonkSite {
 }
 
 /// Tear down the portal iframe held by `cell`, if any.
+///
+/// TWO-PHASE: sever the comms (aborts + port closes via `clear_subs`),
+/// point the frame at `about:blank` so the guest realm unloads on its own
+/// schedule, and only remove the element a tick later. Synchronously
+/// destroying a live nested guest (running wasm, brokered ports, its own
+/// nested frames) from inside a render pass is the pattern the browser
+/// process has crashed under — give the unload a turn to settle first.
 fn teardown(cell: &StateCell) {
     if let Some(state) = cell.borrow_mut().take() {
         let mut s = state.borrow_mut();
@@ -112,9 +119,20 @@ fn teardown(cell: &StateCell) {
         s.clear_subs();
         if let Some(iframe) = s.iframe.take() {
             crate::bridge::unregister_portal(&iframe);
-            if let Some(parent) = iframe.parent_node() {
-                let _ = parent.remove_child(&iframe);
-            }
+            let _ = iframe.remove_attribute("srcdoc");
+            let _ = iframe.set_attribute("src", "about:blank");
+            spawn_local(async move {
+                let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                    if let Some(win) = window() {
+                        let _ = win
+                            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 100);
+                    }
+                });
+                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                if let Some(parent) = iframe.parent_node() {
+                    let _ = parent.remove_child(&iframe);
+                }
+            });
         }
     }
 }

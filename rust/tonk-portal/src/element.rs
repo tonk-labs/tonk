@@ -90,9 +90,25 @@ impl CustomElement for TonkPortal {
             s.clear_subs();
             if let Some(iframe) = s.iframe.take() {
                 bridge::unregister_portal(&iframe);
-                if let Some(parent) = iframe.parent_node() {
-                    let _ = parent.remove_child(&iframe);
-                }
+                // Two-phase: unload the guest realm first, remove the
+                // element a tick later — synchronous destruction of a live
+                // guest is the pattern the browser process crashes under
+                // (see `site::teardown`).
+                let _ = iframe.remove_attribute("srcdoc");
+                let _ = iframe.set_attribute("src", "about:blank");
+                wasm_bindgen_futures::spawn_local(async move {
+                    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                &resolve, 100,
+                            );
+                        }
+                    });
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                    if let Some(parent) = iframe.parent_node() {
+                        let _ = parent.remove_child(&iframe);
+                    }
+                });
             }
         }
     }
