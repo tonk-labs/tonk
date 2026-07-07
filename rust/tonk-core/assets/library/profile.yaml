@@ -106,30 +106,6 @@ command!: &space/create
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
-# The Remove Space command. Submitting a Hub row's delete-confirm form
-# asserts this transient; the worker's `RemoveSpaceHandler` retracts the
-# replica record from this branch, evicts the space from the reactor
-# (stopping background sync), and deletes its local storage. Removal is
-# device-local — a synced spot can be rejoined via an invite link; a
-# local-only spot is gone for good, which the confirm copy states.
-# `subject` reads the form's `data-remove` attribute. Deliberately NOT
-# `data-subject`: `tonk/rename-repository` transients already carry
-# `dataset/subject`, and a remove command matched on that attribute
-# alone would also decode every rename. The distinct attribute doubles
-# as the command's unique shape, so no marker field is needed. The
-# command is transient: it fires the handler once and is swept before
-# the durable commit.
-command!: &space/remove
-  description: A request to remove a space from this device (its list entry and local data).
-  with:
-    subject:
-      description: The subject DID of the space to remove, read from `data-remove`.
-      the: dom.event.current-target.dataset/remove
-      as: entity
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
-
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
 # `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
 # the PROFILE branch (its ancestors resolve no named repo, so the claim routes
@@ -246,58 +222,23 @@ view/directory!:
         .spot-dir-head { font-family: var(--spot-font-display); font-size: 22px; font-weight: 700;
           letter-spacing: -.5px; color: var(--wa-color-text-normal); padding: 0 0 10px;
           border-bottom: var(--wa-border-width-s) solid var(--wa-color-text-normal); margin-bottom: 8px; }
-        /* One row: a wrapper holding the link plus the remove affordance
-           and its confirm overlay. The wrapper (not the <a>) is the
-           repeat element, so the x and overlay travel with the row while
-           staying outside the link. */
-        .srow-wrap { position: relative; }
+        /* One row: sync dot + space name. The wireframe also lists owner /
+           member-count / last-updated columns, but the profile's `space` model
+           carries none of those facts (only subject/kind/status/name), so we
+           show what we actually have rather than mock columns. No "open" label:
+           the whole row is the link. */
         .srow { display: grid; grid-template-columns: 56px minmax(0,1fr); align-items: stretch;
           background: transparent; text-decoration: none; color: var(--wa-color-text-normal); }
         .srow > span { display: flex; align-items: center; padding: 18px 0; font-size: 15px; white-space: nowrap; }
         .srow-dot { justify-content: center; }
-        .srow-name { padding-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-          /* keep the name clear of the hover-revealed remove x */
-          padding-right: 44px; }
-        .srow-wrap:hover .srow { background: var(--wa-color-neutral-fill-quiet); }
+        .srow-name { padding-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .srow:hover { background: var(--wa-color-neutral-fill-quiet); }
+        .srow:hover .srow-open { color: var(--wa-color-brand-on-quiet); }
         /* hide the profile's self-replica row */
-        .srow-wrap[data-kind="tonk:profile"] { display: none; }
+        .srow[data-kind="tonk:profile"] { display: none; }
         /* dim the row while the content branch is still seeding */
-        .srow-wrap[data-status="tonk:blank"] .srow-name { opacity: .6; }
+        .srow[data-status="tonk:blank"] .srow-name { opacity: .6; }
         .spot-untitled { color: var(--wa-color-text-quiet); }
-        /* empty-directory placeholder: visible by default, hidden the
-           moment any real row exists. "Real" excludes the self-replica
-           row, which is present but hidden on some profiles. */
-        .spot-empty { padding: 18px 0; font-size: 15px; color: var(--wa-color-text-quiet); }
-        .spot-list:has(.srow-wrap:not([data-kind="tonk:profile"])) .spot-empty { display: none; }
-
-        /* ── Remove-spot affordance ─────────────────────────────────────
-           A hover-revealed x per row opens a per-row confirm overlay,
-           driven by the same native-radio trick as the create wizard:
-           the row's `__rm` radio shows its overlay; rm-closed (checked
-           by default, re-checked by the form's data-close-radio on
-           submit and by the cancel label) hides them all. The x stays
-           clickable when transparent, so touch works without hover. */
-        .srm-open { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-          display: flex; align-items: center; justify-content: center;
-          width: 30px; height: 30px; cursor: pointer; opacity: 0;
-          color: var(--wa-color-text-quiet); border-radius: var(--wa-border-radius-s); }
-        .srow-wrap:hover .srm-open { opacity: 1; }
-        .srm-open:hover { color: var(--wa-color-danger-on-quiet);
-          background: var(--wa-color-danger-fill-quiet); }
-        .srm-overlay { display: none; position: fixed; inset: 0; z-index: 60;
-          background: var(--wa-color-surface-default); color: var(--wa-color-text-normal); }
-        .srow-wrap > input:checked ~ .srm-overlay { display: flex;
-          align-items: center; justify-content: center; }
-        .srm-card { display: flex; flex-direction: column; align-items: center;
-          gap: 14px; max-width: 480px; padding: 40px; text-align: center; }
-        .srm-title { font-family: var(--spot-font-display); font-weight: 300; font-size: 32px;
-          letter-spacing: -1px; margin: 0; color: var(--wa-color-text-normal);
-          /* opt out of the global heading "headline-cover" dark box */
-          background: none; padding: 0; display: block; }
-        .srm-name { font-size: 17px; font-weight: 600; }
-        .srm-actions { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
-        .srm-cancel { cursor: pointer; }
-        .srm-cancel wa-button { pointer-events: none; }
 
         /* ── Create-spot wizard ─────────────────────────────────────────────
            A CSS-paged wizard driven by native radios (the guest WA bundle
@@ -323,6 +264,8 @@ view/directory!:
         .onb-nav--close { right: 20px; }
         .onb-nav--back { left: 20px; }
         .onb-head { text-align: center; max-width: 560px; }
+        .onb-kick { font-family: var(--spot-font-mono); font-size: 11.5px; letter-spacing: .13em;
+          text-transform: uppercase; color: var(--wa-color-text-quiet); margin-bottom: 10px; }
         .onb-head h3 { font-family: var(--spot-font-display); font-weight: 300; font-size: 38px;
           letter-spacing: -1.3px; margin: 0 0 12px; color: var(--wa-color-text-normal);
           /* opt out of the global heading "headline-cover" dark box */
@@ -463,64 +406,25 @@ view/directory!:
 
       <div class="spot-list">
         <div class="spot-dir-head">Directory</div>
-        <!-- The remove radios form one `__rm` group with the rows' per-row
-             radios below: rm-closed (chrome, default) hides every confirm;
-             a row's radio opens its overlay, and opening another row's
-             closes the first. The confirm form's data-close-radio re-checks
-             rm-closed on submit; cancel is a plain label for it. -->
-        <!-- tabindex=-1: these radios are visually hidden chrome (the × label
-             and the overlay's own buttons are the interactive path); without
-             it Tab would land on an invisible control that opens a
-             destructive overlay. -->
-        <input class="spot-wiz" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
-        <div class="spot-empty">No spots yet — create one to get started.</div>
-        <!-- `data-id={this}` designates the repeat row — the wrapper (not
-             the <a>), so the remove affordance and confirm overlay repeat
-             with the row while staying outside the link: hovering or
-             clicking the x never navigates. Each per-space consumer
-             carries its OWN `with={subject}` — the space's repo DID from
-             the record's `subject` FIELD (`{this}` is the `tonk:space`
-             row, a derived entity that names no repository). A bare repo
-             means its main branch; honored because the profile site is
-             `allow="*"`. -->
-        <div class="srow-wrap" data-kind={kind} data-status={status} data-id={this}>
-          <input class="spot-wiz" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
-          <a class="srow" href="/space/{subject}">
-            <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
-            <span class="srow-name">
-              <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
-                <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
-                <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
-                <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
-                <span slot="loading" class="spot-untitled" hidden>Untitled</span>
-              </tonk-display>
-            </span>
-          </a>
-          <label class="srm-open" for="rm-{subject}" aria-label="Remove spot">
-            <wa-icon name="xmark"></wa-icon>
-          </label>
-          <div class="srm-overlay">
-            <form class="srm-card" onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
-              <h3 class="srm-title">Delete this spot?</h3>
-              <div class="srm-name">
-                <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
-                  <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
-                  <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
-                  <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
-                  <span slot="loading" class="spot-untitled" hidden>Untitled</span>
-                </tonk-display>
-              </div>
-              <p class="onb-lede">Removes this spot and its local data from this device.
-                A synced spot can be rejoined with an invite link; a local-only spot is gone for good.</p>
-              <div class="srm-actions">
-                <label class="srm-cancel" for="rm-closed">
-                  <wa-button variant="neutral" appearance="plain" size="small">cancel</wa-button>
-                </label>
-                <wa-button type="submit" variant="danger" size="small">delete spot</wa-button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <!-- `data-id={this}` designates the repeat row. Each per-space
+             consumer carries its OWN `with={subject}` — the space's repo
+             DID from the record's `subject` FIELD (`{this}` is the
+             `tonk:space` row, a derived entity that names no repository).
+             The row cannot inherit one context because every row targets a
+             different space, so the disc and the label are each
+             self-describing. A bare repo means its main branch; honored
+             because the profile site is `allow="*"`. -->
+        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} data-id={this}>
+          <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
+          <span class="srow-name">
+            <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
+              <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
+              <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
+              <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
+              <span slot="loading" class="spot-untitled" hidden>Untitled</span>
+            </tonk-display>
+          </span>
+        </a>
       </div>
 
       <div class="spot-overlay">
@@ -534,6 +438,7 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
+              <div class="onb-kick">new spot</div>
               <h3>How do you want to start?</h3>
               <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
             </div>
@@ -574,6 +479,7 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
+              <div class="onb-kick">new spot</div>
               <h3>Name your spot</h3>
             </div>
             <!-- Template picker. Native radios drive a 3-up grid of card

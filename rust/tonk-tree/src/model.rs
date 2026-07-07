@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Request, RequestInit, Response, window};
+use web_sys::{Headers, RequestInit, Response, window};
 
 /// A node hash, the `#<base58>` string the worker emits.
 pub type NodeHash = String;
@@ -83,19 +83,24 @@ impl Loader {
     async fn query(&self, formula: &str, terms: serde_json::Value) -> Result<Vec<Row>, String> {
         let body = json!({ "predicate": formula, "terms": terms }).to_string();
 
-        let opts = RequestInit::new();
-        opts.set_method("POST");
-        opts.set_body(&body.into());
-
-        let request = Request::new_with_str_and_init(&self.url, &opts)
-            .map_err(|e| format!("request build: {e:?}"))?;
-        request
-            .headers()
+        let headers = Headers::new().map_err(|e| format!("headers: {e:?}"))?;
+        headers
             .set("content-type", "application/json")
             .map_err(|e| format!("header: {e:?}"))?;
 
+        let opts = RequestInit::new();
+        opts.set_method("POST");
+        opts.set_body(&body.into());
+        opts.set_headers(&headers);
+
+        // Fetch the STRING path — never a `Request`, which resolves the
+        // relative URL against `baseURI` at construction. In a sealed
+        // (opaque-origin) guest that baseURI is `null`, so a `Request`
+        // would carry an absolute `null/api/…` URL the portal's
+        // `window.fetch` override cannot recognize as host-relative and
+        // relay. The string path stays `/api/…` until the override sees it.
         let win = window().ok_or("no window")?;
-        let resp_val = JsFuture::from(win.fetch_with_request(&request))
+        let resp_val = JsFuture::from(win.fetch_with_str_and_init(&self.url, &opts))
             .await
             .map_err(|e| format!("fetch: {e:?}"))?;
         let resp: Response = resp_val.dyn_into().map_err(|_| "not a Response")?;
