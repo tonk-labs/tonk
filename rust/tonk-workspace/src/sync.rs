@@ -2,8 +2,7 @@
 //!
 //! One dumb light-DOM custom element, cut from the same cloth as
 //! [`super::share`]: it resolves its repo/branch from the nearest
-//! `<tonk-repository>` / `<tonk-branch>` ancestors and otherwise holds
-//! no app policy.
+//! `with="branch@repo"` ancestor and otherwise holds no app policy.
 //!
 //! - `<tonk-sync-state>` is the status indicator *and* the pause/resume
 //!   button in one. It shows exactly three states for the branch in
@@ -106,7 +105,7 @@ mod dom {
     use super::logic::{
         OFFLINE_CHIP, PAUSED_CHIP, branch_or_default, pref_is_enabled, pref_key, state_chip,
     };
-    use crate::ancestors::repo_from_ancestor;
+    use crate::ancestors::repo_from_context;
 
     /// Window event the controller dispatches to ask the chip to
     /// re-read its read-only sync status. Repo name rides in `detail`.
@@ -145,16 +144,19 @@ mod dom {
         storage.set_item(&pref_key(repo), value).is_ok()
     }
 
-    /// Read the `name` of the nearest `<tonk-branch>` ancestor, defaulting to
-    /// `main` when absent or empty. Falls back to the bridge context inside
-    /// the sealed guest (the routing ancestors live outside the iframe).
+    /// Read the branch of the nearest `with` ancestor, defaulting to
+    /// `main` when absent, empty, or bare-repo (no branch part). Falls back
+    /// to the bridge context inside the sealed guest (the routing context
+    /// may live outside the iframe).
     fn branch_from_ancestor(this: &HtmlElement) -> String {
         let name = this
-            .closest("tonk-branch")
+            .closest("[with]")
             .ok()
             .flatten()
-            .and_then(|el| el.get_attribute("name"))
-            .filter(|n| !n.is_empty())
+            .and_then(|el| el.get_attribute("with"))
+            .filter(|v| !v.is_empty() && !v.contains('{'))
+            .and_then(|v| v.parse::<tonk_host::location::Location>().ok())
+            .and_then(|location| location.branch().map(str::to_owned))
             .or_else(|| tonk_host::bridge::context_field("branch"));
         branch_or_default(name)
     }
@@ -252,7 +254,7 @@ mod dom {
             if !is_togglable(&host) {
                 return;
             }
-            let Some(repo) = repo_from_ancestor(&host) else {
+            let Some(repo) = repo_from_context(&host) else {
                 return;
             };
             let next = !is_enabled(&repo);
@@ -362,7 +364,7 @@ mod dom {
     /// repaint never clears first, so a refresh holds the last good pill
     /// until the new one is ready.
     fn refresh_state(this: &HtmlElement) {
-        let Some(repo) = repo_from_ancestor(this) else {
+        let Some(repo) = repo_from_context(this) else {
             this.set_inner_html("");
             return;
         };
@@ -399,7 +401,7 @@ mod dom {
     /// unreachable branch reads as `offline` (its `state_chip`). With no
     /// repository ancestor there is nothing to show, so the host clears.
     fn refresh_badge(this: &HtmlElement) {
-        let Some(repo) = repo_from_ancestor(this) else {
+        let Some(repo) = repo_from_context(this) else {
             this.set_inner_html("");
             return;
         };
@@ -532,7 +534,7 @@ mod dom {
     }
 
     /// Install the trigger's click listener on the host: stamp the repo
-    /// resolved from the `<tonk-repository>` ancestor into the notation
+    /// resolved from the `with` ancestor into the notation
     /// enable-sync form's hidden `name` input, so the asserted command
     /// targets the right repository. Harmless when the element is
     /// showing a chip (the chip carries no `data-dialog`, so no dialog
@@ -540,7 +542,7 @@ mod dom {
     fn install_trigger_click(this: &HtmlElement, slot: &Listener) {
         let host = this.clone();
         let listener = Closure::wrap(Box::new(move |_event: Event| {
-            if let Some(repo) = repo_from_ancestor(&host) {
+            if let Some(repo) = repo_from_context(&host) {
                 stamp_enable_sync_repo(&repo);
             }
         }) as Box<dyn FnMut(Event)>);
@@ -591,7 +593,7 @@ mod dom {
             let event_repo = event
                 .dyn_ref::<CustomEvent>()
                 .and_then(|e| e.detail().as_string());
-            if let (Some(this_repo), Some(event_repo)) = (repo_from_ancestor(&host), event_repo)
+            if let (Some(this_repo), Some(event_repo)) = (repo_from_context(&host), event_repo)
                 && this_repo == event_repo
             {
                 refresh(&host);
@@ -691,13 +693,11 @@ mod dom {
             // resolves in this DOM-only test (no service worker).
             storage.set_item(key, "off").unwrap();
 
-            let repo = document.create_element("tonk-repository").unwrap();
-            repo.set_attribute("name", "toggletest").unwrap();
             let state = document.create_element("tonk-sync-state").unwrap();
-            repo.append_child(&state).unwrap();
+            state.set_attribute("with", "main@toggletest").unwrap();
             // Defined element → connectedCallback runs synchronously on
             // append, so the pill is present by the time it returns.
-            body.append_child(&repo).unwrap();
+            body.append_child(&state).unwrap();
 
             let button = state
                 .query_selector(".workspace__sync")
@@ -722,7 +722,7 @@ mod dom {
             assert_eq!(storage.get_item(key).unwrap().as_deref(), Some("off"));
             assert_eq!(button.text_content().as_deref(), Some("paused"));
 
-            repo.remove();
+            state.remove();
             let _ = storage.remove_item(key);
         }
 
@@ -736,11 +736,9 @@ mod dom {
             // Running (on) — `offline` is a *running* sub-state.
             storage.set_item(key, "on").unwrap();
 
-            let repo = document.create_element("tonk-repository").unwrap();
-            repo.set_attribute("name", "offlinetest").unwrap();
             let state = document.create_element("tonk-sync-state").unwrap();
-            repo.append_child(&state).unwrap();
-            body.append_child(&repo).unwrap();
+            state.set_attribute("with", "main@offlinetest").unwrap();
+            body.append_child(&state).unwrap();
 
             // Force the offline pill (the connect-time fetch can't resolve
             // in this DOM-only test, so paint it directly).
@@ -758,7 +756,7 @@ mod dom {
             assert_eq!(storage.get_item(key).unwrap().as_deref(), Some("on"));
             assert_eq!(button.class_name(), "workspace__sync is-offline");
 
-            repo.remove();
+            state.remove();
             let _ = storage.remove_item(key);
         }
 
@@ -804,11 +802,9 @@ mod dom {
             // resolves in this DOM-only test (no service worker).
             storage.set_item(key, "off").unwrap();
 
-            let repo = document.create_element("tonk-repository").unwrap();
-            repo.set_attribute("name", "badgetest").unwrap();
             let badge = document.create_element("tonk-sync-badge").unwrap();
-            repo.append_child(&badge).unwrap();
-            body.append_child(&repo).unwrap();
+            badge.set_attribute("with", "main@badgetest").unwrap();
+            body.append_child(&badge).unwrap();
 
             let span = badge
                 .query_selector(".sync-badge")
@@ -829,7 +825,7 @@ mod dom {
             );
             assert_eq!(span.text_content().as_deref(), Some("paused"));
 
-            repo.remove();
+            badge.remove();
             let _ = storage.remove_item(key);
         }
 
@@ -927,12 +923,11 @@ mod dom {
             form.append_child(&hidden).unwrap();
             body.append_child(&form).unwrap();
 
-            // <tonk-repository name="pictures"><tonk-sync-state/></tonk-repository>
-            let repo = document.create_element("tonk-repository").unwrap();
-            repo.set_attribute("name", "pictures").unwrap();
+            // <tonk-sync-state with="main@pictures"> — the consumer carries
+            // its own routing context.
             let state = document.create_element("tonk-sync-state").unwrap();
-            repo.append_child(&state).unwrap();
-            body.append_child(&repo).unwrap();
+            state.set_attribute("with", "main@pictures").unwrap();
+            body.append_child(&state).unwrap();
 
             // Clicking the element resolves the ancestor repo and stamps
             // it into the form's hidden `name` input.
@@ -948,7 +943,7 @@ mod dom {
             );
 
             form.remove();
-            repo.remove();
+            state.remove();
         }
     }
 }

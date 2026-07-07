@@ -177,7 +177,7 @@ view!:
 # populated); `name` is the space's local repository name. The workspace
 # concept's `{name}` is a display label, NOT the repo name, so the
 # `<tonk-sync-state>` element (which resolves the repo from its
-# `<tonk-repository>` ancestor) stamps the real name into the form's
+# `with` ancestor) stamps the real name into the form's
 # hidden `name` input on click — the one identifier notation can't read
 # from the event. `prevent-default` stops the page reloading.
 command!: &space/enable-sync
@@ -227,8 +227,8 @@ command!: &tonk/invite
 # Load the requesting tab's site for its current path. Asserted transiently by
 # `<tonk-site>` (via the regular transact API) instead of a `/site` fetch: the
 # element supplies its own minted `site:<uuid>` as `this` and the route `path`.
-# The transient rides the normal event path, so the `<tonk-site>`'s ancestor
-# `<tonk-repository>`/`<tonk-branch>` annotate the origin repo/branch. The
+# The transient rides the normal event path, routed at the `<tonk-site>`'s
+# own `with` context (the origin repo/branch). The
 # worker's `LoadHandler` matches `path` against this branch's `route!` table and
 # stamps the resolved `tonk:site` (+ captured route params) onto `this` in this
 # branch's overlay — superseding in place on navigation. One field, so it keeps
@@ -736,8 +736,8 @@ view/fab-invite!:
 #      Scoped to the space branch, `onsubmit=tonk:invite` resolves against
 #      core.yaml here.
 #   2. Routing: the binding dispatches its `tonk-claim` on THIS display's
-#      host, which sits inside `<tonk-repository name={space}>`, so the
-#      claim is annotated with the space's content branch and the worker's
+#      host, which sits inside a `with={space}` context, so the
+#      claim is routed at the space's content branch and the worker's
 #      InviteHandler reads the space as the origin repo. A binding in the
 #      profile/meta FAB template instead dispatched its claim on the FAB's
 #      own host (outside the nested repository), routing to profile/meta
@@ -754,6 +754,38 @@ view/directory!:
     <form class="fab__share-form" data-invite="tonk:invite" onsubmit=tonk:invite>
       <button type="submit" class="fab__share-trigger">share</button>
     </form>
+
+# A view kind holding the FAB's hidden pause-sync form. Distinct attribute
+# (`xyz.tonk.view/fab-pause`) so `tonk:repository` can carry it alongside its
+# other views; selected via `view=tonk:view/fab-pause`.
+concept!: &view/fab-pause
+  this: tonk:view/fab-pause
+  description: A view kind holding the FAB's pause-sync form.
+  with:
+    model:
+      description: Concept this view renders.
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template — the hidden pause-sync form.
+      the: xyz.tonk.view/fab-pause
+      cardinality: one
+      as: text
+
+# The FAB's pause-sync FORM, authored on the SPACE branch (a `tonk:repository`
+# view) for the SAME two reasons the share trigger above is: mounted via
+# `<tonk-display with={space} model="tonk:repository" view="tonk:view/fab-pause">`,
+# its `onsubmit=tonk:pause-sync` binding resolves its descriptor against this
+# branch AND dispatches its claim inside the space's `with` context, so the
+# worker reads the space as the command's origin repo. Submitted by the FAB's
+# alt/option-click gesture (tonk-fab element.rs); `data-pause-sync` is the
+# marker `tonk:pause-sync` decodes against.
+view/fab-pause!:
+  this: id:tonk:repository/fab-pause
+  model: tonk:repository
+  display: |
+    <form id="fab-pause-sync-form" data-pause-sync="tonk:pause-sync" onsubmit=tonk:pause-sync></form>
 
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
@@ -889,7 +921,7 @@ concept!: &view/label
 
 # The repository's name as plain, non-editable text. The Hub card
 # mounts this via `<tonk-display model=tonk:repository entity={subject}
-# view=tonk:view/label>` inside a per-space `<tonk-repository>` routing
+# view=tonk:view/label>` inside a per-space `with={subject}` routing
 # context, so each card shows its own space's current name (read from
 # that space's `tonk/repository`, the cross-device source of truth)
 # rather than an editable banner. Falls back to nothing when unset.
@@ -1285,8 +1317,8 @@ concept!: &db/branch:
 
 # A space (replica) the profile has access to. These records live on
 # the profile repository's meta branch — one per repository this device
-# has joined or created. The Tonk Hub at `/` queries them through a
-# `<tonk-repository profile>` so the user can pick which space to open.
+# has joined or created. The Tonk Hub at `/` queries them on the profile
+# meta branch (`with="meta@profile:tonk"`) so the user can pick which space to open.
 concept!: &space
   this: tonk:space
   description: A repository this profile can open, by its local name.
@@ -1479,7 +1511,7 @@ view!: &space/route/view
 # comment for now.
 #
 # It renders on the site entity, so it reuses the site's `space`/`replica`
-# fields (`space` annotates the `<tonk-repository>`, picked off the site).
+# fields (`space` names the routing context, picked off the site).
 concept!: &workspace/shell
   this: tonk:workspace/shell
   description: Two-portal workspace shell — content portal plus FAB overlay.
@@ -1540,19 +1572,15 @@ concept!: &directory/route
       cardinality: one
       as: text
 
-# Wrap the directory display in repository/branch context so models whose views
-# resolve their repository from a `<tonk-repository>` DOM ancestor (`<tonk-tree>`,
-# `<tonk-inspector>`) work inside the sealed guest, which has no routing-context
-# ancestors of its own.
+# The directory display carries its own `with` so its view's content
+# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# `<tonk-display>` forwards this context onto the view it mounts, so no
+# routing wrapper element is needed.
 view!: &directory/route/view
   this: id:tonk:directory/route/view
   model: tonk:directory/route
   display: |
-    <tonk-repository name={repo}>
-      <tonk-branch name={branch}>
-        <tonk-display model={model} />
-      </tonk-branch>
-    </tonk-repository>
+    <tonk-display with="{branch}@{repo}" model={model} />
 
 # The artifact page — `/space/{name}/{entity}@{model}`. Binds a concrete entity
 # to a model: the view renders that one instance (`<tonk-display entity model>`).
@@ -1585,11 +1613,7 @@ view!: &artifact/route/view
   this: id:tonk:artifact/route/view
   model: tonk:artifact/route
   display: |
-    <tonk-repository name={repo}>
-      <tonk-branch name={branch}>
-        <tonk-display entity={entity} model={model} />
-      </tonk-branch>
-    </tonk-repository>
+    <tonk-display with="{branch}@{repo}" entity={entity} model={model} />
 
 # The ad-hoc page — `/space/{name}/{entity}@{model}!{view}`. As the artifact
 # page, but with an explicit `view` chosen for the entity rather than the
@@ -1628,11 +1652,7 @@ view!: &adhoc/route/view
   this: id:tonk:adhoc/route/view
   model: tonk:adhoc/route
   display: |
-    <tonk-repository name={repo}>
-      <tonk-branch name={branch}>
-        <tonk-display entity={entity} model={model} view={view} />
-      </tonk-branch>
-    </tonk-repository>
+    <tonk-display with="{branch}@{repo}" entity={entity} model={model} view={view} />
 
 # ---- Seeded routes (bootstrap) ----
 #
@@ -1701,7 +1721,7 @@ tonk/initialize!:
 # dialog-search-tree state under the DB: index/segment nodes,
 # their keys (color-coded components, shared prefixes dimmed),
 # byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `<tonk-repository>` routing
+# resolves its repository from the `with` routing
 # ancestor and drives itself from the worker's `tree/*` query
 # formulas — no entity needed (it inspects the whole branch).
 # ============================================================

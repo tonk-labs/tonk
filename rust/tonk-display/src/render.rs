@@ -13,7 +13,7 @@
 //!   keys rows by the conclusion's `this`, clones the repeat element
 //!   (or, when no single element encloses the references, the whole
 //!   fragment), renders the repeat body against that conclusion, and
-//!   stamps `with=<this>` on the clone so the repeat boundary is
+//!   stamps `data-this=<this>` on the clone so the repeat boundary is
 //!   inspectable.
 //!
 //! Inside a repeat row, cardinality-many *subject fields* still iterate
@@ -157,6 +157,14 @@ impl Renderer {
         &self.event_bindings
     }
 
+    /// The host attributes this template consumes via `{dom.host/<attr>}`
+    /// — the render inputs the owning display must watch for changes so a
+    /// restamped attribute (e.g. the FAB's `data-space` on a space switch)
+    /// re-applies through the binding diff.
+    pub fn host_attributes(&self) -> std::collections::BTreeSet<String> {
+        tonk_template::host_attributes(&self.plan)
+    }
+
     /// Apply an entity frame. First call mounts; subsequent calls
     /// reconcile in place — touch only the nodes whose rendered value
     /// changed and add/remove repeat rows whose subject set differs.
@@ -210,6 +218,20 @@ impl Renderer {
         // fragment and silently found no node — dropping every chrome
         // update, e.g. `<tonk-sheet-binder active={dom.host/data-active}>`
         // never reflecting a host-attribute change.)
+        //
+        // The whole-fragment repeat (`plan.repeat.path == None`) recorded the
+        // fragment as its ROW root for the same navigation purpose — re-point
+        // it at the host too, or the row's binding updates walk the emptied
+        // fragment and silently drop: the space chrome's nested
+        // `<tonk-site with="main@{id}">` never restamped on navigation, so a
+        // space→space route change left the previous space mounted.
+        let mut repeat = repeat;
+        if self.plan.repeat.path.is_none() {
+            let host_root: Node = self.host.clone().into();
+            for row in repeat.rows.values_mut() {
+                row.root = host_root.clone();
+            }
+        }
         self.mounted = Some(MountedScope {
             root: self.host.clone().into(),
             chrome,
@@ -294,7 +316,7 @@ fn mount_repeat(
             // Whole-fragment repeat — a multi-root fragment with no
             // single enclosing element (e.g. `<h1>{a}</h1><p>{b}</p>`).
             // There is no element to clone-per-conclusion or stamp
-            // `with=` on, so the lead conclusion renders once over the
+            // `data-this=` on, so the lead conclusion renders once over the
             // fragment's own nodes (matching the historical
             // clone-whole-fragment contract). Single-root templates
             // never reach here: `this_repeat_root` returns the root
@@ -456,7 +478,7 @@ fn update_repeat(
                 &member,
                 &BTreeMap::new(),
             );
-            stamp_with(&row.root, &member.this);
+            stamp_this(&row.root, &member.this);
         } else if let Some(new_row) = build_repeat_row(document, plan, template, &member) {
             let next_anchor = mounted
                 .rows
@@ -479,7 +501,7 @@ fn update_repeat(
 
 /// Clone one repeat row from the pristine template and render its body
 /// against `member`. The returned row is **detached**; the caller
-/// inserts it with a single `insertBefore`. Stamps `with=<this>` on the
+/// inserts it with a single `insertBefore`. Stamps `data-this=<this>` on the
 /// clone.
 ///
 /// `plan.path` selects what to clone: a specific element, or (for a
@@ -526,7 +548,7 @@ fn build_repeat_row(
         &BTreeMap::new(),
     );
 
-    stamp_with(&row_root, &member.this);
+    stamp_this(&row_root, &member.this);
 
     Some(MountedRow {
         root: row_root,
@@ -534,12 +556,13 @@ fn build_repeat_row(
     })
 }
 
-/// Stamp `with=<this>` on a repeat row's root element so the repeat
-/// boundary is inspectable. No-op when the root isn't an element (a
-/// whole-fragment clone yielding a fragment).
-fn stamp_with(root: &Node, this: &str) {
+/// Stamp `data-this=<this>` on a repeat row's root element so the repeat
+/// boundary is inspectable. (Not `with=` — that is the routing-context
+/// attribute, and a row subject is usually not a repository.) No-op when
+/// the root isn't an element (a whole-fragment clone yielding a fragment).
+fn stamp_this(root: &Node, this: &str) {
     if let Some(el) = root.dyn_ref::<Element>() {
-        let _ = el.set_attribute("with", this);
+        let _ = el.set_attribute("data-this", this);
     }
 }
 
@@ -899,9 +922,20 @@ fn write_binding(
         BindingKind::Text { .. } => {
             if let Some(target) = navigate(scope_root, &binding.path) {
                 target.set_text_content(Some(rendered));
+            } else {
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "tonk-render: text binding target missing at {:?}",
+                    binding.path
+                )));
             }
         }
         BindingKind::Attribute { .. } => {
+            if navigate(scope_root, &binding.path).is_none() {
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "tonk-render: attribute binding target missing at {:?}",
+                    binding.path
+                )));
+            }
             let value = single_field_value(binding, &member.this, &member.fields, shadow);
             apply_attribute_binding(scope_root, binding, rendered, value.as_ref());
         }
@@ -969,14 +1003,14 @@ mod tests {
             .collect()
     }
 
-    /// `with=` attribute of every `<li>`, in DOM order — confirms each row
+    /// `data-this=` attribute of every `<li>`, in DOM order — confirms each row
     /// is keyed to the right subject after batched inserts.
     fn li_withs(host: &Element) -> Vec<String> {
         let lis = host.query_selector_all("li").expect("query li");
         (0..lis.length())
             .filter_map(|i| lis.item(i))
             .filter_map(|n| n.dyn_into::<Element>().ok())
-            .filter_map(|e| e.get_attribute("with"))
+            .filter_map(|e| e.get_attribute("data-this"))
             .collect()
     }
 
@@ -984,6 +1018,80 @@ mod tests {
     // the frame renders one `<li>` per subject (without a `{this}` reference
     // the body would render once as chrome over the lead conclusion).
     const LIST: &str = "<ul><li data-id={this}>{name}</li></ul>";
+
+    /// A multi-root template with no `{this}` reference — the whole-fragment
+    /// repeat, which is the space chrome's shape (a nested router and the FAB
+    /// mount, both carrying `{id}`-derived attributes). The row used to record
+    /// the template fragment as its root; `append_child` empties the fragment,
+    /// so a second frame's attribute bindings navigated into the void and the
+    /// old values stayed stamped — a space→space navigation left the previous
+    /// space mounted. Regression test for that root re-pointing.
+    #[dialog_common::test]
+    fn it_restamps_attribute_bindings_across_frames_in_a_whole_fragment_repeat() {
+        // The EXACT space-chrome template shape: two custom-element roots
+        // separated by a newline text node, an unquoted `path={rest}` whose
+        // field is ABSENT from the conclusions, and `{id}` attribute
+        // bindings on both roots.
+        let (mut r, host) = renderer(
+            "<x-inner with=\"main@{id}\" allow=\"main@{id}\" path={rest}></x-inner>\n<x-other model=\"tonk:profile/fab\" data-space=\"{id}\"></x-other>\n",
+        );
+        r.apply(&[row("site:1", &[("id", "did:key:aaa")])]);
+        let inner = host.query_selector("x-inner").expect("q").expect("inner");
+        assert_eq!(
+            inner.get_attribute("with").as_deref(),
+            Some("main@did:key:aaa"),
+            "first frame stamps the binding"
+        );
+
+        r.apply(&[row("site:1", &[("id", "did:key:bbb")])]);
+        let inner = host.query_selector("x-inner").expect("q").expect("inner");
+        assert_eq!(
+            inner.get_attribute("with").as_deref(),
+            Some("main@did:key:bbb"),
+            "a retained whole-fragment row must restamp attribute bindings"
+        );
+        let other = host.query_selector("x-other").expect("q").expect("other");
+        assert_eq!(
+            other.get_attribute("data-space").as_deref(),
+            Some("did:key:bbb"),
+            "every root's bindings restamp, not just the first"
+        );
+    }
+
+    /// Same whole-fragment shape, text bindings: the multi-root template's
+    /// text updates ride the same re-pointed row root.
+    #[dialog_common::test]
+    fn it_updates_text_bindings_across_frames_in_a_whole_fragment_repeat() {
+        let (mut r, host) = renderer("<h1>{title}</h1><p>{body}</p>");
+        r.apply(&[row("doc:1", &[("title", "first"), ("body", "one")])]);
+        assert_eq!(
+            host.query_selector("h1")
+                .expect("q")
+                .expect("h1")
+                .text_content()
+                .as_deref(),
+            Some("first")
+        );
+
+        r.apply(&[row("doc:1", &[("title", "second"), ("body", "two")])]);
+        assert_eq!(
+            host.query_selector("h1")
+                .expect("q")
+                .expect("h1")
+                .text_content()
+                .as_deref(),
+            Some("second"),
+            "text bindings must update across frames in a whole-fragment repeat"
+        );
+        assert_eq!(
+            host.query_selector("p")
+                .expect("q")
+                .expect("p")
+                .text_content()
+                .as_deref(),
+            Some("two")
+        );
+    }
 
     #[dialog_common::test]
     fn it_mounts_every_row_in_frame_order() {

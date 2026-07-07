@@ -14,17 +14,24 @@ async fn main() {
     // out) posthog init, pageviews, and DOM-event listeners.
     tonk_ui::analytics::install();
 
-    // The outermost page is a thin SW relay: it registers only the IO-owning
-    // `<tonk-host>` and the `<tonk-site>` router, then mounts one `<tonk-site>`.
-    // Everything else — the hub, the space chrome, the FAB, the repo content —
-    // renders inside `<tonk-site>`'s sealed guests (the `tonk-guest` bundle),
-    // which `<tonk-site>` brings up per route. No framework, no per-route
-    // components: the profile's `route!` table decides what to render.
-    tonk_host::register();
+    // The outermost page is a thin SW relay: it installs the IO-owning host
+    // (document-level listeners — no element) and the `<tonk-site>` router,
+    // then mounts one `<tonk-site>`. Everything else — the hub, the space
+    // chrome, the FAB, the repo content — renders inside `<tonk-site>`'s
+    // sealed guests (the `tonk-guest` bundle), which `<tonk-site>` brings up
+    // per route. No framework, no per-route components: the profile's
+    // `route!` table decides what to render.
     tonk_portal::register_site();
 
     // Ensure the default repository + profile exist before routing.
     let _ = tonk_ui::api::init().await;
+
+    // Install the host AFTER init: init awaits service-worker readiness, so
+    // everything the host wires up runs against a controlling SW. Nothing
+    // dispatches consumer events before `mount_root` below, so the late
+    // install loses no operations. (Sync cadence is SW-owned — the page
+    // runs no heartbeat.)
+    tonk_host::install();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
     // (debug profile) and off for release, so this never loads in production.
@@ -34,9 +41,7 @@ async fn main() {
     mount_root();
 }
 
-/// Mount the single `<tonk-host><tonk-site></tonk-host>` root into `<body>`. The
-/// `<tonk-site>` has no `repository`/`branch` ancestor and no `path`, so it
-/// routes the document path against the profile branch — the top-level router.
+/// Mount the single `<tonk-site>` root into `<body>` — the top-level router.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn mount_root() {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
@@ -45,34 +50,22 @@ fn mount_root() {
     let Some(body) = document.body() else {
         return;
     };
-    // `<tonk-host><tonk-repository profile><tonk-branch meta><tonk-site>`. The
-    // `<tonk-repository profile>`/`<tonk-branch meta>` ancestors route the
-    // top-level site: `<tonk-site>` reads no context itself, so its `tonk:load`
-    // claim and its guest's queries are annotated by these ancestors and reach
-    // the profile meta branch — the profile's route! table picks what to render.
-    let Ok(host) = document.create_element("tonk-host") else {
-        return;
-    };
-    let Ok(repository) = document.create_element("tonk-repository") else {
-        return;
-    };
-    let _ = repository.set_attribute("profile", "");
-    let Ok(branch) = document.create_element("tonk-branch") else {
-        return;
-    };
-    let _ = branch.set_attribute("name", "meta");
+    // `<tonk-site with="meta@profile:tonk" allow="*">`: `with` routes the site's
+    // `tonk:load` claim and its guest's queries at the profile meta branch —
+    // the profile's route! table picks what to render. `allow="*"` makes this
+    // the privileged site: its guest (the trusted profile chrome) may reach
+    // into any space (hub cards, sync chips, the FAB space list).
     let Ok(site) = document.create_element("tonk-site") else {
         return;
     };
+    let _ = site.set_attribute("with", "meta@profile:tonk");
+    let _ = site.set_attribute("allow", "*");
     // `<tonk-site>` never reads `window.location`; the page owns the document
     // path. Set it as `path` and keep it current on navigation (popstate /
     // pushState-driven), so the site re-routes via `attribute_changed_callback`.
     sync_site_path(&site);
     attach_navigation(&site);
-    let _ = branch.append_child(&site);
-    let _ = repository.append_child(&branch);
-    let _ = host.append_child(&repository);
-    let _ = body.append_child(&host);
+    let _ = body.append_child(&site);
 }
 
 /// Set the top-level `<tonk-site>`'s `path` attribute to the document path.

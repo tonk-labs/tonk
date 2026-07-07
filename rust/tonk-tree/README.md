@@ -16,7 +16,7 @@ entries (Entity · Attribute · Type · Value).
 
 ## How it wires itself
 
-`<tonk-tree>` resolves the repository from its `<tonk-repository>`
+`<tonk-tree>` resolves the repository from its `with="branch@repo"`
 routing ancestor (or an explicit `repo` / `branch` attribute), registers
 Web Awesome's `<wa-tree>` (whose modules the WA auto-loader can't see
 inside a shadow root), builds a `WorkerTreeLoader` against the worker's

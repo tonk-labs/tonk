@@ -28,7 +28,7 @@ use std::rc::Rc;
 use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
-use js_sys::{Function, Reflect};
+use js_sys::{Array, Function, Promise, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
@@ -36,8 +36,12 @@ use tonk_schema::conclusion::Conclusion;
 use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
+use web_sys::{
+    CustomEvent, CustomEventInit, Element, HtmlElement, MutationObserver, MutationObserverInit,
+    MutationRecord, Node, window,
+};
 
 use crate::resolve::{
     directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_model_query,
@@ -170,6 +174,16 @@ struct Inner {
     /// event that bubbles up through this element. Dropped on
     /// disconnect.
     depth_annotator: Option<tonk_host::DepthAnnotator>,
+    /// Bumped on every entity frame. A reconnect-empty hold captures the
+    /// serial and applies the emptiness after the grace period only if no
+    /// further frame superseded it.
+    entity_serial: u64,
+    /// Watches the host's own attributes that mounted views consume via
+    /// `{dom.host/<attr>}` (advertised by each slide as
+    /// `data-host-bindings`). A genuine value change replays the cached
+    /// frame through every slide's binding diff, so `dom.host/*` is a
+    /// live render input rather than a mount-time snapshot.
+    host_watch: Option<HostAttrWatch>,
     /// The model concept's descriptor JSON, handed to a `<tonk-portal>`
     /// so its no-argument `tonk.subscribe()` can build the scoped-entity
     /// query. Set on every connect; only read when a view frame routes
@@ -216,6 +230,8 @@ impl Inner {
             delegate: None,
             delegate_generation: 0,
             depth_annotator: None,
+            entity_serial: 0,
+            host_watch: None,
             portal_descriptor: None,
             portal_model: None,
             view_descriptor: None,
@@ -238,6 +254,8 @@ impl Inner {
         // Drop the delegate — its impl removes listeners from the
         // host on Drop.
         self.delegate.take();
+        // Disconnect the host-attribute watcher.
+        self.host_watch.take();
     }
 }
 
@@ -429,10 +447,14 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
             return;
         }
     };
+    let reconnect = opts.is_object()
+        && Reflect::get(&opts, &"reconnect".into())
+            .map(|v| v.is_truthy())
+            .unwrap_or(false);
     match tag.as_deref() {
         Some("model") => handle_model_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
-        Some("entity") => handle_entity_frame(host, state, conclusions),
+        Some("entity") => handle_entity_frame(host, state, conclusions, reconnect),
         _ => {
             // Unknown tag — log and drop.
         }
@@ -448,13 +470,28 @@ fn on_update(_host: &Element, _state: &Rc<RefCell<Inner>>, _payload: JsValue, _o
 }
 
 /// `error(detail, { tag })` — transport / parse error on a
-/// subscription. Surface as a host-level failure.
+/// subscription.
+///
+/// A transport interruption (the SW restarting or releasing streams on
+/// update, a network blip) is NOT a render failure: the rendered content
+/// stays — replacing it with a callout would throw away a perfectly good
+/// view over a hiccup — and the host is stamped `data-state="offline"` so
+/// chrome can dim or badge it. The host-side retry reconnects the
+/// subscription, and the next frame heals the state to `ready`. Only a
+/// real refusal (HTTP 403 → `unauthorized`) replaces content via the loud
+/// path.
 fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts: JsValue) {
     let message = Reflect::get(&payload, &"message".into())
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| format!("{payload:?}"));
-    fail(host, state, ErrorDetail::new(ErrorKind::Network, message));
+    let err = ErrorDetail::new(ErrorKind::Network, message);
+    if loud_state(&err) == State::Offline {
+        state::set(host, State::Offline);
+        dispatch_error(host, err);
+        return;
+    }
+    fail(host, state, err);
 }
 
 /// Read `opts.tag` as a string. Returns `None` if absent.
@@ -1125,6 +1162,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // descriptor resolves are async and reacquire the state.
     drop(s);
     schedule_delegate_refresh(host, state);
+    refresh_host_watch(host, state);
 
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
 }
@@ -1207,6 +1245,8 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
             // embedder can tell "rendered the way I intended" from
             // "rendered through the generic fallback".
             state::set(&host, State::DefaultView);
+            drop(s);
+            refresh_host_watch(&host, &state);
         }
     });
 }
@@ -1255,6 +1295,7 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
     // The notation dump is the ultimate `_:_` fallback — also
     // `default-view`, not a model-specific render.
     state::set(host, State::DefaultView);
+    refresh_host_watch(host, state);
 }
 
 /// Diff a portal-mode view frame. Single-mode only, so at most one
@@ -1511,13 +1552,46 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 /// conclusion whose differing fields become `Array` values. The
 /// template renderer's iteration-aware walk does the per-value
 /// cloning from there.
-fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+fn handle_entity_frame(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    conclusions: Vec<Conclusion>,
+    reconnect: bool,
+) {
     // Everything is a list of folds: group the flat rows by `this` into
     // one folded conclusion per subject. Cardinality-one is just a
     // one-element frame; the renderer iterates `{this}` over the frame.
     let frame = crate::fold::select_rows(conclusions);
 
     if frame.is_empty() {
+        // HOLD a reconnect-empty over previously rendered content: the
+        // first frame after a re-opened subscription can reflect state the
+        // worker lost across a restart (an overlay-backed record — e.g. the
+        // site stamp — before its owner re-asserts it). Clearing on it
+        // collapses a perfectly good view into a spinner and tears down
+        // nested guests, only for the heal to rebuild them seconds later.
+        // Keep the content; if no real frame supersedes this one within the
+        // grace period, apply the emptiness for real (a genuine deletion
+        // still lands, just unhurriedly).
+        let held = {
+            let mut s = state.borrow_mut();
+            s.entity_serial += 1;
+            reconnect && !s.last_frame.is_empty()
+        };
+        if held {
+            let serial = state.borrow().entity_serial;
+            let host = host.clone();
+            let state = state.clone();
+            spawn_local(async move {
+                reconnect_grace().await;
+                if state.borrow().disposed || state.borrow().entity_serial != serial {
+                    return;
+                }
+                handle_entity_frame(&host, &state, Vec::new(), false);
+            });
+            return;
+        }
+
         let mut s = state.borrow_mut();
         s.last_frame = Vec::new();
         // An empty frame means no rows matched — zero instances in a
@@ -1572,6 +1646,7 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
     // Cache the whole folded frame for the slide-mount replay (directory
     // mode has one conclusion per instance). The lead conclusion drives
     // notation + the result event.
+    s.entity_serial += 1;
     let first = frame[0].clone();
     s.last_frame = frame.clone();
     // Each slide sees the whole frame, augmented with the host's own
@@ -1749,6 +1824,47 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///   `<tonk-view>` straight into the host so the user's template
 ///   flows in its natural layout — no aspect ratio, no
 ///   carousel-imposed sizing.
+/// Forward the display host's OWN routing context (`with`) onto the view
+/// it just mounted — so a view whose content resolves its own context
+/// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
+/// the display's context without inferring it from DOM ancestors. This is
+/// the ONE propagation boundary: context flows across a `<tonk-display>`,
+/// never through an arbitrary element. A view element that carries its own
+/// `with` in the template keeps it (stamp only where absent).
+///
+/// The display host has a `with` only when the template gave it one (route
+/// views: `<tonk-display with="{branch}@{repo}">`). With none, the view
+/// inherits the site's pinned context like any other consumer, and there
+/// is nothing to forward.
+fn forward_with(host: &Element, view_el: &Element) {
+    let Some(context) = host.get_attribute("with").filter(|v| !v.is_empty()) else {
+        return;
+    };
+    if context.contains('{') {
+        return;
+    }
+    // Stamp the view root and every routing consumer inside it that lacks
+    // its own `with`. `:scope, …` selects the view element too, so a view
+    // that IS a single routing consumer is covered.
+    let selector = "[data-tonk-with], tonk-tree, tonk-inspector, ui-sync-status";
+    if view_el
+        .matches(&format!("{selector}, [with]"))
+        .unwrap_or(false)
+        && !view_el.has_attribute("with")
+    {
+        let _ = view_el.set_attribute("with", &context);
+    }
+    if let Ok(list) = view_el.query_selector_all(selector) {
+        for i in 0..list.length() {
+            if let Some(el) = list.item(i).and_then(|n| n.dyn_into::<Element>().ok())
+                && !el.has_attribute("with")
+            {
+                let _ = el.set_attribute("with", &context);
+            }
+        }
+    }
+}
+
 fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
     let document = window()?.document()?;
 
@@ -1767,6 +1883,7 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
         }
     }
     view_el.set_inner_html(display);
+    forward_with(host, &view_el);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -1799,6 +1916,135 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
 /// no `this` binding, so when JS calls `el.render(detail)` the
 /// closure sees `(this=detail, detail=undefined)` and silently
 /// no-ops. Going straight to `draw` sidesteps that.
+/// The installed host-attribute watcher: a `MutationObserver` on the
+/// display host filtered to EXACTLY the attributes its mounted views read
+/// via `{dom.host/<attr>}`. Dropping it disconnects the observer.
+struct HostAttrWatch {
+    observer: MutationObserver,
+    _closure: Closure<dyn FnMut(Array, MutationObserver)>,
+    /// The watched set, so a refresh with an unchanged union skips the
+    /// reinstall.
+    attrs: std::collections::BTreeSet<String>,
+}
+
+impl Drop for HostAttrWatch {
+    fn drop(&mut self) {
+        self.observer.disconnect();
+    }
+}
+
+/// (Re)install the host-attribute watcher from the union of every mounted
+/// slide's advertised `data-host-bindings`. Deferred one microtask: a
+/// slide mounted inside a custom-element reaction has not run its
+/// `connected_callback` (which advertises the set) yet.
+fn refresh_host_watch(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(Promise::resolve(&JsValue::UNDEFINED)).await;
+        let attrs: std::collections::BTreeSet<String> = {
+            let s = state.borrow();
+            if s.disposed {
+                return;
+            }
+            s.slides
+                .values()
+                .filter_map(|slide| slide.view_el.get_attribute("data-host-bindings"))
+                .flat_map(|v| v.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+                .collect()
+        };
+        if state
+            .borrow()
+            .host_watch
+            .as_ref()
+            .is_some_and(|watch| watch.attrs == attrs)
+        {
+            return;
+        }
+        let watch = if attrs.is_empty() {
+            None
+        } else {
+            install_host_watch(&host, &state, attrs)
+        };
+        state.borrow_mut().host_watch = watch;
+    });
+}
+
+/// Build and attach the watcher. The closure holds a `Weak` back-reference
+/// — the watcher lives inside `Inner`, so a strong `Rc` would cycle and
+/// leak the display state.
+fn install_host_watch(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    attrs: std::collections::BTreeSet<String>,
+) -> Option<HostAttrWatch> {
+    let weak = Rc::downgrade(state);
+    let host_cb = host.clone();
+    let closure = Closure::wrap(
+        Box::new(move |records: Array, _observer: MutationObserver| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            // Replay only on a genuine value change: the render diff restamps
+            // attributes wholesale, and a same-value write must not re-render.
+            let changed = records.iter().any(|record| {
+                let Ok(record) = record.dyn_into::<MutationRecord>() else {
+                    return false;
+                };
+                let Some(name) = record.attribute_name() else {
+                    return false;
+                };
+                record.old_value() != host_cb.get_attribute(&name)
+            });
+            if changed {
+                replay_host_frame(&host_cb, &state);
+            }
+        }) as Box<dyn FnMut(Array, MutationObserver)>,
+    );
+    let observer = MutationObserver::new(closure.as_ref().unchecked_ref()).ok()?;
+    let init = MutationObserverInit::new();
+    init.set_attributes(true);
+    init.set_attribute_old_value(true);
+    let filter = Array::new();
+    for attr in &attrs {
+        filter.push(&JsValue::from_str(attr));
+    }
+    init.set_attribute_filter(&filter);
+    observer.observe_with_options(host, &init).ok()?;
+    Some(HostAttrWatch {
+        observer,
+        _closure: closure,
+        attrs,
+    })
+}
+
+/// Replay the cached entity frame through every slide against the host's
+/// CURRENT attributes. `call_render` reaches each mounted renderer's
+/// update path, whose per-binding diff writes only the values that
+/// changed — an incremental update, never a remount.
+fn replay_host_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let s = state.borrow();
+    if s.disposed || s.slides.is_empty() {
+        return;
+    }
+    let detail = augmented_detail(host, &s.last_frame, s.directory);
+    for slide in s.slides.values() {
+        call_render(&slide.view_el, &detail);
+    }
+}
+
+/// The reconnect-empty grace: long enough for the owner's heal claim to
+/// re-stamp (retry jitter + claim round-trip), short enough that genuine
+/// emptiness still applies promptly.
+async fn reconnect_grace() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(win) = window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 5_000);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 fn call_render(el: &Element, detail: &JsValue) {
     let Ok(draw) = Reflect::get(el.as_ref(), &"draw".into()) else {
         return;
@@ -1966,6 +2212,187 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert(key.to_owned(), Ipld::String(value.to_owned()));
         fields
+    }
+
+    /// `forward_with` stamps the display host's OWN `with` onto routing
+    /// consumers in the mounted view that lack one, and leaves those with
+    /// their own `with` alone — the ONE context-propagation boundary,
+    /// replacing DOM-ancestor inference.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_its_with_onto_routing_consumers() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        host.set_attribute("with", "main@did:key:zSpace").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        view.set_inner_html(concat!(
+            "<ui-sync-status></ui-sync-status>",
+            "<tonk-tree></tonk-tree>",
+            r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
+            "<span>plain</span>",
+        ));
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        assert_eq!(
+            view.query_selector("ui-sync-status")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "a routing consumer without its own with inherits the display's",
+        );
+        assert_eq!(
+            view.query_selector("tonk-tree")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+        );
+        assert_eq!(
+            view.query_selector("tonk-inspector")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zOther"),
+            "a consumer with its own with is left untouched",
+        );
+        assert!(
+            view.query_selector("span")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .is_none(),
+            "a plain element gets no routing context",
+        );
+    }
+
+    /// A display with no `with` of its own forwards nothing — the view
+    /// inherits the guest's pinned site context instead.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_nothing_without_its_own_with() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        view.set_inner_html("<ui-sync-status></ui-sync-status>");
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        assert!(
+            view.query_selector("ui-sync-status")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .is_none(),
+            "no display context -> nothing forwarded",
+        );
+    }
+
+    /// A host with one rendered child and a mounted slide, plus the shared
+    /// state — the shape `on_error` reconciles against.
+    #[cfg(target_arch = "wasm32")]
+    fn rendered_display() -> (Element, Rc<RefCell<Inner>>, Element) {
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document.create_element("tonk-display").expect("host");
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach host");
+        let content = document.create_element("span").expect("content");
+        content.set_text_content(Some("rendered"));
+        host.append_child(&content).expect("attach content");
+        let view: Element = document.create_element("tonk-view").expect("view");
+        host.append_child(&view).expect("attach view");
+        let mut inner = Inner::new();
+        inner.slides.insert(
+            "v".to_owned(),
+            Slide {
+                display: String::new(),
+                item: view.clone(),
+                view_el: view,
+            },
+        );
+        (host, Rc::new(RefCell::new(inner)), content)
+    }
+
+    /// A dropped connection must NOT replace the rendered content with a
+    /// callout: the DOM stays, the host is stamped `offline`, and the
+    /// host-side reconnect heals it with the next frame.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_keeps_rendered_content_on_a_transport_interruption() {
+        let (host, state, content) = rendered_display();
+        let payload = js_sys::Object::new();
+        let _ = Reflect::set(
+            &payload,
+            &"message".into(),
+            &JsValue::from_str("stream read failed: TypeError: network error"),
+        );
+        on_error(&host, &state, payload.into(), JsValue::UNDEFINED);
+        assert!(content.is_connected(), "rendered content must survive");
+        assert!(
+            !state.borrow().slides.is_empty(),
+            "slides must survive an interruption"
+        );
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("offline"));
+    }
+
+    /// A reconnect-empty frame HOLDS previously rendered content (the
+    /// worker may have lost overlay state it is about to re-assert); a
+    /// plain empty frame clears as before.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_holds_content_on_a_reconnect_empty_frame() {
+        let (host, state, _content) = rendered_display();
+        state.borrow_mut().last_frame = vec![Conclusion {
+            this: "e:1".to_owned(),
+            fields: BTreeMap::new(),
+        }];
+
+        handle_entity_frame(&host, &state, Vec::new(), true);
+        assert!(
+            !state.borrow().last_frame.is_empty(),
+            "a reconnect-empty must hold the cached frame"
+        );
+        assert_ne!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-entity"),
+            "a reconnect-empty must not surface absence"
+        );
+
+        handle_entity_frame(&host, &state, Vec::new(), false);
+        assert!(
+            state.borrow().last_frame.is_empty(),
+            "a plain empty frame clears as before"
+        );
+    }
+
+    /// An authorization refusal is a real failure: the loud path replaces
+    /// content as before.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_replaces_content_on_an_authorization_refusal() {
+        let (host, state, content) = rendered_display();
+        let payload = js_sys::Object::new();
+        let _ = Reflect::set(
+            &payload,
+            &"message".into(),
+            &JsValue::from_str("HTTP 403: not a member"),
+        );
+        on_error(&host, &state, payload.into(), JsValue::UNDEFINED);
+        assert!(!content.is_connected(), "refused content is torn down");
+        assert!(state.borrow().slides.is_empty());
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("unauthorized")
+        );
     }
 
     // `<tonk-display>` mounts each view slide with `data-scalar-fields` derived
@@ -2655,7 +3082,10 @@ mod tests {
         }
 
         // A transport `error` frame on a live subscription drives the
-        // display to `offline` with a loud danger callout.
+        // display to `offline` QUIETLY: the rendered content stays (no
+        // callout replaces it — the interruption is a hiccup, not a render
+        // failure), and the host-side reconnect heals the state with the
+        // next frame.
         #[dialog_common::test]
         async fn it_goes_offline_on_a_subscription_error() {
             let host =
@@ -2679,14 +3109,9 @@ mod tests {
                 Some("offline"),
                 "a transport error is `offline`",
             );
-            assert_eq!(
-                display
-                    .query_selector("wa-callout")
-                    .unwrap()
-                    .expect("offline surfaces a callout")
-                    .get_attribute("variant")
-                    .as_deref(),
-                Some("danger"),
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "an interruption must NOT replace content with a callout"
             );
         }
 

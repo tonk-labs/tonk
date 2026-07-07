@@ -30,6 +30,8 @@ pub use dialog_repository::Revision;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use sync::{is_sync_enabled, mark_offline};
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
 pub use tonk_schema::SyncState;

@@ -535,6 +535,11 @@ struct SyncScheduler {
     /// Wall-clock ms when the current un-drained burst began, or `None` when the
     /// last drain cleared it. The max-wait cap measures from here.
     pending_since: std::rc::Rc<std::cell::Cell<Option<f64>>>,
+    /// The request that began the current un-drained burst. The drain is
+    /// coalesced at the trailing edge, so the burst-opener is what initiated
+    /// it — later requests just ride the debounce. Taken (and logged) by the
+    /// ticket that actually drains.
+    cause: std::rc::Rc<std::cell::RefCell<Option<String>>>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -579,6 +584,20 @@ impl SyncScheduler {
     fn end_drain(&self) {
         self.in_flight.set(false);
     }
+
+    /// Record the burst-opening request: the first call after a drain wins,
+    /// later requests in the same burst are riders.
+    fn note_cause(&self, cause: impl FnOnce() -> String) {
+        let mut slot = self.cause.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(cause());
+        }
+    }
+
+    /// Take the recorded cause of the current burst.
+    fn take_cause(&self) -> Option<String> {
+        self.cause.borrow_mut().take()
+    }
 }
 
 /// Quiet window before a request's scheduled sync drain fires. A burst of boot
@@ -620,6 +639,13 @@ pub struct TonkServiceWorker {
     /// don't have.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     sync_scheduler: SyncScheduler,
+    /// Whether the self-scheduled sync loop is running. The SW owns the
+    /// sync cadence (the page no longer polls): while any branch holds a
+    /// live subscriber, a loop drains every [`SYNC_LOOP_MS`]; it stops when
+    /// the page goes quiet or connectivity drops, and any fetch (or the
+    /// `online` event) restarts it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    sync_loop: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 #[wasm_bindgen]
@@ -690,6 +716,8 @@ impl TonkServiceWorker {
             lsp,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             sync_scheduler: SyncScheduler::default(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            sync_loop: std::rc::Rc::new(std::cell::Cell::new(false)),
         })
     }
 
@@ -797,6 +825,11 @@ impl TonkServiceWorker {
         // generation ticket — only the last request still matches and drains.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         schedule_sync_drain(&event, &self.sync_scheduler, &self.state);
+        // Any traffic (re)starts the SW-owned sync loop — the page no
+        // longer polls, so this is what keeps an idle-but-subscribed tab
+        // pulling upstream changes.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        self.ensure_sync_loop();
 
         future_to_promise(async move {
             // Opportunistic cleanup of stale bridge sessions and view
@@ -871,6 +904,123 @@ impl TonkServiceWorker {
             Ok(JsValue::UNDEFINED)
         })
     }
+
+    /// Connectivity lost — the SW's own `offline` event. Stamp
+    /// `sync:offline` on every open repo so the chips/discs reflect the
+    /// disconnect. This is the reliable signal: an offline page stops
+    /// polling, so no fetch would otherwise wake this worker.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "onoffline")]
+    pub fn on_offline(&self) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            crate::router::mark_offline(&state).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Connectivity restored — the SW's own `online` event. Run a drain
+    /// directly (like Background Sync's `onsync`) so statuses reconcile
+    /// immediately, and restart the self-scheduled sync loop the offline
+    /// transition stopped.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "ononline")]
+    pub fn on_online(&self) -> Promise {
+        self.ensure_sync_loop();
+        let state = self.state.clone();
+        future_to_promise(async move {
+            crate::router::drain_sync(&state).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Start the self-scheduled sync loop if it isn't running. The SW owns
+    /// the sync cadence: while any cached branch holds a live subscriber
+    /// (an open SSE keeps the SW alive, so the timer chain survives), the
+    /// loop drains every [`SYNC_LOOP_MS`]. It stops when the page goes
+    /// quiet — no subscribers means nothing is watching, and stopping lets
+    /// the browser reclaim the worker — or when connectivity drops (after
+    /// stamping `sync:offline`); any fetch or the `online` event restarts
+    /// it. This replaces the page-side `POST /api/sync` heartbeat.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn ensure_sync_loop(&self) {
+        if self.sync_loop.get() {
+            return;
+        }
+        self.sync_loop.set(true);
+        let running = self.sync_loop.clone();
+        let state = self.state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                let _ = crate::sleep(web_time::Duration::from_millis(SYNC_LOOP_MS)).await;
+                if offline() {
+                    // Reflect the disconnect, then stop — `ononline`
+                    // restarts the loop and reconciles immediately.
+                    crate::router::mark_offline(&state).await;
+                    break;
+                }
+                if !has_live_subscribers(&state).await {
+                    break;
+                }
+                if !has_syncable_repo(&state).await {
+                    // Every open space is paused (or none is open): park.
+                    // No wake-up plumbing needed — a resume arrives as a
+                    // transact, and every fetch restarts this loop.
+                    log!("sync loop parked: every open space is paused");
+                    break;
+                }
+                crate::router::drain_sync(&state).await;
+            }
+            running.set(false);
+        });
+    }
+}
+
+/// Interval between self-scheduled sync drains while subscriptions are
+/// live. Matches the retired page heartbeat's cadence.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_LOOP_MS: u64 = 10_000;
+
+/// Whether any open repository still has auto-sync enabled on its content
+/// branch. All-paused parks the self-scheduled loop — the drain would
+/// sweep the list and skip every entry anyway (the per-repo
+/// `is_sync_enabled` gate), so ticking is pure churn until a resume.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn has_syncable_repo(state: &AppState) -> bool {
+    let tonk = state.read().await;
+    let repos: Vec<String> = tonk.reactor.repos().read().keys().cloned().collect();
+    for repo in repos {
+        if crate::router::is_sync_enabled(&tonk, &repo, "main").await {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether any cached branch — named repositories or the profile — holds a
+/// live subscriber. The signal that a page is watching, so the SW should
+/// keep pulling upstream changes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn has_live_subscribers(state: &AppState) -> bool {
+    let tonk = state.read().await;
+    {
+        let repos = tonk.reactor.repos().read();
+        for repo in repos.values() {
+            for branch in repo.branches().read().values() {
+                if !branch.subscriptions().lock().is_empty() {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(repo) = tonk.reactor.profile_repo_state() {
+        for branch in repo.branches().read().values() {
+            if !branch.subscriptions().lock().is_empty() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Schedule a debounced background sync drain on `event`'s lifetime.
@@ -887,6 +1037,19 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
     use wasm_bindgen::JsCast;
 
     let ticket = scheduler.next(js_sys::Date::now());
+    // Record the burst-opener (method + path + query — the query carries the
+    // heartbeat's `?why=`), so the coalesced drain can log what initiated it.
+    scheduler.note_cause(|| {
+        let request = event.request();
+        let raw = request.url();
+        let path = url::Url::parse(&raw)
+            .map(|u| match u.query() {
+                Some(q) => format!("{}?{}", u.path(), q),
+                None => u.path().to_string(),
+            })
+            .unwrap_or(raw);
+        format!("{} {}", request.method(), path)
+    });
     let scheduler = scheduler.clone();
     let state = state.clone();
 
@@ -899,7 +1062,22 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
             // elapsed), or a drain is already running.
             return Ok(JsValue::UNDEFINED);
         }
+        // No upstream while offline: skip the network sweep, but stamp
+        // `sync:offline` locally so the chip/disc reflect the disconnect
+        // (skipping silently left them frozen on the last online status).
+        // Traffic keeps scheduling, so the first drain after connectivity
+        // returns proceeds normally (and the page's `online` listener polls
+        // immediately).
+        if offline() {
+            scheduler.begin_drain();
+            crate::router::mark_offline(&state).await;
+            scheduler.end_drain();
+            return Ok(JsValue::UNDEFINED);
+        }
         scheduler.begin_drain();
+        if let Some(cause) = scheduler.take_cause() {
+            log!("sync drain, caused by: {cause}");
+        }
         crate::router::drain_sync(&state).await;
         scheduler.end_drain();
         Ok(JsValue::UNDEFINED)
@@ -909,6 +1087,18 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
     // and extend the event's lifetime to cover the debounced drain.
     let extendable: &web_sys::ExtendableEvent = event.unchecked_ref();
     let _ = extendable.wait_until(&promise);
+}
+
+/// Whether the worker reports no network connectivity. Unknown (no worker
+/// global) counts as online — a wrongly skipped drain is worse than a
+/// failed fetch.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn offline() -> bool {
+    use wasm_bindgen::JsCast;
+    js_sys::global()
+        .dyn_into::<web_sys::WorkerGlobalScope>()
+        .map(|scope| !scope.navigator().on_line())
+        .unwrap_or(false)
 }
 
 /// Extracts the `source.id` string from an `ExtendableMessageEvent`.

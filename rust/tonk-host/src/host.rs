@@ -1,127 +1,221 @@
-//! `<tonk-host>` custom element — IO owner.
+//! The installed host — IO owner, no element.
 //!
-//! Page-level singleton. Mounted outside `<Routes>`. Owns:
-//!
-//! - Transport selection (fetch / SSE; bridge support deferred).
-//! - Phase-1 descriptor cache.
-//! - Subscription dedup table (deferred — v1 opens one upstream
-//!   per consumer subscription).
-//! - The central registry of live consumer subscriptions, keyed
-//!   by `event.target`, recording `depth` for staggered refresh.
+//! `install()` is called once at app boot. It attaches the
+//! operation-event listeners to `document` (consumer events bubble
+//! there for free — no ancestor element required), installs the
+//! main-thread navigate provider and the idle-sync heartbeat, and
+//! starts the `with` observer that refreshes affected subscriptions
+//! when a routing context changes. State (the subscription
+//! registry) lives in a thread-local for the page's lifetime.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use custom_elements::CustomElement;
-use web_sys::{HtmlElement, window};
+use js_sys::Array;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
+use web_sys::{Element, MutationObserver, MutationObserverInit, MutationRecord, window};
 
-use crate::idle_sync::{self, IdleSync};
 use crate::navigate::{self, NavigateListener};
 use crate::ops::{self, InstalledListener};
-use crate::query_cache::QueryCache;
 use crate::registry::Registry;
 
 /// Internal state shared across listener closures.
 pub(crate) struct HostState {
-    /// Set true by `disconnected_callback` so closures running
-    /// after detach bail before mutating state.
-    pub disposed: bool,
     /// Subscription registry. Owns abort handles; entries are
     /// keyed by consumer element identity.
     pub registry: Registry,
-    /// LRU for `tonk-query` responses. Repeats from any
-    /// consumer in the page reuse the cached body and skip the
-    /// HTTP round-trip. Invalidated per-branch on every claim
-    /// or evaluate.
-    pub query_cache: QueryCache,
 }
 
 impl HostState {
     fn new() -> Self {
         Self {
-            disposed: false,
             registry: Registry::new(),
-            query_cache: QueryCache::new(),
         }
     }
 }
 
-/// Outer per-element struct held by `custom-elements`. Holds
-/// the shared state plus the listener handles so we can detach
-/// on disconnect.
-#[derive(Default)]
-pub(crate) struct TonkHost {
-    state: RefCell<Option<Rc<RefCell<HostState>>>>,
-    listeners: RefCell<Vec<InstalledListener>>,
-    /// `navigator.serviceWorker` `message` listener that performs
-    /// worker-requested navigations (the main-thread navigate provider).
-    navigate: RefCell<Option<NavigateListener>>,
-    /// Idle sync heartbeat: polls `POST /api/sync` on a `requestIdleCallback`
-    /// loop (and on refocus/reconnect) so an idle tab still pulls upstream
-    /// changes. Only the top-page host installs it.
-    idle_sync: RefCell<Option<IdleSync>>,
+/// Everything `install()` wires up, held for the page's lifetime.
+struct Installed {
+    _state: Rc<RefCell<HostState>>,
+    _listeners: Vec<InstalledListener>,
+    _navigate: Option<NavigateListener>,
+    _observer: Option<WithObserver>,
+    _controller: Option<ControllerWatch>,
 }
 
-impl CustomElement for TonkHost {
-    fn shadow() -> bool {
-        false
-    }
-
-    fn observed_attributes() -> &'static [&'static str] {
-        &[]
-    }
-
-    fn inject_children(&mut self, _this: &HtmlElement) {}
-
-    fn connected_callback(&mut self, this: &HtmlElement) {
-        let state = Rc::new(RefCell::new(HostState::new()));
-        *self.state.borrow_mut() = Some(state.clone());
-        let installed = ops::attach_all(this, state);
-        *self.listeners.borrow_mut() = installed;
-        // Install the main-thread navigate provider: a worker command can
-        // ask the page to redirect by posting `{ type: "navigate", href }`
-        // to its client, and this listener performs it.
-        *self.navigate.borrow_mut() = navigate::install();
-        // Install the idle sync heartbeat so an idle tab keeps pulling upstream
-        // changes even when it makes no other requests.
-        *self.idle_sync.borrow_mut() = idle_sync::install();
-    }
-
-    fn disconnected_callback(&mut self, this: &HtmlElement) {
-        let listeners = std::mem::take(&mut *self.listeners.borrow_mut());
-        ops::detach_all(this, &listeners);
-        if let Some(navigate) = self.navigate.borrow_mut().take() {
-            navigate.remove();
-        }
-        if let Some(idle_sync) = self.idle_sync.borrow_mut().take() {
-            idle_sync.remove();
-        }
-        if let Some(state) = self.state.borrow_mut().take() {
-            let mut s = state.borrow_mut();
-            s.disposed = true;
-            s.registry.clear();
-        }
-    }
+thread_local! {
+    static INSTALLED: RefCell<Option<Installed>> = const { RefCell::new(None) };
 }
 
-/// Register `<tonk-host>` with the page. Idempotent.
-pub(crate) fn register() {
-    if already_registered() {
+/// Install the host on the top page: document-level operation
+/// listeners, the navigate provider, the idle-sync heartbeat, and
+/// the `with` observer. Idempotent — a second call is a no-op.
+pub fn install() {
+    install_inner(true);
+}
+
+/// Install ONLY the IO surface — operation listeners + the `with`
+/// observer — without the top-page-only effects (navigate provider,
+/// idle-sync heartbeat). The sealed guest uses this: its `fetch` is
+/// the portal bootstrap's relay, the top page already heartbeats for
+/// the whole tab, and worker navigation messages only reach real
+/// service-worker clients. Idempotent.
+pub fn install_io() {
+    install_inner(false);
+}
+
+fn install_inner(page_effects: bool) {
+    let already = INSTALLED.with(|cell| cell.borrow().is_some());
+    if already {
+        tonk_common::log!("tonk-host: install skipped — already installed");
         return;
     }
-    TonkHost::define("tonk-host");
+    let Some(document) = window().and_then(|w| w.document()) else {
+        tonk_common::log!("tonk-host: install failed — no window/document");
+        return;
+    };
+    let state = Rc::new(RefCell::new(HostState::new()));
+    let listeners = ops::attach_all(document.as_ref(), state.clone());
+    let installed = Installed {
+        _listeners: listeners,
+        // Main-thread navigate provider: a worker command can ask the page
+        // to redirect by posting `{ type: "navigate", href }` to its client.
+        // (Sync needs no page-side heartbeat: the SW schedules its own
+        // drains while the page holds live subscriptions.)
+        _navigate: page_effects.then(navigate::install).flatten(),
+        _observer: WithObserver::install(&document, state.clone()),
+        _controller: page_effects
+            .then(|| ControllerWatch::install(state.clone()))
+            .flatten(),
+        _state: state.clone(),
+    };
+    INSTALLED.with(|cell| *cell.borrow_mut() = Some(installed));
+    if page_effects {
+        spawn_keepalive(state);
+    }
+    tonk_common::log!(
+        "tonk-host: installed (page_effects={page_effects}) on {}",
+        document.url().unwrap_or_default()
+    );
 }
 
-fn already_registered() -> bool {
+/// Refreshes every subscription the moment a new service worker takes
+/// over (`controllerchange`): the old worker's streams are dead or about
+/// to be, and one immediate pass beats trickling back on jittered retry
+/// timers. Top page only — sealed guests have no service-worker container;
+/// their streams ride this page's relays and heal with it.
+struct ControllerWatch {
+    _closure: Closure<dyn FnMut()>,
+}
+
+impl ControllerWatch {
+    fn install(state: Rc<RefCell<HostState>>) -> Option<Self> {
+        let container = window()?.navigator().service_worker();
+        let closure = Closure::wrap(Box::new(move || {
+            ops::refresh_all(&state);
+        }) as Box<dyn FnMut()>);
+        container
+            .add_event_listener_with_callback("controllerchange", closure.as_ref().unchecked_ref())
+            .ok()?;
+        Some(Self { _closure: closure })
+    }
+}
+
+/// Keep the service worker alive while this page holds live
+/// subscriptions. An SSE response body does NOT extend the worker's
+/// lifetime, and SW-internal timers don't either — so without page
+/// events the browser terminates the worker (~30s idle), closing every
+/// stream and forcing an endless reconnect/re-stamp churn the nested
+/// guests heal slower than it repeats. A `POST /api/sync?why=keepalive`
+/// every 10s is a real fetch event: it extends the worker's lifetime and
+/// rides the same debounced drain scheduling as any other request.
+/// Skipped while the page holds no subscriptions (nothing to keep alive
+/// for — the browser may reclaim the worker) or is offline. Top page
+/// only: guests relay through it, so its keepalive covers the tab.
+fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            crate::ops::wait_ms(10_000).await;
+            if state.borrow().registry.is_empty() {
+                continue;
+            }
+            let Some(win) = window() else { return };
+            if !win.navigator().on_line() {
+                continue;
+            }
+            // A pending update means the CURRENT worker is on its way out:
+            // poking it would extend the very lifetime `skipWaiting` is
+            // waiting to end. Hold the keepalive until the takeover; the
+            // controller-change refresh re-establishes everything.
+            if update_pending().await {
+                continue;
+            }
+            let init = web_sys::RequestInit::new();
+            init.set_method("POST");
+            let _ = win.fetch_with_str_and_init("/api/sync?why=keepalive", &init);
+        }
+    });
+}
+
+/// Whether a newer service worker is installing or waiting to take over.
+async fn update_pending() -> bool {
     let Some(win) = window() else {
         return false;
     };
-    !win.custom_elements().get("tonk-host").is_undefined()
+    let Ok(registration) =
+        wasm_bindgen_futures::JsFuture::from(win.navigator().service_worker().get_registration())
+            .await
+    else {
+        return false;
+    };
+    let Ok(registration) = registration.dyn_into::<web_sys::ServiceWorkerRegistration>() else {
+        return false;
+    };
+    registration.waiting().is_some() || registration.installing().is_some()
 }
 
-/// True iff the host has not yet been disconnected. Used by the
-/// refresh loop to bail out if the host element was removed
-/// mid-refresh.
-pub(crate) fn is_alive(state: &std::rc::Rc<std::cell::RefCell<HostState>>) -> bool {
-    !state.borrow().disposed
+/// Document-wide observer of `with` attribute mutations. A changed
+/// routing context (a re-stamped template row, a navigation
+/// rewriting a wrapper's `with`) triggers the depth-staggered
+/// refresh of every subscription under the mutated element — the
+/// replacement for the routing elements' `attributeChangedCallback`
+/// → `tonk-context-refresh` flow.
+struct WithObserver {
+    observer: MutationObserver,
+    _closure: Closure<dyn FnMut(Array, MutationObserver)>,
+}
+
+impl WithObserver {
+    fn install(document: &web_sys::Document, state: Rc<RefCell<HostState>>) -> Option<Self> {
+        let closure = Closure::wrap(Box::new(move |records: Array, _observer| {
+            for record in records.iter() {
+                let Ok(record) = record.dyn_into::<MutationRecord>() else {
+                    continue;
+                };
+                let Some(target) = record.target().and_then(|n| n.dyn_into::<Element>().ok())
+                else {
+                    continue;
+                };
+                ops::refresh_under(&state, &target);
+            }
+        }) as Box<dyn FnMut(Array, MutationObserver)>);
+        let observer = MutationObserver::new(closure.as_ref().unchecked_ref()).ok()?;
+        let init = MutationObserverInit::new();
+        init.set_subtree(true);
+        init.set_attributes(true);
+        init.set_attribute_filter(&Array::of1(&"with".into()));
+        let root = document.document_element()?;
+        observer.observe_with_options(&root, &init).ok()?;
+        Some(Self {
+            observer,
+            _closure: closure,
+        })
+    }
+}
+
+impl Drop for WithObserver {
+    fn drop(&mut self) {
+        self.observer.disconnect();
+    }
 }

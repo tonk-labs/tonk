@@ -38,7 +38,7 @@ window.tonk = {
 }
 ```
 
-The parent is a pure port relay. After the handshake it binds the transferred port and posts `ready { context }` back, then translates each inbound envelope into the existing `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events on the `<tonk-portal>` element, which bubble through routing ancestors to `<tonk-host>`. Subscription frames arrive back through the portal's `reset` / `error` methods (the same seam `<tonk-display>` uses) and are posted to the iframe as `subscribe-event` / `subscribe-error`. A `query()` / `subscribe()` call with no argument builds the scoped-entity query from the model descriptor and `entity` (see [`query`](src/query.rs)), matching what `<tonk-display>` would read.
+The parent is a pure port relay. After the handshake it binds the transferred port and posts `ready { context }` back, then translates each inbound envelope into the existing `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events on the `<tonk-portal>` element, which bubble to the installed host on the document. Subscription frames arrive back through the portal's `reset` / `error` methods (the same seam `<tonk-display>` uses) and are posted to the iframe as `subscribe-event` / `subscribe-error`. A `query()` / `subscribe()` call with no argument builds the scoped-entity query from the model descriptor and `entity` (see [`query`](src/query.rs)), matching what `<tonk-display>` would read.
 
 ## Modules
 

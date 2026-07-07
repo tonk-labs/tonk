@@ -302,6 +302,38 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
     names
 }
 
+/// Stamp `sync:offline` at `state:here` on every open repository's upstream
+/// branches, WITHOUT touching the network. The per-fetch drain calls this
+/// instead of sweeping while the browser reports offline, so the chip/disc
+/// reflect the disconnect — skipping silently left them frozen on the last
+/// online status. Overlay-only and idempotent: a re-stamp of the same value
+/// changes nothing, so subscribers see exactly one `offline` frame.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn mark_offline(state: &AppState) {
+    let open: Vec<String> = {
+        let tonk = state.read().await;
+        tonk.reactor.repos().read().keys().cloned().collect()
+    };
+    for repo in open {
+        let info = match super::repository::get_repository(State(state.clone()), Path(repo.clone()))
+            .await
+        {
+            Ok(Json(info)) => info,
+            Err(_) => continue,
+        };
+        let tonk = state.read().await;
+        for branch in branches_to_sync(&info.branch) {
+            publish_sync_status_attr(
+                &tonk,
+                &repo,
+                &branch,
+                tonk_schema::Replica::offline_status(),
+            )
+            .await;
+        }
+    }
+}
+
 /// Sweep every upstream branch of `repo`, reusing the per-branch
 /// [`sync`] route. This is what a durable background `sync` event runs
 /// once it has parsed the repo out of its tag; it makes the same
@@ -895,19 +927,19 @@ pub async fn drain_sync(state: &AppState) {
     }
 }
 
-/// `POST /api/sync` — the idle heartbeat's poll endpoint.
+/// `POST /api/sync` — an external sync poke.
 ///
 /// Deliberately does NO work of its own: the drain is scheduled by the SW's
 /// `on_fetch`, which runs `schedule_sync_drain` for EVERY request (debounced,
 /// generation-ticketed) before routing. So merely *reaching* this route already
 /// enqueued a coalesced drain on the event's `wait_until`. Draining here too
 /// would fire a second, un-debounced drain and stack it on the scheduled one —
-/// so the poll participates in the same scheduling machinery precisely by
+/// so the poke participates in the same scheduling machinery precisely by
 /// leaving the drain to `on_fetch`.
 ///
-/// The page's `<tonk-host>` idle loop polls this so an otherwise-idle tab (only
-/// open subscriptions, no other traffic) keeps generating the request the
-/// heartbeat rides on. Always `200`.
+/// The steady cadence is SW-owned (the self-scheduled sync loop in
+/// `worker.rs`); this route remains for explicit pokes (debug tooling, a
+/// page transition that wants an immediate reconcile). Always `200`.
 #[wasm_compat]
 pub async fn drain() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))

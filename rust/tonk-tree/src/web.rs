@@ -1,8 +1,9 @@
 //! The `<tonk-tree>` custom element: a two-pane inspector for the
 //! dialog-search-tree index behind a branch. Left pane is a lazy
 //! `<wa-tree>` outline of index/segment nodes; right pane is the node
-//! inspector. It resolves its repository from the `<tonk-repository>`
-//! routing ancestor and drives itself from the worker's `tree/*` query
+//! inspector. It resolves its repository from its own `with="branch@repo"`
+//! attribute (forwarded onto it by the mounting `<tonk-display>`) and
+//! drives itself from the worker's `tree/*` query
 //! formulas.
 
 use std::cell::RefCell;
@@ -63,7 +64,7 @@ impl CustomElement for TonkTreeElement {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // Defer a tick so the <tonk-repository> ancestor's `name` is set.
+        // Defer a tick so the display's forwarded `with` context is set.
         let this = this.clone();
         let slot = self.state.clone();
         spawn_local(async move {
@@ -100,7 +101,7 @@ fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
     let Some((repo, branch)) = resolve(this) else {
         mount_error(
             this,
-            "no repository in context (nest under <tonk-repository>)",
+            "no repository in context (set with=\"branch@repo\" or mount inside a routed <tonk-display>)",
         );
         return;
     };
@@ -139,31 +140,30 @@ fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
     });
 }
 
-/// Resolve `repo`/`branch` from attributes or the `<tonk-repository>` /
-/// `<tonk-branch>` ancestors.
+/// Resolve `repo`/`branch` from attributes or the nearest `with`
+/// ancestor. A profile context has no repository segment, so it does
+/// not satisfy the tree (which queries `/api/repository/{repo}/…`).
 fn resolve(this: &HtmlElement) -> Option<(String, String)> {
+    let context = own_with(this);
     let repo = this
         .get_attribute("repo")
-        .or_else(|| ancestor_attr(this, "tonk-repository", "name"))?;
+        .or_else(|| context.as_ref().and_then(|c| c.space().map(str::to_owned)))?;
     let branch = this
         .get_attribute("branch")
-        .or_else(|| ancestor_attr(this, "tonk-branch", "name"))
+        .or_else(|| context.as_ref().and_then(|c| c.branch().map(str::to_owned)))
         .unwrap_or_else(|| "main".to_owned());
     Some((repo, branch))
 }
 
-fn ancestor_attr(this: &HtmlElement, tag: &str, attr: &str) -> Option<String> {
-    let mut node: Option<Element> = this.dyn_ref::<Element>().cloned();
-    while let Some(current) = node {
-        if current.local_name() == tag
-            && let Some(v) = current.get_attribute(attr)
-            && !v.is_empty()
-        {
-            return Some(v);
-        }
-        node = current.parent_element();
-    }
-    None
+/// This element's OWN parsed `with` context, skipping an unstamped `{…}`
+/// placeholder. Routing is never inferred from ancestors — the mounting
+/// `<tonk-display>` forwards its context onto this element (see
+/// `forward_with`), and absent that the guest's pinned site context
+/// applies.
+fn own_with(this: &HtmlElement) -> Option<tonk_host::location::Location> {
+    this.get_attribute("with")
+        .filter(|v| !v.is_empty() && !v.contains('{'))
+        .and_then(|v| v.parse().ok())
 }
 
 /// Attach (once) a shadow root and return it.

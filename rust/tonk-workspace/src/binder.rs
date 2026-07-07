@@ -91,10 +91,10 @@ impl CustomElement for TonkSheetBinder {
         install_create_listeners(this, &self.submit, &self.keydown);
         install_observer(this, &self.observer, &self.mutation);
         // Project synchronously: a sealed `<tonk-site>` projected into a
-        // sheet panel reads its routing context from light-DOM ancestors
-        // (`closest("tonk-repository")`) in its own `connected_callback`,
-        // so the panel DOM must exist before that upgrade runs — deferring
-        // it would mount the site into an ancestor-less DOM and render
+        // sheet panel reads its routing attributes in its own
+        // `connected_callback`, so the panel DOM must exist (with its
+        // stamped `with`/`allow`) before that upgrade runs — deferring
+        // it would mount the site unstamped and render
         // "required attribute missing". The one write `project` makes to an
         // OBSERVED attribute (`active`, in `active_sheet`) is deferred to a
         // microtask there, so it cannot synchronously re-enter this

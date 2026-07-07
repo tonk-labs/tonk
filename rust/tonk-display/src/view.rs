@@ -114,6 +114,16 @@ impl CustomElement for TonkView {
                     let _ = host.set_attribute("data-event-bindings", &serialized);
                 }
             }
+            // Advertise which HOST attributes this template reads via
+            // `{dom.host/<attr>}`, space-separated, so the owning
+            // `<tonk-display>` can watch exactly those for changes and
+            // replay the frame through the binding diff. Skipped when the
+            // template reads none — no attribute, no watcher.
+            let host_attrs = renderer.host_attributes();
+            if !host_attrs.is_empty() {
+                let joined = host_attrs.iter().cloned().collect::<Vec<_>>().join(" ");
+                let _ = host.set_attribute("data-host-bindings", &joined);
+            }
         }
 
         let state = Rc::new(RefCell::new(Inner { renderer }));
@@ -133,9 +143,14 @@ impl CustomElement for TonkView {
             let frame: Vec<Conclusion> =
                 match serde_wasm_bindgen::from_value::<Vec<Conclusion>>(detail.clone()) {
                     Ok(frame) => frame,
-                    Err(_) => match serde_wasm_bindgen::from_value::<Conclusion>(detail) {
+                    Err(frame_err) => match serde_wasm_bindgen::from_value::<Conclusion>(detail) {
                         Ok(c) => vec![c],
-                        Err(_) => return,
+                        Err(_) => {
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "tonk-view: draw payload parse failed: {frame_err}"
+                            )));
+                            return;
+                        }
                     },
                 };
             let mut s = state.borrow_mut();
@@ -315,6 +330,30 @@ mod tests {
         let draw = Reflect::get(el.as_ref(), &"draw".into()).expect("draw");
         let func: Function = draw.dyn_into().expect("draw is a function");
         func.call1(&JsValue::NULL, detail).expect("call draw");
+    }
+
+    /// A connected view advertises the host attributes its template reads
+    /// via `{dom.host/<attr>}` on `data-host-bindings`, space-separated —
+    /// the owning `<tonk-display>` watches exactly those for changes.
+    #[dialog_common::test]
+    fn it_advertises_dom_host_bindings_on_connect() {
+        let host = mount(
+            "<x-ring with=\"main@{dom.host/data-space}\"></x-ring>\
+             <span>{dom.host/data-label}</span>",
+        );
+        assert_eq!(
+            host.get_attribute("data-host-bindings").as_deref(),
+            Some("data-label data-space"),
+            "every dom.host reference is advertised, sorted"
+        );
+    }
+
+    /// A template with no `dom.host/*` references advertises nothing — no
+    /// attribute means the display installs no watcher.
+    #[dialog_common::test]
+    fn it_advertises_no_host_bindings_without_dom_host_refs() {
+        let host = mount("<span>{name}</span>");
+        assert_eq!(host.get_attribute("data-host-bindings"), None);
     }
 
     // The fix: a `cardinality: one` field declared in `data-scalar-fields` is a
@@ -1168,13 +1207,13 @@ mod tests {
             host.inner_html(),
         );
 
-        // Each row carries its own `with=<this>` debug attribute and the
+        // Each row carries its own `data-this=<this>` debug attribute and the
         // per-conclusion `{name}` resolved against that conclusion. Rows
         // are keyed in sorted-`this` order (zAlice < zBob).
         let first = items.item(0).unwrap();
         let first_el = first.dyn_ref::<Element>().expect("element");
         assert_eq!(
-            first_el.get_attribute("with").as_deref(),
+            first_el.get_attribute("data-this").as_deref(),
             Some("did:key:zAlice")
         );
         assert_eq!(first_el.text_content().as_deref(), Some("Alice"));
@@ -1182,7 +1221,7 @@ mod tests {
         let second = items.item(1).unwrap();
         let second_el = second.dyn_ref::<Element>().expect("element");
         assert_eq!(
-            second_el.get_attribute("with").as_deref(),
+            second_el.get_attribute("data-this").as_deref(),
             Some("did:key:zBob")
         );
         assert_eq!(second_el.text_content().as_deref(), Some("Bob"));
@@ -1203,7 +1242,7 @@ mod tests {
         let only = items.item(0).unwrap();
         let only_el = only.dyn_ref::<Element>().expect("element");
         assert_eq!(
-            only_el.get_attribute("with").as_deref(),
+            only_el.get_attribute("data-this").as_deref(),
             Some("did:key:zAlice")
         );
         assert_eq!(only_el.text_content().as_deref(), Some("Alice"));
