@@ -21,7 +21,8 @@
   - `{"type":"item.completed","item":{"id":"...","type":"agent_message","text":"..."}}`
   - `{"type":"item.started"|"item.completed","item":{"id":"...","type":"command_execution","command":"<shell> -lc '...'","aggregated_output":"...","exit_code":0|null,"status":"in_progress"|"completed"|"failed"}}`
   - `{"type":"turn.completed","usage":{"input_tokens":N,"cached_input_tokens":N,"output_tokens":N,"reasoning_output_tokens":N}}`
-- Codex runs commands through the user's login shell (`zsh -lc`), which re-sources system profiles. PATH-based "tonk absent" sandboxing therefore relies on tonk not being globally installed; the harness must guard this (Task 1) rather than assume it.
+- Codex runs commands through the user's login shell (`zsh -lc`), which re-sources profiles. On this machine tonk IS globally installed (`~/.cargo/bin/tonk`, via `~/.zprofile`'s cargo env), so PATH-based "tonk absent" sandboxing is impossible with the real `$HOME`. AMENDED (post-Task-2 probe): episode.sh supports `EPISODE_HOME` — when set, the episode runs with `HOME=$EPISODE_HOME` (and `CODEX_HOME` pointed back at the real `~/.codex` for auth), so user rc files (`~/.zprofile` → cargo/homebrew paths) never load, `~`-writes land inside the run dir, and the sandbox guard checks reachability under that HOME instead of aborting on the host install.
+- AMENDED (post-Task-2 probe): the tonk CLI keeps its profile in the platform profile dir (`~/Library/Application Support/dialog` on macOS, `Directory::Profile` in rust/tonk-cli/src/site.rs). Codex's `workspace-write` sandbox denies it, making every profile-touching tonk command fail (`failed to build operator`, exit 4). run_codex must `--add-dir "$HOME/Library/Application Support/dialog"` (mkdir -p first; with `EPISODE_HOME` set this resolves inside the run dir automatically).
 - Asserted-notation update idiom (query-bind then assert; confirmed against this binary):
 
   ```
@@ -702,14 +703,22 @@ In the checkpoint loop in `bench/bin/shots.sh`, after the `home` case:
 
 ```bash
 # Cold-start onboarding: the episode is the pasted agent-invite prompt,
-# in an empty dir, with NO tonk on PATH. npx resolves against the run's
-# hermetic registry.
+# in an empty dir, with NO tonk reachable. EPISODE_HOME gives the
+# episode a blank $HOME inside the run dir so the user's rc files
+# (cargo/homebrew paths, incl. a globally installed tonk) never load
+# and ~-writes stay in the run; EPISODE_BIN supplies node/npm/npx,
+# which the blank HOME would otherwise lose. npx resolves against the
+# run's hermetic registry.
 EPISODE_RUNNER="${EPISODE_RUNNER:-codex}"
 EPISODE_DIR="$RUN_DIR/agent"
+EPISODE_HOME="$RUN_DIR/home"
+EPISODE_BIN="$RUN_DIR/bin"
 EPISODE_PATH_SANDBOX=1
 npm_config_registry="$BENCH_URL/registry/"
 npm_config_cache="$RUN_DIR/npm-cache"
 ```
+
+`prepare.sh` additionally builds `$RUN_DIR/bin` with symlinks to the host's `node`, `npm`, and `npx` (resolved via `command -v` at prepare time) and `mkdir -p "$RUN_DIR/home"`.
 
 - [ ] **Step 3: Write prepare.sh**
 
