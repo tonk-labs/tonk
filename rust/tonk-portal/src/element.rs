@@ -267,16 +267,41 @@ mod tests {
         );
     }
 
+    /// Teardown is TWO-PHASE: on disconnect the guest realm is pointed at
+    /// `about:blank` immediately (comms already severed), and the element
+    /// itself is removed a tick later — synchronous destruction of a live
+    /// guest is the pattern the browser process crashed under.
     #[dialog_common::test]
-    fn it_removes_the_iframe_on_disconnect() {
+    async fn it_removes_the_iframe_on_disconnect() {
         let host = mount(Some("<p>hi</p>"));
         assert_eq!(host.query_selector_all("iframe").unwrap().length(), 1);
 
         host.remove();
 
+        // Phase one, immediate: the frame is unloading, not yet detached.
+        if let Some(iframe) = host.query_selector("iframe").unwrap() {
+            assert_eq!(
+                iframe.get_attribute("src").as_deref(),
+                Some("about:blank"),
+                "disconnect must unload the guest realm first",
+            );
+        }
+
+        // Phase two: detached shortly after.
+        for _ in 0..80 {
+            if host.query_selector("iframe").unwrap().is_none() {
+                break;
+            }
+            let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                if let Some(win) = web_sys::window() {
+                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 25);
+                }
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        }
         assert!(
             host.query_selector("iframe").unwrap().is_none(),
-            "disconnect should detach the iframe; got: {}",
+            "the deferred phase detaches the iframe; got: {}",
             host.inner_html(),
         );
     }
