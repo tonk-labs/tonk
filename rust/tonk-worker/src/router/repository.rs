@@ -3478,13 +3478,26 @@ mod tests {
 
         let (_app, state, _key) = fresh_repo("test-remove-self").await;
 
-        // The harness never runs the worker boot path, so seed the
-        // self-replica record the assertion below expects.
+        // The harness never runs the worker boot path — and can't call
+        // `bootstrap_profile_meta`, whose library fetch needs a real
+        // service-worker registration — so seed just the self-replica
+        // record the assertion below expects, mirroring the bootstrap's
+        // own transaction.
         {
             let tonk = state.read().await;
-            super::bootstrap_profile_meta(&tonk)
+            let profile_did = tonk.profile.did();
+            let replica = super::Replica::new(profile_did.clone(), profile_did);
+            tonk.reactor
+                .profile_repository()
+                .branch(super::META_BRANCH)
+                .transaction()
+                .assert(replica.clone())
+                .assert(replica.branch(super::META_BRANCH))
+                .commit()
+                .perform(&tonk.operator)
                 .await
-                .expect("bootstrap profile meta");
+                .expect("seed self-replica");
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         }
 
         let profile_did = {
