@@ -45,9 +45,15 @@ fi
 # path itself (npx against the run's local registry). Codex commands
 # run through a login shell that re-sources system paths, so the
 # sandbox holds only if tonk isn't globally installed: guard it.
-EPISODE_PATH="$PATH"
-if [ "${EPISODE_PATH_SANDBOX:-0}" != 1 ]; then
-  EPISODE_PATH="$ROOT/target/release:$EPISODE_PATH"
+if [ "${EPISODE_PATH_SANDBOX:-0}" = 1 ]; then
+  # Minimal system PATH — the inherited harness PATH carries user
+  # toolchain dirs incl. a globally installed tonk (~/.cargo/bin).
+  # nix-darwin's zshenv preserves an inherited PATH verbatim when
+  # __NIX_DARWIN_SET_ENVIRONMENT_DONE is set, which the harness env
+  # guarantees, so what we construct here is what the episode sees.
+  EPISODE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+else
+  EPISODE_PATH="$ROOT/target/release:$PATH"
 fi
 if [ -n "${EPISODE_BIN:-}" ]; then
   EPISODE_PATH="$EPISODE_BIN:$EPISODE_PATH"
@@ -94,7 +100,14 @@ if [ -n "${BENCH_USE_API_KEY:-}" ]; then
   KEY_ENV=(ANTHROPIC_API_KEY="$RESOLVED_KEY")
 fi
 
+# env applies PATH="$EPISODE_PATH" before exec'ing the command, so
+# `timeout` and the runner binary must be pre-resolved via the harness
+# PATH — the minimal sandbox PATH doesn't contain them.
+TIMEOUT_BIN="$(command -v timeout)"
+
 run_claude() {
+  local CLAUDE_BIN
+  CLAUDE_BIN="$(command -v claude)"
   local HOME_ENV=()
   if [ -n "${EPISODE_HOME:-}" ]; then
     HOME_ENV=(
@@ -105,13 +118,15 @@ run_claude() {
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
-    timeout -k 30 "$EPISODE_TIMEOUT" claude -p "$(cat "$PROMPT_FILE")" \
+    "$TIMEOUT_BIN" -k 30 "$EPISODE_TIMEOUT" "$CLAUDE_BIN" -p "$(cat "$PROMPT_FILE")" \
       --output-format stream-json --verbose \
       --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
   ) > "$RUN_DIR/episode.jsonl" 2> "$RUN_DIR/episode.stderr"
 }
 
 run_codex() {
+  local CODEX_BIN
+  CODEX_BIN="$(command -v codex)"
   local HOME_ENV=()
   if [ -n "${EPISODE_HOME:-}" ]; then
     HOME_ENV=(
@@ -128,7 +143,7 @@ run_codex() {
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
-    timeout -k 30 "$EPISODE_TIMEOUT" codex exec --json \
+    "$TIMEOUT_BIN" -k 30 "$EPISODE_TIMEOUT" "$CODEX_BIN" exec --json \
       -m "${CODEX_MODEL:-gpt-5.5}" \
       --skip-git-repo-check --ephemeral \
       -s "${EPISODE_SANDBOX:-workspace-write}" \
