@@ -461,13 +461,28 @@ fn on_update(_host: &Element, _state: &Rc<RefCell<Inner>>, _payload: JsValue, _o
 }
 
 /// `error(detail, { tag })` — transport / parse error on a
-/// subscription. Surface as a host-level failure.
+/// subscription.
+///
+/// A transport interruption (the SW restarting or releasing streams on
+/// update, a network blip) is NOT a render failure: the rendered content
+/// stays — replacing it with a callout would throw away a perfectly good
+/// view over a hiccup — and the host is stamped `data-state="offline"` so
+/// chrome can dim or badge it. The host-side retry reconnects the
+/// subscription, and the next frame heals the state to `ready`. Only a
+/// real refusal (HTTP 403 → `unauthorized`) replaces content via the loud
+/// path.
 fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts: JsValue) {
     let message = Reflect::get(&payload, &"message".into())
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| format!("{payload:?}"));
-    fail(host, state, ErrorDetail::new(ErrorKind::Network, message));
+    let err = ErrorDetail::new(ErrorKind::Network, message);
+    if loud_state(&err) == State::Offline {
+        state::set(host, State::Offline);
+        dispatch_error(host, err);
+        return;
+    }
+    fail(host, state, err);
 }
 
 /// Read `opts.tag` as a string. Returns `None` if absent.
@@ -2100,6 +2115,77 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert(key.to_owned(), Ipld::String(value.to_owned()));
         fields
+    }
+
+    /// A host with one rendered child and a mounted slide, plus the shared
+    /// state — the shape `on_error` reconciles against.
+    #[cfg(target_arch = "wasm32")]
+    fn rendered_display() -> (Element, Rc<RefCell<Inner>>, Element) {
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document.create_element("tonk-display").expect("host");
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach host");
+        let content = document.create_element("span").expect("content");
+        content.set_text_content(Some("rendered"));
+        host.append_child(&content).expect("attach content");
+        let view: Element = document.create_element("tonk-view").expect("view");
+        host.append_child(&view).expect("attach view");
+        let mut inner = Inner::new();
+        inner.slides.insert(
+            "v".to_owned(),
+            Slide {
+                display: String::new(),
+                item: view.clone(),
+                view_el: view,
+            },
+        );
+        (host, Rc::new(RefCell::new(inner)), content)
+    }
+
+    /// A dropped connection must NOT replace the rendered content with a
+    /// callout: the DOM stays, the host is stamped `offline`, and the
+    /// host-side reconnect heals it with the next frame.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_keeps_rendered_content_on_a_transport_interruption() {
+        let (host, state, content) = rendered_display();
+        let payload = js_sys::Object::new();
+        let _ = Reflect::set(
+            &payload,
+            &"message".into(),
+            &JsValue::from_str("stream read failed: TypeError: network error"),
+        );
+        on_error(&host, &state, payload.into(), JsValue::UNDEFINED);
+        assert!(content.is_connected(), "rendered content must survive");
+        assert!(
+            !state.borrow().slides.is_empty(),
+            "slides must survive an interruption"
+        );
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("offline"));
+    }
+
+    /// An authorization refusal is a real failure: the loud path replaces
+    /// content as before.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_replaces_content_on_an_authorization_refusal() {
+        let (host, state, content) = rendered_display();
+        let payload = js_sys::Object::new();
+        let _ = Reflect::set(
+            &payload,
+            &"message".into(),
+            &JsValue::from_str("HTTP 403: not a member"),
+        );
+        on_error(&host, &state, payload.into(), JsValue::UNDEFINED);
+        assert!(!content.is_connected(), "refused content is torn down");
+        assert!(state.borrow().slides.is_empty());
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("unauthorized")
+        );
     }
 
     // `<tonk-display>` mounts each view slide with `data-scalar-fields` derived
