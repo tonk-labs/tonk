@@ -322,6 +322,22 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
         };
         let _ = probe.set_attribute("hidden", "");
         let _ = probe.set_attribute("data-site-heal", "");
+        // The probe carries the site's OWN `with` so its subscription routes
+        // to the site's branch. Routing is self-only now (no ancestor walk),
+        // so without this the probe resolves to no context and subscribes to
+        // a bare `/query` — a 404 that the self-heal then retries forever.
+        // A `{…}`-placeholder `with` (unstamped template) is skipped: the
+        // site re-runs once stamped.
+        if let Some(with) = host
+            .get_attribute("with")
+            .filter(|v| !v.is_empty() && !v.contains('{'))
+        {
+            let _ = probe.set_attribute("with", &with);
+        } else {
+            // No usable routing context yet — a later re-resolve installs
+            // the heal; don't subscribe to a bare endpoint.
+            return;
+        }
         let _ = host.append_child(&probe);
 
         let site = site_entity(&host);
@@ -607,6 +623,9 @@ mod tests {
             .expect("html element");
         let _ = host.set_attribute("path", "/space/x");
         let _ = host.set_attribute("data-site", "site:test-heal");
+        // The site carries its own `with`; the heal probe copies it so its
+        // subscription routes to the site's branch (self-only routing).
+        let _ = host.set_attribute("with", "main@did:key:zSpace");
         fake.container.append_child(&host).expect("attach site");
 
         let slot = Rc::new(RefCell::new(None));

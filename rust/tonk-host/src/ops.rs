@@ -427,6 +427,26 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             return;
         }
     };
+    // A routeless subscription (no own `with`, no pinned context) would hit
+    // the bare `/query` endpoint — a 404 the reconnect retries forever.
+    // Refuse it: the consumer needs a routing context. (One-shots may
+    // legitimately hit the bare endpoint from the top page; a live
+    // subscription that reconnects must not.)
+    if space.is_none() && branch.is_none() && !profile {
+        invoke_method(
+            &consumer,
+            "error",
+            &error_to_js(&ErrorDetail::new(
+                ErrorKind::Network,
+                format!(
+                    "tonk-subscribe: no routing context for <{}> (set a with= attribute)",
+                    consumer.local_name()
+                ),
+            )),
+            tag_js.as_ref(),
+        );
+        return;
+    }
     let url = query_url(space.as_deref(), branch.as_deref(), profile);
 
     let query_val = match Reflect::get(&detail, &JsValue::from_str("query")) {
@@ -635,8 +655,8 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
         s.registry.remove(entry_id);
         return;
     }
-    // Read fresh context from the consumer's surroundings (its `with`
-    // ancestry, else the portal's pinned context).
+    // Read fresh context from the consumer's own `with`, else the portal's
+    // pinned context.
     let (space, branch, profile) = match ambient_route(&consumer) {
         Ok(route) => route,
         Err(error) => {
@@ -646,6 +666,23 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             return;
         }
     };
+    // A routeless reconnect would hit the bare `/query` endpoint and fail;
+    // drop the entry instead of retrying forever (the context vanished —
+    // e.g. a `with` attribute was removed). See `handle_subscribe`.
+    if space.is_none() && branch.is_none() && !profile {
+        invoke_method(
+            &consumer,
+            "error",
+            &error_to_js(&ErrorDetail::new(
+                ErrorKind::Network,
+                "tonk-subscribe: routing context lost on reconnect",
+            )),
+            tag.as_ref(),
+        );
+        let mut s = state.borrow_mut();
+        s.registry.remove(entry_id);
+        return;
+    }
     // Abort the existing upstream and clear its handle so the
     // refresh's new subscription is the only live one.
     let url = query_url(space.as_deref(), branch.as_deref(), profile);
