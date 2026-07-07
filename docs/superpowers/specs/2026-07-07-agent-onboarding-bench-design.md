@@ -53,9 +53,11 @@ Judged outcome: pasted prompt → joined → oriented → at least one useful,
 pushed change visible at the checkpoint URL. Rubric penalizes install
 flailing, guessed schema, unpushed work.
 
-Metrics (added to `metrics.sh` output): `seconds_to_join`,
-`seconds_to_first_successful_eval`, `doc_fetches` (guide/llms.txt reads),
-plus the existing failed-tool-results / repeated-commands / wall-clock.
+Metrics (added to `metrics.sh` output as a `journey` object):
+`cmds_before_join`, `cmds_before_first_eval` (command-index proxies —
+neither runner's event stream carries per-event wall timestamps),
+`doc_fetches` (guide/llms.txt reads), `ask_user_calls`, plus the existing
+failed-tool-results / repeated-commands / wall-clock.
 
 ## Scenario 2: `targeted-edit`
 
