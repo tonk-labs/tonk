@@ -14,13 +14,17 @@ CORE_YAML="$ROOT/rust/tonk-core/assets/library/core.yaml"
 INVITE_URL="" NAME="bench"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --invite-url) INVITE_URL="$2"; shift ;;
-    --name) NAME="$2"; shift ;;
+    --invite-url) [ $# -ge 2 ] || { echo "prompt: --invite-url requires a value" >&2; exit 2; }; INVITE_URL="$2"; shift ;;
+    --name) [ $# -ge 2 ] || { echo "prompt: --name requires a value" >&2; exit 2; }; NAME="$2"; shift ;;
     *) echo "prompt: unknown flag $1" >&2; exit 2 ;;
   esac
   shift
 done
 [ -n "$INVITE_URL" ] || { echo "prompt: --invite-url required" >&2; exit 2; }
+
+# Escape chars special to bash pattern-substitution REPLACEMENT text:
+# an unescaped `&` back-references the match, and `\` is an escape.
+psub_escape() { printf '%s' "$1" | sed 's/[\\&]/\\&/g'; }
 
 # Extract the <pre> body: start at the opening tag (dropping the tag
 # itself), stop at </pre>. Then strip the 4-space YAML block indent and
@@ -34,10 +38,14 @@ raw="$(awk '
 [ -n "$raw" ] || { echo "prompt: extraction from $CORE_YAML came up empty — did the agent-prompt view template change shape?" >&2; exit 1; }
 
 # Fill the template. The join URL is one composite placeholder; replace
-# it whole with the real minted invite URL.
+# it whole with the real minted invite URL. Use escaped copies as the
+# replacement text so a literal `&` (e.g. a synced repo's `&remote=`)
+# isn't treated as a back-reference to the matched pattern.
+esc_url="$(psub_escape "$INVITE_URL")"
+esc_name="$(psub_escape "$NAME")"
 filled="$raw"
-filled="${filled//\{dom.host\/data-base\}?access=\{access\}\{remote\}#\{code\}/$INVITE_URL}"
-filled="${filled//\{name\}/$NAME}"
+filled="${filled//\{dom.host\/data-base\}?access=\{access\}\{remote\}#\{code\}/$esc_url}"
+filled="${filled//\{name\}/$esc_name}"
 filled="${filled//\{dom.host\/data-page\}/this repo}"
 
 # Self-check: no unfilled placeholders may survive; the join command
