@@ -107,12 +107,18 @@ impl CommandEnv {
 /// which syncs across devices and is the single source of truth the Hub
 /// and banner both read.
 ///
+/// [`RemoveSpaceHandler`] serves the Hub's per-row delete confirm
+/// (`space/remove`): replica retraction, reactor eviction, storage
+/// cleanup.
+///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
+/// [`RemoveSpaceHandler`]: super::repository::RemoveSpaceHandler
 pub fn command_registry() -> CommandRegistry<CommandEnv> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
+        registry.register(Box::new(super::repository::RemoveSpaceHandler::new()));
         registry.register(Box::new(super::repository::InviteHandler::new()));
         registry.register(Box::new(super::repository::PauseSyncHandler::new()));
         registry.register(Box::new(super::repository::ProfileRenameHandler::new()));

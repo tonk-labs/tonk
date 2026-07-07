@@ -879,6 +879,22 @@ impl SyncQueue {
     fn requeue(&self, repo: &str, now: f64) {
         self.mark_dirty(repo, now);
     }
+
+    /// Drop `repo` from the dirty set without touching any other entry.
+    /// Called when a space is removed: a dirty stamp left behind would
+    /// survive the reactor's [`evict`](crate::Reactor::evict) and, on the
+    /// next [`drain_sync`], get folded into the union that `sync_repository`
+    /// reconciles — re-acquiring (resurrecting) the just-removed repo.
+    ///
+    /// Wasm-gated: its only caller, `remove_space_inner`, is service-worker
+    /// scoped, so a native build never reaches it (native clippy flags it
+    /// dead code otherwise).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn forget(&self, repo: &str) {
+        if let Ok(mut dirty) = self.dirty.lock() {
+            dirty.remove(repo);
+        }
+    }
 }
 
 /// Drain the sync work-queue: reconcile every repository that has un-pushed

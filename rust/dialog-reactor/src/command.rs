@@ -504,6 +504,51 @@ mod tests {
         assert_eq!(decoded.name.0, "pictures");
     }
 
+    /// The Hub's per-row delete confirm asserts a `space/remove`
+    /// transient carrying only `data-remove` (the subject DID).
+    #[dialog_common::test]
+    fn it_decodes_remove_space_from_a_data_remove_fact() {
+        use tonk_schema::command::RemoveSpace;
+
+        let this = entity("did:key:zRemoveSpace");
+        let subject = entity("did:key:zSpaceSubject");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.dataset/remove")
+            .of(this.clone())
+            .is(subject.clone())
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+
+        let decoded = RemoveSpace::decode(this, &facts)
+            .expect("RemoveSpace must decode from a data-remove-only transient");
+        assert_eq!(decoded.subject.0, subject);
+    }
+
+    /// Regression: a `tonk/rename-repository` transient carries
+    /// `dataset/subject` plus the new name. It must NOT decode as
+    /// `RemoveSpace` — a remove command keyed on `dataset/subject`
+    /// would turn every banner rename into a space deletion.
+    #[dialog_common::test]
+    fn it_does_not_decode_a_rename_transient_as_remove_space() {
+        use tonk_schema::command::RemoveSpace;
+
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.dataset/subject")
+            .of(entity("did:key:zRename"))
+            .is(entity("did:key:zSpaceSubject"))
+            .assert(&mut changes);
+        the!("dom.event.current-target/value")
+            .of(entity("did:key:zRename"))
+            .is("new name".to_string())
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+
+        assert!(
+            RemoveSpace::decode(this, &facts).is_none(),
+            "a rename-shaped transient must not decode as RemoveSpace"
+        );
+    }
+
     #[dialog_common::test]
     fn it_does_not_decode_when_a_required_field_is_absent() {
         let mut changes = Changes::new();

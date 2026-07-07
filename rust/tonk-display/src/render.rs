@@ -415,9 +415,16 @@ fn update_repeat(
         return;
     };
 
-    // Incoming subjects, keyed and deduped, in frame order.
+    // Incoming subjects, keyed and deduped, in frame order. A subjectless
+    // conclusion (empty `this`) is the synthetic host-attribute lead of an
+    // empty directory frame, never a real instance: keying it here would
+    // let the single-row rename below adopt the last surviving row under
+    // the empty key and blank it in place instead of removing it.
     let mut incoming: BTreeMap<String, Conclusion> = BTreeMap::new();
     for member in frame {
+        if member.this.is_empty() {
+            continue;
+        }
         incoming
             .entry(member.this.clone())
             .or_insert_with(|| member.clone());
@@ -1219,6 +1226,20 @@ mod tests {
         r.apply(&[row("", &[("name", "Ghost")]), row("a", &[("name", "Ann")])]);
         assert_eq!(li_withs(&host), vec!["a"]);
         assert_eq!(li_texts(&host), vec!["Ann"]);
+    }
+
+    #[dialog_common::test]
+    fn it_removes_the_last_row_when_only_the_synthetic_lead_remains() {
+        // Removing a directory's last instance leaves a frame holding just
+        // the synthetic host-attribute lead (empty `this`). The single-row
+        // rename heuristic must not adopt the surviving row under that
+        // subjectless key — the row vanished, it wasn't renamed — or the
+        // Hub keeps a ghost row with every binding blank.
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("a", &[("name", "Ann")])]);
+        r.apply(&[row("", &[("dom.host/data-space", "acme")])]);
+        assert!(li_withs(&host).is_empty());
+        assert!(li_texts(&host).is_empty());
     }
 
     #[dialog_common::test]
