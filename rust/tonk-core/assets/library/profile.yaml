@@ -264,6 +264,11 @@ view/directory!:
         /* dim the row while the content branch is still seeding */
         .srow-wrap[data-status="tonk:blank"] .srow-name { opacity: .6; }
         .spot-untitled { color: var(--wa-color-text-quiet); }
+        /* empty-directory placeholder: visible by default, hidden the
+           moment any real row exists. "Real" excludes the self-replica
+           row, which is present but hidden on some profiles. */
+        .spot-empty { padding: 18px 0; font-size: 15px; color: var(--wa-color-text-quiet); }
+        .spot-list:has(.srow-wrap:not([data-kind="tonk:profile"])) .spot-empty { display: none; }
 
         /* ── Remove-spot affordance ─────────────────────────────────────
            A hover-revealed x per row opens a per-row confirm overlay,
@@ -318,8 +323,6 @@ view/directory!:
         .onb-nav--close { right: 20px; }
         .onb-nav--back { left: 20px; }
         .onb-head { text-align: center; max-width: 560px; }
-        .onb-kick { font-family: var(--spot-font-mono); font-size: 11.5px; letter-spacing: .13em;
-          text-transform: uppercase; color: var(--wa-color-text-quiet); margin-bottom: 10px; }
         .onb-head h3 { font-family: var(--spot-font-display); font-weight: 300; font-size: 38px;
           letter-spacing: -1.3px; margin: 0 0 12px; color: var(--wa-color-text-normal);
           /* opt out of the global heading "headline-cover" dark box */
@@ -470,6 +473,7 @@ view/directory!:
              it Tab would land on an invisible control that opens a
              destructive overlay. -->
         <input class="spot-wiz" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
+        <div class="spot-empty">No spots yet — create one to get started.</div>
         <!-- `data-id={this}` designates the repeat row — the wrapper (not
              the <a>), so the remove affordance and confirm overlay repeat
              with the row while staying outside the link: hovering or
@@ -497,7 +501,6 @@ view/directory!:
           </label>
           <div class="srm-overlay">
             <form class="srm-card" onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
-              <div class="onb-kick">remove spot</div>
               <h3 class="srm-title">Delete this spot?</h3>
               <div class="srm-name">
                 <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
@@ -531,7 +534,6 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
-              <div class="onb-kick">new spot</div>
               <h3>How do you want to start?</h3>
               <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
             </div>
@@ -572,7 +574,6 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
-              <div class="onb-kick">new spot</div>
               <h3>Name your spot</h3>
             </div>
             <!-- Template picker. Native radios drive a 3-up grid of card
