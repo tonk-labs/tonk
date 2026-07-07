@@ -10,5 +10,5 @@ rustflags = [
   "web_sys_unstable_apis"
 ]
 
-[build]
-target = "wasm32-unknown-unknown"
+# [build]
+# target = "wasm32-unknown-unknown"
