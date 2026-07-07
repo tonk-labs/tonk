@@ -174,6 +174,10 @@ struct Inner {
     /// event that bubbles up through this element. Dropped on
     /// disconnect.
     depth_annotator: Option<tonk_host::DepthAnnotator>,
+    /// Bumped on every entity frame. A reconnect-empty hold captures the
+    /// serial and applies the emptiness after the grace period only if no
+    /// further frame superseded it.
+    entity_serial: u64,
     /// Watches the host's own attributes that mounted views consume via
     /// `{dom.host/<attr>}` (advertised by each slide as
     /// `data-host-bindings`). A genuine value change replays the cached
@@ -226,6 +230,7 @@ impl Inner {
             delegate: None,
             delegate_generation: 0,
             depth_annotator: None,
+            entity_serial: 0,
             host_watch: None,
             portal_descriptor: None,
             portal_model: None,
@@ -442,10 +447,14 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
             return;
         }
     };
+    let reconnect = opts.is_object()
+        && Reflect::get(&opts, &"reconnect".into())
+            .map(|v| v.is_truthy())
+            .unwrap_or(false);
     match tag.as_deref() {
         Some("model") => handle_model_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
-        Some("entity") => handle_entity_frame(host, state, conclusions),
+        Some("entity") => handle_entity_frame(host, state, conclusions, reconnect),
         _ => {
             // Unknown tag — log and drop.
         }
@@ -1543,13 +1552,46 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 /// conclusion whose differing fields become `Array` values. The
 /// template renderer's iteration-aware walk does the per-value
 /// cloning from there.
-fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+fn handle_entity_frame(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    conclusions: Vec<Conclusion>,
+    reconnect: bool,
+) {
     // Everything is a list of folds: group the flat rows by `this` into
     // one folded conclusion per subject. Cardinality-one is just a
     // one-element frame; the renderer iterates `{this}` over the frame.
     let frame = crate::fold::select_rows(conclusions);
 
     if frame.is_empty() {
+        // HOLD a reconnect-empty over previously rendered content: the
+        // first frame after a re-opened subscription can reflect state the
+        // worker lost across a restart (an overlay-backed record — e.g. the
+        // site stamp — before its owner re-asserts it). Clearing on it
+        // collapses a perfectly good view into a spinner and tears down
+        // nested guests, only for the heal to rebuild them seconds later.
+        // Keep the content; if no real frame supersedes this one within the
+        // grace period, apply the emptiness for real (a genuine deletion
+        // still lands, just unhurriedly).
+        let held = {
+            let mut s = state.borrow_mut();
+            s.entity_serial += 1;
+            reconnect && !s.last_frame.is_empty()
+        };
+        if held {
+            let serial = state.borrow().entity_serial;
+            let host = host.clone();
+            let state = state.clone();
+            spawn_local(async move {
+                reconnect_grace().await;
+                if state.borrow().disposed || state.borrow().entity_serial != serial {
+                    return;
+                }
+                handle_entity_frame(&host, &state, Vec::new(), false);
+            });
+            return;
+        }
+
         let mut s = state.borrow_mut();
         s.last_frame = Vec::new();
         // An empty frame means no rows matched — zero instances in a
@@ -1604,6 +1646,7 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
     // Cache the whole folded frame for the slide-mount replay (directory
     // mode has one conclusion per instance). The lead conclusion drives
     // notation + the result event.
+    s.entity_serial += 1;
     let first = frame[0].clone();
     s.last_frame = frame.clone();
     // Each slide sees the whole frame, augmented with the host's own
@@ -1948,6 +1991,18 @@ fn replay_host_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
     }
 }
 
+/// The reconnect-empty grace: long enough for the owner's heal claim to
+/// re-stamp (retry jitter + claim round-trip), short enough that genuine
+/// emptiness still applies promptly.
+async fn reconnect_grace() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(win) = window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 5_000);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 fn call_render(el: &Element, detail: &JsValue) {
     let Ok(draw) = Reflect::get(el.as_ref(), &"draw".into()) else {
         return;
@@ -2165,6 +2220,36 @@ mod tests {
             "slides must survive an interruption"
         );
         assert_eq!(host.get_attribute("data-state").as_deref(), Some("offline"));
+    }
+
+    /// A reconnect-empty frame HOLDS previously rendered content (the
+    /// worker may have lost overlay state it is about to re-assert); a
+    /// plain empty frame clears as before.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_holds_content_on_a_reconnect_empty_frame() {
+        let (host, state, _content) = rendered_display();
+        state.borrow_mut().last_frame = vec![Conclusion {
+            this: "e:1".to_owned(),
+            fields: BTreeMap::new(),
+        }];
+
+        handle_entity_frame(&host, &state, Vec::new(), true);
+        assert!(
+            !state.borrow().last_frame.is_empty(),
+            "a reconnect-empty must hold the cached frame"
+        );
+        assert_ne!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-entity"),
+            "a reconnect-empty must not surface absence"
+        );
+
+        handle_entity_frame(&host, &state, Vec::new(), false);
+        assert!(
+            state.borrow().last_frame.is_empty(),
+            "a plain empty frame clears as before"
+        );
     }
 
     /// An authorization refusal is a real failure: the loud path replaces

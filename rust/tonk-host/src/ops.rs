@@ -610,6 +610,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     let state_close = state.clone();
     let consumer_err = consumer.clone();
     let tag_err = tag.clone();
+    // The first frame after this reopen carries `reconnect: true` — see
+    // `invoke_method_marked`.
+    let first_frame = std::cell::Cell::new(true);
     let abort_result = open_sse(
         &url,
         &body_ipld,
@@ -633,11 +636,12 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
                     return;
                 }
             };
-            invoke_method(
+            invoke_method_marked(
                 &consumer_frame,
                 "reset",
                 &conclusions_js,
                 tag_frame.as_ref(),
+                first_frame.replace(false),
             );
         },
         move |err: ErrorDetail| {
@@ -683,9 +687,27 @@ fn handle_unsubscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 /// Invoke a method on a consumer element with one positional
 /// payload + an `{ tag }` opts object.
 fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Option<&JsValue>) {
+    invoke_method_marked(consumer, method, payload, tag, false);
+}
+
+/// Like [`invoke_method`], with a `reconnect` marker on the opts: `true`
+/// flags the FIRST frame after a re-opened subscription, whose content may
+/// briefly reflect state the worker lost (an overlay-backed record before
+/// its owner re-asserts it). Consumers may hold their rendered content
+/// through such a frame instead of treating it as settled truth.
+fn invoke_method_marked(
+    consumer: &Element,
+    method: &str,
+    payload: &JsValue,
+    tag: Option<&JsValue>,
+    reconnect: bool,
+) {
     let opts = Object::new();
     if let Some(tag_val) = tag {
         let _ = Reflect::set(&opts, &JsValue::from_str("tag"), tag_val);
+    }
+    if reconnect {
+        let _ = Reflect::set(&opts, &JsValue::from_str("reconnect"), &JsValue::TRUE);
     }
     let fn_val = match Reflect::get(consumer, &JsValue::from_str(method)) {
         Ok(v) => v,
