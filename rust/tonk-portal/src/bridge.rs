@@ -51,7 +51,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
+use web_sys::{AbortController, Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
 /// it is reachable from the element lifecycle, the prototype `reset`
@@ -67,6 +67,10 @@ pub(crate) struct PortalState {
     /// Live subscriptions keyed by the host tag we minted. Dropping an
     /// entry cancels its host subscription.
     subs: BTreeMap<String, BridgeSub>,
+    /// Abort handles for every fetch this portal relayed. Aborted (and
+    /// drained) on teardown so no response keeps streaming into a
+    /// destroyed guest realm.
+    relays: Vec<AbortController>,
     /// The port bound by the latest `hello` handshake, used to relay
     /// results back to the iframe. `None` until the iframe says hello.
     port: Option<MessagePort>,
@@ -105,6 +109,7 @@ impl PortalState {
             disposed: false,
             next_tag: 0,
             subs: BTreeMap::new(),
+            relays: Vec::new(),
             port: None,
             _dispatcher: None,
             with: None,
@@ -119,11 +124,32 @@ impl PortalState {
         self.allow = allow;
     }
 
-    /// Cancel and forget every live subscription. Dropping each
-    /// `BridgeSub` cancels its host subscription, so a reload or
-    /// teardown never leaves a dangling SSE.
+    /// Whether this portal's routing context and reach match exactly.
+    /// `<tonk-site>` uses this to re-route a pure path change in place —
+    /// same reach, live iframe — instead of rebuilding the guest.
+    pub(crate) fn same_route(&self, with: &Location, allow: &Allow) -> bool {
+        self.with.as_ref() == Some(with) && self.allow == *allow
+    }
+
+    /// Cancel and forget every live subscription and relayed fetch.
+    /// Dropping each `BridgeSub` cancels its host subscription, and
+    /// aborting each relay cancels the underlying fetch — including a
+    /// streaming response whose body was TRANSFERRED into the guest. A
+    /// torn-down guest must not leave live pipes into its destroyed
+    /// realm: orphaned transferred streams are the prime suspect for the
+    /// renderer crash on space→hub navigation.
     pub(crate) fn clear_subs(&mut self) {
         self.subs.clear();
+        for relay in self.relays.drain(..) {
+            relay.abort();
+        }
+    }
+
+    /// Track a relayed fetch's abort handle for the portal's lifetime, so
+    /// teardown can cancel it. Bounded by the portal's own lifetime — a
+    /// navigation rebuild drains the lot.
+    pub(crate) fn track_relay(&mut self, controller: AbortController) {
+        self.relays.push(controller);
     }
 }
 
@@ -1392,6 +1418,13 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
         Ok(init) => init,
         Err(e) => return post_error(port, "fetch-error", &id, &e),
     };
+    // Every relay is abortable and tracked on the portal: teardown aborts
+    // the lot, so a torn-down guest's streams (transferred response bodies
+    // included) are cancelled instead of piping into a destroyed realm.
+    if let Ok(controller) = AbortController::new() {
+        init.set_signal(Some(&controller.signal()));
+        state.borrow_mut().track_relay(controller);
+    }
     let port = port.clone();
     spawn_local(async move {
         match fetch_path(&path, &init).await {

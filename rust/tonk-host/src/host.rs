@@ -16,7 +16,6 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MutationObserver, MutationObserverInit, MutationRecord, window};
 
-use crate::idle_sync::{self, IdleSync};
 use crate::navigate::{self, NavigateListener};
 use crate::ops::{self, InstalledListener};
 use crate::registry::Registry;
@@ -41,7 +40,6 @@ struct Installed {
     _state: Rc<RefCell<HostState>>,
     _listeners: Vec<InstalledListener>,
     _navigate: Option<NavigateListener>,
-    _idle_sync: Option<IdleSync>,
     _observer: Option<WithObserver>,
 }
 
@@ -82,11 +80,9 @@ fn install_inner(page_effects: bool) {
         _listeners: listeners,
         // Main-thread navigate provider: a worker command can ask the page
         // to redirect by posting `{ type: "navigate", href }` to its client.
+        // (Sync needs no page-side heartbeat: the SW schedules its own
+        // drains while the page holds live subscriptions.)
         _navigate: page_effects.then(navigate::install).flatten(),
-        // Idle sync heartbeat: polls `POST /api/sync` on a
-        // `requestIdleCallback` loop (and on refocus/reconnect) so an idle
-        // tab still pulls upstream changes.
-        _idle_sync: page_effects.then(idle_sync::install).flatten(),
         _observer: WithObserver::install(&document, state.clone()),
         _state: state,
     };

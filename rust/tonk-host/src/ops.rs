@@ -81,15 +81,23 @@ fn claim_event(ev: &CustomEvent) {
     ev.prevent_default();
 }
 
-/// Delay before reconnecting a cleanly closed stream. The common cause is
-/// the SW releasing in-flight streams on update — the replacement worker is
-/// up almost immediately, so reconnect promptly.
-const RETRY_CLOSE_MS: i32 = 1_000;
+/// Delay before reconnecting a cleanly closed stream: 2s plus up to 3s of
+/// per-subscription jitter. The common cause is the SW releasing every
+/// in-flight stream at once on update — an immediate, synchronized
+/// reconnect re-pins the OLD worker with a fresh wave of streams before
+/// the replacement can take over, and the release/reconnect cycle churns
+/// until the renderer gives out. The jitter breaks the herd; the base
+/// delay gives the waiting worker room to activate.
+fn retry_close_ms() -> i32 {
+    2_000 + (js_sys::Math::random() * 3_000.0) as i32
+}
 
 /// Delay before retrying after a transport error (SW restarting, network
-/// blip). Longer than the clean-close delay so a hard-down worker isn't
-/// hammered.
-const RETRY_ERROR_MS: i32 = 3_000;
+/// blip): 3s plus up to 3s of jitter, longer than the clean-close delay so
+/// a hard-down worker isn't hammered.
+fn retry_error_ms() -> i32 {
+    3_000 + (js_sys::Math::random() * 3_000.0) as i32
+}
 
 /// Re-issue the subscription for `entry_id` after `delay_ms`, via the same
 /// re-resolution path a context refresh uses — so the reconnect picks up
@@ -445,13 +453,13 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 // Keep the entry and retry: a transport error usually means
                 // the SW is restarting/updating, and a successful reconnect
                 // heals the consumer with its next `reset`.
-                schedule_resubscribe(&state_err, entry_id, RETRY_ERROR_MS);
+                schedule_resubscribe(&state_err, entry_id, retry_error_ms());
             },
             move || {
                 // Clean server close (the SW releasing in-flight streams on
                 // update): reconnect silently — the subscription isn't over,
                 // its transport is.
-                schedule_resubscribe(&state_close, entry_id, RETRY_CLOSE_MS);
+                schedule_resubscribe(&state_close, entry_id, retry_close_ms());
             },
         )
         .await;
@@ -469,7 +477,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                         tag_for_spawn.as_ref(),
                     );
                 }
-                schedule_resubscribe(&state_for_spawn, entry_id, RETRY_ERROR_MS);
+                schedule_resubscribe(&state_for_spawn, entry_id, retry_error_ms());
             }
         }
     });
@@ -636,10 +644,10 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             if consumer_err.is_connected() {
                 invoke_method(&consumer_err, "error", &error_to_js(&err), tag_err.as_ref());
             }
-            schedule_resubscribe(&state_err, entry_id, RETRY_ERROR_MS);
+            schedule_resubscribe(&state_err, entry_id, retry_error_ms());
         },
         move || {
-            schedule_resubscribe(&state_close, entry_id, RETRY_CLOSE_MS);
+            schedule_resubscribe(&state_close, entry_id, retry_close_ms());
         },
     )
     .await;
@@ -652,7 +660,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             if consumer.is_connected() {
                 invoke_method(&consumer, "error", &error_to_js(&err), tag.as_ref());
             }
-            schedule_resubscribe(state, entry_id, RETRY_ERROR_MS);
+            schedule_resubscribe(state, entry_id, retry_error_ms());
         }
     }
 }

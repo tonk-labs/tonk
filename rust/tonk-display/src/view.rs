@@ -133,9 +133,14 @@ impl CustomElement for TonkView {
             let frame: Vec<Conclusion> =
                 match serde_wasm_bindgen::from_value::<Vec<Conclusion>>(detail.clone()) {
                     Ok(frame) => frame,
-                    Err(_) => match serde_wasm_bindgen::from_value::<Conclusion>(detail) {
+                    Err(frame_err) => match serde_wasm_bindgen::from_value::<Conclusion>(detail) {
                         Ok(c) => vec![c],
-                        Err(_) => return,
+                        Err(_) => {
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "tonk-view: draw payload parse failed: {frame_err}"
+                            )));
+                            return;
+                        }
                     },
                 };
             let mut s = state.borrow_mut();

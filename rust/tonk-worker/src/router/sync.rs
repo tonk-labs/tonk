@@ -927,19 +927,19 @@ pub async fn drain_sync(state: &AppState) {
     }
 }
 
-/// `POST /api/sync` — the idle heartbeat's poll endpoint.
+/// `POST /api/sync` — an external sync poke.
 ///
 /// Deliberately does NO work of its own: the drain is scheduled by the SW's
 /// `on_fetch`, which runs `schedule_sync_drain` for EVERY request (debounced,
 /// generation-ticketed) before routing. So merely *reaching* this route already
 /// enqueued a coalesced drain on the event's `wait_until`. Draining here too
 /// would fire a second, un-debounced drain and stack it on the scheduled one —
-/// so the poll participates in the same scheduling machinery precisely by
+/// so the poke participates in the same scheduling machinery precisely by
 /// leaving the drain to `on_fetch`.
 ///
-/// The page's `<tonk-host>` idle loop polls this so an otherwise-idle tab (only
-/// open subscriptions, no other traffic) keeps generating the request the
-/// heartbeat rides on. Always `200`.
+/// The steady cadence is SW-owned (the self-scheduled sync loop in
+/// `worker.rs`); this route remains for explicit pokes (debug tooling, a
+/// page transition that wants an immediate reconcile). Always `200`.
 #[wasm_compat]
 pub async fn drain() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))

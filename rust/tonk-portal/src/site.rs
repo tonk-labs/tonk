@@ -234,18 +234,25 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // delivers the frame and the content renders. Awaiting the claim's `/transact`
     // round-trip before the bring-up serialized the two — the iframe sat idle for
     // the whole round-trip before it even started booting — so overlap them.
-    // Every resolve rebuilds the sealed iframe. Re-routing IN PLACE (reusing
-    // a live same-reach iframe and letting the guest's `tonk:site`
-    // subscription re-render) would save the guest reboot on navigation, but
-    // it depends on the render diff re-applying attribute bindings on
-    // retained elements — the chrome's nested `<tonk-site with="main@{id}">`
-    // and the FAB's `data-space={id}` are not restamped today, so a
-    // same-route navigation (space A → space B) leaves the old space
-    // rendered. Rebuild until that diff gap is fixed; the navigation itself
-    // is still a client-side pushState, never a page reload.
+    // A pure path change re-routes IN PLACE: with a live iframe already
+    // connected under the same `with`/`allow`, only the `tonk:load` re-claim
+    // is needed — the guest's `tonk:site` subscription delivers the new
+    // route's frame and the render diff restamps the chrome's bindings
+    // (the nested `<tonk-site with="main@{id}">`, the FAB's
+    // `data-space={id}`) inside the running guest. Rebuilding here would
+    // throw away the booted wasm on every navigation. Only a reach change
+    // (different `with`/`allow`) or a missing/dead iframe rebuilds.
+    let reuse = cell.borrow().as_ref().is_some_and(|state| {
+        let s = state.borrow();
+        !s.disposed
+            && s.iframe.as_ref().is_some_and(|f| f.is_connected())
+            && s.same_route(&with, &allow)
+    });
     let host_for_task = host.clone();
     spawn_local(async move {
-        render_in_iframe(&host_for_task, &cell, &site, with, allow);
+        if !reuse {
+            render_in_iframe(&host_for_task, &cell, &site, with, allow);
+        }
         if let Err(error) =
             tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
         {

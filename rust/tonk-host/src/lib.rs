@@ -68,8 +68,6 @@ mod host;
 #[cfg(target_arch = "wasm32")]
 mod http;
 #[cfg(target_arch = "wasm32")]
-mod idle_sync;
-#[cfg(target_arch = "wasm32")]
 mod navigate;
 #[cfg(target_arch = "wasm32")]
 pub use navigate::navigate_to;

@@ -27,9 +27,10 @@ async fn main() {
     let _ = tonk_ui::api::init().await;
 
     // Install the host AFTER init: init awaits service-worker readiness, so
-    // the idle-sync heartbeat's first `POST /api/sync` lands on the SW, not
-    // on the asset server (a 405). Nothing dispatches consumer events before
-    // `mount_root` below, so the late install loses no operations.
+    // everything the host wires up runs against a controlling SW. Nothing
+    // dispatches consumer events before `mount_root` below, so the late
+    // install loses no operations. (Sync cadence is SW-owned — the page
+    // runs no heartbeat.)
     tonk_host::install();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`

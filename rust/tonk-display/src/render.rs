@@ -210,6 +210,20 @@ impl Renderer {
         // fragment and silently found no node — dropping every chrome
         // update, e.g. `<tonk-sheet-binder active={dom.host/data-active}>`
         // never reflecting a host-attribute change.)
+        //
+        // The whole-fragment repeat (`plan.repeat.path == None`) recorded the
+        // fragment as its ROW root for the same navigation purpose — re-point
+        // it at the host too, or the row's binding updates walk the emptied
+        // fragment and silently drop: the space chrome's nested
+        // `<tonk-site with="main@{id}">` never restamped on navigation, so a
+        // space→space route change left the previous space mounted.
+        let mut repeat = repeat;
+        if self.plan.repeat.path.is_none() {
+            let host_root: Node = self.host.clone().into();
+            for row in repeat.rows.values_mut() {
+                row.root = host_root.clone();
+            }
+        }
         self.mounted = Some(MountedScope {
             root: self.host.clone().into(),
             chrome,
@@ -900,9 +914,20 @@ fn write_binding(
         BindingKind::Text { .. } => {
             if let Some(target) = navigate(scope_root, &binding.path) {
                 target.set_text_content(Some(rendered));
+            } else {
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "tonk-render: text binding target missing at {:?}",
+                    binding.path
+                )));
             }
         }
         BindingKind::Attribute { .. } => {
+            if navigate(scope_root, &binding.path).is_none() {
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "tonk-render: attribute binding target missing at {:?}",
+                    binding.path
+                )));
+            }
             let value = single_field_value(binding, &member.this, &member.fields, shadow);
             apply_attribute_binding(scope_root, binding, rendered, value.as_ref());
         }
@@ -985,6 +1010,80 @@ mod tests {
     // the frame renders one `<li>` per subject (without a `{this}` reference
     // the body would render once as chrome over the lead conclusion).
     const LIST: &str = "<ul><li data-id={this}>{name}</li></ul>";
+
+    /// A multi-root template with no `{this}` reference — the whole-fragment
+    /// repeat, which is the space chrome's shape (a nested router and the FAB
+    /// mount, both carrying `{id}`-derived attributes). The row used to record
+    /// the template fragment as its root; `append_child` empties the fragment,
+    /// so a second frame's attribute bindings navigated into the void and the
+    /// old values stayed stamped — a space→space navigation left the previous
+    /// space mounted. Regression test for that root re-pointing.
+    #[dialog_common::test]
+    fn it_restamps_attribute_bindings_across_frames_in_a_whole_fragment_repeat() {
+        // The EXACT space-chrome template shape: two custom-element roots
+        // separated by a newline text node, an unquoted `path={rest}` whose
+        // field is ABSENT from the conclusions, and `{id}` attribute
+        // bindings on both roots.
+        let (mut r, host) = renderer(
+            "<x-inner with=\"main@{id}\" allow=\"main@{id}\" path={rest}></x-inner>\n<x-other model=\"tonk:profile/fab\" data-space=\"{id}\"></x-other>\n",
+        );
+        r.apply(&[row("site:1", &[("id", "did:key:aaa")])]);
+        let inner = host.query_selector("x-inner").expect("q").expect("inner");
+        assert_eq!(
+            inner.get_attribute("with").as_deref(),
+            Some("main@did:key:aaa"),
+            "first frame stamps the binding"
+        );
+
+        r.apply(&[row("site:1", &[("id", "did:key:bbb")])]);
+        let inner = host.query_selector("x-inner").expect("q").expect("inner");
+        assert_eq!(
+            inner.get_attribute("with").as_deref(),
+            Some("main@did:key:bbb"),
+            "a retained whole-fragment row must restamp attribute bindings"
+        );
+        let other = host.query_selector("x-other").expect("q").expect("other");
+        assert_eq!(
+            other.get_attribute("data-space").as_deref(),
+            Some("did:key:bbb"),
+            "every root's bindings restamp, not just the first"
+        );
+    }
+
+    /// Same whole-fragment shape, text bindings: the multi-root template's
+    /// text updates ride the same re-pointed row root.
+    #[dialog_common::test]
+    fn it_updates_text_bindings_across_frames_in_a_whole_fragment_repeat() {
+        let (mut r, host) = renderer("<h1>{title}</h1><p>{body}</p>");
+        r.apply(&[row("doc:1", &[("title", "first"), ("body", "one")])]);
+        assert_eq!(
+            host.query_selector("h1")
+                .expect("q")
+                .expect("h1")
+                .text_content()
+                .as_deref(),
+            Some("first")
+        );
+
+        r.apply(&[row("doc:1", &[("title", "second"), ("body", "two")])]);
+        assert_eq!(
+            host.query_selector("h1")
+                .expect("q")
+                .expect("h1")
+                .text_content()
+                .as_deref(),
+            Some("second"),
+            "text bindings must update across frames in a whole-fragment repeat"
+        );
+        assert_eq!(
+            host.query_selector("p")
+                .expect("q")
+                .expect("p")
+                .text_content()
+                .as_deref(),
+            Some("two")
+        );
+    }
 
     #[dialog_common::test]
     fn it_mounts_every_row_in_frame_order() {
