@@ -73,6 +73,17 @@ start() {
   admin off
 }
 :$BENCH_PORT {
+  handle /registry/tonk {
+    root * "$RUN_DIR/registry"
+    rewrite * /tonk.json
+    header Content-Type application/json
+    file_server
+  }
+  handle /registry/* {
+    uri strip_prefix /registry
+    root * "$RUN_DIR/registry"
+    file_server
+  }
   handle /ucan/* {
     reverse_proxy 127.0.0.1:$ACCESS_PORT
   }

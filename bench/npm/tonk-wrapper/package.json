@@ -1,0 +1,8 @@
+{
+  "name": "tonk",
+  "version": "0.0.0-bench",
+  "description": "tonk CLI (bench-local wrapper around the release binary)",
+  "license": "UNLICENSED",
+  "bin": { "tonk": "bin/tonk.js" },
+  "files": ["bin", "vendor"]
+}
