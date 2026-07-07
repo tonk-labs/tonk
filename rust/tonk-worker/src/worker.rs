@@ -962,6 +962,13 @@ impl TonkServiceWorker {
                 if !has_live_subscribers(&state).await {
                     break;
                 }
+                if !has_syncable_repo(&state).await {
+                    // Every open space is paused (or none is open): park.
+                    // No wake-up plumbing needed — a resume arrives as a
+                    // transact, and every fetch restarts this loop.
+                    log!("sync loop parked: every open space is paused");
+                    break;
+                }
                 crate::router::drain_sync(&state).await;
             }
             running.set(false);
@@ -973,6 +980,22 @@ impl TonkServiceWorker {
 /// live. Matches the retired page heartbeat's cadence.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_LOOP_MS: u64 = 10_000;
+
+/// Whether any open repository still has auto-sync enabled on its content
+/// branch. All-paused parks the self-scheduled loop — the drain would
+/// sweep the list and skip every entry anyway (the per-repo
+/// `is_sync_enabled` gate), so ticking is pure churn until a resume.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn has_syncable_repo(state: &AppState) -> bool {
+    let tonk = state.read().await;
+    let repos: Vec<String> = tonk.reactor.repos().read().keys().cloned().collect();
+    for repo in repos {
+        if crate::router::is_sync_enabled(&tonk, &repo, "main").await {
+            return true;
+        }
+    }
+    false
+}
 
 /// Whether any cached branch — named repositories or the profile — holds a
 /// live subscriber. The signal that a page is watching, so the SW should
