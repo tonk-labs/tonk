@@ -1,0 +1,88 @@
+attribute!: &habit-name
+  description: "The habit display name"
+  the: bench.habit/name
+  as: text
+  cardinality: one
+
+attribute!: &habit-target
+  description: "The daily target description"
+  the: bench.habit/target
+  as: text
+  cardinality: one
+
+attribute!: &entry-habit
+  description: "The habit this entry completes"
+  the: bench.entry/habit
+  as: entity
+  cardinality: one
+
+attribute!: &entry-date
+  description: "Completion date (YYYY-MM-DD)"
+  the: bench.entry/date
+  as: text
+  cardinality: one
+
+concept!: &habit
+  description: "A tracked habit"
+  with:
+    name: habit-name
+    target: habit-target
+
+concept!: &entry
+  description: "One completion of a habit on a date"
+  with:
+    habit: entry-habit
+    date: entry-date
+
+concept!: &view
+  this: tonk:view
+  description: "A display template for rendering an entity"
+  with:
+    model:
+      description: "Concept this view renders"
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: "HTML template for the view"
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+habit!: &run
+  name: "Morning run"
+  target: "Run 5k before 8am"
+
+habit!: &read
+  name: "Read 20 pages"
+  target: "20 pages of the current book"
+
+habit!: &inbox
+  name: "Inbox zero"
+  target: "Empty the inbox before end of day"
+
+entry!:
+  habit: run
+  date: "2026-07-05"
+
+entry!:
+  habit: read
+  date: "2026-07-05"
+
+entry!:
+  habit: run
+  date: "2026-07-06"
+
+entry!:
+  habit: inbox
+  date: "2026-07-06"
+
+view!: &habits
+  model: habit
+  display: |
+    <div class="habit"><b>{name}</b> — {target}</div>
+
+view!: &log
+  model: entry
+  display: |
+    <div class="entry">{date}: {habit}</div>
