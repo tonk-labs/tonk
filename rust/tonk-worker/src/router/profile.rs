@@ -17,8 +17,8 @@ use crate::TonkWorkerError;
 /// Name of the meta branch on the profile repository — mirrors
 /// the constant in `super::repository`. Keeping a private copy
 /// rather than exporting the one from `super::repository` avoids
-/// a cross-module coupling for a one-character string.
-const META_BRANCH: &str = "meta";
+/// a cross-module coupling for a short string.
+const PROFILE_BRANCH: &str = "main";
 
 /// One space the profile owns, as listed by `GET /api/profile`.
 ///
@@ -40,14 +40,14 @@ pub struct SpaceEntry {
 /// Response body for `GET /api/profile`.
 ///
 /// `profile` describes the profile "as a repository" (see
-/// [`bootstrap_profile_meta`]) so the UI can render it the same
+/// [`bootstrap_profile`]) so the UI can render it the same
 /// way it renders any other space — populated by
 /// [`build_repository_info`], which reads the profile's meta
 /// branch and surfaces its branches and remotes. `space` lists every
 /// replica this profile owns — enough to populate the sidebar without
 /// per-repo round-trips.
 ///
-/// [`bootstrap_profile_meta`]: super::repository::bootstrap_profile_meta
+/// [`bootstrap_profile`]: super::repository::bootstrap_profile
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProfileInfo {
     /// [`RepositoryInfo`] for the profile itself — same shape as
@@ -105,7 +105,7 @@ pub async fn get_profile(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {

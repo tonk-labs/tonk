@@ -2103,9 +2103,9 @@ mod tests {
 
     #[dialog_common::test]
     fn it_pins_an_unrouted_operation_to_the_portals_with() {
-        let state = routed_state(Some("meta@profile:tonk"), "*");
+        let state = routed_state(Some("main@profile:tonk"), "*");
         let route = forwarded_route(&state, &route_envelope(None)).expect("pinned route");
-        assert_eq!(route, (None, Some("meta".into()), true));
+        assert_eq!(route, (None, Some("main".into()), true));
 
         let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
         let route = forwarded_route(&state, &route_envelope(None)).expect("pinned route");
@@ -2117,7 +2117,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_honors_a_forwarded_route_the_allow_lists() {
-        let state = routed_state(Some("meta@profile:tonk"), "*");
+        let state = routed_state(Some("main@profile:tonk"), "*");
         let route =
             forwarded_route(&state, &route_envelope(Some("did:key:zB"))).expect("honored route");
         assert_eq!(route, (Some("did:key:zB".into()), None, false));

@@ -80,7 +80,7 @@ pub async fn ensure_site(path: &str) -> Result<String, ErrorDetail> {
 
 /// Register this document's site against a per-branch `/site` endpoint (`url`),
 /// matching `path` on that branch. The branch is named in `url` (e.g.
-/// `/api/profile/branch/meta/site`), so the SW does no document-path routing.
+/// `/api/profile/branch/main/site`), so the SW does no document-path routing.
 /// Returns and caches the `site:<client-id>` entity, like [`ensure_site`].
 #[cfg(target_arch = "wasm32")]
 pub async fn ensure_site_on(url: &str, path: &str) -> Result<String, ErrorDetail> {

@@ -337,15 +337,19 @@ impl NotebookCell {
 
 /// Resolve `(repo, branch)` from this element's OWN `with="branch@repo"`
 /// attribute (forwarded onto it by the mounting `<tonk-display>`; routing
-/// is never inferred from DOM ancestors). `None` when absent, unstamped,
-/// or a profile context (the inspector evaluates against
-/// `/api/repository/{repo}/…`, which a profile location cannot name).
+/// is never inferred from DOM ancestors). `None` when absent or unstamped.
+///
+/// The pair only labels the cells' LSP buffer URIs and the header — the
+/// actual evaluate routes through the host consumer, which re-resolves the
+/// route (space/branch/profile) from this element's `with`. A profile
+/// context has no repository segment, so it labels as `profile`; the
+/// evaluate still targets `/api/profile/branch/{branch}/…`.
 fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
     let location: tonk_host::location::Location = el
         .get_attribute("with")
         .filter(|v| !v.is_empty() && !v.contains('{'))
         .and_then(|v| v.parse().ok())?;
-    let repo = location.space()?.to_owned();
+    let repo = location.space().unwrap_or("profile").to_owned();
     Some((repo, location.effective_branch().to_owned()))
 }
 

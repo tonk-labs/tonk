@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
-    bootstrap_profile_meta,
+    bootstrap_profile,
     router::{AppState, BridgeRegistry, ClientId, ViewBindings, api_router_with_state},
 };
 use axum::{
@@ -699,7 +699,7 @@ impl TonkServiceWorker {
             commands: crate::router::command_registry(),
             sync_queue: Default::default(),
         };
-        bootstrap_profile_meta(&state)
+        bootstrap_profile(&state)
             .await
             .map_err(|e| JsError::new(&format!("Failed to bootstrap profile meta: {}", e)))?;
 

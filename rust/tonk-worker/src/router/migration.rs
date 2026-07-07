@@ -33,9 +33,9 @@ use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidEx
 use super::AppState;
 use crate::TonkWorkerError;
 
-/// Meta branch name on the profile repository. Mirrors the private
-/// copies in sibling modules.
-const META_BRANCH: &str = "meta";
+/// The single branch the profile repository lives on. Mirrors the
+/// private copies in sibling modules.
+const PROFILE_BRANCH: &str = "main";
 
 /// Tally of what the migration stamped.
 #[derive(Clone, Copy, Debug, Default)]
@@ -77,7 +77,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -146,7 +146,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction();
     let mut report = MigrationReport::default();
 
