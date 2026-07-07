@@ -14,8 +14,9 @@
 //!
 //! Routing context comes from the event detail when a caller
 //! pre-filled an explicit route (`consumer::*_with_route`), else
-//! from the dispatching element's nearest `with` ancestor
-//! ([`crate::context::resolve_with`]) at handle time.
+//! from the dispatching element's OWN `with` attribute
+//! ([`crate::context::resolve_with`]) at handle time, else the
+//! guest's pinned site context.
 //!
 //! Each listener calls `event.stopPropagation()` so events do
 //! not escape the host, and `event.preventDefault()` so the

@@ -8,7 +8,7 @@
 //! (real `transact`), seals the cell, and spawns a fresh one.
 //!
 //! Data path: the inspector resolves `(repo, branch)` from its
-//! `<tonk-repository>` / `<tonk-branch>` ancestors (the route view provides them)
+//! its own `with="branch@repo"` (forwarded by the mounting `<tonk-display>`)
 //! and POSTs to `/api/repository/{repo}/branch/{branch}/evaluate?transact=…`.
 //! In the sealed guest `window.fetch` is the portal proxy, so the request rides
 //! the bridge to the host's real origin transparently — no `<tonk-host>` consumer
@@ -335,16 +335,14 @@ impl NotebookCell {
     }
 }
 
-/// Resolve `(repo, branch)` from the nearest `with="branch@repo"`
-/// ancestor (including `el` itself). `None` when absent, unstamped, or a
-/// profile context (the inspector evaluates against
+/// Resolve `(repo, branch)` from this element's OWN `with="branch@repo"`
+/// attribute (forwarded onto it by the mounting `<tonk-display>`; routing
+/// is never inferred from DOM ancestors). `None` when absent, unstamped,
+/// or a profile context (the inspector evaluates against
 /// `/api/repository/{repo}/…`, which a profile location cannot name).
 fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
     let location: tonk_host::location::Location = el
-        .closest("[with]")
-        .ok()
-        .flatten()
-        .and_then(|e| e.get_attribute("with"))
+        .get_attribute("with")
         .filter(|v| !v.is_empty() && !v.contains('{'))
         .and_then(|v| v.parse().ok())?;
     let repo = location.space()?.to_owned();

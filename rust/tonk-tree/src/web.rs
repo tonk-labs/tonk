@@ -1,8 +1,9 @@
 //! The `<tonk-tree>` custom element: a two-pane inspector for the
 //! dialog-search-tree index behind a branch. Left pane is a lazy
 //! `<wa-tree>` outline of index/segment nodes; right pane is the node
-//! inspector. It resolves its repository from the `<tonk-repository>`
-//! routing ancestor and drives itself from the worker's `tree/*` query
+//! inspector. It resolves its repository from its own `with="branch@repo"`
+//! attribute (forwarded onto it by the mounting `<tonk-display>`) and
+//! drives itself from the worker's `tree/*` query
 //! formulas.
 
 use std::cell::RefCell;
@@ -63,7 +64,7 @@ impl CustomElement for TonkTreeElement {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // Defer a tick so the `with` ancestor's context is set.
+        // Defer a tick so the display's forwarded `with` context is set.
         let this = this.clone();
         let slot = self.state.clone();
         spawn_local(async move {
@@ -100,7 +101,7 @@ fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
     let Some((repo, branch)) = resolve(this) else {
         mount_error(
             this,
-            "no repository in context (nest under a with=\"branch@repo\" element)",
+            "no repository in context (set with=\"branch@repo\" or mount inside a routed <tonk-display>)",
         );
         return;
     };
@@ -143,7 +144,7 @@ fn start(this: &HtmlElement, slot: &RefCell<Option<Shared>>) {
 /// ancestor. A profile context has no repository segment, so it does
 /// not satisfy the tree (which queries `/api/repository/{repo}/…`).
 fn resolve(this: &HtmlElement) -> Option<(String, String)> {
-    let context = ancestor_with(this);
+    let context = own_with(this);
     let repo = this
         .get_attribute("repo")
         .or_else(|| context.as_ref().and_then(|c| c.space().map(str::to_owned)))?;
@@ -154,15 +155,13 @@ fn resolve(this: &HtmlElement) -> Option<(String, String)> {
     Some((repo, branch))
 }
 
-/// The nearest parsed `with` context (including `this` itself), skipping
-/// unstamped `{…}` template placeholders.
-fn ancestor_with(this: &HtmlElement) -> Option<tonk_host::location::Location> {
-    let element: &Element = this.dyn_ref::<Element>()?;
-    element
-        .closest("[with]")
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute("with"))
+/// This element's OWN parsed `with` context, skipping an unstamped `{…}`
+/// placeholder. Routing is never inferred from ancestors — the mounting
+/// `<tonk-display>` forwards its context onto this element (see
+/// `forward_with`), and absent that the guest's pinned site context
+/// applies.
+fn own_with(this: &HtmlElement) -> Option<tonk_host::location::Location> {
+    this.get_attribute("with")
         .filter(|v| !v.is_empty() && !v.contains('{'))
         .and_then(|v| v.parse().ok())
 }

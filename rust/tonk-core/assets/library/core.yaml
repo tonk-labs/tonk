@@ -1572,17 +1572,15 @@ concept!: &directory/route
       cardinality: one
       as: text
 
-# Wrap the directory display in a `with` context so models whose views
-# resolve their repository from a `with` DOM ancestor (`<tonk-tree>`,
-# `<tonk-inspector>`) work inside the sealed guest, which has no routing-context
-# ancestors of its own.
+# The directory display carries its own `with` so its view's content
+# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# `<tonk-display>` forwards this context onto the view it mounts, so no
+# routing wrapper element is needed.
 view!: &directory/route/view
   this: id:tonk:directory/route/view
   model: tonk:directory/route
   display: |
-    <div with="{branch}@{repo}" style="display: contents">
-      <tonk-display model={model} />
-    </div>
+    <tonk-display with="{branch}@{repo}" model={model} />
 
 # The artifact page — `/space/{name}/{entity}@{model}`. Binds a concrete entity
 # to a model: the view renders that one instance (`<tonk-display entity model>`).
@@ -1615,9 +1613,7 @@ view!: &artifact/route/view
   this: id:tonk:artifact/route/view
   model: tonk:artifact/route
   display: |
-    <div with="{branch}@{repo}" style="display: contents">
-      <tonk-display entity={entity} model={model} />
-    </div>
+    <tonk-display with="{branch}@{repo}" entity={entity} model={model} />
 
 # The ad-hoc page — `/space/{name}/{entity}@{model}!{view}`. As the artifact
 # page, but with an explicit `view` chosen for the entity rather than the
@@ -1656,9 +1652,7 @@ view!: &adhoc/route/view
   this: id:tonk:adhoc/route/view
   model: tonk:adhoc/route
   display: |
-    <div with="{branch}@{repo}" style="display: contents">
-      <tonk-display entity={entity} model={model} view={view} />
-    </div>
+    <tonk-display with="{branch}@{repo}" entity={entity} model={model} view={view} />
 
 # ---- Seeded routes (bootstrap) ----
 #

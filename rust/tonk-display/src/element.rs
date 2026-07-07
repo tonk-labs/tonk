@@ -1824,6 +1824,47 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///   `<tonk-view>` straight into the host so the user's template
 ///   flows in its natural layout — no aspect ratio, no
 ///   carousel-imposed sizing.
+/// Forward the display host's OWN routing context (`with`) onto the view
+/// it just mounted — so a view whose content resolves its own context
+/// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
+/// the display's context without inferring it from DOM ancestors. This is
+/// the ONE propagation boundary: context flows across a `<tonk-display>`,
+/// never through an arbitrary element. A view element that carries its own
+/// `with` in the template keeps it (stamp only where absent).
+///
+/// The display host has a `with` only when the template gave it one (route
+/// views: `<tonk-display with="{branch}@{repo}">`). With none, the view
+/// inherits the site's pinned context like any other consumer, and there
+/// is nothing to forward.
+fn forward_with(host: &Element, view_el: &Element) {
+    let Some(context) = host.get_attribute("with").filter(|v| !v.is_empty()) else {
+        return;
+    };
+    if context.contains('{') {
+        return;
+    }
+    // Stamp the view root and every routing consumer inside it that lacks
+    // its own `with`. `:scope, …` selects the view element too, so a view
+    // that IS a single routing consumer is covered.
+    let selector = "[data-tonk-with], tonk-tree, tonk-inspector, ui-sync-status";
+    if view_el
+        .matches(&format!("{selector}, [with]"))
+        .unwrap_or(false)
+        && !view_el.has_attribute("with")
+    {
+        let _ = view_el.set_attribute("with", &context);
+    }
+    if let Ok(list) = view_el.query_selector_all(selector) {
+        for i in 0..list.length() {
+            if let Some(el) = list.item(i).and_then(|n| n.dyn_into::<Element>().ok())
+                && !el.has_attribute("with")
+            {
+                let _ = el.set_attribute("with", &context);
+            }
+        }
+    }
+}
+
 fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
     let document = window()?.document()?;
 
@@ -1842,6 +1883,7 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
         }
     }
     view_el.set_inner_html(display);
+    forward_with(host, &view_el);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -2170,6 +2212,86 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert(key.to_owned(), Ipld::String(value.to_owned()));
         fields
+    }
+
+    /// `forward_with` stamps the display host's OWN `with` onto routing
+    /// consumers in the mounted view that lack one, and leaves those with
+    /// their own `with` alone — the ONE context-propagation boundary,
+    /// replacing DOM-ancestor inference.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_its_with_onto_routing_consumers() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        host.set_attribute("with", "main@did:key:zSpace").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        view.set_inner_html(concat!(
+            "<ui-sync-status></ui-sync-status>",
+            "<tonk-tree></tonk-tree>",
+            r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
+            "<span>plain</span>",
+        ));
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        assert_eq!(
+            view.query_selector("ui-sync-status")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "a routing consumer without its own with inherits the display's",
+        );
+        assert_eq!(
+            view.query_selector("tonk-tree")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+        );
+        assert_eq!(
+            view.query_selector("tonk-inspector")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zOther"),
+            "a consumer with its own with is left untouched",
+        );
+        assert!(
+            view.query_selector("span")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .is_none(),
+            "a plain element gets no routing context",
+        );
+    }
+
+    /// A display with no `with` of its own forwards nothing — the view
+    /// inherits the guest's pinned site context instead.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_nothing_without_its_own_with() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        view.set_inner_html("<ui-sync-status></ui-sync-status>");
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        assert!(
+            view.query_selector("ui-sync-status")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .is_none(),
+            "no display context -> nothing forwarded",
+        );
     }
 
     /// A host with one rendered child and a mounted slide, plus the shared

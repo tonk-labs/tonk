@@ -406,17 +406,18 @@ view/directory!:
 
       <div class="spot-list">
         <div class="spot-dir-head">Directory</div>
-        <!-- `data-id={this}` designates the repeat row; `with={subject}`
-             gives every consumer in the row its routing context — the
-             space's repo DID from the record's `subject` FIELD, not the
-             record entity itself (`{this}` is the `tonk:space` row, a
-             derived entity that names no repository). A bare repo means
-             its main branch; honored because the profile site is
-             `allow="*"`. -->
-        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} data-id={this} with={subject}>
-          <span class="srow-dot"><ui-sync-status></ui-sync-status></span>
+        <!-- `data-id={this}` designates the repeat row. Each per-space
+             consumer carries its OWN `with={subject}` — the space's repo
+             DID from the record's `subject` FIELD (`{this}` is the
+             `tonk:space` row, a derived entity that names no repository).
+             The row cannot inherit one context because every row targets a
+             different space, so the disc and the label are each
+             self-describing. A bare repo means its main branch; honored
+             because the profile site is `allow="*"`. -->
+        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} data-id={this}>
+          <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
           <span class="srow-name">
-            <tonk-display entity={subject} model=tonk:repository view=tonk:view/label>
+            <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
               <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
               <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
               <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
@@ -596,7 +597,7 @@ view/fab-menu!:
   this: id:tonk:fab/space-menu
   model: space
   display: |
-    <a class="fab__menu-item" href="/space/{subject}" with={subject}><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="no-view">Untitled</span><span slot="loading">…</span></tonk-display></a>
+    <a class="fab__menu-item" href="/space/{subject}"><tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="no-view">Untitled</span><span slot="loading">…</span></tonk-display></a>
 
 # The member's display name, read directly from THIS (profile meta) branch —
 # the durable `ProfileName` override the worker stamps on `profile/rename`
@@ -731,7 +732,7 @@ view/directory!: &profile/fab/view
              worker's InviteHandler mints the membership keypair + delegation
              against this nested space branch (its origin repo). `<tonk-origin>`
              supplies `{origin}/join` as `data-base` for the copyable URL. -->
-        <span class="fab__seg fab__share" with={dom.host/data-space}>
+        <span class="fab__seg fab__share">
             <tonk-origin>
               <!-- The minted invite link. Shown once the mint lands; before
                    that `tonk:agent-invite` does not resolve and the empty
@@ -739,8 +740,11 @@ view/directory!: &profile/fab/view
                    callout, so the bar shows only the "share" button below.
                    When it resolves the display sets `data-state="ready"`, and
                    the CSS sibling rule hides the button so the bar shows just
-                   the link + copy. `bind:base` supplies `{origin}/join`. -->
-              <tonk-display class="fab__invite-display" entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
+                   the link + copy. `bind:base` supplies `{origin}/join`.
+                   Each display carries its own `with={dom.host/data-space}`
+                   (the active space) — routing is per element, not inherited
+                   from the wrapping span. -->
+              <tonk-display class="fab__invite-display" with={dom.host/data-space} entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
                 <span slot="no-entity" hidden></span>
                 <span slot="no-model" hidden></span>
                 <span slot="loading" hidden></span>
@@ -755,10 +759,10 @@ view/directory!: &profile/fab/view
                    claim to profile/meta with an empty origin repo.) Directory
                    chrome renders regardless of whether the repo is named, so the
                    "share" button is always present. -->
-              <tonk-display class="fab__share-mint" model="tonk:repository"></tonk-display>
+              <tonk-display class="fab__share-mint" with={dom.host/data-space} model="tonk:repository"></tonk-display>
             </tonk-origin>
             <nav class="fab__menu fab__share-menu">
-              <tonk-display model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
+              <tonk-display with={dom.host/data-space} model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
             </nav>
         </span>
         <!-- RIGHT CAP — a plain rounded end cap that always closes the bar

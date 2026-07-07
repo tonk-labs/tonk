@@ -105,7 +105,7 @@ mod dom {
     use super::logic::{
         OFFLINE_CHIP, PAUSED_CHIP, branch_or_default, pref_is_enabled, pref_key, state_chip,
     };
-    use crate::ancestors::repo_from_ancestor;
+    use crate::ancestors::repo_from_context;
 
     /// Window event the controller dispatches to ask the chip to
     /// re-read its read-only sync status. Repo name rides in `detail`.
@@ -254,7 +254,7 @@ mod dom {
             if !is_togglable(&host) {
                 return;
             }
-            let Some(repo) = repo_from_ancestor(&host) else {
+            let Some(repo) = repo_from_context(&host) else {
                 return;
             };
             let next = !is_enabled(&repo);
@@ -364,7 +364,7 @@ mod dom {
     /// repaint never clears first, so a refresh holds the last good pill
     /// until the new one is ready.
     fn refresh_state(this: &HtmlElement) {
-        let Some(repo) = repo_from_ancestor(this) else {
+        let Some(repo) = repo_from_context(this) else {
             this.set_inner_html("");
             return;
         };
@@ -401,7 +401,7 @@ mod dom {
     /// unreachable branch reads as `offline` (its `state_chip`). With no
     /// repository ancestor there is nothing to show, so the host clears.
     fn refresh_badge(this: &HtmlElement) {
-        let Some(repo) = repo_from_ancestor(this) else {
+        let Some(repo) = repo_from_context(this) else {
             this.set_inner_html("");
             return;
         };
@@ -542,7 +542,7 @@ mod dom {
     fn install_trigger_click(this: &HtmlElement, slot: &Listener) {
         let host = this.clone();
         let listener = Closure::wrap(Box::new(move |_event: Event| {
-            if let Some(repo) = repo_from_ancestor(&host) {
+            if let Some(repo) = repo_from_context(&host) {
                 stamp_enable_sync_repo(&repo);
             }
         }) as Box<dyn FnMut(Event)>);
@@ -593,7 +593,7 @@ mod dom {
             let event_repo = event
                 .dyn_ref::<CustomEvent>()
                 .and_then(|e| e.detail().as_string());
-            if let (Some(this_repo), Some(event_repo)) = (repo_from_ancestor(&host), event_repo)
+            if let (Some(this_repo), Some(event_repo)) = (repo_from_context(&host), event_repo)
                 && this_repo == event_repo
             {
                 refresh(&host);
