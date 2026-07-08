@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 /// Serializable projection of a [`ConceptConclusion`] — the
 /// concept's entity plus the projected field values for every
 /// term named by the originating query.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq` by value (entity + fields) so a delta's `retracted`
+/// rows can be matched against a retained snapshot to remove them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Conclusion {
     /// Entity URI of the matched concept (`did:key:…` etc.).
     pub this: String,
@@ -61,6 +64,36 @@ impl Conclusion {
             fields,
         }
     }
+}
+
+/// One subscription update on the wire.
+///
+/// A subscriber's first frame (and any frame after a reconnect) is a
+/// [`Snapshot`](Frame::Snapshot) — the full current result set, so a
+/// fresh consumer needs no prior state. Every subsequent frame is a
+/// [`Delta`](Frame::Delta): the rows that entered
+/// ([`asserted`](Frame::Delta::asserted)) and left
+/// ([`retracted`](Frame::Delta::retracted)) the result since the
+/// last frame. The consumer applies the delta to its retained set,
+/// keyed by conclusion identity, and re-renders.
+///
+/// Serialized internally-tagged so the browser can match on `kind`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Frame {
+    /// The full current result set. First frame per subscriber and
+    /// after a reconnect.
+    Snapshot {
+        /// Every row currently in the result.
+        conclusions: Vec<Conclusion>,
+    },
+    /// The change since the previous frame.
+    Delta {
+        /// Rows that entered the result.
+        asserted: Vec<Conclusion>,
+        /// Rows that left the result.
+        retracted: Vec<Conclusion>,
+    },
 }
 
 /// Convert a [`Value`] into [`Ipld`] for the wire projection.

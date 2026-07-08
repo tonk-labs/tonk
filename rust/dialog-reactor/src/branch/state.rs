@@ -4,7 +4,9 @@
 //! routing through the reactor's name-keyed lookup.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dialog_artifacts::{Changes, Statement};
 use dialog_query::ConceptQuery;
@@ -42,6 +44,14 @@ pub struct BranchState {
     /// clone the overlay in, so reads must not serialize against each
     /// other; only the rare overlay write takes the exclusive lock.
     overlay: RwLock<Changes>,
+    /// Monotonic counter bumped on every overlay mutation. Each
+    /// subscription records the epoch its engine was seeded at; when
+    /// this races ahead, the next poll re-seeds that engine's overlay
+    /// and forces a recompute (an overlay write is off-tree, so the
+    /// engine's tree-diff gate can't see it). Relaxed ordering is
+    /// enough — the value is only ever compared for inequality under
+    /// the subscription-map lock, which provides the happens-before.
+    overlay_epoch: AtomicU64,
     /// Serializes *transactions* on this branch — concurrent writers (e.g.
     /// two browser tabs committing through one service worker) line up rather
     /// than racing the head CAS and failing. Guards nothing but the right to be
@@ -65,8 +75,23 @@ impl BranchState {
             branch,
             subscriptions: Mutex::new(HashMap::new()),
             overlay: RwLock::new(Changes::new()),
+            overlay_epoch: AtomicU64::new(0),
             transactor: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The current overlay epoch — bumped on every overlay mutation.
+    /// A subscription seeded at an earlier epoch is re-seeded on its
+    /// next poll. Read by [`SubscriptionPoll`] to decide whether an
+    /// engine needs re-seeding.
+    pub(crate) fn overlay_epoch(&self) -> u64 {
+        self.overlay_epoch.load(Ordering::Relaxed)
+    }
+
+    /// Bump the overlay epoch. Called by every overlay mutator so a
+    /// subsequent poll re-seeds each engine's overlay.
+    fn bump_overlay_epoch(&self) {
+        self.overlay_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The per-branch transaction lock. A transaction takes it
@@ -109,6 +134,7 @@ impl BranchState {
     pub fn assert_overlay<S: Statement>(&self, claim: S) {
         let mut overlay = self.overlay.write();
         claim.assert(&mut *overlay);
+        self.bump_overlay_epoch();
     }
 
     /// Retract a [`Statement`] from the session overlay. Takes the
@@ -116,6 +142,7 @@ impl BranchState {
     pub fn retract_overlay<S: Statement>(&self, claim: S) {
         let mut overlay = self.overlay.write();
         claim.retract(&mut *overlay);
+        self.bump_overlay_epoch();
     }
 
     /// Drop every fact in the session overlay. Used to keep exactly one
@@ -124,6 +151,7 @@ impl BranchState {
     /// re-assert wouldn't replace the prior one — clearing does).
     pub fn clear_overlay(&self) {
         *self.overlay.write() = Changes::new();
+        self.bump_overlay_epoch();
     }
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]
@@ -184,11 +212,26 @@ impl BranchState {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
 
+        let terms = query.terms.clone();
+        // Seed the dialog engine with the branch's current session
+        // overlay so subscribed reads see the same ephemeral facts a
+        // one-shot query does, and so those reads join the demand
+        // cover. An overlay write later re-seeds via `poll` (see
+        // `poll`). Read the epoch and overlay together so the seeded
+        // epoch matches the seeded overlay: a concurrent bump between
+        // the two would only over-seed (a harmless extra recompute),
+        // never miss one.
+        let epoch = self.overlay_epoch();
+        let overlay = self.overlay();
+
         let mut subs = self.subscriptions.lock();
         let entry = subs.entry(hash.clone());
         let subscription = entry.or_insert_with(|| Subscription {
-            query: query.clone(),
-            last_hash: None,
+            engine: Arc::new(tokio::sync::Mutex::new(Some(
+                self.branch.subscribe_with(query, overlay),
+            ))),
+            terms,
+            seeded_overlay_epoch: epoch,
             subscribers: Vec::new(),
         });
         subscription.subscribers.push(SubscriberSession {
@@ -204,13 +247,21 @@ impl BranchState {
     /// fan out to subscribers. Each subscription is polled via
     /// the same `SubscriptionPoll::perform` path the public
     /// chain uses.
-    pub async fn poll<Env: SelectProvider>(self: &Arc<Self>, env: &Env) {
-        let hashes: Vec<QueryHash> = {
-            let subs = self.subscriptions.lock();
-            subs.keys().cloned().collect()
-        };
-        for hash in hashes {
-            SubscriptionPoll { state: self, hash }.perform(env).await;
+    // `impl Future + 'a` (not `async fn`) so the env lifetime is
+    // named, keeping callers (the axum handlers draining scheduled
+    // polls) Send-general — see `SubscriptionPoll::perform`.
+    pub fn poll<'a, Env: SelectProvider>(
+        self: &'a Arc<Self>,
+        env: &'a Env,
+    ) -> impl Future<Output = ()> + 'a {
+        async move {
+            let hashes: Vec<QueryHash> = {
+                let subs = self.subscriptions.lock();
+                subs.keys().cloned().collect()
+            };
+            for hash in hashes {
+                SubscriptionPoll { state: self, hash }.perform(env).await;
+            }
         }
     }
 }

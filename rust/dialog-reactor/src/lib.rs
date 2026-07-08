@@ -17,6 +17,7 @@
 //! reactor's name-keyed lookup entirely.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use dialog_operator::Profile;
@@ -58,7 +59,7 @@ pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionRefe
 /// On-the-wire `Conclusion` and `Query` — re-exported from
 /// [`tonk_schema`] so consumers (browser clients, the consumer
 /// elements) can deserialize without depending on this crate.
-pub use tonk_schema::conclusion::Conclusion;
+pub use tonk_schema::conclusion::{Conclusion, Frame};
 pub use tonk_schema::query::Query;
 pub use transaction::{Commit, TransactionBuilder};
 
@@ -114,19 +115,27 @@ impl Reactor {
     /// the polls a turn scheduled fire together with the env in hand.
     /// Pointer identity dedups, so a branch scheduled by both its commit
     /// and an overlay write polls a single time.
-    pub async fn run_scheduled_polls<Env: SelectProvider>(&self, env: &Env) {
-        let scheduled = {
-            let mut pending = self.pending_polls.lock();
-            std::mem::take(&mut *pending)
-        };
-        let mut unique: Vec<Arc<BranchState>> = Vec::new();
-        for state in scheduled {
-            if !unique.iter().any(|seen| Arc::ptr_eq(seen, &state)) {
-                unique.push(state);
+    // `impl Future + 'a` (not `async fn`) so the env lifetime is
+    // named, keeping the axum handlers that call this Send-general on
+    // native — see `SubscriptionPoll::perform`.
+    pub fn run_scheduled_polls<'a, Env: SelectProvider>(
+        &'a self,
+        env: &'a Env,
+    ) -> impl Future<Output = ()> + 'a {
+        async move {
+            let scheduled = {
+                let mut pending = self.pending_polls.lock();
+                std::mem::take(&mut *pending)
+            };
+            let mut unique: Vec<Arc<BranchState>> = Vec::new();
+            for state in scheduled {
+                if !unique.iter().any(|seen| Arc::ptr_eq(seen, &state)) {
+                    unique.push(state);
+                }
             }
-        }
-        for state in unique {
-            state.poll(env).await;
+            for state in unique {
+                state.poll(env).await;
+            }
         }
     }
 

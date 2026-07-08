@@ -5,6 +5,7 @@
 //! name-keyed lookup. The dialog [`Branch`] handle is exposed
 //! via [`Self::handle`] for direct dialog API use.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use dialog_artifacts::Changes;
@@ -53,8 +54,11 @@ impl BranchSession {
     }
 
     /// Re-poll every subscription on this branch.
-    pub async fn poll<Env: SelectProvider>(&self, env: &Env) {
-        self.state.poll(env).await;
+    ///
+    /// `impl Future + 'a` (not `async fn`) so the env lifetime stays
+    /// named — see [`SubscriptionPoll::perform`](crate::SubscriptionPoll).
+    pub fn poll<'a, Env: SelectProvider>(&'a self, env: &'a Env) -> impl Future<Output = ()> + 'a {
+        self.state.poll(env)
     }
 
     /// Register a fresh subscriber for `query`. Returns a
