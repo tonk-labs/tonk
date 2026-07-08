@@ -755,7 +755,12 @@ concept!: &tonk/repository
   description: A shared repository which is the subject of a tonk/replica.
   with:
     name:
-      description: The repository's display name.
+      description: >
+        The repository's display name. Seeded at creation (the worker
+        writes it into the repo's own `tonk/repository` on the content
+        branch) and carried over sync on join, so a real repository
+        always has one; the banner still falls back to "Untitled" if a
+        read races ahead of the fact.
       the: xyz.tonk.repo/name
       cardinality: one
       as: text
@@ -797,8 +802,9 @@ rule!:
 # `onchange` fires on commit (blur or Enter), reading the new value from
 # `dom.event.current-target/value`; the rename rule above then writes it
 # back. The banner mounts this via `<tonk-display model=tonk:repository
-# entity={subject}>`, so a repo with no name yet (just the seeded
-# "Untitled") still renders an editable field.
+# entity={subject}>`; a repo whose name fact has not landed yet resolves
+# no model, and the mount's `slot="no-model"` renders "Untitled" until it
+# does (the worker seeds the name at creation, sync carries it on join).
 view!:
   this: id:tonk:repository/name-view
   model: tonk:repository
@@ -1639,35 +1645,6 @@ route!: &route/directory
   this: id:tonk:route/directory
   path: "/{*model}"
   concept: tonk:directory/route
-
-command!: &tonk/initialize
-  description: Initialize a freshly created or joined replica
-  with:
-    reason:
-       description: Reason to initialize the replica
-       as: text
-       the: xyz.tonk.init/reason
-
-rule!:
-  assert!: tonk/repository
-  when:
-    - assert: tonk/initialize
-      where:
-         this: ?init
-    - assert: tonk/replica
-      where:
-         subject: ?this
-    - assert: ==
-      where:
-        this: ?name
-        is: Untitled
-  unless:
-    - assert: tonk/repository
-      where:
-        this: ?this
-
-tonk/initialize!:
-   reason: Initialize a new tonk repository
 
 # ============================================================
 # Tree inspector — `<tonk-tree>` over the branch's search-tree
