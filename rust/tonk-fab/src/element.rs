@@ -34,7 +34,7 @@
 
 use crate::logic::{
     DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, dock_from_conclusions, mirrored,
-    nearest_dock, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    nearest_dock, pause_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -197,8 +197,9 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
 /// detection, no timers. The listener sits on the `<tonk-fab>` host and
 /// routes by the event target:
 ///
-/// - CIRCLE cap: `click` folds/expands the bar; alt/option-`click` toggles
-///   pause ⇄ resume of sync (the cap's ring already shows the state).
+/// - CIRCLE cap: `click` folds/expands the bar. Alt/option-`click` is the pause
+///   gesture, handled by the cap's own `<ui-sync-status onpause=…>` — so this
+///   handler leaves an alt-click alone (no fold) and lets it toggle sync there.
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -209,9 +210,14 @@ fn attach_gestures(element: &HtmlElement) {
         let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
             return;
         };
-        if t.closest(".fab__cap-l").ok().flatten().is_some() {
+        if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
+            // Alt/option-click toggles sync pause; a plain click folds/expands.
+            // Pause is dispatched here (on the FAB, which reliably receives the
+            // click — the cloned `<ui-sync-status>` inside the cap cannot own a
+            // live DOM listener) reading the target space + command off the
+            // cap's `<ui-sync-status with=… onpause=…>`.
             if e.alt_key() {
-                submit_pause_form(&el_click);
+                dispatch_pause_from_cap(&cap);
             } else {
                 toggle_telescope(&el_click);
             }
@@ -247,24 +253,55 @@ fn attach_gestures(element: &HtmlElement) {
     on_click.forget();
 }
 
-/// Toggle pause ⇄ resume: submit the hidden pause form (`tonk:view/fab-pause`,
-/// mounted space-scoped by the FAB template), whose `onsubmit=tonk:pause-sync`
-/// binding fires the toggle command against the space's content branch.
-/// `requestSubmit()` (not `submit()`) so the form's `submit` event — which the
-/// command delegation listens for — actually fires. The cap's
-/// `<ui-sync-status>` ring reflects the result via its live subscription.
-fn submit_pause_form(element: &HtmlElement) {
-    let Some(form) = element
-        .query_selector("#fab-pause-sync-form")
-        .ok()
-        .flatten()
+/// Toggle sync pause for the active space. Reads the target space and the
+/// command URI off the cap's `<ui-sync-status with="branch@repo" onpause=…>`
+/// (the space DID was baked into `with` at render time from
+/// `{dom.host/data-space}`), builds the `tonk:pause-sync` transient, and
+/// dispatches it through `window.tonk.transact` — routeless, so it lands on the
+/// FAB portal's own context (`main@profile:tonk`, where the command is defined
+/// and its handler reads the target space from the command). Nothing space-side
+/// is required, and this runs from the FAB's own click listener, which — unlike
+/// a listener on the cloned `<ui-sync-status>` — reliably receives the click.
+fn dispatch_pause_from_cap(cap: &Element) {
+    let Some(status) = cap.query_selector("ui-sync-status").ok().flatten() else {
+        return;
+    };
+    let command = status
+        .get_attribute("onpause")
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "tonk:pause-sync".to_owned());
+    // The cap's `with` is a `branch@repo` location (or a bare repo); the space
+    // is the repo half. The FAB renders `<ui-sync-status with={dom.host/data-
+    // space}>`, so this is the active space's DID with no branch prefix.
+    let Some(space) = status
+        .get_attribute("with")
+        .filter(|w| !w.is_empty() && !w.contains('{'))
+        .map(|w| w.rsplit('@').next().unwrap_or(&w).to_owned())
+        .filter(|s| !s.is_empty())
     else {
         return;
     };
-    if let Ok(request_submit) = Reflect::get(form.as_ref(), &"requestSubmit".into())
-        && let Ok(request_submit) = request_submit.dyn_into::<Function>()
-    {
-        let _ = request_submit.call0(form.as_ref());
+
+    let claim = pause_claim_json(&command, &space, js_sys::Date::now());
+    let json_str = match serde_json::to_string(&claim) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let Some(win) = window() else { return };
+    let Some(tonk) = Reflect::get(&win, &"tonk".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Object>().ok())
+    else {
+        return;
+    };
+    let Some(transact) = Reflect::get(&tonk, &"transact".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Function>().ok())
+    else {
+        return;
+    };
+    if let Some(obj) = js_sys::JSON::parse(&json_str).ok() {
+        transact.call1(&tonk, &obj).ok();
     }
 }
 
