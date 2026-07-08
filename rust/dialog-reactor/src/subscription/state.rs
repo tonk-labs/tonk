@@ -20,7 +20,16 @@ use crate::Query;
 use bytes::Bytes;
 
 /// The dialog engine backing one reactor subscription.
-pub type Engine = dialog_repository::Subscription<ConceptQuery>;
+///
+/// The subscribed application is a [`QueryPlan`](tonk_schema::concept::QueryPlan),
+/// NOT a raw `ConceptQuery`: `QueryPlan::from` dispatches concept-of-concept /
+/// command / rule metadata queries to the anonymous-enumeration applications that
+/// surface those built-in rows. Subscribing with the raw `ConceptQuery` would run
+/// a metadata query as a plain branch scan over `dialog.meta/*` facts that don't
+/// exist as stored data, yielding an empty result (the "Model not found" on a
+/// `<tonk-display model=…>` whose one-shot query — which does route through
+/// `QueryPlan` — resolves fine).
+pub type Engine = dialog_repository::Subscription<tonk_schema::concept::QueryPlan>;
 
 /// The engine slot: an `Option` behind an async mutex.
 ///

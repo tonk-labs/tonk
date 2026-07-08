@@ -140,6 +140,15 @@ struct Inner {
     /// drop every instance but the first. The lead conclusion (for
     /// notation / the result event) is `last_frame.first()`.
     last_frame: Vec<Conclusion>,
+    /// The last full row set seen per subscription tag
+    /// (`model` / `view` / `entity`), retained so an incremental
+    /// `update` delta can be applied to the correct tag's set and the
+    /// merged full set routed to that tag's handler. A `reset` replaces
+    /// the tag's entry; a `delta` mutates it. Without this a model/view
+    /// delta would merge into the entity `last_frame` and resolve the
+    /// wrong (or empty) set — the "Model not found" after an empty
+    /// snapshot then a stamping delta.
+    retained: BTreeMap<String, Vec<Conclusion>>,
     /// `<wa-carousel>` element when in carousel mode, `None` in
     /// single mode.
     carousel: Option<Element>,
@@ -223,6 +232,7 @@ impl Inner {
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
+            retained: BTreeMap::new(),
             carousel: None,
             slides: BTreeMap::new(),
             notation_source: None,
@@ -343,6 +353,10 @@ impl CustomElement for TonkDisplay {
             let mut s = state.borrow_mut();
             s.abort_all();
             s.last_frame = Vec::new();
+            // Drop retained per-tag sets too: a restart re-subscribes and
+            // the first frame per tag is a fresh snapshot, so stale rows
+            // from the prior context must not survive as a delta base.
+            s.retained.clear();
             // Tear down any mounted slide / carousel chrome so the
             // restart starts from a clean host.
             clear_host(&host, &mut s);
@@ -451,6 +465,14 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
         && Reflect::get(&opts, &"reconnect".into())
             .map(|v| v.is_truthy())
             .unwrap_or(false);
+    // Retain this tag's full set so a later `update` delta applies to the
+    // right base (a `reset` replaces it wholesale).
+    if let Some(tag) = &tag {
+        state
+            .borrow_mut()
+            .retained
+            .insert(tag.clone(), conclusions.clone());
+    }
     match tag.as_deref() {
         Some("model") => handle_model_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
@@ -485,13 +507,25 @@ fn on_update(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts:
         }
     };
 
-    // Merge the delta into a copy of the retained frame.
-    let merged = apply_delta(state.borrow().last_frame.clone(), &asserted, retracted);
+    // Apply the delta to THIS tag's retained set (not `last_frame`, which
+    // is the entity frame only) and re-store it, so a model/view delta
+    // resolves against model/view rows rather than the entity frame.
+    let Some(tag) = tag else {
+        // A delta with no tag has no base to apply to — drop it.
+        return;
+    };
+    let merged = {
+        let mut s = state.borrow_mut();
+        let base = s.retained.get(&tag).cloned().unwrap_or_default();
+        let merged = apply_delta(base, &asserted, retracted);
+        s.retained.insert(tag.clone(), merged.clone());
+        merged
+    };
 
-    match tag.as_deref() {
-        Some("model") => handle_model_frame(host, state, merged),
-        Some("view") => handle_view_frame(host, state, merged),
-        Some("entity") => handle_entity_frame(host, state, merged, false),
+    match tag.as_str() {
+        "model" => handle_model_frame(host, state, merged),
+        "view" => handle_view_frame(host, state, merged),
+        "entity" => handle_entity_frame(host, state, merged, false),
         _ => {
             // Unknown tag — log and drop.
         }

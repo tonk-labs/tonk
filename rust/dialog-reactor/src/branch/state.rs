@@ -226,9 +226,14 @@ impl BranchState {
 
         let mut subs = self.subscriptions.lock();
         let entry = subs.entry(hash.clone());
+        // Route through `QueryPlan::from` (the same projection the one-shot
+        // `QueryEffect` applies) so a concept-of-concept / command / rule
+        // metadata query dispatches to its anonymous-enumeration application
+        // instead of scanning for `dialog.meta/*` facts that aren't stored.
+        let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
             engine: Arc::new(tokio::sync::Mutex::new(Some(
-                self.branch.subscribe_with(query, overlay),
+                self.branch.subscribe_with(plan, overlay),
             ))),
             terms,
             seeded_overlay_epoch: epoch,
