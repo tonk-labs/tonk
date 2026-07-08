@@ -27,6 +27,7 @@ use url::Url;
 use crate::ExitCode;
 use crate::remote::{self, DEFAULT_REMOTE, META_BRANCH};
 use crate::site::{self, SITE_DIRNAME, SiteConfig, TonkSite};
+use crate::sync;
 
 /// Default base URL for minted invites. Mirrors
 /// [`tonk_invite::DEFAULT_BASE_URL`] — exposed here so
@@ -108,6 +109,28 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
+    // Push local state to the upstream before minting, so a joiner
+    // receives current repo state — including the stdlib seed that
+    // `tonk init` committed before any upstream existed. Mirrors
+    // `share`'s push-before-mint. No-op when the branch has no upstream
+    // (a local-only invite). Pull-before-push reconciles a possibly
+    // advanced upstream, best-effort; the push error is authoritative.
+    let has_upstream = {
+        let session = site
+            .branch()
+            .await
+            .map_err(|e| InviteError::Io(format!("acquire branch: {e}")))?;
+        session.handle().upstream().is_some()
+    };
+    if has_upstream {
+        if let Err(e) = sync::pull(site).await {
+            eprintln!("warning: pull before invite failed: {e}");
+        }
+        sync::push(site)
+            .await
+            .map_err(|e| InviteError::Io(format!("push before invite failed: {e}")))?;
+    }
+
     let (signer, seed) = generate_ephemeral().await?;
     let audience = signer.did();
 
