@@ -28,6 +28,25 @@ from-scratch`) that fixes the highest-leverage problem each iteration.
 | artifact-conversion | 9/10 | 4 friction items |
 | from-scratch | 3/10 | `view` concept not built-in on a fresh branch (see Known friction below) |
 
+### Baseline measurements (2026-07-08, codex/gpt-5.5 episodes)
+
+The three agent-onboarding scenarios, run on the real codex/gpt-5.5 episode
+runner. These are the "before" set for the agent-ergonomic-CLI work.
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| targeted-edit | 9/10 | reads the full guide + notation guide for a one-line edit (DSL learn-tax) |
+| interview-build | 3/10 | strong interview, but the build never surfaces on the space home (render-gap) + DSL notation-validation rejections |
+| cold-onboard | 7/10 | invite prompt gives no install hint; agent probes/filesystem-hunts for the CLI |
+
+`cold-onboard` was 7/10 both before and after the seed-reaches-remote fix, but
+the fix removed a confound: pre-fix the joined branch was barren (0
+`xyz.tonk.view` attributes) because `tonk invite` never pushed the
+`tonk init`-seeded standard library to the remote, so the agent had to
+hand-author `tonk:view`. Post-fix the joined branch carries the full stdlib (19
+`xyz.tonk.view` attributes), so the remaining 7/10 reflects real onboarding
+friction (no install hint, orientation) rather than the harness artifact.
+
 ## Usage
 
 ```sh
