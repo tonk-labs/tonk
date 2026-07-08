@@ -46,11 +46,11 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
     };
     match ty {
         Some(Type::UnsignedInt) => {
-            raw.parse::<u64>().map_err(|_| bad("UnsignedInteger"))?;
+            raw.parse::<u128>().map_err(|_| bad("UnsignedInteger"))?;
             Ok(raw.to_string())
         }
         Some(Type::SignedInt) => {
-            raw.parse::<i64>().map_err(|_| bad("SignedInteger"))?;
+            raw.parse::<i128>().map_err(|_| bad("SignedInteger"))?;
             Ok(raw.to_string())
         }
         Some(Type::Float) => {
@@ -76,6 +76,8 @@ fn quote_string(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
             _ => out.push(ch),
         }
     }
@@ -171,6 +173,21 @@ mod tests {
     #[test]
     fn it_rejects_a_non_numeric_for_a_numeric_field() {
         assert!(render_value(Some(Type::UnsignedInt), "notanumber").is_err());
+    }
+    #[test]
+    fn it_renders_a_u128_scale_unsigned_integer() {
+        assert_eq!(
+            render_value(Some(Type::UnsignedInt), "340282366920938463463374607431768211455")
+                .unwrap(),
+            "340282366920938463463374607431768211455"
+        );
+    }
+    #[test]
+    fn it_escapes_control_characters_in_text() {
+        assert_eq!(
+            render_value(Some(Type::String), "a\tb\r\nc").unwrap(),
+            "\"a\\tb\\r\\nc\""
+        );
     }
     #[test]
     fn it_builds_an_rm_field_retraction() {
