@@ -15,6 +15,7 @@ use futures_util::StreamExt as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_common::log;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -85,7 +86,11 @@ pub async fn serve(
         Some(Ok(artifact)) => {
             String::try_from(artifact.is).unwrap_or_else(|_| "application/octet-stream".to_string())
         }
-        _ => "application/octet-stream".to_string(),
+        Some(Err(e)) => {
+            log!("blob: content-type query error: {:?}", e);
+            "application/octet-stream".to_string()
+        }
+        None => "application/octet-stream".to_string(),
     };
 
     // Blob bytes from the branch's content-addressed store.
@@ -207,5 +212,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.as_ref(), payload.as_slice());
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_non_blob_entity() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-reject").await;
+
+        // A well-formed entity that is not a blob reference must be rejected
+        // before it can be used to read arbitrary fact bytes.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/blob/id:alice"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
