@@ -31,6 +31,11 @@ setup() {
   fi
   "$TONK" remote add origin "$BENCH_URL/ucan/"
   "$TONK" remote set-upstream origin
+  # Publish the init-seeded stdlib to the remote now, so a joiner (or an
+  # inspector) sees current state even before an invite is minted. `tonk
+  # init` commits the seed before the upstream exists, so nothing has
+  # pushed it yet.
+  "$TONK" push
   "$TONK" status
 }
 
