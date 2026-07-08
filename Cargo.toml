@@ -185,28 +185,30 @@ dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
 
 # PROTOTYPE WIRING — incremental subscriptions (plan/incremental-subscriptions.md).
-# Points every dialog crate at the local `feat/incremental-retraction` worktree so
-# the reactor can adopt dialog's demand-gated `Subscription`. This branch forks from
-# upstream #298 and LACKS the #373 cache fix in the pinned tag above, so absolute
-# sync latency regresses while patched — measure incremental hit rate, not latency.
-# Swap for a real tag once the branch is reconciled with tonk-2026-07-07 (not in scope).
+# Points every dialog crate at a dedicated `tonk-subs` worktree pinned at the
+# committed subscription-overlays work (rev e8b9b32e), NOT the live `meg` worktree
+# where the dialog Send/#100013 work is in flight — so that agent's uncommitted WIP
+# can't break this build. This branch forks from upstream #298 and LACKS the #373
+# cache fix in the pinned tag above, so absolute sync latency regresses while patched
+# — measure incremental hit rate, not latency. Swap for a real tag once the dialog
+# side is reconciled with tonk-2026-07-07 (not in scope).
 [patch."https://github.com/dialog-db/dialog-db.git"]
-dialog-artifacts = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-artifacts" }
-dialog-capability = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-capability" }
-dialog-common = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-common" }
-dialog-credentials = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-credentials" }
-dialog-csv = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-csv" }
-dialog-effects = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-effects" }
-dialog-operator = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-operator" }
-dialog-query = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-query" }
-dialog-remote-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-remote-s3" }
-dialog-remote-ucan-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-remote-ucan-s3" }
-dialog-repository = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-repository" }
-dialog-search-tree = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-search-tree" }
-dialog-storage = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-storage" }
-dialog-ucan = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-ucan" }
-dialog-ucan-core = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-ucan-core" }
-dialog-varsig = { path = "/Users/gozala/Projects/dialog-db/worker/meg/rust/dialog-varsig" }
+dialog-artifacts = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-artifacts" }
+dialog-capability = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-capability" }
+dialog-common = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-common" }
+dialog-credentials = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-credentials" }
+dialog-csv = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-csv" }
+dialog-effects = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-effects" }
+dialog-operator = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-operator" }
+dialog-query = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-query" }
+dialog-remote-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-remote-s3" }
+dialog-remote-ucan-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-remote-ucan-s3" }
+dialog-repository = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-repository" }
+dialog-search-tree = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-search-tree" }
+dialog-storage = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-storage" }
+dialog-ucan = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-ucan" }
+dialog-ucan-core = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-ucan-core" }
+dialog-varsig = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-varsig" }
 
 [profile.dev]
 opt-level = 1
