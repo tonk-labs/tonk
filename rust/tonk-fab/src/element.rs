@@ -33,8 +33,8 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, mirrored, nearest_dock,
-    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, dock_from_conclusions, mirrored,
+    nearest_dock, pause_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -197,7 +197,9 @@ fn wrap_telescope_tiles(element: &HtmlElement) {
 /// detection, no timers. The listener sits on the `<tonk-fab>` host and
 /// routes by the event target:
 ///
-/// - CIRCLE cap: `click` folds/expands the bar.
+/// - CIRCLE cap: `click` folds/expands the bar. Alt/option-`click` is the pause
+///   gesture, handled by the cap's own `<ui-sync-status onpause=…>` — so this
+///   handler leaves an alt-click alone (no fold) and lets it toggle sync there.
 /// - SPOT segment: `click` toggles the switcher menu.
 /// - SHARE segment: `click` toggles the roster menu.
 ///
@@ -208,15 +210,35 @@ fn attach_gestures(element: &HtmlElement) {
         let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
             return;
         };
-        if t.closest(".fab__cap-l").ok().flatten().is_some() {
-            toggle_telescope(&el_click);
+        if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
+            // Alt/option-click toggles sync pause; a plain click folds/expands.
+            // Pause is dispatched here (on the FAB, which reliably receives the
+            // click — the cloned `<ui-sync-status>` inside the cap cannot own a
+            // live DOM listener) reading the target space + command off the
+            // cap's `<ui-sync-status with=… onpause=…>`.
+            if e.alt_key() {
+                dispatch_pause_from_cap(&cap);
+            } else {
+                toggle_telescope(&el_click);
+            }
         } else if t
             .closest(".fab__menu, .fab__share-menu")
             .ok()
             .flatten()
             .is_some()
         {
-            // A click inside an open menu acts on that menu's own row.
+            // A click inside an open menu acts on that menu's own row. If
+            // it hit an actionable item (a space link, "all spots", "new"),
+            // the interaction is complete — retract the dropdown so it
+            // doesn't sit open over the next view.
+            if t.closest(".fab__menu a, .fab__menu button")
+                .ok()
+                .flatten()
+                .is_some()
+                && let Some(seg) = el_click.query_selector(".fab__repo.is-open").ok().flatten()
+            {
+                let _ = seg.class_list().remove_1("is-open");
+            }
         } else if let Some(seg) = t.closest(".fab__repo").ok().flatten() {
             toggle_menu(&el_click, &seg, ".fab__share");
         } else if let Some(seg) = t.closest(".fab__share").ok().flatten() {
@@ -229,6 +251,58 @@ fn attach_gestures(element: &HtmlElement) {
         .add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref())
         .ok();
     on_click.forget();
+}
+
+/// Toggle sync pause for the active space. Reads the target space and the
+/// command URI off the cap's `<ui-sync-status with="branch@repo" onpause=…>`
+/// (the space DID was baked into `with` at render time from
+/// `{dom.host/data-space}`), builds the `tonk:pause-sync` transient, and
+/// dispatches it through `window.tonk.transact` — routeless, so it lands on the
+/// FAB portal's own context (`main@profile:tonk`, where the command is defined
+/// and its handler reads the target space from the command). Nothing space-side
+/// is required, and this runs from the FAB's own click listener, which — unlike
+/// a listener on the cloned `<ui-sync-status>` — reliably receives the click.
+fn dispatch_pause_from_cap(cap: &Element) {
+    let Some(status) = cap.query_selector("ui-sync-status").ok().flatten() else {
+        return;
+    };
+    let command = status
+        .get_attribute("onpause")
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "tonk:pause-sync".to_owned());
+    // The cap's `with` is a `branch@repo` location (or a bare repo); the space
+    // is the repo half. The FAB renders `<ui-sync-status with={dom.host/data-
+    // space}>`, so this is the active space's DID with no branch prefix.
+    let Some(space) = status
+        .get_attribute("with")
+        .filter(|w| !w.is_empty() && !w.contains('{'))
+        .map(|w| w.rsplit('@').next().unwrap_or(&w).to_owned())
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+
+    let claim = pause_claim_json(&command, &space, js_sys::Date::now());
+    let json_str = match serde_json::to_string(&claim) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let Some(win) = window() else { return };
+    let Some(tonk) = Reflect::get(&win, &"tonk".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Object>().ok())
+    else {
+        return;
+    };
+    let Some(transact) = Reflect::get(&tonk, &"transact".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Function>().ok())
+    else {
+        return;
+    };
+    if let Some(obj) = js_sys::JSON::parse(&json_str).ok() {
+        transact.call1(&tonk, &obj).ok();
+    }
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -919,9 +993,9 @@ fn restore_position(this: &HtmlElement) {
             "dock": { "?": { "name": "dock" } }
         },
         "predicate": {
-            "description": "Persisted FAB dock (profile-meta claim).",
+            "description": "Persisted FAB dock (profile claim).",
             "with": {
-                "dock": { "the": "xyz.tonk.fab/dock", "cardinality": "one", "as": "entity" }
+                "dock": { "the": "xyz.tonk.fab/dock", "cardinality": "one", "as": "Entity" }
             }
         }
     });
@@ -991,18 +1065,14 @@ fn restore_position(this: &HtmlElement) {
     }
 }
 
-/// Extract the first row's `dock` from a `Conclusion[]` value returned by
-/// `window.tonk.query(...)` and resolve it to a `Dock`.
+/// Extract the persisted dock from a `Conclusion[]` value returned by
+/// `window.tonk.query(...)`. Decodes the JS value to JSON and delegates the
+/// row-shape parsing to [`dock_from_conclusions`], which is unit-tested
+/// against the `{ this, fields: { dock } }` conclusion shape.
 fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
-    let arr = rows.dyn_ref::<js_sys::Array>()?;
-    let first = arr.get(0);
-    if first.is_undefined() || first.is_null() {
-        return None;
-    }
-    let sym = Reflect::get(&first, &"dock".into())
-        .ok()
-        .and_then(|v| v.as_string())?;
-    Dock::from_symbol(&sym)
+    let json = js_sys::JSON::stringify(rows).ok()?.as_string()?;
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    dock_from_conclusions(&value)
 }
 
 /// Apply the default dock (bottom-right) to the element.

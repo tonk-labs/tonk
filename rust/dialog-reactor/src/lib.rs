@@ -149,8 +149,8 @@ impl Reactor {
             std::mem::take(&mut *map)
         };
         // The profile-as-repository lives in its own slot, not in
-        // `repos`. The Hub subscribes to its meta branch
-        // (`/api/profile/branch/meta/query` SSE), so it must be drained
+        // `repos`. The Hub subscribes to its main branch
+        // (`/api/profile/branch/main/query` SSE), so it must be drained
         // too — otherwise that one stream stays open and pins the
         // outgoing worker in `waiting` on every update.
         let profile = self.profile_repo.write().take();
@@ -162,6 +162,26 @@ impl Reactor {
             for (_, branch) in branches {
                 branch.clear_subscribers();
             }
+        }
+    }
+
+    /// Drop one repository's cached handles and active subscribers —
+    /// the per-repo analog of [`shutdown`](Self::shutdown). Used when a
+    /// space is removed: the background sync sweep builds its repo set
+    /// from this cache, so eviction is what actually stops the space
+    /// from syncing, and clearing each branch's subscriber map ends its
+    /// SSE streams (see `shutdown` for why removing the cache entry
+    /// alone isn't enough). No-op when the repo isn't cached.
+    pub fn evict(&self, name: &str) {
+        let Some(repo) = self.repos.write().remove(name) else {
+            return;
+        };
+        let branches = {
+            let mut map = repo.branches().write();
+            std::mem::take(&mut *map)
+        };
+        for (_, branch) in branches {
+            branch.clear_subscribers();
         }
     }
 

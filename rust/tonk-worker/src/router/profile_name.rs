@@ -14,8 +14,10 @@ use crate::worker::TonkState;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
-// The meta and content branch name constants, as used throughout router code.
-const META_BRANCH: &str = "meta";
+// The profile repository lives on `main` (it has no content/meta
+// split); spaces re-stamp member names on their own `main` content
+// branch.
+const PROFILE_BRANCH: &str = "main";
 // Only the wasm-gated rename handler re-stamps member names, so this and
 // `restamp_member_name` exist only on the wasm target (the worker's real
 // runtime). Gating them keeps the native `clippy -D warnings` build clean.
@@ -30,7 +32,7 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
     {
@@ -78,7 +80,7 @@ pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), Reposito
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -104,7 +106,7 @@ pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), Reposito
     let name = petname(&tonk.profile.did());
     tonk.reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(ProfileName::new(profile_entity, name))
         .commit()
@@ -135,7 +137,7 @@ async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .acquire(&tonk.operator)
         .await
     {
@@ -308,7 +310,7 @@ mod tests {
         let profile_entity = tonk.profile.did().this();
         tonk.reactor
             .profile_repository()
-            .branch(META_BRANCH)
+            .branch(PROFILE_BRANCH)
             .transaction()
             .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
             .commit()
@@ -325,7 +327,7 @@ mod tests {
         let profile_entity = tonk.profile.did().this();
         tonk.reactor
             .profile_repository()
-            .branch(META_BRANCH)
+            .branch(PROFILE_BRANCH)
             .transaction()
             .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
             .commit()

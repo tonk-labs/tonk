@@ -783,6 +783,47 @@ fn ipld_to_json_string(value: &Ipld) -> String {
         .unwrap_or_default()
 }
 
+/// The host attributes a plan's bindings consume via `{dom.host/<attr>}`
+/// references — render inputs that come from the DISPLAY HOST's own
+/// attributes rather than from conclusions. A display watches exactly this
+/// set for changes and replays its cached frame through the binding diff,
+/// so `dom.host/*` behaves as a live binding instead of a mount-time
+/// snapshot (e.g. the FAB's `data-space`, restamped on a space switch).
+pub fn host_attributes(plan: &BindingPlan) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    collect_host_attributes(&plan.chrome, &mut out);
+    collect_host_attributes(&plan.repeat.body, &mut out);
+    out
+}
+
+/// Walk `nodes` (recursing into iterations) and record every
+/// `dom.host/<attr>` field reference's attribute name into `out`.
+fn collect_host_attributes(nodes: &[PlanNode], out: &mut std::collections::BTreeSet<String>) {
+    for node in nodes {
+        match node {
+            PlanNode::Binding(binding) => {
+                let segments = match &binding.kind {
+                    BindingKind::Text { segments } => segments,
+                    BindingKind::Attribute { segments, .. } => segments,
+                };
+                for segment in segments {
+                    if let Segment::Field(field) = segment
+                        && let Some(attr) = field.strip_prefix("dom.host/")
+                    {
+                        out.insert(attr.to_owned());
+                    }
+                }
+            }
+            PlanNode::Iteration { field, body, .. } => {
+                if let Some(attr) = field.strip_prefix("dom.host/") {
+                    out.insert(attr.to_owned());
+                }
+                collect_host_attributes(body, out);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,5 +955,50 @@ mod tests {
             render_segments(&segments, "did:key:zEntity", &fields),
             "did:key:zEntity"
         );
+    }
+
+    /// `host_attributes` reports every `{dom.host/<attr>}` reference —
+    /// attribute bindings, text bindings, iteration fields, and nested
+    /// iteration bodies alike — from both the chrome and the repeat body.
+    #[test]
+    fn it_collects_dom_host_attributes_across_the_whole_plan() {
+        let plan = BindingPlan {
+            chrome: vec![
+                PlanNode::Binding(attr_binding(&[0], "with", "dom.host/data-space")),
+                PlanNode::Binding(text_binding(&[1], "dom.host/data-label")),
+            ],
+            repeat: RepeatPlan {
+                path: None,
+                body: vec![PlanNode::Iteration {
+                    field: "dom.host/data-items".into(),
+                    path: vec![0],
+                    body: vec![PlanNode::Binding(attr_binding(
+                        &[0],
+                        "active",
+                        "dom.host/data-active",
+                    ))],
+                }],
+            },
+        };
+        let attrs = host_attributes(&plan);
+        assert_eq!(
+            attrs.iter().cloned().collect::<Vec<_>>(),
+            ["data-active", "data-items", "data-label", "data-space"],
+            "every dom.host reference is reported, deduplicated and sorted"
+        );
+    }
+
+    /// A plan with no `dom.host/*` references reports an empty set — the
+    /// display then installs no host-attribute watcher at all.
+    #[test]
+    fn it_collects_no_host_attributes_when_the_plan_reads_none() {
+        let plan = BindingPlan {
+            chrome: vec![PlanNode::Binding(text_binding(&[0], "name"))],
+            repeat: RepeatPlan {
+                path: None,
+                body: vec![PlanNode::Binding(attr_binding(&[1], "href", "url"))],
+            },
+        };
+        assert!(host_attributes(&plan).is_empty());
     }
 }

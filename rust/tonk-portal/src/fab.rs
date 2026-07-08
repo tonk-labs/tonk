@@ -33,6 +33,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use js_sys::Reflect;
 use tonk_fab::logic::{FabIntent, FabState, geometry_box};
+use tonk_host::location::Allow;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -95,12 +96,13 @@ impl CustomElement for TonkFabPortal {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // `true`: the FAB is trusted first-party chrome (placed only by the
-        // shell view in the top document), so its guest may relay a per-query
-        // repository route — letting `<tonk-fab>`'s `<tonk-repository name=…>`
-        // resolve other spaces' labels. This privilege is NOT extended to the
-        // generic `<tonk-portal>`, which renders synced/untrusted content.
-        connect_portal(this, &self.inner, true, |iframe| {
+        // `allow = *`: the FAB is trusted first-party chrome (placed only by
+        // the shell view in the top document), so its guest may relay a
+        // per-query repository route — letting `<tonk-fab>`'s per-space
+        // `with` contexts resolve other spaces' labels. This privilege is
+        // NOT extended to the generic `<tonk-portal>`, which renders
+        // synced/untrusted content.
+        connect_portal(this, &self.inner, None, Allow::Any, |iframe| {
             // Initial fixed small box: top-centre, above all content.
             // Once the first `__tonkFab` geometry message arrives, the
             // centering transform is dropped and absolute px values take
@@ -289,9 +291,25 @@ impl CustomElement for TonkFabPortal {
             s.clear_subs();
             if let Some(iframe) = s.iframe.take() {
                 bridge::unregister_portal(&iframe);
-                if let Some(parent) = iframe.parent_node() {
-                    let _ = parent.remove_child(&iframe);
-                }
+                // Two-phase: unload the guest realm first, remove the
+                // element a tick later — synchronous destruction of a live
+                // guest is the pattern the browser process crashes under
+                // (see `site::teardown`).
+                let _ = iframe.remove_attribute("srcdoc");
+                let _ = iframe.set_attribute("src", "about:blank");
+                wasm_bindgen_futures::spawn_local(async move {
+                    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                &resolve, 100,
+                            );
+                        }
+                    });
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                    if let Some(parent) = iframe.parent_node() {
+                        let _ = parent.remove_child(&iframe);
+                    }
+                });
             }
         }
     }

@@ -39,6 +39,8 @@ web-sys = { workspace = true, features = [
     "Headers",
     "ReadableStream",
     "ReadableStreamDefaultReader",
+    "AbortController",
+    "AbortSignal",
     "Request",
     "RequestInit",
     "RequestCache",

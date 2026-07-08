@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use js_sys::{Function, Reflect};
+use tonk_host::location::{Allow, Location};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -29,7 +30,8 @@ use crate::bridge::{self, PortalState};
 pub(crate) fn connect_portal(
     this: &HtmlElement,
     inner: &RefCell<Option<Rc<RefCell<PortalState>>>>,
-    cross_repo: bool,
+    with: Option<Location>,
+    allow: Allow,
     apply_style: impl Fn(&HtmlIFrameElement),
 ) {
     let host: Element = this.clone().into();
@@ -67,11 +69,12 @@ pub(crate) fn connect_portal(
     apply_style(&iframe);
 
     let state = Rc::new(RefCell::new(PortalState::new()));
-    // Grant the cross-repo relay privilege only when the caller is the trusted
-    // portal element (`<tonk-fab-portal>`). The generic `<tonk-portal>` passes
-    // `false`, so a synced/untrusted content guest can forward a route but the
-    // bridge never honors it.
-    state.borrow_mut().set_cross_repo(cross_repo);
+    // The portal's routing context (`with`) and reach (`allow`) are set by
+    // the trusted caller element, never by the guest: `<tonk-site>` parses
+    // its attributes, `<tonk-fab-portal>` grants `*`, the generic
+    // `<tonk-portal>` grants `self` — so a synced/untrusted content guest
+    // can forward a route but the bridge denies anything un-listed.
+    state.borrow_mut().set_route(with, allow);
     bridge::register_portal(&iframe, &host, &state);
     install_method_delegates(&host, &state);
 

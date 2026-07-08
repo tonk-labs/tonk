@@ -53,6 +53,7 @@ impl EventSource {
         mut frames: LocalBoxStream<'static, Result<String, ErrorDetail>>,
         on_frame: impl Fn(&str) + 'static,
         on_error: impl Fn(ErrorDetail) + 'static,
+        on_close: impl Fn() + 'static,
         teardown: impl FnOnce() + 'static,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = futures::channel::oneshot::channel::<()>();
@@ -90,7 +91,15 @@ impl EventSource {
                                 on_error(e);
                                 break;
                             }
-                            None => break,
+                            // Clean upstream end — the server closed the
+                            // stream (e.g. the SW releasing in-flight
+                            // streams on update). Not an error, but the
+                            // subscription is over: tell the owner so it
+                            // can reconnect instead of freezing.
+                            None => {
+                                on_close();
+                                break;
+                            }
                         }
                     }
                 }
@@ -113,51 +122,38 @@ impl Drop for EventSource {
     }
 }
 
-/// Pick a transport. Prefer the iframe bridge if it's loaded
-/// (`globalThis.tonk` is defined and not null); otherwise fall back
-/// to direct fetch against `url`. The shell mounts these elements
-/// with `space`/`branch` attributes set; the iframe-wrapped body
-/// mounts them without (and has `globalThis.tonk` available).
-pub fn use_bridge() -> bool {
-    use js_sys::Reflect;
-    use wasm_bindgen::JsValue;
-    let Some(win) = web_sys::window() else {
-        return false;
-    };
-    let Ok(tonk) = Reflect::get(&win, &JsValue::from_str("tonk")) else {
-        return false;
-    };
-    !tonk.is_undefined() && !tonk.is_null()
-}
-
-/// Open a streaming subscription using whichever transport is
-/// available.
+/// Open a streaming subscription over fetch against `url`.
 ///
-/// `url` is only used on the fetch path. `body` is the query as an
-/// [`Ipld`] value; on the fetch path it is encoded once as DAG-JSON
+/// One transport everywhere: inside a sealed guest, `window.fetch` is
+/// the portal bootstrap's override, which relays the request (and
+/// streams the response back) through the host — so the same code
+/// serves the top document and every guest. (`window.tonk` is app
+/// sugar, not the elements' transport.)
+///
+/// `body` is the query as an [`Ipld`] value, encoded once as DAG-JSON
 /// for the request body.
 ///
 /// `on_frame` is called for each emitted frame (the raw JSON string
-/// of a `Vec<Conclusion>`); `on_error` for genuine transport errors.
-/// Dropping the returned [`EventSource`] tears the stream down
-/// without reporting an error.
+/// of a `Vec<Conclusion>`); `on_error` for genuine transport errors;
+/// `on_close` when the server ends the stream cleanly (the owner
+/// should reconnect — a released stream is not a cancelled
+/// subscription). Dropping the returned [`EventSource`] tears the
+/// stream down without reporting an error or a close.
 pub async fn open_sse(
     url: &str,
     body: &Ipld,
     on_frame: impl Fn(&str) + 'static,
     on_error: impl Fn(ErrorDetail) + 'static,
+    on_close: impl Fn() + 'static,
 ) -> Result<EventSource, ErrorDetail> {
-    if use_bridge() {
-        let (frames, teardown) = crate::bridge::frame_stream(body).await?;
-        Ok(EventSource::spawn(frames, on_frame, on_error, teardown))
-    } else {
-        let body_bytes = serde_ipld_dagjson::to_vec(body)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body dag-json: {e}")))?;
-        let body_str = String::from_utf8(body_bytes)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body utf8: {e}")))?;
-        let (frames, teardown) = crate::http::frame_stream(url, &body_str).await?;
-        Ok(EventSource::spawn(frames, on_frame, on_error, teardown))
-    }
+    let body_bytes = serde_ipld_dagjson::to_vec(body)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body dag-json: {e}")))?;
+    let body_str = String::from_utf8(body_bytes)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body utf8: {e}")))?;
+    let (frames, teardown) = crate::http::frame_stream(url, &body_str).await?;
+    Ok(EventSource::spawn(
+        frames, on_frame, on_error, on_close, teardown,
+    ))
 }
 
 #[cfg(test)]
@@ -196,6 +192,7 @@ mod tests {
             frames,
             |_frame| {},
             move |_e| saw_error.set(true),
+            || {},
             move || did_teardown.set(true),
         );
 

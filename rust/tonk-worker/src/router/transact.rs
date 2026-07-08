@@ -330,7 +330,7 @@ mod profile_write_boundary {
         let result = transact_profile(
             axum::extract::State(state),
             axum::extract::Path(super::ProfileTransactPath {
-                branch: "meta".to_owned(),
+                branch: "main".to_owned(),
             }),
             Some(Extension(client_id)),
             HeaderMap::new(),

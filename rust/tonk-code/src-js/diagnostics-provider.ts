@@ -361,7 +361,16 @@ class TonkDiagnosticsProvider extends HTMLElement {
   }
 
   #resolveUrl(raw: string | null): string {
-    return new URL(raw || DEFAULT_LANGUAGE_SERVER_URL, document.baseURI).href;
+    const url = raw || DEFAULT_LANGUAGE_SERVER_URL;
+    // A ROOT-RELATIVE `/api/…` URL must stay root-relative: inside a sealed
+    // (opaque-origin) guest `document.baseURI` is `null`, so absolutizing
+    // it yields `null/api/…` that the portal's `window.fetch` override
+    // cannot recognize as host-relative and relay — the LSP then never
+    // reaches the service worker (no diagnostics, no auto-eval). Only
+    // resolve a genuinely relative URL (no leading `/`), where the caller
+    // meant "relative to this document".
+    if (url.startsWith("/")) return url;
+    return new URL(url, document.baseURI).href;
   }
 }
 

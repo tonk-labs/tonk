@@ -64,6 +64,30 @@ self.registration.addEventListener?.("updatefound", async () => {
     }
 });
 
+// Connectivity transitions, observed by the worker itself. An offline
+// page stops polling, so no fetch would ever wake the Rust side to
+// stamp `sync:offline` — the SW's own `offline` event is the reliable
+// signal; `online` runs a drain so statuses reconcile the moment
+// connectivity returns. The wasm boot (`activateWorker`) can outlive a
+// flapping transition, so dispatch on the CURRENT `navigator.onLine`,
+// not on which event happened to fire.
+const onConnectivityChange = async () => {
+    try {
+        const worker = await activateWorker();
+        if (navigator.onLine) {
+            log("Online — reconciling");
+            await worker.ononline?.();
+        } else {
+            log("Offline — stamping sync:offline");
+            await worker.onoffline?.();
+        }
+    } catch (err) {
+        log("Failed to handle connectivity change:", err);
+    }
+};
+self.addEventListener("offline", onConnectivityChange);
+self.addEventListener("online", onConnectivityChange);
+
 // Document navigations bypass the Rust worker entirely. The
 // shell HTML lives in the SW cache and never crosses the data
 // plane — there's no reason a navigation should wait on

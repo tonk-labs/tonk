@@ -1042,7 +1042,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1077,7 +1077,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-trait",
  "convert_case 0.6.0",
@@ -1094,7 +1094,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1122,7 +1122,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-trait",
  "base58",
@@ -1143,7 +1143,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-trait",
  "base58",
@@ -1158,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-trait",
  "base58",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -1185,12 +1185,13 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
+ "dialog-remote-fs",
  "dialog-remote-s3",
  "dialog-remote-ucan-s3",
  "serde",
@@ -1199,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1233,7 +1234,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1288,9 +1289,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-remote-fs"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+dependencies = [
+ "async-trait",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-effects",
+ "dialog-storage",
+ "dialog-ucan",
+ "getrandom 0.2.17",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1329,7 +1347,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1364,7 +1382,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1401,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1430,7 +1448,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1451,6 +1469,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "parking_lot",
+ "percent-encoding",
  "pidlock",
  "rand 0.8.5",
  "rexie",
@@ -1467,13 +1486,15 @@ dependencies = [
  "tower-http",
  "url",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
 ]
 
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "async-trait",
  "base58",
@@ -1494,7 +1515,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1520,7 +1541,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-27#1c9bc9c0f99f9351bd71538d11e088786277fed2"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -2916,6 +2937,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60993920e071b0c9b66f14e2b32740a4e27ffc82854dcd72035887f336a09a28"
 
 [[package]]
+name = "nix"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags 2.10.0",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3123,13 +3156,13 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pidlock"
-version = "0.1.6"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df53bd1a4f9f7d54dc8e604c09aa3d06988d052ac35db5b34d7423272f8046a8"
+checksum = "f837924d5368f9f35a1c404699de3c074311358035c77d7164f5948c08b31382"
 dependencies = [
- "libc",
- "log",
- "windows-sys 0.45.0",
+ "nix",
+ "thiserror 1.0.69",
+ "windows",
 ]
 
 [[package]]
@@ -5151,6 +5184,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+ "tonk-host",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -5795,6 +5829,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows"
+version = "0.62.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
+dependencies = [
+ "windows-collections",
+ "windows-core",
+ "windows-future",
+ "windows-numerics",
+]
+
+[[package]]
+name = "windows-collections"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610"
+dependencies = [
+ "windows-core",
+]
+
+[[package]]
 name = "windows-core"
 version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5805,6 +5860,17 @@ dependencies = [
  "windows-link",
  "windows-result",
  "windows-strings",
+]
+
+[[package]]
+name = "windows-future"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
+dependencies = [
+ "windows-core",
+ "windows-link",
+ "windows-threading",
 ]
 
 [[package]]
@@ -5836,6 +5902,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
+name = "windows-numerics"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
+dependencies = [
+ "windows-core",
+ "windows-link",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5851,15 +5927,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
 dependencies = [
  "windows-link",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.45.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75283be5efb2831d37ea142365f009c02ec203cd29a3ebecbc093d52315b66d0"
-dependencies = [
- "windows-targets 0.42.2",
 ]
 
 [[package]]
@@ -5896,21 +5963,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
-]
-
-[[package]]
-name = "windows-targets"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e5180c00cd44c9b1c88adb3693291f1cd93605ded80c250a75d472756b4d071"
-dependencies = [
- "windows_aarch64_gnullvm 0.42.2",
- "windows_aarch64_msvc 0.42.2",
- "windows_i686_gnu 0.42.2",
- "windows_i686_msvc 0.42.2",
- "windows_x86_64_gnu 0.42.2",
- "windows_x86_64_gnullvm 0.42.2",
- "windows_x86_64_msvc 0.42.2",
 ]
 
 [[package]]
@@ -5962,10 +6014,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows_aarch64_gnullvm"
-version = "0.42.2"
+name = "windows-threading"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "597a5118570b68bc08d8d59125332c54f1ba9d9adeedeef5b99b02ba2b0698f8"
+checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
+dependencies = [
+ "windows-link",
+]
 
 [[package]]
 name = "windows_aarch64_gnullvm"
@@ -5987,12 +6042,6 @@ checksum = "a9d8416fa8b42f5c947f8482c43e7d89e73a173cead56d044f6a56104a6d1b53"
 
 [[package]]
 name = "windows_aarch64_msvc"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e08e8864a60f06ef0d0ff4ba04124db8b0fb3be5776a5cd47641e942e58c4d43"
-
-[[package]]
-name = "windows_aarch64_msvc"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc35310971f3b2dbbf3f0690a219f40e2d9afcf64f9ab7cc1be722937c26b4bc"
@@ -6008,12 +6057,6 @@ name = "windows_aarch64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d782e804c2f632e395708e99a94275910eb9100b2114651e04744e9b125006"
-
-[[package]]
-name = "windows_i686_gnu"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c61d927d8da41da96a81f029489353e68739737d3beca43145c8afec9a31a84f"
 
 [[package]]
 name = "windows_i686_gnu"
@@ -6047,12 +6090,6 @@ checksum = "fa7359d10048f68ab8b09fa71c3daccfb0e9b559aed648a8f95469c27057180c"
 
 [[package]]
 name = "windows_i686_msvc"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44d840b6ec649f480a41c8d80f9c65108b92d89345dd94027bfe06ac444d1060"
-
-[[package]]
-name = "windows_i686_msvc"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f55c233f70c4b27f66c523580f78f1004e8b5a8b659e05a4eb49d4166cca406"
@@ -6068,12 +6105,6 @@ name = "windows_i686_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e7ac75179f18232fe9c285163565a57ef8d3c89254a30685b57d83a38d326c2"
-
-[[package]]
-name = "windows_x86_64_gnu"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8de912b8b8feb55c064867cf047dda097f92d51efad5b491dfb98f6bbb70cb36"
 
 [[package]]
 name = "windows_x86_64_gnu"
@@ -6095,12 +6126,6 @@ checksum = "9c3842cdd74a865a8066ab39c8a7a473c0778a3f29370b5fd6b4b9aa7df4a499"
 
 [[package]]
 name = "windows_x86_64_gnullvm"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26d41b46a36d453748aedef1486d5c7a85db22e56aff34643984ea85514e94a3"
-
-[[package]]
-name = "windows_x86_64_gnullvm"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b7b52767868a23d5bab768e390dc5f5c55825b6d30b86c844ff2dc7414044cc"
@@ -6116,12 +6141,6 @@ name = "windows_x86_64_gnullvm"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ffa179e2d07eee8ad8f57493436566c7cc30ac536a3379fdf008f47f6bb7ae1"
-
-[[package]]
-name = "windows_x86_64_msvc"
-version = "0.42.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9aec5da331524158c6d1a4ac0ab1541149c0b9505fde06423b02f5ef0106b9f0"
 
 [[package]]
 name = "windows_x86_64_msvc"

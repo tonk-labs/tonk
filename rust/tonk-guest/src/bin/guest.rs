@@ -3,9 +3,9 @@
 //! Compiled to its own wasm bundle, this is the Leptos-free, worker-free
 //! registration surface the sealed iframe loads. The guest's bootstrap
 //! imports the generated glue, inits the wasm, then calls [`start`] — which
-//! registers the custom elements (a real `<tonk-display>` and friends) plus
-//! the guest-side `<tonk-host>` proxy that relays their consumer events to
-//! `window.tonk`.
+//! installs the guest relay (document-level listeners forwarding consumer
+//! events to `window.tonk`) and registers the custom elements (a real
+//! `<tonk-display>` and friends).
 //!
 //! It lives in its own crate (not `tonk-ui`) precisely so it does NOT link
 //! `tonk-worker` / the query engine — all data/query logic stays in the
@@ -21,17 +21,12 @@ use wasm_bindgen::prelude::*;
 pub fn start() {
     console_error_panic_hook::set_once();
 
-    // The guest-side proxy host defines `tonk-host` to relay over
-    // `window.tonk`; we never register the real `tonk_host`.
-    tonk_guest::guest_host::register();
-
-    // The passive routing annotators (`<tonk-repository>` / `<tonk-branch>`).
-    // These do NO IO — they only annotate `detail.space` / `detail.branch` on
-    // outbound operation events as they bubble. Without them a nested
-    // `<tonk-repository name=…>` inside the guest is inert, so a query can't be
-    // scoped to another repo; with them, the proxy host forwards the annotated
-    // route over the bridge (honored only for a privileged FAB portal).
-    tonk_host::register_routing_elements();
+    // The guest host: the REAL host IO surface (document listeners
+    // servicing consumer events over plain fetch/SSE — the portal
+    // bootstrap's `window.fetch` override relays each request to the outer
+    // frame), plus the guest-only navigation click relay and site-entity
+    // binding. `window.tonk` stays app sugar, not the elements' transport.
+    tonk_guest::guest_host::install();
 
     tonk_sigil::Sigil::install();
     // The opaque guest can't mask sigils against a cross-origin `/sigils.svg`

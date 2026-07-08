@@ -273,27 +273,11 @@ tonk-component {
     display: none;
 }
 
-/* The routing elements — `<tonk-host>`, `<tonk-repository>`,
-   `<tonk-branch>` — only wire context and event bubbling; they must not
-   occupy layout, so `display: contents` removes their boxes and their
-   children participate in the page layout directly. The `tonk-host`
-   wrapping the mount slot collapses too (the sealed `/space` guest has
-   only `tonk-host > .display-view-slot`, no repository/branch). */
-tonk-host:has(> .display-view-slot),
-tonk-host:has(.display-route),
-tonk-repository.display-route,
-.display-route > tonk-branch {
-    display: contents;
-}
-
-/* `<tonk-site>` is a ROUTING element, like `<tonk-host>`/`<tonk-repository>`/
-   `<tonk-branch>`: it wires up a per-tab site + sealed iframe but imposes no
-   visual box or constraints. `display: contents` makes it transparent so its
-   iframe participates in the surrounding layout directly and the CONTENT
-   (the iframe, sized by the element, and the guest's own view) decides height.
-   The `<tonk-host>` wrapping it collapses the same way. */
-tonk-host:has(> tonk-site),
-tonk-host:has(> tonk-repository > tonk-branch > tonk-site),
+/* `<tonk-site>` is the ROUTING element: it wires up a per-tab site +
+   sealed iframe but imposes no visual box or constraints.
+   `display: contents` makes it transparent so its iframe participates
+   in the surrounding layout directly and the CONTENT (the iframe,
+   sized by the element, and the guest's own view) decides height. */
 tonk-site {
     display: contents;
 }
@@ -333,10 +317,9 @@ tonk-display > .site-pending:not([hidden]) {
    `<tonk-view>` deeper in the tree (carousel slides, board tiles), which
    own their own sizing. A looser descendant selector would catch those
    and impose a viewport height on content that should stay
-   content-sized. Anchoring on the slot (not the `.display-route >
-   tonk-branch` routing path) keeps the layout independent of the routing
-   elements, so it holds wherever the slot is mounted — including inside
-   the sealed `/space` guest, which has no routing ancestors. */
+   content-sized. Anchoring on the slot keeps the layout independent of
+   the routing context, so it holds wherever the slot is mounted —
+   including inside the sealed `/space` guest. */
 .display-view-slot {
     display: flex;
     flex-direction: column;
@@ -428,8 +411,8 @@ tonk-display > .site-pending:not([hidden]) {
    it renders on every space — including empty ones with no workspace
    instance — at the space (directory) level. The `<tonk-repo-name>`,
    `<tonk-sync-state>`, `<tonk-sync-toggle>`, and `<tonk-share>` elements
-   render into these classes and resolve their repo from the
-   `<tonk-repository>` route ancestor, so the bar works wherever it sits.
+   render into these classes and resolve their repo from the nearest
+   `with="branch@repo"` ancestor, so the bar works wherever it sits.
    In the global stylesheet because the directory view that hosts the bar
    always renders, while the per-instance view's <style> does not. */
 .workspace__topbar {
@@ -2357,8 +2340,8 @@ tonk-code:focus-within {
  * only board CSS that stays here.
  *
  * This route mounts `tonk-board` inside `main.board-view`, so the
- * height chain runs `main → tonk-repository → tonk-branch →
- * tonk-board → tonk-display → tonk-view → tonk-strip`. The bare
+ * height chain runs `main → tonk-board → tonk-display → tonk-view →
+ * tonk-strip`. The bare
  * `/display` route establishes its own chain (see `.display-route`
  * above); both bottom out at `tonk-strip`, which the view styles
  * from there down. See `plan/tonk-board.md`.
@@ -2377,11 +2360,9 @@ tonk-code:focus-within {
    the layout flow so block-size: 100% propagates from the
    viewport down to the strip (the view template takes over from
    the strip downward). */
-.board-view tonk-repository,
-.board-view tonk-branch,
 .board-view tonk-board,
-.board-view > tonk-repository > tonk-branch > tonk-board > tonk-display,
-.board-view > tonk-repository > tonk-branch > tonk-board > tonk-display > tonk-view {
+.board-view > tonk-board > tonk-display,
+.board-view > tonk-board > tonk-display > tonk-view {
     display: block;
     block-size: 100%;
     min-block-size: 0;

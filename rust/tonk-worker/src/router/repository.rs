@@ -35,10 +35,17 @@ use tonk_schema::{
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
-/// Name of the meta branch every repository has alongside its
-/// content branches. The meta branch stores schema concepts
-/// describing the repository itself (see [`tonk_schema`]).
+/// Name of the device-local meta branch every *space* repository has
+/// alongside its content branch. It stores local bookkeeping — the
+/// local [`Replica`] record, remotes config, and branch enumeration —
+/// that must never replicate (see [`tonk_schema`]).
 const META_BRANCH: &str = "meta";
+
+/// The single branch the *profile* repository lives on. The profile
+/// has no content/meta split (its whole state is device-local hub
+/// bookkeeping), so it uses `main` like any repository's default
+/// branch rather than a separate meta branch.
+const PROFILE_BRANCH: &str = "main";
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -737,23 +744,33 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
         use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously only to confirm this is a `PauseSync`; it
-        // carries no payload the handler needs (the repo comes from the
-        // origin, the toggle is read from durable state).
-        let is_pause = facts
+        // Decode synchronously to read the target space off the command — the
+        // handler flips THAT space's replica, not the dispatch origin's, so the
+        // command can be dispatched from the profile branch. The repo key is
+        // the space DID's suffix; a space's content branch is always `main`.
+        let target = facts
             .first()
             .map(|artifact| artifact.of.clone())
             .and_then(|entity| tonk_schema::command::PauseSync::decode(entity, facts))
-            .is_some();
+            .and_then(|command| {
+                command
+                    .space
+                    .0
+                    .to_string()
+                    .parse::<dialog_varsig::Did>()
+                    .ok()
+            })
+            .map(|did| did.repo_key().to_owned());
         let env = env.clone();
 
         Box::pin(async move {
-            if !is_pause {
+            let Some(repo) = target else {
+                log!("PauseSync: no/unparseable target space, skipping");
                 return;
-            }
-            let repo = env.origin().repo.clone();
-            let branch = env.origin().branch.clone();
+            };
+            let branch = CONTENT_BRANCH.to_string();
             log!("command PauseSync repo={} branch={}", repo, branch);
 
             if let Err(error) = run_pause_sync(&env, &repo, &branch).await {
@@ -870,7 +887,7 @@ async fn run_profile_rename(
     // 1. Persist the override on the profile meta branch.
     tonk.reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(tonk_schema::ProfileName::new(
             profile_entity,
@@ -902,6 +919,287 @@ async fn run_profile_rename(
     crate::router::join::notify_sync(env.client());
 
     Ok(())
+}
+
+/// Post-commit handler for the [`RemoveSpace`] command.
+///
+/// Fired when the user confirms a Hub row's delete overlay. Removal is
+/// device-local and ordered so the visible state commits first and
+/// cleanup is best-effort behind it — see [`remove_space_inner`].
+///
+/// A custom handler (not a plain `Provider<RemoveSpace>`) for the same
+/// reason as [`CreateSpaceHandler`]: the work needs the profile handle,
+/// the reactor cache, and storage, reached through state rather than
+/// carried by the decoded command.
+///
+/// `run` refuses any transient whose origin repo is non-empty. This is
+/// the first *destructive* command reachable through shape-matched
+/// cross-branch dispatch: `dom.event.current-target.dataset/remove` is
+/// just an attribute name, so the same-shaped fact committed on ANY
+/// content branch — a joined space's own notation, or a same-origin
+/// POST to that repo's `/transact` — would otherwise let it name and
+/// delete any space by DID, regardless of where the command actually
+/// fired. The Hub's delete form commits on the profile branch, whose
+/// origin `repo` is always empty (`transact_profile` in `transact.rs`
+/// never names a repo — the same reasoning `transact_profile`'s
+/// sealed-guest check relies on), so refusing a non-empty origin is
+/// exactly "only the Hub can fire this."
+///
+/// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct RemoveSpaceHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RemoveSpaceHandler {
+    /// Cache `RemoveSpace`'s trigger attributes (its `subject` field) so
+    /// the registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::RemoveSpace::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::RemoveSpace::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock), then
+        // hand the owned subject + an env clone to the `'static` future.
+        let subject = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::RemoveSpace::decode(entity, facts))
+            .map(|command| command.subject.0);
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(subject) = subject else {
+                return;
+            };
+            // See the type doc: only the profile branch (empty origin
+            // repo) may fire this. A non-empty origin means the fact came
+            // from a content branch — matched by shape, not by who asked —
+            // so it is ignored rather than trusted to remove anything.
+            if !env.origin().repo.is_empty() {
+                log!(
+                    "RemoveSpace ignored: origin '{}' is not the profile branch",
+                    env.origin().repo
+                );
+                return;
+            }
+            log!("command RemoveSpace subject={}", subject);
+            let subject: Did = match subject.to_string().parse() {
+                Ok(did) => did,
+                Err(error) => {
+                    log!("RemoveSpace: '{}' is not a DID: {}", subject, error);
+                    return;
+                }
+            };
+            if let Err(error) = remove_space_inner(env.state(), &subject).await {
+                log!("RemoveSpace '{}' failed: {}", subject, error);
+            }
+        })
+    }
+}
+
+/// Remove a space device-locally, in three ordered steps:
+///
+/// 1. Retract its replica record from the profile meta branch
+///    ([`remove_replica_from_profile`]) — the Hub row's source of
+///    truth, so the spot disappears immediately. This is the commit
+///    point; everything after is cleanup.
+/// 2. Evict the repository from the reactor cache
+///    ([`Reactor::evict`](crate::Reactor::evict)) and forget it in the
+///    sync work-queue ([`SyncQueue::forget`](crate::router::SyncQueue::forget)).
+///    The background sync sweep unions the reactor cache with the dirty
+///    set (see `drain_sync`), so both must drop the repo — a leftover
+///    dirty stamp alone would resurrect it on the next drain even after
+///    eviction.
+/// 3. Delete local storage ([`delete_space_storage`]) — best-effort
+///    and outside the state lock; a failure only orphans invisible
+///    bytes, so it is logged, never surfaced. Re-evicted once more
+///    afterward (see below) since the unlocked delete leaves a window
+///    for a concurrent drain to re-acquire the repo.
+///
+/// The self-replica (subject == profile) is refused: its row is hidden
+/// chrome in the Hub, and deleting the profile's own storage would take
+/// every space with it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), RepositoryError> {
+    {
+        let tonk = state.write().await;
+        if *subject == tonk.profile.did() {
+            return Err(RepositoryError::Internal(
+                "refusing to remove the profile's self-replica".to_string(),
+            ));
+        }
+        remove_replica_from_profile(&tonk, subject).await?;
+        // Drain the poll the retraction scheduled so the Hub's meta
+        // subscription reflects the removal (mirrors set_replica_status).
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        tonk.reactor.evict(subject.repo_key());
+        // Same repo, same lock: a dirty stamp left in the sync queue would
+        // otherwise survive eviction and, on the next drain, get folded
+        // into the pull set that resurrects the reactor cache entry.
+        tonk.sync_queue.forget(subject.repo_key());
+    }
+    // Storage cleanup after the lock is released — the delete awaits
+    // browser IO and must not stall other requests.
+    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(subject.repo_key())).await;
+
+    // The delete ran unlocked, so a concurrent `drain_sync` could have
+    // reached in and re-acquired the repo (e.g. to pull) while it was in
+    // flight — resurrecting the cache entry and, since the IDB open races
+    // the delete, potentially recreating an empty database right behind
+    // it. Re-evict now that the delete has settled to drop any such
+    // handle.
+    {
+        let tonk = state.write().await;
+        tonk.reactor.evict(subject.repo_key());
+    }
+    Ok(())
+}
+
+/// Retract every fact keyed on `subject`'s replica entity from the
+/// profile repository's meta branch — the reverse of
+/// [`record_replica_in_profile`]. Selecting the entity's actual claims
+/// (rather than re-asserting typed concepts to retract) sweeps every
+/// stamp regardless of vintage — the `Replica` fields, `SpaceStatus`,
+/// a migration's `SpaceKind`, a legacy `name` — without knowing their
+/// current values.
+///
+/// Reads and writes through the reactor's cached profile handle for the
+/// same reason `record_replica_in_profile` does: the Hub reads through
+/// that handle, so a commit on a separate handle would be invisible to
+/// it. Broadcasts `/api/profile` like the record path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn remove_replica_from_profile(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
+    let stream = meta
+        .handle()
+        .claims()
+        .select(ArtifactSelector::new().of(entity.clone()))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
+    tokio::pin!(stream);
+
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction();
+    let mut found = false;
+    while let Some(artifact) = stream.next().await {
+        let artifact =
+            artifact.map_err(|e| RepositoryError::Internal(format!("read replica claim: {e}")))?;
+        found = true;
+        transaction = transaction.retract(super::claim::RawClaim {
+            the: artifact.the,
+            of: artifact.of,
+            is: artifact.is,
+            unique: false,
+        });
+    }
+    if !found {
+        // Nothing recorded — a stale row or a repeated submit. Not an
+        // error: the desired end state (no record) already holds.
+        log!("remove replica: no facts for {} in profile meta", entity);
+        return Ok(());
+    }
+
+    let revision = transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("retract replica record: {e}")))?;
+
+    broadcast(
+        "/api/profile",
+        &Notification {
+            branch: PROFILE_BRANCH.to_string(),
+            revision,
+        },
+    );
+    Ok(())
+}
+
+/// Delete a space's local storage: its IndexedDB database (archive,
+/// memory, credential, certificate object stores) and, best-effort, an
+/// OPFS blob subtree at `current/<key>` — the path dialog-storage's
+/// FileSystem provider would use under its `Directory::Current`
+/// mapping, if a `WebSpace` wired one up. At the currently pinned
+/// dialog-storage revision it doesn't: the web space keeps everything
+/// in the IndexedDB database, so the OPFS removal below is a
+/// forward-compatible no-op that quietly settles via its `catch` when
+/// the directory doesn't exist. The database name is exactly the
+/// routing key.
+///
+/// Inline JS rather than web-sys: `deleteDatabase` and recursive
+/// `removeEntry` have no plumbing here, and the whole operation is two
+/// promise chains. Never rejects — each half settles on error/absence.
+/// `onblocked` also resolves: the worker's own pooled connection closes
+/// itself on the `versionchange` the delete fires (see
+/// [`crate::patch_idb_versionchange`]), after which the browser
+/// completes the delete; waiting for the completion event would hang if
+/// another tab pins the database open.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function delete_space_storage(name) {
+    const database = new Promise((resolve) => {
+        const request = indexedDB.deleteDatabase(name);
+        request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    const blobs = navigator.storage.getDirectory()
+        .then((root) => root.getDirectoryHandle('current'))
+        .then((dir) => dir.removeEntry(name, { recursive: true }))
+        .catch(() => {});
+    return Promise.all([database, blobs]);
+}
+"#)]
+extern "C" {
+    /// Delete the IndexedDB database and OPFS blob directory for a
+    /// space's routing key. Resolves once both halves settle; never
+    /// rejects.
+    fn delete_space_storage(name: &str) -> js_sys::Promise;
 }
 
 /// Toggle the durable `enabled` preference on the replica and publish the
@@ -1127,6 +1425,70 @@ fn spawn_seed(
 ) {
 }
 
+/// Whether `subject` still has a recorded [`Replica`] on the profile's
+/// meta branch. The replica entity is content-derived from `(profile,
+/// subject)` — the same hash [`Replica::new`] uses (see
+/// [`set_replica_status`]) — so its presence is checked directly rather
+/// than searched for.
+///
+/// Guards [`seed_and_initialize`] against a `RemoveSpace` landing
+/// mid-seed: [`remove_replica_from_profile`] retracts exactly this
+/// record, so its absence means the space was removed while this seed
+/// was in flight (either on the awaited create path or the detached
+/// [`spawn_seed`] path).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn replica_still_recorded(tonk: &TonkState, subject: &Did) -> Result<bool, RepositoryError> {
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
+    let rows: Vec<Replica> = meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::from(entity),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("replica query: {e}")))?;
+    Ok(!rows.is_empty())
+}
+
+/// If `subject`'s replica record is gone (see
+/// [`replica_still_recorded`]), evict the repo from the reactor cache
+/// (a mid-seed removal already evicted once, but the seed may have
+/// re-acquired it since) and log; the caller returns early without
+/// seeding or stamping. `stage` names the point being skipped, for the
+/// log line.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn bail_if_space_removed(
+    tonk: &TonkState,
+    subject: &Did,
+    key: &str,
+    stage: &str,
+) -> Result<bool, RepositoryError> {
+    if replica_still_recorded(tonk, subject).await? {
+        return Ok(false);
+    }
+    log!(
+        "seed '{}': replica record gone (space removed mid-seed), skipping {}",
+        key,
+        stage
+    );
+    tonk.reactor.evict(key);
+    Ok(true)
+}
+
 /// Seed the standard library into every branch, then flip the
 /// replica's status to `initialized`. Runs in the background after
 /// `put_repository` has already responded.
@@ -1139,6 +1501,21 @@ async fn seed_and_initialize(
     branches: &[String],
     template: Option<&str>,
 ) -> Result<(), RepositoryError> {
+    // The seed can run long after the replica record was asserted (the
+    // detached `spawn_seed` path, or just a slow library fetch on the
+    // awaited create path), leaving a window for the user to remove the
+    // space before it lands. Without this guard the seed would re-insert
+    // the evicted reactor cache entry, recreate the just-deleted database
+    // with seeded content, and re-stamp `SpaceStatus` on a retracted
+    // entity. Checked again below, right before each status flip, since
+    // removal can also land in the gap opened by the fetch/seed loop.
+    {
+        let tonk = state.read().await;
+        if bail_if_space_removed(&tonk, subject, key, "seed").await? {
+            return Ok(());
+        }
+    }
+
     if !branches.is_empty() {
         // Fetch every library document this repo seeds — core, then the
         // chosen template, then (home only) the showcase demo. Concatenated
@@ -1169,9 +1546,17 @@ async fn seed_and_initialize(
                 branch_name
             );
         }
+        // Cheap re-check right before stamping: the fetch/seed loop above
+        // awaited, opening another window for a removal to land.
+        if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
+            return Ok(());
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
         let tonk = state.read().await;
+        if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
+            return Ok(());
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
     log!("Repository '{}' initialized", key);
@@ -1195,6 +1580,11 @@ const SHEETS_LIBRARY_URL: &str = "/library/sheets.yaml";
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const WIKI_LIBRARY_URL: &str = "/library/wiki.yaml";
 
+/// URL of the served board-template asset, appended on top of the
+/// scaffold when the `board` template is chosen.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const BOARD_LIBRARY_URL: &str = "/library/board.yaml";
+
 /// URL of the served showcase-demo notation asset (`demo.yaml`),
 /// copied into the dist alongside `core.yaml`. Seeded on top of the
 /// scaffold, but only into the default `home` repository, so every
@@ -1215,11 +1605,12 @@ const DEFAULT_REPOSITORY_NAME: &str = "home";
 /// new repo. Core is always first. The `sheets` template appends the
 /// sheets workspace (which overrides the `tonk/space` alias to the
 /// binder); the `wiki` template appends the wiki (tree + block canvas,
-/// same alias override). The default `home` repo gets sheets + the
-/// showcase demo, so it keeps opening into the populated binder. Every
-/// other template value (including `blank`, `agent`, or an unknown
-/// one) is core alone — the lean default that renders the blank
-/// canvas.
+/// same alias override); the `board` template appends the card canvas
+/// (columns of text/checklist/table cards, same alias override). The
+/// default `home` repo gets sheets + the showcase demo, so it keeps
+/// opening into the populated binder. Every other template value
+/// (including `blank`, `agent`, or an unknown one) is core alone —
+/// the lean default that renders the blank canvas.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn seed_library_urls(template: Option<&str>, display_name: &str) -> Vec<&'static str> {
     if display_name == DEFAULT_REPOSITORY_NAME {
@@ -1228,6 +1619,7 @@ fn seed_library_urls(template: Option<&str>, display_name: &str) -> Vec<&'static
     match template {
         Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
         Some("wiki") => vec![STANDARD_LIBRARY_URL, WIKI_LIBRARY_URL],
+        Some("board") => vec![STANDARD_LIBRARY_URL, BOARD_LIBRARY_URL],
         _ => vec![STANDARD_LIBRARY_URL],
     }
 }
@@ -1736,7 +2128,7 @@ async fn record_replica_in_profile(
     let revision = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(replica)
         .assert(status)
@@ -1757,7 +2149,7 @@ async fn record_replica_in_profile(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: META_BRANCH.to_string(),
+            branch: PROFILE_BRANCH.to_string(),
             revision,
         },
     );
@@ -1788,7 +2180,7 @@ async fn set_replica_status(
     let revision = tonk
         .reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(stamp)
         .commit()
@@ -1803,7 +2195,7 @@ async fn set_replica_status(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: META_BRANCH.to_string(),
+            branch: PROFILE_BRANCH.to_string(),
             revision,
         },
     );
@@ -1834,7 +2226,7 @@ pub(super) async fn mark_replica_initialized(
 /// `(profile, subject)` / `(replica, name)`), so re-asserting the
 /// same facts produces the same entities and attribute values and
 /// the dialog layer deduplicates.
-pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryError> {
+pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> {
     let profile_did = tonk.profile.did();
     let replica = Replica::new(profile_did.clone(), profile_did);
 
@@ -1844,17 +2236,17 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
     // `Repository::from` handle would leave the reader stale.
     tonk.reactor
         .profile_repository()
-        .branch(META_BRANCH)
+        .branch(PROFILE_BRANCH)
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
+        .assert(replica.branch(PROFILE_BRANCH))
         .commit()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to bootstrap profile meta: {}", e))
+            RepositoryError::Internal(format!("Failed to bootstrap profile branch: {}", e))
         })?;
-    log!("Profile meta bootstrapped");
+    log!("Profile branch bootstrapped");
 
     // Stamp a durable display name (the deterministic petname) when none is
     // stored yet, so the FAB's sealed profile-branch `<tonk-display
@@ -1878,18 +2270,18 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
     Ok(())
 }
 
-/// Fetch and seed the lean profile library onto the profile meta
+/// Fetch and seed the lean profile library onto the profile
 /// branch. SW-only — the fetch needs a service-worker scope.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
     let library = fetch_standard_library(PROFILE_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-    super::evaluate::evaluate_profile_body(tonk, META_BRANCH, library, true)
+    super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, library, true)
         .await
         .map(|_| ())
         .map_err(|e| {
-            RepositoryError::Internal(format!("seed standard library on profile meta: {e}"))
+            RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
         })
 }
 
@@ -2903,6 +3295,14 @@ mod seed_library_urls_tests {
     }
 
     #[test]
+    fn it_appends_board_for_the_board_template() {
+        assert_eq!(
+            seed_library_urls(Some("board"), "anything"),
+            vec!["/library/core.yaml", "/library/board.yaml"],
+        );
+    }
+
+    #[test]
     fn it_seeds_core_for_an_unknown_template() {
         assert_eq!(
             seed_library_urls(Some("garden"), "anything"),
@@ -3005,6 +3405,131 @@ mod tests {
         assert!(founder.is_self, "founder is the active profile");
         assert!(founder.invited_by.is_none(), "founder has no inviter");
         assert!(founder.name.is_some(), "founder is named");
+    }
+
+    /// All `Replica` rows on the profile meta branch (any kind), read
+    /// through the reactor's cached profile handle — the same handle
+    /// the Hub and the removal path use.
+    async fn profile_replicas(state: &AppState) -> Vec<tonk_schema::Replica> {
+        use dialog_query::{Output as _, Query, Term};
+        let tonk = state.read().await;
+        let meta = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile meta acquires");
+        meta.handle()
+            .query()
+            .select(Query::<tonk_schema::Replica> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                profile: Term::var("profile"),
+                kind: Term::var("kind"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("replica query")
+    }
+
+    /// Removing a space retracts its replica record from the profile
+    /// meta branch and evicts the repo from the reactor cache (which is
+    /// what drops it from the background sync sweep).
+    #[dialog_common::test]
+    async fn it_removes_a_space_from_the_profile_index() {
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-remove-space").await;
+
+        let subject: dialog_varsig::Did = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            repository.did()
+        };
+        let recorded = profile_replicas(&state).await;
+        assert!(
+            recorded.iter().any(|r| r.subject.0 == subject.this()),
+            "the fresh repo must be recorded before removal"
+        );
+
+        super::remove_space_inner(&state, &subject)
+            .await
+            .expect("remove succeeds");
+
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            !remaining.iter().any(|r| r.subject.0 == subject.this()),
+            "the replica record must be gone after removal"
+        );
+        {
+            let tonk = state.read().await;
+            assert!(
+                !tonk.reactor.repos().read().contains_key(&key),
+                "the repo must be evicted from the reactor cache"
+            );
+        }
+
+        // Idempotent: a repeated submit (e.g. a double-click before the
+        // Hub row disappears) finds no replica record and no cached repo —
+        // `remove_replica_from_profile`'s "nothing recorded" branch and a
+        // no-op `evict` — and is a logged no-op, not an error.
+        super::remove_space_inner(&state, &subject)
+            .await
+            .expect("a repeated remove is a no-op, not an error");
+    }
+
+    /// The self-replica (subject == profile) is refused: deleting the
+    /// profile's own storage would take every space with it.
+    #[dialog_common::test]
+    async fn it_refuses_to_remove_the_self_replica() {
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, _key) = fresh_repo("test-remove-self").await;
+
+        // The harness never runs the worker boot path — and can't call
+        // `bootstrap_profile`, whose library fetch needs a real
+        // service-worker registration — so seed just the self-replica
+        // record the assertion below expects, mirroring the bootstrap's
+        // own transaction.
+        {
+            let tonk = state.read().await;
+            let profile_did = tonk.profile.did();
+            let replica = super::Replica::new(profile_did.clone(), profile_did);
+            tonk.reactor
+                .profile_repository()
+                .branch(super::PROFILE_BRANCH)
+                .transaction()
+                .assert(replica.clone())
+                .assert(replica.branch(super::PROFILE_BRANCH))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .expect("seed self-replica");
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        }
+
+        let profile_did = {
+            let tonk = state.read().await;
+            tonk.profile.did()
+        };
+        super::remove_space_inner(&state, &profile_did)
+            .await
+            .expect_err("removing the self-replica must fail");
+
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            remaining.iter().any(|r| r.subject.0 == profile_did.this()),
+            "the self-replica record must survive"
+        );
     }
 
     /// Build a one-entity transient `ProfileRename{this, name, marker}`
@@ -3159,7 +3684,7 @@ mod tests {
             &state,
             crate::router::CommandOrigin {
                 repo: String::new(),
-                branch: "meta".to_string(),
+                branch: "main".to_string(),
                 client: None,
             },
             changes,
@@ -3644,6 +4169,72 @@ mod tests {
             rows.len(),
             1,
             "state:self must be re-stamped after invite clears the overlay",
+        );
+    }
+
+    /// Build a one-entity transient `RemoveSpace{this, subject}` batch —
+    /// the facts the Hub's delete-confirm form asserts. Mirrors
+    /// `profile_rename_transient`: the `data-remove` marker attribute
+    /// (`dom.event.current-target.dataset/remove`) carries the target
+    /// subject DID as its value and is the command's whole payload (see
+    /// `tonk_schema::command::RemoveSpace`).
+    fn remove_space_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_artifacts::Changes {
+        use dialog_artifacts::{Entity, Statement};
+        use dialog_query::the;
+        use tonk_schema::prelude::DidExt as _;
+
+        let entity: Entity = of.parse().expect("entity URI");
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("dom.event.current-target.dataset/remove")
+            .of(entity)
+            .is(subject.this())
+            .assert(&mut changes);
+        changes
+    }
+
+    /// `RemoveSpace` is refused unless it fired on the profile branch
+    /// (empty origin repo) — the gate closing the finding that a
+    /// same-shaped `dom.event.current-target.dataset/remove` fact
+    /// committed on ANY content branch (a joined space's own notation, or
+    /// a same-origin POST to that repo's `/transact`) could otherwise name
+    /// and delete any space by DID. Fired here with a non-empty origin, as
+    /// that cross-branch dispatch would produce; the replica record must
+    /// survive untouched.
+    #[dialog_common::test]
+    async fn it_ignores_remove_space_from_a_non_profile_origin() {
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, key) = fresh_repo("test-remove-non-profile-origin").await;
+
+        let subject: dialog_varsig::Did = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            repository.did()
+        };
+
+        let changes = remove_space_transient("did:key:zRemoveWrongOrigin", &subject);
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: "somerepo".to_string(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            remaining.iter().any(|r| r.subject.0 == subject.this()),
+            "a RemoveSpace fired from a non-profile origin must not remove the replica",
         );
     }
 }

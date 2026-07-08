@@ -21,10 +21,27 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use tonk_host::location::{Allow, Location};
 use web_sys::{Element, HtmlElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::shared::{connect_portal, install_method_shims, reload_portal};
+
+/// Parse an optional `with` attribute off a portal element. A malformed
+/// value is logged and treated as absent rather than failing the mount —
+/// the portal then runs sealed on the ambient context.
+pub(crate) fn portal_with(this: &HtmlElement) -> Option<Location> {
+    let value = this
+        .get_attribute("with")
+        .filter(|v| !v.is_empty() && !v.contains('{'))?;
+    match value.parse() {
+        Ok(location) => Some(location),
+        Err(error) => {
+            tonk_common::log!("tonk-portal: malformed with={value:?}: {error}");
+            None
+        }
+    }
+}
 
 /// The custom element. Holds the shared [`PortalState`]; `None` until
 /// `connected_callback` builds it.
@@ -45,10 +62,15 @@ impl CustomElement for TonkPortal {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // `false`: a generic content portal renders synced/untrusted markup,
-        // so it must NOT be able to escape its handshake repo context. A
-        // guest-forwarded route is ignored for this portal.
-        connect_portal(this, &self.inner, false, |iframe| {
+        // An optional `with` pins the portal's context; a malformed value is
+        // logged and treated as absent (the portal stays on the ambient
+        // context). The allow list is exactly the pinned context (or
+        // nothing): a generic content portal renders synced/untrusted
+        // markup, so it must NOT be able to escape its pinned context — a
+        // guest-forwarded off-context route is denied.
+        let with = portal_with(this);
+        let allow = with.clone().map(Allow::only).unwrap_or_else(Allow::none);
+        connect_portal(this, &self.inner, with, allow, |iframe| {
             // The iframe always fills its container. `flex: 1` + `align-self:
             // stretch` make it fill a flex-column host (the display-route layout)
             // without needing a definite-height ancestor for `height: 100%`.
@@ -68,9 +90,25 @@ impl CustomElement for TonkPortal {
             s.clear_subs();
             if let Some(iframe) = s.iframe.take() {
                 bridge::unregister_portal(&iframe);
-                if let Some(parent) = iframe.parent_node() {
-                    let _ = parent.remove_child(&iframe);
-                }
+                // Two-phase: unload the guest realm first, remove the
+                // element a tick later — synchronous destruction of a live
+                // guest is the pattern the browser process crashes under
+                // (see `site::teardown`).
+                let _ = iframe.remove_attribute("srcdoc");
+                let _ = iframe.set_attribute("src", "about:blank");
+                wasm_bindgen_futures::spawn_local(async move {
+                    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                &resolve, 100,
+                            );
+                        }
+                    });
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                    if let Some(parent) = iframe.parent_node() {
+                        let _ = parent.remove_child(&iframe);
+                    }
+                });
             }
         }
     }
@@ -229,16 +267,41 @@ mod tests {
         );
     }
 
+    /// Teardown is TWO-PHASE: on disconnect the guest realm is pointed at
+    /// `about:blank` immediately (comms already severed), and the element
+    /// itself is removed a tick later — synchronous destruction of a live
+    /// guest is the pattern the browser process crashed under.
     #[dialog_common::test]
-    fn it_removes_the_iframe_on_disconnect() {
+    async fn it_removes_the_iframe_on_disconnect() {
         let host = mount(Some("<p>hi</p>"));
         assert_eq!(host.query_selector_all("iframe").unwrap().length(), 1);
 
         host.remove();
 
+        // Phase one, immediate: the frame is unloading, not yet detached.
+        if let Some(iframe) = host.query_selector("iframe").unwrap() {
+            assert_eq!(
+                iframe.get_attribute("src").as_deref(),
+                Some("about:blank"),
+                "disconnect must unload the guest realm first",
+            );
+        }
+
+        // Phase two: detached shortly after.
+        for _ in 0..80 {
+            if host.query_selector("iframe").unwrap().is_none() {
+                break;
+            }
+            let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                if let Some(win) = web_sys::window() {
+                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 25);
+                }
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        }
         assert!(
             host.query_selector("iframe").unwrap().is_none(),
-            "disconnect should detach the iframe; got: {}",
+            "the deferred phase detaches the iframe; got: {}",
             host.inner_html(),
         );
     }

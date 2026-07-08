@@ -7,8 +7,8 @@
 //! 1. Builds a `CustomEvent` with `bubbles: true, composed: true,
 //!    cancelable: true` and the appropriate detail shape.
 //! 2. Dispatches on the consumer element.
-//! 3. Reads `event.defaultPrevented` to detect whether a
-//!    `<tonk-host>` ancestor handled the event.
+//! 3. Reads `event.defaultPrevented` to detect whether an
+//!    installed host (or the guest relay) handled the event.
 //! 4. For one-shots, awaits `detail.result`; for subscribe,
 //!    returns the `detail.subscription` handle.
 //!
@@ -66,9 +66,8 @@ pub async fn query(consumer: &Element, query_body: &JsValue) -> Result<JsValue, 
 /// Like [`query`], but with an explicit cross-repo route: `space` (a
 /// repository name/DID) and `branch`. When `space` is `Some`, the dispatched
 /// event's `detail` is stamped with that route (and `profile = false`) so it
-/// wins over any `<tonk-repository>`/`<tonk-branch>`/`<tonk-repository
-/// profile>` ancestor annotators — see [`apply_route`]. With `space = None`
-/// this is identical to [`query`].
+/// wins over any `with` ancestor context — see [`apply_route`]. With
+/// `space = None` this is identical to [`query`].
 pub async fn query_with_route(
     consumer: &Element,
     query_body: &JsValue,
@@ -88,16 +87,15 @@ pub async fn query_with_route(
 
 /// Stamp an explicit cross-repo route onto a one-shot/subscribe `detail`.
 ///
-/// Routing context normally flows from the consumer's `<tonk-repository>` /
-/// `<tonk-branch>` ancestors, which annotate `detail.space` / `detail.branch`
-/// during bubble phase ONLY when the field is absent (inner-most-wins). A
-/// caller with an explicit route (e.g. the portal bridge relaying a sealed
-/// guest's nested `<tonk-repository name=…>` context, which the guest's own
-/// ancestors already resolved) pre-fills those fields so the ancestors leave
-/// them untouched. `profile` is forced to `false` because an explicit
-/// repository route must override a `<tonk-repository profile>` ancestor's
-/// flag (which would otherwise re-target the profile endpoint). When `space`
-/// is `None` the detail is left bare so ancestor annotation proceeds as usual.
+/// Routing context normally resolves at handle time from the consumer's
+/// nearest `with` ancestor. A caller with an explicit route (e.g. the portal
+/// bridge relaying a sealed guest's forwarded `with` context, which the
+/// guest's own relay already resolved) pre-fills the detail fields, and the
+/// host honors those over the `with` ancestry. `profile` is forced to
+/// `false` because an explicit repository route must override a
+/// `…@profile` ancestor context (which would otherwise re-target the
+/// profile endpoint). When `space` is `None` the detail is left bare so
+/// `with` resolution proceeds as usual.
 fn apply_route(detail: &Object, space: Option<&str>, branch: Option<&str>, profile: bool) {
     // A profile route targets the profile-as-repository endpoint: there is no
     // named `space`, just the branch. Stamp the flag and branch and return.
@@ -218,7 +216,10 @@ pub fn subscribe_with_route(
     if !ev.default_prevented() {
         return Err(ErrorDetail::new(
             ErrorKind::Network,
-            "tonk-subscribe: no <tonk-host> ancestor",
+            format!(
+                "tonk-subscribe: no host claimed the event ({})",
+                dispatch_diagnostics(consumer)
+            ),
         ));
     }
     let subscription_obj = Reflect::get(&detail, &"subscription".into())
@@ -277,7 +278,10 @@ fn dispatch_one_shot(
     if !ev.default_prevented() {
         return Err(ErrorDetail::new(
             ErrorKind::Network,
-            format!("{event_name}: no <tonk-host> ancestor"),
+            format!(
+                "{event_name}: no host claimed the event ({})",
+                dispatch_diagnostics(consumer)
+            ),
         ));
     }
     Reflect::get(detail, &"result".into())
@@ -289,6 +293,20 @@ fn dispatch_one_shot(
                 format!("{event_name}: host did not write detail.result"),
             )
         })
+}
+
+/// Diagnostic snapshot for an unclaimed dispatch. An event only reaches the
+/// document listeners from a CONNECTED element (`connected=false` means the
+/// consumer dispatched from a detached tree — the event bubbled to its
+/// detached root and died there); `root` names that root
+/// (`#document` / `#document-fragment` / an element tag).
+fn dispatch_diagnostics(consumer: &Element) -> String {
+    format!(
+        "consumer=<{}> connected={} root={}",
+        consumer.local_name(),
+        consumer.is_connected(),
+        consumer.get_root_node().node_name().to_lowercase(),
+    )
 }
 
 /// Best-effort conversion of a rejected promise's value into an

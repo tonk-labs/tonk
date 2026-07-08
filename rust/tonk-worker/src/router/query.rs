@@ -125,6 +125,37 @@ async fn query_on_branch<'a>(
     };
 
     if want_stream {
+        // While a NEWER worker is waiting, refuse to open a long-lived
+        // stream: an SSE response is a fetch event that never settles, and
+        // `skipWaiting` waits for in-flight events — one reopened stream
+        // would wedge the update forever (the `updatefound` release runs
+        // once, and every tab's reconnect would re-pin this worker). Serve
+        // the current snapshot as a single frame and END the stream; the
+        // consumer's clean-close reconnect lands on the NEW worker after
+        // `controllerchange`.
+        if update_pending() {
+            let wire: Vec<Conclusion> = branch
+                .query(query)
+                .perform(&tonk.operator)
+                .await
+                .map_err(reactor_to_error)?;
+            let payload = serde_json::to_vec(&wire).unwrap_or_default();
+            let mut framed = Vec::with_capacity(payload.len() + 48);
+            framed.extend_from_slice(b"data: ");
+            framed.extend_from_slice(&payload);
+            framed.extend_from_slice(b"\n\n");
+            // Signal that this drop is INTENTIONAL: the consumer should
+            // hold its reconnect for the controller change (long fallback
+            // only) instead of dialing the outgoing worker on a timer.
+            framed.extend_from_slice(b"data: {\"control\":\"update-pending\"}\n\n");
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(Body::from(framed))
+                .expect("response builder failed"));
+        }
+
         let subscriber = branch
             .subscribe(query)
             .perform(&tonk.operator)
@@ -154,6 +185,23 @@ async fn query_on_branch<'a>(
             .map_err(reactor_to_error)?;
         Ok(Json(wire).into_response())
     }
+}
+
+/// Whether a newer service worker is installed and WAITING to take over.
+/// `false` off-wasm and whenever the registration is unreadable — a wrongly
+/// refused stream would starve consumers, a wrongly opened one only delays
+/// an update.
+fn update_pending() -> bool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast;
+        return js_sys::global()
+            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+            .map(|scope| scope.registration().waiting().is_some())
+            .unwrap_or(false);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    false
 }
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {

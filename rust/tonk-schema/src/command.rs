@@ -146,13 +146,17 @@ impl Command for Invite {
     type Output = ();
 }
 
-/// Toggle background sync for the origin repo's replica.
+/// Toggle background sync for a space's replica.
 ///
-/// Dispatched when the sync chip is clicked. Carries only a timestamp so
-/// each click is a distinct transient (re-firing the handler); the handler
-/// reads the replica's current `auto-sync` preference and flips it. The
-/// repo is read from the command origin, the profile from the worker — the
-/// two that key the replica.
+/// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
+/// target `space` (the DID to pause) and a timestamp so each click is a
+/// distinct transient (re-firing the handler); the handler reads the
+/// replica's current `auto-sync` preference for that space and flips it.
+///
+/// The `space` field is what lets this command live on and dispatch from the
+/// PROFILE branch: the handler reads the target space from the command rather
+/// than the dispatch origin, so the FAB's pause affordance needs no view or
+/// command seeded on each space's own branch.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct PauseSync {
     /// The command entity (a fresh id per click).
@@ -160,10 +164,13 @@ pub struct PauseSync {
     /// The click event's timestamp — distinguishes one click from the next
     /// so the transient re-fires.
     pub time: crate::domain::command::invite::TimeStamp,
-    /// Per-command marker (read from the pause form's `data-pause-sync`) that
-    /// gives `PauseSync` an attribute no other command carries — so this
-    /// transient does NOT also decode as `tonk:invite` (which shares the same
-    /// `{this, time}` shape). See [`crate::domain::command::pause_sync::PauseSync`].
+    /// The target space DID — the replica to pause/resume. Read by the handler
+    /// in place of the dispatch origin.
+    pub space: crate::domain::command::pause_sync::Space,
+    /// Per-command marker that gives `PauseSync` an attribute no other command
+    /// carries — so this transient does NOT also decode as `tonk:invite` (which
+    /// shares the same `{this, time}` shape). See
+    /// [`crate::domain::command::pause_sync::PauseSync`].
     pub marker: crate::domain::command::pause_sync::PauseSync,
 }
 
@@ -193,6 +200,40 @@ pub struct ProfileRename {
 }
 
 impl Command for ProfileRename {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Request to remove a space from this device: retract its replica
+/// record from the profile meta branch (the Hub row's source of
+/// truth), detach it from the reactor/sync, and delete its local
+/// storage.
+///
+/// Asserted transiently when the user confirms a Hub row's delete
+/// overlay (`<form onsubmit=space/remove data-remove={subject}>` in
+/// `profile.yaml`). Removal is device-local: a synced space can be
+/// rejoined via an invite link; server-side data is untouched.
+///
+/// Deliberately a single matched field, like [`CreateSpace`], so an
+/// older profile descriptor keeps decoding it. The field also doubles
+/// as the command's distinct shape: `dataset/remove` is read by no
+/// other command, whereas a `dataset/subject` field would also match
+/// every `tonk/rename-repository` transient (which carries
+/// `dataset/subject`) and turn each rename into a deletion — see
+/// [`crate::domain::command::remove::Remove`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RemoveSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The subject DID of the space to remove, from `data-remove`.
+    pub subject: crate::domain::command::remove::Remove,
+}
+
+/// `RemoveSpace` is a [`dialog_capability::Command`]; the worker
+/// registers a custom `RemoveSpaceHandler` (the work needs the profile
+/// handle, the reactor cache, and storage — state the decoded command
+/// doesn't carry).
+impl Command for RemoveSpace {
     type Input = Self;
     type Output = ();
 }

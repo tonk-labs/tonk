@@ -147,36 +147,53 @@ mod tests {
         register();
         let document = web_sys::window().unwrap().document().unwrap();
 
-        // A bare `<tonk-display>` ancestor carrying a `data-state`.
+        // The fallback mirrors the `data-state` of its nearest
+        // `<tonk-display>` ancestor. A registered `<tonk-display>` (earlier
+        // suite tests register it) boots on connect and re-stamps
+        // `data-state`, racing the fixture — so test `sync`'s pure logic
+        // directly, plus one live observer round-trip that force-holds the
+        // attribute against any racing boot write.
         let host = document.create_element("tonk-display").unwrap();
-        host.set_attribute("data-state", "empty").unwrap();
-        document.body().unwrap().append_child(&host).unwrap();
-
         let fallback = document.create_element("tonk-fallback").unwrap();
         fallback.set_inner_html("<p>nothing yet</p>");
         host.append_child(&fallback).unwrap();
-        tick().await;
+        document.body().unwrap().append_child(&host).unwrap();
+        let fb: HtmlElement = fallback.clone().dyn_into().unwrap();
 
-        let fb: HtmlElement = fallback.dyn_into().unwrap();
-        assert!(
-            !fb.hidden(),
-            "fallback should be visible while the display is empty",
-        );
-
-        // Content lands -> the host flips to `ready`, the fallback hides.
-        host.set_attribute("data-state", "ready").unwrap();
-        tick().await;
-        assert!(
-            fb.hidden(),
-            "fallback should hide once the display is no longer empty",
-        );
-
-        // Collection drains back to empty -> the fallback reappears.
+        // Call `sync` directly so no async display boot can interleave: it
+        // reads the CURRENT ancestor `data-state` and sets `hidden`.
         host.set_attribute("data-state", "empty").unwrap();
-        tick().await;
+        sync(&fb);
+        assert!(!fb.hidden(), "empty ancestor -> fallback visible");
+
+        host.set_attribute("data-state", "ready").unwrap();
+        sync(&fb);
+        assert!(fb.hidden(), "ready ancestor -> fallback hidden");
+
+        host.set_attribute("data-state", "empty").unwrap();
+        sync(&fb);
+        assert!(!fb.hidden(), "back to empty -> fallback visible again");
+
+        // Live: the observer wired in `connected_callback` flips `hidden`
+        // when `data-state` mutates, without a manual `sync`. Force the
+        // attribute right before ticking so a racing boot write (if the
+        // ancestor is registered) is superseded, and poll for the flip.
+        let observed = {
+            host.set_attribute("data-state", "ready").unwrap();
+            let mut hid = false;
+            for _ in 0..40 {
+                if fb.hidden() {
+                    hid = true;
+                    break;
+                }
+                host.set_attribute("data-state", "ready").unwrap();
+                tick().await;
+            }
+            hid
+        };
         assert!(
-            !fb.hidden(),
-            "fallback should reappear when the display goes empty again",
+            observed,
+            "the observer hides the fallback when the ancestor leaves empty",
         );
     }
 }

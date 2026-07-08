@@ -15,9 +15,10 @@
 # `model: space` resolves to the `&space` anchor here.
 
 # A space (replica) the profile has access to. These records live on
-# the profile repository's meta branch — one per repository this device
-# has joined or created. The Hub queries them through a
-# `<tonk-repository profile>` so the user can pick which space to open.
+# the profile repository's main branch — one per repository this device
+# has joined or created. The Hub queries them on the profile main branch
+# (the top site's `with="main@profile:tonk"` context) so the user can pick
+# which space to open.
 concept!: &space
   this: tonk:space
   description: A repository this profile can open.
@@ -93,11 +94,12 @@ command!: &space/create
     template:
       description: >
         Which template to seed: "wiki" for linked pages, "sheets" for
-        the tabbed workspace, or blank/absent for the lean default (the
-        blank canvas). Read from the wizard's `template` control on
-        submit, exactly as `name` and `remote` are. The worker's
-        CreateSpaceHandler reads it via template_from_facts; an older
-        form that omits it decodes as blank.
+        the tabbed workspace, "board" for the card canvas, or
+        blank/absent for the lean default (the blank canvas). Read from
+        the wizard's `template` control on submit, exactly as `name`
+        and `remote` are. The worker's CreateSpaceHandler reads it via
+        template_from_facts; an older form that omits it decodes as
+        blank.
       the: dom.event.current-target.elements.template/value
       as: text
     prevent-default:
@@ -142,8 +144,8 @@ concept!: &view/directory
 # subject did:key; the route reads the routing key as the suffix after
 # the last `:`, so `{subject}` (a full did:key) resolves to that key.
 # The card's name is NOT read from this profile-side record — it is read
-# from the listed space's OWN repository: a nested `<tonk-repository
-# name={subject}>` opens that space's routing context and a
+# from the listed space's OWN repository: the row's `with={subject}`
+# context opens that space's routing context and a
 # `<tonk-display model=tonk:repository view=tonk:view/label>` inside it
 # shows the repo's current name (the cross-device source of truth).
 # Rendered as a directory (no entity) over the `space` model on the
@@ -273,9 +275,9 @@ view/directory!:
            in a <label> so a click toggles the driving radio. The card carries
            the surface/border/hover; the label only forwards the click. */
         .onb-choices { display: grid; grid-template-columns: repeat(2, minmax(0,300px)); gap: 18px; }
-        /* The template picker: a 3-up grid of card <label>s, shown once the
-           template path is chosen. */
-        .onb-grid { display: none; grid-template-columns: repeat(3, minmax(0,280px));
+        /* The template picker: a grid of card <label>s (2x2 at four
+           templates), shown once the template path is chosen. */
+        .onb-grid { display: none; grid-template-columns: repeat(2, minmax(0,280px));
           gap: 18px; justify-content: center; }
         #wiz-tmpl:checked ~ .spot-overlay .onb-grid { display: grid; }
         /* Screen-1 choice cards: a <label> wrapping a wa-card. The wa-card owns
@@ -323,6 +325,7 @@ view/directory!:
            card via the general-sibling combinator into the grid. */
         #tpl-wiki:checked   ~ .onb-grid .onb-tcard[data-for="tpl-wiki"],
         #tpl-sheets:checked ~ .onb-grid .onb-tcard[data-for="tpl-sheets"],
+        #tpl-board:checked  ~ .onb-grid .onb-tcard[data-for="tpl-board"],
         #tpl-blank:checked  ~ .onb-grid .onb-tcard[data-for="tpl-blank"] {
           border-color: var(--wa-color-brand-fill-loud);
           box-shadow: inset 0 0 0 1px var(--wa-color-brand-fill-loud);
@@ -362,6 +365,11 @@ view/directory!:
           display: block; margin-bottom: 2px; }
         .tmpl__art--wiki i { height: 7px; background: var(--wa-color-neutral-fill-normal); display: block; width: 100%; }
         .tmpl__art--wiki i:nth-of-type(4) { width: 72%; }
+        .tmpl__art--board { align-items: flex-start; gap: 10px; padding: 16px 18px; }
+        .tmpl__art--board .col { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+        .tmpl__art--board .col i { display: block; width: 100%; height: 12px;
+          background: var(--wa-color-neutral-fill-normal); }
+        .tmpl__art--board .col i.tall { height: 30px; }
         .tmpl__art--sheets { padding: 20px 22px; }
         .tmpl__art--sheets .grid { width: 100%; height: 54px; display: block;
           background:
@@ -398,21 +406,23 @@ view/directory!:
 
       <div class="spot-list">
         <div class="spot-dir-head">Directory</div>
-        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
-          <span class="srow-dot"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
+        <!-- `data-id={this}` designates the repeat row. Each per-space
+             consumer carries its OWN `with={subject}` — the space's repo
+             DID from the record's `subject` FIELD (`{this}` is the
+             `tonk:space` row, a derived entity that names no repository).
+             The row cannot inherit one context because every row targets a
+             different space, so the disc and the label are each
+             self-describing. A bare repo means its main branch; honored
+             because the profile site is `allow="*"`. -->
+        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} data-id={this}>
+          <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
           <span class="srow-name">
-            <tonk-host>
-              <tonk-repository name={subject}>
-                <tonk-branch name="main">
-                  <tonk-display entity={subject} model=tonk:repository view=tonk:view/label>
-                    <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
-                    <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
-                    <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
-                    <span slot="loading" class="spot-untitled" hidden>Untitled</span>
-                  </tonk-display>
-                </tonk-branch>
-              </tonk-repository>
-            </tonk-host>
+            <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
+              <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
+              <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
+              <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
+              <span slot="loading" class="spot-untitled" hidden>Untitled</span>
+            </tonk-display>
           </span>
         </a>
       </div>
@@ -480,6 +490,7 @@ view/directory!:
             <input class="onb-tpl" type="radio" name="template" value="blank" id="tpl-blank" checked>
             <input class="onb-tpl" type="radio" name="template" value="sheets" id="tpl-sheets">
             <input class="onb-tpl" type="radio" name="template" value="wiki" id="tpl-wiki">
+            <input class="onb-tpl" type="radio" name="template" value="board" id="tpl-board">
             <div class="onb-grid">
               <label class="onb-tcard" data-for="tpl-wiki" for="tpl-wiki">
                 <div class="tmpl__art tmpl__art--wiki">
@@ -492,6 +503,15 @@ view/directory!:
                 <div class="tmpl__art tmpl__art--sheets"><span class="grid"></span></div>
                 <div class="onb-card__name">Sheets</div>
                 <div class="onb-card__desc">A tabbed workspace of artifacts.</div>
+              </label>
+              <label class="onb-tcard" data-for="tpl-board" for="tpl-board">
+                <div class="tmpl__art tmpl__art--board">
+                  <div class="col"><i class="tall"></i><i></i></div>
+                  <div class="col"><i></i><i></i><i></i></div>
+                  <div class="col"><i></i><i class="tall"></i></div>
+                </div>
+                <div class="onb-card__name">Board</div>
+                <div class="onb-card__desc">Columns of text, checklist and table cards on a pannable canvas.</div>
               </label>
               <label class="onb-tcard" data-for="tpl-blank" for="tpl-blank">
                 <div class="onb-card__name">Blank</div>
@@ -512,8 +532,8 @@ view/directory!:
 # FAB — floating action button view (rendered in the FAB portal iframe)
 # ============================================================
 #
-# These declarations live on profile/meta because the FAB portal is
-# scoped to the profile branch (`<tonk-repository profile>`). The
+# These declarations live on the profile branch because the FAB portal is
+# scoped to it (`with="main@profile:tonk"`). The
 # guest renders `tonk:profile/fab` via a `<tonk-display>` mounted
 # by the shell's FAB portal content string.
 #
@@ -577,7 +597,7 @@ view/fab-menu!:
   this: id:tonk:fab/space-menu
   model: space
   display: |
-    <a class="fab__menu-item" href="/space/{subject}"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="no-view">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host></a>
+    <a class="fab__menu-item" href="/space/{subject}"><tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="no-view">Untitled</span><span slot="loading">…</span></tonk-display></a>
 
 # The member's display name, read directly from THIS (profile meta) branch —
 # the durable `ProfileName` override the worker stamps on `profile/rename`
@@ -619,6 +639,31 @@ command!: &profile/rename
       the: dom.event.current-target.dataset/rename
       as: entity
 
+# Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
+# `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
+# PROFILE branch (not on each space's branch) and dispatched on the profile
+# context, so the FAB's pause affordance depends on nothing seeded per-space —
+# older spaces missing a `fab-pause` view no longer break it. The `space` field
+# names WHICH replica to flip; the worker's PauseSyncHandler reads it in place
+# of the dispatch origin. `time` makes each click a distinct transient so the
+# toggle reliably re-fires; `marker` keeps the shape distinct from `tonk:invite`.
+command!: &tonk/pause-sync
+  this: tonk:pause-sync
+  description: Toggle auto-sync (pause ⇄ resume) for a space.
+  with:
+    time:
+      description: The click's timestamp; makes each dispatch a distinct transient.
+      the: dom.event/time-stamp
+      as: float
+    space:
+      description: The target space DID — the replica whose auto-sync is flipped.
+      the: xyz.tonk.pause-sync/space
+      as: entity
+    marker:
+      description: Per-command marker keeping the shape distinct from tonk:invite.
+      the: dom.event.current-target.dataset/pause-sync
+      as: entity
+
 # A no-entity directory view over the single profile-name row → an inline
 # editable bound to the name. Mounted in the FAB bar via
 # `<tonk-display model="tonk:profile/name">`. The `<tonk-editable>` commits on
@@ -654,8 +699,12 @@ view/directory!: &profile/fab/view
              context the repo-name display below uses). It subscribes to the
              space's `state:here` sync status and updates as the background drain
              reconciles. When collapsed the whole bar shrinks to just this cap
-             (a floating disc); dragging grabs it. `.fab__circle` sizes the disc. -->
-        <span class="fab__seg fab__cap-l fab__circle"><tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><ui-sync-status></ui-sync-status></tonk-branch></tonk-repository></tonk-host></span>
+             (a floating disc); dragging grabs it. `.fab__circle` sizes the disc.
+             `onpause=tonk:pause-sync` wires the alt/option-click pause gesture:
+             the element dispatches that PROFILE-branch command carrying its own
+             space (from `with`), so pause needs nothing seeded on the space —
+             no hidden form, no space-side view. -->
+        <span class="fab__seg fab__cap-l fab__circle"><ui-sync-status with={dom.host/data-space} onpause="tonk:pause-sync"></ui-sync-status></span>
         <!-- ACCOUNT — its own segment (wireframe's `mr_oats`): the signed-in
              profile name, an inline editable that renames the profile. Shown
              whenever the bar is expanded (no disclosure gate). -->
@@ -665,7 +714,7 @@ view/directory!: &profile/fab/view
         <!-- SPOT — its own segment (wireframe's `myspace`): the active space's
              repo name, and the switcher menu (opened on click). Read from — and
              renamed on — the space's OWN repository (the cross-device source of
-             truth). A nested `<tonk-repository name={DID}>` opens that space's
+             truth). A `with={DID}` context opens that space's
              routing context; omitting `view=` resolves the repository's DEFAULT
              entity view, `tonk:repository/name-view` (core.yaml), an inline
              `<tonk-editable value={name} data-subject={this}
@@ -678,7 +727,7 @@ view/directory!: &profile/fab/view
              view feeds chrome a host-only conclusion; see tonk-display). -->
         <span class="fab__seg fab__repo">
           <span class="fab__space">
-            <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main"><tonk-display entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display></tonk-branch></tonk-repository></tonk-host>
+            <tonk-display with={dom.host/data-space} entity={dom.host/data-space} model=tonk:repository><span slot="no-entity">Untitled</span><span slot="no-model">Untitled</span><span slot="loading">…</span></tonk-display>
           </span>
           <ui-dropdown class="fab__menu" exclude={dom.host/data-space}>
             <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
@@ -698,14 +747,13 @@ view/directory!: &profile/fab/view
              `tonk:agent-invite`, `tonk:member` and the two compact `fab-*` views
              are seeded by core.yaml there, not on this profile/meta branch — so,
              exactly like the repo-name chip above, they are reached through a
-             nested `<tonk-repository name={DID}>` that opens the space's routing
-             context (honored for the privileged FAB portal). Clicking "share"
+             `with={DID}` context that opens the space's routing
+             context (honored because the FAB portal allows `*`). Clicking "share"
              submits the hidden `fab-invite-form`, firing `tonk:invite`; the
              worker's InviteHandler mints the membership keypair + delegation
              against this nested space branch (its origin repo). `<tonk-origin>`
              supplies `{origin}/join` as `data-base` for the copyable URL. -->
         <span class="fab__seg fab__share">
-          <tonk-host><tonk-repository name={dom.host/data-space}><tonk-branch name="main">
             <tonk-origin>
               <!-- The minted invite link. Shown once the mint lands; before
                    that `tonk:agent-invite` does not resolve and the empty
@@ -713,15 +761,18 @@ view/directory!: &profile/fab/view
                    callout, so the bar shows only the "share" button below.
                    When it resolves the display sets `data-state="ready"`, and
                    the CSS sibling rule hides the button so the bar shows just
-                   the link + copy. `bind:base` supplies `{origin}/join`. -->
-              <tonk-display class="fab__invite-display" entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
+                   the link + copy. `bind:base` supplies `{origin}/join`.
+                   Each display carries its own `with={dom.host/data-space}`
+                   (the active space) — routing is per element, not inherited
+                   from the wrapping span. -->
+              <tonk-display class="fab__invite-display" with={dom.host/data-space} entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
                 <span slot="no-entity" hidden></span>
                 <span slot="no-model" hidden></span>
                 <span slot="loading" hidden></span>
               </tonk-display>
               <!-- The mint trigger. The "share" form lives in a SPACE-branch
                    view (core.yaml's `tonk:repository` directory view), mounted
-                   here no-entity inside the nested repository context — so its
+                   here no-entity inside the nested `with` context — so its
                    `onsubmit=tonk:invite` binding both resolves its descriptor
                    AND dispatches its claim on the SPACE's content branch, where
                    the worker's InviteHandler mints for that repo. (Binding it in
@@ -729,12 +780,11 @@ view/directory!: &profile/fab/view
                    claim to profile/meta with an empty origin repo.) Directory
                    chrome renders regardless of whether the repo is named, so the
                    "share" button is always present. -->
-              <tonk-display class="fab__share-mint" model="tonk:repository"></tonk-display>
+              <tonk-display class="fab__share-mint" with={dom.host/data-space} model="tonk:repository"></tonk-display>
             </tonk-origin>
             <nav class="fab__menu fab__share-menu">
-              <tonk-display model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
+              <tonk-display with={dom.host/data-space} model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
             </nav>
-          </tonk-branch></tonk-repository></tonk-host>
         </span>
         <!-- RIGHT CAP — a plain rounded end cap that always closes the bar
              (wireframe §01: the bar's far edge rounds off). It carries no
@@ -784,6 +834,17 @@ view/directory!: &profile/fab/view
               height: 5px; width: 100%; display: block; background: var(--wa-color-neutral-fill-normal);
             }
             .wizard__art--wiki i:nth-of-type(4) { width: 72%; }
+            .wizard__art--board {
+              align-items: flex-start; gap: var(--wa-space-2xs); padding: var(--wa-space-m);
+            }
+            .wizard__art--board .col {
+              flex: 1; display: flex; flex-direction: column; gap: var(--wa-space-2xs);
+            }
+            .wizard__art--board .col i {
+              display: block; width: 100%; height: 9px;
+              background: var(--wa-color-neutral-fill-normal);
+            }
+            .wizard__art--board .col i.tall { height: 22px; }
             .wizard__art--sheets { padding: var(--wa-space-m); }
             .wizard__art--sheets .grid {
               width: 100%; height: 42px; display: block;
@@ -795,6 +856,7 @@ view/directory!: &profile/fab/view
             /* Highlight the chosen template card so the selection is legible. */
             #tpl-sheets:checked ~ .wizard__screen--template label[for="tpl-sheets"],
             #tpl-wiki:checked   ~ .wizard__screen--template label[for="tpl-wiki"],
+            #tpl-board:checked  ~ .wizard__screen--template label[for="tpl-board"],
             #tpl-blank:checked  ~ .wizard__screen--template label[for="tpl-blank"] {
               border-color: var(--wa-color-text-normal);
               box-shadow: inset 0 0 0 1px var(--wa-color-text-normal);
@@ -812,6 +874,7 @@ view/directory!: &profile/fab/view
           <input class="wizard__template" type="radio" name="template" value="blank" id="tpl-blank" checked>
           <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
           <input class="wizard__template" type="radio" name="template" value="wiki" id="tpl-wiki">
+          <input class="wizard__template" type="radio" name="template" value="board" id="tpl-board">
           <input type="hidden" name="remote" value="">
           <tonk-default-remote field="remote" auto></tonk-default-remote>
 
@@ -849,6 +912,15 @@ view/directory!: &profile/fab/view
                 <div class="wizard__art wizard__art--sheets"><span class="grid"></span></div>
                 <h3>Sheets</h3>
                 <p>A tabbed workspace of artifacts.</p>
+              </label>
+              <label class="wizard__card" for="tpl-board">
+                <div class="wizard__art wizard__art--board">
+                  <div class="col"><i class="tall"></i><i></i></div>
+                  <div class="col"><i></i><i></i><i></i></div>
+                  <div class="col"><i></i><i class="tall"></i></div>
+                </div>
+                <h3>Board</h3>
+                <p>Columns of cards on a pannable canvas.</p>
               </label>
               <label class="wizard__card" for="tpl-blank">
                 <h3>Blank</h3>
@@ -1132,15 +1204,12 @@ view/directory!: &profile/fab/view
           text-overflow: ellipsis;
           cursor: pointer;
         }
-        /* The repo name renders through nested routing/display wrappers
-           (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-display>/<tonk-view>`).
-           Collapse them all with `display: contents` so they generate no box and
-           the `<tonk-editable>` becomes the direct flex item of `.fab__space` —
+        /* The repo name renders through display wrappers
+           (`<tonk-display>/<tonk-view>`). Collapse them with
+           `display: contents` so they generate no box and the
+           `<tonk-editable>` becomes the direct flex item of `.fab__space` —
            then the segment's `align-items: center` centres it on the bar axis,
            exactly like the account and share labels. */
-        .fab__space tonk-host,
-        .fab__space tonk-repository,
-        .fab__space tonk-branch,
         .fab__space tonk-display,
         .fab__space tonk-view { display: contents; }
         /* The repo name is an inline `<tonk-editable>` (the repository
@@ -1285,20 +1354,16 @@ view/directory!: &profile/fab/view
         /* ── Share / invite ─────────────────────────────────────────────
            The bar's right-cap segment: rounds its right edge, anchors its own
            roster dropdown (already a positioned `.fab__seg`). */
-        /* The share content renders through nested routing/wrapper elements
-           (`<tonk-host>/<tonk-repository>/<tonk-branch>/<tonk-origin>` and the
-           two `<tonk-display>` wrappers). Collapse ALL of them with
-           `display: contents` so they generate no box of their own and their
-           leaf controls — the copy-link button (B) and the "share" mint trigger
-           (A) — become direct flex items of the `.fab__seg` share zone. That
-           lets the segment's `align-items: center` centre the control on the
-           bar's axis. Leaving the wrappers `inline` instead made the button an
-           inline-block sitting on the text baseline, so it rode up out of the
-           pill. The roster `<nav>` is `position: absolute`, so it stays out of
-           this flex flow. */
-        .fab__share tonk-host,
-        .fab__share tonk-repository,
-        .fab__share tonk-branch,
+        /* The share content renders through wrapper elements
+           (`<tonk-origin>` and the two `<tonk-display>` wrappers). Collapse
+           ALL of them with `display: contents` so they generate no box of
+           their own and their leaf controls — the copy-link button (B) and
+           the "share" mint trigger (A) — become direct flex items of the
+           `.fab__seg` share zone. That lets the segment's `align-items:
+           center` centre the control on the bar's axis. Leaving the wrappers
+           `inline` instead made the button an inline-block sitting on the
+           text baseline, so it rode up out of the pill. The roster `<nav>` is
+           `position: absolute`, so it stays out of this flex flow. */
         .fab__share tonk-origin,
         .fab__share .fab__invite-display,
         .fab__share .fab__share-mint,
@@ -1506,7 +1571,7 @@ concept!: &view
 # status exists. The per-instance repeat shows a spinner while pending and
 # the failure callout (`model=tonk:join/failure`) once a join fails. On
 # success there is no status to show: the worker posts a navigate message
-# to the originating client (see `<tonk-host>`), which redirects into
+# to the originating client (see the host's navigate provider), which redirects into
 # `/space/<subject>` while the chrome's "Joining…" stands until the page
 # leaves.
 view/directory!:
@@ -1518,7 +1583,9 @@ view/directory!:
       <wa-card class="join-card">
         <div slot="header"><h1>Joining…</h1></div>
         <wa-spinner></wa-spinner>
-        <div class="join-status" with={this}>
+        <!-- `data-id={this}` designates the repeat row without granting a
+             routing context (the status entity is not a repository). -->
+        <div class="join-status" data-id={this}>
           <tonk-display entity={this} model=tonk:join/failure>
             <!-- While the join is pending there is a `tonk:join/status` but
                  no `tonk:join/failure` yet: stay quiet (empty slots) instead
@@ -1550,7 +1617,7 @@ view!: &join/failure-view
 # ============================================================
 #
 # The profile is itself a routable target: `<tonk-site path=…>` posts to
-# `/api/profile/branch/meta/site`, the SW asserts this tab's `tonk:site` on this
+# `/api/profile/branch/main/site`, the SW asserts this tab's `tonk:site` on this
 # branch (matching the path against the `route!` table below), and the element
 # renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
 # matched `{concept}` on the same site entity — the same indirection a space uses.
@@ -1683,6 +1750,60 @@ view!: &join/route-view
       <tonk-display model="tonk:join/status"></tonk-display>
     </div>
 
+# The /inspector and /diagnose routes: the same query-inspector and
+# search-tree views a space exposes, but pinned to the PROFILE branch so
+# you can explore the profile DB (the hub's replicas, the member name,
+# sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
+# repository from their own `with` — here the profile endpoint — so they
+# query `/api/profile/branch/main/query` rather than a named space.
+route!: &route/inspector
+  this: id:tonk:route/inspector
+  path: "/inspector"
+  concept: tonk:inspector/route
+
+concept!: &inspector/route
+  this: tonk:inspector/route
+  description: The /inspector page — a query inspector over the profile DB.
+  with:
+    # A route model must declare at least one field; the view doesn't read
+    # it (the inspector needs no entity — it inspects the whole branch).
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &inspector/route-view
+  this: id:tonk:inspector/route/view
+  model: tonk:inspector/route
+  display: |
+    <div class="display-view-slot">
+      <tonk-inspector with="main@profile:tonk" source=home></tonk-inspector>
+    </div>
+
+route!: &route/diagnose
+  this: id:tonk:route/diagnose
+  path: "/diagnose"
+  concept: tonk:diagnose/route
+
+concept!: &diagnose/route
+  this: tonk:diagnose/route
+  description: The /diagnose page — the search-tree inspector over the profile DB.
+  with:
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &diagnose/route-view
+  this: id:tonk:diagnose/route/view
+  model: tonk:diagnose/route
+  display: |
+    <div class="display-view-slot">
+      <tonk-tree with="main@profile:tonk"></tonk-tree>
+    </div>
+
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
 # full-size repo portal with the FAB floating on top — and hands the rest of the
 # path to a NESTED `<tonk-site>` inside the portal, which routes it against the
@@ -1732,5 +1853,5 @@ view!: &space-view
   this: id:tonk:space/view
   model: tonk:space/chrome
   display: |
-    <tonk-host><tonk-repository name={id}><tonk-branch name="main"><tonk-site path={rest}></tonk-site></tonk-branch></tonk-repository></tonk-host>
-    <tonk-host><tonk-repository profile><tonk-branch name="meta"><tonk-display model="tonk:profile/fab" data-space="{id}"></tonk-display></tonk-branch></tonk-repository></tonk-host>
+    <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
+    <tonk-display with="main@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>

@@ -159,6 +159,25 @@ impl Dock {
     }
 }
 
+/// Resolve the persisted dock from a `/query` result (a `Conclusion[]` JSON
+/// value, the shape `window.tonk.query` yields).
+///
+/// A conclusion row is `{ this, fields: { dock, … } }`, so the projected
+/// `dock` symbol lives under `fields` — reading it off the row directly
+/// (an easy mistake that strands the dock at its default) finds nothing.
+/// Falls back to a flat `row.dock` so a change in the projection shape
+/// degrades to the default rather than a silent mismatch. `None` when the
+/// result is empty, malformed, or names an unknown dock symbol.
+pub fn dock_from_conclusions(rows: &Value) -> Option<Dock> {
+    let first = rows.as_array()?.first()?;
+    let symbol = first
+        .get("fields")
+        .and_then(|fields| fields.get("dock"))
+        .or_else(|| first.get("dock"))
+        .and_then(Value::as_str)?;
+    Dock::from_symbol(symbol)
+}
+
 /// Pick the corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
 /// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
@@ -229,14 +248,14 @@ pub fn dock_claim_json(dock: Dock) -> Value {
             "op": "assert",
             "application": {
                 "predicate": {
-                    "kind": "transient",
+                    "kind": "durable",
                     "concept": {
-                        "description": "Persisted FAB dock (profile-meta claim).",
+                        "description": "Persisted FAB dock (profile claim).",
                         "with": {
                             "dock": {
                                 "the": "xyz.tonk.fab/dock",
                                 "cardinality": "one",
-                                "as": "entity"
+                                "as": "Entity"
                             }
                         }
                     }
@@ -244,6 +263,41 @@ pub fn dock_claim_json(dock: Dock) -> Value {
                 "parameters": {
                     "this": "state:fab",
                     "dock": dock.symbol()
+                }
+            }
+        }]
+    })
+}
+
+/// Build a `TransactRequest` JSON body for the `tonk:pause-sync` command.
+///
+/// A transient command asserting the target `space` (the DID to pause) with a
+/// per-click `time` so each dispatch is a distinct transient, plus the `marker`
+/// (the command URI) that keeps the shape distinct from `tonk:invite`. `this`
+/// is omitted so the worker mints it from `(descriptor, parameters)`. Dispatched
+/// routeless via `window.tonk.transact`, so it lands on the FAB portal's own
+/// `main@profile:tonk` context where the command lives; the worker's handler
+/// reads `space` to flip that replica — nothing space-side is required.
+pub fn pause_claim_json(command: &str, space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Toggle auto-sync (pause ⇄ resume) for a space.",
+                        "with": {
+                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
+                            "space":  { "the": "xyz.tonk.pause-sync/space", "as": "Entity" },
+                            "marker": { "the": "dom.event.current-target.dataset/pause-sync", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "space": space,
+                    "marker": command
                 }
             }
         }]
@@ -555,13 +609,67 @@ mod persist {
         assert_eq!(v["claims"][0]["op"], "assert");
         let app = &v["claims"][0]["application"];
         assert_eq!(app["parameters"]["dock"], "tonk:bottom-left");
-        // verify predicate shape matches claim.rs serde derive
-        assert_eq!(app["predicate"]["kind"], "transient");
+        // The dock is a durable profile choice: it must survive commits,
+        // not evaporate as a transient at the timestep it's written.
+        assert_eq!(app["predicate"]["kind"], "durable");
         assert_eq!(
             app["predicate"]["concept"]["with"]["dock"]["the"],
             "xyz.tonk.fab/dock"
         );
         assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+
+    #[test]
+    fn pause_claim_carries_the_space_and_is_transient() {
+        let v = pause_claim_json("tonk:pause-sync", "did:key:zSpace", 123.0);
+        let app = &v["claims"][0]["application"];
+        assert_eq!(v["claims"][0]["op"], "assert");
+        // A command is a one-timestep transient, not a durable fact.
+        assert_eq!(app["predicate"]["kind"], "transient");
+        // The target space rides the command so the handler needn't read it
+        // from the dispatch origin — this is what lets pause dispatch from the
+        // profile branch and depend on nothing seeded per-space.
+        assert_eq!(app["parameters"]["space"], "did:key:zSpace");
+        assert_eq!(app["parameters"]["marker"], "tonk:pause-sync");
+        assert_eq!(app["parameters"]["time"], 123.0);
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["space"]["the"],
+            "xyz.tonk.pause-sync/space"
+        );
+        // `this` is omitted so the worker mints it from (descriptor, params).
+        assert!(app["parameters"].get("this").is_none());
+    }
+
+    #[test]
+    fn reads_the_dock_from_a_conclusion_row() {
+        // The exact `Conclusion[]` shape `window.tonk.query` returns: the
+        // projected `dock` lives under `fields`, not on the row. Reading it
+        // off the row directly is the regression that stranded restore at
+        // its default even though the fact was persisted.
+        let rows = json!([{
+            "this": "state:fab",
+            "fields": { "this": "state:fab", "dock": "tonk:bottom-left" }
+        }]);
+        assert_eq!(dock_from_conclusions(&rows), Some(Dock::BottomLeft));
+    }
+
+    #[test]
+    fn reads_the_dock_from_a_flat_row() {
+        // Fallback shape: a flat `row.dock` still resolves, so a projection
+        // change degrades to a working read rather than a silent default.
+        let rows = json!([{ "dock": "tonk:top-right" }]);
+        assert_eq!(dock_from_conclusions(&rows), Some(Dock::TopRight));
+    }
+
+    #[test]
+    fn empty_result_has_no_dock() {
+        assert_eq!(dock_from_conclusions(&json!([])), None);
+    }
+
+    #[test]
+    fn unknown_symbol_has_no_dock() {
+        let rows = json!([{ "fields": { "dock": "tonk:middle" } }]);
+        assert_eq!(dock_from_conclusions(&rows), None);
     }
 }
 

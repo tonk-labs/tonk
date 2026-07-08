@@ -45,6 +45,7 @@ web-sys = { workspace = true, features = [
     "HtmlTemplateElement",
     "MutationObserver",
     "MutationObserverInit",
+    "MutationRecord",
     "NamedNodeMap",
     "Node",
     "NodeList",

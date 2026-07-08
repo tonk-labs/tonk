@@ -20,8 +20,12 @@ impl<'a> Pull<'a> {
         Self { branch }
     }
 
-    /// Execute the pull. On success, every subscription on the
-    /// branch is re-evaluated.
+    /// Execute the pull. Subscriptions are re-evaluated **only when the pull
+    /// actually moved the branch tree** — a pull that finds no upstream change
+    /// (the common case for a periodic background sync) leaves every query
+    /// result identical, so re-polling would be pure waste. Skipping it is the
+    /// difference between an idle sync being invisible and it re-running every
+    /// subscription on the branch on every tick.
     ///
     /// Two phases: the network-bound fetch + rebase
     /// ([`prepare`](dialog_repository::PreparedPull)) runs lock-free, then the
@@ -37,6 +41,10 @@ impl<'a> Pull<'a> {
     {
         let cached = self.branch.acquire(env).await?;
 
+        // The tree we're at before the pull. Compared against the post-commit
+        // revision to decide whether anything actually changed.
+        let before = cached.handle().revision().map(|r| r.tree);
+
         // Fetch + rebase + persist blocks — no cell writes, no lock.
         let prepared = cached.handle().pull().prepare(env).await?;
 
@@ -47,7 +55,18 @@ impl<'a> Pull<'a> {
             prepared.commit(env).await?
         };
 
-        cached.poll(env).await;
+        // Re-poll subscriptions only if the tree moved. A `None` revision (a
+        // no-op pull) or a merge that netted the same tree changes no query
+        // result, so the poll is skipped — an idle background sync does no
+        // subscription work at all.
+        let changed = match &revision {
+            Some(after) => before.as_ref() != Some(&after.tree),
+            None => false,
+        };
+        if changed {
+            cached.poll(env).await;
+        }
+
         Ok(revision)
     }
 }
