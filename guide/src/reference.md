@@ -95,6 +95,16 @@ photo!:
 Blobs sync with the rest of the branch: `tonk push`/`tonk pull` carry
 both the facts and the bytes they reference.
 
+In the web frontend, an image blob renders inline: embed
+
+```
+<tonk-display with="{branch}@{repo}" entity=blob:<hash> model="tonk:blob" />
+```
+
+in a view and the display mounts an `<img>` served from
+`/api/repository/{repo}/branch/{branch}/blob/{entity}` with the blob's
+recorded content type.
+
 ## CLI
 
 | Command        | Does                                            |
