@@ -132,12 +132,21 @@ pub async fn evaluate(
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     log!("evaluate repo={}, branch={}", path.repo, path.branch);
-    let tonk_state = state.write().await;
-    let tonk_branch = tonk_state
-        .reactor
-        .repository(&path.repo)
-        .branch(&path.branch);
-    let result = evaluate_on_branch(&tonk_state, tonk_branch, body, query).await;
+    // A read lock, like `transact`. `evaluate_on_branch` reaches the reactor and
+    // operator by shared reference, and serializes its commit on the per-branch
+    // transactor lock rather than on the whole of `TonkState`. Holding the write
+    // lock here instead serialized every evaluate against every other request —
+    // including the language server, whose analysis holds a read guard for the
+    // length of a `didChange`. Since the editor auto-fires a dry-run evaluate on
+    // each fresh diagnostics frame, that made typing contend with itself.
+    let result = {
+        let tonk_state = state.read().await;
+        let tonk_branch = tonk_state
+            .reactor
+            .repository(&path.repo)
+            .branch(&path.branch);
+        evaluate_on_branch(&tonk_state, tonk_branch, body, query).await
+    };
 
     // A commit moves the branch head. Announce it on the branch's
     // channel so subscribed UIs refresh their revision/sync-state
@@ -182,9 +191,12 @@ pub async fn evaluate_profile(
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     log!("evaluate profile branch={}", path.branch);
-    let tonk_state = state.write().await;
-    let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-    let result = evaluate_on_branch(&tonk_state, tonk_branch, body, query).await;
+    // Read lock, for the reasons spelled out in [`evaluate`].
+    let result = {
+        let tonk_state = state.read().await;
+        let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
+        evaluate_on_branch(&tonk_state, tonk_branch, body, query).await
+    };
 
     // Same durable-commit gate as [`evaluate`]: pure queries and dry
     // runs leave the head unchanged and announce nothing. The profile
@@ -229,6 +241,26 @@ async fn evaluate_on_branch<'a>(
         .acquire(&tonk_state.operator)
         .await
         .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+
+    // Serialize a committing evaluate on the branch's transactor lock — the same
+    // lock the reactor's `Commit::perform` takes for `/transact`. This document's
+    // commit is a *dialog* `Transaction::commit()`, which CASes against the head
+    // snapshot taken when `branch.transaction()` is built below but never retries.
+    // Without this lock a concurrent commit landing between that snapshot and our
+    // publish fails the whole document with a version mismatch. Holding it from
+    // before the snapshot to after the publish is what makes the CAS unreachable
+    // by another committer.
+    //
+    // A dry run (`transact=false`) writes nothing, so it never takes the lock.
+    // That's the auto-evaluate the editor fires on every fresh diagnostics frame;
+    // keeping it lock-free is the point of holding only a read guard on
+    // `TonkState` here.
+    let _transacting = if query.transact {
+        Some(session.transactor().lock().await)
+    } else {
+        None
+    };
+
     let branch = session.handle();
     let revision_before = branch.revision();
 

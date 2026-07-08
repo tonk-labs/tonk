@@ -67,7 +67,9 @@ pub async fn export(
     Path(path): Path<EvaluatePath>,
 ) -> Result<Response, TonkWorkerError> {
     log!("export repo={}, branch={}", path.repo, path.branch);
-    let tonk_state = state.write().await;
+    // Read lock — the export only reads, and it walks every artifact on the
+    // branch, so a write lock here stalled unrelated requests for the whole walk.
+    let tonk_state = state.read().await;
     let tonk_branch = tonk_state
         .reactor
         .repository(&path.repo)
@@ -122,6 +124,10 @@ pub async fn import(
         path.branch,
         body.len()
     );
+    // A write lock. `Import::perform` commits through the branch handle directly,
+    // so it takes no per-branch transactor lock and its CAS never retries. This
+    // is a cold, explicit upload — excluding concurrent writers costs nothing and
+    // keeps a racing commit from failing the whole import.
     let tonk_state = state.write().await;
     let tonk_branch = tonk_state
         .reactor

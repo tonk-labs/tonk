@@ -235,8 +235,10 @@ pub async fn assert_claim(
     let value = parse_value(content_type, &body)?;
 
     // Build and commit the assertion through the reactor so
-    // subscriptions on this branch re-poll on success.
-    let tonk_state = state.write().await;
+    // subscriptions on this branch re-poll on success. A read lock: the commit
+    // serializes on the per-branch transactor lock inside `Commit::perform`, and
+    // the subscription re-poll only needs `&TonkState`.
+    let tonk_state = state.read().await;
 
     let claim = RawClaim {
         the: attribute,
@@ -303,8 +305,9 @@ pub async fn retract_claim(
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
     let value = parse_value(content_type, &body)?;
 
-    // Build and commit the retraction using the transaction API
-    let tonk_state = state.write().await;
+    // Build and commit the retraction using the transaction API. Read lock —
+    // see [`assert_claim`].
+    let tonk_state = state.read().await;
 
     // Parse attribute
     let attribute: Attribute = attribute_str

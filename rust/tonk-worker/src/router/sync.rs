@@ -443,6 +443,10 @@ pub async fn pull(
         params.branch
     );
 
+    // A write lock, unlike `sync`. Dropping to a read lock would let a commit
+    // race the pull, and this route — unlike `sync` — has no refresh-and-retry
+    // loop to recover from the resulting head CAS failure. It is not on a hot
+    // path (`/sync` is what the app calls), so excluding writers costs nothing.
     let tonk_state = state.write().await;
 
     let session = tonk_state
@@ -497,6 +501,7 @@ pub async fn push(
         params.branch
     );
 
+    // Write lock — see [`pull`]. Same no-retry caveat, same cold path.
     let tonk_state = state.write().await;
 
     let session = tonk_state
@@ -688,8 +693,6 @@ pub async fn sync(
     {
         let tonk_state = state.read().await;
         if !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await {
-            drop(tonk_state);
-            let tonk_state = state.write().await;
             publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
             log!("sync of {}/{} skipped: paused", params.repo, params.branch);
             return Ok(Json(SyncResponse {
@@ -701,15 +704,14 @@ pub async fn sync(
         }
     }
 
-    // Flip the chip to `pending` for the duration. This runs in its OWN brief
-    // write-lock scope that drops before the long pull/push lock below, so the
-    // overlay write + subscription re-poll reach the chip *before* the sync
-    // begins (a mid-sync publish wouldn't — the chip's re-poll needs the read
-    // lock the long write lock holds). The settled status is published by the
-    // status check the controller runs after `/sync` returns.
+    // Flip the chip to `pending` before the sync begins, so the overlay write +
+    // subscription re-poll reach the chip up front rather than mid-pull. The
+    // settled status is published by the status check the controller runs after
+    // `/sync` returns. A read lock: the stamp lands in the branch's session
+    // overlay, which has its own interior lock.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         publish_sync_status_attr(
             &tonk_state,
             &params.repo,
