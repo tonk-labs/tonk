@@ -14,6 +14,7 @@
 use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_query::Attribute;
 use dialog_remote_ucan_s3::UcanAddress;
+use dialog_repository::Blob;
 use dialog_repository::RepositoryExt as _;
 use dialog_repository::helpers::{test_operator_with_profile, unique_name};
 use futures_util::{StreamExt, stream};
@@ -254,14 +255,13 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
     // Write a blob and reference it from a fact.
     let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
     let chunks: Vec<Result<Vec<u8>, _>> = payload.chunks(16384).map(|c| Ok(c.to_vec())).collect();
-    let hash = branch
-        .write_blob(stream::iter(chunks))
+    let blob_entity = Blob::import(stream::iter(chunks))
+        .write(branch.blobs())
         .perform(&operator)
         .await?;
-    let blob_entity = Entity::from_blob(hash.as_bytes())?;
     branch
         .transaction()
-        .assert(Name::of(blob_entity).is("vacation.png".to_string()))
+        .assert(Name::of(blob_entity.clone()).is("vacation.png".to_string()))
         .commit()
         .perform(&operator)
         .await?;
@@ -310,10 +310,16 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
         "Bob should pull Alice's revision"
     );
 
-    let size_b = branch_b.blob_size(&hash).perform(&operator_b).await?;
+    let size_b = Blob::from(blob_entity.clone())
+        .size(branch_b.blobs())
+        .perform(&operator_b)
+        .await?;
     assert_eq!(size_b, Some(payload.len() as u64));
 
-    let mut reader = branch_b.read_blob(&hash, None).perform(&operator_b).await?;
+    let mut reader = Blob::from(blob_entity)
+        .read(branch_b.blobs())
+        .perform(&operator_b)
+        .await?;
     let mut out = Vec::new();
     while let Some(chunk) = reader.next().await? {
         out.extend(chunk);
