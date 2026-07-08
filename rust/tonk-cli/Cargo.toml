@@ -38,6 +38,10 @@ name = "render"
 path = "tests/render.rs"
 
 [[test]]
+name = "schema_read"
+path = "tests/schema_read.rs"
+
+[[test]]
 name = "telemetry"
 path = "tests/telemetry.rs"
 
