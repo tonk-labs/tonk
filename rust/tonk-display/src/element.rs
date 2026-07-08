@@ -1203,6 +1203,18 @@ fn slide_keys(conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
 
+    // A `tonk:blob` model renders as a single media element pointing at
+    // the worker's blob-bytes route — no inline template, no iframe. The
+    // check is on the host `model` attribute (not a projected frame
+    // field), so it fires even on an empty view frame and needs no
+    // dedicated view concept.
+    if host.get_attribute("model").as_deref() == Some("tonk:blob") {
+        drop(s);
+        handle_blob_image_frame(host);
+        dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+        return;
+    }
+
     // A view whose projected `type` is `text/html` is a full HTML
     // document mounted into a `<tonk-portal>` — whose bridge fetches
     // the entity's own data through the live `tonk` object — rather
@@ -1521,6 +1533,53 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
         item: portal.clone(),
         view_el: portal,
     })
+}
+
+/// Mount (or refresh) a single `<img>` whose `src` is the worker's
+/// content-addressed blob route for this display's `entity`. Idempotent:
+/// the `src` is stable for a given `(with, entity)`, so re-running on a
+/// later frame is a no-op once the element exists.
+fn handle_blob_image_frame(host: &Element) {
+    let Some(src) = blob_image_src(host) else {
+        return;
+    };
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let img = match host.query_selector("img").ok().flatten() {
+        Some(existing) => existing,
+        None => {
+            let Ok(created) = document.create_element("img") else {
+                return;
+            };
+            let _ = host.append_child(&created);
+            created
+        }
+    };
+    if img.get_attribute("src").as_deref() != Some(src.as_str()) {
+        let _ = img.set_attribute("src", &src);
+    }
+    state::set(host, State::Ready);
+}
+
+/// Build the blob-bytes URL for this display's `entity`, scoped to the
+/// repo/branch carried in the host's `with` attribute (`"{branch}@{repo}"`,
+/// as forwarded by route views). Returns `None` if `with` is missing or
+/// still an unsubstituted template, or if `entity` is absent.
+fn blob_image_src(host: &Element) -> Option<String> {
+    let entity = host.get_attribute("entity")?;
+    let with = host.get_attribute("with")?;
+    if with.contains('{') {
+        return None; // unsubstituted `{branch}@{repo}` template
+    }
+    // `with` is `branch@repo`; a bare token (no `@`) is a repo on `main`.
+    let (branch, repo) = match with.split_once('@') {
+        Some((branch, repo)) => (branch, repo),
+        None => ("main", with.as_str()),
+    };
+    Some(format!(
+        "/api/repository/{repo}/branch/{branch}/blob/{entity}"
+    ))
 }
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event
@@ -3217,6 +3276,58 @@ mod tests {
             assert_eq!(
                 host.subscribe_tags(),
                 vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
+            );
+        }
+
+        /// A display whose `model` is `tonk:blob` renders a single
+        /// `<img>` pointing at the worker's blob-bytes route, with the
+        /// repo/branch taken from the host's `with` attribute and the
+        /// blob entity from `entity`. No inline template, no iframe.
+        #[dialog_common::test]
+        async fn it_mounts_an_img_for_a_blob_model() {
+            // `model = "tonk:blob"` already looks like a URI (it contains
+            // `:`), so — unlike the bare `"counter"` model name the other
+            // fixtures use — `resolve_model_query` skips the Name-concept
+            // lookup for it and goes straight to a `model` subscription.
+            // Only the `view` name (`"counter"`, still bare) needs
+            // resolving: a name-lookup one-shot, then the view concept's
+            // phase-1 descriptor one-shot. Two responses, not three.
+            let blob_resolve_responses = vec![
+                name_row("did:key:zViewConcept"),
+                rows(&[(
+                    "did:key:zViewConcept",
+                    &[(
+                        "source",
+                        r#"{"with":{"model":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
+                    )],
+                )]),
+            ];
+            let host =
+                FakeHost::install_with_model(blob_resolve_responses, Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "tonk:blob", "blob:zHASH");
+            // The embedding route view forwards `with="{branch}@{repo}"`;
+            // here it is already substituted.
+            display.set_attribute("with", "main@myrepo").unwrap();
+
+            // Wait for the flow to open its subscriptions (model, then
+            // view + entity once the model frame resolves) so the "view"
+            // subscription exists before we push a frame on it.
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // Any view frame (even empty) drives handle_view_frame; the
+            // blob branch fires on the host `model` before anything else.
+            host.push_frame("view", &rows(&[]));
+
+            let img = await_selector(&display, "img")
+                .await
+                .expect("a tonk:blob model should mount an <img>");
+            assert_eq!(
+                img.get_attribute("src").as_deref(),
+                Some("/api/repository/myrepo/branch/main/blob/blob:zHASH"),
             );
         }
 
