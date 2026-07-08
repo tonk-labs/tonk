@@ -97,6 +97,44 @@ mod when_evaluating_with_an_upstream {
     }
 }
 
+mod when_minting_an_invite {
+    use super::*;
+    use tonk_cli::invite;
+
+    #[dialog_common::test]
+    async fn it_pushes_local_state_to_the_upstream_before_minting() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        // Commit something locally that has not been pushed, mirroring the
+        // stdlib seed sitting unpushed on a freshly-init'd repo.
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        assert!(
+            upstream_revision(&test).await?.is_none(),
+            "upstream starts empty — the local commit has not been pushed yet"
+        );
+
+        // Minting a local-only invite (no embedded remote URL) must still
+        // push, because the branch has an upstream.
+        invite::mint(&test.site, None, None).await?;
+
+        assert!(
+            upstream_revision(&test).await?.is_some(),
+            "mint must push the unpushed local state to the upstream"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_is_a_noop_push_when_no_upstream_is_configured() -> Result<()> {
+        // No upstream wired: mint must still succeed (local-only invite),
+        // not error trying to push.
+        let test = TestSite::new().await?;
+        let outcome = invite::mint(&test.site, None, None).await?;
+        assert!(!outcome.url.is_empty(), "a local-only invite still mints a URL");
+        Ok(())
+    }
+}
+
 mod when_reporting_status {
     use super::*;
     use crate::common::CONCEPT_DECL;
