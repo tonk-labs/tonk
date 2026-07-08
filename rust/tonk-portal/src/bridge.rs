@@ -166,7 +166,7 @@ impl PortalState {
 /// Posting to `"*"` is unavoidable from a null origin; the parent
 /// authenticates by `event.source`, not `event.origin`.
 const BOOTSTRAP_JS: &str = r#"(function(){
-  var nextId=0, pending=new Map(), streams=new Map();
+  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map();
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
@@ -242,7 +242,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
                      function(err){streams.delete(id);controller.error(err);});
         },
         cancel:function(){
-          streams.delete(id);
+          streams.delete(id);subRows.delete(id);
           port.postMessage({v:1,type:"unsubscribe",id:id});
         }
       });
@@ -311,10 +311,29 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       }
       case "subscribe-event": {
         var c=streams.get(env.id); if(!c) return;
-        try{c.enqueue(env.rows);}catch(e){streams.delete(env.id);} return;
+        // The guest's window.tonk.subscribe() is documented as a stream of
+        // full Conclusion[] snapshots. The host sends either a full set
+        // (env.rows) or a delta (env.delta = {asserted,retracted}); keep a
+        // retained set per stream and always enqueue the full array so the
+        // author-facing contract is unchanged.
+        try{
+          var prev=subRows.get(env.id)||[];
+          var next;
+          if(env.delta){
+            var rej=env.delta.retracted||[];
+            var add=env.delta.asserted||[];
+            var keyOf=function(r){return JSON.stringify(r);};
+            var gone={};for(var i=0;i<rej.length;i++){gone[keyOf(rej[i])]=true;}
+            next=prev.filter(function(r){return !gone[keyOf(r)];}).concat(add);
+          }else{
+            next=env.rows||[];
+          }
+          subRows.set(env.id,next);
+          c.enqueue(next);
+        }catch(e){streams.delete(env.id);subRows.delete(env.id);} return;
       }
       case "subscribe-error": {
-        var c=streams.get(env.id); if(!c) return; streams.delete(env.id);
+        var c=streams.get(env.id); if(!c) return; streams.delete(env.id);subRows.delete(env.id);
         c.error(new Error(env.error)); return;
       }
     }
@@ -1966,6 +1985,33 @@ pub(crate) fn route_reset(state: &Rc<RefCell<PortalState>>, payload: JsValue, op
     set_v1(&env, "subscribe-event");
     let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&iframe_id));
     let _ = Reflect::set(&env, &"rows".into(), &plain);
+    let _ = port.post_message(&env);
+}
+
+/// `update({ asserted, retracted }, { tag })` — an incremental frame.
+///
+/// Relays the delta to the guest as a `subscribe-event` carrying a
+/// `delta` field (rather than `rows`), normalized through JSON so the
+/// wire shape matches `reset`'s rows. The guest stream enqueues the
+/// tagged frame; the guest consumer applies the delta to its retained
+/// set exactly as the top-level `<tonk-display>` does.
+pub(crate) fn route_update(state: &Rc<RefCell<PortalState>>, payload: JsValue, opts: JsValue) {
+    let Some(tag) = read_tag(&opts) else {
+        return;
+    };
+    // Normalize the `{asserted, retracted}` object through JSON so the
+    // nested `fields` are plain objects, not `Map`s, across postMessage.
+    let plain = match js_sys::JSON::stringify(&payload) {
+        Ok(s) => js_sys::JSON::parse(&String::from(s)).unwrap_or(JsValue::NULL),
+        Err(_) => return,
+    };
+    let Some((port, iframe_id)) = lookup_sub(state, &tag) else {
+        return;
+    };
+    let env = Object::new();
+    set_v1(&env, "subscribe-event");
+    let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&iframe_id));
+    let _ = Reflect::set(&env, &"delta".into(), &plain);
     let _ = port.post_message(&env);
 }
 

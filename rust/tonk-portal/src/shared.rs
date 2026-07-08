@@ -163,6 +163,14 @@ pub(crate) fn install_method_delegates(host: &Element, state: &Rc<RefCell<Portal
     let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
     reset.forget();
 
+    let update_state = state.clone();
+    let update: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            bridge::route_update(&update_state, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkUpdate".into(), update.as_ref());
+    update.forget();
+
     let error_state = state.clone();
     let error: Closure<dyn FnMut(JsValue, JsValue)> =
         Closure::wrap(Box::new(move |payload, opts| {

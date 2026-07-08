@@ -7,8 +7,9 @@
 //!   the handler writes a `Promise` into `detail.result`.
 //! - `tonk-subscribe` — streaming; the handler opens the SSE,
 //!   inserts a registry entry, writes a subscription handle
-//!   into `detail.subscription`, and delivers per-frame data
-//!   via `consumer.reset(...)` method calls.
+//!   into `detail.subscription`, and delivers each frame via
+//!   `consumer.reset(...)` (a `Snapshot`) or `consumer.update(...)`
+//!   (a `Delta`) by the frame's `kind` (see `deliver_frame`).
 //! - `tonk-unsubscribe` — drops all registry entries owned by
 //!   the dispatching consumer.
 //!
@@ -506,7 +507,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 // result by property access (`conclusion.fields.status`).
                 // `serde_wasm_bindgen` would serialize the `fields` map as a
                 // JS `Map`, whose entries `Reflect::get` cannot see.
-                let conclusions_js = match js_sys::JSON::parse(frame) {
+                let frame_js = match js_sys::JSON::parse(frame) {
                     Ok(v) => v,
                     Err(e) => {
                         invoke_method(
@@ -521,12 +522,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                         return;
                     }
                 };
-                invoke_method(
-                    &consumer_frame,
-                    "reset",
-                    &conclusions_js,
-                    tag_frame.as_ref(),
-                );
+                deliver_frame(&consumer_frame, &frame_js, tag_frame.as_ref(), false);
             },
             move |err: ErrorDetail| {
                 if consumer_err.is_connected() {
@@ -729,7 +725,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
                 return;
             }
             // `JSON.parse` for plain objects — see the subscribe handler.
-            let conclusions_js = match js_sys::JSON::parse(frame) {
+            let frame_js = match js_sys::JSON::parse(frame) {
                 Ok(v) => v,
                 Err(e) => {
                     invoke_method(
@@ -744,10 +740,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
                     return;
                 }
             };
-            invoke_method_marked(
+            deliver_frame(
                 &consumer_frame,
-                "reset",
-                &conclusions_js,
+                &frame_js,
                 tag_frame.as_ref(),
                 first_frame.replace(false),
             );
@@ -797,6 +792,41 @@ fn handle_unsubscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 /// payload + an `{ tag }` opts object.
 fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Option<&JsValue>) {
     invoke_method_marked(consumer, method, payload, tag, false);
+}
+
+/// Route one parsed subscription frame to the consumer's `reset` /
+/// `update` method by its `kind`.
+///
+/// The reactor emits a tagged [`Frame`](tonk_schema::conclusion::Frame):
+/// - `{"kind":"snapshot","conclusions":[…]}` → `reset(conclusions, opts)`
+///   — the full current set, for a first frame or a reconnect.
+/// - `{"kind":"delta","asserted":[…],"retracted":[…]}` →
+///   `update({asserted, retracted}, opts)` — the change since the last
+///   frame, applied to the consumer's retained set.
+///
+/// Backward-compatible: a frame with no `kind` (a bare `[…]` array, the
+/// pre-delta wire) is delivered as a `reset` unchanged, so a consumer or
+/// worker that hasn't cut over still works.
+fn deliver_frame(consumer: &Element, frame_js: &JsValue, tag: Option<&JsValue>, reconnect: bool) {
+    let kind = Reflect::get(frame_js, &JsValue::from_str("kind"))
+        .ok()
+        .and_then(|v| v.as_string());
+    match kind.as_deref() {
+        Some("snapshot") => {
+            let conclusions = Reflect::get(frame_js, &JsValue::from_str("conclusions"))
+                .unwrap_or(JsValue::UNDEFINED);
+            invoke_method_marked(consumer, "reset", &conclusions, tag, reconnect);
+        }
+        Some("delta") => {
+            // Hand the consumer the `{asserted, retracted}` object as-is;
+            // it applies both to its retained set keyed by conclusion
+            // identity. A delta is never a reconnect's first frame — that
+            // is always a snapshot — so the marker is not forwarded.
+            invoke_method(consumer, "update", frame_js, tag);
+        }
+        // No `kind`: legacy bare-array frame → treat as a full snapshot.
+        _ => invoke_method_marked(consumer, "reset", frame_js, tag, reconnect),
+    }
 }
 
 /// Like [`invoke_method`], with a `reconnect` marker on the opts: `true`

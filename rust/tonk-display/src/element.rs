@@ -461,12 +461,66 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
     }
 }
 
-/// `update(delta, { tag })` — incremental change. V1 SW does not
-/// emit this; we'd treat it as `reset` on whatever the frame
-/// implies. For now log and drop.
-fn on_update(_host: &Element, _state: &Rc<RefCell<Inner>>, _payload: JsValue, _opts: JsValue) {
-    // V1 SW emits only `reset`. Once delta semantics arrive,
-    // this handler applies the delta to the slide state.
+/// `update({ asserted, retracted }, { tag })` — incremental change.
+///
+/// Apply the delta to the retained flat frame (`last_frame`) by
+/// conclusion identity — drop each `retracted` row, append each
+/// `asserted` row — then route the merged full set through the same
+/// tag handler `reset` uses. Reusing the reset path keeps a delta
+/// exactly equivalent to the snapshot it would have produced, so no
+/// rendering logic is duplicated.
+fn on_update(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+    let tag = read_tag(&opts);
+    let asserted = read_conclusions(&payload, "asserted");
+    let retracted = read_conclusions(&payload, "retracted");
+    let (asserted, retracted) = match (asserted, retracted) {
+        (Ok(a), Ok(r)) => (a, r),
+        (Err(e), _) | (_, Err(e)) => {
+            fail(
+                host,
+                state,
+                ErrorDetail::new(ErrorKind::Parse, format!("update payload: {e}")),
+            );
+            return;
+        }
+    };
+
+    // Merge the delta into a copy of the retained frame.
+    let merged = apply_delta(state.borrow().last_frame.clone(), &asserted, retracted);
+
+    match tag.as_deref() {
+        Some("model") => handle_model_frame(host, state, merged),
+        Some("view") => handle_view_frame(host, state, merged),
+        Some("entity") => handle_entity_frame(host, state, merged, false),
+        _ => {
+            // Unknown tag — log and drop.
+        }
+    }
+}
+
+/// Apply a delta to a retained frame: drop each `retracted` row by
+/// value equality, then append the `asserted` rows. The result is the
+/// full set the equivalent `Snapshot` frame would have carried, which
+/// is what keeps a delta and a snapshot interchangeable downstream.
+fn apply_delta(
+    mut rows: Vec<Conclusion>,
+    asserted: &[Conclusion],
+    retracted: Vec<Conclusion>,
+) -> Vec<Conclusion> {
+    rows.retain(|row| !retracted.contains(row));
+    rows.extend(asserted.iter().cloned());
+    rows
+}
+
+/// Read `payload[field]` as a `Vec<Conclusion>` for a delta frame.
+/// `JSON.parse`-produced values carry `fields` as a plain object (not
+/// a JS `Map`), so `serde_wasm_bindgen` reads them back correctly.
+fn read_conclusions(payload: &JsValue, field: &str) -> Result<Vec<Conclusion>, String> {
+    let value = Reflect::get(payload, &field.into()).map_err(|e| format!("{e:?}"))?;
+    if value.is_undefined() || value.is_null() {
+        return Ok(Vec::new());
+    }
+    serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())
 }
 
 /// `error(detail, { tag })` — transport / parse error on a
@@ -2212,6 +2266,44 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert(key.to_owned(), Ipld::String(value.to_owned()));
         fields
+    }
+
+    fn row(this: &str, display: &str) -> Conclusion {
+        Conclusion {
+            this: this.to_owned(),
+            fields: host_field("display", display),
+        }
+    }
+
+    /// A delta applied to a retained set yields exactly the full set the
+    /// equivalent snapshot would carry: retracted rows leave, asserted
+    /// rows join, untouched rows stay. This equivalence is what lets the
+    /// consumer route a delta through the same handler as a snapshot.
+    #[dialog_common::test]
+    fn it_applies_a_delta_equivalently_to_a_snapshot() {
+        let retained = vec![row("a", "A"), row("b", "B"), row("c", "C")];
+
+        // Retract b, assert d — the snapshot that would follow.
+        let asserted = vec![row("d", "D")];
+        let retracted = vec![row("b", "B")];
+
+        let merged = apply_delta(retained, &asserted, retracted);
+
+        assert_eq!(
+            merged,
+            vec![row("a", "A"), row("c", "C"), row("d", "D")],
+            "delta merge must equal the equivalent full snapshot"
+        );
+    }
+
+    /// A retract whose value differs from the retained row (stale key)
+    /// removes nothing — equality is by value, so a mismatch can't drop a
+    /// live row.
+    #[dialog_common::test]
+    fn it_ignores_a_retract_that_does_not_match_a_retained_row() {
+        let retained = vec![row("a", "A")];
+        let merged = apply_delta(retained, &[], vec![row("a", "STALE")]);
+        assert_eq!(merged, vec![row("a", "A")]);
     }
 
     /// `forward_with` stamps the display host's OWN `with` onto routing
