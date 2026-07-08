@@ -173,22 +173,52 @@ mirrors a real web-created space (where the service worker seeds `core.yaml`
 onto the remote) instead of an artificially barren branch. cold-onboard is then
 re-baselined for a clean "before".
 
-### 2. `tonk render` fails loudly
+### 2. Authored concepts are addressable by name
 
-`tonk render` currently writes output even when an asserted model lacks a view,
-so an agent reads a partial render (peppered with "Model not found" in the web
-UI) as success. Change: non-zero exit and no output file when any asserted
-model in the render target lacks a view, surfacing the same condition the web
-UI hits.
+(Revised after implementation-time investigation. The original item —
+"`tonk render` fails loudly on a missing view" — was dropped: `tonk render`
+*already* exits non-zero with no output on any resolution failure, verified
+directly. The "Model not found" banners in the baseline were the web UI's full
+space page, not the CLI.)
+
+The real, higher-value bug underneath: the CLI cannot address an
+eval-authored concept **by name**. `resolve_model`
+(`rust/tonk-render/src/page/orchestrate.rs`) maps a name → URI via the `Name`
+concept (`dialog.name/referent`); eval-created concepts only carry
+`dialog.meta/name`, so the lookup misses and falls through to a bare-name
+phase-1 query that matches nothing → `RenderError::NoConcept` ("no concept
+matched `habit`"). This breaks `tonk render <model>`, `tonk share display`, and
+the `/space/{name}/{model}` directory URL for anything an agent authors, and
+it is the bench's long-standing "tonk-created concepts have no Name claim"
+known-friction, now root-caused. (The browser's directory route resolves these,
+so it is a real CLI/browser divergence.)
+
+Fix: **concept creation through the new authoring path asserts the `Name`
+claim** — a `name!: { this: id:<short-name>, entity: <concept-uri> }` mapping
+the concept's short name to its URI — so the concept resolves by name for
+`tonk render`/`share`/the data verbs and the directory URL. This is a
+prerequisite for the named-verb surface (`tonk get/list/render <concept>` all
+need name resolution). Scoped to the new authoring path (`tonk concept add`);
+`eval` stays as-is to avoid core.yaml blast radius (every stdlib concept
+already carries its own pinned name). Because it requires the first authoring
+verb, `tonk concept add` is pulled forward from Phase 4 into this first PR.
 
 ## Sequencing (smallest-first; each phase re-baselines on the bench)
 
-1. `render` fails loudly — tiny, standalone.
-2. Seed reaches the remote — small, standalone, high onboarding value; includes
-   the bench `site.sh` push and a cold-onboard re-baseline.
-3. Data verbs (`add`/`set`/`get`/`list`/`rm`) + `describe` + enumerating errors
-   + `--json` — the core agent win.
-4. Authoring verbs (`concept add`, `view add`) + auto-surface + `tonk home`.
+1. **First PR** — two prerequisites, each an independently reviewable task:
+   1a. Seed reaches the remote — small, standalone; includes the bench
+       `site.sh` push and a cold-onboard re-baseline.
+   1b. `tonk concept add` (the first authoring verb) + `Name`-claim
+       addressability — establishes the verb-module pattern (thin front-end
+       over `eval`) that later verbs reuse, and unblocks name resolution for
+       everything downstream.
+2. Data verbs (`add`/`set`/`get`/`list`/`rm`) + `describe` + enumerating errors
+   + `--json` — the core agent win (reuse the verb module and name resolution
+   from 1b).
+3. Remaining authoring verbs (`view add`) + auto-surface + `tonk home`.
+
+`tonk render` fails-loudly is dropped (already true). Each phase re-runs the
+relevant bench scenarios to measure the delta against the eval-only baselines.
 
 Each phase re-runs the relevant bench scenarios to measure the delta against
 the eval-only baselines (targeted-edit's one-line edit should collapse from
