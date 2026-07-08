@@ -9,6 +9,8 @@
 //!
 //! - [`site`] — `.tonk/` discovery, repo+branch open/init.
 //! - [`identity`] — local profile management.
+//! - [`data`] — pure notation builders (value rendering + doc
+//!   assembly) consumed by the argument-based data verbs.
 //! - [`eval`] — read source, drive [`tonk_evaluator::evaluate`],
 //!   render output.
 //! - [`output`] — render an [`tonk_evaluator::evaluate::EvaluateResponse`]
@@ -21,6 +23,7 @@
 
 pub mod auto_sync;
 pub mod blob;
+pub mod data;
 pub mod eval;
 pub mod guide;
 pub mod identity;
