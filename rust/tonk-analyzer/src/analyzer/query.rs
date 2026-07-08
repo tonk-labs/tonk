@@ -106,6 +106,7 @@ pub(crate) fn build_query_application(
                 ));
             }
             let mut parameters = Parameters::new();
+            let mut attributes = std::collections::BTreeMap::new();
             parameters.insert("this".into(), this_term_for_query(&this));
             for field in &body_fields {
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
@@ -118,11 +119,18 @@ pub(crate) fn build_query_application(
                     None,
                 )?;
                 parameters.insert(field.name.clone(), term);
+                // Declared attributes govern the read side too: a
+                // cardinality-many field must enumerate every value,
+                // not select a winner.
+                if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                    attributes.insert(field.name.clone(), declared.descriptor);
+                }
             }
             Ok(Application::Domain {
                 application: DomainApplication {
                     domain: domain.clone(),
                     parameters,
+                    attributes,
                 },
                 this,
                 name: None,

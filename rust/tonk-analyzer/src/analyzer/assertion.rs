@@ -300,6 +300,7 @@ pub(crate) fn build_assertion_application(
                 name_range,
             )?;
             let mut parameters = Parameters::new();
+            let mut attributes = BTreeMap::new();
             parameters.insert("this".into(), this_term);
             for field in &assertion.fields {
                 if is_meta_field(&field.name) {
@@ -315,12 +316,20 @@ pub(crate) fn build_assertion_application(
                     None,
                 )?;
                 parameters.insert(field.name.clone(), term);
+                // A branch-declared `<domain>/<field>` attribute
+                // governs the synthesized descriptor: its
+                // cardinality decides accumulate-vs-replace and its
+                // value type constrains the slot.
+                if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                    attributes.insert(field.name.clone(), declared.descriptor);
+                }
             }
             Ok(AssertionPlan {
                 assert: Some(Application::Domain {
                     application: DomainApplication {
                         domain: domain.clone(),
                         parameters,
+                        attributes,
                     },
                     this,
                     name,

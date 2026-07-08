@@ -81,6 +81,12 @@ enum Need {
         entity: Entity,
         range: lsp_types::Range,
     },
+    /// The `<domain>/<field>` attribute a claim-domain head's body
+    /// field maps onto, by selector id. Resolves when the branch
+    /// declares it, so the declared cardinality and value type
+    /// govern the synthesized descriptor; absent declarations are
+    /// not an error (claim domains are schema-less by design).
+    AttributeById { id: String, range: lsp_types::Range },
     /// The installed rule a `rule!: ..: _` retract targets.
     Rule {
         entity: Entity,
@@ -156,6 +162,10 @@ pub(crate) trait Resolve {
         &self,
         entity: &Entity,
     ) -> Result<Option<AttributeDefinition>, ResolveError>;
+    /// Resolve an attribute by its `domain/name` selector id (the
+    /// `dialog.attribute/id` claim). Used by claim-domain heads to
+    /// discover declared attributes for their body fields.
+    async fn attribute_by_id(&self, id: &str) -> Result<Option<AttributeDefinition>, ResolveError>;
     async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError>;
     async fn rule(&self, entity: &Entity) -> Result<Option<Rule>, RuleResolveError>;
     /// Resolve an installed *deductive* rule by entity for a
@@ -190,6 +200,9 @@ impl Resolve for LocalOnly {
         &self,
         _: &Entity,
     ) -> Result<Option<AttributeDefinition>, ResolveError> {
+        Ok(None)
+    }
+    async fn attribute_by_id(&self, _: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
         Ok(None)
     }
     async fn named_entity(&self, _: &str) -> Result<Option<Entity>, ResolveError> {
@@ -250,6 +263,15 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
             .resolve(self.source.clone())
             .perform(self.env)
             .await
+    }
+    async fn attribute_by_id(&self, id: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
+        Ok(tonk_schema::concept::AttributeById::new(id)
+            .resolve(&self.source, self.env)
+            .await?
+            .map(|attribute| AttributeDefinition {
+                entity: attribute.entity,
+                descriptor: attribute.descriptor,
+            }))
     }
     async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError> {
         tonk_schema::concept::lookup_named_entity(name, self.source.clone(), self.env).await
@@ -354,6 +376,23 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
                 needs.push(Need::Symbol {
                     name: name.clone(),
                     range: field.value_range,
+                });
+            }
+        }
+
+        // Claim-domain heads (`xyz.tonk …:`, assert or query): each
+        // body field maps onto the `<domain>/<field>` attribute,
+        // which the branch may declare with a cardinality and value
+        // type the synthesized descriptor must honor. Prefetch by
+        // selector id; a missing declaration is not an error.
+        if let HeadName::Claim(domain) = &head.name {
+            for field in fields {
+                if super::field::is_meta_field(&field.name) || field.name == ".." {
+                    continue;
+                }
+                needs.push(Need::AttributeById {
+                    id: format!("{domain}/{}", field.name),
+                    range: field.name_range,
                 });
             }
         }
@@ -496,7 +535,32 @@ impl Graph {
                         )
                     })?;
                     if let Some(def) = found {
-                        scope.record_attribute(None, def);
+                        // Index under the entity the document
+                        // referenced — an `id:<name>` reference
+                        // resolves to an attribute whose own entity
+                        // differs, and the parse phase looks up by
+                        // the document's form.
+                        scope.record_attribute_reference(entity, def);
+                    }
+                }
+                Need::AttributeById { id, range } => {
+                    if scope.attribute_by_id(id).is_some() {
+                        continue;
+                    }
+                    let found = resolver.attribute_by_id(id).await.map_err(|e| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("attribute id {id}"),
+                                reason: e.to_string(),
+                            },
+                            *range,
+                        )
+                    })?;
+                    // A claim domain is schema-less by design:
+                    // nothing declared is fine, and the planner
+                    // falls back to the default descriptor.
+                    if let Some(def) = found {
+                        scope.record_attribute_by_id(id, def);
                     }
                 }
                 // A field retraction reads the pinned concept's stored
@@ -745,6 +809,7 @@ impl Graph {
                 // Resolved in Pass 1 (before declaration bodies emit).
                 Need::Attribute { .. }
                 | Need::AttributeByEntity { .. }
+                | Need::AttributeById { .. }
                 | Need::ConceptByEntity { .. } => {}
             }
         }
@@ -844,6 +909,13 @@ mod tests {
         async fn attribute_by_entity(
             &self,
             _: &Entity,
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
+            self.bump();
+            Ok(None)
+        }
+        async fn attribute_by_id(
+            &self,
+            _: &str,
         ) -> Result<Option<AttributeDefinition>, ResolveError> {
             self.bump();
             Ok(None)
