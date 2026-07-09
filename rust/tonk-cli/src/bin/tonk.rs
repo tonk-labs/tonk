@@ -130,6 +130,36 @@ enum Command {
         json: bool,
     },
 
+    /// Assert a new instance of a concept. The flags accepted after
+    /// `<CONCEPT>` are not fixed — they're built at runtime from
+    /// the concept's own schema, one `--field` per attribute in its
+    /// `with:` map, typed and required to match. Run `tonk add
+    /// <concept> --help` to see them.
+    ///
+    /// `--help` is deliberately NOT handled by clap here
+    /// (`disable_help_flag`): with clap's automatic `-h`/`--help`
+    /// left on, it would intercept a trailing `--help` before it
+    /// ever reached `rest`, so `tonk add habit --help` would show
+    /// this static text instead of `habit`'s real flags. Disabling
+    /// it routes any `--help`/`-h` after `<CONCEPT>` into `rest`,
+    /// where `data_ops::add` builds the concept's own dynamic
+    /// `clap::Command` and renders its help instead.
+    #[command(
+        disable_help_flag = true,
+        after_help = "Examples:\n  tonk add task --title \"Write the plan\" --done false\n  tonk add habit --help"
+    )]
+    Add {
+        /// Name of the concept to create an instance of.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Schema-derived `--field value` flags, captured raw
+        /// (including a bare `--help`) so the dynamic per-concept
+        /// parser in `data_ops::add` — not clap's static
+        /// subcommand parser — decides how to handle them.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
+
     /// List entities that carry a `text/html` claim on the local
     /// branch. One row per entity, tab-separated
     /// `name<TAB>entity<TAB>bytes`. Claim-driven: surfaces
@@ -488,6 +518,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Describe { .. } => ("describe", None),
         Command::List { .. } => ("list", None),
         Command::Get { .. } => ("get", None),
+        Command::Add { .. } => ("add", None),
         Command::Views => ("views", None),
         Command::Migrate { .. } => ("migrate", None),
         Command::Export { .. } => ("export", None),
@@ -569,6 +600,7 @@ async fn main() {
             entity,
             json,
         } => get_op(concept, entity, json).await,
+        Command::Add { concept, rest } => add_op(concept, rest).await,
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
@@ -1377,6 +1409,40 @@ async fn get_op(concept: String, entity: String, json: bool) -> ExitCode {
     };
 
     match data_ops::get(&site, &concept, &entity, json).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+/// Assert a new instance of `concept` from the raw `--field value`
+/// flags in `rest`, as rendered by [`data_ops::add`]. `rest` is
+/// parsed against a `clap::Command` built at runtime from the
+/// concept's schema, so an unrecognized `--flag` or a missing
+/// required one is reported with the concept's real flags, and a
+/// `--help` anywhere in `rest` renders that dynamic help instead of
+/// committing anything — [`data_ops::add`] returns it as `Ok`, so it
+/// prints to stdout and exits [`ExitCode::Success`] like any other
+/// successful read.
+async fn add_op(concept: String, rest: Vec<String>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::add(&site, &concept, &rest).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {

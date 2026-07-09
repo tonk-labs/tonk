@@ -2,10 +2,13 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
+use crate::data::build_add;
 use crate::eval::{self, Options, Source};
 use crate::output::Format;
 use crate::schema::{self, type_to_notation};
 use crate::site::TonkSite;
+
+pub mod flags;
 
 /// Failure modes shared by the data verbs (`describe`, and the
 /// upcoming `add`/`set`/`get`/`list`/`rm`). Each maps onto a CLI
@@ -27,9 +30,32 @@ pub enum DataOpError {
     /// The underlying eval pipeline failed.
     #[error(transparent)]
     Eval(#[from] crate::eval::EvalError),
+    /// The raw CLI flags for a schema-aware verb (`add`, `set`)
+    /// failed clap's dynamically-built parse: an unknown `--flag`,
+    /// a missing required one, or a bad value for the arg's type.
+    /// Display text mirrors clap's own rendered error (its usage
+    /// line already enumerates the concept's real flags), minus
+    /// clap's own `"error: "` header — every other `DataOpError`
+    /// variant's `Display` is header-free, and callers that print
+    /// `"error: {err}"` (matching every other data-verb handler in
+    /// `bin/tonk.rs`) would otherwise get a doubled header.
+    #[error("{}", strip_clap_error_header(.0))]
+    Flags(clap::Error),
     /// I/O, schema read, or repo-not-found failure.
     #[error("{0}")]
     Io(String),
+}
+
+/// Strip clap's own `"error: "` header off a rendered
+/// [`clap::Error`], leaving the usage/help body intact. Used by
+/// [`DataOpError::Flags`]'s `Display` impl — see that variant's doc
+/// comment for why.
+fn strip_clap_error_header(e: &clap::Error) -> String {
+    let rendered = e.to_string();
+    match rendered.strip_prefix("error: ") {
+        Some(rest) => rest.to_string(),
+        None => rendered,
+    }
 }
 
 impl DataOpError {
@@ -37,9 +63,9 @@ impl DataOpError {
     pub fn exit_code(&self) -> crate::ExitCode {
         match self {
             DataOpError::NoConcept { .. } | DataOpError::Io(_) => crate::ExitCode::IoError,
-            // A bad field/value is an analysis-level rejection, not
-            // an I/O failure.
-            DataOpError::Data(_) => crate::ExitCode::AnalyzeError,
+            // A bad field/value, or a rejected flag parse, is an
+            // analysis-level rejection, not an I/O failure.
+            DataOpError::Data(_) | DataOpError::Flags(_) => crate::ExitCode::AnalyzeError,
             DataOpError::Eval(e) => e.exit_code(),
         }
     }
@@ -153,4 +179,30 @@ pub async fn get(
         json,
     )
     .await
+}
+
+/// Assert a new instance of `concept` from schema-derived `--field
+/// value` flags in `argv`. Every non-optional field is required
+/// (`parse_field_flags(.., all_required=true)`), so a `--title`-only
+/// `add` on a concept with two required fields fails clap's
+/// required-argument check before anything is built or committed.
+///
+/// A `--help` anywhere in `argv` is not an error: it returns
+/// `Ok(help_text)` so the caller can print it to stdout and exit
+/// successfully, mirroring `tonk add <concept> --help`'s dynamic,
+/// schema-driven help. Any other flag rejection (unknown field,
+/// missing required field, bad value) is
+/// [`DataOpError::Flags`], whose display text is clap's own
+/// rendered error — the usage line already enumerates the
+/// concept's real flags.
+pub async fn add(site: &TonkSite, concept: &str, argv: &[String]) -> Result<String, DataOpError> {
+    let info = require_concept(site, concept).await?;
+    let pairs = match flags::parse_field_flags(&info.descriptor, concept, argv, true) {
+        Ok(pairs) => pairs,
+        Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
+        Err(e) => return Err(DataOpError::Flags(e)),
+    };
+    let doc = build_add(&info.descriptor, concept, &pairs)?;
+    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+    Ok(format!("added {concept}\n{}", outcome.stdout))
 }
