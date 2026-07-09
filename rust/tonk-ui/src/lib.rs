@@ -12,13 +12,6 @@ pub mod api;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod analytics;
 
-/// UI components for the Tonk application.
-pub mod components;
-
-/// Background sync controller — automatic push/pull for the active
-/// repository's upstream branches.
-pub mod sync_controller;
-
 /// Error types for the Tonk UI.
 pub mod error;
 
