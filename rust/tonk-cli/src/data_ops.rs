@@ -2,7 +2,7 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
-use crate::data::build_add;
+use crate::data::{build_add, build_rm, build_set};
 use crate::eval::{self, Options, Source};
 use crate::output::Format;
 use crate::schema::{self, type_to_notation};
@@ -41,6 +41,13 @@ pub enum DataOpError {
     /// `bin/tonk.rs`) would otherwise get a doubled header.
     #[error("{}", strip_clap_error_header(.0))]
     Flags(clap::Error),
+    /// `set` was called with no `--field value` pairs at all — a
+    /// partial update needs at least one field to change, unlike
+    /// `add` (where an all-optional concept could otherwise commit
+    /// a no-op instance, but `set` against an existing entity would
+    /// commit nothing at all).
+    #[error("set needs at least one --field to change")]
+    NoFields,
     /// I/O, schema read, or repo-not-found failure.
     #[error("{0}")]
     Io(String),
@@ -65,7 +72,9 @@ impl DataOpError {
             DataOpError::NoConcept { .. } | DataOpError::Io(_) => crate::ExitCode::IoError,
             // A bad field/value, or a rejected flag parse, is an
             // analysis-level rejection, not an I/O failure.
-            DataOpError::Data(_) | DataOpError::Flags(_) => crate::ExitCode::AnalyzeError,
+            DataOpError::Data(_) | DataOpError::Flags(_) | DataOpError::NoFields => {
+                crate::ExitCode::AnalyzeError
+            }
             DataOpError::Eval(e) => e.exit_code(),
         }
     }
@@ -205,4 +214,76 @@ pub async fn add(site: &TonkSite, concept: &str, argv: &[String]) -> Result<Stri
     let doc = build_add(&info.descriptor, concept, &pairs)?;
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
     Ok(format!("added {concept}\n{}", outcome.stdout))
+}
+
+/// Overwrite a subset of fields on an existing instance of
+/// `concept`. Unlike [`add`], every field is optional
+/// (`parse_field_flags(.., all_required=false)`) — `set` names a
+/// subset of fields to change, not the whole instance — but at
+/// least one `--field` must be supplied, or the call is a no-op
+/// commit against `entity` and rejected as [`DataOpError::NoFields`]
+/// before anything is built.
+///
+/// `entity` is passed straight through to the `this:` binding of
+/// the generated assertion, so it accepts either a bookmark name or
+/// a `did:key:…` entity URI — same addressing [`get`] uses.
+///
+/// A `--help` anywhere in `argv` returns `Ok(help_text)`, mirroring
+/// `add`. Any other flag rejection is [`DataOpError::Flags`].
+pub async fn set(
+    site: &TonkSite,
+    concept: &str,
+    entity: &str,
+    argv: &[String],
+) -> Result<String, DataOpError> {
+    let info = require_concept(site, concept).await?;
+    let pairs = match flags::parse_field_flags(&info.descriptor, concept, argv, false) {
+        Ok(pairs) => pairs,
+        Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
+        Err(e) => return Err(DataOpError::Flags(e)),
+    };
+    if pairs.is_empty() {
+        return Err(DataOpError::NoFields);
+    }
+    let doc = build_set(&info.descriptor, concept, entity, &pairs)?;
+    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+    Ok(format!("updated {entity}\n{}", outcome.stdout))
+}
+
+/// Retract one field, or the whole instance, from `entity`. With
+/// `field: Some(f)`, retracts just `f` (validated against
+/// `concept`'s descriptor first, so an unknown field name is
+/// rejected with the same enumerating error shape as an unknown
+/// `add`/`set` flag — see [`crate::data::DataError::UnknownField`]).
+/// With `field: None`, retracts the whole instance
+/// ([`build_rm`]'s `..: _` form).
+pub async fn rm(
+    site: &TonkSite,
+    concept: &str,
+    entity: &str,
+    field: Option<&str>,
+) -> Result<String, DataOpError> {
+    let info = require_concept(site, concept).await?;
+    if let Some(f) = field {
+        let valid: Vec<String> = info
+            .descriptor
+            .with()
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        if !valid.iter().any(|v| v == f) {
+            return Err(crate::data::DataError::UnknownField {
+                concept: concept.to_string(),
+                field: f.to_string(),
+                valid,
+            }
+            .into());
+        }
+    }
+    let doc = build_rm(concept, entity, field);
+    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+    Ok(match field {
+        Some(f) => format!("removed {f} from {entity}\n{}", outcome.stdout),
+        None => format!("removed {entity}\n{}", outcome.stdout),
+    })
 }

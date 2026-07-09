@@ -157,3 +157,102 @@ mod when_adding_an_instance {
         Ok(())
     }
 }
+
+// `task` has two required fields (`title`, `done`; see the note
+// above `when_adding_an_instance`), so a bare `&anchor` seed with a
+// name but no `this:` field trips the analyzer's "no incomplete
+// fresh-entity assertion" rule unless every required field is
+// supplied up front — every seed below sets both.
+mod when_setting_and_removing {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_overwrites_a_field_on_a_named_entity() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        // Seed a named task `t1` with an anchor so it is addressable
+        // by name across separate eval calls.
+        test.eval_inline("task!: &t1\n  title: \"old\"\n  done: false\n")
+            .await?;
+        tonk_cli::data_ops::set(&test.site, "task", "t1", &["--title".into(), "new".into()])
+            .await?;
+        let out = tonk_cli::data_ops::get(&test.site, "task", "t1", false).await?;
+        assert!(
+            out.contains("new") && !out.contains("old"),
+            "set should overwrite:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_set_with_no_fields_supplied() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &t1b\n  title: \"old\"\n  done: false\n")
+            .await?;
+        let err = tonk_cli::data_ops::set(&test.site, "task", "t1b", &[])
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("at least one"),
+            "empty set should be rejected:\n{msg}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_retracts_a_single_field() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &t2\n  title: \"retract-me\"\n  done: false\n")
+            .await?;
+        tonk_cli::data_ops::rm(&test.site, "task", "t2", Some("title")).await?;
+        // After retracting its only declared field, the concept
+        // query no longer matches it (a concept query requires
+        // every field present).
+        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        assert!(
+            !out.contains("retract-me"),
+            "retracted field should drop the row from the concept query:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_retracts_a_whole_instance() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &t3\n  title: \"gone-entirely\"\n  done: false\n")
+            .await?;
+        tonk_cli::data_ops::rm(&test.site, "task", "t3", None).await?;
+        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        assert!(
+            !out.contains("gone-entirely"),
+            "whole-instance rm should drop the row:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_enumerating_valid_fields_on_an_unknown_rm_field() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &t4\n  title: \"x\"\n  done: false\n")
+            .await?;
+        let err = tonk_cli::data_ops::rm(&test.site, "task", "t4", Some("nope"))
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("title"),
+            "error should enumerate valid fields:\n{msg}"
+        );
+        Ok(())
+    }
+}
