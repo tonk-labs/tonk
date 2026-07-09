@@ -185,13 +185,14 @@ dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
 
 # PROTOTYPE WIRING — incremental subscriptions (plan/incremental-subscriptions.md).
-# Points every dialog crate at a dedicated `tonk-subs` worktree pinned at the
-# committed subscription-overlays work (rev e8b9b32e), NOT the live `meg` worktree
-# where the dialog Send/#100013 work is in flight — so that agent's uncommitted WIP
-# can't break this build. This branch forks from upstream #298 and LACKS the #373
-# cache fix in the pinned tag above, so absolute sync latency regresses while patched
-# — measure incremental hit rate, not latency. Swap for a real tag once the dialog
-# side is reconciled with tonk-2026-07-07 (not in scope).
+# Points every dialog crate at the dedicated `tonk-subs` worktree checked out on
+# `fix/push-noop-guard` — the dialog stack that adds incremental subscriptions,
+# the branch-scoped session overlay, native Send-generality, the inductive-rule
+# self-negation fix, and the push no-op guard (skip re-publishing the revision
+# when nothing new to push). This branch forks from upstream #298 and
+# LACKS the #373 cache fix in the pinned tag above, so absolute sync latency
+# regresses while patched — measure incremental hit rate, not latency. Swap for a
+# real tag once the dialog side is reconciled with tonk-2026-07-07 (not in scope).
 [patch."https://github.com/dialog-db/dialog-db.git"]
 dialog-artifacts = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-artifacts" }
 dialog-capability = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-capability" }

@@ -40,15 +40,14 @@ impl<'a> QueryEffect<'a> {
     {
         let session = self.branch.acquire(env).await?;
         let terms = self.query.terms.clone();
-        // Fold in the branch's session overlay (ephemeral facts kept out
-        // of storage, e.g. an invite's private seed) so the read sees
-        // them alongside branch facts. Deductive `db.rule/*` rules
-        // resolve automatically — the branch query is a layer stack that
-        // resolves rules as well as facts.
+        // The branch folds its own session overlay (ephemeral facts kept
+        // out of storage, e.g. an invite's private seed) into every read,
+        // so the query sees them alongside branch facts with no `.with(..)`
+        // here. Deductive `db.rule/*` rules resolve automatically — the
+        // branch query is a layer stack that resolves rules as well as facts.
         let conclusions = session
             .handle()
             .query()
-            .with(session.overlay())
             .select(tonk_schema::concept::QueryPlan::from(self.query))
             .perform(env)
             .try_vec()

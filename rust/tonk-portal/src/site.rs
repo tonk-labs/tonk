@@ -106,33 +106,24 @@ impl CustomElement for TonkSite {
 
 /// Tear down the portal iframe held by `cell`, if any.
 ///
-/// TWO-PHASE: sever the comms (aborts + port closes via `clear_subs`),
-/// point the frame at `about:blank` so the guest realm unloads on its own
-/// schedule, and only remove the element a tick later. Synchronously
-/// destroying a live nested guest (running wasm, brokered ports, its own
-/// nested frames) from inside a render pass is the pattern the browser
-/// process has crashed under — give the unload a turn to settle first.
+/// Sever comms first (`clear_subs` cancels host subscriptions and aborts the
+/// relayed fetches), then remove the iframe. Response bodies reach the guest
+/// over a MessagePort, never a transferred `ReadableStream`, so nothing
+/// cross-realm is orphaned by the removal — no teardown handshake needed.
 fn teardown(cell: &StateCell) {
     if let Some(state) = cell.borrow_mut().take() {
-        let mut s = state.borrow_mut();
-        s.disposed = true;
-        s.clear_subs();
-        if let Some(iframe) = s.iframe.take() {
-            crate::bridge::unregister_portal(&iframe);
-            let _ = iframe.remove_attribute("srcdoc");
-            let _ = iframe.set_attribute("src", "about:blank");
-            spawn_local(async move {
-                let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-                    if let Some(win) = window() {
-                        let _ = win
-                            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 100);
-                    }
-                });
-                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-                if let Some(parent) = iframe.parent_node() {
-                    let _ = parent.remove_child(&iframe);
-                }
-            });
+        let iframe = {
+            let mut s = state.borrow_mut();
+            s.disposed = true;
+            s.clear_subs();
+            s.iframe.take()
+        };
+        let Some(iframe) = iframe else {
+            return;
+        };
+        crate::bridge::unregister_portal(&iframe);
+        if let Some(parent) = iframe.parent_node() {
+            let _ = parent.remove_child(&iframe);
         }
     }
 }

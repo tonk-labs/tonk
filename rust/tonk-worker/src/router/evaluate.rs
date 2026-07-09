@@ -240,13 +240,14 @@ async fn evaluate_on_branch<'a>(
     // `transact`) is what keeps the read paths consistent; the overlay
     // is read-only and gets `induce`-swept on commit (below) so it never
     // lands durably.
-    let overlay = session.overlay();
-    // The evaluation's match queries (`txn.query()` inside the
-    // evaluator) resolve stored `db.rule/*` rules automatically — rule
-    // resolution is built into the branch query's layer stack, so the
-    // inspector's dry-run preview shows the same deductions a committed
-    // `query` / `subscribe` returns.
-    let txn = branch.transaction().integrate(overlay.clone());
+    // The branch folds its session overlay into every read — the
+    // transaction's as-if-committed view included — so the dry-run
+    // preview sees the same ephemeral facts a `query`/`subscribe` does
+    // with no explicit integrate here, and they never reach the durable
+    // write (the overlay is session-only). The evaluation's match queries
+    // resolve stored `db.rule/*` rules automatically via the branch
+    // query's layer stack.
+    let txn = branch.transaction();
 
     let t_eval = web_time::Instant::now();
     let evaluated = syntax
@@ -273,14 +274,11 @@ async fn evaluate_on_branch<'a>(
     // statement is the single commit signal.
     let response = if query.transact && evaluated.analysis.analysis.has_statements() {
         let t_commit = web_time::Instant::now();
-        // Sweep the overlay before the durable write: the transaction
-        // folded the session overlay in for reads, but those ephemeral
-        // facts (e.g. an invite seed) must never persist. Retracting them
-        // here cancels the integrated asserts so only the document's own
-        // statements land.
+        // The session overlay is folded in for reads but is never part of
+        // the durable write (dialog keeps it session-only), so the commit
+        // lands only the document's own statements — no overlay sweep here.
         let revision_after = evaluated
             .txn
-            .integrate(session.overlay_retraction())
             .commit()
             .perform(&tonk_state.operator)
             .await

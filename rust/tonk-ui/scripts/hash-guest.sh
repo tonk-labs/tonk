@@ -60,3 +60,32 @@ cat > "$GUEST_DIR/manifest.json" <<EOF
 EOF
 
 echo "hash-guest: js=$JS wasm=$WASM waJs=$WA_JS waCss=$WA_CSS"
+
+# ---------------------------------------------------------------------------
+# Service-worker cache-bust.
+#
+# The SW script chain — `service_worker.js` (a copied static file) imports
+# `worker.js` (trunk's `data-bin=worker` glue) which loads `worker_bg.wasm`
+# by a FIXED name — carries no content-dependent identifier anywhere. On an
+# update check (`updateViaCache: "none"`, so always network) the browser
+# byte-compares the SW script and its imported `worker.js`; both are
+# identical across rebuilds even when the wasm changed, so the browser never
+# detects an update and the old worker is never replaced.
+#
+# Fix: stamp the current `worker_bg.wasm` content hash into a comment in
+# `service_worker.js`. Its bytes now change iff the worker wasm changes, so
+# the browser's byte comparison sees a new script and installs the update.
+DIST="${TRUNK_STAGING_DIR:?TRUNK_STAGING_DIR not set}"
+SW="$DIST/service_worker.js"
+WORKER_WASM="$DIST/worker_bg.wasm"
+if [ -f "$SW" ] && [ -f "$WORKER_WASM" ]; then
+    WH=$(hash_of "$WORKER_WASM")
+    # Drop any prior stamp, then append the current one. The marker line is
+    # inert (a comment) and changes the script's bytes with the wasm.
+    grep -v '^// worker-wasm-hash:' "$SW" > "$SW.tmp" || cp "$SW" "$SW.tmp"
+    printf '// worker-wasm-hash: %s\n' "$WH" >> "$SW.tmp"
+    mv -f "$SW.tmp" "$SW"
+    echo "hash-guest: stamped service_worker.js with worker-wasm-hash=$WH"
+else
+    echo "hash-guest: no service_worker.js or worker_bg.wasm to stamp, skipping"
+fi

@@ -121,12 +121,6 @@ pub struct Subscription {
     /// — the delta / snapshot rows are `ConceptConclusion`s that
     /// project to the wire `Conclusion` through these terms.
     pub terms: Parameters,
-    /// The branch overlay epoch this subscription's engine was last
-    /// seeded at. When the branch's epoch moves ahead (an overlay
-    /// write), the poll re-seeds the engine with the current overlay
-    /// and forces a recompute — an overlay change is off-tree, so the
-    /// engine's own tree-diff gate can't observe it.
-    pub seeded_overlay_epoch: u64,
     /// Open downstream channels with their delivery status.
     pub subscribers: Vec<SubscriberSession>,
 }

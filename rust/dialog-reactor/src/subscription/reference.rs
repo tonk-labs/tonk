@@ -88,10 +88,9 @@ impl SubscriptionPoll<'_> {
         // scheduled polls, making every one of them `!Send`.
         async move {
             // Snapshot what we need out of the map lock: the engine
-            // handle, the projection terms, the subscription's seeded
-            // overlay epoch, and whether any subscriber is Pending (needs
-            // a full snapshot rather than a delta).
-            let (slot, terms, seeded_epoch, any_pending) = {
+            // handle, the projection terms, and whether any subscriber is
+            // Pending (needs a full snapshot rather than a delta).
+            let (slot, terms, any_pending) = {
                 let subs = self.state.subscriptions().lock();
                 let Some(subscription) = subs.get(&self.hash) else {
                     return;
@@ -103,35 +102,46 @@ impl SubscriptionPoll<'_> {
                 (
                     Arc::clone(&subscription.engine),
                     subscription.terms.clone(),
-                    subscription.seeded_overlay_epoch,
                     any_pending,
                 )
             };
 
-            // Re-seed the engine's overlay if the branch's overlay moved
-            // since this subscription was seeded. An overlay write is
-            // off-tree, so the engine's tree-diff gate can't see it;
-            // `set_overlay` invalidates the engine's pin so the poll below
-            // recomputes and reports the overlay-induced change as a delta.
-            let current_epoch = self.state.overlay_epoch();
-
             // Take the engine out of its slot so the poll runs without a
-            // guard held across the `await` (see `EngineSlot`). A
-            // concurrent poll of the same subscription finds the slot
-            // emptied and returns — its in-flight sibling covers the same
-            // work.
-            let mut engine = {
-                let mut guard = slot.lock().await;
-                let Some(engine) = guard.take() else {
-                    return;
-                };
-                engine
+            // guard held across the `await` (see `EngineSlot`). If a
+            // concurrent poll holds the engine, wait for it to finish and
+            // then run — do NOT bail: a subscriber that just attached (and
+            // that the in-flight poll may not have seen when it captured its
+            // `any_pending`) still needs its first snapshot, and bailing here
+            // left it hung with no data forever ("query gets nothing and
+            // gets stuck"). Yielding-and-retrying serves it on the next turn.
+            // Bounded so a long-running in-flight poll (its own network await)
+            // can't make this spin indefinitely; if still contended after the
+            // cap, give up this turn — the in-flight poll's fan-out serves the
+            // subscribers it sees, and any genuinely-missed Pending subscriber
+            // is re-served by the next scheduled poll.
+            const SLOT_RETRY_CAP: u32 = 64;
+            let mut engine = 'acquire: {
+                let mut attempts = 0;
+                loop {
+                    {
+                        let mut guard = slot.lock().await;
+                        if let Some(engine) = guard.take() {
+                            break 'acquire engine;
+                        }
+                    }
+                    attempts += 1;
+                    if attempts >= SLOT_RETRY_CAP {
+                        return;
+                    }
+                    // Slot busy — yield a microtask so the in-flight poll can
+                    // put the engine back, then retry acquiring it.
+                    yield_once().await;
+                }
             };
 
-            if seeded_epoch != current_epoch {
-                engine.set_overlay(self.state.overlay());
-            }
-
+            // The engine gates on both the tree revision and the branch's
+            // overlay epoch, so an overlay write (which doesn't move the
+            // tree) still re-evaluates on this poll — no re-seed here.
             let poll_result = engine.poll(env).await;
 
             // Snapshot for Pending subscribers — projected from the
@@ -161,8 +171,13 @@ impl SubscriptionPoll<'_> {
             };
 
             // Delta for Established subscribers — only when the poll
-            // reported a change.
-            let delta_bytes = delta.as_ref().and_then(|delta| {
+            // reported a NON-EMPTY change. An empty delta (asserted and
+            // retracted both empty) is a no-op: a re-evaluation whose
+            // result set didn't move (e.g. an overlay epoch bump that
+            // changed nothing this query reads). Broadcasting it would
+            // repaint every consumer for nothing and, if a re-poll keeps
+            // firing, spin a render loop — so drop it here.
+            let delta_bytes = delta.as_ref().filter(|d| !d.is_empty()).and_then(|delta| {
                 let asserted = delta
                     .asserted
                     .iter()
@@ -184,7 +199,6 @@ impl SubscriptionPoll<'_> {
             let Some(subscription) = subs.get_mut(&self.hash) else {
                 return;
             };
-            subscription.seeded_overlay_epoch = current_epoch;
 
             subscription.subscribers.retain_mut(|subscriber| {
                 let bytes = match subscriber.status {
@@ -226,4 +240,29 @@ fn serialize(frame: &Frame) -> Option<Bytes> {
             None
         }
     }
+}
+
+/// Yield control once: return `Pending` a single time (waking immediately),
+/// so the executor can advance another task before this one resumes.
+/// Runtime-agnostic (works on the wasm service worker and native), used to
+/// let an in-flight poll release the engine slot before this poll retries.
+async fn yield_once() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct YieldOnce(bool);
+    impl Future for YieldOnce {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+    YieldOnce(false).await
 }
