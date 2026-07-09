@@ -107,3 +107,53 @@ mod when_reading_instances {
         Ok(())
     }
 }
+
+// `task` (see `CONCEPT_DECL`) has two fields declared under `with:`
+// — `title` (Text) and `done` (Boolean) — and neither is declared
+// via a `maybe:` block, so `ConceptFieldDescriptor::is_optional()`
+// is `false` for both: `add`'s dynamic clap `Command` (built with
+// `all_required=true`) makes *both* required args. A `--title`-only
+// add therefore fails clap's required-argument check before
+// anything is built or committed, so the happy-path test below
+// supplies both flags.
+mod when_adding_an_instance {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_commits_an_instance_from_typed_flags() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let argv = vec![
+            "--title".to_string(),
+            "Write the plan".to_string(),
+            "--done".to_string(),
+            "false".to_string(),
+        ];
+        tonk_cli::data_ops::add(&test.site, "task", &argv).await?;
+        // Verify it landed: list should now show the title.
+        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        assert!(
+            out.contains("Write the plan"),
+            "added instance should appear in list:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_enumerating_valid_flags_on_unknown_field() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let argv = vec!["--nope".to_string(), "x".to_string()];
+        let err = tonk_cli::data_ops::add(&test.site, "task", &argv)
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("title"),
+            "error should enumerate valid flags:\n{msg}"
+        );
+        Ok(())
+    }
+}

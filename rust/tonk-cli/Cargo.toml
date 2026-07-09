@@ -66,7 +66,12 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-clap = { workspace = true }
+# `string` on top of the workspace default: the schema-aware data
+# verbs (`add`/`set`) build a `clap::Command` at runtime from a
+# concept's field names (owned `String`s from the branch, not
+# `&'static str` literals), which needs `Arg`/`Command` builders
+# that accept owned strings.
+clap = { workspace = true, features = ["string"] }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
