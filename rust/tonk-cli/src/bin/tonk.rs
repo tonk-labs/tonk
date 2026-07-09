@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand};
 
 use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
+use tonk_cli::data_ops;
 use tonk_cli::eval::{self, EvalError, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
 use tonk_cli::migrate::{self, Mode as MigrateMode};
@@ -91,6 +92,16 @@ enum Command {
     /// resolvable everywhere and would just be noise.
     #[command(after_help = "Examples:\n  tonk concepts")]
     Concepts,
+
+    /// Print a concept's fields, types, cardinalities, and
+    /// description — a human-readable view of one entry from
+    /// `tonk schema`. Read-only.
+    #[command(after_help = "Examples:\n  tonk describe task")]
+    Describe {
+        /// Name of the concept to describe.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+    },
 
     /// List entities that carry a `text/html` claim on the local
     /// branch. One row per entity, tab-separated
@@ -447,6 +458,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Guide { .. } => ("guide", None),
         Command::Schema => ("schema", None),
         Command::Concepts => ("concepts", None),
+        Command::Describe { .. } => ("describe", None),
         Command::Views => ("views", None),
         Command::Migrate { .. } => ("migrate", None),
         Command::Export { .. } => ("export", None),
@@ -521,6 +533,7 @@ async fn main() {
         Command::Guide { topic } => print_guide(topic.as_deref()),
         Command::Schema => print_schema().await,
         Command::Concepts => print_concepts().await,
+        Command::Describe { concept } => describe_op(concept).await,
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
@@ -1257,6 +1270,46 @@ async fn print_concepts() -> ExitCode {
         }
     }
     ExitCode::Success
+}
+
+/// Print a concept's fields as rendered by [`data_ops::describe`].
+/// An unknown-concept error is enriched with the list of concept
+/// names actually on the branch, so the agent doesn't have to run
+/// a second command to find the right spelling.
+async fn describe_op(concept: String) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::describe(&site, &concept).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            if err.to_string().contains("no concept named") {
+                match schema::list_concepts(&site).await {
+                    Ok(concepts) => {
+                        let names: Vec<&str> = concepts.iter().map(|c| c.name.as_str()).collect();
+                        eprintln!("known concepts: {}", names.join(", "));
+                    }
+                    Err(list_err) => {
+                        eprintln!("(could not list known concepts: {list_err})");
+                    }
+                }
+            }
+            ExitCode::IoError
+        }
+    }
 }
 
 async fn print_views() -> ExitCode {
