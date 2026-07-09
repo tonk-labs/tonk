@@ -85,23 +85,30 @@ impl CustomElement for TonkPortal {
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
-            let iframe = {
-                let mut s = state.borrow_mut();
-                s.disposed = true;
-                // Sever comms first: cancels host subscriptions and aborts the
-                // relayed fetches. Response bodies reach the guest over a
-                // MessagePort (never a transferred stream), so there is no
-                // cross-realm stream to orphan — the iframe can be removed
-                // directly, no teardown handshake.
-                s.clear_subs();
-                s.iframe.take()
-            };
-            let Some(iframe) = iframe else {
-                return;
-            };
-            bridge::unregister_portal(&iframe);
-            if let Some(parent) = iframe.parent_node() {
-                let _ = parent.remove_child(&iframe);
+            let mut s = state.borrow_mut();
+            s.disposed = true;
+            s.clear_subs();
+            if let Some(iframe) = s.iframe.take() {
+                bridge::unregister_portal(&iframe);
+                // Two-phase: unload the guest realm first, remove the
+                // element a tick later — synchronous destruction of a live
+                // guest is the pattern the browser process crashes under
+                // (see `site::teardown`).
+                let _ = iframe.remove_attribute("srcdoc");
+                let _ = iframe.set_attribute("src", "about:blank");
+                wasm_bindgen_futures::spawn_local(async move {
+                    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                &resolve, 100,
+                            );
+                        }
+                    });
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                    if let Some(parent) = iframe.parent_node() {
+                        let _ = parent.remove_child(&iframe);
+                    }
+                });
             }
         }
     }
@@ -260,10 +267,10 @@ mod tests {
         );
     }
 
-    /// On disconnect the iframe is removed directly (comms severed via
-    /// `clear_subs` first). Removing it fires the guest's `pagehide`, where the
-    /// guest cancels its transferred streams in its own realm before it is torn
-    /// down — so no `about:blank` bounce or settle-timeout is needed.
+    /// Teardown is TWO-PHASE: on disconnect the guest realm is pointed at
+    /// `about:blank` immediately (comms already severed), and the element
+    /// itself is removed a tick later — synchronous destruction of a live
+    /// guest is the pattern the browser process crashed under.
     #[dialog_common::test]
     async fn it_removes_the_iframe_on_disconnect() {
         let host = mount(Some("<p>hi</p>"));
@@ -271,9 +278,30 @@ mod tests {
 
         host.remove();
 
+        // Phase one, immediate: the frame is unloading, not yet detached.
+        if let Some(iframe) = host.query_selector("iframe").unwrap() {
+            assert_eq!(
+                iframe.get_attribute("src").as_deref(),
+                Some("about:blank"),
+                "disconnect must unload the guest realm first",
+            );
+        }
+
+        // Phase two: detached shortly after.
+        for _ in 0..80 {
+            if host.query_selector("iframe").unwrap().is_none() {
+                break;
+            }
+            let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+                if let Some(win) = web_sys::window() {
+                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 25);
+                }
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        }
         assert!(
             host.query_selector("iframe").unwrap().is_none(),
-            "disconnect detaches the iframe directly; got: {}",
+            "the deferred phase detaches the iframe; got: {}",
             host.inner_html(),
         );
     }

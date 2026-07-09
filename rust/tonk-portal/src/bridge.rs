@@ -67,9 +67,9 @@ pub(crate) struct PortalState {
     /// Live subscriptions keyed by the host tag we minted. Dropping an
     /// entry cancels its host subscription.
     subs: BTreeMap<String, BridgeSub>,
-    /// Abort handles for every fetch this portal relayed. Aborted on teardown
-    /// (`clear_subs`) so an SSE subscription's parent fetch stops instead of
-    /// running on after the guest is gone.
+    /// Abort handles for every fetch this portal relayed. Aborted (and
+    /// drained) on teardown so no response keeps streaming into a
+    /// destroyed guest realm.
     relays: Vec<AbortController>,
     /// The port bound by the latest `hello` handshake, used to relay
     /// results back to the iframe. `None` until the iframe says hello.
@@ -131,16 +131,24 @@ impl PortalState {
         self.with.as_ref() == Some(with) && self.allow == *allow
     }
 
-    /// Forget every host-side subscription and abort every relayed fetch.
-    ///
-    /// Aborting a relayed fetch here (e.g. an open SSE subscription) is safe:
-    /// the response body is drained to the guest over a `MessagePort`, not
-    /// transferred as a `ReadableStream`, so there is no cross-realm stream to
-    /// orphan when the guest realm is torn down. The parent fetch simply stops.
+    /// Cancel and forget every live subscription and relayed fetch.
+    /// Dropping each `BridgeSub` cancels its host subscription, and
+    /// aborting each relay cancels the underlying fetch — including a
+    /// streaming response whose body was TRANSFERRED into the guest. A
+    /// torn-down guest must not leave live pipes into its destroyed
+    /// realm: orphaned transferred streams are the prime suspect for the
+    /// renderer crash on space→hub navigation.
     pub(crate) fn clear_subs(&mut self) {
         self.subs.clear();
         for relay in self.relays.drain(..) {
             relay.abort();
+        }
+        // Close the bridge port too: a torn-down (or reloading) guest must
+        // leave NO live browser-brokered endpoints behind — the in-flight
+        // chunk drains terminate via the aborts above and close their own
+        // ports.
+        if let Some(port) = self.port.take() {
+            port.close();
         }
     }
 
@@ -194,28 +202,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       });
     });
   }
-  // In-flight de-duplication for one-shot queries. Many <tonk-display>
-  // elements resolve the SAME concept descriptor (phase-1) or bookmark name
-  // on one page load — e.g. three displays of `tonk:repository` each fire an
-  // identical `dialog.meta/*` query. Coalesce identical concurrent queries
-  // onto one request keyed by (route + body); every caller shares the single
-  // promise. Purely in-flight (cleared when it settles), so no staleness —
-  // just fewer round-trips. A subscription is never deduped here (it's a
-  // long-lived stream), only the fire-and-forget `query`.
-  var inflightQ=new Map();
-  function dedupQuery(env){
-    var key;
-    try{ key=JSON.stringify(env); }catch(e){ return call("query",env); }
-    var hit=inflightQ.get(key);
-    if(hit) return hit;
-    var p=call("query",env).finally(function(){ inflightQ.delete(key); });
-    inflightQ.set(key,p);
-    return p;
-  }
   var tonk={
     context:{this:"",model:""},
     ready:ready,
-    query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
+    query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
     transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
     // {document, transact}; the parent relays it to the installed host's
@@ -273,18 +263,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         // Rebuild a real Response from the status/headers the host captured
-        // plus the body. The body arrives over a transferred MessagePort
-        // (`streamPort`): we wrap it in a ReadableStream — BUILT IN THIS REALM,
-        // so it is GC'd cleanly when the realm is torn down — that pulls chunks
-        // with credit-based backpressure: grant credit when the consumer wants
-        // more, enqueue each {type:"chunk"}, close on {type:"close"}, error on
-        // {type:"error"}, and post {type:"cancel"} if the reader cancels. The
-        // host never TRANSFERS the response stream itself: a transferred
-        // ReadableStream living in this realm faults the renderer when the realm
-        // is destroyed (see `post_fetch_response`). No streamPort ⇒ bodyless.
+        // plus the body. The body arrives one of three ways:
+        //   - env.body is a transferred ReadableStream (fast path) — use it.
+        //   - env.streamPort is a transferred MessagePort (Safari fallback) —
+        //     wrap it in a ReadableStream that pulls chunks with credit-based
+        //     backpressure: grant credit when the consumer wants more, enqueue
+        //     each {type:"chunk"}, close on {type:"close"}, error on
+        //     {type:"error"}, and post {type:"cancel"} if the reader cancels.
+        //   - neither — a bodyless response.
         var headers=new Headers(env.headers||[]);
         var body=null;
-        if (env.streamPort) {
+        if (env.body!==undefined) {
+          body=env.body;
+        } else if (env.streamPort) {
           var sp=env.streamPort;
           body=new ReadableStream({
             start:function(controller){
@@ -1602,15 +1593,59 @@ async fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Respo
         return;
     };
 
-    // Never transfer the response stream itself. A transferred `ReadableStream`
-    // living in a sealed-guest realm faults the renderer whenever that realm is
-    // destroyed (element removal, `about:blank`, even `srcdoc` mutation) — and
-    // it faults even if the stream was cancelled first, so no teardown ordering
-    // makes it safe. Instead drain the body into a `MessageChannel` with
-    // credit-based backpressure: the guest builds its OWN `ReadableStream` fed
-    // by port chunks, owned by (and GC'd cleanly with) its realm. Same
-    // streaming semantics, no cross-realm stream object to orphan.
+    // Fast path: attempt to transfer the stream itself. We only learn whether
+    // the browser supports it by trying — a probe post on a throwaway channel,
+    // so a `DataCloneError` here never reaches the guest.
+    if streams_are_transferable() {
+        let transfer = js_sys::Array::new();
+        let _ = Reflect::set(&env, &"body".into(), &body);
+        transfer.push(&body);
+        match port.post_message_with_transferable(&env, &transfer) {
+            Ok(()) => return,
+            // Shouldn't happen once the probe passed, but if it does, fall
+            // through to the chunked path rather than dropping the response.
+            Err(e) => {
+                tonk_common::log!("portal fetch: stream transfer failed post-probe: {e:?}");
+            }
+        }
+    }
+
+    // Fallback: drain the body into a MessageChannel with credit-based
+    // backpressure. Strip the (untransferable) stream off the head envelope
+    // and hand the guest a port instead.
+    let _ = Reflect::delete_property(&env, &"body".into());
     drain_body_to_port(port, env, &body);
+}
+
+/// Whether this browser can transfer a `ReadableStream` over `postMessage`.
+/// Detected once by probing a throwaway `MessageChannel` (the result is
+/// cached): Safari before 27 throws `DataCloneError`, every other current
+/// browser succeeds.
+///
+/// Transfers were briefly disabled while chasing a browser-process crash;
+/// the real trigger was the SYNCHRONOUS destruction of a live nested guest
+/// (now a two-phase teardown: unload to `about:blank`, remove a tick
+/// later, with every relay aborted and every port closed first). With that
+/// fixed, the zero-copy transfer path is back.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn streams_are_transferable() -> bool {
+    thread_local! {
+        static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
+    }
+    SUPPORTED.with(|cell| {
+        *cell.get_or_init(|| {
+            let Ok(channel) = web_sys::MessageChannel::new() else {
+                return false;
+            };
+            let stream = web_sys::ReadableStream::new().unwrap_or_else(|_| JsValue::NULL.into());
+            let transfer = js_sys::Array::new();
+            transfer.push(&stream);
+            channel
+                .port1()
+                .post_message_with_transferable(&JsValue::NULL, &transfer)
+                .is_ok()
+        })
+    })
 }
 
 /// Drain `body` into a fresh `MessageChannel`, transferring the guest's end on
