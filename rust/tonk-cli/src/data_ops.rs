@@ -2,6 +2,8 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
+use crate::eval::{self, Options, Source};
+use crate::output::Format;
 use crate::schema::{self, type_to_notation};
 use crate::site::TonkSite;
 
@@ -92,4 +94,63 @@ pub async fn describe(site: &TonkSite, concept: &str) -> Result<String, DataOpEr
         ));
     }
     Ok(out)
+}
+
+/// Build a query-notation document that binds every field of
+/// `concept`'s descriptor: `this: ?e` (or `this: <entity>` when a
+/// specific instance is requested) followed by one `<field>:
+/// ?<field>` line per field. No `!` head, so evaluating the
+/// document is a pure query — nothing commits.
+fn query_doc(
+    descriptor: &dialog_query::ConceptDescriptor,
+    concept: &str,
+    entity: Option<&str>,
+) -> String {
+    let mut doc = format!("{concept}:\n");
+    match entity {
+        Some(e) => doc.push_str(&format!("  this: {e}\n")),
+        None => doc.push_str("  this: ?e\n"),
+    }
+    for (field, _) in descriptor.with().iter() {
+        doc.push_str(&format!("  {field}: ?{field}\n"));
+    }
+    doc
+}
+
+/// Run a read-only query document through the eval pipeline and
+/// return its rendered stdout.
+async fn run_read(site: &TonkSite, doc: String, json: bool) -> Result<String, DataOpError> {
+    let options = Options {
+        format: if json { Format::Json } else { Format::Notation },
+        quiet: false,
+        dry_run: false,
+    };
+    let outcome = eval::run_against_site(site, Source::Inline(doc), options).await?;
+    Ok(outcome.stdout)
+}
+
+/// List every instance of `concept`, with every field bound.
+/// Rendered as notation by default, or as JSON when `json` is
+/// `true`.
+pub async fn list(site: &TonkSite, concept: &str, json: bool) -> Result<String, DataOpError> {
+    let info = require_concept(site, concept).await?;
+    run_read(site, query_doc(&info.descriptor, concept, None), json).await
+}
+
+/// Fetch a single instance of `concept` by `entity`, with every
+/// field bound. Rendered as notation by default, or as JSON when
+/// `json` is `true`.
+pub async fn get(
+    site: &TonkSite,
+    concept: &str,
+    entity: &str,
+    json: bool,
+) -> Result<String, DataOpError> {
+    let info = require_concept(site, concept).await?;
+    run_read(
+        site,
+        query_doc(&info.descriptor, concept, Some(entity)),
+        json,
+    )
+    .await
 }

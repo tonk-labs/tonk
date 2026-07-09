@@ -103,6 +103,33 @@ enum Command {
         concept: String,
     },
 
+    /// List every instance of a concept, with every field bound.
+    /// Read-only — the query commits nothing.
+    #[command(after_help = "Examples:\n  tonk list task\n  tonk list task --json")]
+    List {
+        /// Name of the concept to list.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Fetch a single instance of a concept by entity, with every
+    /// field bound. Read-only — the query commits nothing.
+    #[command(after_help = "Examples:\n  tonk get task alice\n  tonk get task alice --json")]
+    Get {
+        /// Name of the concept to fetch from.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Bookmark name or `did:key:…` entity URI of the instance.
+        #[arg(value_name = "ENTITY")]
+        entity: String,
+        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// List entities that carry a `text/html` claim on the local
     /// branch. One row per entity, tab-separated
     /// `name<TAB>entity<TAB>bytes`. Claim-driven: surfaces
@@ -459,6 +486,8 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Schema => ("schema", None),
         Command::Concepts => ("concepts", None),
         Command::Describe { .. } => ("describe", None),
+        Command::List { .. } => ("list", None),
+        Command::Get { .. } => ("get", None),
         Command::Views => ("views", None),
         Command::Migrate { .. } => ("migrate", None),
         Command::Export { .. } => ("export", None),
@@ -534,6 +563,12 @@ async fn main() {
         Command::Schema => print_schema().await,
         Command::Concepts => print_concepts().await,
         Command::Describe { concept } => describe_op(concept).await,
+        Command::List { concept, json } => list_op(concept, json).await,
+        Command::Get {
+            concept,
+            entity,
+            json,
+        } => get_op(concept, entity, json).await,
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
@@ -1281,6 +1316,60 @@ async fn describe_op(concept: String) -> ExitCode {
     };
 
     match data_ops::describe(&site, &concept).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+/// Print every instance of `concept` as rendered by
+/// [`data_ops::list`].
+async fn list_op(concept: String, json: bool) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::list(&site, &concept, json).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+/// Print a single instance of `concept` as rendered by
+/// [`data_ops::get`].
+async fn get_op(concept: String, entity: String, json: bool) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::get(&site, &concept, &entity, json).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
