@@ -60,7 +60,7 @@ pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionRefe
 /// elements) can deserialize without depending on this crate.
 pub use tonk_schema::conclusion::Conclusion;
 pub use tonk_schema::query::Query;
-pub use transaction::{Commit, TransactionBuilder};
+pub use transaction::{COMMIT_RETRY_LIMIT, Commit, TransactionBuilder, is_head_moved};
 
 /// A reactive layer over dialog branches. Owned by the consumer's
 /// application state (e.g. the worker's `TonkState`).

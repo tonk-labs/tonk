@@ -242,13 +242,20 @@ impl Commit<'_> {
 /// How many times a reactor commit refreshes-and-retries when a sync advanced
 /// the head under it. Transactions serialize via the transactor lock, so the
 /// only racer is sync; one retry settles it in practice.
-const COMMIT_RETRY_LIMIT: usize = 4;
+///
+/// Public so the worker's `/evaluate` route, which commits through dialog's
+/// `Transaction` directly, can bound its own retry loop to the same budget.
+pub const COMMIT_RETRY_LIMIT: usize = 4;
 
 /// Whether a commit error is the "head moved under us" version mismatch (a sync
 /// advanced the head between this commit's snapshot and its publish) — the
 /// signal to refresh and retry. Matched on the rendered error so the reactor
 /// need not import the dialog error hierarchy; the `VersionMismatch` leaf
 /// renders its distinctive text through the chain.
-fn is_head_moved(error: &CommitError) -> bool {
+///
+/// Public so callers that commit through dialog's `Transaction` directly rather
+/// than this `Commit` (e.g. the worker's `/evaluate` route) can run the same
+/// refresh-and-retry recovery this loop does.
+pub fn is_head_moved(error: &CommitError) -> bool {
     error.to_string().contains("Version mismatch")
 }

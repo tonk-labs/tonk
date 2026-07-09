@@ -18,6 +18,7 @@ use ::axum::{
     http::HeaderMap,
 };
 use axum_wasm_macros::wasm_compat;
+use dialog_reactor::{COMMIT_RETRY_LIMIT, is_head_moved};
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -245,11 +246,14 @@ async fn evaluate_on_branch<'a>(
     // Serialize a committing evaluate on the branch's transactor lock — the same
     // lock the reactor's `Commit::perform` takes for `/transact`. This document's
     // commit is a *dialog* `Transaction::commit()`, which CASes against the head
-    // snapshot taken when `branch.transaction()` is built below but never retries.
-    // Without this lock a concurrent commit landing between that snapshot and our
-    // publish fails the whole document with a version mismatch. Holding it from
-    // before the snapshot to after the publish is what makes the CAS unreachable
-    // by another committer.
+    // snapshot taken when `branch.transaction()` is built below. The lock excludes
+    // the common racer — another committer (a transact, an invite/join/pause) —
+    // so those line up here instead of one losing the CAS and having to retry.
+    // A sync is the exception the lock can't cover: it advances the head while
+    // only briefly holding this lock and releases it between its network fetch and
+    // its cell advance, so it can still land in our snapshot→publish window. The
+    // commit loop below handles that residual case by refreshing and retrying,
+    // exactly as `Commit::perform` does.
     //
     // A dry run (`transact=false`) writes nothing, so it never takes the lock.
     // That's the auto-evaluate the editor fires on every fresh diagnostics frame;
@@ -262,88 +266,128 @@ async fn evaluate_on_branch<'a>(
     };
 
     let branch = session.handle();
-    let revision_before = branch.revision();
 
-    // Fold the branch's session overlay (ephemeral facts kept out of
-    // storage, e.g. an invite's private seed) into the evaluation
-    // transaction so every evaluation — the inspector running
-    // `invitation:`, preview or explicit — sees the same facts a
-    // `query`/`subscribe` does. Folding it here (not gated on
-    // `transact`) is what keeps the read paths consistent; the overlay
-    // is read-only and gets `induce`-swept on commit (below) so it never
-    // lands durably.
-    let overlay = session.overlay();
-    // The evaluation's match queries (`txn.query()` inside the
-    // evaluator) resolve stored `db.rule/*` rules automatically — rule
-    // resolution is built into the branch query's layer stack, so the
-    // inspector's dry-run preview shows the same deductions a committed
-    // `query` / `subscribe` returns.
-    let txn = branch.transaction().integrate(overlay.clone());
+    // Evaluate, then commit if the document writes, refreshing and retrying on a
+    // head that moved under us. The transactor lock above excludes other
+    // *committers*, but a pull advances the head while only briefly holding that
+    // lock (and releases it between its network `prepare` and its `commit`), so a
+    // sync can still land between the transaction's head snapshot below and our
+    // publish. `/transact` handles this the same way (`Commit::perform`'s retry
+    // loop); this is the evaluate-side equivalent.
+    //
+    // The retry re-enters at `branch.transaction()` — not just `.commit()` —
+    // because the evaluated transaction borrows the pre-refresh tree: after a
+    // refresh we must re-run the evaluation against the new head. Evaluation is
+    // pure over (document, head), so replaying it is safe; the document's
+    // statements are idempotent asserts/retracts.
+    let mut attempt = 0;
+    let response = loop {
+        let revision_before = branch.revision();
 
-    let t_eval = web_time::Instant::now();
-    let evaluated = syntax
-        .evaluate(txn)
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(map_evaluate_error)?;
-    let eval_ms = t_eval.elapsed().as_millis();
+        // Fold the branch's session overlay (ephemeral facts kept out of
+        // storage, e.g. an invite's private seed) into the evaluation
+        // transaction so every evaluation — the inspector running
+        // `invitation:`, preview or explicit — sees the same facts a
+        // `query`/`subscribe` does. Folding it here (not gated on
+        // `transact`) is what keeps the read paths consistent; the overlay
+        // is read-only and gets `induce`-swept on commit (below) so it never
+        // lands durably.
+        let overlay = session.overlay();
+        // The evaluation's match queries (`txn.query()` inside the
+        // evaluator) resolve stored `db.rule/*` rules automatically — rule
+        // resolution is built into the branch query's layer stack, so the
+        // inspector's dry-run preview shows the same deductions a committed
+        // `query` / `subscribe` returns.
+        let txn = branch.transaction().integrate(overlay.clone());
 
-    // Compute the post-evaluation matches before any commit
-    // decision: the txn's overlay already reflects every mutation
-    // and induce-pass derivation, so this is the same answer a
-    // post-commit branch query would give.
-    let t_matches = web_time::Instant::now();
-    let matches_after = evaluated
-        .matches_after(&tonk_state.operator)
-        .await
-        .map_err(map_evaluate_error)?;
-    let matches_ms = t_matches.elapsed().as_millis();
-
-    // A document commits when it writes anything. `rule!:` is a
-    // mutation (the `!` says so) and the analyzer lifts it into a
-    // `Statement::InstallEffect`, so a document with any planned
-    // statement is the single commit signal.
-    let response = if query.transact && evaluated.analysis.analysis.has_statements() {
-        let t_commit = web_time::Instant::now();
-        // Sweep the overlay before the durable write: the transaction
-        // folded the session overlay in for reads, but those ephemeral
-        // facts (e.g. an invite seed) must never persist. Retracting them
-        // here cancels the integrated asserts so only the document's own
-        // statements land.
-        let revision_after = evaluated
-            .txn
-            .integrate(session.overlay_retraction())
-            .commit()
+        let t_eval = web_time::Instant::now();
+        let evaluated = syntax
+            .evaluate(txn)
             .perform(&tonk_state.operator)
             .await
-            .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("commit: {e}"))))?;
-        let commit_ms = t_commit.elapsed().as_millis();
-        // Re-poll subscriptions so SSE clients see the new state.
-        // The chain commits via dialog directly; the reactor's
-        // subscription registry is the worker's responsibility.
-        let t_poll = web_time::Instant::now();
-        session.poll(&tonk_state.operator).await;
-        let poll_ms = t_poll.elapsed().as_millis();
-        let timing = format!(
-            "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | matches {matches_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
-        );
-        log!("{timing}");
-        // Tee timing onto a BroadcastChannel so a page (or DevTools
-        // listener) can read seed numbers without the SW console — the
-        // seed runs background in the SW, so its logs never reach the
-        // page console.
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        if let Ok(channel) = web_sys::BroadcastChannel::new("tonk-timing") {
-            let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&timing));
+            .map_err(map_evaluate_error)?;
+        let eval_ms = t_eval.elapsed().as_millis();
+
+        // Compute the post-evaluation matches before any commit
+        // decision: the txn's overlay already reflects every mutation
+        // and induce-pass derivation, so this is the same answer a
+        // post-commit branch query would give.
+        let t_matches = web_time::Instant::now();
+        let matches_after = evaluated
+            .matches_after(&tonk_state.operator)
+            .await
+            .map_err(map_evaluate_error)?;
+        let matches_ms = t_matches.elapsed().as_millis();
+
+        // A document commits when it writes anything. `rule!:` is a
+        // mutation (the `!` says so) and the analyzer lifts it into a
+        // `Statement::InstallEffect`, so a document with any planned
+        // statement is the single commit signal.
+        if query.transact && evaluated.analysis.analysis.has_statements() {
+            let t_commit = web_time::Instant::now();
+            // Sweep the overlay before the durable write: the transaction
+            // folded the session overlay in for reads, but those ephemeral
+            // facts (e.g. an invite seed) must never persist. Retracting them
+            // here cancels the integrated asserts so only the document's own
+            // statements land.
+            let commit = evaluated
+                .txn
+                .integrate(session.overlay_retraction())
+                .commit()
+                .perform(&tonk_state.operator)
+                .await;
+            let revision_after = match commit {
+                Ok(revision) => revision,
+                Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {
+                    attempt += 1;
+                    log!("evaluate commit raced (attempt {attempt}); refreshing head and retrying");
+                    // Refresh the handle's view of the head, then loop to re-run
+                    // the evaluation against it. If even the refresh fails, give
+                    // up with the original mismatch.
+                    branch
+                        .refresh(&tonk_state.operator)
+                        .await
+                        .map_err(|refresh_err| {
+                            map_evaluate_error(EvaluateError::Query(format!(
+                                "commit: {e}; refresh after race failed: {refresh_err}"
+                            )))
+                        })?;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(map_evaluate_error(EvaluateError::Query(format!(
+                        "commit: {e}"
+                    ))));
+                }
+            };
+            let commit_ms = t_commit.elapsed().as_millis();
+            // Re-poll subscriptions so SSE clients see the new state.
+            // The chain commits via dialog directly; the reactor's
+            // subscription registry is the worker's responsibility.
+            let t_poll = web_time::Instant::now();
+            session.poll(&tonk_state.operator).await;
+            let poll_ms = t_poll.elapsed().as_millis();
+            let timing = format!(
+                "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | matches {matches_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
+            );
+            log!("{timing}");
+            // Tee timing onto a BroadcastChannel so a page (or DevTools
+            // listener) can read seed numbers without the SW console — the
+            // seed runs background in the SW, so its logs never reach the
+            // page console.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            if let Ok(channel) = web_sys::BroadcastChannel::new("tonk-timing") {
+                let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&timing));
+            }
+            break EvaluateResponse {
+                revision_before,
+                revision_after: Some(revision_after),
+                matches_before: evaluated.matches,
+                matches_after,
+                commits: evaluated.commits,
+            };
         }
-        EvaluateResponse {
-            revision_before,
-            revision_after: Some(revision_after),
-            matches_before: evaluated.matches,
-            matches_after,
-            commits: evaluated.commits,
-        }
-    } else {
+
         // Pure-query or dry-run: drop the transaction without
         // committing. The pre-mutation matches double as "after"
         // because no mutations actually landed. Zero out
@@ -353,13 +397,13 @@ async fn evaluate_on_branch<'a>(
         // branch is untouched.
         let mut commits = evaluated.commits;
         commits.claims = 0;
-        EvaluateResponse {
+        break EvaluateResponse {
             revision_before: revision_before.clone(),
             revision_after: revision_before,
             matches_before: evaluated.matches.clone(),
             matches_after: evaluated.matches,
             commits,
-        }
+        };
     };
 
     Ok(Json(response))
