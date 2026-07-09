@@ -2,6 +2,11 @@ import init, { activate } from "./worker.js";
 
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
+// Shell cache name. Kept in step with `cache.rs`'s `SHELL_CACHE`.
+// Declared up here (not beside `serveNavigation`) because
+// `oninstall` precaches the shell into it.
+const SHELL_CACHE = "TONK_SHELL_v1";
+
 let tonkServiceWorkerResolves;
 
 // Static import at top-level is forced on us: dynamic `import()`
@@ -24,7 +29,23 @@ self.oninstall = event => {
     // of the script, where it's a no-op — the browser only honors
     // `skipWaiting()` while the worker is in `waiting`, and at
     // top-level eval time the lifecycle hasn't reached install yet.
-    event.waitUntil(self.skipWaiting());
+    //
+    // Precache the shell under `/index.html` so offline deep-link
+    // navigations have a fallback. `serveNavigation` caches the shell
+    // under the visited URL (e.g. `/`), never `/index.html`, so its
+    // `cache.match("/index.html")` fallback would otherwise only hit
+    // after a network fetch — which fails offline. Seeding it here
+    // guarantees a first-visit-online install populates the key every
+    // offline navigation falls back to.
+    event.waitUntil((async () => {
+        try {
+            const cache = await caches.open(SHELL_CACHE);
+            await cache.add("/index.html");
+        } catch (err) {
+            log("Shell precache failed:", err);
+        }
+        await self.skipWaiting();
+    })());
     log("Installed");
 };
 
@@ -102,8 +123,8 @@ self.addEventListener("online", onConnectivityChange);
 // view client and how the rewrite should map. The Rust side
 // itself runs static cacheable GETs through the same shell
 // cache so this isn't a separate cache from the navigation
-// case, just a different entry point.
-const SHELL_CACHE = "TONK_SHELL_v1";
+// case, just a different entry point. (`SHELL_CACHE` is declared at
+// the top of the file so `oninstall` can precache into it.)
 
 async function serveNavigation(request) {
     const cache = await caches.open(SHELL_CACHE);
