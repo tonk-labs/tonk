@@ -728,28 +728,41 @@ fn font_mime(path: &str) -> &'static str {
     }
 }
 
+/// Collect the distinct `/fonts/*` paths referenced as `url(...)` arguments
+/// in `css`, in first-appearance order. Only genuine `url()` arguments
+/// qualify: scanning for the raw `/fonts/` substring also matches prose in
+/// comments — a comment in styles.css mentioning `` `/fonts/` `` used to
+/// produce a junk `GET /fonts/%60%20(copied…` 404 on every guest boot.
+fn find_font_paths(css: &str) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut rest = css;
+    while let Some(i) = rest.find("url(") {
+        rest = &rest[i + "url(".len()..];
+        let Some(close) = rest.find(')') else { break };
+        let arg = rest[..close].trim().trim_matches(['"', '\'']);
+        // Skip a bare `/fonts/` with no filename.
+        if let Some(name) = arg.strip_prefix("/fonts/")
+            && !name.is_empty()
+            && !paths.iter().any(|p| p == arg)
+        {
+            paths.push(arg.to_owned());
+        }
+        rest = &rest[close + 1..];
+    }
+    paths
+}
+
 /// Replace every `url("/fonts/<name>.<ext>")` in `css` with a
 /// `url("data:<mime>;base64,…")` so the sealed guest needs no font fetch.
 /// Inlines ANY file under `/fonts/`, not a fixed set of extensions. Fonts
 /// whose fetch/encode fails are left as-is (degrade to a fallback face).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn inline_fonts(css: &str) -> String {
-    // Collect distinct `/fonts/*` paths — the path runs up to the closing
-    // quote / paren of the `url(...)` argument.
-    let mut paths: Vec<String> = Vec::new();
-    let mut rest = css;
-    while let Some(i) = rest.find("/fonts/") {
-        let tail = &rest[i..];
-        let end = tail.find(['"', '\'', ')']).unwrap_or(tail.len());
-        // Skip a bare `/fonts/` with no filename (end at the slash itself).
-        if end > "/fonts/".len() {
-            let path = tail[..end].to_owned();
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        rest = &tail[end.max(1)..];
-    }
+    let mut paths = find_font_paths(css);
+    // Substitute longest-first so a path that is a prefix of another
+    // (`a.woff` next to `a.woff2`) isn't corrupted by the shorter one's
+    // replacement landing inside it.
+    paths.sort_by_key(|p| std::cmp::Reverse(p.len()));
 
     let mut out = css.to_owned();
     for path in paths {
@@ -2125,6 +2138,34 @@ mod tests {
     const DESCRIPTOR: &str = r#"{"with":{
         "count": { "the": "counter/count", "as": "UnsignedInteger", "cardinality": "one" }
     }}"#;
+
+    // --- find_font_paths: url() argument extraction --------------------
+
+    #[dialog_common::test]
+    fn it_finds_font_paths_in_url_args_only() {
+        // The comment reproduces styles.css prose that the old raw-substring
+        // scan turned into `GET /fonts/%60%20(copied…` — a 404 on every
+        // guest boot. Prose mentions of `/fonts/` must not count; quoted,
+        // single-quoted, and bare url() arguments must; duplicates collapse.
+        let css = r#"
+            /* Files live under `/fonts/` (copied into the dist by Trunk's
+               `copy-dir` on `./assets/fonts`). */
+            @font-face { src: url("/fonts/space-grotesk-400.woff2") format("woff2"); }
+            @font-face { src: url('/fonts/gestalte-400.otf'); }
+            .bare { mask: url(/fonts/unquoted.ttf); }
+            .other { background: url("/images/mark-white.svg"); }
+            .dup { src: url("/fonts/space-grotesk-400.woff2"); }
+            .empty { background: url("/fonts/"); }
+        "#;
+        assert_eq!(
+            find_font_paths(css),
+            vec![
+                "/fonts/space-grotesk-400.woff2",
+                "/fonts/gestalte-400.otf",
+                "/fonts/unquoted.ttf",
+            ]
+        );
+    }
 
     // --- forwarded_route: the allow chokepoint -------------------------
 

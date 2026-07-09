@@ -715,6 +715,7 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
                     application: DomainApplication {
                         domain: d.domain.clone(),
                         parameters,
+                        attributes: d.attributes.clone(),
                     },
                     this: ThisIntent::Uri(entity),
                     name: None,

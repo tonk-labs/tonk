@@ -379,6 +379,57 @@ impl AttributeByEntity {
     }
 }
 
+/// Builder for looking up an attribute by its *selector id* — the
+/// `domain/name` string stored as its `dialog.attribute/id` claim.
+/// This is how a claim-domain head (`xyz.tonk!:`) discovers whether
+/// the `<domain>/<field>` attribute a body field maps onto is
+/// declared on the branch, so the declared cardinality and value
+/// type govern instead of synthesized defaults.
+pub struct AttributeById {
+    id: String,
+}
+
+impl AttributeById {
+    /// Construct a lookup for the given `domain/name` id.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self { id: id.into() }
+    }
+
+    /// Resolve the attribute against a branch: one
+    /// [`AnonymousAttribute`] query with the id pinned and the
+    /// entity free.
+    pub async fn resolve<Env: QueryEnv>(
+        self,
+        source: &Source<'_>,
+        env: &Env,
+    ) -> Result<Option<Attribute>, ConceptLookupError> {
+        use tonk_core::meta::attribute::Id;
+        let facts: Vec<AnonymousAttribute> = source
+            .select(Query::<AnonymousAttribute> {
+                this: Term::var("attribute"),
+                id: Term::from(Id(self.id)),
+                r#type: Term::var("type"),
+                cardinality: Term::var("cardinality"),
+                description: Term::var("description"),
+            })
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                ConceptLookupError::query(format!("AnonymousAttribute query failed: {e:?}"))
+            })?;
+
+        let Some(facts) = facts.into_iter().next() else {
+            return Ok(None);
+        };
+        let descriptor = build_attribute_descriptor(&facts).map_err(ConceptLookupError::query)?;
+        Ok(Some(Attribute {
+            entity: facts.this,
+            descriptor,
+        }))
+    }
+}
+
 /// Builder for looking up an attribute by its published name —
 /// the user-facing label `<name>` whose `id:<name>` entity
 /// carries a `dialog.meta/name` claim pointing at the attribute.

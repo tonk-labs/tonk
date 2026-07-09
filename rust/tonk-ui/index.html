@@ -40,6 +40,147 @@
         <link rel="shortcut icon" href="/images/mark-white.svg" />
         <link rel="apple-touch-icon" href="/images/mark-white.svg" />
 
+        <!-- Boot-shell critical CSS, inlined so first paint needs ZERO
+       external resources: both stylesheets below load async (media="print"
+       + onload swap), which is safe ONLY while the shell is the body's
+       sole pre-mount content — any other visible pre-mount markup would
+       flash unstyled. Every color/size is `var(--wa-token, literal)`: the
+       literal (resolved from the shoelace palette, the default theme and
+       styles.css's brand remap) paints immediately; the live token takes
+       over — identically, today — when the async CSS lands. light-dark()
+       follows the `color-scheme` meta above, the same OS signal the
+       wa-dark/wa-light classes are toggled by. -->
+        <style>
+            /* The wordmark cut, duplicated from styles.css (the canonical
+               @font-face set) because that file is async and the shell
+               shows "tonk" at first paint. Browsers dedupe identical
+               @font-face descriptors; the preload below has the bytes. */
+            @font-face {
+                font-family: "GestalteName";
+                font-style: normal;
+                font-weight: 500;
+                font-display: swap;
+                src: url("/fonts/gestaltename-500.ttf") format("truetype");
+            }
+            #tonk-boot {
+                position: fixed;
+                inset: 0;
+                z-index: 9999;
+                display: flex;
+                flex-direction: column;
+                padding: 26px 38px 30px;
+                background: var(
+                    --wa-color-surface-default,
+                    light-dark(#ffffff, #101113)
+                );
+                color: var(
+                    --wa-color-text-normal,
+                    light-dark(#1d1d20, #f2f2f3)
+                );
+            }
+            /* CSS-only teardown: the wasm mounts <tonk-site> into <body>
+               and this rule fades the shell out — the app never has to
+               know the shell exists. The delay gives the mounted site a
+               beat to paint its own surface underneath; `visibility`
+               flips after the fade so the shell can't intercept clicks
+               it no longer visually owns. */
+            body:has(tonk-site) #tonk-boot {
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+                transition:
+                    opacity 400ms ease 300ms,
+                    visibility 0s 700ms;
+            }
+            /* Header replica — token-for-token the Hub's `.spot-brand`
+               row (profile.yaml), so the real header takes over in
+               place. */
+            .tonk-boot-brand {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex: none;
+            }
+            .tonk-boot-logo {
+                font-family: "GestalteName", "Gestalte", sans-serif;
+                font-size: var(--wa-font-size-4xl, 52px);
+                font-weight: 500;
+                line-height: 1;
+                text-transform: lowercase;
+            }
+            .tonk-boot-badge {
+                font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+                font-weight: 600;
+                font-size: 19px;
+                line-height: 1.1;
+                padding: 3px 11px;
+                color: var(--wa-color-brand-on-loud, #2a3005);
+                background: #deff1a;
+            }
+            /* Progress, centered where the Hub's directory will land. */
+            .tonk-boot-center {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 14px;
+            }
+            .tonk-boot-bar {
+                inline-size: min(220px, 60vw);
+                block-size: 2px;
+                background: var(
+                    --wa-color-neutral-fill-normal,
+                    light-dark(#e5e5e8, #313134)
+                );
+                overflow: hidden;
+            }
+            /* Indeterminate by default; boot-progress.mjs flips to
+               [data-determinate] + explicit widths once real totals
+               exist, and [data-failed] on a load error. */
+            .tonk-boot-fill {
+                block-size: 100%;
+                inline-size: 40%;
+                background: var(
+                    --wa-color-text-normal,
+                    light-dark(#1d1d20, #f2f2f3)
+                );
+                animation: tonk-boot-sweep 1.2s ease-in-out infinite;
+            }
+            .tonk-boot-fill[data-determinate] {
+                animation: none;
+                inline-size: 0;
+                transition: inline-size 200ms ease;
+            }
+            .tonk-boot-fill[data-failed] {
+                animation: none;
+                inline-size: 100%;
+                background: var(--wa-color-danger-fill-loud, #e02c2b);
+            }
+            @keyframes tonk-boot-sweep {
+                0% {
+                    translate: -250% 0;
+                }
+                100% {
+                    translate: 350% 0;
+                }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .tonk-boot-fill {
+                    animation: none;
+                }
+            }
+            .tonk-boot-status {
+                margin: 0;
+                font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                font-size: 12px;
+                color: var(
+                    --wa-color-text-quiet,
+                    light-dark(#565861, #94959b)
+                );
+            }
+        </style>
+
         <!-- V9  -->
         <!-- Web Awesome: custom-element UI library (see .claude/skills/webawesome). The loader
        auto-registers any <wa-*> elements used in the DOM; `data-webawesome` tells it
@@ -48,18 +189,44 @@
        We use the default theme with the shoelace palette. Two
        local overrides layer on top (see styles.css): brutalist's
        fonts (Space Grotesk / IBM Plex Sans Condensed / Space Mono)
-       and a zero border radius so nothing is rounded. -->
-        <link rel="stylesheet" href="/webawesome/styles/webawesome.css" />
-        <link rel="stylesheet" href="/webawesome/styles/themes/default.css" />
+       and a zero border radius so nothing is rounded.
+
+       webawesome-flat.css is the three entry stylesheets' @import graph
+       (webawesome.css + themes/default.css + color/palettes/shoelace.css)
+       inlined into ONE file by scripts/flatten-webawesome.sh: the nested
+       imports were ~29 render-blocking requests, four levels deep, each
+       level a serial round trip before first paint. Re-run the script
+       after a webawesome vendor bump; the unflattened sources stay in
+       the dist for the loader's lazy per-component chunks.
+
+       Loaded ASYNC (media="print" downloads without blocking render, the
+       onload swap applies it): nothing visible needs these rules until
+       the wasm mounts the app seconds later — the boot shell's own CSS
+       is inlined above. This holds only while the shell is the body's
+       sole pre-mount content. -->
         <link
             rel="stylesheet"
-            href="/webawesome/styles/color/palettes/shoelace.css"
+            href="/webawesome/styles/webawesome-flat.css"
+            media="print"
+            onload="this.onload=null;this.media='all'"
         />
         <!-- Brutalist-theme fonts (Space Grotesk / IBM Plex Sans
        Condensed / Space Mono) are self-hosted: see styles.css
        for the `@font-face` declarations. Files live in
        `assets/fonts/` and are copied into the dist by the
        Trunk `copy-dir` rule below. No external font CDN. -->
+        <!-- The wordmark cut only (27 KB): the boot shell shows "tonk"
+       immediately, and without the preload the face would arrive after
+       the shell's first paint and flash the fallback. Fonts are always
+       CORS-fetched, so `crossorigin` is required for the preload to
+       match. The other faces load on demand as usual. -->
+        <link
+            rel="preload"
+            href="/fonts/gestaltename-500.ttf"
+            as="font"
+            type="font/ttf"
+            crossorigin
+        />
         <!-- Preload the loader so it starts compiling alongside the
        Wasm bundle instead of after the HTML has finished parsing.
        The loader itself dynamically imports per-component chunks
@@ -173,12 +340,15 @@
         <!-- The following are load-bearing configuration for the Trunk build tool
          (https://trunkrs.dev/assets/); if you need to add build steps or copy
          static assets, you will want to modify this condiguration here. -->
+        <!-- `data-initializer` gives the static boot shell (see <body>) real
+         progress callbacks for the multi-megabyte wasm fetch. -->
         <link
             data-trunk
             rel="rust"
             data-bin="ui"
             data-type="main"
             data-wasm-opt="z"
+            data-initializer="assets/boot-progress.mjs"
         />
         <link
             data-trunk
@@ -307,10 +477,41 @@
             data-target-path="tonk-code"
         />
 
-        <link data-trunk rel="css" href="./styles.css" />
+        <!-- Async like the webawesome sheet above (trunk forwards the
+         extra attributes to the emitted link, entity-escaped but decoded
+         by the HTML parser). First paint therefore needs no external CSS
+         at all — the boot shell's rules are inline in <head>. -->
+        <link
+            data-trunk
+            rel="css"
+            href="./styles.css"
+            media="print"
+            onload="this.onload=null;this.media='all'"
+        />
     </head>
 
     <body>
+        <!-- Static boot shell: the ONLY body content until the wasm mounts
+         `<tonk-site>` — the async-stylesheet strategy in <head> depends on
+         that staying true. It replicates the Hub header (wordmark + badge,
+         same tokens as `.spot` in profile.yaml) so the app's own header
+         appears to simply take over, and shows live wasm download progress
+         via the Trunk initializer (assets/boot-progress.mjs). Styled by the
+         inline critical CSS in <head>; hidden purely by CSS
+         (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
+        <div id="tonk-boot" aria-live="polite">
+            <div class="tonk-boot-brand">
+                <span class="tonk-boot-logo">tonk</span>
+                <span class="tonk-boot-badge">spot</span>
+            </div>
+            <div class="tonk-boot-center">
+                <div class="tonk-boot-bar">
+                    <div class="tonk-boot-fill" data-boot-fill></div>
+                </div>
+                <p class="tonk-boot-status" data-boot-status>loading…</p>
+            </div>
+        </div>
+
         <script type="module">
             if ("serviceWorker" in navigator) {
                 await navigator.serviceWorker.register("/service_worker.js", {

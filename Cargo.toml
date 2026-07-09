@@ -167,31 +167,33 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard+retract" }
 
 # NOTE — incremental subscriptions (plan/incremental-subscriptions.md): the
-# dialog deps above are pinned to the `fix/push-noop-guard` BRANCH (not the
-# `tonk-2026-07-07` tag) — the dialog stack that adds incremental subscriptions,
-# the branch-scoped session overlay, native Send-generality, the inductive-rule
-# self-negation fix, and the push no-op guard. This branch forks from upstream
-# #298 and LACKS the #373 cache fix, so absolute sync latency regresses — measure
-# incremental hit rate, not latency. Swap back to a tag once the dialog side is
-# reconciled (not in scope).
+# dialog deps above are pinned to the `fix/push-noop-guard+retract` BRANCH (not
+# the `tonk-2026-07-09` tag) — the dialog stack that adds incremental
+# subscriptions, the branch-scoped session overlay, native Send-generality, the
+# inductive-rule self-negation fix, the push no-op guard, and (cherry-picked on
+# top) the retract-no-tombstone-without-prior fix (a retract of a never-committed
+# fact no longer writes a tombstone that mints a no-op revision). This branch
+# forks from upstream #298 and LACKS the #373 cache fix, so absolute sync latency
+# regresses — measure incremental hit rate, not latency. Swap back to a tag once
+# the dialog side is reconciled (not in scope).
 
 [profile.dev]
 opt-level = 1
