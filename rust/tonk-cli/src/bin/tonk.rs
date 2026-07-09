@@ -1266,8 +1266,9 @@ async fn print_concepts() -> ExitCode {
 }
 
 /// Print a concept's fields as rendered by [`data_ops::describe`].
-/// An unknown-concept error is enriched with the list of concept
-/// names actually on the branch, so the agent doesn't have to run
+/// An unknown-concept error already carries the list of concept
+/// names actually on the branch (built by
+/// [`data_ops::require_concept`]), so the agent doesn't have to run
 /// a second command to find the right spelling.
 async fn describe_op(concept: String) -> ExitCode {
     let cwd = match std::env::current_dir() {
@@ -1289,18 +1290,7 @@ async fn describe_op(concept: String) -> ExitCode {
         }
         Err(err) => {
             eprintln!("error: {err}");
-            if err.to_string().contains("no concept named") {
-                match schema::list_concepts(&site).await {
-                    Ok(concepts) => {
-                        let names: Vec<&str> = concepts.iter().map(|c| c.name.as_str()).collect();
-                        eprintln!("known concepts: {}", names.join(", "));
-                    }
-                    Err(list_err) => {
-                        eprintln!("(could not list known concepts: {list_err})");
-                    }
-                }
-            }
-            ExitCode::IoError
+            err.exit_code()
         }
     }
 }

@@ -27,3 +27,23 @@ mod when_describing_a_concept {
         Ok(())
     }
 }
+
+mod when_the_concept_is_unknown {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_errors_with_a_known_concepts_list() -> anyhow::Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let err = tonk_cli::data_ops::describe(&test.site, "widget")
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("task"),
+            "unknown-concept error should list known concepts: {msg}"
+        );
+        Ok(())
+    }
+}
