@@ -28,6 +28,15 @@ tonk concepts     # user-defined concepts: name<TAB>description
 tonk views        # entities with a text/html claim: name<TAB>entity<TAB>bytes
 tonk guide        # baked-in asserted-notation reference (also: guide notation|views|all)
 
+# Argument-based data verbs — a constrained front-end over `eval`.
+# Each builds asserted-notation internally and runs the same analyze->commit pipeline.
+tonk describe habit                       # fields, types, cardinality (schema-aware --help source)
+tonk add habit --name "Run" --target "5k" # add an instance (typed flags from the branch schema)
+tonk list habit                           # all instances (add --json for machine output)
+tonk get habit <entity>                   # one instance
+tonk set habit <entity> --target "10k"    # overwrite fields on an existing instance
+tonk rm habit <entity> [--field target]   # retract one field, or the whole instance
+
 # CSV transfer over the main branch.
 tonk export --out data.csv
 tonk import data.csv
