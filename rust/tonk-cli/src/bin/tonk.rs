@@ -160,6 +160,52 @@ enum Command {
         rest: Vec<String>,
     },
 
+    /// Overwrite a subset of fields on an existing instance of a
+    /// concept. Like `add`, the flags accepted after `<CONCEPT>
+    /// <ENTITY>` are built at runtime from the concept's schema —
+    /// but every field is optional here, since `set` names only
+    /// the fields to change. Run `tonk set <concept> <entity>
+    /// --help` to see them.
+    ///
+    /// `--help` is deliberately NOT handled by clap here, for the
+    /// same reason as `add`: see that variant's doc comment.
+    #[command(
+        disable_help_flag = true,
+        after_help = "Examples:\n  tonk set task alice --done true\n  tonk set habit alice --help"
+    )]
+    Set {
+        /// Name of the concept the instance belongs to.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Bookmark name or `did:key:…` entity URI of the instance
+        /// to update.
+        #[arg(value_name = "ENTITY")]
+        entity: String,
+        /// Schema-derived `--field value` flags, captured raw
+        /// (including a bare `--help`) — same handling as `add`'s
+        /// `rest`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
+
+    /// Retract a single field, or a whole instance, from a
+    /// concept. Omit `--field` to retract the whole instance.
+    #[command(
+        after_help = "Examples:\n  tonk rm task alice --field done\n  tonk rm task alice"
+    )]
+    Rm {
+        /// Name of the concept the instance belongs to.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Bookmark name or `did:key:…` entity URI of the instance
+        /// to modify.
+        #[arg(value_name = "ENTITY")]
+        entity: String,
+        /// Retract just this field instead of the whole instance.
+        #[arg(long)]
+        field: Option<String>,
+    },
+
     /// List entities that carry a `text/html` claim on the local
     /// branch. One row per entity, tab-separated
     /// `name<TAB>entity<TAB>bytes`. Claim-driven: surfaces
@@ -519,6 +565,8 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::List { .. } => ("list", None),
         Command::Get { .. } => ("get", None),
         Command::Add { .. } => ("add", None),
+        Command::Set { .. } => ("set", None),
+        Command::Rm { .. } => ("rm", None),
         Command::Views => ("views", None),
         Command::Migrate { .. } => ("migrate", None),
         Command::Export { .. } => ("export", None),
@@ -601,6 +649,16 @@ async fn main() {
             json,
         } => get_op(concept, entity, json).await,
         Command::Add { concept, rest } => add_op(concept, rest).await,
+        Command::Set {
+            concept,
+            entity,
+            rest,
+        } => set_op(concept, entity, rest).await,
+        Command::Rm {
+            concept,
+            entity,
+            field,
+        } => rm_op(concept, entity, field).await,
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
@@ -1436,6 +1494,62 @@ async fn add_op(concept: String, rest: Vec<String>) -> ExitCode {
     };
 
     match data_ops::add(&site, &concept, &rest).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+/// Overwrite a subset of fields on an existing instance of
+/// `concept`, from the raw `--field value` flags in `rest`, as
+/// rendered by [`data_ops::set`]. Same dynamic-flag / `--help`
+/// handling as [`add_op`].
+async fn set_op(concept: String, entity: String, rest: Vec<String>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::set(&site, &concept, &entity, &rest).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+/// Retract a single field, or a whole instance, from `concept`, as
+/// rendered by [`data_ops::rm`].
+async fn rm_op(concept: String, entity: String, field: Option<String>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::rm(&site, &concept, &entity, field.as_deref()).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
