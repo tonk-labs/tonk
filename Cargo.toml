@@ -167,49 +167,31 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-07" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "fix/push-noop-guard" }
 
-# PROTOTYPE WIRING — incremental subscriptions (plan/incremental-subscriptions.md).
-# Points every dialog crate at the dedicated `tonk-subs` worktree checked out on
-# `fix/push-noop-guard` — the dialog stack that adds incremental subscriptions,
+# NOTE — incremental subscriptions (plan/incremental-subscriptions.md): the
+# dialog deps above are pinned to the `fix/push-noop-guard` BRANCH (not the
+# `tonk-2026-07-07` tag) — the dialog stack that adds incremental subscriptions,
 # the branch-scoped session overlay, native Send-generality, the inductive-rule
-# self-negation fix, and the push no-op guard (skip re-publishing the revision
-# when nothing new to push). This branch forks from upstream #298 and
-# LACKS the #373 cache fix in the pinned tag above, so absolute sync latency
-# regresses while patched — measure incremental hit rate, not latency. Swap for a
-# real tag once the dialog side is reconciled with tonk-2026-07-07 (not in scope).
-[patch."https://github.com/dialog-db/dialog-db.git"]
-dialog-artifacts = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-artifacts" }
-dialog-capability = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-capability" }
-dialog-common = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-common" }
-dialog-credentials = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-credentials" }
-dialog-csv = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-csv" }
-dialog-effects = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-effects" }
-dialog-operator = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-operator" }
-dialog-query = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-query" }
-dialog-remote-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-remote-s3" }
-dialog-remote-ucan-s3 = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-remote-ucan-s3" }
-dialog-repository = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-repository" }
-dialog-search-tree = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-search-tree" }
-dialog-storage = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-storage" }
-dialog-ucan = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-ucan" }
-dialog-ucan-core = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-ucan-core" }
-dialog-varsig = { path = "/Users/gozala/Projects/dialog-db/worker/tonk-subs/rust/dialog-varsig" }
+# self-negation fix, and the push no-op guard. This branch forks from upstream
+# #298 and LACKS the #373 cache fix, so absolute sync latency regresses — measure
+# incremental hit rate, not latency. Swap back to a tag once the dialog side is
+# reconciled (not in scope).
 
 [profile.dev]
 opt-level = 1
