@@ -1855,3 +1855,47 @@ view!: &space-view
   display: |
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
     <tonk-display with="main@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>
+
+# The catch-all: any path no static/`/space/…` route claims lands here. The
+# router matches most-specific-first, so this `{*rest}` span never shadows `/`,
+# `/join`, `/inspector`, `/diagnose`, or `/space/{id}` — it only catches what
+# nothing else does (a mistyped `/board`, a stale deep link). Without it such a
+# path matches no route, the site is never stamped, and the shell spins forever.
+route!: &route/not-found
+  this: id:tonk:route/not-found
+  path: "/{*rest}"
+  concept: tonk:not-found
+
+concept!: &not-found
+  this: tonk:not-found
+  description: The 404 page — a path the profile has no route for.
+  with:
+    # The attempted path, picked off the site, shown back to the user.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!: &not-found-view
+  this: id:tonk:not-found/view
+  model: tonk:not-found
+  display: |
+    <div class="display-view-slot">
+      <style>
+        .nf { display: flex; flex-direction: column; align-items: center;
+              justify-content: center; gap: 8px; height: 100%; padding: 32px;
+              text-align: center; color: var(--wa-color-text-normal); }
+        .nf__code { font-size: 3rem; font-weight: 600; line-height: 1;
+                    color: var(--wa-color-text-quiet); }
+        .nf__msg { font-size: 1rem; color: var(--wa-color-text-quiet); }
+        .nf__path { font-family: var(--wa-font-family-code, monospace);
+                    color: var(--wa-color-text-normal); }
+        .nf__home { margin-top: 8px; text-decoration: none; }
+      </style>
+      <div class="nf">
+        <div class="nf__code">404</div>
+        <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
+        <a class="nf__home" href="/"><wa-button variant="brand">Back to Hub</wa-button></a>
+      </div>
+    </div>

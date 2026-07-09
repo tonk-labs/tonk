@@ -1042,7 +1042,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1077,7 +1077,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "convert_case 0.6.0",
@@ -1094,7 +1094,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1122,7 +1122,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "base58",
@@ -1143,7 +1143,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "base58",
@@ -1158,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "base58",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -1185,7 +1185,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1200,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1234,7 +1234,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1291,7 +1291,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1308,7 +1308,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1347,7 +1347,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1382,7 +1382,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1419,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1448,7 +1448,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1487,6 +1487,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "web-time",
 ]
@@ -1494,7 +1495,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "async-trait",
  "base58",
@@ -1515,7 +1516,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1541,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-07#99602b2c6f446e5d9968c02c0ef77576143c54a5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-09#e58e56861dbdbddea5f0a9a94f135328b348ea6d"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -3622,6 +3623,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -3642,12 +3644,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]

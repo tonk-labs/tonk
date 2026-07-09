@@ -14,6 +14,7 @@ use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::Identify;
+use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::Load;
 use dialog_repository::RemoteSite;
@@ -119,10 +120,12 @@ pub trait PushProvider:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Publish>
+    + Provider<BlobRead>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Put>>
     + Provider<Fork<RemoteSite, Resolve>>
     + Provider<Fork<RemoteSite, Publish>>
+    + Provider<Fork<RemoteSite, BlobImport>>
     + ConditionalSync
     + 'static
 {
@@ -132,10 +135,12 @@ impl<T> PushProvider for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Publish>
+        + Provider<BlobRead>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Put>>
         + Provider<Fork<RemoteSite, Resolve>>
         + Provider<Fork<RemoteSite, Publish>>
+        + Provider<Fork<RemoteSite, BlobImport>>
         + ConditionalSync
         + 'static
 {
