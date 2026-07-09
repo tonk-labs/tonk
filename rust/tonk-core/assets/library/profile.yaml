@@ -1270,6 +1270,14 @@ view/directory!: &profile/fab/view
              share roster re-anchors right (`.fab__share-menu`). */
           width: 100%;
           z-index: 100;
+          /* A long list (many members, many spots) must not run off screen:
+             cap the stack to the viewport minus the dock offset (16px), the
+             bar, the 7px gap and some breathing room, and scroll the rest.
+             Scrolling clips the ::before hover bridge — harmless, menus are
+             click-toggled, not hover-held. */
+          max-height: calc(100dvh - 96px);
+          overflow-y: auto;
+          overscroll-behavior: contain;
         }
         /* Dropdowns open AWAY from the docked edge — down from the top dock, up
            from the bottom, and horizontally into the viewport (rightward from a
@@ -1318,6 +1326,11 @@ view/directory!: &profile/fab/view
            reads as more of the same control, not a differently-coloured panel. */
         .fab__menu-item {
           display: block;
+          /* Keep natural height inside the height-capped menu: the item's
+             `overflow: hidden` zeroes its flex min-height, so without this
+             the cards compress to cram into `max-height` instead of letting
+             the menu scroll. */
+          flex: none;
           padding: 10px 16px;
           background: var(--fab-pill);
           border-radius: 2px;
@@ -1368,6 +1381,39 @@ view/directory!: &profile/fab/view
         .fab__share .fab__invite-display,
         .fab__share .fab__share-mint,
         .fab__share-mint tonk-view { display: contents; }
+        /* The share wedge is FIXED-WIDTH, sized to hold its widest state
+           ("copy invite link" + icon), so the label swapping between
+           share / copy invite link / copied never resizes the wedge — nor
+           the open roster, which is width-matched to it. Its label aligns
+           like every other row: toward the bar's inner edge — right when
+           the bar anchors left, left when mirrored on the right. */
+        .fab__share {
+          box-sizing: border-box;
+          width: 180px;
+        }
+        /* Pin the wedge's control (the "share" form pre-mint, the copy
+           control after) to the wedge's edge, ABSOLUTELY — out of the flex
+           flow entirely, where flow-based justify-content proved unreliable
+           through the display chain. `top: 50% / translateY` centres it on
+           the bar's axis. Aligned like every other row: the right edge when
+           the bar anchors left, the left edge when mirrored on the right.
+           (The segment keeps its height from the telescope tile's fixed
+           block-size, so lifting the control out of flow doesn't collapse
+           the wedge.) */
+        .fab__share .fab__share-form,
+        .fab__share .fab__invite {
+          position: absolute;
+          top: 50%;
+          transform: translateY(-50%);
+          right: 22px;
+          left: auto;
+          margin: 0;
+        }
+        .fab-mirror .fab__share .fab__share-form,
+        .fab-mirror .fab__share .fab__invite {
+          left: 22px;
+          right: auto;
+        }
         .fab__share-form {
           display: inline-flex;
           align-items: center;
@@ -1414,6 +1460,11 @@ view/directory!: &profile/fab/view
           color: var(--fab-ink);
           background: transparent;
           transition: opacity 0.15s ease;
+          /* Centre the slotted label on the bar's axis — the shadow
+             button's own line box otherwise sits the label on its text
+             baseline, dropping it below the segment's vertical centre. */
+          display: inline-flex;
+          align-items: center;
         }
         .fab__invite::part(button):hover {
           background: transparent;
@@ -1429,6 +1480,13 @@ view/directory!: &profile/fab/view
           /* Slotted into <wa-copy-button>, so it inherits WebAwesome's body
              font (not the FAB's) — pin it back to the FAB face. */
           font-family: "IBM Plex Sans Condensed", var(--wa-font-family-heading, sans-serif);
+        }
+        /* The slot icons: cap to the label's text scale — wa-icon's default
+           box overshoots the cap height, inflating the label's line box and
+           pushing the text off the bar's vertical centre. */
+        .fab__invite-label wa-icon {
+          font-size: 0.85em;
+          line-height: 1;
         }
         /* The "Copied!" success state. WebAwesome tints its success slot green
            (`var(--wa-color-success-on-quiet)`), tuned for a light background and
