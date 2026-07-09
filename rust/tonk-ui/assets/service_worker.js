@@ -31,12 +31,13 @@ self.oninstall = event => {
     // top-level eval time the lifecycle hasn't reached install yet.
     //
     // Precache the shell under `/index.html` so offline deep-link
-    // navigations have a fallback. `serveNavigation` caches the shell
-    // under the visited URL (e.g. `/`), never `/index.html`, so its
-    // `cache.match("/index.html")` fallback would otherwise only hit
-    // after a network fetch — which fails offline. Seeding it here
-    // guarantees a first-visit-online install populates the key every
-    // offline navigation falls back to.
+    // navigations have a fallback. `serveNavigation` caches each
+    // shell under the visited URL (e.g. `/`), so a route never
+    // visited online has no cache entry; its `/index.html` fallback
+    // would then only hit after a network fetch — which fails
+    // offline. Seeding the key here guarantees a first-visit-online
+    // install populates the shell every offline navigation falls
+    // back to.
     event.waitUntil((async () => {
         try {
             const cache = await caches.open(SHELL_CACHE);
@@ -109,44 +110,21 @@ const onConnectivityChange = async () => {
 self.addEventListener("offline", onConnectivityChange);
 self.addEventListener("online", onConnectivityChange);
 
-// Document navigations bypass the Rust worker entirely. The
-// shell HTML lives in the SW cache and never crosses the data
-// plane — there's no reason a navigation should wait on
-// `dialog-repository` / axum / IndexedDB initialisation just to
-// hand back a cached `index.html`. Skipping the worker boot
-// here cuts the navigation TTFB on a warm load from ~1 s to
-// ~10 ms.
+// Serve the precached app shell for every route navigation. The
+// SPA router resolves the actual path client-side, so there's
+// nothing URL-specific to serve — just hand back `/index.html`
+// from the cache, which means a navigation never waits on the
+// network (a network-first shell blocked slow loads on a full
+// round-trip even though the shell was already on disk).
 //
-// Every other fetch (`/api/*`, static assets that may need the
-// guest-iframe rewrite, etc.) goes through the Rust worker —
-// it's the only place that knows whether a request is from a
-// view client and how the rewrite should map. The Rust side
-// itself runs static cacheable GETs through the same shell
-// cache so this isn't a separate cache from the navigation
-// case, just a different entry point. (`SHELL_CACHE` is declared at
-// the top of the file so `oninstall` can precache into it.)
-
-async function serveNavigation(request) {
+// The shell is seeded by `oninstall` and re-seeded on every new
+// worker install, so a deploy refreshes it. The rare miss (first
+// visit racing the install, or a purged cache) fetches it once.
+async function serveNavigation() {
     const cache = await caches.open(SHELL_CACHE);
-    try {
-        const response = await fetch(request);
-        if (response.status === 404) {
-            return (await cache.match("/index.html")) || (await fetchAndCacheIndex(cache));
-        }
-        if (response.ok && response.type !== "opaque") {
-            cache.put(request, response.clone()).catch(() => {});
-        }
-        return response;
-    } catch {
-        return (
-            (await cache.match(request)) ||
-            (await cache.match("/index.html")) ||
-            fetchAndCacheIndex(cache)
-        );
-    }
-}
+    const cached = await cache.match("/index.html");
+    if (cached) return cached;
 
-async function fetchAndCacheIndex(cache) {
     const response = await fetch("/index.html");
     if (response.ok && response.type !== "opaque") {
         cache.put("/index.html", response.clone()).catch(() => {});
@@ -154,6 +132,11 @@ async function fetchAndCacheIndex(cache) {
     return response;
 }
 
+// Route navigations straight to the cached shell (bypassing the
+// Rust worker boot, so TTFB doesn't wait on dialog-repository /
+// axum / IndexedDB init); everything else — `/api/*` and static
+// assets — goes through the Rust worker, which owns the guest
+// rewrite and the resource cache.
 self.onfetch = event => {
     if (event.request.mode === "navigate") {
         // `/api/*` navigations are real data-plane requests, not SPA
@@ -165,7 +148,7 @@ self.onfetch = event => {
         // navigation to an app route: serve the cached shell.
         const path = new URL(event.request.url).pathname;
         if (!path.startsWith("/api/")) {
-            event.respondWith(serveNavigation(event.request));
+            event.respondWith(serveNavigation());
             return;
         }
     }
