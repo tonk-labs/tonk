@@ -151,7 +151,7 @@ indexmap = { version = "2", features = ["serde"] }
 serde-wasm-bindgen = "0.6"
 url = "2"
 ulid = "1"
-wasm-streams = "0.4"
+wasm-streams = "0.5"
 web-time = "1"
 webbrowser = "1.0"
 worker = "0.7.4"
