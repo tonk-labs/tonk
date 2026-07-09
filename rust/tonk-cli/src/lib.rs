@@ -11,6 +11,9 @@
 //! - [`identity`] — local profile management.
 //! - [`data`] — pure notation builders (value rendering + doc
 //!   assembly) consumed by the argument-based data verbs.
+//! - [`data_ops`] — the testable handlers behind the argument-based
+//!   data verbs (`tonk describe`, …); `bin/tonk.rs` is a thin
+//!   parser→call shim over these.
 //! - [`eval`] — read source, drive [`tonk_evaluator::evaluate`],
 //!   render output.
 //! - [`output`] — render an [`tonk_evaluator::evaluate::EvaluateResponse`]
@@ -24,6 +27,7 @@
 pub mod auto_sync;
 pub mod blob;
 pub mod data;
+pub mod data_ops;
 pub mod eval;
 pub mod guide;
 pub mod identity;

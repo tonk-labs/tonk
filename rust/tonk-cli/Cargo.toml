@@ -49,6 +49,10 @@ path = "tests/telemetry.rs"
 name = "blob"
 path = "tests/blob.rs"
 
+[[test]]
+name = "data_verbs"
+path = "tests/data_verbs.rs"
+
 [features]
 integration-tests = []
 
