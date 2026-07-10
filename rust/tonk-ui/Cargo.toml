@@ -36,25 +36,13 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 bs58 = { workspace = true }
-tonk-board = { workspace = true }
 tonk-common = { workspace = true }
-tonk-workspace = { workspace = true }
-tonk-code = { workspace = true, features = ["web"] }
-tonk-tree = { workspace = true }
-tonk-display = { workspace = true }
-tonk-fab = { workspace = true }
 tonk-host = { workspace = true }
-tonk-invite = { workspace = true }
-tonk-notation = { workspace = true }
 tonk-portal = { workspace = true }
-tonk-schema = { workspace = true }
-tonk-sigil = { workspace = true, features = ["web"] }
 tonk-worker = { workspace = true }
 tonk-analytics = { workspace = true }
 url = { workspace = true }
-dialog-repository = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
-dialog-varsig = { workspace = true }
 dialog-common = { workspace = true, optional = true }
 port_check = { workspace = true, optional = true }
 thirtyfour = { workspace = true, optional = true }
@@ -85,7 +73,12 @@ features = [
     "BroadcastChannel",
     "CustomEvent",
     "Document",
+    "Element",
+    "HtmlHeadElement",
+    "HtmlScriptElement",
+    "Location",
     "MessageEvent",
+    "Node",
     "VisibilityState",
     "Window",
 ]
