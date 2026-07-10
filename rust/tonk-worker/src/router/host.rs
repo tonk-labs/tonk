@@ -160,12 +160,20 @@ fn body_for(value: Value) -> Body {
 /// The bridge module's top-level installs `globalThis.tonk` and
 /// posts the `hello` handshake to the SW — loading it as a plain
 /// `<script type="module" src>` is enough.
+///
+/// The `color-scheme` meta must match the embedding page's (index.html
+/// declares `light dark`): Chrome paints an iframe whose color-scheme
+/// differs from its embedder on an OPAQUE WHITE canvas, so without it a
+/// dark-mode page flashes white from `<tonk-site>` mount until the guest
+/// styles land. With matching schemes the canvas stays transparent and
+/// the page's own surface shows through while the guest boots.
 fn wrap_html_body(body: &str) -> String {
     format!(
         r#"<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
 <script type="module" src="/__tonk/bridge.js"></script>
 </head>
 <body>

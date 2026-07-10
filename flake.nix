@@ -150,9 +150,48 @@
             command = "nix build .#tonk-ui";
           };
           "dev:web" = {
-            description = "Start a dev server (set UCAN_ENDPOINT to override /ucan/ proxy)";
+            description = "Start a dev server with a local access service (set UCAN_ENDPOINT to proxy /ucan/ to a remote instead)";
             command = ''
-              ENDPOINT="''${UCAN_ENDPOINT:-https://staging.tonk.xyz/ucan/}"
+              # Resolve the /ucan/ sync backend. By default, spin up a local,
+              # blob-aware access service: the native `tonk-access-local` helper
+              # mirrors the deployed Cloudflare Worker over a local in-memory S3,
+              # so local dev never depends on a deployed service being in sync
+              # with this checkout (a stale remote rejects newer commands — e.g.
+              # blob import — with a 403). Set UCAN_ENDPOINT to point /ucan/ at a
+              # real remote (staging, prod, a teammate's tunnel) instead.
+              ACCESS_PID=""
+              if [ -n "''${UCAN_ENDPOINT:-}" ]; then
+                ENDPOINT="$UCAN_ENDPOINT"
+                echo "dev:web: proxying /ucan/ to $ENDPOINT (from UCAN_ENDPOINT)"
+              else
+                echo "dev:web: starting a local access service (set UCAN_ENDPOINT to use a remote)..."
+                ACCESS_LOG="$(mktemp)"
+                # stdout carries the `ACCESS_SERVICE_URL=` line; stderr (build
+                # progress) stays on the terminal.
+                cargo run --bin tonk-access-local --features helpers >"$ACCESS_LOG" &
+                ACCESS_PID=$!
+                ENDPOINT=""
+                tries=0
+                while [ "$tries" -lt 600 ]; do
+                  ENDPOINT="$(sed -n 's|^ACCESS_SERVICE_URL=||p' "$ACCESS_LOG" 2>/dev/null | head -n1)"
+                  if [ -n "$ENDPOINT" ]; then
+                    break
+                  fi
+                  if ! kill -0 "$ACCESS_PID" 2>/dev/null; then
+                    echo "dev:web: the local access service exited before printing its URL" >&2
+                    exit 1
+                  fi
+                  tries=$((tries + 1))
+                  sleep 0.5
+                done
+                if [ -z "$ENDPOINT" ]; then
+                  echo "dev:web: timed out waiting for the local access service" >&2
+                  kill "$ACCESS_PID" 2>/dev/null || true
+                  exit 1
+                fi
+                ENDPOINT="$ENDPOINT/ucan/"
+                echo "dev:web: local access service ready; proxying /ucan/ to $ENDPOINT"
+              fi
               # Serve the user guide at /guide/ via mdbook's own live-reload
               # server, proxied by trunk (see the [[proxies]] entry in
               # Trunk.toml).
@@ -171,7 +210,7 @@
               PATH="${pkgs.mdbook-mermaid}/bin:$PATH" \
                 ${pkgs.mdbook}/bin/mdbook serve ./guide --port "$GUIDE_PORT" --hostname 127.0.0.1 &
               GUIDE_PID=$!
-              trap 'kill "$GUIDE_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null' EXIT INT TERM
+              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null' EXIT INT TERM
               trunk serve --config ./rust/tonk-ui/Trunk.toml --proxy-backend "$ENDPOINT"
             '';
           };
