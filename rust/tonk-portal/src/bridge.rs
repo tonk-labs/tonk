@@ -341,8 +341,24 @@ const BOOTSTRAP_JS: &str = r#"(function(){
             var rej=env.delta.retracted||[];
             var add=env.delta.asserted||[];
             var keyOf=function(r){return JSON.stringify(r);};
+            // Value-equality retract, tracking which retracts found no
+            // matching row (drift) and which `this` the delta asserts.
+            // Mirrors tonk-display's apply_delta: an asserted row for an
+            // entity whose retract didn't match a retained row supersedes
+            // that entity's stale (drifted) rows, so a superseded field
+            // leaves ONE row for the entity, not two that a group-by-`this`
+            // fold would collapse to a stale/multi-valued field. Clean
+            // supersessions, pure retracts, and directory multi-valued
+            // entities (retract matches the changed tuple) are unaffected.
             var gone={};for(var i=0;i<rej.length;i++){gone[keyOf(rej[i])]=true;}
-            next=prev.filter(function(r){return !gone[keyOf(r)];}).concat(add);
+            var drifted={};for(var i=0;i<rej.length;i++){drifted[rej[i].this]=true;}
+            var asserts={};for(var i=0;i<add.length;i++){asserts[add[i].this]=true;}
+            next=prev.filter(function(r){
+              if(gone[keyOf(r)]){ delete drifted[r.this]; return false; }
+              return true;
+            }).filter(function(r){
+              return !(drifted[r.this] && asserts[r.this]);
+            }).concat(add);
           }else{
             next=env.rows||[];
           }
