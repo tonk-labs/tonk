@@ -20,7 +20,6 @@ serde-wasm-bindgen = { workspace = true }
 serde_ipld_dagjson = { workspace = true }
 serde_json = { workspace = true }
 tonk-common = { workspace = true }
-tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
@@ -31,6 +30,7 @@ web-sys = { workspace = true, features = [
   "CustomEvent",
   "CustomEventInit",
   "Document",
+  "DomException",
   "Element",
   "Event",
   "EventInit",

@@ -797,7 +797,7 @@ fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Optio
 /// Route one parsed subscription frame to the consumer's `reset` /
 /// `update` method by its `kind`.
 ///
-/// The reactor emits a tagged [`Frame`](tonk_schema::conclusion::Frame):
+/// The reactor emits a tagged `Frame` (`tonk_schema::conclusion::Frame`):
 /// - `{"kind":"snapshot","conclusions":[…]}` → `reset(conclusions, opts)`
 ///   — the full current set, for a first frame or a reconnect.
 /// - `{"kind":"delta","asserted":[…],"retracted":[…]}` →
