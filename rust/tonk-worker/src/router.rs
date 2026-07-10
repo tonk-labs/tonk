@@ -3197,20 +3197,48 @@ employee:
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let mut body = open_subscription(&app, repo, "main").await;
-        let snapshot_before = read_sse_frame(&mut body).await;
 
-        // Commit a second named attribute — the result set grows.
+        // The first frame is a full snapshot of the current result set.
+        let snapshot = read_sse_frame(&mut body).await;
+        assert_eq!(
+            snapshot.get("kind").and_then(|k| k.as_str()),
+            Some("snapshot"),
+            "first frame is a snapshot: {snapshot}"
+        );
+        let before = snapshot
+            .get("conclusions")
+            .and_then(|c| c.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        // Commit a second named attribute — the result set grows by one row.
         seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
 
-        let snapshot_after = read_sse_frame(&mut body).await;
-        assert_ne!(
-            snapshot_before, snapshot_after,
-            "commit must broadcast a changed snapshot"
+        // The commit broadcasts an incremental delta: the new row is asserted,
+        // nothing retracted, so the result set is strictly larger than before.
+        let delta = read_sse_frame(&mut body).await;
+        assert_eq!(
+            delta.get("kind").and_then(|k| k.as_str()),
+            Some("delta"),
+            "post-commit frame is a delta: {delta}"
+        );
+        let asserted = delta
+            .get("asserted")
+            .and_then(|a| a.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let retracted = delta
+            .get("retracted")
+            .and_then(|r| r.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert!(
+            asserted > 0,
+            "commit must broadcast the new row as asserted: {delta}"
         );
         assert!(
-            snapshot_after.as_array().map(|a| a.len()).unwrap_or(0)
-                > snapshot_before.as_array().map(|a| a.len()).unwrap_or(0),
-            "post-commit snapshot has more rows than pre-commit"
+            before + asserted > before + retracted,
+            "post-commit result set grows (asserted {asserted} > retracted {retracted})"
         );
     }
 
