@@ -4,7 +4,6 @@
 //! routing through the reactor's name-keyed lookup.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 
 use dialog_artifacts::Statement;
@@ -176,21 +175,13 @@ impl BranchState {
     /// fan out to subscribers. Each subscription is polled via
     /// the same `SubscriptionPoll::perform` path the public
     /// chain uses.
-    // `impl Future + 'a` (not `async fn`) so the env lifetime is
-    // named, keeping callers (the axum handlers draining scheduled
-    // polls) Send-general — see `SubscriptionPoll::perform`.
-    pub fn poll<'a, Env: SelectProvider>(
-        self: &'a Arc<Self>,
-        env: &'a Env,
-    ) -> impl Future<Output = ()> + 'a {
-        async move {
-            let hashes: Vec<QueryHash> = {
-                let subs = self.subscriptions.lock();
-                subs.keys().cloned().collect()
-            };
-            for hash in hashes {
-                SubscriptionPoll { state: self, hash }.perform(env).await;
-            }
+    pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
+        let hashes: Vec<QueryHash> = {
+            let subs = self.subscriptions.lock();
+            subs.keys().cloned().collect()
+        };
+        for hash in hashes {
+            SubscriptionPoll { state: self, hash }.perform(env).await;
         }
     }
 }
