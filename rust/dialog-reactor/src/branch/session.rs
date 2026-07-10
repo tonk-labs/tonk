@@ -38,7 +38,6 @@ impl BranchSession {
         self.state.transactor()
     }
 
-
     /// Re-poll every subscription on this branch.
     ///
     /// `impl Future + 'a` (not `async fn`) so the env lifetime stays
