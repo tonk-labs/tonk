@@ -274,7 +274,9 @@ async fn stamp_site_on(
     };
 
     let Some(replica) = origin_entity(tonk, &state).await else {
-        tonk_common::log!("[stamp] {site} SKIPPED: no origin_entity (repo={repo} branch={branch_name} rest={rest})");
+        tonk_common::log!(
+            "[stamp] {site} SKIPPED: no origin_entity (repo={repo} branch={branch_name} rest={rest})"
+        );
         return;
     };
     let Some(matched) = match_route(tonk, &state, rest).await else {

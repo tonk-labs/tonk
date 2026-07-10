@@ -148,6 +148,17 @@ pub async fn evaluate(
         && let Some(revision) = &response.revision_after
         && response.revision_before.as_ref() != Some(revision)
     {
+        // The commit scheduled a subscription poll; drain it so
+        // subscribers see the change as an incremental delta. Without
+        // this, a committing `/evaluate` leaves the delta uncomputed —
+        // the branch broadcast below still fires, so UIs reconnect and
+        // re-render a STALE snapshot instead of applying the new value
+        // (mirrors the drain `/transact` does after its commit).
+        tonk_state
+            .reactor
+            .run_scheduled_polls(&tonk_state.operator)
+            .await;
+
         broadcast(
             &format!("/api/repository/{}/branch/{}", path.repo, path.branch),
             &Notification {
@@ -194,6 +205,13 @@ pub async fn evaluate_profile(
         && let Some(revision) = &response.revision_after
         && response.revision_before.as_ref() != Some(revision)
     {
+        // Drain the poll the commit scheduled so subscribers get the
+        // incremental delta (see the note in [`evaluate`]).
+        tonk_state
+            .reactor
+            .run_scheduled_polls(&tonk_state.operator)
+            .await;
+
         broadcast(
             crate::broadcast::LOCAL_COMMIT_CHANNEL,
             &Notification {
