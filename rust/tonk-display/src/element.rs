@@ -1435,6 +1435,12 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
             view_el: notation,
         },
     );
+    // Track the fallback's `<script>` so subsequent entity frames re-format it
+    // via `update_notation`. A `<tonk-notation>` has no `draw` method, so the
+    // `call_render` loop over slides no-ops on it; without this the default
+    // `_:_` dump renders the mount-time conclusion once and never reflects a
+    // later update (the counter stayed stale on every increment).
+    s.notation_source = Some(script);
     s.default_slide = true;
     // The notation dump is the ultimate `_:_` fallback — also
     // `default-view`, not a model-specific render.
