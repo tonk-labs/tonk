@@ -202,10 +202,28 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       });
     });
   }
+  // In-flight de-duplication for one-shot queries. Many <tonk-display>
+  // elements resolve the SAME concept descriptor (phase-1) or bookmark name
+  // on one page load — e.g. three displays of `tonk:repository` each fire an
+  // identical `dialog.meta/*` query. Coalesce identical concurrent queries
+  // onto one request keyed by (route + body); every caller shares the single
+  // promise. Purely in-flight (cleared when it settles), so no staleness —
+  // just fewer round-trips. A subscription is never deduped here (it's a
+  // long-lived stream), only the fire-and-forget `query`.
+  var inflightQ=new Map();
+  function dedupQuery(env){
+    var key;
+    try{ key=JSON.stringify(env); }catch(e){ return call("query",env); }
+    var hit=inflightQ.get(key);
+    if(hit) return hit;
+    var p=call("query",env).finally(function(){ inflightQ.delete(key); });
+    inflightQ.set(key,p);
+    return p;
+  }
   var tonk={
     context:{this:"",model:""},
     ready:ready,
-    query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
+    query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
     transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
     // {document, transact}; the parent relays it to the installed host's
