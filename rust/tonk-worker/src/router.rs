@@ -3039,11 +3039,23 @@ employee:
         serde_json::from_str(json_text).expect("snapshot is JSON")
     }
 
-    /// Open an SSE subscription, read the first event, and return
-    /// the parsed snapshot. Drops the body afterwards.
+    /// Open an SSE subscription, read the first event (a
+    /// `{kind:"snapshot", conclusions:[…]}` frame), and return its
+    /// `conclusions` array — the same bare-array shape the one-shot
+    /// `/query` route returns, so the two are directly comparable.
+    /// Drops the body afterwards.
     async fn subscribe_first_event(app: &Router, repo: &str, branch: &str) -> serde_json::Value {
         let mut body = open_subscription(app, repo, branch).await;
-        read_sse_frame(&mut body).await
+        let frame = read_sse_frame(&mut body).await;
+        assert_eq!(
+            frame.get("kind").and_then(|k| k.as_str()),
+            Some("snapshot"),
+            "first SSE frame is a snapshot: {frame}"
+        );
+        frame
+            .get("conclusions")
+            .cloned()
+            .expect("snapshot frame carries a conclusions array")
     }
 
     /// One-shot `/query` returns the current matches as a JSON
@@ -3197,20 +3209,200 @@ employee:
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let mut body = open_subscription(&app, repo, "main").await;
-        let snapshot_before = read_sse_frame(&mut body).await;
 
-        // Commit a second named attribute — the result set grows.
+        // The first frame is a full snapshot of the current result set.
+        let snapshot = read_sse_frame(&mut body).await;
+        assert_eq!(
+            snapshot.get("kind").and_then(|k| k.as_str()),
+            Some("snapshot"),
+            "first frame is a snapshot: {snapshot}"
+        );
+        let before = snapshot
+            .get("conclusions")
+            .and_then(|c| c.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        // Commit a second named attribute — the result set grows by one row.
         seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
 
-        let snapshot_after = read_sse_frame(&mut body).await;
-        assert_ne!(
-            snapshot_before, snapshot_after,
-            "commit must broadcast a changed snapshot"
+        // The commit broadcasts an incremental delta: the new row is asserted,
+        // nothing retracted, so the result set is strictly larger than before.
+        let delta = read_sse_frame(&mut body).await;
+        assert_eq!(
+            delta.get("kind").and_then(|k| k.as_str()),
+            Some("delta"),
+            "post-commit frame is a delta: {delta}"
+        );
+        let asserted = delta
+            .get("asserted")
+            .and_then(|a| a.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let retracted = delta
+            .get("retracted")
+            .and_then(|r| r.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert!(
+            asserted > 0,
+            "commit must broadcast the new row as asserted: {delta}"
         );
         assert!(
-            snapshot_after.as_array().map(|a| a.len()).unwrap_or(0)
-                > snapshot_before.as_array().map(|a| a.len()).unwrap_or(0),
-            "post-commit snapshot has more rows than pre-commit"
+            before + asserted > before + retracted,
+            "post-commit result set grows (asserted {asserted} > retracted {retracted})"
+        );
+    }
+
+    /// A committing `/evaluate` that SUPERSEDES a cardinality-one field
+    /// on an entity with an open SSE subscription must deliver a `delta`
+    /// frame carrying the NEW value — the "counter" bug shape: one row
+    /// whose field moved, not a new row.
+    ///
+    /// Unlike `it_broadcasts_changed_snapshot_after_commit`, this does
+    /// NOT grow the result set. Declaring an attribute anchor publishes
+    /// a `meta::Name` (`id:<anchor>` carries a cardinality-one
+    /// `dialog.name/referent` pointing at the attribute entity).
+    /// Re-declaring the SAME anchor with a different `the:` re-points
+    /// that referent: the `id:<anchor>` row keeps its identity but its
+    /// `entity` field changes. The subscription must observe that
+    /// supersession as a `delta` frame whose `asserted` row carries the
+    /// new target and whose `retracted` row carries the old one.
+    ///
+    /// NOTE on discriminating power: on the current tree this test
+    /// passes with OR without the `run_scheduled_polls` drain in
+    /// `router/evaluate.rs`. The `/evaluate` handler also polls inline
+    /// via `session.poll()` after its commit, and that inline poll
+    /// already re-evaluates every subscription on the committed branch
+    /// and fans out the delta. `run_scheduled_polls` is a no-op for a
+    /// plain `/evaluate`: the dialog `txn.commit()` schedules no reactor
+    /// poll, so the pending-poll set is empty. This test therefore
+    /// locks in the correct superseding-delta behavior (and guards
+    /// against a regression that would drop the inline poll), but it
+    /// does NOT by itself prove the `run_scheduled_polls` fix — see the
+    /// handoff note.
+    #[dialog_common::test]
+    async fn it_broadcasts_superseded_field_after_commit() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-supersede-broadcast";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+
+        // Publish `id:counter -> <attribute entity for xyz.tonk/a>`.
+        seed_named_attribute(&app, repo, "counter", "xyz.tonk/a").await;
+
+        let mut body = open_subscription(&app, repo, "main").await;
+
+        // The first frame is a `snapshot` carrying the pre-supersession
+        // target for `id:counter`. Keep it so we can prove the
+        // post-commit frame moved the field.
+        let snapshot_before = read_sse_frame(&mut body).await;
+        assert_eq!(
+            snapshot_before.get("kind").and_then(|k| k.as_str()),
+            Some("snapshot"),
+            "first frame is a snapshot: {snapshot_before}"
+        );
+        let target_before = counter_entity_in(&snapshot_before, "conclusions");
+
+        // Re-declare the SAME anchor pointing at a fresh attribute
+        // entity (`the: xyz.tonk/b`). This supersedes `id:counter`'s
+        // cardinality-one referent — the row's identity is unchanged,
+        // only its `entity` field moves. The result set does NOT grow.
+        seed_named_attribute(&app, repo, "counter", "xyz.tonk/b").await;
+
+        // (1) Propagation: a frame must ARRIVE after the superseding
+        // commit. If neither the inline `session.poll()` nor the
+        // scheduled-poll drain re-evaluated the subscription, no delta
+        // reaches the subscriber and this read hangs until the harness
+        // timeout.
+        let delta_after = read_sse_frame(&mut body).await;
+        assert_eq!(
+            delta_after.get("kind").and_then(|k| k.as_str()),
+            Some("delta"),
+            "post-supersession frame is an incremental delta: {delta_after}"
+        );
+
+        // (2) Correctness: the delta's `asserted` row for `id:counter`
+        // must carry the NEW target, not the stale one that was current
+        // when the subscription opened.
+        let target_after = counter_entity_in(&delta_after, "asserted");
+        assert_ne!(
+            target_before, target_after,
+            "superseding commit must broadcast the new `entity`, not the stale one; \
+             before={target_before:?} after={target_after:?}"
+        );
+    }
+
+    /// Find the `id:counter` name row inside an SSE frame's `key` array
+    /// (`conclusions` for a snapshot, `asserted` for a delta) and
+    /// return its projected `entity` target — the referent the name
+    /// currently points at. Panics with the offending frame if the row
+    /// or field is missing so a shape regression is loud.
+    fn counter_entity_in(frame: &serde_json::Value, key: &str) -> String {
+        let rows = frame
+            .get(key)
+            .and_then(|r| r.as_array())
+            .unwrap_or_else(|| panic!("frame missing `{key}` array: {frame}"));
+        for row in rows {
+            let fields = row
+                .get("fields")
+                .and_then(|f| f.as_object())
+                .unwrap_or_else(|| panic!("row missing fields object: {row}"));
+            if fields.get("this").and_then(|v| v.as_str()) == Some("id:counter") {
+                return fields
+                    .get("entity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("id:counter row missing `entity`: {row}"))
+                    .to_string();
+            }
+        }
+        panic!("no id:counter row in frame `{key}`: {frame}");
+    }
+
+    /// TWO consecutive supersessions over one open subscription. This
+    /// pins down whether the reactor tracks the state IT last emitted:
+    /// the second delta's `retracted` must carry the value the FIRST
+    /// delta asserted (b), not the original snapshot value (a). If the
+    /// reactor's per-subscription base drifts (retract still names the
+    /// original), a consumer applying deltas by value-identity can't
+    /// match the retract against its own retained row and mis-renders.
+    #[dialog_common::test]
+    async fn it_tracks_emitted_state_across_consecutive_supersessions() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-consecutive-supersede";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+
+        seed_named_attribute(&app, repo, "counter", "xyz.tonk/a").await;
+
+        let mut body = open_subscription(&app, repo, "main").await;
+        let snapshot = read_sse_frame(&mut body).await;
+        let target_a = counter_entity_in(&snapshot, "conclusions");
+
+        // First supersession: a -> b.
+        seed_named_attribute(&app, repo, "counter", "xyz.tonk/b").await;
+        let delta1 = read_sse_frame(&mut body).await;
+        let asserted_b = counter_entity_in(&delta1, "asserted");
+        let retracted_1 = counter_entity_in(&delta1, "retracted");
+        assert_eq!(
+            retracted_1, target_a,
+            "delta1 must retract the original (a); got retracted={retracted_1} target_a={target_a}"
+        );
+
+        // Second supersession: b -> c. The reactor's base for THIS delta
+        // must be `b` (what delta1 asserted), so delta2 retracts `b`.
+        seed_named_attribute(&app, repo, "counter", "xyz.tonk/c").await;
+        let delta2 = read_sse_frame(&mut body).await;
+        let asserted_c = counter_entity_in(&delta2, "asserted");
+        let retracted_2 = counter_entity_in(&delta2, "retracted");
+
+        assert_ne!(asserted_b, asserted_c, "delta2 asserts a new target (c)");
+        assert_eq!(
+            retracted_2, asserted_b,
+            "delta2 must retract what delta1 ASSERTED (b), proving the reactor \
+             tracks its own emitted state; got retracted={retracted_2} asserted_b={asserted_b}"
         );
     }
 

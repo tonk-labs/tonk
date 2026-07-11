@@ -22,7 +22,7 @@
 //! subscription + one entity subscription per attribute set.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
@@ -140,6 +140,15 @@ struct Inner {
     /// drop every instance but the first. The lead conclusion (for
     /// notation / the result event) is `last_frame.first()`.
     last_frame: Vec<Conclusion>,
+    /// The last full row set seen per subscription tag
+    /// (`model` / `view` / `entity`), retained so an incremental
+    /// `update` delta can be applied to the correct tag's set and the
+    /// merged full set routed to that tag's handler. A `reset` replaces
+    /// the tag's entry; a `delta` mutates it. Without this a model/view
+    /// delta would merge into the entity `last_frame` and resolve the
+    /// wrong (or empty) set — the "Model not found" after an empty
+    /// snapshot then a stamping delta.
+    retained: BTreeMap<String, Vec<Conclusion>>,
     /// `<wa-carousel>` element when in carousel mode, `None` in
     /// single mode.
     carousel: Option<Element>,
@@ -223,6 +232,7 @@ impl Inner {
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
+            retained: BTreeMap::new(),
             carousel: None,
             slides: BTreeMap::new(),
             notation_source: None,
@@ -343,6 +353,10 @@ impl CustomElement for TonkDisplay {
             let mut s = state.borrow_mut();
             s.abort_all();
             s.last_frame = Vec::new();
+            // Drop retained per-tag sets too: a restart re-subscribes and
+            // the first frame per tag is a fresh snapshot, so stale rows
+            // from the prior context must not survive as a delta base.
+            s.retained.clear();
             // Tear down any mounted slide / carousel chrome so the
             // restart starts from a clean host.
             clear_host(&host, &mut s);
@@ -451,6 +465,14 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
         && Reflect::get(&opts, &"reconnect".into())
             .map(|v| v.is_truthy())
             .unwrap_or(false);
+    // Retain this tag's full set so a later `update` delta applies to the
+    // right base (a `reset` replaces it wholesale).
+    if let Some(tag) = &tag {
+        state
+            .borrow_mut()
+            .retained
+            .insert(tag.clone(), conclusions.clone());
+    }
     match tag.as_deref() {
         Some("model") => handle_model_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
@@ -461,12 +483,134 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
     }
 }
 
-/// `update(delta, { tag })` — incremental change. V1 SW does not
-/// emit this; we'd treat it as `reset` on whatever the frame
-/// implies. For now log and drop.
-fn on_update(_host: &Element, _state: &Rc<RefCell<Inner>>, _payload: JsValue, _opts: JsValue) {
-    // V1 SW emits only `reset`. Once delta semantics arrive,
-    // this handler applies the delta to the slide state.
+/// `update({ asserted, retracted }, { tag })` — incremental change.
+///
+/// Apply the delta to the retained flat frame (`last_frame`) by
+/// conclusion identity — drop each `retracted` row, append each
+/// `asserted` row — then route the merged full set through the same
+/// tag handler `reset` uses. Reusing the reset path keeps a delta
+/// exactly equivalent to the snapshot it would have produced, so no
+/// rendering logic is duplicated.
+fn on_update(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+    let tag = read_tag(&opts);
+    let asserted = read_conclusions(&payload, "asserted");
+    let retracted = read_conclusions(&payload, "retracted");
+    let (asserted, retracted) = match (asserted, retracted) {
+        (Ok(a), Ok(r)) => (a, r),
+        (Err(e), _) | (_, Err(e)) => {
+            fail(
+                host,
+                state,
+                ErrorDetail::new(ErrorKind::Parse, format!("update payload: {e}")),
+            );
+            return;
+        }
+    };
+
+    // Apply the delta to THIS tag's retained set (not `last_frame`, which
+    // is the entity frame only) and re-store it, so a model/view delta
+    // resolves against model/view rows rather than the entity frame.
+    let Some(tag) = tag else {
+        // A delta with no tag has no base to apply to — drop it.
+        return;
+    };
+    let merged = {
+        let mut s = state.borrow_mut();
+        let base = s.retained.get(&tag).cloned().unwrap_or_default();
+        let merged = apply_delta(base, &asserted, retracted);
+        s.retained.insert(tag.clone(), merged.clone());
+        merged
+    };
+
+    match tag.as_str() {
+        "model" => handle_model_frame(host, state, merged),
+        "view" => handle_view_frame(host, state, merged),
+        "entity" => handle_entity_frame(host, state, merged, false),
+        _ => {
+            // Unknown tag — log and drop.
+        }
+    }
+}
+
+/// Apply a delta to a retained frame, healing over base drift while
+/// preserving legitimate multi-row (directory) entities.
+///
+/// The reactor emits a *per-entity diff*: for each entity it touched
+/// it asserts the rows that entered and retracts the rows that left
+/// that entity's projection (`dialog-repository` subscription
+/// `maintain` — over-delete the entity's retained rows, re-derive,
+/// diff). An entity's *unchanged* rows are neither asserted nor
+/// retracted, so a directory frame legitimately keeps N rows for one
+/// `this` (one per tuple of a cardinality-many field) across a delta
+/// that only supersedes one of them.
+///
+/// Two things must hold at once:
+/// - **Value-equality retract** (the common case): drop each
+///   `retracted` row from the base by value. When the base still
+///   holds what the retract names, this exactly supersedes a
+///   cardinality-one field and preserves the untouched tuples of a
+///   multi-row entity (the retract *matches* the changed tuple only).
+/// - **Drift heal** (the counter bug): if the consumer missed or
+///   reset a frame, its retained row for an entity can have *drifted*
+///   from what the delta retracts (base `count:5`, delta retracts
+///   `count:4`, asserts `count:6`). The value retract then matches
+///   nothing and a naive append leaves two rows for one `this`, which
+///   the downstream group-by-`this` fold collapses into a garbled
+///   multi-valued field. So: for any `this` that the delta *both*
+///   asserts a row for *and* has an unmatched retract for (the
+///   supersession-under-drift signal), drop that entity's surviving
+///   base rows before appending — the assert carries the entity's
+///   fresh row-set.
+///
+/// The heal is scoped by the *unmatched* retract: an entity whose
+/// retracts all matched (a directory tuple supersession, or a pure
+/// addition with no retract) keeps its other rows untouched, so
+/// multi-row directory mode is preserved. The result is the full set
+/// the equivalent `Snapshot` frame would carry, keeping a delta and a
+/// snapshot interchangeable downstream.
+fn apply_delta(
+    mut rows: Vec<Conclusion>,
+    asserted: &[Conclusion],
+    retracted: Vec<Conclusion>,
+) -> Vec<Conclusion> {
+    // Value-equality retract, recording which retracts found no
+    // matching base row. An unmatched retract for a `this` the delta
+    // also asserts is the drift signal: the base row for that entity
+    // is stale relative to the delta's view of it.
+    let mut drifted: BTreeSet<String> = retracted.iter().map(|r| r.this.clone()).collect();
+    rows.retain(|row| {
+        if retracted.contains(row) {
+            // This retract matched a live row — not drift for this
+            // entity (a clean supersession or a directory-tuple
+            // removal), so it must not trigger a heal that would drop
+            // the entity's other rows.
+            drifted.remove(&row.this);
+            false
+        } else {
+            true
+        }
+    });
+
+    // Entities the delta asserts a fresh row-set for. A drifted base
+    // row for one of these is superseded by the assert.
+    let asserted_entities: BTreeSet<&str> = asserted.iter().map(|c| c.this.as_str()).collect();
+    rows.retain(|row| {
+        !(drifted.contains(&row.this) && asserted_entities.contains(row.this.as_str()))
+    });
+
+    rows.extend(asserted.iter().cloned());
+    rows
+}
+
+/// Read `payload[field]` as a `Vec<Conclusion>` for a delta frame.
+/// `JSON.parse`-produced values carry `fields` as a plain object (not
+/// a JS `Map`), so `serde_wasm_bindgen` reads them back correctly.
+fn read_conclusions(payload: &JsValue, field: &str) -> Result<Vec<Conclusion>, String> {
+    let value = Reflect::get(payload, &field.into()).map_err(|e| format!("{e:?}"))?;
+    if value.is_undefined() || value.is_null() {
+        return Ok(Vec::new());
+    }
+    serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())
 }
 
 /// `error(detail, { tag })` — transport / parse error on a
@@ -1291,6 +1435,12 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
             view_el: notation,
         },
     );
+    // Track the fallback's `<script>` so subsequent entity frames re-format it
+    // via `update_notation`. A `<tonk-notation>` has no `draw` method, so the
+    // `call_render` loop over slides no-ops on it; without this the default
+    // `_:_` dump renders the mount-time conclusion once and never reflects a
+    // later update (the counter stayed stale on every increment).
+    s.notation_source = Some(script);
     s.default_slide = true;
     // The notation dump is the ultimate `_:_` fallback — also
     // `default-view`, not a model-specific render.
@@ -1420,7 +1570,6 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
 
 async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_generation: u64) {
     use crate::events::delegate::{Delegate, Descriptors};
-    use std::collections::BTreeSet;
 
     // Snapshot the view elements so we don't hold the borrow
     // across awaits. The delegate's `claim` calls dispatch on the
@@ -2212,6 +2361,117 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert(key.to_owned(), Ipld::String(value.to_owned()));
         fields
+    }
+
+    fn row(this: &str, display: &str) -> Conclusion {
+        Conclusion {
+            this: this.to_owned(),
+            fields: host_field("display", display),
+        }
+    }
+
+    /// A delta applied to a retained set yields exactly the full set the
+    /// equivalent snapshot would carry: retracted rows leave, asserted
+    /// rows join, untouched rows stay. This equivalence is what lets the
+    /// consumer route a delta through the same handler as a snapshot.
+    #[dialog_common::test]
+    fn it_applies_a_delta_equivalently_to_a_snapshot() {
+        let retained = vec![row("a", "A"), row("b", "B"), row("c", "C")];
+
+        // Retract b, assert d — the snapshot that would follow.
+        let asserted = vec![row("d", "D")];
+        let retracted = vec![row("b", "B")];
+
+        let merged = apply_delta(retained, &asserted, retracted);
+
+        assert_eq!(
+            merged,
+            vec![row("a", "A"), row("c", "C"), row("d", "D")],
+            "delta merge must equal the equivalent full snapshot"
+        );
+    }
+
+    /// A retract whose value differs from the retained row (stale key)
+    /// removes nothing — equality is by value, so a mismatch can't drop a
+    /// live row.
+    #[dialog_common::test]
+    fn it_ignores_a_retract_that_does_not_match_a_retained_row() {
+        let retained = vec![row("a", "A")];
+        let merged = apply_delta(retained, &[], vec![row("a", "STALE")]);
+        assert_eq!(merged, vec![row("a", "A")]);
+    }
+
+    fn count_row(this: &str, count: i128) -> Conclusion {
+        let mut fields = BTreeMap::new();
+        fields.insert("count".to_owned(), Ipld::Integer(count));
+        Conclusion {
+            this: this.to_owned(),
+            fields,
+        }
+    }
+
+    /// Superseding a cardinality-one field on an existing entity (the
+    /// counter case): the delta retracts the old value and asserts the
+    /// new one for the SAME `this`. The merged set must contain exactly
+    /// one row for that entity, carrying the NEW value — not two rows
+    /// (old + new) that a downstream group-by-`this` fold would collapse
+    /// into a multi-valued/stale field.
+    #[dialog_common::test]
+    fn it_supersedes_a_cardinality_one_field_for_the_same_entity() {
+        let retained = vec![count_row("e", 4)];
+        let merged = apply_delta(retained, &[count_row("e", 5)], vec![count_row("e", 4)]);
+        assert_eq!(
+            merged,
+            vec![count_row("e", 5)],
+            "supersession must leave exactly one row carrying the new value"
+        );
+    }
+
+    /// The failure the counter bug actually hit: the retained base has
+    /// DRIFTED from what the delta's retract names (the consumer missed
+    /// or mis-applied an earlier frame, so its row is `count:5` while the
+    /// delta retracts `count:4` and asserts `count:6`). A correct apply
+    /// must still end with one row carrying the newest asserted value —
+    /// never two rows for one entity.
+    #[dialog_common::test]
+    fn it_supersedes_even_when_the_retained_base_has_drifted() {
+        let retained = vec![count_row("e", 5)];
+        let merged = apply_delta(retained, &[count_row("e", 6)], vec![count_row("e", 4)]);
+        assert_eq!(
+            merged,
+            vec![count_row("e", 6)],
+            "an asserted row must replace the entity's prior row even when the \
+             retract value does not match the (drifted) retained row"
+        );
+    }
+
+    fn tag_row(this: &str, tag: &str) -> Conclusion {
+        let mut fields = BTreeMap::new();
+        fields.insert("tag".to_owned(), Ipld::String(tag.to_owned()));
+        Conclusion {
+            this: this.to_owned(),
+            fields,
+        }
+    }
+
+    /// Directory / multi-row mode: one `this` legitimately carries
+    /// several rows (one per tuple of a cardinality-many field). The
+    /// reactor's per-entity diff supersedes ONE tuple by asserting the
+    /// new tuple and retracting the old — the drift heal must NOT wipe
+    /// the entity's other tuples, so the untouched rows survive and
+    /// only the superseded tuple is replaced.
+    #[dialog_common::test]
+    fn it_preserves_other_rows_of_a_multi_valued_entity_through_a_delta() {
+        let retained = vec![tag_row("e", "x"), tag_row("e", "y"), tag_row("e", "z")];
+        // Supersede tuple `y` → `w`; the retract matches a live row, so
+        // it is a clean tuple removal, not drift.
+        let merged = apply_delta(retained, &[tag_row("e", "w")], vec![tag_row("e", "y")]);
+        assert_eq!(
+            merged,
+            vec![tag_row("e", "x"), tag_row("e", "z"), tag_row("e", "w")],
+            "a multi-valued entity keeps its untouched tuples; only the \
+             superseded tuple is replaced"
+        );
     }
 
     /// `forward_with` stamps the display host's OWN `with` onto routing

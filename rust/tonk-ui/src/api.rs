@@ -1,5 +1,4 @@
 use dialog_remote_ucan_s3::UcanAddress;
-use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker::{
@@ -45,7 +44,8 @@ where
 /// Returns the page origin (`http://host:port`). Used by API
 /// helpers to build absolute URLs against the worker's routes.
 pub fn origin() -> String {
-    window()
+    web_sys::window()
+        .expect("Could not access window")
         .location()
         .origin()
         .expect("Could not read window location")
@@ -59,7 +59,7 @@ pub fn origin() -> String {
 /// rendering a "not found" view through the normal value path.
 pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiError> {
     tonk_host::ready::wait().await;
-    log!("Fetching repository '{}'...", name);
+    tonk_common::log!("Fetching repository '{}'...", name);
 
     let response = reqwest::Client::new()
         .get(format!("{}/api/repository/{}", origin(), name))
@@ -92,7 +92,7 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
 /// endpoint instead of `/api/repository/{name}`.
 pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError> {
     tonk_host::ready::wait().await;
-    log!("Fetching profile repository...");
+    tonk_common::log!("Fetching profile repository...");
     let response = reqwest::Client::new()
         .get(format!("{}/api/profile/repository", origin()))
         .send()
@@ -135,7 +135,7 @@ pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError>
 /// the default branch to track `origin/{branch}`.
 pub async fn init() -> Result<String, TonkUiError> {
     tonk_host::ready::wait().await;
-    log!("Ensuring the profile has at least one space...");
+    tonk_common::log!("Ensuring the profile has at least one space...");
 
     let response = reqwest::Client::new()
         .get(format!("{}/api/profile", origin()))
@@ -172,14 +172,14 @@ pub async fn init() -> Result<String, TonkUiError> {
     // Profile already has a space → nothing to create. The user lands on
     // the Hub and picks one.
     if !profile.space.is_empty() {
-        log!(
+        tonk_common::log!(
             "Profile already has {} space(s); skipping default create",
             profile.space.len()
         );
         return Ok(client_id);
     }
 
-    log!(
+    tonk_common::log!(
         "Profile has no spaces; creating the default '{}'",
         DEFAULT_REPO
     );
@@ -390,8 +390,8 @@ pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError>
 /// Full sync (pull then push) of a branch against its upstream.
 ///
 /// `POST /api/repository/{repo}/branch/{branch}/sync`. Used by the
-/// background [`crate::sync_controller`] so a tick reconciles a
-/// branch in both directions in one round-trip.
+/// background sync controller so a tick reconciles a branch in both
+/// directions in one round-trip.
 pub async fn sync(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
     sync_op(repo, branch, "").await
 }
@@ -426,7 +426,7 @@ pub async fn sync_status(repo: &str, branch: &str) -> Result<SyncStatusResponse,
 /// directional routes, or `""` for the combined `/sync` route.
 async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
     tonk_host::ready::wait().await;
-    log!("Sync ({}) repo='{}' branch='{}'", op, repo, branch);
+    tonk_common::log!("Sync ({}) repo='{}' branch='{}'", op, repo, branch);
     // `op` is a directional suffix (`/pull`, `/push`); the combined
     // sync route is the bare `/sync` path, so an empty `op` drops
     // the trailing segment entirely.
@@ -488,14 +488,11 @@ impl From<TonkUiError> for JoinError {
 /// existing name is returned and `name` is ignored.
 ///
 /// On success the worker registers (or reuses) the replica in the
-/// profile meta branch and broadcasts on `/api/profile`, so the
-/// shared [`ProfileResource`] picks up any new tile without an
-/// explicit refetch.
-///
-/// [`ProfileResource`]: crate::components::ProfileResource
+/// profile meta branch and broadcasts on `/api/profile`, so any
+/// subscriber picks up the new tile without an explicit refetch.
 pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
     tonk_host::ready::wait().await;
-    log!("Joining invite...");
+    tonk_common::log!("Joining invite...");
 
     let body = JoinRequest {
         url: url.to_string(),
@@ -529,7 +526,7 @@ pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
 /// Fetches the current user's identity (DID) from the service worker.
 pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
     tonk_host::ready::wait().await;
-    log!("Fetching identity...");
+    tonk_common::log!("Fetching identity...");
 
     let response = reqwest::Client::new()
         .get(format!("{}/api/identify", origin()))

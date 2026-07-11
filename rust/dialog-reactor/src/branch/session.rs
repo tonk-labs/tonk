@@ -5,9 +5,9 @@
 //! name-keyed lookup. The dialog [`Branch`] handle is exposed
 //! via [`Self::handle`] for direct dialog API use.
 
+use std::future::Future;
 use std::sync::Arc;
 
-use dialog_artifacts::Changes;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
 
@@ -38,23 +38,12 @@ impl BranchSession {
         self.state.transactor()
     }
 
-    /// A clone of this branch's session overlay, to fold into a read
-    /// query via [`QueryLayer::with`](dialog_repository::QueryLayer).
-    pub fn overlay(&self) -> Changes {
-        self.state.overlay()
-    }
-
-    /// The inverse of this branch's overlay — retracts every overlay
-    /// fact. Integrate before a commit so a read that folded the overlay
-    /// in does not persist the ephemeral facts. See
-    /// [`BranchState::overlay_retraction`](crate::BranchState::overlay_retraction).
-    pub fn overlay_retraction(&self) -> Changes {
-        self.state.overlay_retraction()
-    }
-
     /// Re-poll every subscription on this branch.
-    pub async fn poll<Env: SelectProvider>(&self, env: &Env) {
-        self.state.poll(env).await;
+    ///
+    /// `impl Future + 'a` (not `async fn`) so the env lifetime stays
+    /// named — see [`SubscriptionPoll::perform`](crate::SubscriptionPoll).
+    pub fn poll<'a, Env: SelectProvider>(&'a self, env: &'a Env) -> impl Future<Output = ()> + 'a {
+        self.state.poll(env)
     }
 
     /// Register a fresh subscriber for `query`. Returns a

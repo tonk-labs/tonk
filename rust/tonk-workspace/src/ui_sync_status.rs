@@ -52,6 +52,7 @@ type ResetClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 pub(crate) struct UiSyncStatus {
     subscription: Rc<RefCell<Option<Subscription>>>,
     reset: Rc<RefCell<Option<ResetClosure>>>,
+    update: Rc<RefCell<Option<ResetClosure>>>,
     error: Rc<RefCell<Option<ResetClosure>>>,
 }
 
@@ -83,6 +84,19 @@ impl CustomElement for UiSyncStatus {
             }));
         let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
         *self.reset.borrow_mut() = Some(reset);
+
+        // Install the per-instance `update` delegate: with incremental
+        // subscriptions the initial frame is a `reset` (snapshot) but every
+        // subsequent status change arrives as an `update` (delta). Without
+        // this the disc would render the first status and never move —
+        // paused/idle/offline transitions were silently dropped.
+        let host = this.clone();
+        let update: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                on_delta(&host, payload);
+            }));
+        let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
+        *self.update.borrow_mut() = Some(update);
 
         // A transport error on the subscription means the worker is gone
         // (stopped, updating, network down): paint the hollow offline ring
@@ -131,6 +145,7 @@ impl CustomElement for UiSyncStatus {
         // Dropping the subscription cancels the upstream host subscription.
         self.subscription.borrow_mut().take();
         self.reset.borrow_mut().take();
+        self.update.borrow_mut().take();
         self.error.borrow_mut().take();
     }
 }
@@ -169,6 +184,30 @@ fn on_frame(host: &HtmlElement, payload: JsValue) {
     let status = (!first.is_undefined() && !first.is_null())
         .then(|| {
             Reflect::get(&first, &"fields".into())
+                .ok()
+                .and_then(|fields| Reflect::get(&fields, &"status".into()).ok())
+                .and_then(|s| s.as_string())
+        })
+        .flatten();
+    if let Some(status) = status {
+        paint(host, &status);
+    }
+}
+
+/// Handle an incremental `update` frame: `{ asserted, retracted }`. The status
+/// is cardinality-one on the `state:here` singleton, so a change supersedes the
+/// prior value — the newest `asserted` row carries the current status. Retracts
+/// alone (no asserted) leave the disc where it is: the SW always stamps a fresh
+/// status, so a bare retract is a transient gap, and clearing would flicker
+/// (same rationale as an empty `reset` frame).
+fn on_delta(host: &HtmlElement, payload: JsValue) {
+    let asserted = Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+    let rows = js_sys::Array::from(&asserted);
+    // Cardinality-one: at most one asserted row, carrying the new status.
+    let last = rows.get(rows.length().saturating_sub(1));
+    let status = (!last.is_undefined() && !last.is_null())
+        .then(|| {
+            Reflect::get(&last, &"fields".into())
                 .ok()
                 .and_then(|fields| Reflect::get(&fields, &"status".into()).ok())
                 .and_then(|s| s.as_string())
@@ -254,6 +293,11 @@ fn install_reset_shim() {
         "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
     );
     let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let update_fn = js_sys::Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
     let error_fn = js_sys::Function::new_with_args(
         "payload, opts",
         "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",

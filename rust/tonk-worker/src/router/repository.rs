@@ -3705,7 +3705,6 @@ mod tests {
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
-            .with(session.overlay())
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
                 did: Term::var("did"),
@@ -4154,7 +4153,6 @@ mod tests {
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
-            .with(session.overlay())
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
                 did: Term::var("did"),

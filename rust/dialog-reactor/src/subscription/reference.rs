@@ -11,13 +11,11 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use dialog_common::Blake3Hash;
 use dialog_common::log;
-use dialog_query::Output as _;
 
 use crate::BranchState;
-use crate::Conclusion;
 use crate::env::SelectProvider;
+use crate::{Conclusion, Frame};
 
 use super::state::{QueryHash, Status};
 
@@ -53,71 +51,161 @@ pub struct SubscriptionPoll<'a> {
 }
 
 impl SubscriptionPoll<'_> {
-    /// Re-evaluate the subscription, decide who receives the
-    /// bytes (Pending vs Established), update `last_hash`,
-    /// drop dead subscribers, drop the subscription if empty.
-    pub async fn perform<Env: SelectProvider>(self, env: &Env) {
-        // Snapshot the query out of the lock so we can run it
-        // without holding the subscription mutex across await.
-        let query = {
+    /// Poll the subscription's dialog engine, then broadcast.
+    ///
+    /// The engine ([`dialog_repository::Subscription`]) is
+    /// demand-gated: its [`poll`](dialog_repository::Subscription::poll)
+    /// returns `None` when nothing inside the query's demand cover
+    /// changed — no query runs, nothing broadcasts (the win). A
+    /// change yields a [`Delta`](dialog_repository::Delta) of
+    /// asserted / retracted rows.
+    ///
+    /// Two delivery cases per subscriber:
+    /// - **Pending** (just attached, or reconnected): gets a
+    ///   [`Frame::Snapshot`] built from the engine's retained
+    ///   `results()`, so it needs no prior state. Delivered even when
+    ///   the poll itself found no change.
+    /// - **Established**: gets a [`Frame::Delta`] whenever the poll
+    ///   reports one.
+    ///
+    /// Locking dance: the engine's `poll` takes `&mut self` and
+    /// awaits, so it can't run under the branch's synchronous
+    /// subscription-map lock. We clone the `Arc<Engine>` (and the
+    /// projection terms) out under the map lock, await the engine
+    /// under its own async lock, then re-lock the map only to fan
+    /// bytes out.
+    pub async fn perform<'a, Env: SelectProvider>(self, env: &'a Env)
+    where
+        Self: 'a,
+    {
+        // Snapshot what we need out of the map lock: the engine
+        // handle, the projection terms, and whether any subscriber is
+        // Pending (needs a full snapshot rather than a delta).
+        let (slot, terms, any_pending) = {
             let subs = self.state.subscriptions().lock();
             let Some(subscription) = subs.get(&self.hash) else {
                 return;
             };
-            subscription.query.clone()
+            let any_pending = subscription
+                .subscribers
+                .iter()
+                .any(|s| s.status == Status::Pending);
+            (
+                Arc::clone(&subscription.engine),
+                subscription.terms.clone(),
+                any_pending,
+            )
         };
 
-        let terms = query.terms.clone();
-        // Fold in the session overlay so subscribed reads see the same
-        // ephemeral facts a one-shot query does (see `query.rs`).
-        let conclusions = match self
-            .state
-            .branch
-            .query()
-            .with(self.state.overlay())
-            .select(tonk_schema::concept::QueryPlan::from(query))
-            .perform(env)
-            .try_vec()
-            .await
-        {
-            Ok(c) => c,
+        // Take the engine out of its slot so the poll runs without a
+        // guard held across the `await` (see `EngineSlot`). If a
+        // concurrent poll holds the engine, wait for it to finish and
+        // then run — do NOT bail: a subscriber that just attached (and
+        // that the in-flight poll may not have seen when it captured its
+        // `any_pending`) still needs its first snapshot, and bailing here
+        // left it hung with no data forever ("query gets nothing and
+        // gets stuck"). Yielding-and-retrying serves it on the next turn.
+        // Bounded so a long-running in-flight poll (its own network await)
+        // can't make this spin indefinitely; if still contended after the
+        // cap, give up this turn — the in-flight poll's fan-out serves the
+        // subscribers it sees, and any genuinely-missed Pending subscriber
+        // is re-served by the next scheduled poll.
+        const SLOT_RETRY_CAP: u32 = 64;
+        let mut engine = 'acquire: {
+            let mut attempts = 0;
+            loop {
+                {
+                    let mut guard = slot.lock().await;
+                    if let Some(engine) = guard.take() {
+                        break 'acquire engine;
+                    }
+                }
+                attempts += 1;
+                if attempts >= SLOT_RETRY_CAP {
+                    return;
+                }
+                // Slot busy — yield a microtask so the in-flight poll can
+                // put the engine back, then retry acquiring it.
+                yield_once().await;
+            }
+        };
+
+        // The engine gates on both the tree revision and the branch's
+        // overlay epoch, so an overlay write (which doesn't move the
+        // tree) still re-evaluates on this poll — no re-seed here.
+        let poll_result = engine.poll(env).await;
+
+        // Snapshot for Pending subscribers — projected from the
+        // engine's retained results, consistent with the poll we just
+        // ran. Built only when some subscriber needs it.
+        let snapshot_bytes = if any_pending {
+            let conclusions: Vec<Conclusion> = engine
+                .results()
+                .iter()
+                .map(|c| Conclusion::project(c, &terms))
+                .collect();
+            serialize(&Frame::Snapshot { conclusions })
+        } else {
+            None
+        };
+
+        // Put the engine back before handling the poll outcome so the
+        // slot is never left empty on an early return.
+        *slot.lock().await = Some(engine);
+
+        let delta = match poll_result {
+            Ok(delta) => delta,
             Err(err) => {
                 log!("[reactor] subscription poll failed: {err:?}");
                 return;
             }
         };
 
-        let wire: Vec<Conclusion> = conclusions
-            .iter()
-            .map(|c| Conclusion::project(c, &terms))
-            .collect();
-        let bytes = match serde_json::to_vec(&wire) {
-            Ok(b) => Bytes::from(b),
-            Err(err) => {
-                log!("[reactor] failed to serialize conclusions: {err}");
-                return;
-            }
-        };
-        let new_hash = Blake3Hash::hash(&bytes);
+        // Delta for Established subscribers — only when the poll
+        // reported a NON-EMPTY change. An empty delta (asserted and
+        // retracted both empty) is a no-op: a re-evaluation whose
+        // result set didn't move (e.g. an overlay epoch bump that
+        // changed nothing this query reads). Broadcasting it would
+        // repaint every consumer for nothing and, if a re-poll keeps
+        // firing, spin a render loop — so drop it here.
+        let delta_bytes = delta.as_ref().filter(|d| !d.is_empty()).and_then(|delta| {
+            let asserted = delta
+                .asserted
+                .iter()
+                .map(|c| Conclusion::project(c, &terms))
+                .collect();
+            let retracted = delta
+                .retracted
+                .iter()
+                .map(|c| Conclusion::project(c, &terms))
+                .collect();
+            serialize(&Frame::Delta {
+                asserted,
+                retracted,
+            })
+        });
 
+        // Fan out under the map lock.
         let mut subs = self.state.subscriptions().lock();
         let Some(subscription) = subs.get_mut(&self.hash) else {
             return;
         };
 
-        let changed = subscription.last_hash.as_ref() != Some(&new_hash);
-        if changed {
-            subscription.last_hash = Some(new_hash);
-        }
-
-        // Walk subscribers, sending where required, dropping any
-        // whose receiver closed.
         subscription.subscribers.retain_mut(|subscriber| {
-            let needs_send = changed || subscriber.status == Status::Pending;
-            if !needs_send {
+            let bytes = match subscriber.status {
+                // A fresh (or reconnected) subscriber needs the full
+                // set, not a delta it has no base for.
+                Status::Pending => snapshot_bytes.clone(),
+                // An established subscriber only hears about changes.
+                Status::Established => delta_bytes.clone(),
+            };
+            let Some(bytes) = bytes else {
+                // Nothing to send this subscriber this round (an
+                // Established subscriber on a no-change poll, or a
+                // frame that failed to serialize) — keep it.
                 return true;
-            }
-            match subscriber.sender.send(bytes.clone()) {
+            };
+            match subscriber.sender.send(bytes) {
                 Ok(()) => {
                     subscriber.status = Status::Established;
                     true
@@ -130,4 +218,41 @@ impl SubscriptionPoll<'_> {
             subs.remove(&self.hash);
         }
     }
+}
+
+/// Serialize a [`Frame`] to wire bytes, logging and dropping on
+/// failure (a serialization error is not worth killing the poll).
+fn serialize(frame: &Frame) -> Option<Bytes> {
+    match serde_json::to_vec(frame) {
+        Ok(bytes) => Some(Bytes::from(bytes)),
+        Err(err) => {
+            log!("[reactor] failed to serialize frame: {err}");
+            None
+        }
+    }
+}
+
+/// Yield control once: return `Pending` a single time (waking immediately),
+/// so the executor can advance another task before this one resumes.
+/// Runtime-agnostic (works on the wasm service worker and native), used to
+/// let an in-flight poll release the engine slot before this poll retries.
+async fn yield_once() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct YieldOnce(bool);
+    impl Future for YieldOnce {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+    YieldOnce(false).await
 }

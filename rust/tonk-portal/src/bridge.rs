@@ -166,7 +166,7 @@ impl PortalState {
 /// Posting to `"*"` is unavoidable from a null origin; the parent
 /// authenticates by `event.source`, not `event.origin`.
 const BOOTSTRAP_JS: &str = r#"(function(){
-  var nextId=0, pending=new Map(), streams=new Map();
+  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map();
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
@@ -202,10 +202,28 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       });
     });
   }
+  // In-flight de-duplication for one-shot queries. Many <tonk-display>
+  // elements resolve the SAME concept descriptor (phase-1) or bookmark name
+  // on one page load — e.g. three displays of `tonk:repository` each fire an
+  // identical `dialog.meta/*` query. Coalesce identical concurrent queries
+  // onto one request keyed by (route + body); every caller shares the single
+  // promise. Purely in-flight (cleared when it settles), so no staleness —
+  // just fewer round-trips. A subscription is never deduped here (it's a
+  // long-lived stream), only the fire-and-forget `query`.
+  var inflightQ=new Map();
+  function dedupQuery(env){
+    var key;
+    try{ key=JSON.stringify(env); }catch(e){ return call("query",env); }
+    var hit=inflightQ.get(key);
+    if(hit) return hit;
+    var p=call("query",env).finally(function(){ inflightQ.delete(key); });
+    inflightQ.set(key,p);
+    return p;
+  }
   var tonk={
     context:{this:"",model:""},
     ready:ready,
-    query:function(body,ctx){return call("query",withRoute({body:body},ctx));},
+    query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
     transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
     // {document, transact}; the parent relays it to the installed host's
@@ -242,7 +260,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
                      function(err){streams.delete(id);controller.error(err);});
         },
         cancel:function(){
-          streams.delete(id);
+          streams.delete(id);subRows.delete(id);
           port.postMessage({v:1,type:"unsubscribe",id:id});
         }
       });
@@ -311,10 +329,45 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       }
       case "subscribe-event": {
         var c=streams.get(env.id); if(!c) return;
-        try{c.enqueue(env.rows);}catch(e){streams.delete(env.id);} return;
+        // The guest's window.tonk.subscribe() is documented as a stream of
+        // full Conclusion[] snapshots. The host sends either a full set
+        // (env.rows) or a delta (env.delta = {asserted,retracted}); keep a
+        // retained set per stream and always enqueue the full array so the
+        // author-facing contract is unchanged.
+        try{
+          var prev=subRows.get(env.id)||[];
+          var next;
+          if(env.delta){
+            var rej=env.delta.retracted||[];
+            var add=env.delta.asserted||[];
+            var keyOf=function(r){return JSON.stringify(r);};
+            // Value-equality retract, tracking which retracts found no
+            // matching row (drift) and which `this` the delta asserts.
+            // Mirrors tonk-display's apply_delta: an asserted row for an
+            // entity whose retract didn't match a retained row supersedes
+            // that entity's stale (drifted) rows, so a superseded field
+            // leaves ONE row for the entity, not two that a group-by-`this`
+            // fold would collapse to a stale/multi-valued field. Clean
+            // supersessions, pure retracts, and directory multi-valued
+            // entities (retract matches the changed tuple) are unaffected.
+            var gone={};for(var i=0;i<rej.length;i++){gone[keyOf(rej[i])]=true;}
+            var drifted={};for(var i=0;i<rej.length;i++){drifted[rej[i].this]=true;}
+            var asserts={};for(var i=0;i<add.length;i++){asserts[add[i].this]=true;}
+            next=prev.filter(function(r){
+              if(gone[keyOf(r)]){ delete drifted[r.this]; return false; }
+              return true;
+            }).filter(function(r){
+              return !(drifted[r.this] && asserts[r.this]);
+            }).concat(add);
+          }else{
+            next=env.rows||[];
+          }
+          subRows.set(env.id,next);
+          c.enqueue(next);
+        }catch(e){streams.delete(env.id);subRows.delete(env.id);} return;
       }
       case "subscribe-error": {
-        var c=streams.get(env.id); if(!c) return; streams.delete(env.id);
+        var c=streams.get(env.id); if(!c) return; streams.delete(env.id);subRows.delete(env.id);
         c.error(new Error(env.error)); return;
       }
     }
@@ -1979,6 +2032,33 @@ pub(crate) fn route_reset(state: &Rc<RefCell<PortalState>>, payload: JsValue, op
     set_v1(&env, "subscribe-event");
     let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&iframe_id));
     let _ = Reflect::set(&env, &"rows".into(), &plain);
+    let _ = port.post_message(&env);
+}
+
+/// `update({ asserted, retracted }, { tag })` — an incremental frame.
+///
+/// Relays the delta to the guest as a `subscribe-event` carrying a
+/// `delta` field (rather than `rows`), normalized through JSON so the
+/// wire shape matches `reset`'s rows. The guest stream enqueues the
+/// tagged frame; the guest consumer applies the delta to its retained
+/// set exactly as the top-level `<tonk-display>` does.
+pub(crate) fn route_update(state: &Rc<RefCell<PortalState>>, payload: JsValue, opts: JsValue) {
+    let Some(tag) = read_tag(&opts) else {
+        return;
+    };
+    // Normalize the `{asserted, retracted}` object through JSON so the
+    // nested `fields` are plain objects, not `Map`s, across postMessage.
+    let plain = match js_sys::JSON::stringify(&payload) {
+        Ok(s) => js_sys::JSON::parse(&String::from(s)).unwrap_or(JsValue::NULL),
+        Err(_) => return,
+    };
+    let Some((port, iframe_id)) = lookup_sub(state, &tag) else {
+        return;
+    };
+    let env = Object::new();
+    set_v1(&env, "subscribe-event");
+    let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&iframe_id));
+    let _ = Reflect::set(&env, &"delta".into(), &plain);
     let _ = port.post_message(&env);
 }
 

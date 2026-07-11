@@ -100,9 +100,6 @@ hkdf = "0.12"
 idb = "0.6"
 ipld-core = { version = "0.4", features = ["serde"] }
 keyring = "3.6"
-leptos = "0.8"
-leptos-use = "0.17"
-leptos_router = "0.8"
 lsp-types = "0.97"
 matchit = "0.8"
 saphyr = "0.0.6"
@@ -167,22 +164,31 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-09-2" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-self-negation" }
+
+# NOTE — incremental subscriptions (plan/incremental-subscriptions.md): the
+# dialog deps above are pinned to the `feat/inductive-self-negation` BRANCH (not
+# the `tonk-2026-07-09` tag) — the dialog stack that adds incremental
+# subscriptions, the branch-scoped session overlay, and native Send-generality on
+# top of the inductive-rule self-negation fix. Rebased onto upstream main, so it
+# also carries blob storage (#372), the cache-lock fix (#373), the push no-op
+# guard (#386), and the retract-no-tombstone-without-prior fix (#387). Swap back
+# to a tag once this dialog stack lands upstream (not in scope).
 
 [profile.dev]
 opt-level = 1

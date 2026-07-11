@@ -1,12 +1,53 @@
 //! [`Subscription`] — one per `(branch, query)` pair, shared by
 //! every subscriber that opened that query against that branch.
+//!
+//! The evaluation engine is dialog's demand-gated
+//! [`dialog_repository::Subscription`]: each poll returns `None`
+//! when nothing inside the query's demand cover changed (no query
+//! work), or a [`Delta`](dialog_repository::Delta) of asserted /
+//! retracted rows after an incremental maintenance or a recompute.
+//! This crate wraps that engine with the fan-out to SSE subscribers.
 
-use bytes::Bytes;
+use std::sync::Arc;
+
 use dialog_common::Blake3Hash;
 use dialog_query::ConceptQuery;
+use dialog_query::Parameters;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::Query;
+use bytes::Bytes;
+
+/// The dialog engine backing one reactor subscription.
+///
+/// The subscribed application is a [`QueryPlan`](tonk_schema::concept::QueryPlan),
+/// NOT a raw `ConceptQuery`: `QueryPlan::from` dispatches concept-of-concept /
+/// command / rule metadata queries to the anonymous-enumeration applications that
+/// surface those built-in rows. Subscribing with the raw `ConceptQuery` would run
+/// a metadata query as a plain branch scan over `dialog.meta/*` facts that don't
+/// exist as stored data, yielding an empty result (the "Model not found" on a
+/// `<tonk-display model=…>` whose one-shot query — which does route through
+/// `QueryPlan` — resolves fine).
+pub type Engine = dialog_repository::Subscription<tonk_schema::concept::QueryPlan>;
+
+/// The engine slot: an `Option` behind an async mutex.
+///
+/// The poll takes the engine *out* (leaving `None`), releases the
+/// lock, awaits [`poll`](dialog_repository::Subscription::poll), then
+/// puts it back. It is deliberately **not** held as a guard across
+/// the engine's `await`: a `tokio::sync::MutexGuard` borrowed across
+/// the generic, higher-ranked `poll(env).await` collapses rustc's
+/// Send-generality inference and makes every downstream axum handler
+/// future non-`Send` on the native build. Taking the value out sheds
+/// the guard before the await, so the future stays `Send`-general.
+///
+/// The lock still serializes take/put, so two polls of the same
+/// subscription can't both hold the engine. A poll that finds the
+/// slot already emptied (a concurrent poll has it) simply returns —
+/// the in-flight poll covers the same or a newer revision, and poll
+/// scheduling coalesces, so nothing is lost.
+pub type EngineSlot = Arc<AsyncMutex<Option<Engine>>>;
 
 /// Identity of a subscription within one branch — blake3 over a
 /// deterministic serialization of the [`ConceptQuery`]. Wraps
@@ -34,13 +75,15 @@ impl From<&ConceptQuery> for QueryHash {
 }
 
 /// Per-subscriber state — has the subscriber received the
-/// subscription's current `last_hash` yet?
+/// subscription's current snapshot yet?
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
-    /// Just attached — hasn't received the current snapshot yet.
+    /// Just attached — hasn't received a snapshot yet. The next
+    /// poll sends it a full [`Frame::Snapshot`](crate::Frame),
+    /// not a delta, so it needs no prior retained state.
     Pending,
-    /// Has received bytes whose hash matches the subscription's
-    /// `last_hash`.
+    /// Has received the initial snapshot; subsequent polls send
+    /// deltas.
     Established,
 }
 
@@ -53,21 +96,31 @@ pub enum Status {
 pub struct SubscriberSession {
     /// Sender into the subscriber's mpsc channel.
     pub sender: UnboundedSender<Bytes>,
-    /// Whether the subscriber has received the current
-    /// `last_hash` yet.
+    /// Whether the subscriber has received its initial snapshot.
     pub status: Status,
 }
 
 /// One subscription, shared by every subscriber that opened the
-/// same query against the same branch. The branch handle isn't
-/// carried here — the poll path already has access via the
-/// parent `BranchState`.
+/// same query against the same branch.
+///
+/// The [`Engine`] (dialog's incremental subscription) sits in its own
+/// [`EngineSlot`] behind an async mutex, not under the branch's
+/// subscription-map lock: [`poll`](dialog_repository::Subscription::poll)
+/// takes `&mut self` and awaits, so the map's synchronous `parking_lot`
+/// lock must be released before the poll. The poll path clones the
+/// `EngineSlot` handle out under the map lock, takes the engine out of
+/// the slot to run it, then re-locks the map only to fan bytes out to
+/// subscribers.
 pub struct Subscription {
-    /// The query to re-run on every poll.
-    pub query: ConceptQuery,
-    /// Hash of the most recent serialization of the result.
-    /// `None` until the first poll completes.
-    pub last_hash: Option<Blake3Hash>,
+    /// Dialog's demand-gated evaluation engine, in a take-out slot so
+    /// the poll runs it without a guard held across the `await` (see
+    /// [`EngineSlot`]).
+    pub engine: EngineSlot,
+    /// The query's term bindings, retained for
+    /// [`Conclusion::project`](tonk_schema::conclusion::Conclusion::project)
+    /// — the delta / snapshot rows are `ConceptConclusion`s that
+    /// project to the wire `Conclusion` through these terms.
+    pub terms: Parameters,
     /// Open downstream channels with their delivery status.
     pub subscribers: Vec<SubscriberSession>,
 }

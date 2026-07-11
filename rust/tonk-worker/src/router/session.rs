@@ -274,9 +274,13 @@ async fn stamp_site_on(
     };
 
     let Some(replica) = origin_entity(tonk, &state).await else {
+        tonk_common::log!(
+            "[stamp] {site} SKIPPED: no origin_entity (repo={repo} branch={branch_name} rest={rest})"
+        );
         return;
     };
     let Some(matched) = match_route(tonk, &state, rest).await else {
+        tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
         return;
     };
 
@@ -327,6 +331,8 @@ async fn stamp_site_on(
     }
     if let Err(e) = overlay.write().perform(&tonk.operator).await {
         tonk_common::log!("register_site: overlay write failed for {path}: {e}");
+    } else {
+        tonk_common::log!("[stamp] {site} WROTE path={path}");
     }
 }
 

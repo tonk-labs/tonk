@@ -18,11 +18,9 @@
 //!   `CustomEvent("tonk:analytics", { bubbles: true, composed: true,
 //!   detail: { name, props } })` without depending on this crate.
 
-// Not `leptos::task::spawn_local`: `install()` runs from the ui
-// binary's `main`, where no Leptos global executor is initialized
-// (the shell mounts custom elements, not Leptos components), and
-// any_spawner panics on an uninitialized executor. The wasm-bindgen
-// executor needs no initialization.
+// The wasm-bindgen executor needs no initialization: `install()` runs from
+// the ui binary's `main`, which mounts custom elements rather than starting a
+// framework runtime, so there is no global executor to spawn onto.
 use wasm_bindgen_futures::spawn_local;
 
 use wasm_bindgen::JsCast;

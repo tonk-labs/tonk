@@ -354,6 +354,16 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         let tonk = state.read().await;
         if !is_sync_enabled(&tonk, repo, "main").await {
             log!("background sync of '{repo}' skipped: paused");
+            // Re-stamp `sync:paused` on the way out. The status lives in the
+            // SW's in-memory overlay and is lost on reload / worker restart;
+            // the durable `enabled=false` preference survives, but without
+            // this the chip's `state:here` subscription comes back empty
+            // (the sweep is the only thing that stamps status, and a paused
+            // replica took the early return before ever stamping) — so a
+            // paused space rendered as un-paused after every reload. The chip
+            // reads `state:here` on the content branch (`main`);
+            // `publish_paused_status` asserts the overlay and drains the poll.
+            publish_paused_status(&tonk, repo, "main").await;
             return Ok(());
         }
     }
@@ -1063,7 +1073,6 @@ mod overlay_tests {
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
-            .with(session.overlay())
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
                 did: Term::var("did"),

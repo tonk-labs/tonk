@@ -148,6 +148,17 @@ pub async fn evaluate(
         && let Some(revision) = &response.revision_after
         && response.revision_before.as_ref() != Some(revision)
     {
+        // The commit scheduled a subscription poll; drain it so
+        // subscribers see the change as an incremental delta. Without
+        // this, a committing `/evaluate` leaves the delta uncomputed —
+        // the branch broadcast below still fires, so UIs reconnect and
+        // re-render a STALE snapshot instead of applying the new value
+        // (mirrors the drain `/transact` does after its commit).
+        tonk_state
+            .reactor
+            .run_scheduled_polls(&tonk_state.operator)
+            .await;
+
         broadcast(
             &format!("/api/repository/{}/branch/{}", path.repo, path.branch),
             &Notification {
@@ -194,6 +205,13 @@ pub async fn evaluate_profile(
         && let Some(revision) = &response.revision_after
         && response.revision_before.as_ref() != Some(revision)
     {
+        // Drain the poll the commit scheduled so subscribers get the
+        // incremental delta (see the note in [`evaluate`]).
+        tonk_state
+            .reactor
+            .run_scheduled_polls(&tonk_state.operator)
+            .await;
+
         broadcast(
             crate::broadcast::LOCAL_COMMIT_CHANNEL,
             &Notification {
@@ -240,13 +258,14 @@ async fn evaluate_on_branch<'a>(
     // `transact`) is what keeps the read paths consistent; the overlay
     // is read-only and gets `induce`-swept on commit (below) so it never
     // lands durably.
-    let overlay = session.overlay();
-    // The evaluation's match queries (`txn.query()` inside the
-    // evaluator) resolve stored `db.rule/*` rules automatically — rule
-    // resolution is built into the branch query's layer stack, so the
-    // inspector's dry-run preview shows the same deductions a committed
-    // `query` / `subscribe` returns.
-    let txn = branch.transaction().integrate(overlay.clone());
+    // The branch folds its session overlay into every read — the
+    // transaction's as-if-committed view included — so the dry-run
+    // preview sees the same ephemeral facts a `query`/`subscribe` does
+    // with no explicit integrate here, and they never reach the durable
+    // write (the overlay is session-only). The evaluation's match queries
+    // resolve stored `db.rule/*` rules automatically via the branch
+    // query's layer stack.
+    let txn = branch.transaction();
 
     let t_eval = web_time::Instant::now();
     let evaluated = syntax
@@ -273,14 +292,11 @@ async fn evaluate_on_branch<'a>(
     // statement is the single commit signal.
     let response = if query.transact && evaluated.analysis.analysis.has_statements() {
         let t_commit = web_time::Instant::now();
-        // Sweep the overlay before the durable write: the transaction
-        // folded the session overlay in for reads, but those ephemeral
-        // facts (e.g. an invite seed) must never persist. Retracting them
-        // here cancels the integrated asserts so only the document's own
-        // statements land.
+        // The session overlay is folded in for reads but is never part of
+        // the durable write (dialog keeps it session-only), so the commit
+        // lands only the document's own statements — no overlay sweep here.
         let revision_after = evaluated
             .txn
-            .integrate(session.overlay_retraction())
             .commit()
             .perform(&tonk_state.operator)
             .await

@@ -7,8 +7,9 @@
 //!   the handler writes a `Promise` into `detail.result`.
 //! - `tonk-subscribe` — streaming; the handler opens the SSE,
 //!   inserts a registry entry, writes a subscription handle
-//!   into `detail.subscription`, and delivers per-frame data
-//!   via `consumer.reset(...)` method calls.
+//!   into `detail.subscription`, and delivers each frame via
+//!   `consumer.reset(...)` (a `Snapshot`) or `consumer.update(...)`
+//!   (a `Delta`) by the frame's `kind` (see `deliver_frame`).
 //! - `tonk-unsubscribe` — drops all registry entries owned by
 //!   the dispatching consumer.
 //!
@@ -506,7 +507,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 // result by property access (`conclusion.fields.status`).
                 // `serde_wasm_bindgen` would serialize the `fields` map as a
                 // JS `Map`, whose entries `Reflect::get` cannot see.
-                let conclusions_js = match js_sys::JSON::parse(frame) {
+                let frame_js = match js_sys::JSON::parse(frame) {
                     Ok(v) => v,
                     Err(e) => {
                         invoke_method(
@@ -521,12 +522,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                         return;
                     }
                 };
-                invoke_method(
-                    &consumer_frame,
-                    "reset",
-                    &conclusions_js,
-                    tag_frame.as_ref(),
-                );
+                deliver_frame(&consumer_frame, &frame_js, tag_frame.as_ref(), false);
             },
             move |err: ErrorDetail| {
                 if consumer_err.is_connected() {
@@ -729,7 +725,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
                 return;
             }
             // `JSON.parse` for plain objects — see the subscribe handler.
-            let conclusions_js = match js_sys::JSON::parse(frame) {
+            let frame_js = match js_sys::JSON::parse(frame) {
                 Ok(v) => v,
                 Err(e) => {
                     invoke_method(
@@ -744,10 +740,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
                     return;
                 }
             };
-            invoke_method_marked(
+            deliver_frame(
                 &consumer_frame,
-                "reset",
-                &conclusions_js,
+                &frame_js,
                 tag_frame.as_ref(),
                 first_frame.replace(false),
             );
@@ -797,6 +792,41 @@ fn handle_unsubscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 /// payload + an `{ tag }` opts object.
 fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Option<&JsValue>) {
     invoke_method_marked(consumer, method, payload, tag, false);
+}
+
+/// Route one parsed subscription frame to the consumer's `reset` /
+/// `update` method by its `kind`.
+///
+/// The reactor emits a tagged `Frame` (`tonk_schema::conclusion::Frame`):
+/// - `{"kind":"snapshot","conclusions":[…]}` → `reset(conclusions, opts)`
+///   — the full current set, for a first frame or a reconnect.
+/// - `{"kind":"delta","asserted":[…],"retracted":[…]}` →
+///   `update({asserted, retracted}, opts)` — the change since the last
+///   frame, applied to the consumer's retained set.
+///
+/// Backward-compatible: a frame with no `kind` (a bare `[…]` array, the
+/// pre-delta wire) is delivered as a `reset` unchanged, so a consumer or
+/// worker that hasn't cut over still works.
+fn deliver_frame(consumer: &Element, frame_js: &JsValue, tag: Option<&JsValue>, reconnect: bool) {
+    let kind = Reflect::get(frame_js, &JsValue::from_str("kind"))
+        .ok()
+        .and_then(|v| v.as_string());
+    match kind.as_deref() {
+        Some("snapshot") => {
+            let conclusions = Reflect::get(frame_js, &JsValue::from_str("conclusions"))
+                .unwrap_or(JsValue::UNDEFINED);
+            invoke_method_marked(consumer, "reset", &conclusions, tag, reconnect);
+        }
+        Some("delta") => {
+            // Hand the consumer the `{asserted, retracted}` object as-is;
+            // it applies both to its retained set keyed by conclusion
+            // identity. A delta is never a reconnect's first frame — that
+            // is always a snapshot — so the marker is not forwarded.
+            invoke_method(consumer, "update", frame_js, tag);
+        }
+        // No `kind`: legacy bare-array frame → treat as a full snapshot.
+        _ => invoke_method_marked(consumer, "reset", frame_js, tag, reconnect),
+    }
 }
 
 /// Like [`invoke_method`], with a `reconnect` marker on the opts: `true`
@@ -877,4 +907,260 @@ fn handle_evaluate(ev: &CustomEvent) {
         }
     });
     let _ = Reflect::set(&detail, &JsValue::from_str("result"), &promise);
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use js_sys::Array;
+    use wasm_bindgen::prelude::Closure;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    use web_sys::window;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A fake consumer element whose `reset`/`update`/`error` methods each
+    /// push a `{ method, payload, opts }` record into a shared JS array the
+    /// test reads back. The closures are kept alive by the returned struct
+    /// so they outlive the `deliver_frame` call.
+    struct FakeConsumer {
+        element: Element,
+        calls: Array,
+        _closures: Vec<Closure<dyn FnMut(JsValue, JsValue)>>,
+    }
+
+    impl FakeConsumer {
+        fn new() -> FakeConsumer {
+            let element = window()
+                .expect("window")
+                .document()
+                .expect("document")
+                .create_element("tonk-fake-consumer")
+                .expect("create_element");
+
+            let calls = Array::new();
+            let mut closures = Vec::new();
+            for method in ["reset", "update", "error"] {
+                let calls_for_method = calls.clone();
+                let method_name = method.to_owned();
+                let closure = Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                    let record = Object::new();
+                    let _ = Reflect::set(
+                        &record,
+                        &JsValue::from_str("method"),
+                        &JsValue::from_str(&method_name),
+                    );
+                    let _ = Reflect::set(&record, &JsValue::from_str("payload"), &payload);
+                    let _ = Reflect::set(&record, &JsValue::from_str("opts"), &opts);
+                    calls_for_method.push(&record);
+                }) as Box<dyn FnMut(JsValue, JsValue)>);
+                let _ = Reflect::set(
+                    &element,
+                    &JsValue::from_str(method),
+                    closure.as_ref().unchecked_ref(),
+                );
+                closures.push(closure);
+            }
+
+            FakeConsumer {
+                element,
+                calls,
+                _closures: closures,
+            }
+        }
+
+        /// Number of recorded method calls.
+        fn len(&self) -> u32 {
+            self.calls.length()
+        }
+
+        /// The recorded call at `index` as `{ method, payload, opts }`.
+        fn call(&self, index: u32) -> Object {
+            self.calls.get(index).dyn_into::<Object>().expect("record")
+        }
+    }
+
+    fn field(object: &Object, key: &str) -> JsValue {
+        Reflect::get(object, &JsValue::from_str(key)).expect("field")
+    }
+
+    fn method_of(record: &Object) -> String {
+        field(record, "method").as_string().expect("method string")
+    }
+
+    fn opts_of(record: &Object) -> Object {
+        field(record, "opts")
+            .dyn_into::<Object>()
+            .expect("opts object")
+    }
+
+    fn payload_of(record: &Object) -> JsValue {
+        field(record, "payload")
+    }
+
+    /// Build a `{ kind: "snapshot", conclusions }` frame with `conclusions`
+    /// as a JS array (its contents are irrelevant to routing).
+    fn snapshot_frame() -> JsValue {
+        let frame = Object::new();
+        let _ = Reflect::set(
+            &frame,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str("snapshot"),
+        );
+        let conclusions = Array::new();
+        conclusions.push(&JsValue::from_str("c0"));
+        let _ = Reflect::set(&frame, &JsValue::from_str("conclusions"), &conclusions);
+        frame.into()
+    }
+
+    /// Build a `{ kind: "delta", asserted, retracted }` frame.
+    fn delta_frame() -> JsValue {
+        let frame = Object::new();
+        let _ = Reflect::set(
+            &frame,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str("delta"),
+        );
+        let _ = Reflect::set(&frame, &JsValue::from_str("asserted"), &Array::new());
+        let _ = Reflect::set(&frame, &JsValue::from_str("retracted"), &Array::new());
+        frame.into()
+    }
+
+    /// Build a bare `[…]` array frame (the pre-delta, kind-less wire).
+    fn bare_array_frame() -> JsValue {
+        let frame = Array::new();
+        frame.push(&JsValue::from_str("c0"));
+        frame.into()
+    }
+
+    /// A snapshot frame routes to `reset` with the tag forwarded on opts.
+    #[dialog_common::test]
+    async fn it_routes_a_snapshot_frame_to_reset_with_the_tag() {
+        let consumer = FakeConsumer::new();
+        let tag = JsValue::from_str("tonk:sheet");
+
+        deliver_frame(&consumer.element, &snapshot_frame(), Some(&tag), false);
+
+        assert_eq!(consumer.len(), 1, "exactly one method call");
+        let record = consumer.call(0);
+        assert_eq!(method_of(&record), "reset", "snapshot must route to reset");
+
+        let opts = opts_of(&record);
+        assert_eq!(
+            field(&opts, "tag"),
+            tag,
+            "the tag must be forwarded on the reset opts"
+        );
+
+        // The payload is the frame's `conclusions`, not the whole frame.
+        let payload = payload_of(&record)
+            .dyn_into::<Array>()
+            .expect("conclusions array");
+        assert_eq!(payload.length(), 1, "reset receives the conclusions array");
+    }
+
+    /// A delta frame routes to `update` with the tag and NO reconnect marker.
+    #[dialog_common::test]
+    async fn it_routes_a_delta_frame_to_update_with_the_tag_and_no_reconnect() {
+        let consumer = FakeConsumer::new();
+        let tag = JsValue::from_str("tonk:sheet");
+
+        // Even with reconnect=true, a delta must never carry the marker.
+        deliver_frame(&consumer.element, &delta_frame(), Some(&tag), true);
+
+        assert_eq!(consumer.len(), 1, "exactly one method call");
+        let record = consumer.call(0);
+        assert_eq!(method_of(&record), "update", "delta must route to update");
+
+        let opts = opts_of(&record);
+        assert_eq!(
+            field(&opts, "tag"),
+            tag,
+            "the tag must be forwarded on the update opts"
+        );
+        assert!(
+            field(&opts, "reconnect").is_undefined(),
+            "a delta must never carry a reconnect marker"
+        );
+    }
+
+    /// A bare-array (kind-less) frame routes to `reset` (legacy wire).
+    #[dialog_common::test]
+    async fn it_routes_a_bare_array_frame_to_reset() {
+        let consumer = FakeConsumer::new();
+        let tag = JsValue::from_str("tonk:sheet");
+
+        deliver_frame(&consumer.element, &bare_array_frame(), Some(&tag), false);
+
+        assert_eq!(consumer.len(), 1, "exactly one method call");
+        let record = consumer.call(0);
+        assert_eq!(
+            method_of(&record),
+            "reset",
+            "a kind-less bare-array frame must route to reset"
+        );
+
+        // The whole array is handed through unchanged as the reset payload.
+        let payload = payload_of(&record)
+            .dyn_into::<Array>()
+            .expect("array payload");
+        assert_eq!(payload.length(), 1, "the bare array is the reset payload");
+    }
+
+    /// Each tag is forwarded verbatim, so a frame carrying the model tag can
+    /// never land in the view or entity retained bucket. We deliver three
+    /// frames on the same consumer, one per tag, and assert each recorded
+    /// opts.tag matches the tag it was dispatched with.
+    #[dialog_common::test]
+    async fn it_forwards_the_tag_to_the_matching_retained_bucket() {
+        let consumer = FakeConsumer::new();
+
+        for tag_name in ["model", "view", "entity"] {
+            let tag = JsValue::from_str(tag_name);
+            deliver_frame(&consumer.element, &snapshot_frame(), Some(&tag), false);
+        }
+
+        assert_eq!(consumer.len(), 3, "three frames, three calls");
+        for (index, tag_name) in ["model", "view", "entity"].iter().enumerate() {
+            let record = consumer.call(index as u32);
+            let opts = opts_of(&record);
+            assert_eq!(
+                field(&opts, "tag"),
+                JsValue::from_str(tag_name),
+                "frame {index} must carry its own tag, not another bucket's"
+            );
+        }
+    }
+
+    /// A reconnect snapshot is marked `reconnect: true`; the very next delta
+    /// on the same consumer is not. Guards the invariant that only a
+    /// snapshot ever flags the first post-reconnect frame.
+    #[dialog_common::test]
+    async fn it_marks_a_reconnect_snapshot_but_never_a_delta() {
+        let consumer = FakeConsumer::new();
+        let tag = JsValue::from_str("tonk:sheet");
+
+        // First: the reconnect snapshot.
+        deliver_frame(&consumer.element, &snapshot_frame(), Some(&tag), true);
+        // Then: a following delta (also flagged reconnect at the call site,
+        // which `deliver_frame` must ignore for deltas).
+        deliver_frame(&consumer.element, &delta_frame(), Some(&tag), true);
+
+        assert_eq!(consumer.len(), 2, "snapshot then delta");
+
+        let snapshot = consumer.call(0);
+        assert_eq!(method_of(&snapshot), "reset");
+        assert_eq!(
+            field(&opts_of(&snapshot), "reconnect"),
+            JsValue::TRUE,
+            "a reconnect snapshot must be marked reconnect:true"
+        );
+
+        let delta = consumer.call(1);
+        assert_eq!(method_of(&delta), "update");
+        assert!(
+            field(&opts_of(&delta), "reconnect").is_undefined(),
+            "a delta must never be marked reconnect, even on reconnect"
+        );
+    }
 }

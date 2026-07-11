@@ -6,10 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dialog_artifacts::{Changes, Statement};
+use dialog_artifacts::Statement;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use crate::env::SelectProvider;
@@ -29,19 +29,6 @@ pub struct BranchState {
     pub branch: Branch,
     /// Subscriptions on this branch, keyed by query hash.
     subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
-    /// In-memory session overlay — ephemeral facts folded into every
-    /// read query (one-shot and subscription poll) via
-    /// [`QueryLayer::with`](dialog_repository::QueryLayer), but never
-    /// written to the branch tree and never replicated. Holds secrets
-    /// that must stay out of storage (e.g. an invite's private seed):
-    /// readable by the UI's display query, invisible to the
-    /// transaction/commit path (dialog's transaction query is
-    /// non-composable), and lost on branch eviction.
-    ///
-    /// `RwLock`, not `Mutex`: every read query takes the shared lock to
-    /// clone the overlay in, so reads must not serialize against each
-    /// other; only the rare overlay write takes the exclusive lock.
-    overlay: RwLock<Changes>,
     /// Serializes *transactions* on this branch — concurrent writers (e.g.
     /// two browser tabs committing through one service worker) line up rather
     /// than racing the head CAS and failing. Guards nothing but the right to be
@@ -64,7 +51,6 @@ impl BranchState {
         Self {
             branch,
             subscriptions: Mutex::new(HashMap::new()),
-            overlay: RwLock::new(Changes::new()),
             transactor: tokio::sync::Mutex::new(()),
         }
     }
@@ -77,53 +63,29 @@ impl BranchState {
         &self.transactor
     }
 
-    /// A clone of the current session overlay, to fold into a read query
-    /// via [`QueryLayer::with`](dialog_repository::QueryLayer). Taken
-    /// under the shared read lock so concurrent reads don't serialize.
-    pub fn overlay(&self) -> Changes {
-        self.overlay.read().clone()
-    }
-
-    /// The inverse of the current overlay: a [`Changes`] that retracts
-    /// every fact the overlay asserts. Integrate this into a transaction
-    /// *before* committing so an evaluation that folded the overlay in for
-    /// reads does not carry the ephemeral facts (e.g. an invite seed) into
-    /// the durable write. Asserts/replaces become retracts; existing
-    /// retracts are dropped (nothing to undo).
-    pub fn overlay_retraction(&self) -> Changes {
-        use dialog_artifacts::{Change, Update};
-        let overlay = self.overlay.read();
-        let mut inverse = Changes::new();
-        for (entity, attribute, change) in overlay.iter() {
-            if let Change::Assert(value) | Change::Replace(value) = change {
-                inverse.dissociate(attribute.clone(), entity.clone(), value.clone());
-            }
-        }
-        inverse
-    }
-
-    /// Assert a [`Statement`] into the session overlay. A cardinality-one
-    /// re-assert overwrites the prior value in place, so "keep exactly
-    /// one live fact" needs no separate retract. Takes the exclusive
-    /// write lock.
+    /// Assert a [`Statement`] into the branch's session overlay —
+    /// ephemeral facts folded into every read of the branch (queries,
+    /// transaction views, and standing subscriptions) but never
+    /// committed. Delegates to [`Branch::overlay`]: dialog owns the
+    /// overlay now, folds it in at the single `QueryLayer::from(&Branch)`
+    /// point, and bumps an epoch so the branch's subscriptions re-evaluate
+    /// on their next poll. A cardinality-one re-assert overwrites in place.
     pub fn assert_overlay<S: Statement>(&self, claim: S) {
-        let mut overlay = self.overlay.write();
-        claim.assert(&mut *overlay);
+        self.branch.overlay().assert(claim);
     }
 
-    /// Retract a [`Statement`] from the session overlay. Takes the
-    /// exclusive write lock.
+    /// Retract a [`Statement`] from the branch's session overlay.
     pub fn retract_overlay<S: Statement>(&self, claim: S) {
-        let mut overlay = self.overlay.write();
-        claim.retract(&mut *overlay);
+        self.branch.overlay().retract(claim);
     }
 
-    /// Drop every fact in the session overlay. Used to keep exactly one
-    /// live entry across keys that differ between writes (e.g. each
-    /// invitation is keyed by a fresh membership DID, so a cardinality-one
-    /// re-assert wouldn't replace the prior one — clearing does).
+    /// Drop every fact in the branch's session overlay. Used to keep
+    /// exactly one live entry across keys that differ between writes (e.g.
+    /// each invitation is keyed by a fresh membership DID, so a
+    /// cardinality-one re-assert wouldn't replace the prior one — clearing
+    /// does).
     pub fn clear_overlay(&self) {
-        *self.overlay.write() = Changes::new();
+        self.branch.overlay().clear();
     }
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]
@@ -184,11 +146,20 @@ impl BranchState {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
 
+        let terms = query.terms.clone();
+
         let mut subs = self.subscriptions.lock();
         let entry = subs.entry(hash.clone());
+        // Route through `QueryPlan::from` (the same projection the one-shot
+        // `QueryEffect` applies) so a concept-of-concept / command / rule
+        // metadata query dispatches to its anonymous-enumeration application
+        // instead of scanning for `dialog.meta/*` facts that aren't stored.
+        // The branch folds its own session overlay into every read, so the
+        // subscription sees ephemeral facts with no extra wiring here.
+        let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            query: query.clone(),
-            last_hash: None,
+            engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
+            terms,
             subscribers: Vec::new(),
         });
         subscription.subscribers.push(SubscriberSession {
@@ -204,7 +175,7 @@ impl BranchState {
     /// fan out to subscribers. Each subscription is polled via
     /// the same `SubscriptionPoll::perform` path the public
     /// chain uses.
-    pub async fn poll<Env: SelectProvider>(self: &Arc<Self>, env: &Env) {
+    pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
         let hashes: Vec<QueryHash> = {
             let subs = self.subscriptions.lock();
             subs.keys().cloned().collect()
