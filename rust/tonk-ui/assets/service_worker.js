@@ -30,18 +30,17 @@ self.oninstall = event => {
     // `skipWaiting()` while the worker is in `waiting`, and at
     // top-level eval time the lifecycle hasn't reached install yet.
     //
-    // Precache the shell under `/index.html` so offline deep-link
-    // navigations have a fallback. `serveNavigation` caches each
-    // shell under the visited URL (e.g. `/`), so a route never
-    // visited online has no cache entry; its `/index.html` fallback
-    // would then only hit after a network fetch — which fails
-    // offline. Seeding the key here guarantees a first-visit-online
-    // install populates the shell every offline navigation falls
-    // back to.
+    // Precache the shell under `/` — the origin serves the shell
+    // HTML there (200), whereas `/index.html` is a 307 redirect to
+    // `/`. `cache.add` refuses to store a redirect, so seeding
+    // `/index.html` silently fails and every reload then serves a
+    // dead key. `serveNavigation` reads and writes the same `/`
+    // key, so a first-visit-online install populates the shell
+    // every later navigation falls back to.
     event.waitUntil((async () => {
         try {
             const cache = await caches.open(SHELL_CACHE);
-            await cache.add("/index.html");
+            await cache.add("/");
         } catch (err) {
             log("Shell precache failed:", err);
         }
@@ -112,22 +111,25 @@ self.addEventListener("online", onConnectivityChange);
 
 // Serve the precached app shell for every route navigation. The
 // SPA router resolves the actual path client-side, so there's
-// nothing URL-specific to serve — just hand back `/index.html`
-// from the cache, which means a navigation never waits on the
-// network (a network-first shell blocked slow loads on a full
-// round-trip even though the shell was already on disk).
+// nothing URL-specific to serve — just hand back the shell from
+// the cache, which means a navigation never waits on the network
+// (a network-first shell blocked slow loads on a full round-trip
+// even though the shell was already on disk).
 //
-// The shell is seeded by `oninstall` and re-seeded on every new
-// worker install, so a deploy refreshes it. The rare miss (first
-// visit racing the install, or a purged cache) fetches it once.
+// Keyed on `/`, where the origin serves the shell HTML (200).
+// `/index.html` is a 307 redirect to `/`, so it can't be cached
+// or served as the shell. The shell is seeded by `oninstall` and
+// re-seeded on every new worker install, so a deploy refreshes
+// it. The rare miss (first visit racing the install, or a purged
+// cache) fetches it once.
 async function serveNavigation() {
     const cache = await caches.open(SHELL_CACHE);
-    const cached = await cache.match("/index.html");
+    const cached = await cache.match("/");
     if (cached) return cached;
 
-    const response = await fetch("/index.html");
+    const response = await fetch("/");
     if (response.ok && response.type !== "opaque") {
-        cache.put("/index.html", response.clone()).catch(() => {});
+        cache.put("/", response.clone()).catch(() => {});
     }
     return response;
 }
