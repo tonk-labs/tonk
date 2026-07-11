@@ -3039,11 +3039,23 @@ employee:
         serde_json::from_str(json_text).expect("snapshot is JSON")
     }
 
-    /// Open an SSE subscription, read the first event, and return
-    /// the parsed snapshot. Drops the body afterwards.
+    /// Open an SSE subscription, read the first event (a
+    /// `{kind:"snapshot", conclusions:[…]}` frame), and return its
+    /// `conclusions` array — the same bare-array shape the one-shot
+    /// `/query` route returns, so the two are directly comparable.
+    /// Drops the body afterwards.
     async fn subscribe_first_event(app: &Router, repo: &str, branch: &str) -> serde_json::Value {
         let mut body = open_subscription(app, repo, branch).await;
-        read_sse_frame(&mut body).await
+        let frame = read_sse_frame(&mut body).await;
+        assert_eq!(
+            frame.get("kind").and_then(|k| k.as_str()),
+            Some("snapshot"),
+            "first SSE frame is a snapshot: {frame}"
+        );
+        frame
+            .get("conclusions")
+            .cloned()
+            .expect("snapshot frame carries a conclusions array")
     }
 
     /// One-shot `/query` returns the current matches as a JSON
