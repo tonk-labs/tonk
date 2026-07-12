@@ -6,6 +6,8 @@
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use wasm_bindgen_futures::spawn_local;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
@@ -23,14 +25,12 @@ async fn main() {
     // `route!` table decides what to render.
     tonk_portal::register_site();
 
-    // Ensure the default repository + profile exist before routing.
-    let _ = tonk_ui::api::init().await;
-
-    // Install the host AFTER init: init awaits service-worker readiness, so
-    // everything the host wires up runs against a controlling SW. Nothing
-    // dispatches consumer events before `mount_root` below, so the late
-    // install loses no operations. (Sync cadence is SW-owned — the page
-    // runs no heartbeat.)
+    // Install the host IO surface and mount `<tonk-site>` right away —
+    // first paint no longer waits on any data round-trip. Every `/api/*`
+    // fetch the host issues self-gates on service-worker readiness
+    // (`tonk_host::ready::wait`, memoized), so mounting before the SW is
+    // controlling loses nothing: the site's own routing fetches block
+    // themselves until the worker is up.
     tonk_host::install();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
@@ -39,6 +39,17 @@ async fn main() {
     inject_hot_swap();
 
     mount_root();
+
+    // Ensure the profile has at least one space, off the critical path.
+    // `init` awaits SW readiness then a `GET /api/profile` (a ~1.6s
+    // first-touch main-branch transact) and, on a fresh profile, a space
+    // create — none of which the first paint needs. The Hub renders its
+    // space directory through a LIVE `<tonk-display>` subscription, so a
+    // space created here populates it reactively with no reload. The
+    // returned client id is unused, so the result is discarded.
+    spawn_local(async {
+        let _ = tonk_ui::api::init().await;
+    });
 }
 
 /// Mount the single `<tonk-site>` root into `<body>` — the top-level router.
