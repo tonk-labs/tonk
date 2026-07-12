@@ -506,6 +506,68 @@ mod route_for_tests {
         );
         s.end_drain();
     }
+
+    #[dialog_common::test]
+    fn it_defers_a_drain_while_a_page_is_loading() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        // A data-plane request is in flight (a page booting): even the latest
+        // ticket at its debounce edge must NOT drain — sync yields the thread.
+        let _guard = s.enter_loading(0.0);
+        assert!(
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            "an in-flight data-plane request defers the drain",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_drains_once_the_load_settles() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        {
+            let _guard = s.enter_loading(0.0);
+            assert!(!s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+        }
+        // Guard dropped — the request completed, so the drain proceeds.
+        assert!(
+            s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            "the drain runs once the in-flight request completes",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_stops_deferring_past_the_load_cap() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        // A request that never completes (held guard) must not defer sync
+        // forever: past SYNC_LOAD_DEFER_MS from its start, the drain proceeds.
+        let _guard = s.enter_loading(0.0);
+        assert!(
+            !s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64 - 1.0),
+            "within the cap, an in-flight request still defers",
+        );
+        assert!(
+            s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64),
+            "past the cap, a stuck request no longer defers the drain",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_counts_concurrent_loads() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        let g1 = s.enter_loading(0.0);
+        let g2 = s.enter_loading(0.0);
+        drop(g1);
+        // One of two concurrent requests finished; the other still defers
+        // (e.g. a second tab still booting).
+        assert!(
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            "a drain waits while any data-plane request is still in flight",
+        );
+        drop(g2);
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+    }
 }
 
 /// Trailing-edge debounce coordinator for the background sync drain, with a
@@ -532,6 +594,16 @@ mod route_for_tests {
 struct SyncScheduler {
     generation: std::rc::Rc<std::cell::Cell<u64>>,
     in_flight: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Count of outstanding data-plane (`/api/*`) requests. A sync drain
+    /// competes with these for the single SW thread and the reactor's branch
+    /// locks, so it holds off while any are in flight — a page actively loading
+    /// (this tab or another) finishes its boot before sync does network work.
+    /// Bounded by [`SYNC_LOAD_DEFER_MS`] so a hung request can't defer sync
+    /// forever.
+    loading: std::rc::Rc<std::cell::Cell<u32>>,
+    /// Wall-clock ms of the last data-plane request start, used with `loading`
+    /// to cap how long an in-flight request may defer a drain.
+    last_request_at: std::rc::Rc<std::cell::Cell<f64>>,
     /// Wall-clock ms when the current un-drained burst began, or `None` when the
     /// last drain cleared it. The max-wait cap measures from here.
     pending_since: std::rc::Rc<std::cell::Cell<Option<f64>>>,
@@ -557,12 +629,37 @@ impl SyncScheduler {
         next
     }
 
+    /// Mark a data-plane (`/api/*`) request as started — a drain defers while
+    /// any are outstanding. Returns a guard that decrements on drop, so the
+    /// count is released on any request outcome (success, error, or panic).
+    fn enter_loading(&self, now: f64) -> LoadingGuard {
+        self.loading.set(self.loading.get().saturating_add(1));
+        self.last_request_at.set(now);
+        LoadingGuard {
+            loading: self.loading.clone(),
+        }
+    }
+
+    /// Whether a page is actively loading: at least one data-plane request is
+    /// in flight AND the most recent one started within [`SYNC_LOAD_DEFER_MS`].
+    /// The time bound caps how long a single stuck request can defer sync — past
+    /// it, the drain proceeds even with the counter non-zero.
+    fn is_loading(&self, now: f64) -> bool {
+        self.loading.get() > 0 && now - self.last_request_at.get() < SYNC_LOAD_DEFER_MS as f64
+    }
+
     /// Whether a woken ticket should drain now. True when no drain is already
-    /// running AND either the ticket is still the latest (normal trailing edge)
-    /// or the current burst has been pending past [`SYNC_MAX_WAIT_MS`] (the cap,
-    /// so continuous traffic can't starve the drain).
+    /// running AND no page is actively loading AND either the ticket is still
+    /// the latest (normal trailing edge) or the current burst has been pending
+    /// past [`SYNC_MAX_WAIT_MS`] (the cap, so continuous traffic can't starve
+    /// the drain).
     fn should_drain(&self, ticket: u64, now: f64) -> bool {
         if self.in_flight.get() {
+            return false;
+        }
+        // Yield to an actively-loading page — a boot burst (this tab or another)
+        // finishes before sync competes for the SW thread and branch locks.
+        if self.is_loading(now) {
             return false;
         }
         let is_latest = self.generation.get() == ticket;
@@ -599,6 +696,28 @@ impl SyncScheduler {
         self.cause.borrow_mut().take()
     }
 }
+
+/// Decrements the scheduler's in-flight data-plane count on drop, so a request
+/// releases its "loading" hold on the sync drain regardless of how it finishes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+struct LoadingGuard {
+    loading: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl Drop for LoadingGuard {
+    fn drop(&mut self) {
+        self.loading.set(self.loading.get().saturating_sub(1));
+    }
+}
+
+/// How long an in-flight data-plane request may defer the sync drain. Past this,
+/// a stuck or slow request no longer holds sync off — the drain proceeds even
+/// with requests still counted as in flight. Comfortably longer than a normal
+/// page load (sub-500ms measured) so a real boot always completes first, but
+/// short enough that a genuinely hung request doesn't stall sync for long.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_LOAD_DEFER_MS: i32 = 2_000;
 
 /// Quiet window before a request's scheduled sync drain fires. A burst of boot
 /// queries collapses into one drain at the trailing edge. Kept short so a
@@ -831,7 +950,21 @@ impl TonkServiceWorker {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         self.ensure_sync_loop();
 
+        // Count data-plane (`/api/*`) requests as in-flight for the duration of
+        // this fetch: they contend with the sync drain for the SW thread and the
+        // reactor's branch locks, so the drain holds off while any are running.
+        // A page actively booting (this tab or another) thus finishes before
+        // sync does network work. Static-asset fetches don't count — they never
+        // touch the reactor. The guard rides into the future below and drops when
+        // the request completes.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let loading_guard = path
+            .starts_with("/api/")
+            .then(|| self.sync_scheduler.enter_loading(js_sys::Date::now()));
+
         future_to_promise(async move {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            let _loading_guard = loading_guard;
             // Opportunistic cleanup of stale bridge sessions and view
             // bindings. Cheap enough to run on every fetch.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
