@@ -609,7 +609,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             let href = format!("/space/{key}", key = outcome.key);
-            notify_navigate(env.client(), &href);
+            crate::router::navigate::notify_navigate(env.client(), &href);
             log!(
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
@@ -678,74 +678,6 @@ async fn pull_joined_content(tonk: &TonkState, key: &str) {
     }
 }
 
-/// Post a `{ type: "navigate", href }` message to the originating client so
-/// it redirects there. This is how a worker-side command performs a page
-/// capability: the service worker has no `window`, and the command is
-/// transient (it never lands in a branch a subscription could observe), so
-/// the originating client is the only path back to the page that asked.
-///
-/// No-ops (with a log) when the client is unknown or its handle can't be
-/// resolved — the join still succeeded; only the convenience redirect is
-/// lost, and the recipient can navigate from the Hub.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::{JsFuture, spawn_local};
-
-    let Some(client) = client else {
-        log!("join: no originating client to navigate; skipping redirect");
-        return;
-    };
-    let client_id = client.0.clone();
-    let href = href.to_owned();
-
-    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
-        Ok(g) => g,
-        Err(_) => {
-            log!("join: not in a service worker scope; skipping redirect");
-            return;
-        }
-    };
-
-    // `clients.get(id)` resolves the live `Client` handle; post the message
-    // on it. Done on a spawned task so the caller isn't blocked on the
-    // round-trip (the navigate is fire-and-forget).
-    spawn_local(async move {
-        let client_value = match JsFuture::from(global.clients().get(&client_id)).await {
-            Ok(value) if !value.is_undefined() && !value.is_null() => value,
-            Ok(_) => {
-                log!("join: originating client {client_id} is gone; skipping redirect");
-                return;
-            }
-            Err(e) => {
-                log!("join: clients.get failed: {e:?}");
-                return;
-            }
-        };
-        let Ok(client) = client_value.dyn_into::<web_sys::Client>() else {
-            log!("join: clients.get did not yield a Client; skipping redirect");
-            return;
-        };
-
-        // `{ type: "navigate", href }` — the page's `<tonk-host>` listens
-        // for `navigate` messages and assigns `window.location`.
-        let message = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(
-            &message,
-            &JsValue::from_str("type"),
-            &JsValue::from_str("navigate"),
-        );
-        let _ = js_sys::Reflect::set(
-            &message,
-            &JsValue::from_str("href"),
-            &JsValue::from_str(&href),
-        );
-        if let Err(e) = client.post_message(&message) {
-            log!("join: post_message(navigate) failed: {e:?}");
-        }
-    });
-}
-
 /// Post a `{ type: "sync" }` message to the originating client so it
 /// dispatches a `tonk:committed` window event, prompting the sync
 /// controller to push immediately instead of waiting for the heartbeat.
@@ -753,6 +685,8 @@ fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
 /// Mirrors [`notify_navigate`] exactly — fire-and-forget on a spawned
 /// task, no `TonkState` access, so the caller's held read lock is
 /// irrelevant.
+///
+/// [`notify_navigate`]: crate::router::navigate::notify_navigate
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
     use wasm_bindgen::{JsCast, JsValue};

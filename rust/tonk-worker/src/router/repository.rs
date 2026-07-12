@@ -321,6 +321,115 @@ fn template_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
+/// The default display label for a space created without a user-typed
+/// name. The create forms carry it in a hidden `name` input (the wizard
+/// no longer asks for a name up front); the handler uniquifies it
+/// against the existing space labels via [`next_untitled_label`], and
+/// the user renames the spot later (the FAB's inline editable /
+/// `tonk/rename-repository`).
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const UNTITLED: &str = "Untitled";
+
+/// Pick the first free untitled label: `Untitled`, then `Untitled 2`,
+/// `Untitled 3`, … — the smallest ordinal no existing label already
+/// uses. Only exact `Untitled` / `Untitled <n>` labels count as taken;
+/// anything else (user-typed names, key fallbacks) is ignored.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn next_untitled_label<I>(existing: I) -> String
+where
+    I: IntoIterator<Item = String>,
+{
+    let taken: std::collections::HashSet<u64> = existing
+        .into_iter()
+        .filter_map(|label| {
+            let label = label.trim();
+            if label == UNTITLED {
+                return Some(1);
+            }
+            label
+                .strip_prefix(UNTITLED)
+                .and_then(|rest| rest.strip_prefix(' '))
+                .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                .filter(|ordinal| *ordinal >= 2)
+        })
+        .collect();
+    let mut ordinal = 1;
+    while taken.contains(&ordinal) {
+        ordinal += 1;
+    }
+    if ordinal == 1 {
+        UNTITLED.to_string()
+    } else {
+        format!("{UNTITLED} {ordinal}")
+    }
+}
+
+/// The display labels of every space the profile owns, read from each
+/// repository's own `tonk/repository` concept (the same source the Hub
+/// renders). Used by the create handler to uniquify the untitled label.
+///
+/// Best-effort: a replica whose repo can't be loaded is skipped (its
+/// [`repository_label`] key fallback wouldn't match the untitled
+/// pattern anyway), so a single broken space never blocks a create.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn existing_space_labels(state: &AppState) -> Vec<String> {
+    use tonk_schema::domain::replica::Profile as ProfileEntity;
+
+    let tonk = state.read().await;
+    let profile_entity = tonk.profile.did().this();
+
+    let meta = match tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(meta) => meta,
+        Err(e) => {
+            log!("existing_space_labels: profile meta acquire failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let rows: Vec<Replica> = meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            profile: Term::from(ProfileEntity(profile_entity.clone())),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    let mut labels = Vec::new();
+    for replica in rows {
+        // The profile's self-replica is not a space.
+        if replica.subject.0 == profile_entity {
+            continue;
+        }
+        let Ok(did) = replica.subject.0.to_string().parse::<Did>() else {
+            continue;
+        };
+        let key = did.repo_key().to_owned();
+        match tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(repository) => labels.push(repository_label(&tonk, &repository, &key).await),
+            Err(e) => log!("existing_space_labels: repository '{key}' not loadable: {e}"),
+        }
+    }
+    labels
+}
+
 /// Command handler for the "New space" form (`space/create`) and the
 /// topbar's "Enable sync" form (`space/enable-sync`).
 ///
@@ -338,7 +447,13 @@ fn template_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 /// the same handler serves both forms: the Hub "New space" form and the
 /// topbar "Enable sync" form — both post the same `name`(+`remote`)
 /// shape, and the handler keys on the shared `name` attribute. The
-/// user-typed `name` is only a display label; two spaces may share it. A
+/// `name` is only a display label; two spaces may share it. The create
+/// wizard doesn't ask for one — its hidden input carries the
+/// [`UNTITLED`] sentinel, which the handler uniquifies against the
+/// existing space labels ([`next_untitled_label`]) so consecutive
+/// creates read "Untitled", "Untitled 2", …. Once the space is created
+/// and seeded, the handler posts a `navigate` message back to the
+/// originating client so the creator lands inside the new spot. A
 /// remote/auth failure leaves a working local space, retryable from the
 /// topbar.
 ///
@@ -403,6 +518,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             let Some(name) = name else {
                 return;
             };
+
+            // The create wizard no longer asks for a name: its hidden
+            // `name` input carries the `Untitled` sentinel (a blank name
+            // from an older form gets the same treatment). Uniquify it
+            // against the existing space labels so consecutive creates
+            // read "Untitled", "Untitled 2", … — the user renames later.
+            let name = if name.trim().is_empty() || name.trim() == UNTITLED {
+                next_untitled_label(existing_space_labels(env.state()).await)
+            } else {
+                name
+            };
             log!("command CreateSpace name={} remote={:?}", name, remote);
 
             // 1. Always create local-only first, so the space appears
@@ -417,7 +543,16 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
                 }
             };
 
-            // 2. If the form carried a remote, attach it best-effort to
+            // 2. The space is created and seeded — drop the creator into
+            //    it. Same page-capability channel as the join redirect: a
+            //    `{ type: "navigate", href }` posted to the originating
+            //    client. Fired before the remote attach so the navigation
+            //    doesn't wait on the network; the attach continues in the
+            //    worker regardless.
+            let href = format!("/space/{key}");
+            crate::router::navigate::notify_navigate(env.client(), &href);
+
+            // 3. If the form carried a remote, attach it best-effort to
             //    the identity just created. A failure here just leaves it
             //    local-only — retryable from the topbar's Enable sync.
             //    (`remote_from_facts` already dropped empty/blank URLs.)
@@ -3262,6 +3397,77 @@ mod template_from_facts_tests {
             .is("   ".to_string())
             .assert(&mut changes);
         assert!(template_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
+/// The pure untitled-label picker the create handler uses. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod next_untitled_label_tests {
+    use super::next_untitled_label;
+
+    fn labels(labels: &[&str]) -> Vec<String> {
+        labels.iter().map(|label| label.to_string()).collect()
+    }
+
+    #[test]
+    fn it_starts_at_bare_untitled() {
+        assert_eq!(next_untitled_label(labels(&[])), "Untitled");
+    }
+
+    #[test]
+    fn it_ignores_named_spaces() {
+        assert_eq!(
+            next_untitled_label(labels(&["pictures", "notes"])),
+            "Untitled",
+        );
+    }
+
+    #[test]
+    fn it_numbers_from_two_after_the_bare_label() {
+        assert_eq!(
+            next_untitled_label(labels(&["Untitled", "pictures"])),
+            "Untitled 2",
+        );
+    }
+
+    #[test]
+    fn it_fills_the_smallest_gap() {
+        assert_eq!(
+            next_untitled_label(labels(&["Untitled", "Untitled 3"])),
+            "Untitled 2",
+        );
+        assert_eq!(
+            next_untitled_label(labels(&["Untitled 2", "Untitled 3"])),
+            "Untitled",
+        );
+    }
+
+    #[test]
+    fn it_counts_past_a_dense_run() {
+        assert_eq!(
+            next_untitled_label(labels(&["Untitled", "Untitled 2", "Untitled 3"])),
+            "Untitled 4",
+        );
+    }
+
+    #[test]
+    fn it_ignores_near_misses() {
+        // Prefixes without the ` <n>` shape, or with a non-ordinal
+        // suffix, are user-typed names — not part of the sequence.
+        assert_eq!(
+            next_untitled_label(labels(&[
+                "Untitled draft",
+                "Untitled2",
+                "Untitled 0",
+                "untitled",
+            ])),
+            "Untitled",
+        );
+    }
+
+    #[test]
+    fn it_trims_surrounding_whitespace() {
+        assert_eq!(next_untitled_label(labels(&["  Untitled  "])), "Untitled 2");
     }
 }
 
