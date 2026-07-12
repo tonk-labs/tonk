@@ -59,6 +59,10 @@ pub struct CreateSpace {
     /// worker from the predicate + payload).
     pub this: Entity,
     /// Local name for the new space, read from the form's `name` input.
+    /// The create wizard supplies it from a hidden input carrying the
+    /// `Untitled` sentinel (the user no longer types a name up front);
+    /// the worker's handler uniquifies that to "Untitled N" against the
+    /// existing space labels, and the user renames later.
     pub name: SpaceName,
 }
 

@@ -76,6 +76,8 @@ pub use host::{ClientId, ViewBinding, ViewBindings};
 
 mod migration;
 
+mod navigate;
+
 mod command;
 pub use command::{CommandEnv, CommandOrigin, command_registry, dispatch};
 

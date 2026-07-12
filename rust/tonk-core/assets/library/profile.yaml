@@ -61,8 +61,9 @@ concept!: &space
 # The Add Space command. Submitting the Hub's form asserts this
 # transient command; the worker's `create_space` handler decodes it and
 # does the work (record the replica, create + seed the repository, flip
-# the status). `name` reads from the form on submit:
-# `event.currentTarget.elements.name.value` — the `<wa-input name="name">`
+# the status, navigate the creator into the new spot). `name` reads from
+# the form on submit: `event.currentTarget.elements.name.value` — the
+# hidden `<input name="name" value="Untitled">`
 # inside `<form onsubmit=space/create>`. `prevent-default` stops the page
 # from reloading: `method="dialog"` does NOT work here because the form is
 # slotted into `<wa-dialog>` and the native `<dialog>` lives across the
@@ -71,10 +72,18 @@ concept!: &space
 # transient: it fires the handler once and is swept before the durable
 # commit.
 command!: &space/create
-  description: A request to create a new space by the name typed into the form.
+  description: A request to create a new space from the wizard form.
   with:
     name:
-      description: The space name, read from the form's `name` input on submit
+      description: >
+        The space name, read from the form's `name` input on submit. The
+        wizard no longer asks for one: a hidden input carries the
+        "Untitled" sentinel, which the worker's CreateSpaceHandler
+        uniquifies against the existing space labels ("Untitled",
+        "Untitled 2", …); the user renames the spot later. The sentinel
+        must be non-empty — the event extractor omits blank fields, and
+        with no `name` fact the transient would never trigger the
+        handler.
       the: dom.event.current-target.elements.name/value
       as: text
     remote:
@@ -102,6 +111,30 @@ command!: &space/create
         blank.
       the: dom.event.current-target.elements.template/value
       as: text
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
+# The Remove Space command. Submitting a Hub row's delete-confirm form
+# asserts this transient; the worker's `RemoveSpaceHandler` retracts the
+# replica record from this branch, evicts the space from the reactor
+# (stopping background sync), and deletes its local storage. Removal is
+# device-local — a synced spot can be rejoined via an invite link; a
+# local-only spot is gone for good, which the confirm copy states.
+# `subject` reads the form's `data-remove` attribute. Deliberately NOT
+# `data-subject`: `tonk/rename-repository` transients already carry
+# `dataset/subject`, and a remove command matched on that attribute
+# alone would also decode every rename. The distinct attribute doubles
+# as the command's unique shape, so no marker field is needed. The
+# command is transient: it fires the handler once and is swept before
+# the durable commit.
+command!: &space/remove
+  description: A request to remove a space from this device (its list entry and local data).
+  with:
+    subject:
+      description: The subject DID of the space to remove, read from `data-remove`.
+      the: dom.event.current-target.dataset/remove
+      as: entity
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -222,23 +255,58 @@ view/directory!:
         .spot-dir-head { font-family: var(--spot-font-display); font-size: 22px; font-weight: 700;
           letter-spacing: -.5px; color: var(--wa-color-text-normal); padding: 0 0 10px;
           border-bottom: var(--wa-border-width-s) solid var(--wa-color-text-normal); margin-bottom: 8px; }
-        /* One row: sync dot + space name. The wireframe also lists owner /
-           member-count / last-updated columns, but the profile's `space` model
-           carries none of those facts (only subject/kind/status/name), so we
-           show what we actually have rather than mock columns. No "open" label:
-           the whole row is the link. */
+        /* One row: a wrapper holding the link plus the remove affordance
+           and its confirm overlay. The wrapper (not the <a>) is the
+           repeat element, so the x and overlay travel with the row while
+           staying outside the link. */
+        .srow-wrap { position: relative; }
         .srow { display: grid; grid-template-columns: 56px minmax(0,1fr); align-items: stretch;
           background: transparent; text-decoration: none; color: var(--wa-color-text-normal); }
         .srow > span { display: flex; align-items: center; padding: 18px 0; font-size: 15px; white-space: nowrap; }
         .srow-dot { justify-content: center; }
-        .srow-name { padding-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-        .srow:hover { background: var(--wa-color-neutral-fill-quiet); }
-        .srow:hover .srow-open { color: var(--wa-color-brand-on-quiet); }
+        .srow-name { padding-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+          /* keep the name clear of the hover-revealed remove x */
+          padding-right: 44px; }
+        .srow-wrap:hover .srow { background: var(--wa-color-neutral-fill-quiet); }
         /* hide the profile's self-replica row */
-        .srow[data-kind="tonk:profile"] { display: none; }
+        .srow-wrap[data-kind="tonk:profile"] { display: none; }
         /* dim the row while the content branch is still seeding */
-        .srow[data-status="tonk:blank"] .srow-name { opacity: .6; }
+        .srow-wrap[data-status="tonk:blank"] .srow-name { opacity: .6; }
         .spot-untitled { color: var(--wa-color-text-quiet); }
+        /* empty-directory placeholder: visible by default, hidden the
+           moment any real row exists. "Real" excludes the self-replica
+           row, which is present but hidden on some profiles. */
+        .spot-empty { padding: 18px 0; font-size: 15px; color: var(--wa-color-text-quiet); }
+        .spot-list:has(.srow-wrap:not([data-kind="tonk:profile"])) .spot-empty { display: none; }
+
+        /* ── Remove-spot affordance ─────────────────────────────────────
+           A hover-revealed x per row opens a per-row confirm overlay,
+           driven by the same native-radio trick as the create wizard:
+           the row's `__rm` radio shows its overlay; rm-closed (checked
+           by default, re-checked by the form's data-close-radio on
+           submit and by the cancel label) hides them all. The x stays
+           clickable when transparent, so touch works without hover. */
+        .srm-open { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+          display: flex; align-items: center; justify-content: center;
+          width: 30px; height: 30px; cursor: pointer; opacity: 0;
+          color: var(--wa-color-text-quiet); border-radius: var(--wa-border-radius-s); }
+        .srow-wrap:hover .srm-open { opacity: 1; }
+        .srm-open:hover { color: var(--wa-color-danger-on-quiet);
+          background: var(--wa-color-danger-fill-quiet); }
+        .srm-overlay { display: none; position: fixed; inset: 0; z-index: 60;
+          background: var(--wa-color-surface-default); color: var(--wa-color-text-normal); }
+        .srow-wrap > input:checked ~ .srm-overlay { display: flex;
+          align-items: center; justify-content: center; }
+        .srm-card { display: flex; flex-direction: column; align-items: center;
+          gap: 14px; max-width: 480px; padding: 40px; text-align: center; }
+        .srm-title { font-family: var(--spot-font-display); font-weight: 300; font-size: 32px;
+          letter-spacing: -1px; margin: 0; color: var(--wa-color-text-normal);
+          /* opt out of the global heading "headline-cover" dark box */
+          background: none; padding: 0; display: block; }
+        .srm-name { font-size: 17px; font-weight: 600; }
+        .srm-actions { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+        .srm-cancel { cursor: pointer; }
+        .srm-cancel wa-button { pointer-events: none; }
 
         /* ── Create-spot wizard ─────────────────────────────────────────────
            A CSS-paged wizard driven by native radios (the guest WA bundle
@@ -264,8 +332,6 @@ view/directory!:
         .onb-nav--close { right: 20px; }
         .onb-nav--back { left: 20px; }
         .onb-head { text-align: center; max-width: 560px; }
-        .onb-kick { font-family: var(--spot-font-mono); font-size: 11.5px; letter-spacing: .13em;
-          text-transform: uppercase; color: var(--wa-color-text-quiet); margin-bottom: 10px; }
         .onb-head h3 { font-family: var(--spot-font-display); font-weight: 300; font-size: 38px;
           letter-spacing: -1.3px; margin: 0 0 12px; color: var(--wa-color-text-normal);
           /* opt out of the global heading "headline-cover" dark box */
@@ -378,7 +444,18 @@ view/directory!:
           border-bottom: var(--wa-border-width-s) solid var(--wa-color-neutral-fill-normal); }
         .onb-agent-note { display: none; text-align: center; }
         #wiz-agent:checked ~ .spot-overlay .onb-agent-note { display: block; }
+        /* Details-screen heading follows the chosen path (same trick as the
+           note/grid above). `.onb-head .onb-h` (0,2,0) so the hide out-ranks
+           the `.onb-head h3 { display: block }` headline-cover opt-out above;
+           the checked-radio reveals carry an id and out-rank both. */
+        .onb-head .onb-h { display: none; }
+        #wiz-tmpl:checked ~ .spot-overlay .onb-h--tmpl { display: block; }
+        #wiz-agent:checked ~ .spot-overlay .onb-h--agent { display: block; }
         .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
+        /* The submit shouldn't span the whole column — shrink it to its
+           content (the flex column would otherwise stretch it) with a
+           floor for a comfortable hit target. */
+        .onb-fields wa-button { align-self: center; min-width: 220px; }
       </style>
 
       <!-- wizard state radio group: closed by default; each open state is a
@@ -406,29 +483,73 @@ view/directory!:
 
       <div class="spot-list">
         <div class="spot-dir-head">Directory</div>
-        <!-- `data-id={this}` designates the repeat row. Each per-space
-             consumer carries its OWN `with={subject}` — the space's repo
-             DID from the record's `subject` FIELD (`{this}` is the
-             `tonk:space` row, a derived entity that names no repository).
-             The row cannot inherit one context because every row targets a
-             different space, so the disc and the label are each
-             self-describing. A bare repo means its main branch; honored
-             because the profile site is `allow="*"`. -->
-        <a class="srow" href="/space/{subject}" data-kind={kind} data-status={status} data-id={this}>
-          <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
-          <span class="srow-name">
-            <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
-              <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
-              <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
-              <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
-              <span slot="loading" class="spot-untitled" hidden>Untitled</span>
-            </tonk-display>
-          </span>
-        </a>
+        <!-- The remove radios form one `__rm` group with the rows' per-row
+             radios below: rm-closed (chrome, default) hides every confirm;
+             a row's radio opens its overlay, and opening another row's
+             closes the first. The confirm form's data-close-radio re-checks
+             rm-closed on submit; cancel is a plain label for it. -->
+        <!-- tabindex=-1: these radios are visually hidden chrome (the × label
+             and the overlay's own buttons are the interactive path); without
+             it Tab would land on an invisible control that opens a
+             destructive overlay. -->
+        <input class="spot-wiz" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
+        <div class="spot-empty">No spots yet — create one to get started.</div>
+        <!-- `data-id={this}` designates the repeat row — the wrapper (not
+             the <a>), so the remove affordance and confirm overlay repeat
+             with the row while staying outside the link: hovering or
+             clicking the x never navigates. Each per-space consumer
+             carries its OWN `with={subject}` — the space's repo DID from
+             the record's `subject` FIELD (`{this}` is the `tonk:space`
+             row, a derived entity that names no repository). A bare repo
+             means its main branch; honored because the profile site is
+             `allow="*"`. -->
+        <div class="srow-wrap" data-kind={kind} data-status={status} data-id={this}>
+          <input class="spot-wiz" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
+          <a class="srow" href="/space/{subject}">
+            <span class="srow-dot"><ui-sync-status with={subject}></ui-sync-status></span>
+            <span class="srow-name">
+              <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
+                <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
+                <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
+                <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
+                <span slot="loading" class="spot-untitled" hidden>Untitled</span>
+              </tonk-display>
+            </span>
+          </a>
+          <label class="srm-open" for="rm-{subject}" aria-label="Remove spot">
+            <wa-icon name="xmark"></wa-icon>
+          </label>
+          <div class="srm-overlay">
+            <form class="srm-card" onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
+              <h3 class="srm-title">Delete this spot?</h3>
+              <div class="srm-name">
+                <tonk-display with={subject} entity={subject} model=tonk:repository view=tonk:view/label>
+                  <span slot="no-entity" class="spot-untitled" hidden>Untitled</span>
+                  <span slot="no-model" class="spot-untitled" hidden>Untitled</span>
+                  <span slot="no-view" class="spot-untitled" hidden>Untitled</span>
+                  <span slot="loading" class="spot-untitled" hidden>Untitled</span>
+                </tonk-display>
+              </div>
+              <p class="onb-lede">Removes this spot and its local data from this device.
+                A synced spot can be rejoined with an invite link; a local-only spot is gone for good.</p>
+              <div class="srm-actions">
+                <label class="srm-cancel" for="rm-closed">
+                  <wa-button variant="neutral" appearance="plain" size="small">cancel</wa-button>
+                </label>
+                <wa-button type="submit" variant="danger" size="small">delete spot</wa-button>
+              </div>
+            </form>
+          </div>
+        </div>
       </div>
 
       <div class="spot-overlay">
         <form class="onb-overlay-body" onsubmit=space/create data-close-radio="wiz-closed">
+          <!-- No name up front: the hidden sentinel becomes "Untitled" /
+               "Untitled 2" (worker-uniquified); the user renames later.
+               Must be non-empty or the extractor omits the field and the
+               command never fires. -->
+          <input type="hidden" name="name" value="Untitled">
           <input type="hidden" name="remote" value="">
           <tonk-default-remote field="remote" auto></tonk-default-remote>
 
@@ -438,7 +559,6 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
-              <div class="onb-kick">new spot</div>
               <h3>How do you want to start?</h3>
               <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
             </div>
@@ -461,14 +581,17 @@ view/directory!:
                   </div>
                   <div class="onb-card__name">Build with an agent</div>
                   <div class="onb-card__desc">Start blank; hand the spot to an agent from inside it.</div>
-                  <div class="onb-card__cta">name it &rsaquo;</div>
+                  <div class="onb-card__cta">start blank &rsaquo;</div>
                 </wa-card>
               </label>
             </div>
           </div>
 
-          <!-- Screen 2: details — the only submit. Name (required, visible)
-               + template picker (template path) or agent note (agent path). -->
+          <!-- Screen 2: details — the only submit. Template picker
+               (template path) or agent note (agent path); no name field —
+               the spot starts "Untitled" and is renamed in place. The
+               heading follows the path via the same checked-radio sibling
+               selectors that page the screens. -->
           <div class="onb-screen onb-screen--details">
             <label class="onb-nav onb-nav--back" for="wiz-start">
               <wa-button variant="neutral" appearance="plain" size="small">
@@ -479,8 +602,8 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
-              <div class="onb-kick">new spot</div>
-              <h3>Name your spot</h3>
+              <h3 class="onb-h onb-h--tmpl">Pick a template</h3>
+              <h3 class="onb-h onb-h--agent">Build with an agent</h3>
             </div>
             <!-- Template picker. Native radios drive a 3-up grid of card
                  <label>s (reliable side-by-side layout, matching the
@@ -520,7 +643,6 @@ view/directory!:
             </div>
             <p class="onb-agent-note onb-lede">An agent will build this spot from a blank canvas.</p>
             <div class="onb-fields">
-              <wa-input name="name" label="Spot name" placeholder="e.g. pictures" autocomplete="off" required></wa-input>
               <wa-button type="submit" variant="brand">Create spot</wa-button>
             </div>
           </div>
@@ -798,18 +920,34 @@ view/directory!: &profile/fab/view
            `<tonk-default-remote>` resolves the default sync URL on this same
            profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
-      <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog">
+      <!-- `--width` is the wa-dialog sizing hook; the default (~31rem) is
+           too narrow for the 2x2 template grid. -->
+      <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog" style="--width: 40rem">
         <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create data-close-dialog>
           <style>
             /* CSS-paged wizard: a hidden radio per screen drives which
                .wizard__screen shows. The form submits once at the end, so
-               every control (name, template, hidden remote) is in the same form
-               and read via dom.event.current-target.elements.* . */
+               every control (hidden name, template, hidden remote) is in the
+               same form and read via dom.event.current-target.elements.* . */
             .wizard__nav { position: absolute; opacity: 0; pointer-events: none; }
             .wizard__screen { display: none; flex-direction: column; gap: var(--wa-space-m); }
             #wiz-start:checked    ~ .wizard__screen--start    { display: flex; }
             #wiz-template:checked ~ .wizard__screen--template { display: flex; }
             .wizard__cards { display: flex; gap: var(--wa-space-m); }
+            /* Screen 2 holds FOUR template cards. A flex row can't shrink
+               them below their longest word, so it overflowed the dialog
+               edge; a 2x2 grid with minmax(0,1fr) tracks keeps every card
+               inside the dialog at its natural width. Screen 1's two
+               chooser cards stay a flex row. */
+            .wizard__screen--template .wizard__cards {
+              display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            /* Shrink the submit to its content (the screen's flex column
+               would otherwise stretch it full-width), with a floor for a
+               comfortable hit target. */
+            .wizard__screen--template > wa-button[type="submit"] {
+              align-self: center; min-width: 220px;
+            }
             .wizard__card {
               flex: 1; display: block; padding: var(--wa-space-l);
               border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
@@ -875,12 +1013,16 @@ view/directory!: &profile/fab/view
           <input class="wizard__template" type="radio" name="template" value="sheets" id="tpl-sheets">
           <input class="wizard__template" type="radio" name="template" value="wiki" id="tpl-wiki">
           <input class="wizard__template" type="radio" name="template" value="board" id="tpl-board">
+          <!-- No name up front: the hidden sentinel becomes "Untitled" /
+               "Untitled 2" (worker-uniquified); the user renames later.
+               Must be non-empty or the extractor omits the field and the
+               command never fires. -->
+          <input type="hidden" name="name" value="Untitled">
           <input type="hidden" name="remote" value="">
           <tonk-default-remote field="remote" auto></tonk-default-remote>
 
-          <!-- Screen 1: name + how to start -->
+          <!-- Screen 1: how to start -->
           <div class="wizard__screen wizard__screen--start">
-            <wa-input name="name" label="Spot name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
             <div class="wizard__cards">
               <label class="wizard__card" for="wiz-template">
                 <h3>Start from a template</h3>
