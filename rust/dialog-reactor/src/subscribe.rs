@@ -16,26 +16,12 @@ pub struct Subscribe<'a> {
     pub branch: BranchReference<'a>,
     /// The query the subscription re-evaluates on every change.
     pub query: ConceptQuery,
-    /// The client this subscriber serves, when known — see
-    /// [`BranchState::retain_subscribers`](crate::BranchState::retain_subscribers).
-    pub client: Option<String>,
 }
 
 impl<'a> Subscribe<'a> {
     /// Build a new `Subscribe` effect.
     pub fn new(branch: BranchReference<'a>, query: ConceptQuery) -> Self {
-        Self {
-            branch,
-            query,
-            client: None,
-        }
-    }
-
-    /// Tag the subscriber with the client it serves, so the owner
-    /// can prune it once that client is no longer alive.
-    pub fn client(mut self, client: impl Into<String>) -> Self {
-        self.client = Some(client.into());
-        self
+        Self { branch, query }
     }
 
     /// Resolve the branch (opening it if needed), attach a
@@ -46,7 +32,7 @@ impl<'a> Subscribe<'a> {
         Env: LoadProvider + BranchOpenProvider + SelectProvider,
     {
         let session = self.branch.acquire(env).await?;
-        let subscriber = session.subscribe(self.query, self.client)?;
+        let subscriber = session.subscribe(self.query)?;
         session
             .subscription(subscriber.hash.clone())
             .poll()

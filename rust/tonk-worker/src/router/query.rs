@@ -53,10 +53,9 @@ pub async fn query(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
-    let client = request_client(&request);
     let tonk = state.read().await;
     let branch = tonk.reactor.repository(&path.repo).branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    query_on_branch(&tonk, branch, headers, request).await
 }
 
 /// `POST /api/profile/branch/{branch}/query`
@@ -74,22 +73,9 @@ pub async fn query_profile(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
-    let client = request_client(&request);
     let tonk = state.read().await;
     let branch = tonk.reactor.profile_repository().branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
-}
-
-/// The requesting SW client's id, when the fetch handler stamped one.
-/// Tags SSE subscribers so the stale-client sweep can prune the ones
-/// whose page is gone (a dead client's stream may never cancel, so
-/// send-failure pruning alone can't be relied on).
-fn request_client(request: &Request) -> Option<String> {
-    request
-        .extensions()
-        .get::<crate::router::ClientId>()
-        .map(|c| c.0.clone())
-        .filter(|id| !id.is_empty())
+    query_on_branch(&tonk, branch, headers, request).await
 }
 
 /// Shared body for [`query`] and [`query_profile`]. Takes a
@@ -100,7 +86,6 @@ async fn query_on_branch<'a>(
     branch: crate::reactor::BranchReference<'a>,
     headers: HeaderMap,
     request: Request,
-    client: Option<String>,
 ) -> Result<Response, TonkWorkerError> {
     let bytes = request
         .into_body()
@@ -171,11 +156,8 @@ async fn query_on_branch<'a>(
                 .expect("response builder failed"));
         }
 
-        let mut subscribe = branch.subscribe(query);
-        if let Some(client) = client {
-            subscribe = subscribe.client(client);
-        }
-        let subscriber = subscribe
+        let subscriber = branch
+            .subscribe(query)
             .perform(&tonk.operator)
             .await
             .map_err(reactor_to_error)?;

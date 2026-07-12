@@ -247,27 +247,6 @@ impl Reactor {
         Ok(())
     }
 
-    /// Snapshot every cached branch state, across named repositories
-    /// and the profile-as-repository. Used by liveness sweeps that
-    /// reconcile per-client state (overlay facts, tagged subscribers)
-    /// against the set of live clients — only cached branches can
-    /// hold any, since both live on the in-memory [`BranchState`].
-    pub fn cached_branch_states(&self) -> Vec<Arc<BranchState>> {
-        let repos: Vec<Arc<RepositoryState>> = {
-            let map = self.repos.read();
-            map.values().cloned().collect()
-        };
-        let profile = self.profile_repo.read().clone();
-        repos
-            .into_iter()
-            .chain(profile)
-            .flat_map(|repo| {
-                let branches = repo.branches().read();
-                branches.values().cloned().collect::<Vec<_>>()
-            })
-            .collect()
-    }
-
     /// Begin a chain scoped to the named repository.
     pub fn repository<'a>(&'a self, name: &'a str) -> RepositoryReference<'a> {
         RepositoryReference::Named {
