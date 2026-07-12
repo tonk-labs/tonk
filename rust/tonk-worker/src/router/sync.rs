@@ -689,6 +689,36 @@ pub async fn sync(
         params.branch
     );
 
+    // Don't touch the network while offline. This is the single chokepoint every
+    // sync path flows through (the per-fetch drain, the self-scheduled loop,
+    // `POST /api/sync`, an SSE reconnect), so gating here stops ALL of them from
+    // hammering an unreachable upstream — an offline branch would otherwise
+    // retry `handle.fetch()` on every tick, re-queue on failure, and retry
+    // again. Stamp `offline` so the chip reflects the disconnect and report
+    // success (nothing to reconcile until connectivity returns; any traffic or
+    // the page's `online` event restarts real syncing).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if crate::worker::offline() {
+        // Read lock — the overlay stamp goes through the reactor (its own
+        // locks); a write lock here would block concurrent reads, same as
+        // `mark_offline`, which stamps the identical status under `read()`.
+        let tonk_state = state.read().await;
+        publish_sync_status_attr(
+            &tonk_state,
+            &params.repo,
+            &params.branch,
+            tonk_schema::Replica::offline_status(),
+        )
+        .await;
+        log!("sync of {}/{} skipped: offline", params.repo, params.branch);
+        return Ok(Json(SyncResponse {
+            success: true,
+            before: None,
+            after: None,
+            error: None,
+        }));
+    }
+
     // Honor the durable pause preference at the single chokepoint every sync
     // path flows through (the in-page interval coordinator, the background
     // sweep, a manual sync all call `/sync`). A paused replica neither pulls

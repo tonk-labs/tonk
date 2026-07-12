@@ -1038,31 +1038,31 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Connectivity lost — the SW's own `offline` event. Stamp
-    /// `sync:offline` on every open repo so the chips/discs reflect the
-    /// disconnect. This is the reliable signal: an offline page stops
-    /// polling, so no fetch would otherwise wake this worker.
+    /// Connectivity changed. Re-read `navigator.onLine` (reliable in the SW
+    /// scope) and reconcile: offline stamps `sync:offline` on every open repo
+    /// so the chips/discs reflect the disconnect; online runs a drain and
+    /// restarts the self-scheduled sync loop the offline transition stopped.
+    ///
+    /// Fired both by the SW's own `offline`/`online` events and by a
+    /// `{type:"connectivity"}` nudge from the active page (whose events fire
+    /// even when the SW's don't). Either way the decision is made from
+    /// `navigator.onLine`, not from who fired — a flapping transition settles
+    /// on the current reading.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "onoffline")]
-    pub fn on_offline(&self) -> Promise {
+    #[wasm_bindgen(js_name = "onconnectivity")]
+    pub fn on_connectivity(&self) -> Promise {
+        let offline = offline();
+        if !offline {
+            // Restart the self-scheduled loop the offline transition stopped.
+            self.ensure_sync_loop();
+        }
         let state = self.state.clone();
         future_to_promise(async move {
-            crate::router::mark_offline(&state).await;
-            Ok(JsValue::UNDEFINED)
-        })
-    }
-
-    /// Connectivity restored — the SW's own `online` event. Run a drain
-    /// directly (like Background Sync's `onsync`) so statuses reconcile
-    /// immediately, and restart the self-scheduled sync loop the offline
-    /// transition stopped.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "ononline")]
-    pub fn on_online(&self) -> Promise {
-        self.ensure_sync_loop();
-        let state = self.state.clone();
-        future_to_promise(async move {
-            crate::router::drain_sync(&state).await;
+            if offline {
+                crate::router::mark_offline(&state).await;
+            } else {
+                crate::router::drain_sync(&state).await;
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -1222,11 +1222,13 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
     let _ = extendable.wait_until(&promise);
 }
 
-/// Whether the worker reports no network connectivity. Unknown (no worker
-/// global) counts as online — a wrongly skipped drain is worse than a
-/// failed fetch.
+/// Whether the worker reports no network connectivity, read straight from
+/// `navigator.onLine` in the service-worker scope (which does update under
+/// DevTools offline emulation and reflects the real connection in the wild).
+/// A failure to read the scope counts as online — a wrongly skipped drain is
+/// worse than a failed fetch (which itself stamps `sync:offline`).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn offline() -> bool {
+pub(crate) fn offline() -> bool {
     use wasm_bindgen::JsCast;
     js_sys::global()
         .dyn_into::<web_sys::WorkerGlobalScope>()
