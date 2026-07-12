@@ -1569,17 +1569,7 @@ fn handle_blob_image_frame(host: &Element) {
 fn blob_image_src(host: &Element) -> Option<String> {
     let entity = host.get_attribute("entity")?;
     let with = host.get_attribute("with")?;
-    if with.contains('{') {
-        return None; // unsubstituted `{branch}@{repo}` template
-    }
-    // `with` is `branch@repo`; a bare token (no `@`) is a repo on `main`.
-    let (branch, repo) = match with.split_once('@') {
-        Some((branch, repo)) => (branch, repo),
-        None => ("main", with.as_str()),
-    };
-    Some(format!(
-        "/api/repository/{repo}/branch/{branch}/blob/{entity}"
-    ))
+    crate::blob_url::blob_read_url(&with, &entity)
 }
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event

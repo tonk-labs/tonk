@@ -49,6 +49,8 @@ pub mod notation_format;
 #[cfg(any(target_arch = "wasm32", test))]
 mod notation_tokens;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod blob_url;
 #[cfg(target_arch = "wasm32")]
 mod component;
 #[cfg(target_arch = "wasm32")]
