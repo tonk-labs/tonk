@@ -40,9 +40,9 @@ tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 tonk-portal = { workspace = true }
 tonk-worker = { workspace = true }
+tonk-worker-api = { workspace = true }
 tonk-analytics = { workspace = true }
 url = { workspace = true }
-dialog-remote-ucan-s3 = { workspace = true }
 dialog-common = { workspace = true, optional = true }
 port_check = { workspace = true, optional = true }
 thirtyfour = { workspace = true, optional = true }

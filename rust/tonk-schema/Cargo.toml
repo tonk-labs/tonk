@@ -40,6 +40,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tonk-core = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-worker-api = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

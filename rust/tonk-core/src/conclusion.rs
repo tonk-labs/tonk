@@ -1,6 +1,13 @@
-//! On-the-wire shape for query results — a serializable
-//! projection of [`ConceptConclusion`] that workers emit and
-//! browser clients deserialize.
+//! On-the-wire shape for query results — a serializable projection of
+//! [`ConceptConclusion`] that workers emit and browser clients
+//! deserialize.
+//!
+//! [`Conclusion`] and [`Frame`] are engine-free data types and live in
+//! `tonk-worker-api` so the page can name them without linking the
+//! datalog engine; they are re-exported here at their historical
+//! `tonk_core::conclusion::*` paths. Only [`project`] — which reads a
+//! raw engine [`ConceptConclusion`] — needs the engine, so it stays
+//! here as a free function.
 
 use std::collections::BTreeMap;
 
@@ -8,92 +15,42 @@ use dialog_artifacts::Value;
 use dialog_query::{Any, ConceptConclusion, Parameters, Term};
 use ipld_core::ipld::Ipld;
 use ipld_core::serde::to_ipld;
-use serde::{Deserialize, Serialize};
 
-/// Serializable projection of a [`ConceptConclusion`] — the
-/// concept's entity plus the projected field values for every
-/// term named by the originating query.
+pub use tonk_worker_api::{Conclusion, Frame};
+
+/// Project a [`ConceptConclusion`] using the query's `terms` to
+/// discover which field names were bound.
 ///
-/// `PartialEq` by value (entity + fields) so a delta's `retracted`
-/// rows can be matched against a retained snapshot to remove them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Conclusion {
-    /// Entity URI of the matched concept (`did:key:…` etc.).
-    pub this: String,
-    /// Field values keyed by term name from the query. Each value
-    /// is the raw `dialog_artifacts::Value` serialized into the
-    /// IPLD data model — strings, integers, floats, bools, byte
-    /// buffers — so the wire encoding stays codec-agnostic
-    /// (dag-json on the browser hop, dag-cbor for storage).
-    pub fields: BTreeMap<String, Ipld>,
-}
-
-impl Conclusion {
-    /// Project a [`ConceptConclusion`] using the query's `terms`
-    /// to discover which field names were bound.
-    ///
-    /// Variable terms read their value from the match's bindings;
-    /// constant terms emit the constant directly. Constants
-    /// matter for filter use-cases — `terms.name = "Alice"`
-    /// means the caller already knows the value and the engine
-    /// won't bind a variable for it; without surfacing the
-    /// constant here, `fields["name"]` would be missing for every
-    /// row even though every row's `name` is, by construction,
-    /// `"Alice"`.
-    pub fn project(conclusion: &ConceptConclusion, terms: &Parameters) -> Self {
-        let mut fields = BTreeMap::new();
-        for (name, term) in terms.iter() {
-            let value = match term {
-                Term::Constant(value) => value_to_ipld(value),
-                // `lookup` yields a `Binding`: a `Present` value, or
-                // `Absent` for an optional field this entity lacks.
-                // Absent fields are simply omitted from the wire
-                // projection.
-                Term::Variable { .. } => conclusion
-                    .source()
-                    .lookup(&Term::<Any>::var(name.clone()))
-                    .ok()
-                    .and_then(|binding| binding.as_value().and_then(value_to_ipld)),
-            };
-            if let Some(value) = value {
-                fields.insert(name.clone(), value);
-            }
-        }
-        Self {
-            this: conclusion.entity().to_string(),
-            fields,
+/// Variable terms read their value from the match's bindings; constant
+/// terms emit the constant directly. Constants matter for filter
+/// use-cases — `terms.name = "Alice"` means the caller already knows
+/// the value and the engine won't bind a variable for it; without
+/// surfacing the constant here, `fields["name"]` would be missing for
+/// every row even though every row's `name` is, by construction,
+/// `"Alice"`.
+pub fn project(conclusion: &ConceptConclusion, terms: &Parameters) -> Conclusion {
+    let mut fields = BTreeMap::new();
+    for (name, term) in terms.iter() {
+        let value = match term {
+            Term::Constant(value) => value_to_ipld(value),
+            // `lookup` yields a `Binding`: a `Present` value, or
+            // `Absent` for an optional field this entity lacks.
+            // Absent fields are simply omitted from the wire
+            // projection.
+            Term::Variable { .. } => conclusion
+                .source()
+                .lookup(&Term::<Any>::var(name.clone()))
+                .ok()
+                .and_then(|binding| binding.as_value().and_then(value_to_ipld)),
+        };
+        if let Some(value) = value {
+            fields.insert(name.clone(), value);
         }
     }
-}
-
-/// One subscription update on the wire.
-///
-/// A subscriber's first frame (and any frame after a reconnect) is a
-/// [`Snapshot`](Frame::Snapshot) — the full current result set, so a
-/// fresh consumer needs no prior state. Every subsequent frame is a
-/// [`Delta`](Frame::Delta): the rows that entered
-/// ([`asserted`](Frame::Delta::asserted)) and left
-/// ([`retracted`](Frame::Delta::retracted)) the result since the
-/// last frame. The consumer applies the delta to its retained set,
-/// keyed by conclusion identity, and re-renders.
-///
-/// Serialized internally-tagged so the browser can match on `kind`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Frame {
-    /// The full current result set. First frame per subscriber and
-    /// after a reconnect.
-    Snapshot {
-        /// Every row currently in the result.
-        conclusions: Vec<Conclusion>,
-    },
-    /// The change since the previous frame.
-    Delta {
-        /// Rows that entered the result.
-        asserted: Vec<Conclusion>,
-        /// Rows that left the result.
-        retracted: Vec<Conclusion>,
-    },
+    Conclusion {
+        this: conclusion.entity().to_string(),
+        fields,
+    }
 }
 
 /// Convert a [`Value`] into [`Ipld`] for the wire projection.

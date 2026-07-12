@@ -9,7 +9,7 @@
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
-use tonk_schema::query::Query;
+use tonk_worker_api::Query;
 
 /// Build the scoped-entity query: pin `this` to `entity` and project
 /// every field in the descriptor's `with:` map as a variable. The

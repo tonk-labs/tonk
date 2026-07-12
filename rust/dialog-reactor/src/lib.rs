@@ -58,7 +58,7 @@ pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionRefe
 /// On-the-wire `Conclusion` and `Query` — re-exported from
 /// [`tonk_schema`] so consumers (browser clients, the consumer
 /// elements) can deserialize without depending on this crate.
-pub use tonk_schema::conclusion::{Conclusion, Frame};
+pub use tonk_schema::conclusion::{Conclusion, Frame, project};
 pub use tonk_schema::query::Query;
 pub use transaction::{Commit, TransactionBuilder};
 

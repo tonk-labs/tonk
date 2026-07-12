@@ -15,7 +15,7 @@ use dialog_common::log;
 
 use crate::BranchState;
 use crate::env::SelectProvider;
-use crate::{Conclusion, Frame};
+use crate::{Conclusion, Frame, project};
 
 use super::state::QueryHash;
 
@@ -141,7 +141,7 @@ impl SubscriptionPoll<'_> {
         let snapshot_conclusions: Vec<Conclusion> = engine
             .results()
             .iter()
-            .map(|c| Conclusion::project(c, &terms))
+            .map(|c| project(c, &terms))
             .collect();
 
         // Put the engine back before handling the poll outcome so the
@@ -164,16 +164,8 @@ impl SubscriptionPoll<'_> {
         // repaint every consumer for nothing and, if a re-poll keeps
         // firing, spin a render loop — so drop it here.
         let delta_bytes = delta.as_ref().filter(|d| !d.is_empty()).and_then(|delta| {
-            let asserted = delta
-                .asserted
-                .iter()
-                .map(|c| Conclusion::project(c, &terms))
-                .collect();
-            let retracted = delta
-                .retracted
-                .iter()
-                .map(|c| Conclusion::project(c, &terms))
-                .collect();
+            let asserted = delta.asserted.iter().map(|c| project(c, &terms)).collect();
+            let retracted = delta.retracted.iter().map(|c| project(c, &terms)).collect();
             serialize(&Frame::Delta {
                 asserted,
                 retracted,
