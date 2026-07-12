@@ -273,8 +273,6 @@ view/directory!:
         .onb-nav--close { right: 20px; }
         .onb-nav--back { left: 20px; }
         .onb-head { text-align: center; max-width: 560px; }
-        .onb-kick { font-family: var(--spot-font-mono); font-size: 11.5px; letter-spacing: .13em;
-          text-transform: uppercase; color: var(--wa-color-text-quiet); margin-bottom: 10px; }
         .onb-head h3 { font-family: var(--spot-font-display); font-weight: 300; font-size: 38px;
           letter-spacing: -1.3px; margin: 0 0 12px; color: var(--wa-color-text-normal);
           /* opt out of the global heading "headline-cover" dark box */
@@ -388,8 +386,10 @@ view/directory!:
         .onb-agent-note { display: none; text-align: center; }
         #wiz-agent:checked ~ .spot-overlay .onb-agent-note { display: block; }
         /* Details-screen heading follows the chosen path (same trick as the
-           note/grid above). */
-        .onb-h { display: none; }
+           note/grid above). `.onb-head .onb-h` (0,2,0) so the hide out-ranks
+           the `.onb-head h3 { display: block }` headline-cover opt-out above;
+           the checked-radio reveals carry an id and out-rank both. */
+        .onb-head .onb-h { display: none; }
         #wiz-tmpl:checked ~ .spot-overlay .onb-h--tmpl { display: block; }
         #wiz-agent:checked ~ .spot-overlay .onb-h--agent { display: block; }
         .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
@@ -457,7 +457,6 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
-              <div class="onb-kick">new spot</div>
               <h3>How do you want to start?</h3>
               <p class="onb-lede">Seed a ready-made layout, or start blank and hand the spot to an agent.</p>
             </div>
@@ -501,7 +500,6 @@ view/directory!:
               <wa-button variant="neutral" appearance="plain" size="small">close</wa-button>
             </label>
             <div class="onb-head">
-              <div class="onb-kick">new spot</div>
               <h3 class="onb-h onb-h--tmpl">Pick a template</h3>
               <h3 class="onb-h onb-h--agent">Build with an agent</h3>
             </div>
@@ -820,7 +818,9 @@ view/directory!: &profile/fab/view
            `<tonk-default-remote>` resolves the default sync URL on this same
            profile/meta branch.
            Mirrors the Hub's create dialog (the directory view above). -->
-      <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog">
+      <!-- `--width` is the wa-dialog sizing hook; the default (~31rem) is
+           too narrow for the 2x2 template grid. -->
+      <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog" style="--width: 40rem">
         <form id="fab-space-create-form" class="fab__form wizard" onsubmit=space/create data-close-dialog>
           <style>
             /* CSS-paged wizard: a hidden radio per screen drives which
@@ -832,6 +832,14 @@ view/directory!: &profile/fab/view
             #wiz-start:checked    ~ .wizard__screen--start    { display: flex; }
             #wiz-template:checked ~ .wizard__screen--template { display: flex; }
             .wizard__cards { display: flex; gap: var(--wa-space-m); }
+            /* Screen 2 holds FOUR template cards. A flex row can't shrink
+               them below their longest word, so it overflowed the dialog
+               edge; a 2x2 grid with minmax(0,1fr) tracks keeps every card
+               inside the dialog at its natural width. Screen 1's two
+               chooser cards stay a flex row. */
+            .wizard__screen--template .wizard__cards {
+              display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
             .wizard__card {
               flex: 1; display: block; padding: var(--wa-space-l);
               border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
