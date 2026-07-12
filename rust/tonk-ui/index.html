@@ -312,13 +312,29 @@
             //
             // No reloads, no timeouts: the claim path is deterministic
             // once the SW has a `message` handler that honors `claim`.
+            // Poke the worker to re-check connectivity. Sent BEFORE the app's
+            // first data-plane call (this runs inside `serviceWorkerActivates`,
+            // which the shell awaits at boot), so on a reload while offline the
+            // worker reconciles the offline status before it would otherwise
+            // drain — which was resetting the indicator to "online" on reload.
+            // The worker reads `navigator.onLine` itself; this only wakes it.
+            const sendConnectivity = async () => {
+                const reg = await navigator.serviceWorker.ready;
+                reg.active?.postMessage({ type: "connectivity" });
+            };
+
             self.serviceWorkerActivates = async () => {
                 if (!("serviceWorker" in navigator)) {
                     throw new Error(
                         "Service workers not supported; Tonk will not work!",
                     );
                 }
-                if (navigator.serviceWorker.controller) return;
+                if (navigator.serviceWorker.controller) {
+                    // Warm reload: already controlled. Still poke so a reload
+                    // while offline reconciles the offline state.
+                    await sendConnectivity();
+                    return;
+                }
 
                 const controlled = new Promise((resolve) => {
                     navigator.serviceWorker.addEventListener(
@@ -334,6 +350,7 @@
                 });
 
                 await controlled;
+                await sendConnectivity();
             };
 
             // Register a one-shot background sync under `tag` so a
@@ -354,6 +371,15 @@
                 const registration = await navigator.serviceWorker.ready;
                 await registration.sync.register(tag);
             };
+
+            // Poke the worker on connectivity TRANSITIONS so the sync indicator
+            // updates immediately instead of waiting for the next fetch. The
+            // active page's `online`/`offline` events are the dependable
+            // trigger; the worker itself decides online-vs-offline from
+            // `navigator.onLine`. The INITIAL poke is sent from
+            // `serviceWorkerActivates` above (before the first data-plane call).
+            self.addEventListener("online", () => sendConnectivity().catch(() => {}));
+            self.addEventListener("offline", () => sendConnectivity().catch(() => {}));
         </script>
         <!-- The following are load-bearing configuration for the Trunk build tool
          (https://trunkrs.dev/assets/); if you need to add build steps or copy
