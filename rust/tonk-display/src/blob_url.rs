@@ -22,7 +22,9 @@ pub(crate) fn branch_repo(with: &str) -> Option<(String, String)> {
 /// The read URL for a blob entity, scoped by `with`. `None` if `with` is unusable.
 pub(crate) fn blob_read_url(with: &str, entity: &str) -> Option<String> {
     let (branch, repo) = branch_repo(with)?;
-    Some(format!("/api/repository/{repo}/branch/{branch}/blob/{entity}"))
+    Some(format!(
+        "/api/repository/{repo}/branch/{branch}/blob/{entity}"
+    ))
 }
 
 #[cfg(test)]
