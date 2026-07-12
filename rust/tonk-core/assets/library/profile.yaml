@@ -393,6 +393,10 @@ view/directory!:
         #wiz-tmpl:checked ~ .spot-overlay .onb-h--tmpl { display: block; }
         #wiz-agent:checked ~ .spot-overlay .onb-h--agent { display: block; }
         .onb-fields { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 620px; }
+        /* The submit shouldn't span the whole column — shrink it to its
+           content (the flex column would otherwise stretch it) with a
+           floor for a comfortable hit target. */
+        .onb-fields wa-button { align-self: center; min-width: 220px; }
       </style>
 
       <!-- wizard state radio group: closed by default; each open state is a
@@ -839,6 +843,12 @@ view/directory!: &profile/fab/view
                chooser cards stay a flex row. */
             .wizard__screen--template .wizard__cards {
               display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            /* Shrink the submit to its content (the screen's flex column
+               would otherwise stretch it full-width), with a floor for a
+               comfortable hit target. */
+            .wizard__screen--template > wa-button[type="submit"] {
+              align-self: center; min-width: 220px;
             }
             .wizard__card {
               flex: 1; display: block; padding: var(--wa-space-l);
