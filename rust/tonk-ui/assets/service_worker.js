@@ -118,20 +118,57 @@ self.addEventListener("online", onConnectivityChange);
 //
 // Keyed on `/`, where the origin serves the shell HTML (200).
 // `/index.html` is a 307 redirect to `/`, so it can't be cached
-// or served as the shell. The shell is seeded by `oninstall` and
-// re-seeded on every new worker install, so a deploy refreshes
-// it. The rare miss (first visit racing the install, or a purged
-// cache) fetches it once.
-async function serveNavigation() {
+// or served as the shell.
+//
+// Stale-while-revalidate: serve the cached shell IMMEDIATELY (a
+// navigation never waits on the network, so a repeat load on a slow
+// or flaky connection is instant and works offline), and in the
+// background fetch `/` to refresh the cached copy for NEXT time. But
+// a plain SWR on the shell alone poisons the cache: the shell names
+// content-hashed assets, so refreshing `/` to a newer build leaves
+// the cache holding the new shell beside the OLD build's assets (and
+// missing the new ones) — exactly the mix that makes a later load
+// reference assets that aren't cached and hard-fail. So when the
+// refreshed shell DIFFERS from the cached one (a new build), drop
+// every cached asset: the new shell then re-populates its own assets
+// on the next load, and the two never cross builds. The current
+// load keeps serving the coherent build it already had.
+async function serveNavigation(event) {
     const cache = await caches.open(SHELL_CACHE);
     const cached = await cache.match("/");
-    if (cached) return cached;
 
-    const response = await fetch("/");
-    if (response.ok && response.type !== "opaque") {
-        cache.put("/", response.clone()).catch(() => {});
+    const revalidate = (async () => {
+        try {
+            const fresh = await fetch("/");
+            if (!fresh.ok || fresh.type === "opaque") return;
+            // Compare against the copy we served to detect a build change.
+            const freshText = await fresh.clone().text();
+            const cachedText = cached ? await cached.clone().text() : null;
+            if (cachedText !== null && cachedText !== freshText) {
+                // New build: flush the whole shell cache so the old
+                // build's hashed assets can't mix with the new shell,
+                // then seed the fresh shell into the clean cache.
+                await caches.delete(SHELL_CACHE);
+                const clean = await caches.open(SHELL_CACHE);
+                await clean.put("/", fresh);
+            } else {
+                await cache.put("/", fresh);
+            }
+        } catch {
+            // Offline / fetch failed — keep the cached shell as-is.
+        }
+    })();
+
+    if (cached) {
+        // Don't block the response on the refresh, but keep the worker
+        // alive until it settles so the cache updates for next time.
+        event?.waitUntil?.(revalidate);
+        return cached;
     }
-    return response;
+    // Cold cache (first visit, or just flushed): the refresh IS the
+    // response — wait for it and serve the fetched shell.
+    await revalidate;
+    return (await cache.match("/")) || fetch("/");
 }
 
 // Route navigations straight to the cached shell (bypassing the
@@ -150,7 +187,7 @@ self.onfetch = event => {
         // navigation to an app route: serve the cached shell.
         const path = new URL(event.request.url).pathname;
         if (!path.startsWith("/api/")) {
-            event.respondWith(serveNavigation());
+            event.respondWith(serveNavigation(event));
             return;
         }
     }
