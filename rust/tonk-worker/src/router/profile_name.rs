@@ -284,6 +284,7 @@ mod tests {
             bridges: Default::default(),
             sync_queue: Default::default(),
             commands: crate::router::command_registry(),
+            sites: Default::default(),
         }
     }
 

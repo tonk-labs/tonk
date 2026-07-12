@@ -60,7 +60,7 @@ pub use query::QueryPath;
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
 mod session;
-pub use session::SiteResponse;
+pub use session::{SiteRegistry, SiteResponse};
 
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
@@ -350,6 +350,7 @@ pub mod tests {
             bridges: Default::default(),
             sync_queue: Default::default(),
             commands: super::command_registry(),
+            sites: Default::default(),
         }
     }
 

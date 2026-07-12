@@ -33,6 +33,17 @@ pub struct SiteResponse {
     pub site: String,
 }
 
+/// Shared map of stamped site entity URI → the SW client the stamp
+/// serves. Every [`stamp_site_on`] records its entry here; the
+/// stale-client sweep reconciles it against `clients.matchAll()` and
+/// prunes dead clients' site facts from the branch overlays — the GC
+/// the `site:<client-id>` keying was designed for. Covers both site
+/// keyings: `site:<client-id>` (the `/site` endpoints) and
+/// `site:<uuid>` (the `tonk:load` command, whose entity is minted by
+/// the page but whose commit origin names the client).
+pub type SiteRegistry =
+    std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::ClientId>>>;
+
 /// Read a header as a `&str`, empty when absent or non-ASCII.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
@@ -68,7 +79,7 @@ pub async fn register_site(
         let path = header(&headers, "x-tonk-path").to_owned();
         let anchor = header(&headers, "x-tonk-hash").to_owned();
         let tonk = state.read().await;
-        stamp_site(&tonk, &site, &path, anchor).await;
+        stamp_site(&tonk, &site, ClientId(client_id), &path, anchor).await;
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
@@ -105,7 +116,7 @@ pub async fn register_site_on_repo(
     ::axum::extract::Path(path): ::axum::extract::Path<crate::router::transact::TransactPath>,
     request: Request,
 ) -> Result<Json<SiteResponse>, TonkWorkerError> {
-    let site = client_site(&request)?;
+    let (site, client) = client_site(&request)?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let body = read_site_request(request).await?;
@@ -113,6 +124,7 @@ pub async fn register_site_on_repo(
         stamp_site_on(
             &tonk,
             &site,
+            client,
             &path.repo,
             &path.branch,
             false,
@@ -124,7 +136,7 @@ pub async fn register_site_on_repo(
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
-        let _ = (&state, &path, &request);
+        let _ = (&state, &path, &request, &client);
     }
     Ok(Json(SiteResponse { site }))
 }
@@ -140,7 +152,7 @@ pub async fn register_site_on_profile(
     >,
     request: Request,
 ) -> Result<Json<SiteResponse>, TonkWorkerError> {
-    let site = client_site(&request)?;
+    let (site, client) = client_site(&request)?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let body = read_site_request(request).await?;
@@ -149,6 +161,7 @@ pub async fn register_site_on_profile(
         stamp_site_on(
             &tonk,
             &site,
+            client,
             &repo,
             &path.branch,
             true,
@@ -160,14 +173,14 @@ pub async fn register_site_on_profile(
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
-        let _ = (&state, &path, &request);
+        let _ = (&state, &path, &request, &client);
     }
     Ok(Json(SiteResponse { site }))
 }
 
 /// Derive the `site:<client-id>` entity for a request, erroring if the SW set no
 /// client id (the per-tab key the site is stamped under).
-fn client_site(request: &Request) -> Result<String, TonkWorkerError> {
+fn client_site(request: &Request) -> Result<(String, ClientId), TonkWorkerError> {
     let client_id = request
         .extensions()
         .get::<ClientId>()
@@ -176,7 +189,7 @@ fn client_site(request: &Request) -> Result<String, TonkWorkerError> {
     if client_id.is_empty() {
         return Err(TonkWorkerError::Router("no client id on /site".into()));
     }
-    Ok(format!("site:{client_id}"))
+    Ok((format!("site:{client_id}"), ClientId(client_id)))
 }
 
 /// Read and decode the [`SiteRequest`] body, defaulting to an empty path when
@@ -209,7 +222,13 @@ async fn read_site_request(request: Request) -> Result<SiteRequest, TonkWorkerEr
 /// per-branch `/site` endpoint, which calls [`stamp_site_on`] directly with the
 /// branch named in the request URL.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anchor: String) {
+async fn stamp_site(
+    tonk: &crate::worker::TonkState,
+    site: &str,
+    client: ClientId,
+    path: &str,
+    anchor: String,
+) {
     use tonk_schema::{RouteTarget, resolve_path};
 
     let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
@@ -218,6 +237,7 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
     stamp_site_on(
         tonk,
         site,
+        client,
         &space.name,
         &space.branch,
         false,
@@ -243,6 +263,7 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
 async fn stamp_site_on(
     tonk: &crate::worker::TonkState,
     site: &str,
+    client: ClientId,
     repo: &str,
     branch_name: &str,
     profile: bool,
@@ -332,6 +353,13 @@ async fn stamp_site_on(
     if let Err(e) = overlay.write().perform(&tonk.operator).await {
         tonk_common::log!("register_site: overlay write failed for {path}: {e}");
     } else {
+        // Record which client this site serves, so the stale-client
+        // sweep can prune the overlay facts once the client is gone.
+        // An unknown client (empty id) is not registered — better to
+        // leak its facts than sweep a live page's site.
+        if !client.0.is_empty() {
+            tonk.sites.write().await.insert(site.to_owned(), client);
+        }
         tonk_common::log!("[stamp] {site} WROTE path={path}");
     }
 }
@@ -455,6 +483,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
             let repo = env.origin().repo.clone();
             let branch = env.origin().branch.clone();
             let profile = repo.is_empty();
+            // The site entity is page-minted (`site:<uuid>`), but the commit
+            // origin names the client — the sweep key. A missing origin
+            // client (shouldn't happen for a page commit) stamps under an
+            // empty id; `stamp_site_on` skips registering those, so the
+            // facts outlive the client (the pre-sweep behaviour) instead of
+            // being wrongly swept out from under a live page.
+            let client = env
+                .origin()
+                .client
+                .clone()
+                .unwrap_or(crate::router::ClientId(String::new()));
             dialog_common::log!(
                 "command Load site={} path={} repo={} branch={} profile={}",
                 site,
@@ -471,6 +510,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
             stamp_site_on(
                 &tonk,
                 &site,
+                client,
                 &repo,
                 &branch,
                 profile,

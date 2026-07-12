@@ -466,6 +466,7 @@ async fn handle_subscribe(
             .repository(&binding.repo)
             .branch(&binding.branch)
             .subscribe(query)
+            .client(client.0.clone())
             .perform(&tonk.operator)
             .await
         {
@@ -627,7 +628,12 @@ pub async fn sweep_stale_clients(state: &crate::router::AppState) {
             return;
         }
     };
-    let live_promise = global.clients().match_all();
+    // Include uncontrolled clients: a document mid-navigation (or one the
+    // SW hasn't claimed yet) is absent from the default set, and treating
+    // it as dead would sweep state it registered moments earlier.
+    let options = web_sys::ClientQueryOptions::new();
+    options.set_include_uncontrolled(true);
+    let live_promise = global.clients().match_all_with_options(&options);
     let live_value = match wasm_bindgen_futures::JsFuture::from(live_promise).await {
         Ok(v) => v,
         Err(e) => {
@@ -640,6 +646,8 @@ pub async fn sweep_stale_clients(state: &crate::router::AppState) {
         .iter()
         .filter_map(|v| v.dyn_into::<web_sys::Client>().ok().map(|c| c.id()))
         .collect();
+
+    sweep_reactor_state(state, &live_ids).await;
 
     let (stale_bridges, stale_views) = {
         let snap = state.read().await;
@@ -698,6 +706,56 @@ pub async fn sweep_stale_clients(state: &crate::router::AppState) {
         stale_bridges.len(),
         stale_views.len(),
     );
+}
+
+/// Reconcile per-client **reactor** state against the live-client set:
+/// drop dead clients' tagged SSE subscribers and prune their stamped
+/// site facts from the branch overlays.
+///
+/// Both accumulate unboundedly without this — a reload assigns the page
+/// a fresh client id, so the old id's subscriptions keep re-evaluating
+/// on every poll (a vanished client's stream may never cancel, so the
+/// send-failure prune never fires) and its `site:` overlay facts grow
+/// the fold every read pays. This is the GC the `site:<client-id>`
+/// keying was designed for (see `session::SiteRegistry`).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn sweep_reactor_state(
+    state: &crate::router::AppState,
+    live_ids: &std::collections::HashSet<String>,
+) {
+    let snap = state.read().await;
+
+    // Dead site entities: registry entries whose client is gone.
+    // Removed from the registry here; their overlay facts below.
+    let dead_sites: std::collections::HashSet<String> = {
+        let mut registry = snap.sites.write().await;
+        let dead: std::collections::HashSet<String> = registry
+            .iter()
+            .filter(|(_, client)| !live_ids.contains(&client.0))
+            .map(|(site, _)| site.clone())
+            .collect();
+        registry.retain(|_, client| live_ids.contains(&client.0));
+        dead
+    };
+
+    for branch in snap.reactor.cached_branch_states() {
+        branch.retain_subscribers(|client| live_ids.contains(client));
+        if !dead_sites.is_empty()
+            && branch.retain_overlay_entities(|entity| !dead_sites.contains(entity.as_str()))
+        {
+            // The overlay changed under live subscribers — schedule a
+            // poll so they observe the removal; the request dispatcher
+            // drains it once this turn.
+            snap.reactor.schedule_poll(branch);
+        }
+    }
+
+    if !dead_sites.is_empty() {
+        log!(
+            "sweep: pruned {} dead site(s) from overlays",
+            dead_sites.len()
+        );
+    }
 }
 
 /// Post an error envelope back to the client.

@@ -333,6 +333,10 @@ pub struct TonkState {
     /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
     /// reconcile it. See `router::sync::SyncQueue`.
     pub sync_queue: crate::router::SyncQueue,
+    /// Stamped site entities keyed to the SW client each serves, so
+    /// the stale-client sweep can prune dead clients' site facts
+    /// from the branch overlays. See [`crate::router::SiteRegistry`].
+    pub sites: crate::router::SiteRegistry,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -817,6 +821,7 @@ impl TonkServiceWorker {
             bridges: Default::default(),
             commands: crate::router::command_registry(),
             sync_queue: Default::default(),
+            sites: Default::default(),
         };
         bootstrap_profile(&state)
             .await
