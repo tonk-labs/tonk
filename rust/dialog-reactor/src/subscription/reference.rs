@@ -17,7 +17,7 @@ use crate::BranchState;
 use crate::env::SelectProvider;
 use crate::{Conclusion, Frame};
 
-use super::state::{QueryHash, Status};
+use super::state::QueryHash;
 
 /// Names a subscription within a branch. Built from
 /// [`BranchSession::subscription`].
@@ -79,22 +79,17 @@ impl SubscriptionPoll<'_> {
         Self: 'a,
     {
         // Snapshot what we need out of the map lock: the engine
-        // handle, the projection terms, and whether any subscriber is
-        // Pending (needs a full snapshot rather than a delta).
-        let (slot, terms, any_pending) = {
+        // handle and the projection terms. Whether a subscriber needs
+        // a full snapshot is decided at fan-out time (under the lock),
+        // NOT here: a subscriber can attach while the engine poll below
+        // awaits, so a flag captured now would miss it and leave it
+        // hung on `loading` forever (the stuck-spinner race).
+        let (slot, terms) = {
             let subs = self.state.subscriptions().lock();
             let Some(subscription) = subs.get(&self.hash) else {
                 return;
             };
-            let any_pending = subscription
-                .subscribers
-                .iter()
-                .any(|s| s.status == Status::Pending);
-            (
-                Arc::clone(&subscription.engine),
-                subscription.terms.clone(),
-                any_pending,
-            )
+            (Arc::clone(&subscription.engine), subscription.terms.clone())
         };
 
         // Take the engine out of its slot so the poll runs without a
@@ -135,19 +130,19 @@ impl SubscriptionPoll<'_> {
         // tree) still re-evaluates on this poll — no re-seed here.
         let poll_result = engine.poll(env).await;
 
-        // Snapshot for Pending subscribers — projected from the
-        // engine's retained results, consistent with the poll we just
-        // ran. Built only when some subscriber needs it.
-        let snapshot_bytes = if any_pending {
-            let conclusions: Vec<Conclusion> = engine
-                .results()
-                .iter()
-                .map(|c| Conclusion::project(c, &terms))
-                .collect();
-            serialize(&Frame::Snapshot { conclusions })
-        } else {
-            None
-        };
+        // Project the engine's retained results while we still hold the
+        // engine — the snapshot any Pending subscriber will need. Kept as
+        // projected conclusions (not yet serialized) so the fan-out below
+        // can decide, under the map lock, whether a snapshot is actually
+        // needed. Serializing eagerly here would waste work on the common
+        // no-Pending poll; deferring it to fan-out is what lets us serve a
+        // subscriber that attached during the poll `await` above without
+        // paying for a snapshot when there is none.
+        let snapshot_conclusions: Vec<Conclusion> = engine
+            .results()
+            .iter()
+            .map(|c| Conclusion::project(c, &terms))
+            .collect();
 
         // Put the engine back before handling the poll outcome so the
         // slot is never left empty on an early return.
@@ -185,35 +180,17 @@ impl SubscriptionPoll<'_> {
             })
         });
 
-        // Fan out under the map lock.
+        // Fan out under the map lock. The delivery decision (snapshot to
+        // Pending, delta to Established) lives on `Subscription::deliver`
+        // so it re-checks the subscriber set HERE, under the lock, rather
+        // than off a flag captured before the poll `await` — a subscriber
+        // that attached during the poll is served its first snapshot now
+        // instead of hanging until some later write schedules another poll.
         let mut subs = self.state.subscriptions().lock();
         let Some(subscription) = subs.get_mut(&self.hash) else {
             return;
         };
-
-        subscription.subscribers.retain_mut(|subscriber| {
-            let bytes = match subscriber.status {
-                // A fresh (or reconnected) subscriber needs the full
-                // set, not a delta it has no base for.
-                Status::Pending => snapshot_bytes.clone(),
-                // An established subscriber only hears about changes.
-                Status::Established => delta_bytes.clone(),
-            };
-            let Some(bytes) = bytes else {
-                // Nothing to send this subscriber this round (an
-                // Established subscriber on a no-change poll, or a
-                // frame that failed to serialize) — keep it.
-                return true;
-            };
-            match subscriber.sender.send(bytes) {
-                Ok(()) => {
-                    subscriber.status = Status::Established;
-                    true
-                }
-                Err(_) => false,
-            }
-        });
-
+        subscription.deliver(&snapshot_conclusions, delta_bytes.as_ref());
         if subscription.subscribers.is_empty() {
             subs.remove(&self.hash);
         }

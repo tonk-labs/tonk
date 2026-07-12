@@ -16,8 +16,9 @@ use dialog_query::Parameters;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::Query;
+use crate::{Conclusion, Frame, Query};
 use bytes::Bytes;
+use dialog_common::log;
 
 /// The dialog engine backing one reactor subscription.
 ///
@@ -123,4 +124,208 @@ pub struct Subscription {
     pub terms: Parameters,
     /// Open downstream channels with their delivery status.
     pub subscribers: Vec<SubscriberSession>,
+}
+
+impl Subscription {
+    /// Fan a poll's result out to every subscriber, advancing each to
+    /// [`Established`](Status::Established) once served.
+    ///
+    /// - A [`Pending`](Status::Pending) subscriber gets a full
+    ///   [`Frame::Snapshot`] built from `snapshot_conclusions` (the
+    ///   engine's retained results, projected to wire rows). This is the
+    ///   race-safe half: the Pending set is read HERE, at delivery, not
+    ///   from a flag captured before the poll's `await` — so a subscriber
+    ///   that attached while the poll ran is still served its first frame
+    ///   now rather than left hung on `loading` until an unrelated write
+    ///   happens to schedule another poll (which, on a quiescent branch,
+    ///   may never come).
+    /// - An [`Established`](Status::Established) subscriber gets
+    ///   `delta_bytes` when the poll reported a non-empty change, and
+    ///   nothing otherwise.
+    ///
+    /// The snapshot is serialized lazily and at most once, only when a
+    /// Pending subscriber is actually present. A subscriber whose channel
+    /// has closed is dropped.
+    pub fn deliver(&mut self, snapshot_conclusions: &[Conclusion], delta_bytes: Option<&Bytes>) {
+        fan_out(&mut self.subscribers, snapshot_conclusions, delta_bytes);
+    }
+}
+
+/// Deliver a poll's result to a subscriber set (see
+/// [`Subscription::deliver`]). Split out from the `Subscription` method so
+/// the delivery logic — the race-sensitive part — is exercised directly by
+/// tests without fabricating a dialog engine.
+fn fan_out(
+    subscribers: &mut Vec<SubscriberSession>,
+    snapshot_conclusions: &[Conclusion],
+    delta_bytes: Option<&Bytes>,
+) {
+    // Memoized snapshot bytes: `None` = not built yet, `Some(inner)` =
+    // built (`inner` may itself be `None` if serialization failed).
+    let mut snapshot_bytes: Option<Option<Bytes>> = None;
+
+    subscribers.retain_mut(|subscriber| {
+        let bytes = match subscriber.status {
+            Status::Pending => snapshot_bytes
+                .get_or_insert_with(|| serialize_snapshot(snapshot_conclusions.to_vec()))
+                .clone(),
+            Status::Established => delta_bytes.cloned(),
+        };
+        let Some(bytes) = bytes else {
+            // Nothing to send this subscriber this round (an Established
+            // subscriber on a no-change poll, or a frame that failed to
+            // serialize) — keep it.
+            return true;
+        };
+        match subscriber.sender.send(bytes) {
+            Ok(()) => {
+                subscriber.status = Status::Established;
+                true
+            }
+            Err(_) => false,
+        }
+    });
+}
+
+/// Serialize a [`Frame::Snapshot`] to wire bytes, logging and dropping on
+/// failure (a serialization error is not worth killing the fan-out).
+fn serialize_snapshot(conclusions: Vec<Conclusion>) -> Option<Bytes> {
+    match serde_json::to_vec(&Frame::Snapshot { conclusions }) {
+        Ok(bytes) => Some(Bytes::from(bytes)),
+        Err(err) => {
+            log!("[reactor] failed to serialize snapshot frame: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    use std::collections::BTreeMap;
+
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    use super::*;
+
+    /// One row of a snapshot.
+    fn conclusion(this: &str) -> Conclusion {
+        Conclusion {
+            this: this.to_owned(),
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// A subscriber in the given delivery state, paired with its receiver.
+    fn subscriber(status: Status) -> (SubscriberSession, UnboundedReceiver<Bytes>) {
+        let (sender, receiver) = unbounded_channel();
+        (SubscriberSession { sender, status }, receiver)
+    }
+
+    /// Decode a delivered frame off a receiver.
+    fn recv(receiver: &mut UnboundedReceiver<Bytes>) -> Option<Frame> {
+        receiver
+            .try_recv()
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).expect("frame decodes"))
+    }
+
+    /// A Pending subscriber must receive its snapshot on the next fan-out —
+    /// even when it is the ONLY pending subscriber and every other is
+    /// Established. The regression: the snapshot used to be built off a flag
+    /// captured before the engine poll, so a subscriber that attached during
+    /// the poll (or after that flag was read) was silently kept unserved and
+    /// its `<tonk-display>` hung on `loading` forever. Delivery now decides
+    /// per-subscriber at fan-out, so this can't happen.
+    #[dialog_common::test]
+    fn it_snapshots_a_pending_subscriber_even_beside_established_ones() {
+        let (established, mut established_rx) = subscriber(Status::Established);
+        let (pending, mut pending_rx) = subscriber(Status::Pending);
+        let mut subscribers = vec![established, pending];
+
+        // A no-change poll: no delta for the Established subscriber, but the
+        // Pending one still needs its first snapshot.
+        fan_out(&mut subscribers, &[conclusion("id:one")], None);
+
+        // The Pending subscriber got a Snapshot and is now Established.
+        match recv(&mut pending_rx) {
+            Some(Frame::Snapshot { conclusions }) => {
+                assert_eq!(conclusions, vec![conclusion("id:one")]);
+            }
+            other => panic!("pending subscriber must get a Snapshot, got {other:?}"),
+        }
+        assert_eq!(subscribers[1].status, Status::Established);
+
+        // The Established subscriber got nothing on a no-change poll.
+        assert!(
+            recv(&mut established_rx).is_none(),
+            "established subscriber gets no frame when the delta is empty"
+        );
+    }
+
+    /// The snapshot is serialized at most once regardless of how many
+    /// Pending subscribers there are, and every one of them receives it.
+    #[dialog_common::test]
+    fn it_serves_every_pending_subscriber_one_snapshot() {
+        let (a, mut a_rx) = subscriber(Status::Pending);
+        let (b, mut b_rx) = subscriber(Status::Pending);
+        let mut subscribers = vec![a, b];
+
+        fan_out(&mut subscribers, &[conclusion("id:x")], None);
+
+        for rx in [&mut a_rx, &mut b_rx] {
+            assert!(
+                matches!(recv(rx), Some(Frame::Snapshot { .. })),
+                "each pending subscriber receives the snapshot"
+            );
+        }
+        assert!(subscribers.iter().all(|s| s.status == Status::Established));
+    }
+
+    /// An Established subscriber receives a non-empty delta; a Pending one
+    /// added in the same round still gets a full snapshot, not the delta.
+    #[dialog_common::test]
+    fn it_sends_deltas_to_established_and_snapshots_to_pending() {
+        let (established, mut established_rx) = subscriber(Status::Established);
+        let (pending, mut pending_rx) = subscriber(Status::Pending);
+        let mut subscribers = vec![established, pending];
+
+        let delta = Bytes::from(
+            serde_json::to_vec(&Frame::Delta {
+                asserted: vec![],
+                retracted: vec![],
+            })
+            .unwrap(),
+        );
+        fan_out(&mut subscribers, &[conclusion("id:one")], Some(&delta));
+
+        assert!(
+            matches!(recv(&mut established_rx), Some(Frame::Delta { .. })),
+            "established subscriber gets the delta"
+        );
+        assert!(
+            matches!(recv(&mut pending_rx), Some(Frame::Snapshot { .. })),
+            "pending subscriber gets a snapshot, not the delta"
+        );
+    }
+
+    /// A subscriber whose receiver has been dropped is pruned from the set.
+    #[dialog_common::test]
+    fn it_drops_a_subscriber_whose_channel_closed() {
+        let (live, mut live_rx) = subscriber(Status::Pending);
+        let (dead, dead_rx) = subscriber(Status::Pending);
+        drop(dead_rx);
+        let mut subscribers = vec![live, dead];
+
+        fan_out(&mut subscribers, &[conclusion("id:one")], None);
+
+        assert_eq!(subscribers.len(), 1, "the closed subscriber is pruned");
+        assert!(matches!(recv(&mut live_rx), Some(Frame::Snapshot { .. })));
+    }
 }
