@@ -227,17 +227,35 @@
             type="font/ttf"
             crossorigin
         />
-        <!-- Preload the loader so it starts compiling alongside the
-       Wasm bundle instead of after the HTML has finished parsing.
-       The loader itself dynamically imports per-component chunks
-       on demand, so preloading the loader is the highest-leverage
-       step we can take without enumerating every chunk. -->
-        <link rel="modulepreload" href="/webawesome/webawesome.loader.js" />
-        <script
-            type="module"
-            src="/webawesome/webawesome.loader.js"
-            data-webawesome="/webawesome"
-        ></script>
+        <!-- Web Awesome loader — injected when the browser goes idle, NOT
+       eagerly. The loader module statically imports ~16 runtime chunks
+       (discover/startLoader/icon+translation registries/base-path utils),
+       so importing it eagerly downloads all of them at once. On a slow
+       connection that flood saturates the pipe and starves the boot data
+       plane: the wasm + the first `/api/*` fetches queue behind it, and
+       first paint waits. Nothing on the TOP page uses a `<wa-*>` COMPONENT
+       — the theme is pure CSS (loaded above), and every `<wa-*>` element
+       renders inside the sealed guest, which ships its own Web Awesome. So
+       the top-level loader isn't on the critical path; defer it to
+       `requestIdleCallback` (with a timeout fallback) so the wasm and data
+       plane win the bandwidth first. `data-webawesome` is carried onto the
+       injected script so the loader still resolves its base path. -->
+        <script>
+            (() => {
+                const inject = () => {
+                    const s = document.createElement("script");
+                    s.type = "module";
+                    s.src = "/webawesome/webawesome.loader.js";
+                    s.dataset.webawesome = "/webawesome";
+                    document.head.appendChild(s);
+                };
+                if ("requestIdleCallback" in window) {
+                    requestIdleCallback(inject, { timeout: 3000 });
+                } else {
+                    setTimeout(inject, 1000);
+                }
+            })();
+        </script>
 
         <!-- PostHog analytics, self-hosted (no external CDN, matching
        the font policy above). The bundle only defines window.posthog;
