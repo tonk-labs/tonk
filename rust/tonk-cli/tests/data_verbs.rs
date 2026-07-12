@@ -165,6 +165,42 @@ mod when_adding_an_instance {
 // supplied up front — every seed below sets both.
 mod when_setting_and_removing {
     use super::*;
+    use anyhow::anyhow;
+    use dialog_artifacts::Attribute;
+    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+
+    /// Pull every raw `(the, ?of, ?is)` claim for a bare attribute
+    /// URI directly off `main` — bypasses the concept query
+    /// entirely, so it can tell a single-field retraction (one
+    /// attribute's claims gone, the rest untouched) apart from a
+    /// whole-instance retraction (every attribute's claims gone).
+    /// A concept-completeness query can't make that distinction:
+    /// it requires every `with:` field bound, so it stops matching
+    /// the row the instant *any* field is missing.
+    async fn select_claims(
+        test: &TestSite,
+        the: &str,
+    ) -> Result<Vec<dialog_query::Claim>> {
+        let attr: Attribute = the
+            .parse()
+            .map_err(|e| anyhow!("{the} should be a valid attribute URI: {e:?}"))?;
+        let the_term: attribute::The = attr.into();
+        let session = test.site.branch().await?;
+        session
+            .handle()
+            .query()
+            .select(AttributeQuery::new(
+                Term::from(the_term),
+                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_query::Any>::var("is"),
+                Term::<attribute::Cause>::blank(),
+                None,
+            ))
+            .perform(&test.site.operator)
+            .try_vec()
+            .await
+            .map_err(|e| anyhow!("{the} query failed: {e:?}"))
+    }
 
     #[dialog_common::test]
     async fn it_overwrites_a_field_on_a_named_entity() -> Result<()> {
@@ -219,6 +255,22 @@ mod when_setting_and_removing {
             !out.contains("retract-me"),
             "retracted field should drop the row from the concept query:\n{out}"
         );
+        // The `list`/`get` check above can't tell a single-field
+        // retraction apart from a whole-instance wipe — the
+        // concept-completeness query drops the row either way.
+        // Go around it and check the *other* field's raw claim
+        // directly: it must survive a `title: _` retraction.
+        let title_claims = select_claims(&test, "xyz.tonk.task/title").await?;
+        assert!(
+            title_claims.is_empty(),
+            "retracted `title` field should leave no claim: {title_claims:?}"
+        );
+        let done_claims = select_claims(&test, "xyz.tonk.task/done").await?;
+        assert_eq!(
+            done_claims.len(),
+            1,
+            "untouched `done` field's claim must survive a single-field `title: _` retraction, got: {done_claims:?}"
+        );
         Ok(())
     }
 
@@ -234,6 +286,19 @@ mod when_setting_and_removing {
         assert!(
             !out.contains("gone-entirely"),
             "whole-instance rm should drop the row:\n{out}"
+        );
+        // `..: _` must still take out every field, not just the
+        // ones the retraction-target fix leaves alone for
+        // per-field `_`.
+        let title_claims = select_claims(&test, "xyz.tonk.task/title").await?;
+        assert!(
+            title_claims.is_empty(),
+            "whole-instance rm should leave no `title` claim: {title_claims:?}"
+        );
+        let done_claims = select_claims(&test, "xyz.tonk.task/done").await?;
+        assert!(
+            done_claims.is_empty(),
+            "whole-instance rm should leave no `done` claim: {done_claims:?}"
         );
         Ok(())
     }
