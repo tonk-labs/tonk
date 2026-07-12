@@ -305,6 +305,19 @@ async fn stamp_site_on(
         return;
     };
 
+    // A re-stamp REPLACES this site's overlay facts, not merges into them:
+    // params the new route does not capture must not survive the previous
+    // navigation as stale cardinality-one values. The bare space route
+    // (`/space/{id}`) captures no `{rest}`, so after visiting
+    // `/space/{id}/inspector` a merge would leave `rest="inspector"` on the
+    // site and the nested `<tonk-site path={rest}>` would keep routing the
+    // old sub-path. Pruned only once the route matched (above), so a
+    // no-match navigation still keeps the previous stamp; the write below
+    // schedules the poll that lets subscribers observe the swap atomically.
+    state
+        .state
+        .retain_overlay_entities(|overlaid| overlaid.as_str() != site);
+
     // Write through the overlay builder: it asserts into the session overlay and
     // schedules a poll so subscribers are notified — the request dispatcher
     // drains the poll once. Cardinality-one fields supersede in place, so a

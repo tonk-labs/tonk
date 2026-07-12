@@ -93,12 +93,24 @@ impl CustomElement for TonkSite {
         // changes (e.g. `/space/{id}/inspector` → `/space/{id}` removes it), and
         // a template re-stamp can rewrite `with`/`allow`. The `<tonk-site>`
         // re-asserts `tonk:load` against the same site entity so the live
-        // subscription re-renders. The initial values are handled by
-        // `connected_callback`, so skip the first-set callback — NOTE the
-        // `custom-elements` JS shim coerces a null `oldValue` to `""`, so a
-        // first set arrives as `Some("")`, never `None`.
+        // subscription re-renders.
+        //
+        // `with`/`allow` skip the first-set callback (the initial values are
+        // handled by `connected_callback`) — NOTE the `custom-elements` JS shim
+        // coerces a null `oldValue` to `""`, so a first set arrives as
+        // `Some("")`, never `None`. `path` must NOT apply that skip: an absent
+        // path is a routed state (`/`), so the empty → value transition IS a
+        // navigation (the bare space route gaining a `{rest}` sub-path), not
+        // mount noise. Pre-connect callbacks are already no-ops inside
+        // `resolve_and_render` (`is_connected` gate), and a mount-time double
+        // resolve is absorbed by the same-route iframe reuse.
         let first_set = old.as_deref().is_none_or(str::is_empty);
-        if matches!(name.as_str(), "path" | "with" | "allow") && !first_set && old != new {
+        let re_route = match name.as_str() {
+            "path" => old != new,
+            "with" | "allow" => !first_set && old != new,
+            _ => false,
+        };
+        if re_route {
             resolve_and_render(this, self.inner.clone());
         }
     }
