@@ -51,6 +51,20 @@ web-sys = { workspace = true, features = [
     "NodeList",
     "Text",
     "Window",
+    "Blob",
+    "File",
+    "FileList",
+    "FilePropertyBag",
+    "Headers",
+    "HtmlInputElement",
+    "Request",
+    "RequestInit",
+    "Response",
+    "ResponseInit",
+    "ShadowRoot",
+    "ShadowRootInit",
+    "ShadowRootMode",
+    "Url",
 ] }
 
 [dev-dependencies]

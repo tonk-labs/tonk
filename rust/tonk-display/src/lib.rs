@@ -61,6 +61,8 @@ mod fallback;
 mod notation;
 #[cfg(target_arch = "wasm32")]
 mod render;
+#[cfg(target_arch = "wasm32")]
+mod upload;
 // `state::State` and its `as_str` mapping are target-independent
 // — DOM-touching helpers in this module are individually gated
 // to wasm32 so native test builds can still exercise the enum.
@@ -84,4 +86,5 @@ pub fn register() {
     element::register();
     fallback::register();
     component::register();
+    upload::register();
 }
