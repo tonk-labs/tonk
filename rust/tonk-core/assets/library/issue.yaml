@@ -1,0 +1,100 @@
+attribute!: &issue/title
+  description: Issue title
+  the: io.gozala.issue/title
+  as: text
+
+attribute!: &issue/description
+  description: Description of the issue
+  the: io.gozala.issue/description
+  as: text
+
+attribute!: &issue/type
+  description: |
+    Type of issue represented by an entity acting like a category.
+    While it is open ended and you can have any kind of isues we recognize following ones
+
+    bug:. - Something broken than needs fixing
+    feature:. - New functionality
+    task:. - Work item (tests, docs, refactoring)
+    epic:. -  Large feature with subtasks
+    chore:. - Maintenance (dependencies, tooling)
+  the: io.gozala.issue/type
+  as: entity
+
+attribute!: &issue/priority
+  description: |
+    Priority for the issue as an entity we recognize following
+
+    critical:. - Security, data loss, broken builds
+    high:. - Major features, important bugs
+    medium:. - Nice-to-have features, minor bugs
+    low:. - Polish, optimization
+    backlog:. - Future ideas
+  the: io.gozala.issue/priority
+  as: entity
+
+attribute!: &issue/status
+  description: |
+    Status of this issue we recognize following
+
+    open:.
+    fixed:.
+    progress:.
+    canceled:.
+
+  the: io.gozala.issue/status
+  as: entity
+
+attribute!: &issue/blocks
+  description: |
+    Hard dependency. Another issue this blocks
+  the: io.gozala.issue/blocks
+  as: entity
+  cardinality: many
+
+concept!: &issue
+  description: |
+    Work items with priorities, types, labels, and dependencies
+  with:
+    title:
+      description: Issue title
+      the: io.gozala.issue/title
+      as: text
+    description:
+      description: Description of the issue
+      the: io.gozala.issue/description
+      as: text
+    type:
+      description: |
+        Type of issue represented by an entity acting like a category.
+        While it is open ended and you can have any kind of isues we recognize following ones
+
+        bug:. - Something broken than needs fixing
+        feature:. - New functionality
+        task:. - Work item (tests, docs, refactoring)
+        epic:. -  Large feature with subtasks
+        chore:. - Maintenance (dependencies, tooling)
+      the: io.gozala.issue/type
+      as: entity
+    priority:
+      description: |
+        Priority for the issue as an entity we recognize following
+
+        critical:. - Security, data loss, broken builds
+        high:. - Major features, important bugs
+        medium:. - Nice-to-have features, minor bugs
+        low:. - Polish, optimization
+        backlog:. - Future ideas
+      the: io.gozala.issue/priority
+      as: entity
+    status:
+      description: |
+        Status of this issue we recognize following
+
+        open:.
+        fixed:.
+        progress:.
+        canceled:.
+
+      the: io.gozala.issue/status
+      as: entity

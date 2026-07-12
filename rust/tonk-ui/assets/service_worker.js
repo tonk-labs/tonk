@@ -261,6 +261,17 @@ async function serveAsset(event) {
 // which owns the guest rewrite and the resource cache.
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
+    // the edge worker, not this one. Not intercepting at all is the
+    // point: the edge answers `GET /@/{hash}` with a relative 301
+    // that the browser must follow natively so the short link's
+    // `#fragment` (an invite's seed) carries over to the target via
+    // RFC 7231 fragment inheritance. Serving the shell here would
+    // swallow the redirect for any user who already has this worker
+    // installed.
+    if (path === "/@" || path.startsWith("/@/")) {
+        return;
+    }
     if (event.request.mode === "navigate") {
         // `/api/*` navigations are real data-plane requests, not SPA
         // routes — a user visiting e.g. `/api/migrate/...` directly, or

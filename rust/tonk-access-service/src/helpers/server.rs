@@ -5,6 +5,7 @@
 //! as a native HTTP server with CORS support for browser-based testing.
 
 use super::AccessServiceAddress;
+use crate::shortcut::{Shortcut, object_key_for, requested_ttl};
 use dialog_common::helpers::{Provider, Service};
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
@@ -12,14 +13,18 @@ use dialog_remote_ucan_s3::UcanAuthorizer;
 use hyper::body::Incoming;
 use hyper::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    ACCESS_CONTROL_EXPOSE_HEADERS, CONTENT_TYPE,
+    ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL, CONTENT_TYPE, LOCATION,
 };
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+
+/// In-memory shortcut store: object key → (unix-seconds expiry, target).
+type Shortcuts = Arc<RwLock<HashMap<String, (u64, String)>>>;
 
 /// A running UCAN access service test server instance.
 pub struct AccessServer {
@@ -64,6 +69,7 @@ impl AccessServer {
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
         let authorizer_clone = authorizer.clone();
         let server_handle = tokio::spawn(async move {
             loop {
@@ -72,11 +78,13 @@ impl AccessServer {
                     result = listener.accept() => {
                         if let Ok((stream, _)) = result {
                             let authorizer = authorizer_clone.clone();
+                            let shortcuts = shortcuts.clone();
                             tokio::spawn(async move {
                                 let service = hyper::service::service_fn(move |req| {
                                     let authorizer = authorizer.clone();
+                                    let shortcuts = shortcuts.clone();
                                     async move {
-                                        handle_request(req, authorizer).await
+                                        handle_request(req, authorizer, shortcuts).await
                                     }
                                 });
                                 let _ = http1::Builder::new()
@@ -102,10 +110,13 @@ impl AccessServer {
 ///
 /// This implements the same logic as the Cloudflare Worker handler:
 /// - POST /ucan/ → Authorize UCAN and return presigned URL
-/// - OPTIONS /ucan/ → CORS preflight
+/// - PUT /@ → Store a shortcut target, respond with its hash
+/// - GET /@/{hash} → Permanent relative redirect to the stored target
+/// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
     authorizer: Arc<RwLock<UcanAuthorizer>>,
+    shortcuts: Shortcuts,
 ) -> Result<Response<http_body_util::Full<bytes::Bytes>>, std::convert::Infallible> {
     use bytes::Bytes;
     use http_body_util::Full;
@@ -118,6 +129,15 @@ async fn handle_request(
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
         ));
+    }
+
+    if req.method() == Method::PUT && req.uri().path() == "/@" {
+        return Ok(cors_response(store_shortcut(req, shortcuts).await));
+    }
+    if req.method() == Method::GET
+        && let Some(hash) = req.uri().path().strip_prefix("/@/")
+    {
+        return Ok(cors_response(serve_shortcut(hash, shortcuts).await));
     }
 
     // Only accept POST requests to /ucan/
@@ -183,13 +203,113 @@ async fn handle_request(
     }
 }
 
+/// Current time as unix seconds.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is past the epoch")
+        .as_secs()
+}
+
+/// PUT /@ → validate and store a shortcut target, mirroring the
+/// Cloudflare Worker handler over an in-memory store.
+async fn store_shortcut(
+    req: Request<Incoming>,
+    shortcuts: Shortcuts,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+
+    let ttl = match requested_ttl(req.uri().query()) {
+        Ok(ttl) => ttl,
+        Err(reason) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from(reason)))
+                .unwrap();
+        }
+    };
+    let body = match req.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from(format!("Failed to read body: {e}"))))
+                .unwrap();
+        }
+    };
+
+    match Shortcut::new(&body) {
+        Ok(shortcut) => {
+            let hash = shortcut.hash_str();
+            shortcuts
+                .write()
+                .await
+                .insert(shortcut.object_key(), (unix_now() + ttl, shortcut.target));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(Full::new(Bytes::from(hash)))
+                .unwrap()
+        }
+        Err(reason) => Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Full::new(Bytes::from(reason)))
+            .unwrap(),
+    }
+}
+
+/// GET /@/{hash} → permanent relative redirect to the stored target.
+async fn serve_shortcut(
+    hash: &str,
+    shortcuts: Shortcuts,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    use bytes::Bytes;
+    use http_body_util::Full;
+
+    let key = match object_key_for(hash) {
+        Ok(key) => key,
+        Err(reason) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from(reason)))
+                .unwrap();
+        }
+    };
+
+    let not_found = || {
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Full::new(Bytes::from("Not Found")))
+            .unwrap()
+    };
+    match shortcuts.read().await.get(&key) {
+        Some((expires, target)) => {
+            let remaining = expires.saturating_sub(unix_now());
+            if remaining == 0 {
+                return not_found();
+            }
+            Response::builder()
+                .status(StatusCode::MOVED_PERMANENTLY)
+                .header(LOCATION, target)
+                .header(
+                    CACHE_CONTROL,
+                    format!("public, max-age={}", remaining.min(86_400)),
+                )
+                .body(Full::new(Bytes::new()))
+                .unwrap()
+        }
+        None => not_found(),
+    }
+}
+
 /// Add CORS headers to a response.
 fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     let headers = response.headers_mut();
     headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
     headers.insert(
         ACCESS_CONTROL_ALLOW_METHODS,
-        "POST, OPTIONS".parse().unwrap(),
+        "GET, PUT, POST, OPTIONS".parse().unwrap(),
     );
     headers.insert(
         ACCESS_CONTROL_ALLOW_HEADERS,
