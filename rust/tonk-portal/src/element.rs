@@ -94,8 +94,15 @@ impl CustomElement for TonkPortal {
                 // element a tick later — synchronous destruction of a live
                 // guest is the pattern the browser process crashes under
                 // (see `site::teardown`).
+                //
+                // Unload via the frame's own `location.replace()`, never by
+                // setting `src`: setting `src` NAVIGATES the frame, and a
+                // frame navigation appends an entry to the joint session
+                // history, so each teardown left an extra Back step behind.
                 let _ = iframe.remove_attribute("srcdoc");
-                let _ = iframe.set_attribute("src", "about:blank");
+                if let Some(frame_window) = iframe.content_window() {
+                    let _ = frame_window.location().replace("about:blank");
+                }
                 wasm_bindgen_futures::spawn_local(async move {
                     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                         if let Some(win) = web_sys::window() {

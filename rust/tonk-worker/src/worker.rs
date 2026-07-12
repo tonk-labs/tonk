@@ -333,6 +333,10 @@ pub struct TonkState {
     /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
     /// reconcile it. See `router::sync::SyncQueue`.
     pub sync_queue: crate::router::SyncQueue,
+    /// Liveness ledger: SW client → what it registered (site stamps) and
+    /// whether we have observed it alive. The stale-client sweep reaps
+    /// born-then-died clients from here. See [`crate::router::ClientRegistry`].
+    pub clients: crate::router::ClientRegistry,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -612,6 +616,19 @@ struct SyncScheduler {
     /// it — later requests just ride the debounce. Taken (and logged) by the
     /// ticket that actually drains.
     cause: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    /// Wall-clock ms when the last drain FINISHED, so the next one can be
+    /// held off for [`SYNC_COOLDOWN_MS`]. The debounce measures from the
+    /// triggering request, which says nothing about how long the previous
+    /// drain ran: on a slow link a drain can outlast the loop's interval, so
+    /// without a completion-relative gap the next drain starts the moment the
+    /// last one lands and sync runs back-to-back forever.
+    last_drain_end: std::rc::Rc<std::cell::Cell<f64>>,
+    /// Set once the worker is being replaced. A dying worker must not start
+    /// new sync work: the SW spec keeps it alive until every `waitUntil`
+    /// settles and every fetch completes, so a drain scheduled (or a loop
+    /// tick fired) after `updatefound` pins the outgoing worker in `waiting`
+    /// — which is why it "won't go away".
+    stopped: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -654,12 +671,7 @@ impl SyncScheduler {
     /// past [`SYNC_MAX_WAIT_MS`] (the cap, so continuous traffic can't starve
     /// the drain).
     fn should_drain(&self, ticket: u64, now: f64) -> bool {
-        if self.in_flight.get() {
-            return false;
-        }
-        // Yield to an actively-loading page — a boot burst (this tab or another)
-        // finishes before sync competes for the SW thread and branch locks.
-        if self.is_loading(now) {
+        if !self.may_drain(now) {
             return false;
         }
         let is_latest = self.generation.get() == ticket;
@@ -670,6 +682,35 @@ impl SyncScheduler {
         is_latest || capped
     }
 
+    /// The gate EVERY drain entrypoint passes through — the debounced
+    /// per-fetch drain, the self-scheduled loop, and Background Sync's
+    /// `onsync`. Previously only the per-fetch path consulted `in_flight`,
+    /// so a loop tick could start a second drain on top of a running one and
+    /// they would contend for the SW thread and the branch locks.
+    ///
+    /// Refuses when: the worker is being replaced (a dying worker must start
+    /// no new work — see `stopped`), a drain is already running, a page is
+    /// actively loading, or the previous drain finished less than
+    /// [`SYNC_COOLDOWN_MS`] ago.
+    fn may_drain(&self, now: f64) -> bool {
+        if self.stopped.get() {
+            return false;
+        }
+        if self.in_flight.get() {
+            return false;
+        }
+        // Yield to an actively-loading page — a boot burst (this tab or another)
+        // finishes before sync competes for the SW thread and branch locks.
+        if self.is_loading(now) {
+            return false;
+        }
+        // Quiet period measured from the LAST DRAIN'S COMPLETION, not from the
+        // request that triggered this one. Without it, a drain that outlasts
+        // the loop interval (easy on a slow link) is followed immediately by
+        // the next, and sync runs continuously.
+        now - self.last_drain_end.get() >= SYNC_COOLDOWN_MS as f64
+    }
+
     /// Mark a drain as started: take the `in_flight` guard and clear the burst
     /// clock so the max-wait cap restarts from the next request.
     fn begin_drain(&self) {
@@ -677,9 +718,21 @@ impl SyncScheduler {
         self.pending_since.set(None);
     }
 
-    /// Release the `in_flight` guard once a drain finishes.
+    /// Release the `in_flight` guard once a drain finishes, and stamp the
+    /// completion time so the cooldown measures from here.
     fn end_drain(&self) {
         self.in_flight.set(false);
+        self.last_drain_end.set(js_sys::Date::now());
+    }
+
+    /// Stop all sync work: the worker is being replaced. Idempotent.
+    fn stop(&self) {
+        self.stopped.set(true);
+    }
+
+    /// Whether the worker has been told to stop.
+    fn stopped(&self) -> bool {
+        self.stopped.get()
     }
 
     /// Record the burst-opening request: the first call after a drain wins,
@@ -732,6 +785,15 @@ const SYNC_DEBOUNCE_MS: i32 = 500;
 /// the drain never runs. Measured from the first request after the last drain.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_MAX_WAIT_MS: i32 = 3_000;
+
+/// Minimum quiet period between the END of one sync drain and the start of
+/// the next. The debounce measures from the triggering request, which says
+/// nothing about how long the previous drain ran — on a slow link a drain can
+/// outlast the loop's interval, and without a completion-relative gap the next
+/// one starts the instant the last lands, so sync runs continuously and starves
+/// the queries it shares the single SW thread with.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_COOLDOWN_MS: i32 = 2_000;
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -817,6 +879,7 @@ impl TonkServiceWorker {
             bridges: Default::default(),
             commands: crate::router::command_registry(),
             sync_queue: Default::default(),
+            clients: Default::default(),
         };
         bootstrap_profile(&state)
             .await
@@ -856,6 +919,16 @@ impl TonkServiceWorker {
     #[wasm_bindgen(js_name = "onupdatefound")]
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
+        // Stop all sync work FIRST. The spec keeps this worker alive until
+        // every in-flight fetch and every `waitUntil` promise settles; a drain
+        // scheduled on a fetch's `waitUntil`, or the self-scheduled loop's next
+        // tick, would keep re-arming that condition and pin the outgoing worker
+        // in `waiting` indefinitely — the "SW won't go away" symptom.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            self.sync_scheduler.stop();
+            self.sync_loop.set(false);
+        }
         let lsp = self.lsp.clone();
         let state = self.state.clone();
         future_to_promise(async move {
@@ -1031,8 +1104,23 @@ impl TonkServiceWorker {
     pub fn sync(&self, tag: String) -> Promise {
         let state = self.state.clone();
 
+        // Same gate as every other drain entrypoint: never overlap a running
+        // drain, never run on a worker that is being replaced, and honor the
+        // completion-relative cooldown.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
             log!("Background sync triggered ({tag:?})");
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                if !scheduler.may_drain(js_sys::Date::now()) {
+                    return Ok(JsValue::UNDEFINED);
+                }
+                scheduler.begin_drain();
+                crate::router::drain_sync(&state).await;
+                scheduler.end_drain();
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             crate::router::drain_sync(&state).await;
             Ok(JsValue::UNDEFINED)
         })
@@ -1057,11 +1145,14 @@ impl TonkServiceWorker {
             self.ensure_sync_loop();
         }
         let state = self.state.clone();
+        let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else {
+            } else if scheduler.may_drain(js_sys::Date::now()) {
+                scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
+                scheduler.end_drain();
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -1077,15 +1168,23 @@ impl TonkServiceWorker {
     /// it. This replaces the page-side `POST /api/sync` heartbeat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn ensure_sync_loop(&self) {
-        if self.sync_loop.get() {
+        // A worker being replaced starts no new work — its loop would keep
+        // waking up and pinning it in `waiting`.
+        if self.sync_scheduler.stopped() || self.sync_loop.get() {
             return;
         }
         self.sync_loop.set(true);
         let running = self.sync_loop.clone();
         let state = self.state.clone();
+        let scheduler = self.sync_scheduler.clone();
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 let _ = crate::sleep(web_time::Duration::from_millis(SYNC_LOOP_MS)).await;
+                // The worker is being replaced (or `onupdatefound` cleared the
+                // running flag): exit so this worker can be released.
+                if scheduler.stopped() || !running.get() {
+                    break;
+                }
                 if offline() {
                     // Reflect the disconnect, then stop — `ononline`
                     // restarts the loop and reconciles immediately.
@@ -1102,7 +1201,19 @@ impl TonkServiceWorker {
                     log!("sync loop parked: every open space is paused");
                     break;
                 }
+                // Through the SAME gate as the per-fetch drain: a loop tick used
+                // to call `drain_sync` directly, so it could start a second
+                // drain on top of one already running (they only consulted
+                // `in_flight` on the per-fetch path) and the two then contended
+                // for the single SW thread and the branch locks. The gate also
+                // enforces the cooldown, so a drain that outlasts this interval
+                // is not immediately followed by another.
+                if !scheduler.may_drain(js_sys::Date::now()) {
+                    continue;
+                }
+                scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
+                scheduler.end_drain();
             }
             running.set(false);
         });

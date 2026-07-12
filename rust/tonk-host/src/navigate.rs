@@ -100,6 +100,20 @@ pub fn navigate_to(href: &str) {
     let Some(win) = window() else {
         return;
     };
+
+    // Navigating to where we already are is a no-op, not a navigation. Without
+    // this guard every such call pushed a DUPLICATE history entry and fired a
+    // `popstate` that re-routed the site and re-stamped it for no change — and
+    // the duplicates then had to be walked back through one by one on Back.
+    // Resolved against the current document so a relative `href` compares
+    // correctly with `location`.
+    if let Ok(current) = win.location().href()
+        && let Ok(target) = web_sys::Url::new_with_base(href, &current)
+        && target.href() == current
+    {
+        return;
+    }
+
     let pushed = win
         .history()
         .ok()

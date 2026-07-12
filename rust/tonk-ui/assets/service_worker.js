@@ -138,6 +138,16 @@ async function serveNavigation(event) {
     // OLD build's hashed assets so the shell and its assets never cross
     // builds; `/` itself is rewritten in the same pass, so the cache is
     // never without a shell.
+    // Snapshot the cached shell's body NOW, while we still own it. Below we
+    // hand `cached` itself to the browser, which consumes its body to render
+    // the page — and a Response whose body is being consumed can no longer be
+    // cloned. Cloning inside `revalidate` (which runs concurrently under
+    // `waitUntil`) therefore raced the page and threw
+    // "Response body is already used", so the `cache.put` below it never ran:
+    // the shell cache was never refreshed, and every navigation paid a `/`
+    // fetch whose result was thrown away on the exception.
+    const cachedTextPromise = cached ? cached.clone().text() : null;
+
     const revalidate = async () => {
         let fresh;
         try {
@@ -148,7 +158,7 @@ async function serveNavigation(event) {
         if (!fresh.ok || fresh.type === "opaque") return;
 
         const freshText = await fresh.clone().text();
-        const cachedText = cached ? await cached.clone().text() : null;
+        const cachedText = cachedTextPromise ? await cachedTextPromise : null;
 
         if (cachedText !== null && cachedText !== freshText) {
             // New build. Prune every OTHER entry (the previous build's

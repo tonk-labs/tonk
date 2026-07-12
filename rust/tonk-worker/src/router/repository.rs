@@ -4225,7 +4225,7 @@ mod tests {
                 .await
                 .expect("acquire cached main");
             subscriber = session
-                .subscribe(ConceptQuery::from(Query::<Name>::default()))
+                .subscribe(ConceptQuery::from(Query::<Name>::default()), None)
                 .expect("subscribe");
             before_ptr = Arc::as_ptr(&session.state);
         }

@@ -99,6 +99,13 @@ pub struct SubscriberSession {
     pub sender: UnboundedSender<Bytes>,
     /// Whether the subscriber has received its initial snapshot.
     pub status: Status,
+    /// The client (e.g. a service-worker client id) this subscriber
+    /// serves, when known. Lets the owner reconcile subscribers
+    /// against its live-client set and drop the dead ones — channel
+    /// closure alone can't be relied on: a client that vanishes
+    /// without cancelling its response stream leaves the receiver
+    /// alive, so the send-failure prune never fires.
+    pub client: Option<String>,
 }
 
 /// One subscription, shared by every subscriber that opened the
@@ -225,7 +232,14 @@ mod tests {
     /// A subscriber in the given delivery state, paired with its receiver.
     fn subscriber(status: Status) -> (SubscriberSession, UnboundedReceiver<Bytes>) {
         let (sender, receiver) = unbounded_channel();
-        (SubscriberSession { sender, status }, receiver)
+        (
+            SubscriberSession {
+                sender,
+                status,
+                client: None,
+            },
+            receiver,
+        )
     }
 
     /// Decode a delivered frame off a receiver.

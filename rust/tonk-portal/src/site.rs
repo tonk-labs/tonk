@@ -119,11 +119,18 @@ impl CustomElement for TonkSite {
 /// Tear down the portal iframe held by `cell`, if any.
 ///
 /// TWO-PHASE: sever the comms (aborts + port closes via `clear_subs`),
-/// point the frame at `about:blank` so the guest realm unloads on its own
-/// schedule, and only remove the element a tick later. Synchronously
-/// destroying a live nested guest (running wasm, brokered ports, its own
-/// nested frames) from inside a render pass is the pattern the browser
-/// process has crashed under — give the unload a turn to settle first.
+/// unload the guest realm so it tears down on its own schedule, and only
+/// remove the element a tick later. Synchronously destroying a live nested
+/// guest (running wasm, brokered ports, its own nested frames) from inside a
+/// render pass is the pattern the browser process has crashed under — give
+/// the unload a turn to settle first.
+///
+/// The unload goes through the frame's own `location.replace()`, NOT through
+/// `iframe.src = "about:blank"`. Setting `src` *navigates* the frame, and a
+/// frame navigation appends an entry to the JOINT session history — so every
+/// teardown left a Back step behind, and the user had to press Back several
+/// times to leave a page they had navigated to once. `location.replace()`
+/// unloads the realm while replacing the current entry rather than adding one.
 fn teardown(cell: &StateCell) {
     if let Some(state) = cell.borrow_mut().take() {
         let mut s = state.borrow_mut();
@@ -132,7 +139,12 @@ fn teardown(cell: &StateCell) {
         if let Some(iframe) = s.iframe.take() {
             crate::bridge::unregister_portal(&iframe);
             let _ = iframe.remove_attribute("srcdoc");
-            let _ = iframe.set_attribute("src", "about:blank");
+            // Replace (don't push) the frame's entry. If the content window is
+            // unreachable (already detached), the frame is on its way out
+            // anyway and the element removal below finishes the job.
+            if let Some(frame_window) = iframe.content_window() {
+                let _ = frame_window.location().replace("about:blank");
+            }
             spawn_local(async move {
                 let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                     if let Some(win) = window() {

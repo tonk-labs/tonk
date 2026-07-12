@@ -44,6 +44,7 @@ web-sys = { workspace = true, features = [
   "MutationObserverInit",
   "MutationRecord",
   "Navigator",
+  "Url",
   "Node",
   "ReadableStream",
   "ReadableStreamDefaultReader",
