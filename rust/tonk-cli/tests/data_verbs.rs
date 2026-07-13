@@ -2,7 +2,7 @@ mod common;
 
 use anyhow::Result;
 
-use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, TestSite};
+use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, NOTE_ATTRIBUTE_DECL, NOTE_CONCEPT_DECL, TestSite};
 
 // The verbs are exercised through the library handlers, not the binary,
 // to avoid spawning a subprocess. Each handler returns its rendered
@@ -378,6 +378,87 @@ mod when_superseding_and_retracting {
         assert!(
             msg.contains("pass the entity before the flags"),
             "missing-required error should hint the supersede form:\n{msg}"
+        );
+        Ok(())
+    }
+}
+
+// Dialog semantics on a many-cardinality attribute: an assert
+// APPENDS a value; it does not supersede. These tests lock that
+// behavior through the typed-flag surface — if the analyzer turns
+// out not to append, the failure here is a finding to surface, not
+// to paper over (see the spec's cardinality-many section).
+mod when_asserting_many_cardinality_fields {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_appends_a_value_instead_of_superseding() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(NOTE_ATTRIBUTE_DECL).await?;
+        test.eval_inline(NOTE_CONCEPT_DECL).await?;
+        // Anchor the mint through eval so the entity is addressable
+        // by name across calls (the flag surface can't set anchors).
+        test.eval_inline("note!: &n1\n  body: \"hello\"\n  tag: \"a\"\n")
+            .await?;
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "note",
+            Some("n1"),
+            &["--tag".into(), "b".into()],
+        )
+        .await?;
+        let tag_claims = select_claims(&test, "xyz.tonk.note/tag").await?;
+        assert_eq!(
+            tag_claims.len(),
+            2,
+            "asserting a second value on a many-cardinality field must append, got: {tag_claims:?}"
+        );
+        let body_claims = select_claims(&test, "xyz.tonk.note/body").await?;
+        assert_eq!(
+            body_claims.len(),
+            1,
+            "the untouched one-cardinality field must keep exactly one claim: {body_claims:?}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_retracts_every_value_of_a_many_field() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(NOTE_ATTRIBUTE_DECL).await?;
+        test.eval_inline(NOTE_CONCEPT_DECL).await?;
+        test.eval_inline("note!: &n2\n  body: \"hello\"\n  tag: \"a\"\n  tag: \"b\"\n")
+            .await?;
+        tonk_cli::data_ops::retract(&test.site, "note", "n2", Some("tag")).await?;
+        let tag_claims = select_claims(&test, "xyz.tonk.note/tag").await?;
+        assert!(
+            tag_claims.is_empty(),
+            "retract --field on a many field must retract every value: {tag_claims:?}"
+        );
+        let body_claims = select_claims(&test, "xyz.tonk.note/body").await?;
+        assert_eq!(
+            body_claims.len(),
+            1,
+            "the sibling field must survive: {body_claims:?}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_marks_many_fields_in_the_dynamic_help() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(NOTE_ATTRIBUTE_DECL).await?;
+        test.eval_inline(NOTE_CONCEPT_DECL).await?;
+        let help = tonk_cli::data_ops::assert_op(
+            &test.site,
+            "note",
+            None,
+            &["--help".into()],
+        )
+        .await?;
+        assert!(
+            help.contains("appends a value"),
+            "many-cardinality fields should be marked in --help:\n{help}"
         );
         Ok(())
     }
