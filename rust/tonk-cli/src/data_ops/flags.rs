@@ -2,7 +2,7 @@
 //! <concept>` gets real typed `--flags`, `--help`, and enumerating
 //! errors — all driven by the branch schema, not hand-rolled.
 
-use dialog_query::ConceptDescriptor;
+use dialog_query::{Cardinality, ConceptDescriptor};
 
 use crate::schema::type_to_notation;
 
@@ -39,11 +39,15 @@ pub fn parse_field_flags(
             .content_type()
             .map(|t| type_to_notation(&t))
             .unwrap_or_else(|| "value".into());
+        let mut help = fd.description().to_string();
+        if matches!(fd.cardinality(), Cardinality::Many) {
+            help.push_str(" (cardinality many: each assert appends a value)");
+        }
         cmd = cmd.arg(
             clap::Arg::new(field.to_string())
                 .long(field.to_string())
                 .value_name(ty.to_uppercase())
-                .help(fd.description().to_string())
+                .help(help)
                 .required(all_required && !fd.is_optional()),
         );
     }
