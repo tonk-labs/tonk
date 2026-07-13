@@ -160,6 +160,7 @@
               # blob import — with a 403). Set UCAN_ENDPOINT to point /ucan/ at a
               # real remote (staging, prod, a teammate's tunnel) instead.
               ACCESS_PID=""
+              SHORTCUT_ORIGIN=""
               if [ -n "''${UCAN_ENDPOINT:-}" ]; then
                 ENDPOINT="$UCAN_ENDPOINT"
                 echo "dev:web: proxying /ucan/ to $ENDPOINT (from UCAN_ENDPOINT)"
@@ -189,8 +190,12 @@
                   kill "$ACCESS_PID" 2>/dev/null || true
                   exit 1
                 fi
+                # `/@` (the invite shortcut) is served by this same process, so
+                # it proxies to the same origin. Kept before `/ucan/` is
+                # appended to $ENDPOINT.
+                SHORTCUT_ORIGIN="$ENDPOINT"
                 ENDPOINT="$ENDPOINT/ucan/"
-                echo "dev:web: local access service ready; proxying /ucan/ to $ENDPOINT"
+                echo "dev:web: local access service ready; proxying /ucan/ and /@ to $SHORTCUT_ORIGIN"
               fi
               # Serve the user guide at /guide/ via mdbook's own live-reload
               # server, proxied by trunk (see the [[proxies]] entry in
@@ -210,8 +215,33 @@
               PATH="${pkgs.mdbook-mermaid}/bin:$PATH" \
                 ${pkgs.mdbook}/bin/mdbook serve ./guide --port "$GUIDE_PORT" --hostname 127.0.0.1 &
               GUIDE_PID=$!
-              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null' EXIT INT TERM
-              trunk serve --config ./rust/tonk-ui/Trunk.toml --proxy-backend "$ENDPOINT"
+
+              # Trunk takes only one `--proxy-backend`, and its TOML proxies do
+              # not interpolate, so `/@` (the invite shortcut) cannot be written
+              # into Trunk.toml — the access service's port is only known now.
+              # Generate a config that appends it, next to the original so the
+              # relative `watch` / target paths still resolve.
+              #
+              # `no_redirect` (underscore; the hyphen spelling is ignored) hands
+              # the shortcut's 301 to the BROWSER, which resolves the relative
+              # `Location: /join?…` against the dev origin and carries the short
+              # link's `#seed` onto it. Left to follow the redirect itself, trunk
+              # would resolve that Location against the access service, which has
+              # no `/join` route, and serve its 405.
+              TRUNK_CONFIG_GENERATED="./rust/tonk-ui/.Trunk.dev.toml"
+              cp ./rust/tonk-ui/Trunk.toml "$TRUNK_CONFIG_GENERATED"
+              if [ -n "$SHORTCUT_ORIGIN" ]; then
+                # printf, not a heredoc: a heredoc's body has to sit at column
+                # zero, which nixfmt then reflows the whole surrounding Nix
+                # string around.
+                printf '\n[[proxies]]\nbackend = "%s/@"\nno_redirect = true\n' \
+                  "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
+              else
+                echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
+              fi
+              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
+
+              trunk serve --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
             '';
           };
           "lint" = {
