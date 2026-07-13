@@ -30,10 +30,10 @@ use tonk_cli::{ExitCode, guide, identity, schema, site};
 #[derive(Parser, Debug)]
 #[command(
     name = "tonk",
-    about = "Headless CLI for reading/writing data and views",
+    about = "Headless CLI for a datalog-flavoured, syncable fact store: define concepts, assert facts, query them, render views",
     version,
     propagate_version = true,
-    after_help = "Start here:\n  tonk guide            one-screen index\n  tonk schema           every concept + attribute on the branch\n  tonk home <concept>   put a concept's directory on the space home\n\nExamples:\n  tonk eval -c 'person:'\n  tonk concepts\n  tonk share display alice --view person-card"
+    after_help = "The loop: orient, define concepts, assert facts, give them a view, share.\n\n  orient   guide · schema · concepts · views · status\n  author   concept add · view add · home\n  data     assert · query · get · retract\n  power    eval (asserted-notation) · render\n  collab   share · invite · join · push · pull · remote\n  setup    init · identity · blob · export · import · migrate · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,34 +42,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Initialize a new repo in the current working directory
-    #[command(after_help = "Examples:\n  tonk init\n  tonk init my-repo")]
-    Init {
-        /// Optional label for the repository.
-        ///
-        /// Reserved for a future `dialog.meta/name` claim;
-        /// accepted but not yet persisted.
-        #[arg(value_name = "LABEL")]
-        label: Option<String>,
-    },
-
-    /// Show the local profile DID. With `--reset`, deletes the
-    /// on-disk profile and creates a fresh identity.
-    #[command(after_help = "Examples:\n  tonk identity\n  tonk identity --reset")]
-    Identity {
-        /// Wipe the on-disk profile and create a new one. This removes
-        /// access to exisitng repos without re-delegation.
-        #[arg(long)]
-        reset: bool,
-    },
-
-    /// Evaluate commands in the current repo
-    Eval(EvalArgs),
-
-    /// Print the agent reference. With no topic, prints a one-screen
-    /// index; `tonk guide <topic>` prints one section; `tonk guide
-    /// all` prints everything. Useful for agent harnesses that need to
-    /// learn the syntax without repo access.
+    // -- orient -------------------------------------------------------
+    /// Print the built-in agent reference (the index, or one topic)
+    ///
+    /// With no topic, prints a one-screen index; `tonk guide <topic>`
+    /// prints one section; `tonk guide all` prints everything. Useful
+    /// for agent harnesses that need to learn the syntax without repo
+    /// access.
     // Topic list here is hand-rolled for help text; keep in sync with `guide::TOPICS`.
     #[command(
         after_help = "Topics: notation, views, events, workspace, all\n\nExamples:\n  tonk guide\n  tonk guide notation\n  tonk guide views\n  tonk guide all"
@@ -81,10 +60,11 @@ enum Command {
         topic: Option<String>,
     },
 
-    /// Print the site's schema as a re-submittable notation
-    /// document — every named attribute and concept, or just one
-    /// concept's subset when `<CONCEPT>` is given. The human
-    /// field/type view lives in `tonk assert <concept> --help`.
+    /// Print the branch's schema as re-submittable notation
+    ///
+    /// Every named attribute and concept, or just one concept's
+    /// subset when `<CONCEPT>` is given. The human field/type view
+    /// lives in `tonk assert <concept> --help`.
     #[command(
         after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema > schema.notation"
     )]
@@ -96,58 +76,72 @@ enum Command {
         concept: Option<String>,
     },
 
-    /// List user-defined concepts on the local branch. One row
-    /// per concept, tab-separated `name<TAB>description`. Built-in
-    /// concepts (`attribute`, `concept`, …) are omitted — they're
-    /// resolvable everywhere and would just be noise.
+    /// List user-defined concepts on the branch
+    ///
+    /// One row per concept, tab-separated `name<TAB>description`.
+    /// Built-in concepts (`attribute`, `concept`, …) are omitted —
+    /// they're resolvable everywhere and would just be noise.
     #[command(after_help = "Examples:\n  tonk concepts")]
     Concepts,
 
-    /// Query every instance of a concept, with every field bound —
-    /// reads are queries in dialog. Read-only; nothing commits.
-    /// Filter flags (e.g. `--where`) are the intended future
-    /// direction; today the whole concept is returned.
-    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
-    Query {
-        /// Name of the concept to query.
-        #[arg(value_name = "CONCEPT")]
-        concept: String,
-        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Fetch a single instance of a concept by entity, with every
-    /// field bound. Read-only — the query commits nothing.
-    #[command(after_help = "Examples:\n  tonk get task alice\n  tonk get task alice --json")]
-    Get {
-        /// Name of the concept to fetch from.
-        #[arg(value_name = "CONCEPT")]
-        concept: String,
-        /// Bookmark name or `did:key:…` entity URI of the instance.
-        #[arg(value_name = "ENTITY")]
-        entity: String,
-        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Assert claims — dialog's one write operation. With no entity,
-    /// mints a new instance of the concept (every non-optional field
-    /// required); with an entity, asserts superseding claims on it
-    /// (only the named fields change, and the entity must already
-    /// match the concept). The flags after `<CONCEPT>` are built at
-    /// runtime from the concept's own schema — run `tonk assert
-    /// <concept> --help` to see them.
+    /// List renderable entities (those carrying a text/html claim)
     ///
-    /// `--help` is deliberately NOT handled by clap here
-    /// (`disable_help_flag`): with clap's automatic `-h`/`--help`
-    /// left on, it would intercept a trailing `--help` before it
-    /// ever reached `rest`, so `tonk assert task --help` would show
-    /// this static text instead of `task`'s real flags. Disabling
-    /// it routes any `--help`/`-h` after `<CONCEPT>` into `rest`,
-    /// where `data_ops::assert_op` builds the concept's own dynamic
-    /// `clap::Command` and renders its help instead.
+    /// One row per entity, tab-separated `name<TAB>entity<TAB>bytes`.
+    /// Claim-driven: surfaces anything the host route would serve,
+    /// regardless of how the claim was asserted.
+    #[command(after_help = "Examples:\n  tonk views")]
+    Views,
+
+    /// Report how local main relates to its upstream
+    ///
+    /// Prints `synced`, `ahead`, `behind`, `diverged`, or
+    /// `no-upstream`. Read-only — fetches the upstream head without
+    /// merging.
+    #[command(after_help = "Examples:\n  tonk status")]
+    Status,
+
+    // -- author -------------------------------------------------------
+    /// Define a concept (schema) with typed attributes
+    Concept {
+        #[command(subcommand)]
+        command: ConceptCommand,
+    },
+
+    /// Author a declarative HTML view for a concept
+    View {
+        #[command(subcommand)]
+        command: ViewCommand,
+    },
+
+    /// Pin one or more concepts' directories on the space home
+    ///
+    /// Authors the origin-keyed root-concept recipe and re-points
+    /// the `tonk/space` alias (cardinality-one — safe to re-run;
+    /// each run replaces the home wholesale).
+    #[command(after_help = "Examples:\n  tonk home habit\n  tonk home habit entry")]
+    Home {
+        /// Concept name(s) to surface, in order.
+        #[arg(value_name = "CONCEPT", required = true)]
+        models: Vec<String>,
+    },
+
+    // -- data ---------------------------------------------------------
+    /// Write facts: mint an instance, or supersede fields on one
+    ///
+    /// With no entity, mints a new instance of the concept (every
+    /// non-optional field required); with an entity, asserts
+    /// superseding claims on it (only the named fields change, and
+    /// the entity must already match the concept). The flags after
+    /// `<CONCEPT>` are built at runtime from the concept's own
+    /// schema — run `tonk assert <concept> --help` to see them.
+    // `--help` is deliberately NOT handled by clap here
+    // (`disable_help_flag`): with clap's automatic `-h`/`--help`
+    // left on, it would intercept a trailing `--help` before it
+    // ever reached `rest`, so `tonk assert task --help` would show
+    // this static text instead of `task`'s real flags. Disabling
+    // it routes any `--help`/`-h` after `<CONCEPT>` into `rest`,
+    // where `data_ops::assert_op` builds the concept's own dynamic
+    // `clap::Command` and renders its help instead.
     #[command(
         disable_help_flag = true,
         after_help = "Examples:\n  tonk assert task --title \"Write the plan\" --done false\n  tonk assert task <entity> --done true\n  tonk assert task --help"
@@ -165,7 +159,39 @@ enum Command {
         rest: Vec<String>,
     },
 
-    /// Retract a single field, or a whole instance, from a concept.
+    /// Read every instance of a concept, every field bound
+    ///
+    /// Reads are queries in dialog. Read-only; nothing commits.
+    /// Filter flags (e.g. `--where`) are the intended future
+    /// direction; today the whole concept is returned.
+    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
+    Query {
+        /// Name of the concept to query.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Read one instance of a concept by entity
+    ///
+    /// Every field bound. Read-only — the query commits nothing.
+    #[command(after_help = "Examples:\n  tonk get task alice\n  tonk get task alice --json")]
+    Get {
+        /// Name of the concept to fetch from.
+        #[arg(value_name = "CONCEPT")]
+        concept: String,
+        /// Bookmark name or `did:key:…` entity URI of the instance.
+        #[arg(value_name = "ENTITY")]
+        entity: String,
+        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Retract a field, or a whole instance
+    ///
     /// A retraction is itself an assertion — a claim invalidating an
     /// old one — not a deletion. Omit `--field` to retract the whole
     /// instance; on a many-cardinality field, `--field` retracts
@@ -185,43 +211,18 @@ enum Command {
         field: Option<String>,
     },
 
-    /// List entities that carry a `text/html` claim on the local
-    /// branch. One row per entity, tab-separated
-    /// `name<TAB>entity<TAB>bytes`. Claim-driven: surfaces
-    /// anything the host route would serve, regardless of how
-    /// the claim was asserted.
-    #[command(after_help = "Examples:\n  tonk views")]
-    Views,
-
-    /// Migrate a `.carry/` directory to `.tonk/`. Walks up from
-    /// `$PWD` to find the source unless `--from` is supplied; the
-    /// destination is always a sibling `.tonk/` of the source.
-    #[command(after_help = "Examples:\n  tonk migrate\n  tonk migrate --from ../old --move")]
-    Migrate {
-        /// Explicit source `.carry/` directory. Default: walk up
-        /// from `$PWD`.
-        #[arg(long, value_name = "PATH")]
-        from: Option<PathBuf>,
-
-        /// Move instead of copy. Atomic rename on the same
-        /// filesystem; copy + delete fallback otherwise.
-        #[arg(long = "move")]
-        do_move: bool,
-    },
-
-    /// Export the local main branch's artifacts as CSV. Writes to
-    /// stdout unless `--out <file>` is given.
-    #[command(after_help = "Examples:\n  tonk export\n  tonk export --out data.csv")]
-    Export {
-        /// Write the CSV to this file instead of stdout.
-        #[arg(long, value_name = "PATH")]
-        out: Option<PathBuf>,
-    },
-
-    /// Render a `<tonk-display>` view to HTML, headlessly.
+    // -- power --------------------------------------------------------
+    /// Evaluate an asserted-notation document (the full DSL)
     ///
-    /// Route grammar: `/{model}` (directory), `/{entity}@{model}`
-    /// (one entity), `/{entity}@{model}!{view}` (explicit view).
+    /// The escape hatch for anything the verbs don't cover: rules,
+    /// multi-statement documents, joins, retractions inside
+    /// assertions. `tonk guide notation` documents the grammar.
+    Eval(EvalArgs),
+
+    /// Render a view to HTML, headlessly
+    ///
+    /// Route grammar: `{model}` (directory), `{entity}@{model}`
+    /// (one entity), `{entity}@{model}!{view}` (explicit view).
     /// Writes HTML to stdout unless `--out <file>` is given.
     #[command(
         after_help = "Examples:\n  tonk render person\n  tonk render alice@person\n  tonk render alice@person!card --out alice.html"
@@ -235,33 +236,18 @@ enum Command {
         out: Option<PathBuf>,
     },
 
-    /// Import artifacts from a CSV file, committing each row as an
-    /// assertion on the local main branch.
-    #[command(after_help = "Examples:\n  tonk import data.csv")]
-    Import {
-        /// The CSV file to read (`the,of,as,is,cause` columns).
-        #[arg(value_name = "PATH")]
-        file: PathBuf,
+    // -- collab -------------------------------------------------------
+    /// Push, then mint a launcher URL onto a live view
+    Share {
+        #[command(subcommand)]
+        command: ShareCommand,
     },
 
-    /// Push the local main branch to its upstream.
-    #[command(after_help = "Examples:\n  tonk push")]
-    Push,
-
-    /// Pull the local main branch from its upstream.
-    #[command(after_help = "Examples:\n  tonk pull")]
-    Pull,
-
-    /// Print how the local main branch relates to its upstream:
-    /// `synced`, `ahead`, `behind`, `diverged`, or `no-upstream`.
-    /// Read-only — fetches the upstream head without merging.
-    #[command(after_help = "Examples:\n  tonk status")]
-    Status,
-
-    /// Mint a UCAN delegation chain over the local repo and
-    /// print a paste-able invite URL. The default form is
-    /// audience-open: anyone holding the URL can claim by
-    /// redelegating from the embedded ephemeral key.
+    /// Mint an invite URL granting access to this repo
+    ///
+    /// Mints a UCAN delegation chain over the local repo. The
+    /// default form is audience-open: anyone holding the URL can
+    /// claim by redelegating from the embedded ephemeral key.
     #[command(after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod")]
     Invite {
         /// Override the URL prefix the invite is built against.
@@ -276,8 +262,9 @@ enum Command {
         remote: Option<String>,
     },
 
-    /// Claim an invite URL into a fresh `.tonk/` under the
-    /// current directory. Refuses if a site already exists.
+    /// Claim an invite URL into a fresh .tonk/ here
+    ///
+    /// Refuses if a site already exists under the current directory.
     #[command(after_help = "Examples:\n  tonk join 'https://...#invite'")]
     Join {
         /// Invite URL produced by `tonk invite` or
@@ -286,51 +273,92 @@ enum Command {
         url: String,
     },
 
-    /// Manage remotes attached to the local repository.
+    /// Push local main to its upstream
+    #[command(after_help = "Examples:\n  tonk push")]
+    Push,
+
+    /// Pull local main from its upstream
+    #[command(after_help = "Examples:\n  tonk pull")]
+    Pull,
+
+    /// Manage remotes (add, list, set-upstream)
     Remote {
         #[command(subcommand)]
         command: RemoteCommand,
     },
 
-    /// Store and inspect content-addressed blobs (images, files).
+    // -- setup --------------------------------------------------------
+    /// Create a new .tonk/ repo in the current directory
+    #[command(after_help = "Examples:\n  tonk init\n  tonk init my-repo")]
+    Init {
+        /// Optional label for the repository.
+        ///
+        /// Reserved for a future `dialog.meta/name` claim;
+        /// accepted but not yet persisted.
+        #[arg(value_name = "LABEL")]
+        label: Option<String>,
+    },
+
+    /// Show (or reset) the local profile DID
+    ///
+    /// With `--reset`, deletes the on-disk profile and creates a
+    /// fresh identity.
+    #[command(after_help = "Examples:\n  tonk identity\n  tonk identity --reset")]
+    Identity {
+        /// Wipe the on-disk profile and create a new one. This removes
+        /// access to existing repos without re-delegation.
+        #[arg(long)]
+        reset: bool,
+    },
+
+    /// Store and inspect content-addressed blobs (images, files)
     Blob {
         #[command(subcommand)]
         command: BlobCommand,
     },
 
-    /// Author schema: concepts and their attributes.
-    Concept {
-        #[command(subcommand)]
-        command: ConceptCommand,
+    /// Export local main's artifacts as CSV
+    ///
+    /// Writes to stdout unless `--out <file>` is given.
+    #[command(after_help = "Examples:\n  tonk export\n  tonk export --out data.csv")]
+    Export {
+        /// Write the CSV to this file instead of stdout.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
     },
 
-    /// Author declarative views for a concept.
-    View {
-        #[command(subcommand)]
-        command: ViewCommand,
+    /// Import artifacts from a CSV file onto local main
+    ///
+    /// Commits each row as an assertion.
+    #[command(after_help = "Examples:\n  tonk import data.csv")]
+    Import {
+        /// The CSV file to read (`the,of,as,is,cause` columns).
+        #[arg(value_name = "PATH")]
+        file: PathBuf,
     },
 
-    /// Put one or more concepts' directories on the space home.
-    /// Authors the origin-keyed root-concept recipe and re-points
-    /// the `tonk/space` alias (cardinality-one — safe to re-run;
-    /// each run replaces the home wholesale).
-    #[command(after_help = "Examples:\n  tonk home habit\n  tonk home habit entry")]
-    Home {
-        /// Concept name(s) to surface, in order.
-        #[arg(value_name = "CONCEPT", required = true)]
-        models: Vec<String>,
+    /// Migrate a .carry/ directory to .tonk/
+    ///
+    /// Walks up from `$PWD` to find the source unless `--from` is
+    /// supplied; the destination is always a sibling `.tonk/` of
+    /// the source.
+    #[command(after_help = "Examples:\n  tonk migrate\n  tonk migrate --from ../old --move")]
+    Migrate {
+        /// Explicit source `.carry/` directory. Default: walk up
+        /// from `$PWD`.
+        #[arg(long, value_name = "PATH")]
+        from: Option<PathBuf>,
+
+        /// Move instead of copy. Atomic rename on the same
+        /// filesystem; copy + delete fallback otherwise.
+        #[arg(long = "move")]
+        do_move: bool,
     },
 
-    /// Push to the upstream and produce a launcher URL that
-    /// lands the recipient on a live view of local data.
-    Share {
-        #[command(subcommand)]
-        command: ShareCommand,
-    },
-
-    /// Show or change anonymous usage telemetry. `status` (default)
-    /// prints the effective state and why; `on` / `off` persist the
-    /// choice.
+    /// Show or toggle anonymous usage telemetry
+    ///
+    /// `status` (default) prints the effective state and why;
+    /// `on` / `off` persist the choice.
     #[command(after_help = "Examples:\n  tonk telemetry\n  tonk telemetry off")]
     Telemetry {
         /// One of: status, on, off. Omit for status.
@@ -341,8 +369,9 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum ShareCommand {
-    /// Share a named concept. The recipient lands on the
-    /// auto-rendered concept view at
+    /// Share a concept's auto-rendered listing
+    ///
+    /// The recipient lands on the auto-rendered concept view at
     /// `/space/<space-name>/branch/main/concept/<name>`.
     #[command(
         after_help = "Examples:\n  tonk share concept person\n  tonk share concept person --space-name demo"
@@ -366,9 +395,12 @@ enum ShareCommand {
         remote: Option<String>,
     },
 
-    /// Share an HTML view. The recipient lands on the iframe
-    /// viewer at `/space/<space-name>/branch/main/view/<entity>`
-    /// with the body served from the entity's `text/html` claim.
+    /// Share a raw HTML page through the iframe viewer
+    ///
+    /// The recipient lands on the iframe viewer at
+    /// `/space/<space-name>/branch/main/view/<entity>` with the body
+    /// served from the entity's `text/html` claim. Events don't fire
+    /// there — for interactive, data-bound views use `share display`.
     #[command(after_help = "Examples:\n  tonk share view my-page")]
     View {
         /// Bookmark name or `did:key:…` entity URI for the view.
@@ -386,8 +418,9 @@ enum ShareCommand {
         remote: Option<String>,
     },
 
-    /// Share an entity rendered through `<tonk-display>`. The
-    /// recipient lands on
+    /// Share an entity rendered live through <tonk-display>
+    ///
+    /// The recipient lands on
     /// `/space/<space-name>/branch/main/display/<subject>` with
     /// the supplied `--view` carried across as a query parameter.
     /// Use this for declarative views built against the `view`
@@ -431,9 +464,10 @@ enum ShareCommand {
 
 #[derive(Subcommand, Debug)]
 enum RemoteCommand {
-    /// Register a UCAN-S3 access-service remote on the local
-    /// site. Writes the dialog remote handle and the
-    /// meta-branch `Remote` concept browsers read.
+    /// Register a UCAN-S3 access-service remote
+    ///
+    /// Writes the dialog remote handle and the meta-branch
+    /// `Remote` concept browsers read.
     #[command(after_help = "Examples:\n  tonk remote add prod https://access.example.com")]
     Add {
         /// Local name for the remote.
@@ -449,12 +483,11 @@ enum RemoteCommand {
         subject: Option<String>,
     },
 
-    /// Print every remote registered on the meta branch.
+    /// Print every remote registered on the meta branch
     #[command(after_help = "Examples:\n  tonk remote list")]
     List,
 
-    /// Wire the local `main` branch's upstream to
-    /// `<remote>/main`.
+    /// Wire local main's upstream to <remote>/main
     #[command(after_help = "Examples:\n  tonk remote set-upstream prod")]
     SetUpstream {
         /// Name of the remote to track.
@@ -465,8 +498,9 @@ enum RemoteCommand {
 
 #[derive(Subcommand, Debug)]
 enum BlobCommand {
-    /// Ingest a file into the blob store and print its blob:<hash>
-    /// reference. Asserts content-type (and file name) facts.
+    /// Ingest a file and print its blob:<hash> reference
+    ///
+    /// Asserts content-type (and file name) facts.
     #[command(
         after_help = "Examples:\n  tonk blob add photo.png\n  tonk blob add data.bin --type application/octet-stream"
     )]
@@ -478,24 +512,26 @@ enum BlobCommand {
         #[arg(long = "type", value_name = "MIME")]
         content_type: Option<String>,
     },
-    /// Write a blob's bytes to stdout.
+    /// Write a blob's bytes to stdout
     #[command(after_help = "Examples:\n  tonk blob cat blob:zAbc...")]
     Cat {
         /// The blob:<hash> reference.
         #[arg(value_name = "BLOB_URI")]
         reference: String,
     },
-    /// List blobs in the index with size and content type.
+    /// List blobs in the index with size and content type
     #[command(after_help = "Examples:\n  tonk blob ls")]
     Ls,
 }
 
 #[derive(Subcommand, Debug)]
 enum ConceptCommand {
-    /// Assert a new concept with typed attributes. Attributes are
-    /// anchored (`&{concept}-{field}`), so the concept and its
-    /// fields resolve by name immediately — `tonk assert <name>
-    /// --help` shows the typed flags right after this succeeds.
+    /// Assert a new concept with typed attributes
+    ///
+    /// Attributes are anchored (`&{concept}-{field}`), so the
+    /// concept and its fields resolve by name immediately —
+    /// `tonk assert <name> --help` shows the typed flags right
+    /// after this succeeds.
     #[command(
         after_help = "Types: text, entity, unsigned-integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --attr name:text:one --attr target:text:one --description \"a tracked habit\"\n  tonk concept add note --attr body:text:one --attr tag:text:many"
     )]
@@ -514,8 +550,10 @@ enum ConceptCommand {
 
 #[derive(Subcommand, Debug)]
 enum ViewCommand {
-    /// Assert a declarative view for a concept. When no home is set
-    /// yet, the build is auto-surfaced onto the space home.
+    /// Assert a declarative view for a concept
+    ///
+    /// When no home is set yet, the build is auto-surfaced onto the
+    /// space home so it's immediately visible.
     #[command(
         after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --name habit-card"
     )]
