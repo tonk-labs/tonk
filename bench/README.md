@@ -53,6 +53,25 @@ notation-validation rejections did not recur.
 | targeted-edit | 9/10 | 12 commands of filesystem grepping for store-resident data before settling on the schema/eval path |
 | interview-build | 3/10 | strong interview and clean notation, but the render-gap again: `tonk/space` home alias never repointed, so the build never surfaces on the space home |
 
+### Post-authoring-verbs measurement (2026-07-13, codex/gpt-5.5 episode)
+
+Re-run of interview-build after the authoring verbs landed (`tonk concept
+add`, `tonk view add` with auto-surface, `tonk home` re-pointing the space
+alias via the verified root-concept recipe).
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| interview-build | 3/10 | render-gap persists as a *discovery* problem: the episode issued zero `tonk home`/`tonk view add`/`tonk concept add` commands — it drove every write through `tonk eval` heredocs and never learned the alias-repointing verb exists, so the home screenshot still shows the empty launcher |
+
+The capability gap is closed (the verbs exist and are verified end to end in
+`rust/tonk-cli/tests/authoring.rs`) but the *orientation surfaces the episode
+actually reads* — the invite prompt and `tonk guide` — still teach eval-first
+and never mention `tonk home`. Judge friction also repeated the three
+notation constraints worth surfacing in `tonk guide notation` (mandatory
+attribute descriptions, rules must bind `this`, seed anchors need explicit
+`id:`). Next lever: put the authoring verbs in the guide/invite prompt, or
+have the episode's post-build checklist drive the space home URL.
+
 `cold-onboard` was 7/10 both before and after the seed-reaches-remote fix, but
 the fix removed a confound: pre-fix the joined branch was barren (0
 `xyz.tonk.view` attributes) because `tonk invite` never pushed the
