@@ -1,5 +1,10 @@
 //! Tests for the shortcut service: validation core and endpoints.
 //!
+//! Native-only, like the crate's other test suite: the library links
+//! the Cloudflare `worker` runtime, so its wasm build only
+//! instantiates inside workerd — the browser harness the web CI leg
+//! runs tests in can't load it.
+//!
 //! The HTTP round trip runs against the local test server and is gated
 //! like the other integration tests:
 //!
@@ -7,13 +12,12 @@
 //! cargo test -p tonk-access-service --features integration-tests --test shortcut
 //! ```
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use tonk_access_service::shortcut::{
     DEFAULT_TTL_DAYS, KEY_PREFIX, MAX_TARGET_SIZE, MAX_TTL_DAYS, SECONDS_PER_DAY, Shortcut,
     object_key_for, requested_ttl,
 };
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 #[dialog_common::test]
 fn it_accepts_a_rooted_path_with_query() {

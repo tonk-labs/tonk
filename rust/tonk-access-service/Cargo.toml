@@ -72,8 +72,6 @@ dialog-storage = { workspace = true, features = ["helpers"] }
 dialog-ucan-core = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
-wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }

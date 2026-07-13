@@ -4155,7 +4155,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "url",
- "wasm-bindgen-test",
  "worker",
  "worker-macros",
 ]
