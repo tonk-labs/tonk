@@ -2,6 +2,7 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
+use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
 use crate::eval::{self, Options, Source};
 use crate::output::Format;
@@ -251,6 +252,9 @@ pub async fn get(
 /// maps to [`DataOpError::MissingRequired`], whose display hints
 /// the supersede form; any other flag rejection is
 /// [`DataOpError::Flags`].
+///
+/// Commits sync to the upstream like `tonk eval` (pull-before /
+/// push-after; `TONK_NO_SYNC` opts out).
 pub async fn assert_op(
     site: &TonkSite,
     concept: &str,
@@ -270,8 +274,13 @@ pub async fn assert_op(
     match entity {
         None => {
             let doc = build_assert(&info.descriptor, concept, &pairs)?;
-            let outcome =
-                eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+            let outcome = auto_sync::run_eval(
+                site,
+                Source::Inline(doc),
+                Options::default(),
+                auto_sync::enabled(false),
+            )
+            .await?;
             Ok(format!("asserted {concept}\n{}", outcome.stdout))
         }
         Some(entity) => {
@@ -285,8 +294,13 @@ pub async fn assert_op(
                 return Err(DataOpError::NoFields);
             }
             let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
-            let outcome =
-                eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+            let outcome = auto_sync::run_eval(
+                site,
+                Source::Inline(doc),
+                Options::default(),
+                auto_sync::enabled(false),
+            )
+            .await?;
             Ok(format!("asserted {entity}\n{}", outcome.stdout))
         }
     }
@@ -299,6 +313,9 @@ pub async fn assert_op(
 /// valid fields on a miss); on a many-cardinality field this
 /// retracts every value. With `field: None`, retracts the whole
 /// instance ([`build_retract`]'s `..: _` form).
+///
+/// Commits sync to the upstream like `tonk eval` (pull-before /
+/// push-after; `TONK_NO_SYNC` opts out).
 pub async fn retract(
     site: &TonkSite,
     concept: &str,
@@ -323,7 +340,13 @@ pub async fn retract(
         }
     }
     let doc = build_retract(concept, entity, field);
-    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+    let outcome = auto_sync::run_eval(
+        site,
+        Source::Inline(doc),
+        Options::default(),
+        auto_sync::enabled(false),
+    )
+    .await?;
     Ok(match field {
         Some(f) => format!("retracted {f} from {entity}\n{}", outcome.stdout),
         None => format!("retracted {entity}\n{}", outcome.stdout),
