@@ -480,7 +480,7 @@ mod route_for_tests {
         // Drain at the trailing edge, which clears the burst clock.
         assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
         s.begin_drain();
-        s.end_drain();
+        s.end_drain(SYNC_DEBOUNCE_MS as f64);
         // A fresh burst after the drain starts a NEW cap clock at t=10_000. Use a
         // superseded ticket (t2, then t3 bumps the generation) so `is_latest` is
         // false and only the cap can trigger a drain — that's what proves the
@@ -508,7 +508,7 @@ mod route_for_tests {
             !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0),
             "in_flight guard must block a second concurrent drain",
         );
-        s.end_drain();
+        s.end_drain(SYNC_MAX_WAIT_MS as f64 * 10.0);
     }
 
     #[dialog_common::test]
@@ -622,7 +622,9 @@ struct SyncScheduler {
     /// drain ran: on a slow link a drain can outlast the loop's interval, so
     /// without a completion-relative gap the next drain starts the moment the
     /// last one lands and sync runs back-to-back forever.
-    last_drain_end: std::rc::Rc<std::cell::Cell<f64>>,
+    /// `None` until the first drain completes: with no previous drain there is
+    /// nothing to cool down from, so the first one runs immediately.
+    last_drain_end: std::rc::Rc<std::cell::Cell<Option<f64>>>,
     /// Set once the worker is being replaced. A dying worker must not start
     /// new sync work: the SW spec keeps it alive until every `waitUntil`
     /// settles and every fetch completes, so a drain scheduled (or a loop
@@ -708,7 +710,9 @@ impl SyncScheduler {
         // request that triggered this one. Without it, a drain that outlasts
         // the loop interval (easy on a slow link) is followed immediately by
         // the next, and sync runs continuously.
-        now - self.last_drain_end.get() >= SYNC_COOLDOWN_MS as f64
+        self.last_drain_end
+            .get()
+            .is_none_or(|end| now - end >= SYNC_COOLDOWN_MS as f64)
     }
 
     /// Mark a drain as started: take the `in_flight` guard and clear the burst
@@ -718,11 +722,13 @@ impl SyncScheduler {
         self.pending_since.set(None);
     }
 
-    /// Release the `in_flight` guard once a drain finishes, and stamp the
-    /// completion time so the cooldown measures from here.
-    fn end_drain(&self) {
+    /// Release the `in_flight` guard once a drain finishes, stamping `now` as
+    /// the completion time so the cooldown measures from here. The clock is
+    /// passed in rather than read internally so the gate is testable against a
+    /// synthetic one.
+    fn end_drain(&self, now: f64) {
         self.in_flight.set(false);
-        self.last_drain_end.set(js_sys::Date::now());
+        self.last_drain_end.set(Some(now));
     }
 
     /// Stop all sync work: the worker is being replaced. Idempotent.
@@ -1118,7 +1124,7 @@ impl TonkServiceWorker {
                 }
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain();
+                scheduler.end_drain(js_sys::Date::now());
             }
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             crate::router::drain_sync(&state).await;
@@ -1152,7 +1158,7 @@ impl TonkServiceWorker {
             } else if scheduler.may_drain(js_sys::Date::now()) {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain();
+                scheduler.end_drain(js_sys::Date::now());
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -1213,7 +1219,7 @@ impl TonkServiceWorker {
                 }
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain();
+                scheduler.end_drain(js_sys::Date::now());
             }
             running.set(false);
         });
@@ -1315,7 +1321,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         if offline() {
             scheduler.begin_drain();
             crate::router::mark_offline(&state).await;
-            scheduler.end_drain();
+            scheduler.end_drain(js_sys::Date::now());
             return Ok(JsValue::UNDEFINED);
         }
         scheduler.begin_drain();
@@ -1323,7 +1329,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
             log!("sync drain, caused by: {cause}");
         }
         crate::router::drain_sync(&state).await;
-        scheduler.end_drain();
+        scheduler.end_drain(js_sys::Date::now());
         Ok(JsValue::UNDEFINED)
     });
 
