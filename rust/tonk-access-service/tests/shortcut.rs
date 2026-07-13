@@ -210,4 +210,99 @@ mod http {
 
         Ok(())
     }
+
+    /// A real invite URL survives the shorten → redirect → reassemble
+    /// round trip: following the short link's 301 the way a browser does
+    /// reproduces the original long URL exactly, secret fragment included.
+    ///
+    /// This is the seam the mint handler depends on, driven through the
+    /// same [`ShortcutRequest`] glue it uses. The two halves it guards:
+    ///
+    /// - The seed (`#…`) is never PUT — it must not reach the server, and
+    ///   the service must not echo it back in `Location`. It survives only
+    ///   because the browser re-attaches the *short* link's fragment to
+    ///   the redirect target (RFC 7231 fragment inheritance).
+    /// - The `Location` is relative, so it resolves against the origin the
+    ///   user is on, not the service's.
+    ///
+    /// [`ShortcutRequest`]: tonk_invite::shortcut::ShortcutRequest
+    #[dialog_common::test]
+    async fn it_round_trips_an_invite_url(env: AccessServiceAddress) -> anyhow::Result<()> {
+        use tonk_invite::shortcut::ShortcutRequest;
+
+        let origin = env.access_service_url.trim_end_matches('/');
+        let seed = "BsBZG8W93RD527tyLRA142rcewpggxBsRSUe5eEDEmGh";
+        let long = format!(
+            "{origin}/join\
+             ?access=2DoZVyzdw3q5w9WQ1MJgH4zwGuhKdryoLUgVLYhkbA5N\
+             &remote=http%3A%2F%2Flocalhost%3A8080%2Fucan%2F\
+             #{seed}"
+        );
+
+        let request = ShortcutRequest::new(&long)?;
+
+        // The secret never goes on the wire: only the path + query is PUT.
+        assert!(
+            !request.target.contains(seed),
+            "the seed must not be sent to the service, got {:?}",
+            request.target,
+        );
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let response = client
+            .put(request.endpoint.as_str())
+            .body(request.target.clone())
+            .send()
+            .await?;
+        assert_eq!(response.status(), 200);
+        let hash = response.text().await?;
+
+        // The short link keeps the fragment; the stored part does not.
+        let short = request.short_url(&hash)?;
+        assert!(
+            short.starts_with(&format!("{origin}/@/{hash}")),
+            "short URL should be the shortcut endpoint, got {short}",
+        );
+        assert!(
+            short.ends_with(&format!("#{seed}")),
+            "short URL must carry the seed in its fragment, got {short}",
+        );
+        assert!(
+            short.len() < long.len(),
+            "the short URL should be shorter ({} vs {})",
+            short.len(),
+            long.len(),
+        );
+
+        // Follow the redirect the way a browser does, and reassemble.
+        let response = client.get(format!("{origin}/@/{hash}")).send().await?;
+        assert_eq!(response.status(), 301);
+        let location = response
+            .headers()
+            .get("Location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            location.starts_with('/'),
+            "Location must be relative so it resolves against the user's \
+             origin, got {location}",
+        );
+        assert!(
+            !location.contains('#'),
+            "the service must not echo a fragment; the browser inherits the \
+             short link's own. Got {location}",
+        );
+
+        // Fragment inheritance: the browser carries the short link's `#seed`
+        // onto the relative target. That reconstructs the original URL.
+        let rebuilt = format!("{origin}{location}#{seed}");
+        assert_eq!(
+            rebuilt, long,
+            "following the short link must reproduce the original invite URL",
+        );
+
+        Ok(())
+    }
 }
