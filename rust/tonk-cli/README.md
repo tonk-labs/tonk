@@ -40,6 +40,11 @@ tonk get habit <entity>                       # one instance
 tonk retract habit <entity> --field target    # retract one field (a many field loses every value)
 tonk retract habit <entity>                   # retract the whole instance
 
+# Authoring — schema, views, and the space home.
+tonk concept add habit --attr name:text:one   # anchored concept + typed attributes
+tonk view add habit --template '<b>{name}</b>'  # declarative view (auto-surfaces an unset home)
+tonk home habit                               # put habit's directory on the space home
+
 # CSV transfer over the main branch.
 tonk export --out data.csv
 tonk import data.csv

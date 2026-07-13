@@ -39,6 +39,24 @@ Notes:
 - Asserting on a many-cardinality field appends a value.
 - Exit codes: 0 success, 1 parse, 2 analyze, 3 commit, 4 I/O.
 
+## Authoring (schema, views, the space home)
+
+```bash
+tonk concept add <name> --attr <field>:<type>:<card> [--attr …] [--description <text>]
+                                    # types: text, entity, unsigned-integer, …; card: one|many
+tonk view add <concept> --template '<html>' | --template-file <path> [--name <anchor>]
+tonk home <concept> [<concept> …]   # put concept directories on the space home
+```
+
+Notes:
+- `concept add` anchors everything, so `tonk assert <name> --help` works
+  immediately after.
+- `view add` auto-surfaces your build onto the space home when no home is
+  set yet; `tonk home` re-points it explicitly (safe to re-run — each run
+  replaces the home).
+- Writes sync to the upstream automatically (like `tonk eval`); set
+  `TONK_NO_SYNC=1` to opt out.
+
 ## Escape hatch: eval (asserted-notation documents)
 
 Anything the verbs don't cover — defining concepts/attributes, rules,
