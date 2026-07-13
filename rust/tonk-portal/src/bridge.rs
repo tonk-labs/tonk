@@ -1934,10 +1934,15 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     let this = host.get_attribute("entity").unwrap_or_default();
     let model = host.get_attribute("model").unwrap_or_default();
     let location = window().map(|w| w.location());
-    let origin = location
-        .as_ref()
-        .and_then(|l| l.origin().ok())
-        .unwrap_or_default();
+    // The host's real origin. Read it via `context_origin()`, not
+    // `location.origin()` directly: when THIS portal is itself inside a sealed
+    // guest (a NESTED `<tonk-site>`), the host document is `about:srcdoc` and
+    // `location.origin()` is the opaque string `"null"`. `context_origin()`
+    // prefers the origin the parent portal already forwarded in
+    // `window.tonk.context.origin`, so the real origin propagates down every
+    // nesting level; it falls back to `location.origin` at the top document
+    // (no parent portal, so `window.tonk` is absent).
+    let origin = tonk_host::bridge::context_origin().unwrap_or_default();
     // The guest's own `window.location` is `about:srcdoc`; its REAL location is
     // the parent's. Pass the parent's path + search + hash so the guest stamps
     // them on its requests (the SW reads them to route/contain) and so a
@@ -2583,6 +2588,40 @@ mod tests {
         assert!(
             get_str(&context, "search").is_some(),
             "context carries a `search` field forwarded from the host location",
+        );
+    }
+
+    /// When THIS portal is itself a nested guest, its host document is
+    /// `about:srcdoc` and `location.origin` is `"null"`; the real origin lives
+    /// in the parent-forwarded `window.tonk.context.origin`. The ready envelope
+    /// must carry that forwarded origin (not `"null"`), so a further-nested
+    /// guest can build a same-origin invite link. Simulated by installing a
+    /// `window.tonk.context.origin` before bind.
+    #[dialog_common::test]
+    async fn it_forwards_the_parent_context_origin() {
+        let win = window().expect("window");
+        let tonk = Object::new();
+        let ctx = Object::new();
+        let _ = Reflect::set(&ctx, &"origin".into(), &"https://forwarded.test".into());
+        let _ = Reflect::set(&tonk, &"context".into(), &ctx);
+        let _ = Reflect::set(&win, &"tonk".into(), &tonk);
+
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"), None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+
+        let ready = listener.wait_for("ready").await;
+        let context = Reflect::get(&ready, &"context".into()).expect("context");
+
+        // Restore before asserting so a failure doesn't leak `window.tonk`
+        // into a later test running in the same page.
+        let _ = Reflect::set(&win, &"tonk".into(), &JsValue::UNDEFINED);
+
+        assert_eq!(
+            get_str(&context, "origin").as_deref(),
+            Some("https://forwarded.test"),
+            "a nested portal forwards the parent context origin, not `about:srcdoc`'s null",
         );
     }
 
