@@ -10,10 +10,10 @@ use crate::site::TonkSite;
 
 pub mod flags;
 
-/// Failure modes shared by the data verbs (`describe`, and the
-/// upcoming `add`/`set`/`get`/`list`/`rm`). Each maps onto a CLI
-/// exit code via [`Self::exit_code`], mirroring [`crate::eval::EvalError`]
-/// and [`crate::invite::InviteError`].
+/// Failure modes shared by the data verbs (`assert`, `retract`,
+/// `query`, `get`, `describe`). Each maps onto a CLI exit code via
+/// [`Self::exit_code`], mirroring [`crate::eval::EvalError`] and
+/// [`crate::invite::InviteError`].
 #[derive(Debug, thiserror::Error)]
 pub enum DataOpError {
     /// No user concept with this name; lists the known concept names.
@@ -24,29 +24,45 @@ pub enum DataOpError {
         /// Names of every concept actually defined on the branch.
         known: Vec<String>,
     },
+    /// The supersede form of `assert` named an entity that doesn't
+    /// currently match the concept (every `with:` field bound).
+    /// Closes the validation backdoor: without this, a typo'd
+    /// entity would silently mint a partial orphan instance,
+    /// bypassing the mint form's required-field check.
+    #[error("no {concept} instance at '{entity}'; run `tonk query {concept}` to see what exists")]
+    NoInstance {
+        /// Concept the entity was checked against.
+        concept: String,
+        /// The entity reference that didn't resolve.
+        entity: String,
+    },
+    /// The mint form of `assert` was missing one or more required
+    /// fields. Rendered like [`DataOpError::Flags`], plus a hint
+    /// for the agent who intended the supersede form and forgot
+    /// the entity — clap's own message points at the wrong fix.
+    #[error("{}\nto update an existing instance, pass the entity before the flags: tonk assert <concept> <entity> --<field> <value>", strip_clap_error_header(.0))]
+    MissingRequired(clap::Error),
     /// A field/value error from the notation builders.
     #[error(transparent)]
     Data(#[from] crate::data::DataError),
     /// The underlying eval pipeline failed.
     #[error(transparent)]
     Eval(#[from] crate::eval::EvalError),
-    /// The raw CLI flags for a schema-aware verb (`add`, `set`)
-    /// failed clap's dynamically-built parse: an unknown `--flag`,
-    /// a missing required one, or a bad value for the arg's type.
-    /// Display text mirrors clap's own rendered error (its usage
-    /// line already enumerates the concept's real flags), minus
-    /// clap's own `"error: "` header — every other `DataOpError`
-    /// variant's `Display` is header-free, and callers that print
-    /// `"error: {err}"` (matching every other data-verb handler in
-    /// `bin/tonk.rs`) would otherwise get a doubled header.
+    /// The raw CLI flags for `assert` failed clap's
+    /// dynamically-built parse: an unknown `--flag` or a bad value
+    /// for the arg's type. Display text mirrors clap's own rendered
+    /// error (its usage line already enumerates the concept's real
+    /// flags), minus clap's own `"error: "` header — every other
+    /// `DataOpError` variant's `Display` is header-free, and callers
+    /// that print `"error: {err}"` (matching every other data-verb
+    /// handler in `bin/tonk.rs`) would otherwise get a doubled
+    /// header.
     #[error("{}", strip_clap_error_header(.0))]
     Flags(clap::Error),
-    /// `set` was called with no `--field value` pairs at all — a
-    /// partial update needs at least one field to change, unlike
-    /// `add` (where an all-optional concept could otherwise commit
-    /// a no-op instance, but `set` against an existing entity would
-    /// commit nothing at all).
-    #[error("set needs at least one --field to change")]
+    /// The supersede form of `assert` was called with no `--field
+    /// value` pairs at all — asserting against an existing entity
+    /// with nothing to change would commit nothing.
+    #[error("assert with an entity needs at least one --field to change")]
     NoFields,
     /// I/O, schema read, or repo-not-found failure.
     #[error("{0}")]
@@ -69,12 +85,15 @@ impl DataOpError {
     /// CLI exit code for this failure mode.
     pub fn exit_code(&self) -> crate::ExitCode {
         match self {
-            DataOpError::NoConcept { .. } | DataOpError::Io(_) => crate::ExitCode::IoError,
+            DataOpError::NoConcept { .. } | DataOpError::Io(_) | DataOpError::NoInstance { .. } => {
+                crate::ExitCode::IoError
+            }
             // A bad field/value, or a rejected flag parse, is an
             // analysis-level rejection, not an I/O failure.
-            DataOpError::Data(_) | DataOpError::Flags(_) | DataOpError::NoFields => {
-                crate::ExitCode::AnalyzeError
-            }
+            DataOpError::Data(_)
+            | DataOpError::Flags(_)
+            | DataOpError::NoFields
+            | DataOpError::MissingRequired(_) => crate::ExitCode::AnalyzeError,
             DataOpError::Eval(e) => e.exit_code(),
         }
     }
@@ -164,12 +183,43 @@ async fn run_read(site: &TonkSite, doc: String, json: bool) -> Result<String, Da
     Ok(outcome.stdout)
 }
 
-/// List every instance of `concept`, with every field bound.
-/// Rendered as notation by default, or as JSON when `json` is
-/// `true`.
-pub async fn list(site: &TonkSite, concept: &str, json: bool) -> Result<String, DataOpError> {
+/// Query every instance of `concept`, with every field bound —
+/// reads are queries in dialog. Rendered as notation by default,
+/// or as JSON when `json` is `true`.
+pub async fn query(site: &TonkSite, concept: &str, json: bool) -> Result<String, DataOpError> {
     let info = require_concept(site, concept).await?;
     run_read(site, query_doc(&info.descriptor, concept, None), json).await
+}
+
+/// True iff `entity` currently matches `concept` — every `with:`
+/// field bound, the same completeness [`get`] requires. A partial
+/// instance (a field retracted) does not count; repairing one is
+/// `tonk eval` territory.
+async fn instance_exists(
+    site: &TonkSite,
+    descriptor: &dialog_query::ConceptDescriptor,
+    concept: &str,
+    entity: &str,
+) -> Result<bool, DataOpError> {
+    let doc = query_doc(descriptor, concept, Some(entity));
+    let outcome = match eval::run_against_site(site, Source::Inline(doc), Options::default()).await
+    {
+        Ok(outcome) => outcome,
+        // `entity` is the only untrusted input in this document, so
+        // any analyzer rejection of it (most commonly `this:` naming
+        // a bookmark that was never declared — `UnknownNameReference`)
+        // means the same thing a query with no results would: there's
+        // no instance there. Any other failure (I/O, commit) still
+        // propagates.
+        Err(eval::EvalError::Analyze(_)) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(outcome
+        .response
+        .matches_after
+        .iter()
+        .find(|block| block.label == concept)
+        .is_some_and(|block| !block.results.is_empty()))
 }
 
 /// Fetch a single instance of `concept` by `entity`, with every
@@ -190,74 +240,72 @@ pub async fn get(
     .await
 }
 
-/// Assert a new instance of `concept` from schema-derived `--field
-/// value` flags in `argv`. Every non-optional field is required
-/// (`parse_field_flags(.., all_required=true)`), so a `--title`-only
-/// `add` on a concept with two required fields fails clap's
-/// required-argument check before anything is built or committed.
+/// Assert claims against `concept` — dialog's one write operation.
+/// With `entity: None`, mints a new instance: every non-optional
+/// field is required (`all_required=true`), so a partial mint fails
+/// clap's required-argument check before anything is built. With
+/// `entity: Some(_)`, asserts superseding claims on that entity:
+/// every field is optional, at least one must be supplied, and the
+/// entity must already match the concept ([`instance_exists`]) —
+/// otherwise the call is rejected as [`DataOpError::NoInstance`]
+/// instead of silently minting a partial orphan.
 ///
 /// A `--help` anywhere in `argv` is not an error: it returns
-/// `Ok(help_text)` so the caller can print it to stdout and exit
-/// successfully, mirroring `tonk add <concept> --help`'s dynamic,
-/// schema-driven help. Any other flag rejection (unknown field,
-/// missing required field, bad value) is
-/// [`DataOpError::Flags`], whose display text is clap's own
-/// rendered error — the usage line already enumerates the
-/// concept's real flags.
-pub async fn add(site: &TonkSite, concept: &str, argv: &[String]) -> Result<String, DataOpError> {
-    let info = require_concept(site, concept).await?;
-    let pairs = match flags::parse_field_flags(&info.descriptor, concept, argv, true) {
-        Ok(pairs) => pairs,
-        Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
-        Err(e) => return Err(DataOpError::Flags(e)),
-    };
-    let doc = build_assert(&info.descriptor, concept, &pairs)?;
-    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
-    Ok(format!("added {concept}\n{}", outcome.stdout))
-}
-
-/// Overwrite a subset of fields on an existing instance of
-/// `concept`. Unlike [`add`], every field is optional
-/// (`parse_field_flags(.., all_required=false)`) — `set` names a
-/// subset of fields to change, not the whole instance — but at
-/// least one `--field` must be supplied, or the call is a no-op
-/// commit against `entity` and rejected as [`DataOpError::NoFields`]
-/// before anything is built.
-///
-/// `entity` is passed straight through to the `this:` binding of
-/// the generated assertion, so it accepts either a bookmark name or
-/// a `did:key:…` entity URI — same addressing [`get`] uses.
-///
-/// A `--help` anywhere in `argv` returns `Ok(help_text)`, mirroring
-/// `add`. Any other flag rejection is [`DataOpError::Flags`].
-pub async fn set(
+/// `Ok(help_text)` so the caller prints it and exits successfully —
+/// the mint form renders required markers, the entity form renders
+/// everything optional. A missing required field on the mint form
+/// maps to [`DataOpError::MissingRequired`], whose display hints
+/// the supersede form; any other flag rejection is
+/// [`DataOpError::Flags`].
+pub async fn assert_op(
     site: &TonkSite,
     concept: &str,
-    entity: &str,
+    entity: Option<&str>,
     argv: &[String],
 ) -> Result<String, DataOpError> {
     let info = require_concept(site, concept).await?;
-    let pairs = match flags::parse_field_flags(&info.descriptor, concept, argv, false) {
+    let all_required = entity.is_none();
+    let pairs = match flags::parse_field_flags(&info.descriptor, concept, argv, all_required) {
         Ok(pairs) => pairs,
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
+        Err(e) if all_required && e.kind() == clap::error::ErrorKind::MissingRequiredArgument => {
+            return Err(DataOpError::MissingRequired(e));
+        }
         Err(e) => return Err(DataOpError::Flags(e)),
     };
-    if pairs.is_empty() {
-        return Err(DataOpError::NoFields);
+    match entity {
+        None => {
+            let doc = build_assert(&info.descriptor, concept, &pairs)?;
+            let outcome =
+                eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+            Ok(format!("asserted {concept}\n{}", outcome.stdout))
+        }
+        Some(entity) => {
+            if pairs.is_empty() {
+                return Err(DataOpError::NoFields);
+            }
+            if !instance_exists(site, &info.descriptor, concept, entity).await? {
+                return Err(DataOpError::NoInstance {
+                    concept: concept.to_string(),
+                    entity: entity.to_string(),
+                });
+            }
+            let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
+            let outcome =
+                eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+            Ok(format!("asserted {entity}\n{}", outcome.stdout))
+        }
     }
-    let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
-    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
-    Ok(format!("updated {entity}\n{}", outcome.stdout))
 }
 
-/// Retract one field, or the whole instance, from `entity`. With
-/// `field: Some(f)`, retracts just `f` (validated against
-/// `concept`'s descriptor first, so an unknown field name is
-/// rejected with the same enumerating error shape as an unknown
-/// `add`/`set` flag — see [`crate::data::DataError::UnknownField`]).
-/// With `field: None`, retracts the whole instance
-/// ([`build_retract`]'s `..: _` form).
-pub async fn rm(
+/// Retract one field, or the whole instance, from `entity`. A
+/// retraction is itself an assertion — a claim invalidating an old
+/// one — not a deletion. With `field: Some(f)`, retracts `f`
+/// (validated against `concept`'s descriptor first, enumerating the
+/// valid fields on a miss); on a many-cardinality field this
+/// retracts every value. With `field: None`, retracts the whole
+/// instance ([`build_retract`]'s `..: _` form).
+pub async fn retract(
     site: &TonkSite,
     concept: &str,
     entity: &str,
@@ -283,7 +331,7 @@ pub async fn rm(
     let doc = build_retract(concept, entity, field);
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
     Ok(match field {
-        Some(f) => format!("removed {f} from {entity}\n{}", outcome.stdout),
-        None => format!("removed {entity}\n{}", outcome.stdout),
+        Some(f) => format!("retracted {f} from {entity}\n{}", outcome.stdout),
+        None => format!("retracted {entity}\n{}", outcome.stdout),
     })
 }
