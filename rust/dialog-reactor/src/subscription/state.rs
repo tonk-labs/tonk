@@ -125,7 +125,7 @@ pub struct Subscription {
     /// [`EngineSlot`]).
     pub engine: EngineSlot,
     /// The query's term bindings, retained for
-    /// [`Conclusion::project`](tonk_schema::conclusion::Conclusion::project)
+    /// [`project`](tonk_schema::conclusion::project)
     /// — the delta / snapshot rows are `ConceptConclusion`s that
     /// project to the wire `Conclusion` through these terms.
     pub terms: Parameters,

@@ -46,7 +46,7 @@ use std::rc::Rc;
 use js_sys::{Object, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::location::{Allow, Location};
-use tonk_schema::conclusion::Conclusion;
+use tonk_worker_api::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;

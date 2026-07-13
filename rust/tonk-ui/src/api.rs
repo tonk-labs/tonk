@@ -1,7 +1,6 @@
-use dialog_remote_ucan_s3::UcanAddress;
 use reqwest::StatusCode;
 use serde::Deserialize;
-use tonk_worker::{
+use tonk_worker_api::{
     BranchConfiguration, EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse,
     ProfileInfo, QueryResponse, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     SyncResponse, SyncStatusResponse,
@@ -185,12 +184,10 @@ pub async fn init() -> Result<String, TonkUiError> {
     );
 
     let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
-    // `RemoteConfiguration::new` accepts anything that converts
-    // into `SiteAddress`, and `UcanAddress` does via `NetworkAddress`.
-    let address = UcanAddress::new(&service_url);
-
+    // The origin remote is a UCAN-over-S3 access endpoint; the worker
+    // decodes this into its real `SiteAddress`.
     let configuration = RepositoryConfiguration::default()
-        .remote("origin", RemoteConfiguration::new(address))
+        .remote("origin", RemoteConfiguration::ucan(service_url))
         // The branch's standard library (the built-in concepts,
         // views, commands, rules + demo content) is seeded by the
         // service worker at repository creation: it fetches the

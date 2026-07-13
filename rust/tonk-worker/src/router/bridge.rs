@@ -284,7 +284,7 @@ async fn handle_query(
         {
             Ok(rows) => rows
                 .iter()
-                .map(|c| crate::reactor::Conclusion::project(c, &terms))
+                .map(|c| crate::reactor::project(c, &terms))
                 .collect::<Vec<_>>(),
             Err(e) => {
                 send_error(

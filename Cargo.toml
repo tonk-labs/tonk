@@ -29,6 +29,7 @@ members = [
     "rust/tonk-sigil",
     "rust/tonk-ui",
     "rust/tonk-worker",
+    "rust/tonk-worker-api",
     "rust/tonk-workspace",
 ]
 resolver = "2"
@@ -66,6 +67,7 @@ tonk-template = { path = "./rust/tonk-template" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
+tonk-worker-api = { path = "./rust/tonk-worker-api" }
 tonk-workspace = { path = "./rust/tonk-workspace" }
 
 anyhow = "1"
@@ -164,31 +166,35 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-12-2" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-13-2" }
 
-# NOTE — incremental subscriptions (plan/incremental-subscriptions.md): the
-# dialog deps above are pinned to the `feat/inductive-self-negation` BRANCH (not
-# the `tonk-2026-07-09` tag) — the dialog stack that adds incremental
-# subscriptions, the branch-scoped session overlay, and native Send-generality on
-# top of the inductive-rule self-negation fix. Rebased onto upstream main, so it
-# also carries blob storage (#372), the cache-lock fix (#373), the push no-op
-# guard (#386), and the retract-no-tombstone-without-prior fix (#387). Swap back
-# to a tag once this dialog stack lands upstream (not in scope).
+# NOTE — the dialog deps above are pinned to the `tonk-2026-07-13-2` TAG:
+# `feat/overlay-retain-entities` (dialog-db #390, which tonk's `staging` already
+# depends on for `Overlay::retain_entities`) plus the Revision/TreeReference move
+# to `dialog-capability` (dialog-db #391), which is what lets the host page name a
+# revision without linking the query engine.
+#
+# That move previously lived only on an ORPHANED commit (tagged `tonk-2026-07-12`,
+# reachable from no branch), which is why this crate used to pin the
+# `feat/engine-free-revision` branch to get it — dragging in the whole
+# version-control stack as a side effect, and resolving TWO copies of every dialog
+# crate. #391 cherry-picks it onto a real branch, so one tag now covers everything.
+# Repoint to a tag on the merged base once #390 and #391 land.
 
 [profile.dev]
 opt-level = 1
@@ -207,6 +213,3 @@ opt-level = "s"
 debug = 0
 inherits = "release"
 strip = "debuginfo"
-
-
-
