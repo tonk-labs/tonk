@@ -12,6 +12,9 @@ use tonk_access_service::shortcut::{
     object_key_for, requested_ttl,
 };
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
 #[dialog_common::test]
 fn it_accepts_a_rooted_path_with_query() {
     let shortcut = Shortcut::new(b"/join?access=abc&remote=https%3A%2F%2Fhub.tonk.xyz").unwrap();
