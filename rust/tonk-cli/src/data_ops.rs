@@ -5,13 +5,13 @@
 use crate::data::{build_assert, build_retract, build_supersede};
 use crate::eval::{self, Options, Source};
 use crate::output::Format;
-use crate::schema::{self, type_to_notation};
+use crate::schema;
 use crate::site::TonkSite;
 
 pub mod flags;
 
 /// Failure modes shared by the data verbs (`assert`, `retract`,
-/// `query`, `get`, `describe`). Each maps onto a CLI exit code via
+/// `query`, `get`, `schema_subset`). Each maps onto a CLI exit code via
 /// [`Self::exit_code`], mirroring [`crate::eval::EvalError`] and
 /// [`crate::invite::InviteError`].
 #[derive(Debug, thiserror::Error)]
@@ -127,27 +127,19 @@ pub async fn require_concept(
     }
 }
 
-/// Render a concept's schema as a human-readable field list.
-pub async fn describe(site: &TonkSite, concept: &str) -> Result<String, DataOpError> {
-    let info = require_concept(site, concept).await?;
-    let mut out = String::new();
-    if let Some(desc) = info.descriptor.description() {
-        out.push_str(desc);
-        out.push_str("\n\n");
+/// Render one concept's schema subset — same notation as bare
+/// `tonk schema`, filtered — or the enumerating [`DataOpError::NoConcept`].
+/// The human field/type table this replaces lives in
+/// `tonk assert <concept> --help`, where the flags are.
+pub async fn schema_subset(site: &TonkSite, concept: &str) -> Result<String, DataOpError> {
+    require_concept(site, concept).await?;
+    match schema::render_one(site, concept).await {
+        Ok(Some(text)) => Ok(text),
+        Ok(None) => Err(DataOpError::Io(format!(
+            "concept '{concept}' vanished between lookup and render"
+        ))),
+        Err(e) => Err(DataOpError::Io(e.to_string())),
     }
-    for (field, fd) in info.descriptor.with().iter() {
-        let ty = fd
-            .content_type()
-            .map(|t| type_to_notation(&t))
-            .unwrap_or_else(|| "any".into());
-        let card = format!("{:?}", fd.cardinality()).to_lowercase();
-        let req = if fd.is_optional() { "" } else { " (required)" };
-        out.push_str(&format!(
-            "  --{field} <{ty}> [{card}]{req}  {}\n",
-            fd.description()
-        ));
-    }
-    Ok(out)
 }
 
 /// Build a query-notation document that binds every field of

@@ -111,6 +111,34 @@ pub async fn render(site: &TonkSite) -> Result<String> {
     Ok(out)
 }
 
+/// Render one named concept's schema subset — the `attribute!:`
+/// declarations it references followed by its `concept!:` block —
+/// in the same re-submittable notation as [`render`]. Returns
+/// `Ok(None)` when no user concept has that name.
+pub async fn render_one(site: &TonkSite, name: &str) -> Result<Option<String>> {
+    let attrs = enumerate_attributes(site).await?;
+    let concepts = enumerate_concepts(site).await?;
+    let Some(concept) = concepts.iter().find(|c| c.name == name) else {
+        return Ok(None);
+    };
+    let uri_to_name: HashMap<String, String> = attrs
+        .iter()
+        .filter_map(|a| a.name.as_ref().map(|n| (a.the.clone(), n.clone())))
+        .collect();
+    let referenced: std::collections::HashSet<String> = concept
+        .descriptor
+        .with()
+        .iter()
+        .map(|(_, ad)| ad.the().to_string())
+        .collect();
+    let mut out = String::new();
+    for attr in attrs.iter().filter(|a| referenced.contains(&a.the)) {
+        render_attribute(&mut out, attr);
+    }
+    render_concept(&mut out, concept, &uri_to_name);
+    Ok(Some(out))
+}
+
 // ---------------------------------------------------------------- //
 // Data shapes                                                      //
 // ---------------------------------------------------------------- //

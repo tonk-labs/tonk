@@ -43,22 +43,47 @@ async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::C
         .map_err(|e| anyhow!("{the} query failed: {e:?}"))
 }
 
-mod when_describing_a_concept {
+mod when_rendering_a_concept_schema_subset {
     use super::*;
+    use crate::common::VIEW_DECL;
 
     #[dialog_common::test]
-    async fn it_lists_fields_with_types() -> Result<()> {
+    async fn it_emits_only_the_named_concepts_notation() -> Result<()> {
         let test = TestSite::new().await?;
-        test.eval_inline(ATTRIBUTE_DECL).await?; // seeds task-title / task-done
-        test.eval_inline(CONCEPT_DECL).await?; // seeds the `task` concept
-        let out = tonk_cli::data_ops::describe(&test.site, "task").await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        // A second concept on the branch that must NOT appear.
+        test.eval_inline(VIEW_DECL).await?;
+        let out = tonk_cli::data_ops::schema_subset(&test.site, "task").await?;
         assert!(
-            out.contains("title"),
-            "describe should list the title field:\n{out}"
+            out.contains("concept!: &task"),
+            "subset should carry the concept block:\n{out}"
         );
         assert!(
-            out.contains("Text"),
-            "describe should show the field type:\n{out}"
+            out.contains("attribute!: &task-title"),
+            "subset should carry the referenced attribute decls:\n{out}"
+        );
+        assert!(
+            !out.contains("&view") && !out.contains("html-body"),
+            "subset must not leak other concepts:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_resubmits_cleanly_on_a_fresh_site() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let out = tonk_cli::data_ops::schema_subset(&test.site, "task").await?;
+        // Same format as bare `tonk schema`: the subset is a valid
+        // notation document a fresh branch accepts wholesale.
+        let fresh = TestSite::new().await?;
+        fresh.eval_inline(&out).await?;
+        let described = tonk_cli::data_ops::schema_subset(&fresh.site, "task").await?;
+        assert!(
+            described.contains("concept!: &task"),
+            "re-submitted subset should reconstruct the concept:\n{described}"
         );
         Ok(())
     }
@@ -72,7 +97,7 @@ mod when_the_concept_is_unknown {
         let test = TestSite::new().await?;
         test.eval_inline(ATTRIBUTE_DECL).await?;
         test.eval_inline(CONCEPT_DECL).await?;
-        let err = tonk_cli::data_ops::describe(&test.site, "widget")
+        let err = tonk_cli::data_ops::schema_subset(&test.site, "widget")
             .await
             .unwrap_err();
         let msg = format!("{err}");

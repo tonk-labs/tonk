@@ -81,10 +81,20 @@ enum Command {
         topic: Option<String>,
     },
 
-    /// Print the current site's schema (every named attribute and
-    /// concept) as a re-submittable notation document.
-    #[command(after_help = "Examples:\n  tonk schema\n  tonk schema > schema.notation")]
-    Schema,
+    /// Print the site's schema as a re-submittable notation
+    /// document — every named attribute and concept, or just one
+    /// concept's subset when `<CONCEPT>` is given. The human
+    /// field/type view lives in `tonk assert <concept> --help`.
+    #[command(
+        after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema > schema.notation"
+    )]
+    Schema {
+        /// Optional concept name — emit only that concept's
+        /// `concept!:` block plus the `attribute!:` declarations
+        /// it references.
+        #[arg(value_name = "CONCEPT")]
+        concept: Option<String>,
+    },
 
     /// List user-defined concepts on the local branch. One row
     /// per concept, tab-separated `name<TAB>description`. Built-in
@@ -92,16 +102,6 @@ enum Command {
     /// resolvable everywhere and would just be noise.
     #[command(after_help = "Examples:\n  tonk concepts")]
     Concepts,
-
-    /// Print a concept's fields, types, cardinalities, and
-    /// description — a human-readable view of one entry from
-    /// `tonk schema`. Read-only.
-    #[command(after_help = "Examples:\n  tonk describe task")]
-    Describe {
-        /// Name of the concept to describe.
-        #[arg(value_name = "CONCEPT")]
-        concept: String,
-    },
 
     /// Query every instance of a concept, with every field bound —
     /// reads are queries in dialog. Read-only; nothing commits.
@@ -538,9 +538,8 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Identity { .. } => ("identity", None),
         Command::Eval(_) => ("eval", None),
         Command::Guide { .. } => ("guide", None),
-        Command::Schema => ("schema", None),
+        Command::Schema { .. } => ("schema", None),
         Command::Concepts => ("concepts", None),
-        Command::Describe { .. } => ("describe", None),
         Command::Query { .. } => ("query", None),
         Command::Get { .. } => ("get", None),
         Command::Assert { .. } => ("assert", None),
@@ -617,9 +616,8 @@ async fn main() {
         Command::Identity { reset } => identity(reset).await,
         Command::Eval(args) => eval(args).await,
         Command::Guide { topic } => print_guide(topic.as_deref()),
-        Command::Schema => print_schema().await,
+        Command::Schema { concept } => print_schema(concept).await,
         Command::Concepts => print_concepts().await,
-        Command::Describe { concept } => describe_op(concept).await,
         Command::Query { concept, json } => query_op(concept, json).await,
         Command::Get {
             concept,
@@ -1363,36 +1361,6 @@ async fn print_concepts() -> ExitCode {
     ExitCode::Success
 }
 
-/// Print a concept's fields as rendered by [`data_ops::describe`].
-/// An unknown-concept error already carries the list of concept
-/// names actually on the branch (built by
-/// [`data_ops::require_concept`]), so the agent doesn't have to run
-/// a second command to find the right spelling.
-async fn describe_op(concept: String) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
-    };
-
-    match data_ops::describe(&site, &concept).await {
-        Ok(text) => {
-            let mut stdout = std::io::stdout().lock();
-            if let Err(e) = stdout.write_all(text.as_bytes()) {
-                return print_error(format!("failed to write stdout: {e}"));
-            }
-            ExitCode::Success
-        }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
-    }
-}
-
 /// Query every instance of `concept` as rendered by
 /// [`data_ops::query`].
 async fn query_op(concept: String, json: bool) -> ExitCode {
@@ -1537,7 +1505,7 @@ fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::
     writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
 }
 
-async fn print_schema() -> ExitCode {
+async fn print_schema(concept: Option<String>) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => return print_error(format!("could not determine current directory: {e}")),
@@ -1546,16 +1514,24 @@ async fn print_schema() -> ExitCode {
         Ok(s) => s,
         Err(err) => return print_error(err.to_string()),
     };
-    match schema::render(&site).await {
-        Ok(text) => {
-            let mut stdout = std::io::stdout().lock();
-            if let Err(e) = stdout.write_all(text.as_bytes()) {
-                return print_error(format!("failed to write stdout: {e}"));
+    let rendered = match &concept {
+        Some(name) => match data_ops::schema_subset(&site, name).await {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("error: {err}");
+                return err.exit_code();
             }
-            ExitCode::Success
-        }
-        Err(err) => print_error(err.to_string()),
+        },
+        None => match schema::render(&site).await {
+            Ok(text) => text,
+            Err(err) => return print_error(err.to_string()),
+        },
+    };
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout.write_all(rendered.as_bytes()) {
+        return print_error(format!("failed to write stdout: {e}"));
     }
+    ExitCode::Success
 }
 
 fn telemetry_op(action: Option<TelemetryAction>) -> ExitCode {
