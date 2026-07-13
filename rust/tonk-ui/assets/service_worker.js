@@ -75,6 +75,20 @@ self.onactivate = event => {
 // browser side resumes via the existing reconnect loop against
 // the new worker.
 self.registration.addEventListener?.("updatefound", async () => {
+    // The event fires on the REGISTRATION, so every worker running this script
+    // hears it — including the newly-installing worker, about its own arrival.
+    // Only the OUTGOING worker may act on it: `onupdatefound` stops all sync
+    // work, and that flag is never cleared (a retiring worker must not re-arm
+    // `waitUntil`, or it pins itself in `waiting`). A new worker that ran it
+    // would latch itself off and then go on to serve the page while refusing
+    // every sync drain for the rest of its life.
+    //
+    // `registration.installing` is the incoming worker. If that is us, this is
+    // our own birth announcement, not our eviction notice.
+    if (self.serviceWorker && self.registration.installing === self.serviceWorker) {
+        log("Update found — that is us installing; staying live");
+        return;
+    }
     log("Update found — forwarding to wasm worker");
     try {
       const worker = await activateWorker();
