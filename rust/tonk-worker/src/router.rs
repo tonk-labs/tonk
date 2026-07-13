@@ -268,10 +268,15 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
         )
-        // Content-addressed blob bytes. Serves a `blob:<hash>` entity's
-        // bytes from the branch's blob store, with `Content-Type` from
-        // the blob's `xyz.tonk.blob/content-type` fact. `<tonk-display>`
-        // points `<img src>` here for `tonk:blob` models.
+        // Content-addressed blob bytes: GET serves an entity's bytes; POST
+        // ingests a new blob into the branch store and returns its ref.
+        // `<tonk-display>` points `<img src>` at the GET form for
+        // `tonk:blob` models; `Content-Type` there comes from the blob's
+        // `xyz.tonk.blob/content-type` fact, which POST asserts.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/blob",
+            post(blob::upload),
+        )
         .route(
             "/api/repository/{repo}/branch/{branch}/blob/{entity}",
             get(blob::serve),
