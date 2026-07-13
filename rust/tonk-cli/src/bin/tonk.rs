@@ -298,6 +298,12 @@ enum Command {
         command: BlobCommand,
     },
 
+    /// Author schema: concepts and their attributes.
+    Concept {
+        #[command(subcommand)]
+        command: ConceptCommand,
+    },
+
     /// Push to the upstream and produce a launcher URL that
     /// lands the recipient on a live view of local data.
     Share {
@@ -467,6 +473,28 @@ enum BlobCommand {
     Ls,
 }
 
+#[derive(Subcommand, Debug)]
+enum ConceptCommand {
+    /// Assert a new concept with typed attributes. Attributes are
+    /// anchored (`&{concept}-{field}`), so the concept and its
+    /// fields resolve by name immediately — `tonk assert <name>
+    /// --help` shows the typed flags right after this succeeds.
+    #[command(
+        after_help = "Types: text, entity, unsigned-integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --attr name:text:one --attr target:text:one --description \"a tracked habit\"\n  tonk concept add note --attr body:text:one --attr tag:text:many"
+    )]
+    Add {
+        /// Name for the concept (also the anchor).
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// One field as `<field>:<type>:<cardinality>`; repeatable.
+        #[arg(long = "attr", value_name = "FIELD:TYPE:CARD", required = true)]
+        attrs: Vec<String>,
+        /// Human description for the concept.
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+    },
+}
+
 #[derive(Args, Debug)]
 #[command(
     after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --format json\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
@@ -570,6 +598,12 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 ShareCommand::Display { .. } => "display",
             }),
         ),
+        Command::Concept { command } => (
+            "concept",
+            Some(match command {
+                ConceptCommand::Add { .. } => "add",
+            }),
+        ),
         Command::Telemetry { .. } => ("telemetry", None),
         Command::Blob { command } => (
             "blob",
@@ -643,6 +677,7 @@ async fn main() {
         Command::Remote { command } => remote_op(command).await,
         Command::Blob { command } => blob_op(command).await,
         Command::Share { command } => share_op(command).await,
+        Command::Concept { command } => concept_op(command).await,
         Command::Telemetry { action } => telemetry_op(action),
     };
 
@@ -1481,6 +1516,38 @@ async fn retract_op(concept: String, entity: String, field: Option<String>) -> E
             eprintln!("error: {err}");
             err.exit_code()
         }
+    }
+}
+
+/// Author a new concept, as rendered by [`data_ops::concept_add`].
+async fn concept_op(command: ConceptCommand) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match command {
+        ConceptCommand::Add {
+            name,
+            attrs,
+            description,
+        } => match data_ops::concept_add(&site, &name, &attrs, description.as_deref()).await {
+            Ok(text) => {
+                let mut stdout = std::io::stdout().lock();
+                if let Err(e) = stdout.write_all(text.as_bytes()) {
+                    return print_error(format!("failed to write stdout: {e}"));
+                }
+                ExitCode::Success
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                err.exit_code()
+            }
+        },
     }
 }
 

@@ -2,6 +2,7 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
+use crate::authoring::{build_concept_decl, parse_attr_spec};
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
 use crate::eval::{self, Options, Source};
@@ -46,6 +47,17 @@ pub enum DataOpError {
     /// A field/value error from the notation builders.
     #[error(transparent)]
     Data(#[from] crate::data::DataError),
+    /// A `--attr` flag on `concept add` failed to parse (malformed
+    /// spec, unknown type, or bad cardinality).
+    #[error(transparent)]
+    Authoring(#[from] crate::authoring::AuthoringError),
+    /// `concept add` named a concept that already exists on the
+    /// branch.
+    #[error("concept '{name}' already exists; inspect it with `tonk schema {name}`")]
+    ConceptExists {
+        /// The concept name that was already taken.
+        name: String,
+    },
     /// The underlying eval pipeline failed.
     #[error(transparent)]
     Eval(#[from] crate::eval::EvalError),
@@ -86,15 +98,17 @@ impl DataOpError {
     /// CLI exit code for this failure mode.
     pub fn exit_code(&self) -> crate::ExitCode {
         match self {
-            DataOpError::NoConcept { .. } | DataOpError::Io(_) | DataOpError::NoInstance { .. } => {
-                crate::ExitCode::IoError
-            }
+            DataOpError::NoConcept { .. }
+            | DataOpError::Io(_)
+            | DataOpError::NoInstance { .. }
+            | DataOpError::ConceptExists { .. } => crate::ExitCode::IoError,
             // A bad field/value, or a rejected flag parse, is an
             // analysis-level rejection, not an I/O failure.
             DataOpError::Data(_)
             | DataOpError::Flags(_)
             | DataOpError::NoFields
-            | DataOpError::MissingRequired(_) => crate::ExitCode::AnalyzeError,
+            | DataOpError::MissingRequired(_)
+            | DataOpError::Authoring(_) => crate::ExitCode::AnalyzeError,
             DataOpError::Eval(e) => e.exit_code(),
         }
     }
@@ -351,4 +365,46 @@ pub async fn retract(
         Some(f) => format!("retracted {f} from {entity}\n{}", outcome.stdout),
         None => format!("retracted {entity}\n{}", outcome.stdout),
     })
+}
+
+/// Author a new concept: parse every raw `--attr field:type:card`
+/// flag ([`parse_attr_spec`]), reject a name already on the branch
+/// ([`DataOpError::ConceptExists`]), then build and commit the
+/// anchored `concept!:`/`attribute!:` declaration
+/// ([`build_concept_decl`]) via the same auto-sync pattern as
+/// `assert_op`/`retract`. The concept and its fields resolve by
+/// name immediately afterward — `tonk assert <name> --help` shows
+/// the typed flags.
+pub async fn concept_add(
+    site: &TonkSite,
+    name: &str,
+    attrs: &[String],
+    description: Option<&str>,
+) -> Result<String, DataOpError> {
+    let attrs = attrs
+        .iter()
+        .map(|raw| parse_attr_spec(raw))
+        .collect::<Result<Vec<_>, _>>()?;
+    if schema::find_concept(site, name)
+        .await
+        .map_err(|e| DataOpError::Io(e.to_string()))?
+        .is_some()
+    {
+        return Err(DataOpError::ConceptExists {
+            name: name.to_string(),
+        });
+    }
+    let doc = build_concept_decl(name, description, &attrs);
+    let outcome = auto_sync::run_eval(
+        site,
+        Source::Inline(doc),
+        Options::default(),
+        auto_sync::enabled(false),
+    )
+    .await?;
+    Ok(format!(
+        "asserted concept {name} ({n} fields)\nnext: tonk assert {name} --help\n{stdout}",
+        n = attrs.len(),
+        stdout = outcome.stdout
+    ))
 }

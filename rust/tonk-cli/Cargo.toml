@@ -53,6 +53,10 @@ path = "tests/blob.rs"
 name = "data_verbs"
 path = "tests/data_verbs.rs"
 
+[[test]]
+name = "authoring"
+path = "tests/authoring.rs"
+
 [features]
 integration-tests = []
 
