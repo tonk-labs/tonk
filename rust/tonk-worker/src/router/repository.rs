@@ -671,7 +671,7 @@ async fn run_invite(
     use tonk_schema::Invitation;
     use tonk_schema::command::{Authorization, Credential};
     use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
-    use tonk_schema::domain::credential::Seed;
+    use tonk_schema::domain::credential::{Link, Seed};
 
     // Mint a fresh membership keypair. Its private seed becomes the
     // invite URL's `#` fragment; its public DID is the audience the repo
@@ -744,19 +744,27 @@ async fn run_invite(
         None => String::new(),
     };
 
+    // Assemble the invite URL the recipient opens. Built here rather than
+    // concatenated in the view template so there is exactly one definition
+    // of an invite URL, and so it can be shortened — an async round-trip a
+    // template can't make.
+    let link = invite_url(&proof, &remote, &seed).await;
+
     let authorization = Authorization {
         this: subject_entity.clone(),
         proof: Proof(proof),
         remote: AuthorizationRemote(remote),
     };
 
-    // Write the private seed into the session overlay and schedule a poll
-    // of this branch so the change propagates even though it never commits
-    // durably. The seed never reaches replicated storage. `Seed` is
-    // cardinality-one keyed on the subject, so asserting supersedes any
-    // prior credential in place — no whole-overlay clear, which would also
-    // drop the tab's `tonk:site` fact and collapse the share view to "not
-    // found".
+    // Write the private seed and the assembled URL into the session overlay
+    // and schedule a poll of this branch so the change propagates even
+    // though it never commits durably. Neither reaches replicated storage:
+    // the URL carries the seed in its `#` fragment, so it is exactly as
+    // secret as the seed and lives on the same overlay-only concept.
+    // `Credential` is cardinality-one keyed on the subject, so asserting
+    // supersedes any prior credential in place — no whole-overlay clear,
+    // which would also drop the tab's `tonk:site` fact and collapse the
+    // share view to "not found".
     tonk.reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
@@ -764,6 +772,7 @@ async fn run_invite(
         .assert(Credential {
             this: subject_entity,
             seed: Seed(seed),
+            link: Link(link),
         })
         .write()
         .perform(&tonk.operator)
@@ -815,6 +824,56 @@ async fn run_invite(
 
     log!("Minted invitation for repo '{}'", repo_name);
     Ok(())
+}
+
+/// Assemble the invite URL a recipient opens, shortened when the
+/// shortcut service answers.
+///
+/// The long form is `{origin}/join?access={proof}{remote}#{seed}`, where
+/// `remote` is already a ready-to-append `&remote=…` suffix (empty for a
+/// local-only repo). This is the shape the share view used to concatenate
+/// from three overlay fields; building it here gives it one definition and
+/// lets it be shortened.
+///
+/// Shortening is best-effort: a failed `PUT /@` (offline, no service
+/// deployed, a non-2xx) logs and yields the long URL, which is fully
+/// functional. Minting must not fail because a convenience failed.
+///
+/// The origin comes from the service worker's own scope, which is the only
+/// origin that can serve the shortcut's relative redirect back — and the
+/// origin the recipient will actually load. It is read here rather than
+/// taken from the page because a sealed guest's `window.location.origin` is
+/// the opaque `"null"`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn invite_url(proof: &str, remote: &str, seed: &str) -> String {
+    use wasm_bindgen::JsCast;
+
+    let origin = js_sys::global()
+        .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+        .ok()
+        .map(|global| global.location().origin())
+        .filter(|origin| !origin.is_empty());
+
+    let Some(origin) = origin else {
+        // No scope to derive an origin from (and so no service to shorten
+        // against). Fall back to the same base the HTTP mint path defaults
+        // to, so the URL is still well-formed.
+        log!("invite: no worker origin; using the default base");
+        return format!(
+            "{}?access={proof}{remote}#{seed}",
+            tonk_invite::DEFAULT_BASE_URL
+        );
+    };
+
+    let long = format!("{origin}/join?access={proof}{remote}#{seed}");
+
+    match super::create_invite::shorten(&long).await {
+        Ok(short) => short,
+        Err(e) => {
+            log!("invite shortcut failed; using the full URL: {e}");
+            long
+        }
+    }
 }
 
 /// Post-commit handler for the [`PauseSync`] command.

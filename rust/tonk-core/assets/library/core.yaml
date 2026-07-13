@@ -266,30 +266,46 @@ concept!: &authorization
       cardinality: one
       as: text
 
-# The private, ephemeral half of an invite: the membership keypair's seed.
-# Asserted only into the reactor's session overlay (never written to the
-# branch tree, never replicated), so the secret stays out of storage. Keyed
-# by the same membership DID as its `tonk:authorization`, so `tonk:invitation`
-# joins the two.
+# The private, ephemeral half of an invite: the membership keypair's seed
+# and the finished URL built from it. Asserted only into the reactor's
+# session overlay (never written to the branch tree, never replicated), so
+# the secrets stay out of storage — the URL carries the seed in its `#`
+# fragment, so it is exactly as secret as the seed. Keyed by the same
+# membership DID as its `tonk:authorization`, so `tonk:invitation` joins the
+# two.
 concept!: &credential
   this: tonk:credential
-  description: The private ed25519 seed of a membership principal (overlay-only).
+  description: The private ed25519 seed of a membership principal, and its invite URL (overlay-only).
   with:
     seed:
       description: base58 keypair seed — the `#` fragment of the invite URL.
       the: xyz.tonk.credential/seed
       cardinality: one
       as: text
+    link:
+      description: The complete invite URL, shortened when the shortcut service answered.
+      the: xyz.tonk.credential/link
+      cardinality: one
+      as: text
 
 # The invite, as a join of the public `tonk:authorization` and the
-# overlay-only `tonk:credential` on the membership DID. Declaring all three
-# attributes makes this concept resolve only an entity that has both halves
-# — the durable proof/remote AND the overlay seed — so the share view
-# renders only once the handler has asserted both.
+# overlay-only `tonk:credential` on the membership DID. Declaring the
+# attributes of both halves makes this concept resolve only an entity that
+# has both — the durable proof/remote AND the overlay seed/link — so the
+# share view renders only once the handler has asserted both.
+#
+# `link` is the whole URL, assembled (and shortened) by the mint handler.
+# Views render it directly. `access`/`remote`/`code` remain the raw parts,
+# still available to anything that needs to rebuild the URL by hand.
 concept!: &invitation
   this: tonk:invitation
   description: An invite that can be used to join a space (authorization + credential).
   with:
+    link:
+      description: The complete invite URL — what a view renders and copies.
+      the: xyz.tonk.credential/link
+      cardinality: one
+      as: text
     access:
       description: base58 delegation chain — the `?access=` part of the invite URL.
       the: xyz.tonk.authorization/proof
@@ -309,13 +325,11 @@ concept!: &invitation
 # The invite-link view — the default view for the `invitation` model, so
 # `<tonk-display model=invitation>` mounts it with no explicit `view=`. It
 # renders only once the handler has asserted both halves for the repo's
-# subject (before that the display is empty). The readonly input shows the
-# assembled absolute URL: `{base}?access={access}{remote}#{code}`, where
-# `base` (`{origin}/join`) is the `data-base` host attribute a wrapping
-# `<tonk-origin>` set, `access`/`remote` are the durable authorization, and
-# `code` is the overlay-only seed. `remote` is a ready-to-append
-# `&remote=<url>` suffix (empty for a local-only repo) so the recipient
-# knows where to sync from. `<wa-copy-button>` copies the same value.
+# subject (before that the display is empty). The readonly input shows
+# `{link}`: the URL the mint handler assembled and shortened. The view no
+# longer concatenates it from parts — shortening is an async round-trip a
+# template can't make, so the whole URL arrives ready to render.
+# `<wa-copy-button>` copies the same value.
 view!: &invitation/link
   this: id:invitation/link
   model: invitation
@@ -333,12 +347,12 @@ view!: &invitation/link
         class="invite-link__url"
         label="Invite link"
         readonly
-        value="{dom.host/data-base}?access={access}{remote}#{code}"
+        value="{link}"
       >
         <wa-copy-button
           slot="end"
           class="invite-link__copy"
-          value="{dom.host/data-base}?access={access}{remote}#{code}"
+          value="{link}"
         ></wa-copy-button>
       </wa-input>
     </div>
@@ -356,6 +370,11 @@ concept!: &tonk/agent-invite
     name:
       description: The repository's display name.
       the: xyz.tonk.repo/name
+      cardinality: one
+      as: text
+    link:
+      description: The complete invite URL — what the prompt embeds.
+      the: xyz.tonk.credential/link
       cardinality: one
       as: text
     access:
@@ -389,6 +408,7 @@ rule!:
     - assert: invitation
       where:
         this: ?this
+        link: ?link
         access: ?access
         remote: ?remote
         code: ?code
@@ -437,7 +457,7 @@ view!:
     Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
       mkdir -p ~/tonk/{name} &amp;&amp; cd ~/tonk/{name}
-      tonk join '{dom.host/data-base}?access={access}{remote}#{code}'
+      tonk join '{link}'
       tonk guide        # how to drive the CLI
       tonk schema       # concepts already on the branch
 
@@ -448,7 +468,7 @@ view!:
     Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
       mkdir -p ~/tonk/{name} &amp;&amp; cd ~/tonk/{name}
-      tonk join '{dom.host/data-base}?access={access}{remote}#{code}'
+      tonk join '{link}'
       tonk guide        # how to drive the CLI
       tonk schema       # concepts already on the branch
 
@@ -700,7 +720,7 @@ view/fab-invite!:
   this: id:tonk:agent-invite/fab-invite
   model: tonk:agent-invite
   display: |
-    <wa-copy-button class="fab__invite" style="display: inline-flex; align-items: center; vertical-align: middle;" copy-label="Copy invite link for {name}" value="{dom.host/data-base}?access={access}{remote}#{code}">
+    <wa-copy-button class="fab__invite" style="display: inline-flex; align-items: center; vertical-align: middle;" copy-label="Copy invite link for {name}" value="{link}">
       <span slot="copy-icon" class="fab__invite-label"><wa-icon name="copy" style="opacity: 0.7;"></wa-icon>copy invite link</span>
       <span slot="success-icon" class="fab__invite-label"><wa-icon name="check"></wa-icon>copied</span>
     </wa-copy-button>

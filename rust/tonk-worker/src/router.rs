@@ -924,11 +924,12 @@ pub mod tests {
         assert!(!minted.access.is_empty());
     }
 
-    /// The minted credential seed lives in the session overlay only — it
-    /// must never reach durable storage. Proof: after the overlay is
-    /// cleared (which drops only in-memory facts, never touching the
-    /// branch tree), the credential seed is gone but the durably-committed
-    /// authorization proof remains.
+    /// The minted credential lives in the session overlay only — it must
+    /// never reach durable storage. That covers both the seed and the
+    /// assembled invite `link`, which carries the seed in its `#` fragment
+    /// and so is exactly as secret. Proof: after the overlay is cleared
+    /// (which drops only in-memory facts, never touching the branch tree),
+    /// both are gone but the durably-committed authorization proof remains.
     #[dialog_common::test]
     async fn it_keeps_the_credential_seed_out_of_storage() {
         let state = test_state().await;
@@ -985,12 +986,19 @@ pub mod tests {
 
         let proof = read(query("xyz.tonk.authorization/proof", "proof")).await;
         let seed = read(query("xyz.tonk.credential/seed", "seed")).await;
+        let link = read(query("xyz.tonk.credential/link", "link")).await;
 
         assert_eq!(proof.len(), 1, "authorization proof must be durable");
         assert_eq!(
             seed.len(),
             0,
             "credential seed must be overlay-only, never persisted (got {seed:?})",
+        );
+        assert_eq!(
+            link.len(),
+            0,
+            "invite link carries the seed in its fragment, so it must be \
+             overlay-only too, never persisted (got {link:?})",
         );
     }
 

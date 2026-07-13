@@ -255,7 +255,10 @@ pub async fn create_invite(
 /// Shorten a minted invite URL via the shortcut service on its own
 /// origin: PUT the path + query, assemble `{origin}/@/{hash}` with the
 /// seed fragment re-attached (the fragment never goes on the wire).
-async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
+///
+/// Shared with the `tonk:invite` command handler in [`super::repository`],
+/// the other mint path, so both shorten identically.
+pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
     let request = ShortcutRequest::new(url)
         .map_err(|e| TonkWorkerError::Internal(format!("failed to derive shortcut: {e}")))?;
     let hash = put_shortcut(request.endpoint.as_str(), request.target.clone()).await?;
