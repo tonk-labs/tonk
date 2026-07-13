@@ -237,10 +237,12 @@ pub async fn get(
 /// field is required (`all_required=true`), so a partial mint fails
 /// clap's required-argument check before anything is built. With
 /// `entity: Some(_)`, asserts superseding claims on that entity:
-/// every field is optional, at least one must be supplied, and the
-/// entity must already match the concept ([`instance_exists`]) —
-/// otherwise the call is rejected as [`DataOpError::NoInstance`]
-/// instead of silently minting a partial orphan.
+/// every field is optional, but the entity must already match the
+/// concept ([`instance_exists`]) — checked first, so a bad entity
+/// surfaces as [`DataOpError::NoInstance`] instead of silently
+/// minting a partial orphan. Only once that holds does at least
+/// one field need to be supplied, or the call is rejected as
+/// [`DataOpError::NoFields`].
 ///
 /// A `--help` anywhere in `argv` is not an error: it returns
 /// `Ok(help_text)` so the caller prints it and exits successfully —
@@ -273,14 +275,14 @@ pub async fn assert_op(
             Ok(format!("asserted {concept}\n{}", outcome.stdout))
         }
         Some(entity) => {
-            if pairs.is_empty() {
-                return Err(DataOpError::NoFields);
-            }
             if !instance_exists(site, &info.descriptor, concept, entity).await? {
                 return Err(DataOpError::NoInstance {
                     concept: concept.to_string(),
                     entity: entity.to_string(),
                 });
+            }
+            if pairs.is_empty() {
+                return Err(DataOpError::NoFields);
             }
             let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
             let outcome =

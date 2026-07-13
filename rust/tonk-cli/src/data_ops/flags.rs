@@ -1,4 +1,4 @@
-//! Build a `clap::Command` from a concept's schema so `tonk add
+//! Build a `clap::Command` from a concept's schema so `tonk assert
 //! <concept>` gets real typed `--flags`, `--help`, and enumerating
 //! errors — all driven by the branch schema, not hand-rolled.
 
@@ -8,11 +8,11 @@ use crate::schema::type_to_notation;
 
 /// Parse schema-derived `--field value` flags out of `argv` against
 /// `concept`'s descriptor. With `all_required`, every field becomes
-/// a required arg (used by `add`, where every non-optional field
-/// must be supplied up front); otherwise every field is optional
-/// (used by `set`, where a partial update is the point). Returns
-/// the `(field, value)` pairs the caller actually supplied, in
-/// schema field order.
+/// a required arg (the mint form of `assert`, where every
+/// non-optional field must be supplied up front); otherwise every
+/// field is optional (the supersede form of `assert`, where a
+/// partial update is the point). Returns the `(field, value)` pairs
+/// the caller actually supplied, in schema field order.
 ///
 /// A `--help` (or `-h`) anywhere in `argv` surfaces as `Err(e)`
 /// with `e.kind() == clap::error::ErrorKind::DisplayHelp`; `e` then

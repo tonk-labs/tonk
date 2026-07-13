@@ -408,6 +408,25 @@ mod when_superseding_and_retracting {
         );
         Ok(())
     }
+
+    #[dialog_common::test]
+    async fn it_reports_no_instance_before_no_fields_for_a_bad_entity() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        // A misplaced bare token with no flags at all: the entity
+        // check must win, so the error names the real problem (no
+        // such instance), not the missing flags.
+        let err = tonk_cli::data_ops::assert_op(&test.site, "task", Some("ghost"), &[])
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no task instance at 'ghost'"),
+            "a nonexistent entity should surface NoInstance even with zero flags:\n{msg}"
+        );
+        Ok(())
+    }
 }
 
 // Dialog semantics on a many-cardinality attribute: an assert
