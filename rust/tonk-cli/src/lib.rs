@@ -12,7 +12,7 @@
 //! - [`data`] — pure notation builders (value rendering + doc
 //!   assembly) consumed by the argument-based data verbs.
 //! - [`data_ops`] — the testable handlers behind the argument-based
-//!   data verbs (`tonk describe`, …); `bin/tonk.rs` is a thin
+//!   data verbs (`tonk assert`, `tonk query`, …); `bin/tonk.rs` is a thin
 //!   parser→call shim over these.
 //! - [`eval`] — read source, drive [`tonk_evaluator::evaluate`],
 //!   render output.

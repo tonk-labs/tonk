@@ -1,5 +1,11 @@
 # Data Verbs Implementation Plan (CLI PR2)
 
+> **Superseded (verb surface):** the data verbs were renamed to
+> dialog-native `assert`/`retract`/`query`, `add`+`set` merged into
+> `assert`, and `describe` folded into `schema <concept>` — see
+> `docs/superpowers/specs/2026-07-13-dialog-native-verbs-design.md`.
+> Command names below are the old surface.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add schema-aware, argument-based data verbs to tonk-cli — `tonk add/set/get/list/rm` over existing concepts, plus `tonk describe` — as a thin front-end over the existing eval pipeline, so agents manipulate data with fixed `--flag` names read from `--help` instead of authoring the notation DSL.

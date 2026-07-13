@@ -3,6 +3,12 @@
 Date: 2026-07-08
 Status: approved design, pre-implementation
 
+> **Superseded (verb surface):** the data verbs were renamed to
+> dialog-native `assert`/`retract`/`query`, `add`+`set` merged into
+> `assert`, and `describe` folded into `schema <concept>` — see
+> `docs/superpowers/specs/2026-07-13-dialog-native-verbs-design.md`.
+> Command names below are the old surface.
+
 ## Problem
 
 tonk-cli's only mutating verb is `eval`, which runs a bespoke multi-line DSL
