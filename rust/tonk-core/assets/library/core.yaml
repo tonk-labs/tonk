@@ -472,7 +472,7 @@ view!:
       tonk guide        # how to drive the CLI
       tonk schema       # concepts already on the branch
 
-    Then build.</pre>
+    Then build: define schema with `tonk concept add`, write data with `tonk assert`, add views with `tonk view add` — and finish with `tonk home &lt;concept&gt;` so the build lands on the space home.</pre>
     </div>
 
 # A space member, as seen in the "shared with" roster. Reads the
