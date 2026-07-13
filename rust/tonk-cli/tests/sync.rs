@@ -130,7 +130,10 @@ mod when_minting_an_invite {
         // not error trying to push.
         let test = TestSite::new().await?;
         let outcome = invite::mint(&test.site, None, None).await?;
-        assert!(!outcome.url.is_empty(), "a local-only invite still mints a URL");
+        assert!(
+            !outcome.url.is_empty(),
+            "a local-only invite still mints a URL"
+        );
         Ok(())
     }
 }

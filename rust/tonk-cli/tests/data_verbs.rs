@@ -2,7 +2,9 @@ mod common;
 
 use anyhow::Result;
 
-use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, NOTE_ATTRIBUTE_DECL, NOTE_CONCEPT_DECL, TestSite};
+use crate::common::{
+    ATTRIBUTE_DECL, CONCEPT_DECL, NOTE_ATTRIBUTE_DECL, NOTE_CONCEPT_DECL, TestSite,
+};
 
 // The verbs are exercised through the library handlers, not the binary,
 // to avoid spawning a subprocess. Each handler returns its rendered
@@ -449,13 +451,8 @@ mod when_asserting_many_cardinality_fields {
         let test = TestSite::new().await?;
         test.eval_inline(NOTE_ATTRIBUTE_DECL).await?;
         test.eval_inline(NOTE_CONCEPT_DECL).await?;
-        let help = tonk_cli::data_ops::assert_op(
-            &test.site,
-            "note",
-            None,
-            &["--help".into()],
-        )
-        .await?;
+        let help =
+            tonk_cli::data_ops::assert_op(&test.site, "note", None, &["--help".into()]).await?;
         assert!(
             help.contains("appends a value"),
             "many-cardinality fields should be marked in --help:\n{help}"
