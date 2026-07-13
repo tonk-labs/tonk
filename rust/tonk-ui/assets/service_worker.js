@@ -85,23 +85,17 @@ self.registration.addEventListener?.("updatefound", async () => {
     }
 });
 
-// Connectivity transitions, observed by the worker itself. An offline
-// page stops polling, so no fetch would ever wake the Rust side to
-// stamp `sync:offline` — the SW's own `offline` event is the reliable
-// signal; `online` runs a drain so statuses reconcile the moment
-// connectivity returns. The wasm boot (`activateWorker`) can outlive a
-// flapping transition, so dispatch on the CURRENT `navigator.onLine`,
-// not on which event happened to fire.
+// Connectivity transitions. The Rust side reads `navigator.onLine` itself
+// (reliable in the SW scope) and reconciles — an offline reading stamps
+// `sync:offline`, an online one runs a drain. We only need to POKE it on a
+// transition; the decision is the worker's. The SW's own `offline`/`online`
+// events fire the poke, and so does a `{type:"connectivity"}` message from the
+// active page (belt-and-suspenders — the page's events are the ones guaranteed
+// to fire, and it forwards them here).
 const onConnectivityChange = async () => {
     try {
         const worker = await activateWorker();
-        if (navigator.onLine) {
-            log("Online — reconciling");
-            await worker.ononline?.();
-        } else {
-            log("Offline — stamping sync:offline");
-            await worker.onoffline?.();
-        }
+        await worker.onconnectivity?.();
     } catch (err) {
         log("Failed to handle connectivity change:", err);
     }
@@ -118,28 +112,155 @@ self.addEventListener("online", onConnectivityChange);
 //
 // Keyed on `/`, where the origin serves the shell HTML (200).
 // `/index.html` is a 307 redirect to `/`, so it can't be cached
-// or served as the shell. The shell is seeded by `oninstall` and
-// re-seeded on every new worker install, so a deploy refreshes
-// it. The rare miss (first visit racing the install, or a purged
-// cache) fetches it once.
-async function serveNavigation() {
+// or served as the shell.
+//
+// Stale-while-revalidate: serve the cached shell IMMEDIATELY (a
+// navigation never waits on the network, so a repeat load on a slow
+// or flaky connection is instant and works offline), and in the
+// background fetch `/` to refresh the cached copy for NEXT time. But
+// a plain SWR on the shell alone poisons the cache: the shell names
+// content-hashed assets, so refreshing `/` to a newer build leaves
+// the cache holding the new shell beside the OLD build's assets (and
+// missing the new ones) — exactly the mix that makes a later load
+// reference assets that aren't cached and hard-fail. So when the
+// refreshed shell DIFFERS from the cached one (a new build), drop
+// every cached asset: the new shell then re-populates its own assets
+// on the next load, and the two never cross builds. The current
+// load keeps serving the coherent build it already had.
+async function serveNavigation(event) {
     const cache = await caches.open(SHELL_CACHE);
     const cached = await cache.match("/");
-    if (cached) return cached;
 
-    const response = await fetch("/");
-    if (response.ok && response.type !== "opaque") {
-        cache.put("/", response.clone()).catch(() => {});
+    // Background refresh. Only ever mutates the cache with a fresh shell
+    // ALREADY IN HAND — never deletes before it can replace, so an offline
+    // or failed fetch leaves the cached shell untouched (the app must stay
+    // loadable offline). On a build change it replaces `/` and prunes the
+    // OLD build's hashed assets so the shell and its assets never cross
+    // builds; `/` itself is rewritten in the same pass, so the cache is
+    // never without a shell.
+    // Snapshot the cached shell's body NOW, while we still own it. Below we
+    // hand `cached` itself to the browser, which consumes its body to render
+    // the page — and a Response whose body is being consumed can no longer be
+    // cloned. Cloning inside `revalidate` (which runs concurrently under
+    // `waitUntil`) therefore raced the page and threw
+    // "Response body is already used", so the `cache.put` below it never ran:
+    // the shell cache was never refreshed, and every navigation paid a `/`
+    // fetch whose result was thrown away on the exception.
+    const cachedTextPromise = cached ? cached.clone().text() : null;
+
+    const revalidate = async () => {
+        let fresh;
+        try {
+            fresh = await fetch("/");
+        } catch {
+            return; // offline / network error — keep what we have
+        }
+        if (!fresh.ok || fresh.type === "opaque") return;
+
+        const freshText = await fresh.clone().text();
+        const cachedText = cachedTextPromise ? await cachedTextPromise : null;
+
+        if (cachedText !== null && cachedText !== freshText) {
+            // New build. Prune every OTHER entry (the previous build's
+            // hashed assets) but keep `/` continuously populated by
+            // overwriting it with the fresh shell in the same cache.
+            const keys = await cache.keys();
+            await Promise.all(
+                keys
+                    .filter((req) => new URL(req.url).pathname !== "/")
+                    .map((req) => cache.delete(req)),
+            );
+            await cache.put("/", fresh);
+        } else {
+            await cache.put("/", fresh);
+        }
+    };
+
+    if (cached) {
+        // Serve the cached shell immediately; refresh in the background.
+        event?.waitUntil?.(revalidate());
+        return cached;
     }
-    return response;
+    // Cold cache: no shell to serve yet. Fetch it (this is the only path
+    // that can hard-fail offline, and only when nothing was ever cached —
+    // `oninstall` precaches `/`, so this is the rare first-visit race).
+    try {
+        const fresh = await fetch("/");
+        if (fresh.ok && fresh.type !== "opaque") {
+            cache.put("/", fresh.clone()).catch(() => {});
+        }
+        return fresh;
+    } catch {
+        // Offline with an empty cache — nothing we can do but surface it.
+        return Response.error();
+    }
+}
+
+// Whether a request can be served from the shell cache by the JS shim
+// WITHOUT booting the wasm worker. Same-origin GETs that aren't the data
+// plane (`/api/*`) and don't ask for fresh content. Mirrors `cache.rs`'s
+// `is_cacheable`, but lives here so a cached asset is served straight from
+// the Cache API — the wasm worker's own bundle can be multiple MB, and
+// booting it to serve a static file made every subresource wait on that
+// download (fatal on 3G). The Rust worker still owns the SAME cache for
+// misses and for guest-iframe path rewrites.
+function isShellCacheable(request, path) {
+    if (request.method !== "GET") return false;
+    if (request.mode === "navigate") return false;
+    if (path.startsWith("/api/")) return false;
+    // A guest-iframe subresource is rewritten to a branch-scoped `/api/...`
+    // path by the Rust worker; those must not be served as top-level assets.
+    // They carry a client id the shim can't see, so exclude by the one
+    // shared-asset exception the worker passes through unchanged.
+    const cache = request.cache;
+    if (cache === "no-store" || cache === "reload" || cache === "no-cache") {
+        return false;
+    }
+    return true;
+}
+
+// Serve a static asset cache-first, revalidating in the background. Returns
+// the cached response immediately when present (no network, no worker boot —
+// instant on any connection); on a miss, falls through to the wasm worker,
+// which fetches, caches, and applies any guest rewrite.
+async function serveAsset(event) {
+    const cache = await caches.open(SHELL_CACHE);
+    // Match ONLY what the Rust worker itself cached (it writes the top-level
+    // resource graph under the request URL). A guest-iframe subresource is
+    // rewritten to a branch-scoped `/api/...` path by the worker and cached
+    // under THAT key, so it can never match here — no cross-serving a guest
+    // asset from the top-level cache.
+    const cached = await cache.match(event.request);
+    if (cached) {
+        // Background refresh for next time; never blocks this response.
+        event.waitUntil?.(
+            (async () => {
+                try {
+                    const fresh = await fetch(event.request);
+                    if (fresh.ok && fresh.type !== "opaque") {
+                        await cache.put(event.request, fresh.clone());
+                    }
+                } catch {
+                    // offline / blip — keep the cached copy
+                }
+            })(),
+        );
+        return cached;
+    }
+    // Cache miss: let the wasm worker fetch + cache (it owns the guest
+    // rewrite and the resource cache write). This is the only path that
+    // pays the worker-boot cost, and only for assets not yet cached.
+    return (await activateWorker()).onfetch(event);
 }
 
 // Route navigations straight to the cached shell (bypassing the
 // Rust worker boot, so TTFB doesn't wait on dialog-repository /
-// axum / IndexedDB init); everything else — `/api/*` and static
-// assets — goes through the Rust worker, which owns the guest
-// rewrite and the resource cache.
+// axum / IndexedDB init); cached static assets are served from the
+// Cache API directly (also bypassing the boot); everything else —
+// `/api/*` and cache-missed assets — goes through the Rust worker,
+// which owns the guest rewrite and the resource cache.
 self.onfetch = event => {
+    const path = new URL(event.request.url).pathname;
     if (event.request.mode === "navigate") {
         // `/api/*` navigations are real data-plane requests, not SPA
         // routes — a user visiting e.g. `/api/migrate/...` directly, or
@@ -148,11 +269,15 @@ self.onfetch = event => {
         // instead of handing back the shell HTML (which would boot the
         // SPA and 404 in the client router). Everything else is a
         // navigation to an app route: serve the cached shell.
-        const path = new URL(event.request.url).pathname;
         if (!path.startsWith("/api/")) {
-            event.respondWith(serveNavigation());
+            event.respondWith(serveNavigation(event));
             return;
         }
+    } else if (isShellCacheable(event.request, path)) {
+        // A cached static asset is served WITHOUT booting the wasm worker,
+        // so a slow connection never waits on the worker's own bundle.
+        event.respondWith(serveAsset(event));
+        return;
     }
     event.respondWith(
         (async () => (await activateWorker()).onfetch(event))(),
@@ -176,6 +301,22 @@ self.onfetch = event => {
 self.onmessage = event => {
     if (event.data && event.data.type === "claim") {
         event.waitUntil?.(self.clients.claim());
+        return;
+    }
+    // Connectivity nudge from the active page on an `online`/`offline`
+    // transition. The worker re-reads `navigator.onLine` itself and reconciles;
+    // this just wakes it so the overlay updates without waiting for a fetch.
+    if (event.data && event.data.type === "connectivity") {
+        event.waitUntil?.(
+            (async () => {
+                try {
+                    const worker = await activateWorker();
+                    await worker.onconnectivity?.();
+                } catch (err) {
+                    log("connectivity dispatch failed:", err);
+                }
+            })(),
+        );
         return;
     }
     event.waitUntil?.(

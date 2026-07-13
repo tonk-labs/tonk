@@ -93,12 +93,24 @@ impl CustomElement for TonkSite {
         // changes (e.g. `/space/{id}/inspector` → `/space/{id}` removes it), and
         // a template re-stamp can rewrite `with`/`allow`. The `<tonk-site>`
         // re-asserts `tonk:load` against the same site entity so the live
-        // subscription re-renders. The initial values are handled by
-        // `connected_callback`, so skip the first-set callback — NOTE the
-        // `custom-elements` JS shim coerces a null `oldValue` to `""`, so a
-        // first set arrives as `Some("")`, never `None`.
+        // subscription re-renders.
+        //
+        // `with`/`allow` skip the first-set callback (the initial values are
+        // handled by `connected_callback`) — NOTE the `custom-elements` JS shim
+        // coerces a null `oldValue` to `""`, so a first set arrives as
+        // `Some("")`, never `None`. `path` must NOT apply that skip: an absent
+        // path is a routed state (`/`), so the empty → value transition IS a
+        // navigation (the bare space route gaining a `{rest}` sub-path), not
+        // mount noise. Pre-connect callbacks are already no-ops inside
+        // `resolve_and_render` (`is_connected` gate), and a mount-time double
+        // resolve is absorbed by the same-route iframe reuse.
         let first_set = old.as_deref().is_none_or(str::is_empty);
-        if matches!(name.as_str(), "path" | "with" | "allow") && !first_set && old != new {
+        let re_route = match name.as_str() {
+            "path" => old != new,
+            "with" | "allow" => !first_set && old != new,
+            _ => false,
+        };
+        if re_route {
             resolve_and_render(this, self.inner.clone());
         }
     }
@@ -107,11 +119,18 @@ impl CustomElement for TonkSite {
 /// Tear down the portal iframe held by `cell`, if any.
 ///
 /// TWO-PHASE: sever the comms (aborts + port closes via `clear_subs`),
-/// point the frame at `about:blank` so the guest realm unloads on its own
-/// schedule, and only remove the element a tick later. Synchronously
-/// destroying a live nested guest (running wasm, brokered ports, its own
-/// nested frames) from inside a render pass is the pattern the browser
-/// process has crashed under — give the unload a turn to settle first.
+/// unload the guest realm so it tears down on its own schedule, and only
+/// remove the element a tick later. Synchronously destroying a live nested
+/// guest (running wasm, brokered ports, its own nested frames) from inside a
+/// render pass is the pattern the browser process has crashed under — give
+/// the unload a turn to settle first.
+///
+/// The unload goes through the frame's own `location.replace()`, NOT through
+/// `iframe.src = "about:blank"`. Setting `src` *navigates* the frame, and a
+/// frame navigation appends an entry to the JOINT session history — so every
+/// teardown left a Back step behind, and the user had to press Back several
+/// times to leave a page they had navigated to once. `location.replace()`
+/// unloads the realm while replacing the current entry rather than adding one.
 fn teardown(cell: &StateCell) {
     if let Some(state) = cell.borrow_mut().take() {
         let mut s = state.borrow_mut();
@@ -120,7 +139,12 @@ fn teardown(cell: &StateCell) {
         if let Some(iframe) = s.iframe.take() {
             crate::bridge::unregister_portal(&iframe);
             let _ = iframe.remove_attribute("srcdoc");
-            let _ = iframe.set_attribute("src", "about:blank");
+            // Replace (don't push) the frame's entry. If the content window is
+            // unreachable (already detached), the frame is on its way out
+            // anyway and the element removal below finishes the job.
+            if let Some(frame_window) = iframe.content_window() {
+                let _ = frame_window.location().replace("about:blank");
+            }
             spawn_local(async move {
                 let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                     if let Some(win) = window() {

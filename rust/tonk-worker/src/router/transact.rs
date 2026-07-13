@@ -84,11 +84,19 @@ pub async fn transact(
             .branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
-    // Mark the repo dirty so the next sync drain pushes its new commits. The
-    // SW owns the sync work-queue (the page only pokes `POST /api/sync` on a
-    // heartbeat); a commit here is the authoritative "this repo has un-pushed
-    // changes" signal. A no-op transact (empty claims) re-marks harmlessly —
-    // the drain just finds nothing ahead and pushes nothing.
+    // Mark the repo dirty so the next sync drain pushes its new commits — but
+    // ONLY if the commit actually moved the tree. The SW owns the sync
+    // work-queue (the page only pokes `POST /api/sync` on a heartbeat); a
+    // commit here is the authoritative "this repo has un-pushed changes"
+    // signal, and a transact whose data didn't change has none.
+    //
+    // This is not hypothetical: every page load fires the transient
+    // `tonk:load` site stamp through this route. Transients are retracted
+    // before the durable write, so the commit lands with an IDENTICAL tree
+    // hash (only the revision's `moment` ticks) — yet it used to enqueue the
+    // repo, so every single reload scheduled a push of nothing.
+    if response.0.revision_before.as_ref().map(|r| &r.tree)
+        != response.0.revision_after.as_ref().map(|r| &r.tree)
     {
         let tonk_state = state.read().await;
         tonk_state.sync_queue.mark_dirty(&path.repo, now_millis());

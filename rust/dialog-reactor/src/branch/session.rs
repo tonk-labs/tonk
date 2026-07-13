@@ -46,11 +46,17 @@ impl BranchSession {
         self.state.poll(env)
     }
 
-    /// Register a fresh subscriber for `query`. Returns a
+    /// Register a fresh subscriber for `query`, optionally tagged
+    /// with the client it serves (see
+    /// [`BranchState::retain_subscribers`]). Returns a
     /// [`Subscriber`] carrying the subscription's hash and the
     /// receiver to read broadcast bytes from.
-    pub fn subscribe(&self, query: ConceptQuery) -> Result<Subscriber, ReactorError> {
-        self.state.subscribe(query)
+    pub fn subscribe(
+        &self,
+        query: ConceptQuery,
+        client: Option<String>,
+    ) -> Result<Subscriber, ReactorError> {
+        self.state.subscribe(query, client)
     }
 
     /// Reference a single subscription on this branch by its

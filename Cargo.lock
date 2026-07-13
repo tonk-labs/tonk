@@ -907,7 +907,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "convert_case",
@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -987,7 +987,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "base58",
@@ -1008,7 +1008,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "base58",
@@ -1023,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "base58",
@@ -1038,7 +1038,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1050,7 +1050,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1065,7 +1065,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1099,7 +1099,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1156,7 +1156,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1212,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1247,7 +1247,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1284,7 +1284,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1313,7 +1313,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1360,7 +1360,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "async-trait",
  "base58",
@@ -1381,7 +1381,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1407,7 +1407,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-self-negation#09bddcc1bc3f1c5fdc83b76d17f2b110cf019699"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-12-2#baa5d57e8ca2b64af01883a1b10397094444f41c"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",

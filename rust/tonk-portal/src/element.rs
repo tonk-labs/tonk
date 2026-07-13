@@ -94,8 +94,15 @@ impl CustomElement for TonkPortal {
                 // element a tick later — synchronous destruction of a live
                 // guest is the pattern the browser process crashes under
                 // (see `site::teardown`).
+                //
+                // Unload via the frame's own `location.replace()`, never by
+                // setting `src`: setting `src` NAVIGATES the frame, and a
+                // frame navigation appends an entry to the joint session
+                // history, so each teardown left an extra Back step behind.
                 let _ = iframe.remove_attribute("srcdoc");
-                let _ = iframe.set_attribute("src", "about:blank");
+                if let Some(frame_window) = iframe.content_window() {
+                    let _ = frame_window.location().replace("about:blank");
+                }
                 wasm_bindgen_futures::spawn_local(async move {
                     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                         if let Some(win) = web_sys::window() {
@@ -267,10 +274,18 @@ mod tests {
         );
     }
 
-    /// Teardown is TWO-PHASE: on disconnect the guest realm is pointed at
-    /// `about:blank` immediately (comms already severed), and the element
-    /// itself is removed a tick later — synchronous destruction of a live
-    /// guest is the pattern the browser process crashed under.
+    /// Teardown is TWO-PHASE: on disconnect the guest realm is unloaded
+    /// immediately (comms already severed), and the element itself is removed
+    /// a tick later — synchronous destruction of a live guest is the pattern
+    /// the browser process crashed under.
+    ///
+    /// Phase one asserts the guest CONTENT is gone, not the mechanism that
+    /// removed it. The unload goes through the frame's own
+    /// `location.replace()` rather than `iframe.src = "about:blank"`, because
+    /// setting `src` navigates the frame and a frame navigation appends an
+    /// entry to the joint session history (Back then needed an extra press per
+    /// teardown). `location.replace()` leaves the `src` attribute untouched,
+    /// so asserting on it would only pin the old mechanism in place.
     #[dialog_common::test]
     async fn it_removes_the_iframe_on_disconnect() {
         let host = mount(Some("<p>hi</p>"));
@@ -278,12 +293,20 @@ mod tests {
 
         host.remove();
 
-        // Phase one, immediate: the frame is unloading, not yet detached.
+        // Phase one, immediate: the frame is unloading, not yet detached — and
+        // it must NOT have been navigated via its `src` attribute, which is
+        // what used to grow the history.
         if let Some(iframe) = host.query_selector("iframe").unwrap() {
             assert_eq!(
-                iframe.get_attribute("src").as_deref(),
-                Some("about:blank"),
+                iframe.get_attribute("srcdoc"),
+                None,
                 "disconnect must unload the guest realm first",
+            );
+            assert_eq!(
+                iframe.get_attribute("src"),
+                None,
+                "the unload must not navigate the frame via `src` — that appends \
+                 a joint-session-history entry",
             );
         }
 

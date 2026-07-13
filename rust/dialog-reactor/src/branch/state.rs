@@ -142,7 +142,11 @@ impl BranchState {
     /// the hash is the right move here. Track the upstream fix
     /// in dialog-db (make `NamedAttributes::PartialEq`
     /// order-insensitive, or serialize in sorted order).
-    pub fn subscribe(&self, query: ConceptQuery) -> Result<Subscriber, ReactorError> {
+    pub fn subscribe(
+        &self,
+        query: ConceptQuery,
+        client: Option<String>,
+    ) -> Result<Subscriber, ReactorError> {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
 
@@ -165,9 +169,40 @@ impl BranchState {
         subscription.subscribers.push(SubscriberSession {
             sender,
             status: Status::Pending,
+            client,
         });
 
         Ok(Subscriber { hash, receiver })
+    }
+
+    /// Drop every subscriber whose `client` tag fails `keep`; an
+    /// untagged subscriber (`None`) is always kept. A subscription
+    /// left with no subscribers is removed with its engine.
+    ///
+    /// This is the liveness-driven prune: send-failure pruning in
+    /// `fan_out` only fires once the receiver is actually dropped,
+    /// which a vanished client may never trigger — its stale
+    /// subscription would re-evaluate on every poll forever.
+    pub fn retain_subscribers<F: Fn(&str) -> bool>(&self, keep: F) {
+        let mut subs = self.subscriptions.lock();
+        subs.retain(|_, subscription| {
+            subscription
+                .subscribers
+                .retain(|s| s.client.as_deref().is_none_or(&keep));
+            !subscription.subscribers.is_empty()
+        });
+    }
+
+    /// Drop every session-overlay fact recorded for entities that
+    /// fail `keep` — the branch-level surface of
+    /// [`Overlay::retain_entities`](dialog_repository::Overlay).
+    /// Returns whether anything was removed; the caller schedules a
+    /// poll when it was, so live subscribers observe the removal.
+    pub fn retain_overlay_entities<F: FnMut(&dialog_artifacts::Entity) -> bool>(
+        &self,
+        keep: F,
+    ) -> bool {
+        self.branch.overlay().retain_entities(keep)
     }
 
     /// Re-poll every subscription on this branch. Mutating leaf

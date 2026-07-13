@@ -333,6 +333,10 @@ pub struct TonkState {
     /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
     /// reconcile it. See `router::sync::SyncQueue`.
     pub sync_queue: crate::router::SyncQueue,
+    /// Liveness ledger: SW client → what it registered (site stamps) and
+    /// whether we have observed it alive. The stale-client sweep reaps
+    /// born-then-died clients from here. See [`crate::router::ClientRegistry`].
+    pub clients: crate::router::ClientRegistry,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -476,7 +480,7 @@ mod route_for_tests {
         // Drain at the trailing edge, which clears the burst clock.
         assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
         s.begin_drain();
-        s.end_drain();
+        s.end_drain(SYNC_DEBOUNCE_MS as f64);
         // A fresh burst after the drain starts a NEW cap clock at t=10_000. Use a
         // superseded ticket (t2, then t3 bumps the generation) so `is_latest` is
         // false and only the cap can trigger a drain — that's what proves the
@@ -504,7 +508,69 @@ mod route_for_tests {
             !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0),
             "in_flight guard must block a second concurrent drain",
         );
-        s.end_drain();
+        s.end_drain(SYNC_MAX_WAIT_MS as f64 * 10.0);
+    }
+
+    #[dialog_common::test]
+    fn it_defers_a_drain_while_a_page_is_loading() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        // A data-plane request is in flight (a page booting): even the latest
+        // ticket at its debounce edge must NOT drain — sync yields the thread.
+        let _guard = s.enter_loading(0.0);
+        assert!(
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            "an in-flight data-plane request defers the drain",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_drains_once_the_load_settles() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        {
+            let _guard = s.enter_loading(0.0);
+            assert!(!s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+        }
+        // Guard dropped — the request completed, so the drain proceeds.
+        assert!(
+            s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            "the drain runs once the in-flight request completes",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_stops_deferring_past_the_load_cap() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        // A request that never completes (held guard) must not defer sync
+        // forever: past SYNC_LOAD_DEFER_MS from its start, the drain proceeds.
+        let _guard = s.enter_loading(0.0);
+        assert!(
+            !s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64 - 1.0),
+            "within the cap, an in-flight request still defers",
+        );
+        assert!(
+            s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64),
+            "past the cap, a stuck request no longer defers the drain",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_counts_concurrent_loads() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        let g1 = s.enter_loading(0.0);
+        let g2 = s.enter_loading(0.0);
+        drop(g1);
+        // One of two concurrent requests finished; the other still defers
+        // (e.g. a second tab still booting).
+        assert!(
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            "a drain waits while any data-plane request is still in flight",
+        );
+        drop(g2);
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
     }
 }
 
@@ -532,6 +598,16 @@ mod route_for_tests {
 struct SyncScheduler {
     generation: std::rc::Rc<std::cell::Cell<u64>>,
     in_flight: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Count of outstanding data-plane (`/api/*`) requests. A sync drain
+    /// competes with these for the single SW thread and the reactor's branch
+    /// locks, so it holds off while any are in flight — a page actively loading
+    /// (this tab or another) finishes its boot before sync does network work.
+    /// Bounded by [`SYNC_LOAD_DEFER_MS`] so a hung request can't defer sync
+    /// forever.
+    loading: std::rc::Rc<std::cell::Cell<u32>>,
+    /// Wall-clock ms of the last data-plane request start, used with `loading`
+    /// to cap how long an in-flight request may defer a drain.
+    last_request_at: std::rc::Rc<std::cell::Cell<f64>>,
     /// Wall-clock ms when the current un-drained burst began, or `None` when the
     /// last drain cleared it. The max-wait cap measures from here.
     pending_since: std::rc::Rc<std::cell::Cell<Option<f64>>>,
@@ -540,6 +616,21 @@ struct SyncScheduler {
     /// it — later requests just ride the debounce. Taken (and logged) by the
     /// ticket that actually drains.
     cause: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    /// Wall-clock ms when the last drain FINISHED, so the next one can be
+    /// held off for [`SYNC_COOLDOWN_MS`]. The debounce measures from the
+    /// triggering request, which says nothing about how long the previous
+    /// drain ran: on a slow link a drain can outlast the loop's interval, so
+    /// without a completion-relative gap the next drain starts the moment the
+    /// last one lands and sync runs back-to-back forever.
+    /// `None` until the first drain completes: with no previous drain there is
+    /// nothing to cool down from, so the first one runs immediately.
+    last_drain_end: std::rc::Rc<std::cell::Cell<Option<f64>>>,
+    /// Set once the worker is being replaced. A dying worker must not start
+    /// new sync work: the SW spec keeps it alive until every `waitUntil`
+    /// settles and every fetch completes, so a drain scheduled (or a loop
+    /// tick fired) after `updatefound` pins the outgoing worker in `waiting`
+    /// — which is why it "won't go away".
+    stopped: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -557,12 +648,32 @@ impl SyncScheduler {
         next
     }
 
+    /// Mark a data-plane (`/api/*`) request as started — a drain defers while
+    /// any are outstanding. Returns a guard that decrements on drop, so the
+    /// count is released on any request outcome (success, error, or panic).
+    fn enter_loading(&self, now: f64) -> LoadingGuard {
+        self.loading.set(self.loading.get().saturating_add(1));
+        self.last_request_at.set(now);
+        LoadingGuard {
+            loading: self.loading.clone(),
+        }
+    }
+
+    /// Whether a page is actively loading: at least one data-plane request is
+    /// in flight AND the most recent one started within [`SYNC_LOAD_DEFER_MS`].
+    /// The time bound caps how long a single stuck request can defer sync — past
+    /// it, the drain proceeds even with the counter non-zero.
+    fn is_loading(&self, now: f64) -> bool {
+        self.loading.get() > 0 && now - self.last_request_at.get() < SYNC_LOAD_DEFER_MS as f64
+    }
+
     /// Whether a woken ticket should drain now. True when no drain is already
-    /// running AND either the ticket is still the latest (normal trailing edge)
-    /// or the current burst has been pending past [`SYNC_MAX_WAIT_MS`] (the cap,
-    /// so continuous traffic can't starve the drain).
+    /// running AND no page is actively loading AND either the ticket is still
+    /// the latest (normal trailing edge) or the current burst has been pending
+    /// past [`SYNC_MAX_WAIT_MS`] (the cap, so continuous traffic can't starve
+    /// the drain).
     fn should_drain(&self, ticket: u64, now: f64) -> bool {
-        if self.in_flight.get() {
+        if !self.may_drain(now) {
             return false;
         }
         let is_latest = self.generation.get() == ticket;
@@ -573,6 +684,37 @@ impl SyncScheduler {
         is_latest || capped
     }
 
+    /// The gate EVERY drain entrypoint passes through — the debounced
+    /// per-fetch drain, the self-scheduled loop, and Background Sync's
+    /// `onsync`. Previously only the per-fetch path consulted `in_flight`,
+    /// so a loop tick could start a second drain on top of a running one and
+    /// they would contend for the SW thread and the branch locks.
+    ///
+    /// Refuses when: the worker is being replaced (a dying worker must start
+    /// no new work — see `stopped`), a drain is already running, a page is
+    /// actively loading, or the previous drain finished less than
+    /// [`SYNC_COOLDOWN_MS`] ago.
+    fn may_drain(&self, now: f64) -> bool {
+        if self.stopped.get() {
+            return false;
+        }
+        if self.in_flight.get() {
+            return false;
+        }
+        // Yield to an actively-loading page — a boot burst (this tab or another)
+        // finishes before sync competes for the SW thread and branch locks.
+        if self.is_loading(now) {
+            return false;
+        }
+        // Quiet period measured from the LAST DRAIN'S COMPLETION, not from the
+        // request that triggered this one. Without it, a drain that outlasts
+        // the loop interval (easy on a slow link) is followed immediately by
+        // the next, and sync runs continuously.
+        self.last_drain_end
+            .get()
+            .is_none_or(|end| now - end >= SYNC_COOLDOWN_MS as f64)
+    }
+
     /// Mark a drain as started: take the `in_flight` guard and clear the burst
     /// clock so the max-wait cap restarts from the next request.
     fn begin_drain(&self) {
@@ -580,9 +722,23 @@ impl SyncScheduler {
         self.pending_since.set(None);
     }
 
-    /// Release the `in_flight` guard once a drain finishes.
-    fn end_drain(&self) {
+    /// Release the `in_flight` guard once a drain finishes, stamping `now` as
+    /// the completion time so the cooldown measures from here. The clock is
+    /// passed in rather than read internally so the gate is testable against a
+    /// synthetic one.
+    fn end_drain(&self, now: f64) {
         self.in_flight.set(false);
+        self.last_drain_end.set(Some(now));
+    }
+
+    /// Stop all sync work: the worker is being replaced. Idempotent.
+    fn stop(&self) {
+        self.stopped.set(true);
+    }
+
+    /// Whether the worker has been told to stop.
+    fn stopped(&self) -> bool {
+        self.stopped.get()
     }
 
     /// Record the burst-opening request: the first call after a drain wins,
@@ -600,6 +756,28 @@ impl SyncScheduler {
     }
 }
 
+/// Decrements the scheduler's in-flight data-plane count on drop, so a request
+/// releases its "loading" hold on the sync drain regardless of how it finishes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+struct LoadingGuard {
+    loading: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl Drop for LoadingGuard {
+    fn drop(&mut self) {
+        self.loading.set(self.loading.get().saturating_sub(1));
+    }
+}
+
+/// How long an in-flight data-plane request may defer the sync drain. Past this,
+/// a stuck or slow request no longer holds sync off — the drain proceeds even
+/// with requests still counted as in flight. Comfortably longer than a normal
+/// page load (sub-500ms measured) so a real boot always completes first, but
+/// short enough that a genuinely hung request doesn't stall sync for long.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_LOAD_DEFER_MS: i32 = 2_000;
+
 /// Quiet window before a request's scheduled sync drain fires. A burst of boot
 /// queries collapses into one drain at the trailing edge. Kept short so a
 /// reactive pull (and the `<tonk-host>` idle poll every ~2× this) feels
@@ -613,6 +791,15 @@ const SYNC_DEBOUNCE_MS: i32 = 500;
 /// the drain never runs. Measured from the first request after the last drain.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_MAX_WAIT_MS: i32 = 3_000;
+
+/// Minimum quiet period between the END of one sync drain and the start of
+/// the next. The debounce measures from the triggering request, which says
+/// nothing about how long the previous drain ran — on a slow link a drain can
+/// outlast the loop's interval, and without a completion-relative gap the next
+/// one starts the instant the last lands, so sync runs continuously and starves
+/// the queries it shares the single SW thread with.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_COOLDOWN_MS: i32 = 2_000;
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -698,6 +885,7 @@ impl TonkServiceWorker {
             bridges: Default::default(),
             commands: crate::router::command_registry(),
             sync_queue: Default::default(),
+            clients: Default::default(),
         };
         bootstrap_profile(&state)
             .await
@@ -737,6 +925,16 @@ impl TonkServiceWorker {
     #[wasm_bindgen(js_name = "onupdatefound")]
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
+        // Stop all sync work FIRST. The spec keeps this worker alive until
+        // every in-flight fetch and every `waitUntil` promise settles; a drain
+        // scheduled on a fetch's `waitUntil`, or the self-scheduled loop's next
+        // tick, would keep re-arming that condition and pin the outgoing worker
+        // in `waiting` indefinitely — the "SW won't go away" symptom.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            self.sync_scheduler.stop();
+            self.sync_loop.set(false);
+        }
         let lsp = self.lsp.clone();
         let state = self.state.clone();
         future_to_promise(async move {
@@ -831,7 +1029,21 @@ impl TonkServiceWorker {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         self.ensure_sync_loop();
 
+        // Count data-plane (`/api/*`) requests as in-flight for the duration of
+        // this fetch: they contend with the sync drain for the SW thread and the
+        // reactor's branch locks, so the drain holds off while any are running.
+        // A page actively booting (this tab or another) thus finishes before
+        // sync does network work. Static-asset fetches don't count — they never
+        // touch the reactor. The guard rides into the future below and drops when
+        // the request completes.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let loading_guard = path
+            .starts_with("/api/")
+            .then(|| self.sync_scheduler.enter_loading(js_sys::Date::now()));
+
         future_to_promise(async move {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            let _loading_guard = loading_guard;
             // Opportunistic cleanup of stale bridge sessions and view
             // bindings. Cheap enough to run on every fetch.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -898,38 +1110,56 @@ impl TonkServiceWorker {
     pub fn sync(&self, tag: String) -> Promise {
         let state = self.state.clone();
 
+        // Same gate as every other drain entrypoint: never overlap a running
+        // drain, never run on a worker that is being replaced, and honor the
+        // completion-relative cooldown.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
             log!("Background sync triggered ({tag:?})");
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                if !scheduler.may_drain(js_sys::Date::now()) {
+                    return Ok(JsValue::UNDEFINED);
+                }
+                scheduler.begin_drain();
+                crate::router::drain_sync(&state).await;
+                scheduler.end_drain(js_sys::Date::now());
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             crate::router::drain_sync(&state).await;
             Ok(JsValue::UNDEFINED)
         })
     }
 
-    /// Connectivity lost — the SW's own `offline` event. Stamp
-    /// `sync:offline` on every open repo so the chips/discs reflect the
-    /// disconnect. This is the reliable signal: an offline page stops
-    /// polling, so no fetch would otherwise wake this worker.
+    /// Connectivity changed. Re-read `navigator.onLine` (reliable in the SW
+    /// scope) and reconcile: offline stamps `sync:offline` on every open repo
+    /// so the chips/discs reflect the disconnect; online runs a drain and
+    /// restarts the self-scheduled sync loop the offline transition stopped.
+    ///
+    /// Fired both by the SW's own `offline`/`online` events and by a
+    /// `{type:"connectivity"}` nudge from the active page (whose events fire
+    /// even when the SW's don't). Either way the decision is made from
+    /// `navigator.onLine`, not from who fired — a flapping transition settles
+    /// on the current reading.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "onoffline")]
-    pub fn on_offline(&self) -> Promise {
+    #[wasm_bindgen(js_name = "onconnectivity")]
+    pub fn on_connectivity(&self) -> Promise {
+        let offline = offline();
+        if !offline {
+            // Restart the self-scheduled loop the offline transition stopped.
+            self.ensure_sync_loop();
+        }
         let state = self.state.clone();
+        let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
-            crate::router::mark_offline(&state).await;
-            Ok(JsValue::UNDEFINED)
-        })
-    }
-
-    /// Connectivity restored — the SW's own `online` event. Run a drain
-    /// directly (like Background Sync's `onsync`) so statuses reconcile
-    /// immediately, and restart the self-scheduled sync loop the offline
-    /// transition stopped.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "ononline")]
-    pub fn on_online(&self) -> Promise {
-        self.ensure_sync_loop();
-        let state = self.state.clone();
-        future_to_promise(async move {
-            crate::router::drain_sync(&state).await;
+            if offline {
+                crate::router::mark_offline(&state).await;
+            } else if scheduler.may_drain(js_sys::Date::now()) {
+                scheduler.begin_drain();
+                crate::router::drain_sync(&state).await;
+                scheduler.end_drain(js_sys::Date::now());
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -944,15 +1174,23 @@ impl TonkServiceWorker {
     /// it. This replaces the page-side `POST /api/sync` heartbeat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn ensure_sync_loop(&self) {
-        if self.sync_loop.get() {
+        // A worker being replaced starts no new work — its loop would keep
+        // waking up and pinning it in `waiting`.
+        if self.sync_scheduler.stopped() || self.sync_loop.get() {
             return;
         }
         self.sync_loop.set(true);
         let running = self.sync_loop.clone();
         let state = self.state.clone();
+        let scheduler = self.sync_scheduler.clone();
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 let _ = crate::sleep(web_time::Duration::from_millis(SYNC_LOOP_MS)).await;
+                // The worker is being replaced (or `onupdatefound` cleared the
+                // running flag): exit so this worker can be released.
+                if scheduler.stopped() || !running.get() {
+                    break;
+                }
                 if offline() {
                     // Reflect the disconnect, then stop — `ononline`
                     // restarts the loop and reconciles immediately.
@@ -969,7 +1207,19 @@ impl TonkServiceWorker {
                     log!("sync loop parked: every open space is paused");
                     break;
                 }
+                // Through the SAME gate as the per-fetch drain: a loop tick used
+                // to call `drain_sync` directly, so it could start a second
+                // drain on top of one already running (they only consulted
+                // `in_flight` on the per-fetch path) and the two then contended
+                // for the single SW thread and the branch locks. The gate also
+                // enforces the cooldown, so a drain that outlasts this interval
+                // is not immediately followed by another.
+                if !scheduler.may_drain(js_sys::Date::now()) {
+                    continue;
+                }
+                scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
+                scheduler.end_drain(js_sys::Date::now());
             }
             running.set(false);
         });
@@ -1071,7 +1321,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         if offline() {
             scheduler.begin_drain();
             crate::router::mark_offline(&state).await;
-            scheduler.end_drain();
+            scheduler.end_drain(js_sys::Date::now());
             return Ok(JsValue::UNDEFINED);
         }
         scheduler.begin_drain();
@@ -1079,7 +1329,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
             log!("sync drain, caused by: {cause}");
         }
         crate::router::drain_sync(&state).await;
-        scheduler.end_drain();
+        scheduler.end_drain(js_sys::Date::now());
         Ok(JsValue::UNDEFINED)
     });
 
@@ -1089,11 +1339,13 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
     let _ = extendable.wait_until(&promise);
 }
 
-/// Whether the worker reports no network connectivity. Unknown (no worker
-/// global) counts as online — a wrongly skipped drain is worse than a
-/// failed fetch.
+/// Whether the worker reports no network connectivity, read straight from
+/// `navigator.onLine` in the service-worker scope (which does update under
+/// DevTools offline emulation and reflects the real connection in the wild).
+/// A failure to read the scope counts as online — a wrongly skipped drain is
+/// worse than a failed fetch (which itself stamps `sync:offline`).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn offline() -> bool {
+pub(crate) fn offline() -> bool {
     use wasm_bindgen::JsCast;
     js_sys::global()
         .dyn_into::<web_sys::WorkerGlobalScope>()
