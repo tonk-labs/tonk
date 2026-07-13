@@ -39,6 +39,20 @@ runner. These are the "before" set for the agent-ergonomic-CLI work.
 | interview-build | 3/10 | strong interview, but the build never surfaces on the space home (render-gap) + DSL notation-validation rejections |
 | cold-onboard | 7/10 | invite prompt gives no install hint; agent probes/filesystem-hunts for the CLI |
 
+### Post-rename measurements (2026-07-13, codex/gpt-5.5 episodes)
+
+Re-run of the two episode scenarios after the CLI data verbs went
+dialog-native (`assert`/`retract`/`query`/`schema` replacing
+`add`/`set`/`rm`/`list`/`describe`). Neither episode attempted an old
+verb; both oriented via `tonk schema`/`tonk concepts` and drove every
+write through `tonk eval` notation, accepted first try — the 07-08
+notation-validation rejections did not recur.
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| targeted-edit | 9/10 | 12 commands of filesystem grepping for store-resident data before settling on the schema/eval path |
+| interview-build | 3/10 | strong interview and clean notation, but the render-gap again: `tonk/space` home alias never repointed, so the build never surfaces on the space home |
+
 `cold-onboard` was 7/10 both before and after the seed-reaches-remote fix, but
 the fix removed a confound: pre-fix the joined branch was barren (0
 `xyz.tonk.view` attributes) because `tonk invite` never pushed the
