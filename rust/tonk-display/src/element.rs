@@ -3013,7 +3013,7 @@ mod tests {
                 init.set_status(200);
                 let resp =
                     web_sys::Response::new_with_opt_str_and_init(Some("fakepng"), &init).unwrap();
-                Promise::resolve(&resp.into())
+                Promise::resolve(&JsValue::from(resp))
             })
                 as Box<dyn FnMut(JsValue, JsValue) -> Promise>);
             Reflect::set(

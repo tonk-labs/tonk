@@ -41,16 +41,19 @@ let
   wasm-bindgen-cli =
     with pkgs;
     buildWasmBindgenCli rec {
+      # Must match the `wasm-bindgen` crate version in the workspace exactly:
+      # the CLI generates the JS glue for the wasm the crate emits, and a
+      # mismatch produces bindings that silently do not line up.
       src = fetchCrate {
         pname = "wasm-bindgen-cli";
-        version = "0.2.108";
-        hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
+        version = "0.2.126";
+        hash = "sha256-H6Is3fiZVxZCfOMWK5dWMSrtn50VGv0sfdnsT+cTtyk=";
       };
 
       cargoDeps = rustPlatform.fetchCargoVendor {
         inherit src;
         inherit (src) pname version;
-        hash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
+        hash = "sha256-VucqkXbCi4qtQzY/HrXiDnbSURsagPsdNVMn1Tw3UiY=";
       };
     };
 

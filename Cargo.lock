@@ -479,9 +479,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.66"
+version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
+checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -907,7 +907,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -924,7 +924,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.17",
  "leb128",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "rkyv",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "base58",
@@ -960,7 +960,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -970,7 +970,7 @@ dependencies = [
  "dialog-macros",
  "futures-util",
  "getrandom 0.2.17",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rkyv",
  "serde",
  "serde_bytes",
@@ -988,7 +988,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "base58",
@@ -1009,7 +1009,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "base58",
@@ -1024,7 +1024,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "base58",
@@ -1039,7 +1039,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1051,7 +1051,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1066,7 +1066,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1085,7 +1085,7 @@ dependencies = [
  "dirs 5.0.1",
  "ed25519-dalek",
  "getrandom 0.2.17",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
@@ -1100,7 +1100,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1157,7 +1157,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1194,7 +1194,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "md5",
- "rand 0.8.6",
+ "rand 0.8.7",
  "reqwest 0.12.28",
  "s3s",
  "serde",
@@ -1213,7 +1213,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1248,7 +1248,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1285,7 +1285,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1302,7 +1302,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "nonempty",
  "parking_lot",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rkyv",
  "serde",
  "sieve-cache",
@@ -1314,7 +1314,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1337,7 +1337,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pidlock",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rexie",
  "s3s",
  "serde",
@@ -1353,7 +1353,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.4.2",
+ "wasm-streams 0.6.0",
  "web-sys",
  "web-time",
 ]
@@ -1361,7 +1361,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "async-trait",
  "base58",
@@ -1382,7 +1382,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1408,7 +1408,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-13-2#ec3abffbbc093cae07a83c34c3c240e3bedb6863"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-07-14-3#4cbdee5a4e7289f665cfc5103a521acbc73f1204"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -1962,9 +1962,9 @@ dependencies = [
 
 [[package]]
 name = "http-body"
-version = "1.0.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
+checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
  "http",
@@ -1972,9 +1972,9 @@ dependencies = [
 
 [[package]]
 name = "http-body-util"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
+checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
 dependencies = [
  "bytes",
  "futures-core",
@@ -2316,11 +2316,12 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.85"
+version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c942ebf8e95485ca0d52d97da7c5a2c387d0e7f0ba4c35e93bfcaee045955b3"
+checksum = "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102"
 dependencies = [
- "once_cell",
+ "cfg-if",
+ "futures-util",
  "wasm-bindgen",
 ]
 
@@ -2505,9 +2506,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02bd0af71c67b473010cbbc60715ee815645a4dc942899111f494b4b737d6fda"
+checksum = "30d65c71f1ce40ab09135ce117d742b9f8a19ff91a41a8b57ed50bc2de59c427"
 dependencies = [
  "libc",
  "wasi",
@@ -2967,9 +2968,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -2978,9 +2979,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
+checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
@@ -3296,9 +3297,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.41"
+version = "0.23.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
+checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -3757,9 +3758,9 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "simd_cesu8"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94f90157bb87cddf702797c5dadfa0be7d266cdf49e22da2fcaa32eff75b2c33"
+checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
 dependencies = [
  "rustc_version",
  "simdutf8",
@@ -3785,9 +3786,9 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "socket2"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -3795,9 +3796,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
 name = "spki"
@@ -3845,6 +3846,27 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "strum"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "subtle"
@@ -4033,9 +4055,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.11.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+checksum = "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f"
 dependencies = [
  "tinyvec_macros",
 ]
@@ -4237,7 +4259,7 @@ dependencies = [
  "futures-util",
  "ipld-core",
  "lsp-types",
- "rand 0.9.4",
+ "rand 0.9.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4399,7 +4421,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "wasm-streams 0.4.2",
+ "wasm-streams 0.6.0",
  "web-sys",
 ]
 
@@ -4627,7 +4649,7 @@ dependencies = [
  "js-sys",
  "lsp-types",
  "port_check",
- "rand 0.9.4",
+ "rand 0.9.5",
  "reqwest 0.12.28",
  "send_wrapper",
  "serde",
@@ -4687,7 +4709,7 @@ dependencies = [
  "js-sys",
  "lsp-types",
  "parking_lot",
- "rand 0.9.4",
+ "rand 0.9.5",
  "send_wrapper",
  "serde",
  "serde-wasm-bindgen",
@@ -4711,7 +4733,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "wasm-streams 0.4.2",
+ "wasm-streams 0.6.0",
  "web-sys",
  "web-time",
 ]
@@ -4921,9 +4943,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.23.4"
+version = "1.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
+checksum = "ea5fab0d6c3c01ae70085a09cb03d4c7a1d6314e2b3e075392783396d724ca0a"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4977,9 +4999,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.108"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64024a30ec1e37399cf85a7ffefebdb72205ca1c972291c51512360d90bd8566"
+checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -4990,23 +5012,19 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.58"
+version = "0.4.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70a6e77fd0ae8029c9ea0063f87c46fde723e7d887703d74ad2616d792e51e6f"
+checksum = "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d"
 dependencies = [
- "cfg-if",
- "futures-util",
  "js-sys",
- "once_cell",
  "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.108"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "008b239d9c740232e71bd39e8ef6429d27097518b6b30bdf9086833bd5b6d608"
+checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -5014,9 +5032,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.108"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5256bae2d58f54820e6490f9839c49780dff84c65aeab9e772f15d5f0e913a55"
+checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -5027,18 +5045,18 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.108"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f01b580c9ac74c8d8f0c0e4afb04eeef2acf145458e52c03845ee9cd23e3d12"
+checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "wasm-bindgen-test"
-version = "0.3.58"
+version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45649196a53b0b7a15101d845d44d2dda7374fc1b5b5e2bbf58b7577ff4b346d"
+checksum = "2a0d555ca874445df8d314f94f5c948a4e74e5418f332c89f660a3d8310a96f4"
 dependencies = [
  "async-trait",
  "cast",
@@ -5058,9 +5076,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-test-macro"
-version = "0.3.58"
+version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f579cdd0123ac74b94e1a4a72bd963cf30ebac343f2df347da0b8df24cdebed2"
+checksum = "94eb68555b95bcea5e8cf4abe280b529049479fa995bfc23734af96a6aedc120"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5069,9 +5087,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-test-shared"
-version = "0.2.108"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8145dd1593bf0fb137dbfa85b8be79ec560a447298955877804640e40c2d6ea"
+checksum = "c31d56021e873866c968588ed85ccdf56db5c426e44afdb4618c39895104b920"
 
 [[package]]
 name = "wasm-streams"
@@ -5100,10 +5118,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-sys"
-version = "0.3.85"
+name = "wasm-streams"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "312e32e551d92129218ea9a2452120f4aabc03529ef03e4d0d82fb2780608598"
+checksum = "e7d3be8814f5ba5f074491a469eed3d73c273ffad955f25ed1635efac4b0d269"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "web-sys"
+version = "0.3.103"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -5486,9 +5517,9 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "worker"
-version = "0.7.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "244647fd7673893058f91f22a0eabd0f45bb50298e995688cb0c4b9837081b19"
+checksum = "2f8adbf6c9ae45b665dee995c5e3a342c2bd7d58a2e8ca5c75b50ce8b1b8bfd9"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5504,11 +5535,12 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "serde_urlencoded",
+ "strum",
  "tokio",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.4.2",
+ "wasm-streams 0.6.0",
  "web-sys",
  "worker-macros",
  "worker-sys",
@@ -5516,25 +5548,25 @@ dependencies = [
 
 [[package]]
 name = "worker-macros"
-version = "0.7.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac7e73ffb164183b57bb67d3efb881681fcd93ef5515ba32a4d022c4a6acc2ce"
+checksum = "6d908735d273dd7f9c325a842623f4e5a745e0686187ce465b34dc162ad348df"
 dependencies = [
  "async-trait",
  "proc-macro2",
  "quote",
+ "strum",
  "syn",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-macro-support",
  "worker-sys",
 ]
 
 [[package]]
 name = "worker-sys"
-version = "0.7.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2b96254fcaa9229fd82d886f04be99c4ee8e59c8d80438724aa70039dca838"
+checksum = "33faa1a8fa6c7eec67b196e008859c44d468a5ad4f991855cdc856f119e0e98f"
 dependencies = [
  "cfg-if",
  "js-sys",
@@ -5683,9 +5715,9 @@ checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
 
 [[package]]
 name = "zmij"
-version = "1.0.21"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zopfli"

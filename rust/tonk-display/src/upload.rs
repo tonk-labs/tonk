@@ -448,7 +448,7 @@ mod tests {
             let init = web_sys::ResponseInit::new();
             init.set_status(status);
             let resp = web_sys::Response::new_with_opt_str_and_init(Some(json), &init).unwrap();
-            js_sys::Promise::resolve(&resp.into())
+            js_sys::Promise::resolve(&JsValue::from(resp))
         })
             as Box<dyn FnMut(JsValue, JsValue) -> js_sys::Promise>);
         js_sys::Reflect::set(
