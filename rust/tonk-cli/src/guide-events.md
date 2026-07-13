@@ -136,11 +136,14 @@ Rules of the translation:
   posted and the event falls through to the next matching
   binding. Only a `the:` that doesn't address the event at all
   is silently dropped.
-- An **empty string** reads as "blank = omit" (like an empty form
-  field), so a required field that resolves to `""` also drops the
-  whole command, silently. If a field can legitimately be empty,
-  send a sentinel from the component (e.g. `<br>` for empty rich
-  text) rather than `""`.
+- A **blank** leaf (`""` from an empty text input, `null` from a
+  blank `<wa-input>`) is "not provided": the field is **omitted** and
+  the command still posts without it. No error is logged — but a rule
+  premise that names the missing field then matches nothing, so the
+  event silently does nothing. Read as little as possible from the
+  form and derive the rest in the rule from branch data; if a field
+  can legitimately be empty, send a sentinel from the component
+  (e.g. `<br>` for empty rich text) rather than `""`.
 - The `as:` type drives coercion: `text` → string, `entity` →
   string parsed as a URI (rejected if it has no `:`),
   `unsigned-integer` / `signed-integer` / `float` → number,
@@ -320,6 +323,63 @@ rule!:
 The rule fires on the click-derived `complete` transient and
 retracts the matched `todo`. The view's subscription sees the
 row disappear.
+
+### Minting a new entity from a rule (create forms)
+
+A rule head needs every field bound, **including `this`** — there is
+no formula that generates a fresh entity. To create durable state
+from an event (a "new post" form), bind the transient command's own
+content-derived entity as the new fact's identity:
+
+```yaml
+command!: &publish
+  with:
+    body:    { the: dom.event.current-target.elements.body/value, as: text }
+    prevent: { the: dom.event.do/prevent-default }
+
+rule!:
+  assert!: post
+  when:
+    - assert: publish
+      where: { this: ?this, body: ?body }   # the transient's own entity
+```
+
+One durable entity per event, carrying the command's identity. The
+caveat: a command's entity is content-derived, so two events with
+identical parameters collide on the same entity. If duplicates must
+stay distinct, add a per-event nonce field to the command (e.g.
+`time: { the: dom.event/time-stamp, as: float }`) so each event's
+body — and therefore its entity — differs.
+
+Everything the head asserts must be bound in the body: read what the
+user typed from the form, and pull the rest (author, defaults) from
+persistent facts joined in additional `when:` premises, or bind
+constants with `==` / formula premises.
+
+### Debugging: the click did nothing
+
+The failure modes, from loud to silent:
+
+1. **Console warn "field … did not resolve against the event"** —
+   the path itself is wrong: a missing property step, a kebab-case
+   control name (each path segment camelCases, so `name="like-seed"`
+   is looked up as `likeSeed` — prefer single-word lowercase
+   `name=`s), or a value that won't coerce to `as:` (an `entity`
+   needs a `:`). The whole binding aborts; nothing posts.
+2. **No warn, but the rule didn't fire** — a form control resolved
+   blank (`""`/`null`), so the field was omitted and the posted
+   command doesn't satisfy the rule's premise. See the blank-leaf
+   bullet above.
+3. **The wrong rule fired (or two did)** — commands match
+   structurally, not by name; see "One command, one shape".
+4. **The form reloaded the page** — the command failed to build
+   (case 1), so its queued `prevent-default` never ran and the
+   native submit won.
+
+To isolate a rule from the DOM wiring, assert the command's shape
+directly with `tonk eval` (transients evaluate like any concept) and
+check the rule's output fact appears; if it does, the bug is in the
+event binding, not the rule.
 
 ### Opening the view in tonk-ui
 
