@@ -2,7 +2,7 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
-use crate::data::{build_add, build_rm, build_set};
+use crate::data::{build_assert, build_retract, build_supersede};
 use crate::eval::{self, Options, Source};
 use crate::output::Format;
 use crate::schema::{self, type_to_notation};
@@ -211,7 +211,7 @@ pub async fn add(site: &TonkSite, concept: &str, argv: &[String]) -> Result<Stri
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
         Err(e) => return Err(DataOpError::Flags(e)),
     };
-    let doc = build_add(&info.descriptor, concept, &pairs)?;
+    let doc = build_assert(&info.descriptor, concept, &pairs)?;
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
     Ok(format!("added {concept}\n{}", outcome.stdout))
 }
@@ -245,7 +245,7 @@ pub async fn set(
     if pairs.is_empty() {
         return Err(DataOpError::NoFields);
     }
-    let doc = build_set(&info.descriptor, concept, entity, &pairs)?;
+    let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
     Ok(format!("updated {entity}\n{}", outcome.stdout))
 }
@@ -256,7 +256,7 @@ pub async fn set(
 /// rejected with the same enumerating error shape as an unknown
 /// `add`/`set` flag — see [`crate::data::DataError::UnknownField`]).
 /// With `field: None`, retracts the whole instance
-/// ([`build_rm`]'s `..: _` form).
+/// ([`build_retract`]'s `..: _` form).
 pub async fn rm(
     site: &TonkSite,
     concept: &str,
@@ -280,7 +280,7 @@ pub async fn rm(
             .into());
         }
     }
-    let doc = build_rm(concept, entity, field);
+    let doc = build_retract(concept, entity, field);
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
     Ok(match field {
         Some(f) => format!("removed {f} from {entity}\n{}", outcome.stdout),

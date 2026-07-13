@@ -117,8 +117,9 @@ fn render_pairs(
 }
 
 /// Build a `<concept>!: { … }` assertion document from (field, raw)
-/// pairs, resolving each field's type through `descriptor`.
-pub fn build_add(
+/// pairs, resolving each field's type through `descriptor` — the
+/// mint form of `tonk assert` (no entity).
+pub fn build_assert(
     descriptor: &ConceptDescriptor,
     concept: &str,
     fields: &[(String, String)],
@@ -128,8 +129,9 @@ pub fn build_add(
 }
 
 /// Build a `<concept>!: { this: <entity>, … }` assertion document —
-/// an update against an existing entity.
-pub fn build_set(
+/// superseding claims against an existing entity (the entity form
+/// of `tonk assert`).
+pub fn build_supersede(
     descriptor: &ConceptDescriptor,
     concept: &str,
     entity: &str,
@@ -140,8 +142,10 @@ pub fn build_set(
 }
 
 /// Build a retraction document: a single field (`field: _`) or the
-/// whole entity (`..: _`) when `field` is `None`.
-pub fn build_rm(concept: &str, entity: &str, field: Option<&str>) -> String {
+/// whole entity (`..: _`) when `field` is `None`. A retraction is
+/// itself an assertion — a claim invalidating an old one — not a
+/// deletion.
+pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String {
     match field {
         Some(f) => format!("{concept}!:\n  this: {entity}\n  {f}: _\n"),
         None => format!("{concept}!:\n  this: {entity}\n  ..: _\n"),
@@ -190,14 +194,14 @@ mod tests {
         );
     }
     #[test]
-    fn it_builds_an_rm_field_retraction() {
+    fn it_builds_a_field_retraction() {
         assert_eq!(
-            build_rm("task", "t1", Some("done")),
+            build_retract("task", "t1", Some("done")),
             "task!:\n  this: t1\n  done: _\n"
         );
     }
     #[test]
-    fn it_builds_an_rm_whole_entity_retraction() {
-        assert_eq!(build_rm("task", "t1", None), "task!:\n  this: t1\n  ..: _\n");
+    fn it_builds_a_whole_entity_retraction() {
+        assert_eq!(build_retract("task", "t1", None), "task!:\n  this: t1\n  ..: _\n");
     }
 }
