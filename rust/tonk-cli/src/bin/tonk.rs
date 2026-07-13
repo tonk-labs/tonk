@@ -103,11 +103,13 @@ enum Command {
         concept: String,
     },
 
-    /// List every instance of a concept, with every field bound.
-    /// Read-only — the query commits nothing.
-    #[command(after_help = "Examples:\n  tonk list task\n  tonk list task --json")]
-    List {
-        /// Name of the concept to list.
+    /// Query every instance of a concept, with every field bound —
+    /// reads are queries in dialog. Read-only; nothing commits.
+    /// Filter flags (e.g. `--where`) are the intended future
+    /// direction; today the whole concept is returned.
+    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
+    Query {
+        /// Name of the concept to query.
         #[arg(value_name = "CONCEPT")]
         concept: String,
         /// Emit `EvaluateResponse` as pretty JSON instead of notation.
@@ -130,75 +132,52 @@ enum Command {
         json: bool,
     },
 
-    /// Assert a new instance of a concept. The flags accepted after
-    /// `<CONCEPT>` are not fixed — they're built at runtime from
-    /// the concept's own schema, one `--field` per attribute in its
-    /// `with:` map, typed and required to match. Run `tonk add
+    /// Assert claims — dialog's one write operation. With no entity,
+    /// mints a new instance of the concept (every non-optional field
+    /// required); with an entity, asserts superseding claims on it
+    /// (only the named fields change, and the entity must already
+    /// match the concept). The flags after `<CONCEPT>` are built at
+    /// runtime from the concept's own schema — run `tonk assert
     /// <concept> --help` to see them.
     ///
     /// `--help` is deliberately NOT handled by clap here
     /// (`disable_help_flag`): with clap's automatic `-h`/`--help`
     /// left on, it would intercept a trailing `--help` before it
-    /// ever reached `rest`, so `tonk add habit --help` would show
-    /// this static text instead of `habit`'s real flags. Disabling
+    /// ever reached `rest`, so `tonk assert task --help` would show
+    /// this static text instead of `task`'s real flags. Disabling
     /// it routes any `--help`/`-h` after `<CONCEPT>` into `rest`,
-    /// where `data_ops::add` builds the concept's own dynamic
+    /// where `data_ops::assert_op` builds the concept's own dynamic
     /// `clap::Command` and renders its help instead.
     #[command(
         disable_help_flag = true,
-        after_help = "Examples:\n  tonk add task --title \"Write the plan\" --done false\n  tonk add habit --help"
+        after_help = "Examples:\n  tonk assert task --title \"Write the plan\" --done false\n  tonk assert task <entity> --done true\n  tonk assert task --help"
     )]
-    Add {
-        /// Name of the concept to create an instance of.
+    Assert {
+        /// Name of the concept to assert against.
         #[arg(value_name = "CONCEPT")]
         concept: String,
-        /// Schema-derived `--field value` flags, captured raw
-        /// (including a bare `--help`) so the dynamic per-concept
-        /// parser in `data_ops::add` — not clap's static
+        /// Optional entity (a leading non-flag token selects the
+        /// supersede form) followed by schema-derived `--field
+        /// value` flags, captured raw (including a bare `--help`)
+        /// so the dynamic per-concept parser — not clap's static
         /// subcommand parser — decides how to handle them.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
     },
 
-    /// Overwrite a subset of fields on an existing instance of a
-    /// concept. Like `add`, the flags accepted after `<CONCEPT>
-    /// <ENTITY>` are built at runtime from the concept's schema —
-    /// but every field is optional here, since `set` names only
-    /// the fields to change. Run `tonk set <concept> <entity>
-    /// --help` to see them.
-    ///
-    /// `--help` is deliberately NOT handled by clap here, for the
-    /// same reason as `add`: see that variant's doc comment.
+    /// Retract a single field, or a whole instance, from a concept.
+    /// A retraction is itself an assertion — a claim invalidating an
+    /// old one — not a deletion. Omit `--field` to retract the whole
+    /// instance; on a many-cardinality field, `--field` retracts
+    /// every value (value-level retraction is not yet surfaced).
     #[command(
-        disable_help_flag = true,
-        after_help = "Examples:\n  tonk set task alice --done true\n  tonk set habit alice --help"
+        after_help = "Examples:\n  tonk retract task alice --field done\n  tonk retract task alice"
     )]
-    Set {
+    Retract {
         /// Name of the concept the instance belongs to.
         #[arg(value_name = "CONCEPT")]
         concept: String,
-        /// Bookmark name or `did:key:…` entity URI of the instance
-        /// to update.
-        #[arg(value_name = "ENTITY")]
-        entity: String,
-        /// Schema-derived `--field value` flags, captured raw
-        /// (including a bare `--help`) — same handling as `add`'s
-        /// `rest`.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        rest: Vec<String>,
-    },
-
-    /// Retract a single field, or a whole instance, from a
-    /// concept. Omit `--field` to retract the whole instance.
-    #[command(
-        after_help = "Examples:\n  tonk rm task alice --field done\n  tonk rm task alice"
-    )]
-    Rm {
-        /// Name of the concept the instance belongs to.
-        #[arg(value_name = "CONCEPT")]
-        concept: String,
-        /// Bookmark name or `did:key:…` entity URI of the instance
-        /// to modify.
+        /// Bookmark name or `did:key:…` entity URI of the instance.
         #[arg(value_name = "ENTITY")]
         entity: String,
         /// Retract just this field instead of the whole instance.
@@ -562,11 +541,10 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Schema => ("schema", None),
         Command::Concepts => ("concepts", None),
         Command::Describe { .. } => ("describe", None),
-        Command::List { .. } => ("list", None),
+        Command::Query { .. } => ("query", None),
         Command::Get { .. } => ("get", None),
-        Command::Add { .. } => ("add", None),
-        Command::Set { .. } => ("set", None),
-        Command::Rm { .. } => ("rm", None),
+        Command::Assert { .. } => ("assert", None),
+        Command::Retract { .. } => ("retract", None),
         Command::Views => ("views", None),
         Command::Migrate { .. } => ("migrate", None),
         Command::Export { .. } => ("export", None),
@@ -642,23 +620,18 @@ async fn main() {
         Command::Schema => print_schema().await,
         Command::Concepts => print_concepts().await,
         Command::Describe { concept } => describe_op(concept).await,
-        Command::List { concept, json } => list_op(concept, json).await,
+        Command::Query { concept, json } => query_op(concept, json).await,
         Command::Get {
             concept,
             entity,
             json,
         } => get_op(concept, entity, json).await,
-        Command::Add { concept, rest } => add_op(concept, rest).await,
-        Command::Set {
-            concept,
-            entity,
-            rest,
-        } => set_op(concept, entity, rest).await,
-        Command::Rm {
+        Command::Assert { concept, rest } => assert_cmd(concept, rest).await,
+        Command::Retract {
             concept,
             entity,
             field,
-        } => rm_op(concept, entity, field).await,
+        } => retract_op(concept, entity, field).await,
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
@@ -1427,9 +1400,9 @@ async fn describe_op(concept: String) -> ExitCode {
     }
 }
 
-/// Print every instance of `concept` as rendered by
-/// [`data_ops::list`].
-async fn list_op(concept: String, json: bool) -> ExitCode {
+/// Query every instance of `concept` as rendered by
+/// [`data_ops::query`].
+async fn query_op(concept: String, json: bool) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => return print_error(format!("could not determine current directory: {e}")),
@@ -1439,7 +1412,7 @@ async fn list_op(concept: String, json: bool) -> ExitCode {
         Err(err) => return print_error(err.to_string()),
     };
 
-    match data_ops::list(&site, &concept, json).await {
+    match data_ops::query(&site, &concept, json).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -1481,16 +1454,17 @@ async fn get_op(concept: String, entity: String, json: bool) -> ExitCode {
     }
 }
 
-/// Assert a new instance of `concept` from the raw `--field value`
-/// flags in `rest`, as rendered by [`data_ops::add`]. `rest` is
-/// parsed against a `clap::Command` built at runtime from the
-/// concept's schema, so an unrecognized `--flag` or a missing
-/// required one is reported with the concept's real flags, and a
-/// `--help` anywhere in `rest` renders that dynamic help instead of
-/// committing anything — [`data_ops::add`] returns it as `Ok`, so it
-/// prints to stdout and exits [`ExitCode::Success`] like any other
-/// successful read.
-async fn add_op(concept: String, rest: Vec<String>) -> ExitCode {
+/// Split `rest` into the optional entity and the flag argv, then
+/// assert via [`data_ops::assert_op`]. A leading non-flag token is
+/// always the entity (the supersede form) — an entity reference
+/// never starts with `-`, and flag values always follow their
+/// flag, so the first token is either a flag or the entity. Same
+/// dynamic-flag / `--help` handling as the old `add`/`set`.
+async fn assert_cmd(concept: String, rest: Vec<String>) -> ExitCode {
+    let (entity, argv) = match rest.split_first() {
+        Some((first, tail)) if !first.starts_with('-') => (Some(first.clone()), tail.to_vec()),
+        _ => (None, rest),
+    };
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => return print_error(format!("could not determine current directory: {e}")),
@@ -1500,7 +1474,7 @@ async fn add_op(concept: String, rest: Vec<String>) -> ExitCode {
         Err(err) => return print_error(err.to_string()),
     };
 
-    match data_ops::add(&site, &concept, &rest).await {
+    match data_ops::assert_op(&site, &concept, entity.as_deref(), &argv).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -1515,11 +1489,9 @@ async fn add_op(concept: String, rest: Vec<String>) -> ExitCode {
     }
 }
 
-/// Overwrite a subset of fields on an existing instance of
-/// `concept`, from the raw `--field value` flags in `rest`, as
-/// rendered by [`data_ops::set`]. Same dynamic-flag / `--help`
-/// handling as [`add_op`].
-async fn set_op(concept: String, entity: String, rest: Vec<String>) -> ExitCode {
+/// Retract a single field, or a whole instance, as rendered by
+/// [`data_ops::retract`].
+async fn retract_op(concept: String, entity: String, field: Option<String>) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => return print_error(format!("could not determine current directory: {e}")),
@@ -1529,34 +1501,7 @@ async fn set_op(concept: String, entity: String, rest: Vec<String>) -> ExitCode 
         Err(err) => return print_error(err.to_string()),
     };
 
-    match data_ops::set(&site, &concept, &entity, &rest).await {
-        Ok(text) => {
-            let mut stdout = std::io::stdout().lock();
-            if let Err(e) = stdout.write_all(text.as_bytes()) {
-                return print_error(format!("failed to write stdout: {e}"));
-            }
-            ExitCode::Success
-        }
-        Err(err) => {
-            eprintln!("error: {err}");
-            err.exit_code()
-        }
-    }
-}
-
-/// Retract a single field, or a whole instance, from `concept`, as
-/// rendered by [`data_ops::rm`].
-async fn rm_op(concept: String, entity: String, field: Option<String>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
-    };
-
-    match data_ops::rm(&site, &concept, &entity, field.as_deref()).await {
+    match data_ops::retract(&site, &concept, &entity, field.as_deref()).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {

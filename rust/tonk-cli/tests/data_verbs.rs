@@ -6,7 +6,41 @@ use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, TestSite};
 
 // The verbs are exercised through the library handlers, not the binary,
 // to avoid spawning a subprocess. Each handler returns its rendered
-// stdout + an ExitCode. (Task 3 introduces `tonk_cli::data_ops`.)
+// stdout + an ExitCode.
+
+/// Pull every raw `(the, ?of, ?is)` claim for a bare attribute URI
+/// directly off `main` — bypasses the concept query entirely, so it
+/// can tell a single-field retraction (one attribute's claims gone,
+/// the rest untouched) apart from a whole-instance retraction (every
+/// attribute's claims gone). A concept-completeness query can't make
+/// that distinction: it requires every `with:` field bound, so it
+/// stops matching the row the instant *any* field is missing.
+async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::Claim>> {
+    use anyhow::anyhow;
+    use dialog_artifacts::Attribute;
+    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+
+    let attr: Attribute = the
+        .parse()
+        .map_err(|e| anyhow!("{the} should be a valid attribute URI: {e:?}"))?;
+    let the_term: attribute::The = attr.into();
+    let session = test.site.branch().await?;
+    session
+        .handle()
+        .query()
+        .select(AttributeQuery::new(
+            Term::from(the_term),
+            Term::<dialog_artifacts::Entity>::var("of"),
+            Term::<dialog_query::Any>::var("is"),
+            Term::<attribute::Cause>::blank(),
+            None,
+        ))
+        .perform(&test.site.operator)
+        .try_vec()
+        .await
+        .map_err(|e| anyhow!("{the} query failed: {e:?}"))
+}
+
 mod when_describing_a_concept {
     use super::*;
 
@@ -60,7 +94,7 @@ mod when_reading_instances {
             "task!:\n  title: \"alpha\"\n  done: false\ntask!:\n  title: \"beta\"\n  done: false\n",
         )
         .await?;
-        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        let out = tonk_cli::data_ops::query(&test.site, "task", false).await?;
         assert!(
             out.contains("alpha") && out.contains("beta"),
             "list should show both:\n{out}"
@@ -75,7 +109,7 @@ mod when_reading_instances {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!:\n  title: \"gamma\"\n  done: false\n")
             .await?;
-        let out = tonk_cli::data_ops::list(&test.site, "task", true).await?;
+        let out = tonk_cli::data_ops::query(&test.site, "task", true).await?;
         assert!(
             out.trim_start().starts_with('{') || out.trim_start().starts_with('['),
             "json output:\n{out}"
@@ -116,7 +150,7 @@ mod when_reading_instances {
 // add therefore fails clap's required-argument check before
 // anything is built or committed, so the happy-path test below
 // supplies both flags.
-mod when_adding_an_instance {
+mod when_asserting_a_new_instance {
     use super::*;
 
     #[dialog_common::test]
@@ -130,9 +164,9 @@ mod when_adding_an_instance {
             "--done".to_string(),
             "false".to_string(),
         ];
-        tonk_cli::data_ops::add(&test.site, "task", &argv).await?;
+        tonk_cli::data_ops::assert_op(&test.site, "task", None, &argv).await?;
         // Verify it landed: list should now show the title.
-        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        let out = tonk_cli::data_ops::query(&test.site, "task", false).await?;
         assert!(
             out.contains("Write the plan"),
             "added instance should appear in list:\n{out}"
@@ -146,7 +180,7 @@ mod when_adding_an_instance {
         test.eval_inline(ATTRIBUTE_DECL).await?;
         test.eval_inline(CONCEPT_DECL).await?;
         let argv = vec!["--nope".to_string(), "x".to_string()];
-        let err = tonk_cli::data_ops::add(&test.site, "task", &argv)
+        let err = tonk_cli::data_ops::assert_op(&test.site, "task", None, &argv)
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -163,44 +197,8 @@ mod when_adding_an_instance {
 // name but no `this:` field trips the analyzer's "no incomplete
 // fresh-entity assertion" rule unless every required field is
 // supplied up front — every seed below sets both.
-mod when_setting_and_removing {
+mod when_superseding_and_retracting {
     use super::*;
-    use anyhow::anyhow;
-    use dialog_artifacts::Attribute;
-    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
-
-    /// Pull every raw `(the, ?of, ?is)` claim for a bare attribute
-    /// URI directly off `main` — bypasses the concept query
-    /// entirely, so it can tell a single-field retraction (one
-    /// attribute's claims gone, the rest untouched) apart from a
-    /// whole-instance retraction (every attribute's claims gone).
-    /// A concept-completeness query can't make that distinction:
-    /// it requires every `with:` field bound, so it stops matching
-    /// the row the instant *any* field is missing.
-    async fn select_claims(
-        test: &TestSite,
-        the: &str,
-    ) -> Result<Vec<dialog_query::Claim>> {
-        let attr: Attribute = the
-            .parse()
-            .map_err(|e| anyhow!("{the} should be a valid attribute URI: {e:?}"))?;
-        let the_term: attribute::The = attr.into();
-        let session = test.site.branch().await?;
-        session
-            .handle()
-            .query()
-            .select(AttributeQuery::new(
-                Term::from(the_term),
-                Term::<dialog_artifacts::Entity>::var("of"),
-                Term::<dialog_query::Any>::var("is"),
-                Term::<attribute::Cause>::blank(),
-                None,
-            ))
-            .perform(&test.site.operator)
-            .try_vec()
-            .await
-            .map_err(|e| anyhow!("{the} query failed: {e:?}"))
-    }
 
     #[dialog_common::test]
     async fn it_overwrites_a_field_on_a_named_entity() -> Result<()> {
@@ -211,8 +209,13 @@ mod when_setting_and_removing {
         // by name across separate eval calls.
         test.eval_inline("task!: &t1\n  title: \"old\"\n  done: false\n")
             .await?;
-        tonk_cli::data_ops::set(&test.site, "task", "t1", &["--title".into(), "new".into()])
-            .await?;
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "task",
+            Some("t1"),
+            &["--title".into(), "new".into()],
+        )
+        .await?;
         let out = tonk_cli::data_ops::get(&test.site, "task", "t1", false).await?;
         assert!(
             out.contains("new") && !out.contains("old"),
@@ -228,7 +231,7 @@ mod when_setting_and_removing {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t1b\n  title: \"old\"\n  done: false\n")
             .await?;
-        let err = tonk_cli::data_ops::set(&test.site, "task", "t1b", &[])
+        let err = tonk_cli::data_ops::assert_op(&test.site, "task", Some("t1b"), &[])
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -246,11 +249,11 @@ mod when_setting_and_removing {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t2\n  title: \"retract-me\"\n  done: false\n")
             .await?;
-        tonk_cli::data_ops::rm(&test.site, "task", "t2", Some("title")).await?;
+        tonk_cli::data_ops::retract(&test.site, "task", "t2", Some("title")).await?;
         // After retracting its only declared field, the concept
         // query no longer matches it (a concept query requires
         // every field present).
-        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        let out = tonk_cli::data_ops::query(&test.site, "task", false).await?;
         assert!(
             !out.contains("retract-me"),
             "retracted field should drop the row from the concept query:\n{out}"
@@ -281,8 +284,8 @@ mod when_setting_and_removing {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t3\n  title: \"gone-entirely\"\n  done: false\n")
             .await?;
-        tonk_cli::data_ops::rm(&test.site, "task", "t3", None).await?;
-        let out = tonk_cli::data_ops::list(&test.site, "task", false).await?;
+        tonk_cli::data_ops::retract(&test.site, "task", "t3", None).await?;
+        let out = tonk_cli::data_ops::query(&test.site, "task", false).await?;
         assert!(
             !out.contains("gone-entirely"),
             "whole-instance rm should drop the row:\n{out}"
@@ -310,13 +313,71 @@ mod when_setting_and_removing {
         test.eval_inline(CONCEPT_DECL).await?;
         test.eval_inline("task!: &t4\n  title: \"x\"\n  done: false\n")
             .await?;
-        let err = tonk_cli::data_ops::rm(&test.site, "task", "t4", Some("nope"))
+        let err = tonk_cli::data_ops::retract(&test.site, "task", "t4", Some("nope"))
             .await
             .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("title"),
             "error should enumerate valid fields:\n{msg}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_superseding_a_nonexistent_entity() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        // No instance seeded: a typo'd (or missing) entity must not
+        // silently mint a partial orphan — the validation-backdoor
+        // test from the spec.
+        let err = tonk_cli::data_ops::assert_op(
+            &test.site,
+            "task",
+            Some("no-such-task"),
+            &["--title".into(), "x".into()],
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no task instance at 'no-such-task'"),
+            "supersede against a nonexistent entity must fail loudly:\n{msg}"
+        );
+        assert!(
+            msg.contains("tonk query task"),
+            "the error should point at `tonk query`:\n{msg}"
+        );
+        // And nothing landed: the branch has no task rows at all.
+        let out = tonk_cli::data_ops::query(&test.site, "task", false).await?;
+        assert!(
+            !out.contains("\"x\""),
+            "no partial orphan may be minted:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_hints_the_supersede_form_on_missing_required_fields() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        // Mint form with a required field missing — the agent who
+        // meant to supersede and forgot the entity lands here, so
+        // the error must point at the right fix.
+        let err = tonk_cli::data_ops::assert_op(
+            &test.site,
+            "task",
+            None,
+            &["--title".into(), "only-title".into()],
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("pass the entity before the flags"),
+            "missing-required error should hint the supersede form:\n{msg}"
         );
         Ok(())
     }
