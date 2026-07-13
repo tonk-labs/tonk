@@ -539,6 +539,40 @@ mod route_for_tests {
         );
     }
 
+    /// A stopped worker refuses every drain — that is the point of the flag: a
+    /// worker being replaced must start no new sync work, or it re-arms
+    /// `waitUntil` and pins itself in `waiting`.
+    #[dialog_common::test]
+    fn it_refuses_every_drain_once_stopped() {
+        let s = SyncScheduler::default();
+        let t = s.next(0.0);
+        s.stop();
+        assert!(!s.may_drain(0.0), "a stopped worker starts no sync work");
+        assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64));
+    }
+
+    /// ...but `stop()` must not be a ONE-WAY latch. `updatefound` fires on the
+    /// registration, so a newly-installing worker hears it about its own
+    /// arrival and can stop itself; it then activates and serves the page. It
+    /// must sync. `resume()` (called from `onactivate`) is what un-latches it —
+    /// without it that worker refuses every drain for the rest of its life.
+    #[dialog_common::test]
+    fn it_resumes_when_it_turns_out_to_be_the_serving_worker() {
+        let s = SyncScheduler::default();
+        s.stop();
+        assert!(!s.may_drain(0.0));
+
+        // Activating: we are the worker now serving, so we are not retiring.
+        s.resume();
+
+        assert!(
+            s.may_drain(0.0),
+            "an activated worker must sync, even if it previously stopped itself",
+        );
+        let t = s.next(0.0);
+        assert!(s.should_drain(t, SYNC_DEBOUNCE_MS as f64));
+    }
+
     #[dialog_common::test]
     fn it_stops_deferring_past_the_load_cap() {
         let s = SyncScheduler::default();
@@ -734,6 +768,16 @@ impl SyncScheduler {
     /// Stop all sync work: the worker is being replaced. Idempotent.
     fn stop(&self) {
         self.stopped.set(true);
+    }
+
+    /// Allow sync work again: this worker is the one now serving, so it is not
+    /// retiring after all. Called from `onactivate`. Idempotent.
+    ///
+    /// Without this, [`stop`](Self::stop) is a one-way latch: a worker that
+    /// stopped but was never actually replaced (a failed install, an update
+    /// that never activates) refuses every drain for the rest of its life.
+    fn resume(&self) {
+        self.stopped.set(false);
     }
 
     /// Whether the worker has been told to stop.
@@ -956,6 +1000,13 @@ impl TonkServiceWorker {
     /// worker doesn't race against stale entries.
     #[wasm_bindgen(js_name = "onactivate")]
     pub fn on_activate(&self) -> Promise {
+        // A worker that is activating is the one now serving the page, so it is
+        // by definition not retiring: clear the sync stop-flag. Makes the latch
+        // self-healing even if a worker stopped itself and was then never
+        // replaced — whoever ends up serving syncs.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        self.sync_scheduler.resume();
+
         future_to_promise(async move {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
