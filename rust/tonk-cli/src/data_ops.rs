@@ -2,7 +2,9 @@
 //! `bin/tonk.rs` handlers call. Each returns rendered stdout; the
 //! binary maps errors to exit codes.
 
-use crate::authoring::{build_concept_decl, parse_attr_spec};
+use crate::authoring::{
+    AuthoringError, build_concept_decl, build_home_recipe, build_view_decl, parse_attr_spec,
+};
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
 use crate::eval::{self, Options, Source};
@@ -407,4 +409,109 @@ pub async fn concept_add(
         n = attrs.len(),
         stdout = outcome.stdout
     ))
+}
+
+/// Resolve a published bookmark name (`name!: {this: id:<name>, entity:
+/// …}`) to the entity it currently points at, or `None` if the name
+/// was never published. Pure query — nothing commits. Always re-reads
+/// the branch rather than trusting an assertion's own echoed matches:
+/// per `.superpowers/sdd/repoint-findings.md`, the printed match block
+/// of a `name!:` assertion can show a stale pre-commit echo.
+async fn resolve_name(site: &TonkSite, name: &str) -> Result<Option<String>, DataOpError> {
+    let doc = format!("name:\n  this: id:{name}\n  entity: ?e\n");
+    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+    Ok(outcome
+        .response
+        .matches_after
+        .iter()
+        .find(|block| block.label == "name")
+        .and_then(|block| block.results.first())
+        .and_then(|row| row.fields.get("entity"))
+        .and_then(|value| value.as_str())
+        .map(str::to_owned))
+}
+
+/// True when the `tonk/space` alias is either unpublished or still
+/// pointing at the fresh-repo default (`tonk:blank`) — the two cases
+/// where `tonk view add`'s auto-surface is safe to repoint the home
+/// without clobbering something a human explicitly set.
+async fn home_is_unset(site: &TonkSite) -> Result<bool, DataOpError> {
+    let Some(space) = resolve_name(site, "tonk/space").await? else {
+        return Ok(true);
+    };
+    // The alias value renders as whatever shape the claim stored: on a
+    // fresh repo the core.yaml seed stores the `tonk:blank` symbol
+    // itself, so match the literal first; a claim that stored the
+    // resolved entity instead is covered by comparing against
+    // `tonk:blank`'s own name-table resolution.
+    if space == "tonk:blank" {
+        return Ok(true);
+    }
+    let blank = resolve_name(site, "tonk:blank").await?;
+    Ok(blank.as_deref() == Some(space.as_str()))
+}
+
+/// Put one or more concepts' directories on the space home: validate
+/// every model exists first ([`require_concept`], so a typo'd name
+/// fails before anything is asserted), then author and commit the
+/// verified origin-keyed root-concept recipe
+/// ([`build_home_recipe`]) that re-points the `tonk/space` alias.
+/// Cardinality-one — safe to re-run; each call replaces the home
+/// wholesale.
+pub async fn home(site: &TonkSite, models: &[String]) -> Result<String, DataOpError> {
+    for model in models {
+        require_concept(site, model).await?;
+    }
+    let doc = build_home_recipe(models);
+    let outcome = auto_sync::run_eval(
+        site,
+        Source::Inline(doc),
+        Options::default(),
+        auto_sync::enabled(false),
+    )
+    .await?;
+    let did = site.repository.did();
+    Ok(format!(
+        "home set: {}\nlive at /space/{did}/\n{}",
+        models.join(", "),
+        outcome.stdout
+    ))
+}
+
+/// Author a declarative view for `concept`: an anchored `view!:`
+/// (anchor defaults to `<model>-view`, so re-authoring supersedes
+/// rather than duplicates) rendering `template`. When the space home
+/// is unset (a fresh repo still showing `tonk:blank`, or nothing
+/// published at all), the concept is auto-surfaced onto the home via
+/// [`home`] so an agent's first view build actually lands somewhere
+/// visible; an explicitly-set home is left alone.
+pub async fn view_add(
+    site: &TonkSite,
+    model: &str,
+    name: Option<&str>,
+    template: &str,
+) -> Result<String, DataOpError> {
+    require_concept(site, model).await?;
+    if template.trim().is_empty() {
+        return Err(AuthoringError::EmptyTemplate.into());
+    }
+    let anchor = name
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{model}-view"));
+    let doc = build_view_decl(&anchor, model, template);
+    let outcome = auto_sync::run_eval(
+        site,
+        Source::Inline(doc),
+        Options::default(),
+        auto_sync::enabled(false),
+    )
+    .await?;
+    let mut out = format!("asserted view {anchor}\n{}", outcome.stdout);
+    if home_is_unset(site).await? {
+        out.push('\n');
+        out.push_str(&home(site, &[model.to_string()]).await?);
+    } else {
+        out.push_str("home already set; re-point it explicitly with `tonk home <concept>`\n");
+    }
+    Ok(out)
 }

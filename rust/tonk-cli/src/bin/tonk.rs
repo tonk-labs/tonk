@@ -33,7 +33,7 @@ use tonk_cli::{ExitCode, guide, identity, schema, site};
     about = "Headless CLI for reading/writing data and views",
     version,
     propagate_version = true,
-    after_help = "Start here:\n  tonk guide            one-screen index\n  tonk schema           every concept + attribute on the branch\n\nExamples:\n  tonk eval -c 'person:'\n  tonk concepts\n  tonk share display alice --view person-card"
+    after_help = "Start here:\n  tonk guide            one-screen index\n  tonk schema           every concept + attribute on the branch\n  tonk home <concept>   put a concept's directory on the space home\n\nExamples:\n  tonk eval -c 'person:'\n  tonk concepts\n  tonk share display alice --view person-card"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -304,6 +304,23 @@ enum Command {
         command: ConceptCommand,
     },
 
+    /// Author declarative views for a concept.
+    View {
+        #[command(subcommand)]
+        command: ViewCommand,
+    },
+
+    /// Put one or more concepts' directories on the space home.
+    /// Authors the origin-keyed root-concept recipe and re-points
+    /// the `tonk/space` alias (cardinality-one — safe to re-run;
+    /// each run replaces the home wholesale).
+    #[command(after_help = "Examples:\n  tonk home habit\n  tonk home habit entry")]
+    Home {
+        /// Concept name(s) to surface, in order.
+        #[arg(value_name = "CONCEPT", required = true)]
+        models: Vec<String>,
+    },
+
     /// Push to the upstream and produce a launcher URL that
     /// lands the recipient on a live view of local data.
     Share {
@@ -495,6 +512,34 @@ enum ConceptCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum ViewCommand {
+    /// Assert a declarative view for a concept. When no home is set
+    /// yet, the build is auto-surfaced onto the space home.
+    #[command(
+        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --name habit-card"
+    )]
+    Add {
+        /// The concept this view renders.
+        #[arg(value_name = "CONCEPT")]
+        model: String,
+        /// Inline HTML template ({field} interpolation).
+        #[arg(
+            long,
+            value_name = "HTML",
+            conflicts_with = "template_file",
+            required_unless_present = "template_file"
+        )]
+        template: Option<String>,
+        /// Read the template from a file instead.
+        #[arg(long, value_name = "PATH")]
+        template_file: Option<PathBuf>,
+        /// Anchor name for the view (default: <concept>-view).
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+}
+
 #[derive(Args, Debug)]
 #[command(
     after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --format json\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
@@ -604,6 +649,13 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 ConceptCommand::Add { .. } => "add",
             }),
         ),
+        Command::View { command } => (
+            "view",
+            Some(match command {
+                ViewCommand::Add { .. } => "add",
+            }),
+        ),
+        Command::Home { .. } => ("home", None),
         Command::Telemetry { .. } => ("telemetry", None),
         Command::Blob { command } => (
             "blob",
@@ -678,6 +730,8 @@ async fn main() {
         Command::Blob { command } => blob_op(command).await,
         Command::Share { command } => share_op(command).await,
         Command::Concept { command } => concept_op(command).await,
+        Command::View { command } => view_op(command).await,
+        Command::Home { models } => home_op(models).await,
         Command::Telemetry { action } => telemetry_op(action),
     };
 
@@ -1548,6 +1602,89 @@ async fn concept_op(command: ConceptCommand) -> ExitCode {
                 err.exit_code()
             }
         },
+    }
+}
+
+/// Author a declarative view, as rendered by [`data_ops::view_add`].
+/// `--template-file` is read here (the thin binary owns I/O); a
+/// missing or empty template surfaces as
+/// [`tonk_cli::authoring::AuthoringError::EmptyTemplate`] via
+/// `data_ops::view_add`'s own check.
+async fn view_op(command: ViewCommand) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match command {
+        ViewCommand::Add {
+            model,
+            template,
+            template_file,
+            name,
+        } => {
+            let template = match (template, template_file) {
+                (Some(inline), _) => inline,
+                (None, Some(path)) => match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        return print_error(format!(
+                            "could not read template file {}: {e}",
+                            path.display()
+                        ));
+                    }
+                },
+                (None, None) => {
+                    return print_error(
+                        "one of --template or --template-file is required".to_string(),
+                    );
+                }
+            };
+            match data_ops::view_add(&site, &model, name.as_deref(), &template).await {
+                Ok(text) => {
+                    let mut stdout = std::io::stdout().lock();
+                    if let Err(e) = stdout.write_all(text.as_bytes()) {
+                        return print_error(format!("failed to write stdout: {e}"));
+                    }
+                    ExitCode::Success
+                }
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
+        }
+    }
+}
+
+/// Put one or more concepts' directories on the space home, as
+/// rendered by [`data_ops::home`].
+async fn home_op(models: Vec<String>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::TonkSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match data_ops::home(&site, &models).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
     }
 }
 
