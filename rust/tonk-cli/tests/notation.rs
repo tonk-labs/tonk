@@ -233,6 +233,27 @@ task!:
         Ok(())
     }
 
+    /// A claim can reference a blob entity, and the blob concept from
+    /// the standard library can describe it.
+    #[dialog_common::test]
+    async fn it_references_blob_entities_from_notation() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        // A 32-byte hash in base58 (all-7s), as `tonk blob add` would print.
+        let outcome = test
+            .eval_inline(
+                r#"
+blob!:
+  this: blob:AsimTVBhbHkeicMyxturKmMKGWDLW8YyaQpEqhk6JsyM
+  content-type: "image/png"
+  name: "vacation.png"
+"#,
+            )
+            .await?;
+        assert!(outcome.committed);
+        assert!(outcome.response.commits.claims > 0);
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_returns_matches_for_a_dry_run_query() -> Result<()> {
         use tonk_cli::eval::Options;

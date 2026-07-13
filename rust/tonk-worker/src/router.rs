@@ -74,6 +74,8 @@ pub use bridge::BridgeRegistry;
 mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
 
+mod blob;
+
 mod migration;
 
 mod navigate;
@@ -265,6 +267,14 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
+        )
+        // Content-addressed blob bytes. Serves a `blob:<hash>` entity's
+        // bytes from the branch's blob store, with `Content-Type` from
+        // the blob's `xyz.tonk.blob/content-type` fact. `<tonk-display>`
+        // points `<img src>` here for `tonk:blob` models.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/blob/{entity}",
+            get(blob::serve),
         )
         // Inspect operations
         .route(

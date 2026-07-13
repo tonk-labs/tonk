@@ -14,9 +14,10 @@
 use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_query::Attribute;
 use dialog_remote_ucan_s3::UcanAddress;
+use dialog_repository::Blob;
 use dialog_repository::RepositoryExt as _;
 use dialog_repository::helpers::{test_operator_with_profile, unique_name};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use tonk_access_service::helpers::AccessServiceAddress;
 
 /// A simple typed attribute for testing.
@@ -210,6 +211,122 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
         alice_results.len(),
         2,
         "Alice should have both artifacts after pulling"
+    );
+
+    Ok(())
+}
+
+/// Test that blob Import/Read authorization flows through the UCAN access
+/// service unchanged: Alice writes a blob, references it from a fact, and
+/// pushes (shipping the bytes through the access service to S3). A second
+/// replica of the same repository — Bob, holding a delegation for Alice's
+/// repo subject — pulls the revision and lazily hydrates the bytes it never
+/// wrote, reading them back through the same `/ucan/` route.
+#[dialog_common::test]
+async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
+    // --- Alice: create repo, delegate ownership, wire the UCAN remote. ---
+    let (operator, profile) = test_operator_with_profile().await;
+
+    let repo = profile
+        .repository(unique_name("ucan-blob"))
+        .create()
+        .perform(&operator)
+        .await?;
+
+    let ownership = repo
+        .access()
+        .claim(&repo)
+        .delegate(profile.did())
+        .perform(&operator)
+        .await?;
+    profile.access().save(ownership).perform(&operator).await?;
+
+    let address = UcanAddress::new(&env.access_service_url);
+    let origin = repo
+        .remote("origin")
+        .create(address.clone())
+        .perform(&operator)
+        .await?;
+
+    let branch = repo.branch("main").open().perform(&operator).await?;
+    let upstream = origin.branch("main").open().perform(&operator).await?;
+    branch.set_upstream(upstream).perform(&operator).await?;
+
+    // Write a blob and reference it from a fact.
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
+    let chunks: Vec<Result<Vec<u8>, _>> = payload.chunks(16384).map(|c| Ok(c.to_vec())).collect();
+    let blob_entity = Blob::import(stream::iter(chunks))
+        .write(branch.blobs())
+        .perform(&operator)
+        .await?;
+    branch
+        .transaction()
+        .assert(Name::of(blob_entity.clone()).is("vacation.png".to_string()))
+        .commit()
+        .perform(&operator)
+        .await?;
+
+    // Push ships the blob through the access service to S3.
+    assert!(
+        branch.push().perform(&operator).await?.is_some(),
+        "push should ship the blob and succeed"
+    );
+
+    // --- Bob: a second replica of the same repository. Alice delegates repo
+    //     access to Bob, who opens his own repo pointing at Alice's subject. ---
+    let (operator_b, profile_b) = test_operator_with_profile().await;
+
+    let invite = profile
+        .access()
+        .claim(&repo)
+        .delegate(profile_b.did())
+        .perform(&operator)
+        .await?;
+    profile_b.access().save(invite).perform(&operator_b).await?;
+
+    let repo_b = profile_b
+        .repository(unique_name("ucan-blob-b"))
+        .open()
+        .perform(&operator_b)
+        .await?;
+
+    let origin_b = repo_b
+        .remote("origin")
+        .create(address)
+        .subject(repo.did())
+        .perform(&operator_b)
+        .await?;
+
+    let branch_b = repo_b.branch("main").open().perform(&operator_b).await?;
+    let upstream_b = origin_b.branch("main").open().perform(&operator_b).await?;
+    branch_b
+        .set_upstream(upstream_b)
+        .perform(&operator_b)
+        .await?;
+
+    // Bob pulls the revision, then lazily hydrates the bytes he never wrote.
+    assert!(
+        branch_b.pull().perform(&operator_b).await?.is_some(),
+        "Bob should pull Alice's revision"
+    );
+
+    let size_b = Blob::from(blob_entity.clone())
+        .size(branch_b.blobs())
+        .perform(&operator_b)
+        .await?;
+    assert_eq!(size_b, Some(payload.len() as u64));
+
+    let mut reader = Blob::from(blob_entity)
+        .read(branch_b.blobs())
+        .perform(&operator_b)
+        .await?;
+    let mut out = Vec::new();
+    while let Some(chunk) = reader.next().await? {
+        out.extend(chunk);
+    }
+    assert_eq!(
+        out, payload,
+        "hydrated blob bytes should match the original"
     );
 
     Ok(())

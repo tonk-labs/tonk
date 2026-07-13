@@ -35,6 +35,7 @@ A head ending in `!` writes; without `!` it queries.
 | `_`               | Blank: query matches any; assertion retracts. |
 | `person` (bare)   | Symbol, resolved through the name table.       |
 | `id:foo`, `did:key:…` | URI, used directly.                       |
+| `blob:<hash>`     | Content-addressed reference to bytes stored with `tonk blob add`. |
 
 ## Attribute fields
 
@@ -69,6 +70,40 @@ Read from the DOM event with the `the:` of a command field.
 | `dom.event.current-target/value`               | the target's `value`               |
 | `dom.event.current-target.dataset/foo`         | the target's `data-foo`            |
 | `dom.event.detail/foo`                          | a custom event's `detail.foo`      |
+
+## Blobs
+
+Binary data (images, files, anything that isn't a fact) lives outside
+the associative memory, referenced from it by a content-addressed
+`blob:<hash>` URI.
+
+| Command                 | Does                                                    |
+|--------------------------|---------------------------------------------------------|
+| `tonk blob add <file>`   | Ingest a file, print its `blob:<hash>` reference.        |
+| `tonk blob cat <blob:hash>` | Write a blob's bytes to stdout.                       |
+| `tonk blob ls`           | List blobs in the branch's index with size and content type. |
+
+The reference is just another URI value, so assert it onto any
+concept like `id:` or `did:key:…`:
+
+```yaml
+photo!:
+  this: id:vacation
+  image: blob:5Pj4ZaADcKEv2D7udVLP44edvv2ZbTkEpqZdMdBRZkmt
+```
+
+Blobs sync with the rest of the branch: `tonk push`/`tonk pull` carry
+both the facts and the bytes they reference.
+
+In the web frontend, an image blob renders inline: embed
+
+```
+<tonk-display with="{branch}@{repo}" entity=blob:<hash> model="tonk:blob" />
+```
+
+in a view and the display mounts an `<img>` served from
+`/api/repository/{repo}/branch/{branch}/blob/{entity}` with the blob's
+recorded content type.
 
 ## CLI
 

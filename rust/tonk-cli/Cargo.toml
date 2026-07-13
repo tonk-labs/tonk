@@ -41,6 +41,10 @@ path = "tests/render.rs"
 name = "telemetry"
 path = "tests/telemetry.rs"
 
+[[test]]
+name = "blob"
+path = "tests/blob.rs"
+
 [features]
 integration-tests = []
 
@@ -57,6 +61,7 @@ async-trait = { workspace = true }
 clap = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
@@ -71,6 +76,7 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dirs = { workspace = true }
+futures-util = { workspace = true }
 # tonk doesn't call reqwest directly; this dep exists so Cargo feature unification
 # turns on `rustls-tls-native-roots` (see workspace Cargo.toml) for the reqwest that
 # dialog-db's transport crates build, letting tonk's remote ops trust the OS CA
@@ -83,6 +89,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util"] }
+tokio-util = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-invite = { workspace = true }

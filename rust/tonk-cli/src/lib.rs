@@ -20,6 +20,7 @@
 //! - [`telemetry`] — anonymous usage telemetry (PostHog), opt-out.
 
 pub mod auto_sync;
+pub mod blob;
 pub mod eval;
 pub mod guide;
 pub mod identity;
