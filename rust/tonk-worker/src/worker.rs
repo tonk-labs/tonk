@@ -539,6 +539,25 @@ mod route_for_tests {
         );
     }
 
+    /// The cooldown must stay strictly under the loop interval, or the idle
+    /// pull cadence is not the interval at all.
+    ///
+    /// The loop ticks every [`SYNC_LOOP_MS`] and each tick is refused if it
+    /// lands inside the cooldown measured from the last drain's completion. At
+    /// cooldown >= interval, a tick arriving right after a drain is always
+    /// refused and the page waits for the tick *after* it — silently doubling
+    /// the worst-case latency for seeing another device's change, with nothing
+    /// in the logs to say so.
+    #[dialog_common::test]
+    fn it_keeps_the_cooldown_under_the_loop_interval() {
+        assert!(
+            (SYNC_COOLDOWN_MS as u64) < SYNC_LOOP_MS,
+            "cooldown ({SYNC_COOLDOWN_MS}ms) must be under the loop interval \
+             ({SYNC_LOOP_MS}ms), else every other idle tick is refused and the \
+             real pull cadence is 2x the interval",
+        );
+    }
+
     /// A stopped worker refuses every drain — that is the point of the flag: a
     /// worker being replaced must start no new sync work, or it re-arms
     /// `waitUntil` and pins itself in `waiting`.
@@ -842,8 +861,15 @@ const SYNC_MAX_WAIT_MS: i32 = 3_000;
 /// outlast the loop's interval, and without a completion-relative gap the next
 /// one starts the instant the last lands, so sync runs continuously and starves
 /// the queries it shares the single SW thread with.
+///
+/// Deliberately smaller than [`SYNC_LOOP_MS`] so the loop's interval, not this,
+/// is what sets the idle pull cadence: at cooldown >= interval every other tick
+/// lands inside the quiet period and is refused, silently doubling the latency.
+/// It stays non-zero because the starvation it prevents is real — it just needs
+/// to be a gap, not a rate limit. A drain costs ~40ms locally, so this leaves
+/// the thread free the overwhelming majority of the time.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const SYNC_COOLDOWN_MS: i32 = 2_000;
+const SYNC_COOLDOWN_MS: i32 = 500;
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -1277,10 +1303,22 @@ impl TonkServiceWorker {
     }
 }
 
-/// Interval between self-scheduled sync drains while subscriptions are
-/// live. Matches the retired page heartbeat's cadence.
+/// Interval between self-scheduled sync drains while subscriptions are live.
+///
+/// This is the ONLY thing that pulls on an idle page: with no traffic there is
+/// no per-fetch drain to ride, so it sets the worst-case latency for seeing
+/// another device's change. An active page already syncs within
+/// [`SYNC_DEBOUNCE_MS`] of its own requests.
+///
+/// [`SYNC_COOLDOWN_MS`] is the real floor on drain frequency (measured from the
+/// last drain's *completion*, so a slow drain can't be followed immediately by
+/// another), which is why this can sit at the same value without sync running
+/// continuously: a tick that arrives inside the cooldown is refused, and the
+/// next one picks it up. A no-op pull costs one round-trip per open repo
+/// (~40ms locally), so ticking this often is cheap relative to the latency it
+/// buys.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const SYNC_LOOP_MS: u64 = 10_000;
+const SYNC_LOOP_MS: u64 = 2_000;
 
 /// Whether any open repository still has auto-sync enabled on its content
 /// branch. All-paused parks the self-scheduled loop — the drain would
