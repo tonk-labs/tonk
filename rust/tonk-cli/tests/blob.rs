@@ -68,17 +68,22 @@ async fn it_cats_a_blob_back() -> Result<()> {
     Ok(())
 }
 
+/// `ls` is deferred: the current dialog-db pin's entity-keyed blob
+/// API offers no way to enumerate a branch's blobs, so `tonk blob ls`
+/// reports `Unsupported` rather than listing. When the pin advances to
+/// a dialog-db with a blob-enumeration API, restore the listing test:
+/// add a blob, then assert `ls` returns one row matching the added
+/// entity, its size, and its `image/png` content type.
 #[tokio::test]
-async fn it_lists_blobs_with_metadata() -> Result<()> {
+async fn it_reports_ls_unsupported_on_the_current_pin() -> Result<()> {
     let test = TestSite::new().await?;
     let file = test.parent.join("pic.png");
     tokio::fs::write(&file, b"\x89PNG bytes").await?;
-    let added = blob::add(&test.site, &file, None).await?;
+    blob::add(&test.site, &file, None).await?;
 
-    let rows = blob::ls(&test.site).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].entity, added.entity);
-    assert_eq!(rows[0].size, 10);
-    assert_eq!(rows[0].content_type.as_deref(), Some("image/png"));
+    assert!(matches!(
+        blob::ls(&test.site).await,
+        Err(blob::BlobError::Unsupported(_))
+    ));
     Ok(())
 }

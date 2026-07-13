@@ -1,14 +1,14 @@
 //! `tonk blob` — content-addressed blob ingest, readback, listing.
 //!
 //! `add` streams a local file into the branch's blob store
-//! (`Branch::write_blob`), derives the content-addressed `blob:<hash>`
-//! [`Entity`] from the discovered hash, and asserts extrinsic
-//! metadata (content type, file name) as ordinary facts on that
-//! entity using the `tonk:blob` concept's attributes
+//! (`Blob::import(..).write(branch.blobs())`), which returns the
+//! content-addressed `blob:<hash>` [`Entity`] directly, and asserts
+//! extrinsic metadata (content type, file name) as ordinary facts on
+//! that entity using the `tonk:blob` concept's attributes
 //! (`xyz.tonk.blob/content-type`, `xyz.tonk.blob/name`) from the
 //! standard library. `cat` reads a blob's bytes back out by
-//! reference; `ls` enumerates every blob in the branch's index
-//! with its size and (if asserted) content type.
+//! reference. `ls` is deferred: the current dialog-db pin exposes no
+//! blob-enumeration API (see [`ls`]).
 
 use std::path::Path;
 
@@ -16,7 +16,7 @@ use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_effects::blob::BlobError as UpstreamBlobError;
 use dialog_query::Attribute;
 use dialog_reactor::BranchSession;
-use dialog_repository::CommitError;
+use dialog_repository::{Blob, CommitError};
 use thiserror::Error;
 
 use crate::site::TonkSite;
@@ -32,9 +32,12 @@ pub enum BlobError {
     #[error("{0}")]
     Site(String),
     /// The referenced blob isn't available locally or from the
-    /// remote. Reserved for `cat`/`ls` (Task 10).
+    /// remote.
     #[error("blob not available locally or from the remote: {0}")]
     NotFound(String),
+    /// The subcommand isn't available on the current dialog-db pin.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl BlobError {
@@ -44,6 +47,7 @@ impl BlobError {
             BlobError::Io(_) => crate::ExitCode::IoError,
             BlobError::Site(_) => crate::ExitCode::CommitError,
             BlobError::NotFound(_) => crate::ExitCode::IoError,
+            BlobError::Unsupported(_) => crate::ExitCode::CommitError,
         }
     }
 }
@@ -104,9 +108,9 @@ pub async fn add(
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
 
-    // Stream the file lazily: `write_blob` now takes a fallible stream
+    // Stream the file lazily: the blob import takes a fallible stream
     // (`Stream<Item = Result<Vec<u8>, dialog_effects::blob::BlobError>>`),
-    // so a mid-read I/O error propagates through `write_blob` (and
+    // so a mid-read I/O error propagates through the write (and
     // surfaces here as `BlobError::Site`) instead of either buffering
     // the whole file up front to check for it, or silently dropping it
     // by filtering a fallible reader-stream down to an infallible one
@@ -123,15 +127,13 @@ pub async fn add(
         .branch()
         .await
         .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
-    let hash = session
-        .handle()
-        .write_blob(Box::pin(source))
+    // `Blob::import(..).write(..)` returns the content-addressed
+    // `blob:<hash>` entity directly (entity-keyed blob API).
+    let entity = Blob::import(Box::pin(source))
+        .write(session.handle().blobs())
         .perform(&site.operator)
         .await
         .map_err(|e| BlobError::Site(format!("write blob: {e}")))?;
-
-    let entity = Entity::from_blob(hash.as_bytes())
-        .map_err(|e| BlobError::Site(format!("blob entity: {e}")))?;
 
     // Extrinsic metadata as ordinary facts on the blob entity.
     let mut tx = session
@@ -169,18 +171,18 @@ pub async fn cat(
     let entity: Entity = reference
         .parse()
         .map_err(|e| BlobError::Site(format!("invalid reference: {e}")))?;
-    let hash = entity
-        .blob_hash()
-        .ok_or_else(|| BlobError::Site(format!("not a blob reference: {reference}")))?;
-    let digest = dialog_common::Blake3Hash::from(hash);
+    if entity.blob_hash().is_none() {
+        return Err(BlobError::Site(format!(
+            "not a blob reference: {reference}"
+        )));
+    }
 
     let session = site
         .branch()
         .await
         .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
-    let mut reader = match session
-        .handle()
-        .read_blob(&digest, None)
+    let mut reader = match Blob::from(entity)
+        .read(session.handle().blobs())
         .perform(&site.operator)
         .await
     {
@@ -222,30 +224,20 @@ pub struct LsRow {
 
 /// Enumerate every blob referenced by the branch's current tree,
 /// paired with its size and (best-effort) content type.
-pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
-    let session = site
-        .branch()
-        .await
-        .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
-    let listed = session
-        .handle()
-        .list_blobs()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| BlobError::Site(format!("list blobs: {e}")))?;
-
-    let mut rows = Vec::with_capacity(listed.len());
-    for (hash, record) in listed {
-        let entity =
-            Entity::from_blob(&hash).map_err(|e| BlobError::Site(format!("blob entity: {e}")))?;
-        let content_type = query_content_type(&session, &site.operator, &entity).await?;
-        rows.push(LsRow {
-            entity,
-            size: record.size,
-            content_type,
-        });
-    }
-    Ok(rows)
+///
+/// Deferred: the current dialog-db pin's blob API is entity-keyed
+/// (read/write/size by `blob:<hash>`) and exposes no way to
+/// enumerate the blobs a branch holds. `ls` returns an
+/// [`BlobError::Unsupported`] until the pin advances to a dialog-db
+/// that offers a blob-enumeration API (at which point the
+/// [`query_content_type`] helper below wires the per-blob content
+/// type back in).
+pub async fn ls(_site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
+    Err(BlobError::Unsupported(
+        "tonk blob ls is not supported on the current dialog-db pin \
+         (no blob-enumeration API)"
+            .to_string(),
+    ))
 }
 
 /// Look up the `xyz.tonk.blob/content-type` fact for `entity`,
@@ -260,6 +252,11 @@ pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
 /// "what's the value of this single attribute on this single
 /// entity". `ArtifactSelector::new().the(..).of(..)` expresses
 /// exactly that constraint directly, with no extra type needed.
+///
+/// Retained for the deferred [`ls`]: it's the per-blob content-type
+/// lookup that a future blob-enumeration API will pair with each
+/// listed entity.
+#[allow(dead_code)]
 async fn query_content_type(
     session: &BranchSession,
     operator: &dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
