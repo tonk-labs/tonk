@@ -41,6 +41,20 @@ use web_sys::{Element, Event};
 
 use super::path::{Classification, EventAction, EventPath, classify};
 
+/// A successfully-built transact body plus the diagnostics the
+/// delegate surfaces. `blank_fields` names the `dom.event*` fields
+/// whose leaf resolved but was empty (`""`/`null`) — omitted from
+/// `body` rather than aborting it. The command still posts; a rule
+/// premise naming an omitted field will silently match nothing, so
+/// the delegate logs them.
+#[derive(Debug)]
+pub struct BuiltBody {
+    /// The `TransactRequest`-shaped JSON wire body.
+    pub body: Value,
+    /// Field names omitted because their leaf read back blank.
+    pub blank_fields: Vec<String>,
+}
+
 /// Build a `TransactRequest`-shaped JSON value for a single
 /// `assert` of `concept_name` populated from `event`, using the
 /// concept's `descriptor` schema.
@@ -66,7 +80,7 @@ pub fn build_transact_body(
     concept_name_or_uri: &str,
     event: &Event,
     binding: &Element,
-) -> Result<Value, ExtractError> {
+) -> Result<BuiltBody, ExtractError> {
     let with = descriptor
         .get("with")
         .and_then(Value::as_object)
@@ -83,6 +97,7 @@ pub fn build_transact_body(
     // to the next matching ancestor; we don't want preventDefault /
     // stopPropagation to land for a binding we're about to skip.
     let mut pending_actions: Vec<EventAction> = Vec::new();
+    let mut blank_fields: Vec<String> = Vec::new();
 
     for (field_name, attr_value) in with {
         let Some(identifier) = attr_value.get("the").and_then(Value::as_str) else {
@@ -107,8 +122,10 @@ pub fn build_transact_body(
                     // `space/create` form's `remote`) must still fire the
                     // command (and its `preventDefault`), not fall through
                     // to a native form submit. The worker decides whether
-                    // the missing parameter is acceptable.
-                    ReadOutcome::Empty => {}
+                    // the missing parameter is acceptable. Recorded so the
+                    // delegate can log what was omitted — a rule premise
+                    // naming the field will otherwise mismatch silently.
+                    ReadOutcome::Empty => blank_fields.push(field_name.clone()),
                     // The path itself didn't resolve (a missing property /
                     // type mismatch — a descriptor typo, not a blank
                     // input). That is a genuine binding failure: abort so
@@ -164,7 +181,10 @@ pub fn build_transact_body(
     // site read naturally.
     let _ = concept_name_or_uri;
 
-    Ok(json!({ "claims": [claim] }))
+    Ok(BuiltBody {
+        body: json!({ "claims": [claim] }),
+        blank_fields,
+    })
 }
 
 /// The result of reading a `dom.event` path for one field.
@@ -498,7 +518,8 @@ mod tests {
         let event = synthetic_event(&[]);
         let binding = binding_element(&[("data-counter", "did:key:zCounter")]);
         let body = build_transact_body(&descriptor, "increment", &event, &binding)
-            .expect("build_transact_body");
+            .expect("build_transact_body")
+            .body;
         let claims = body
             .get("claims")
             .and_then(Value::as_array)
@@ -543,7 +564,8 @@ mod tests {
         );
         let binding = binding_element(&[]);
         let body = build_transact_body(&descriptor, "noop", &event, &binding)
-            .expect("build_transact_body");
+            .expect("build_transact_body")
+            .body;
         let params = &body["claims"][0]["application"]["parameters"];
         // The field resolved (the binding didn't fall through) and holds
         // the integer value. Compare as f64 since the coerced number is
@@ -563,7 +585,8 @@ mod tests {
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
         let body = build_transact_body(&descriptor, "noop", &event, &binding)
-            .expect("build_transact_body");
+            .expect("build_transact_body")
+            .body;
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["kind"], json!("click"));
     }
@@ -630,8 +653,11 @@ mod tests {
         set_null_field(&event, "remote");
         let binding = binding_element(&[]);
 
-        let body = build_transact_body(&descriptor, "space/create", &event, &binding)
+        let built = build_transact_body(&descriptor, "space/create", &event, &binding)
             .expect("a blank optional field must not abort the command");
+        // The omitted field is reported so the delegate can log it.
+        assert_eq!(built.blank_fields, vec!["remote".to_string()]);
+        let body = built.body;
         let params = &body["claims"][0]["application"]["parameters"];
         // `name` resolved (the event `type` is "click"); `remote` was
         // blank, so it is absent — not a reason to fail the build.
@@ -668,9 +694,10 @@ mod tests {
         )
         .unwrap();
         let binding = binding_element(&[]);
-        let body = build_transact_body(&descriptor, "noop", &event, &binding)
+        let built = build_transact_body(&descriptor, "noop", &event, &binding)
             .expect("an empty-string field must not abort the command");
-        let params = &body["claims"][0]["application"]["parameters"];
+        assert_eq!(built.blank_fields, vec!["remote".to_string()]);
+        let params = &built.body["claims"][0]["application"]["parameters"];
         assert!(
             params.get("remote").is_none(),
             "an empty-string field is omitted",
@@ -689,7 +716,8 @@ mod tests {
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
         let body = build_transact_body(&descriptor, "noop", &event, &binding)
-            .expect("build_transact_body");
+            .expect("build_transact_body")
+            .body;
         let params = &body["claims"][0]["application"]["parameters"];
         assert!(params.get("name").is_none());
     }
@@ -729,7 +757,8 @@ mod tests {
         let event = synthetic_event(&[]); // no target.dataset.todo either
         let binding = binding_element(&[("data-todo", "did:key:zTodo")]);
         let body = build_transact_body(&descriptor, "toggle", &event, &binding)
-            .expect("build_transact_body");
+            .expect("build_transact_body")
+            .body;
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["todo"], json!("did:key:zTodo"));
     }
