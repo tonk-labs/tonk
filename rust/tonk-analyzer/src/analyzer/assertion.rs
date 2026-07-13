@@ -208,7 +208,8 @@ pub(crate) fn build_assertion_application(
                         // field on the concept goes unmentioned — which
                         // is every ordinary partial retraction.
                         if has_rest_retraction {
-                            retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                            retract_terms
+                                .insert(field_name.into(), Term::<dialog_query::Any>::blank());
                             any_retract = true;
                         }
                     }
