@@ -86,7 +86,11 @@ fn quote_string(s: &str) -> String {
 }
 
 fn valid_fields(descriptor: &ConceptDescriptor) -> Vec<String> {
-    descriptor.with().iter().map(|(f, _)| f.to_string()).collect()
+    descriptor
+        .with()
+        .iter()
+        .map(|(f, _)| f.to_string())
+        .collect()
 }
 
 fn render_pairs(
@@ -159,7 +163,10 @@ mod tests {
 
     #[test]
     fn it_quotes_text_values() {
-        assert_eq!(render_value(Some(Type::String), "hi there").unwrap(), "\"hi there\"");
+        assert_eq!(
+            render_value(Some(Type::String), "hi there").unwrap(),
+            "\"hi there\""
+        );
     }
     #[test]
     fn it_renders_numeric_values_bare() {
@@ -172,7 +179,10 @@ mod tests {
     #[test]
     fn it_renders_entity_values_bare() {
         assert_eq!(render_value(Some(Type::Entity), "run").unwrap(), "run");
-        assert_eq!(render_value(Some(Type::Entity), "did:key:z6Mk").unwrap(), "did:key:z6Mk");
+        assert_eq!(
+            render_value(Some(Type::Entity), "did:key:z6Mk").unwrap(),
+            "did:key:z6Mk"
+        );
     }
     #[test]
     fn it_rejects_a_non_numeric_for_a_numeric_field() {
@@ -181,8 +191,11 @@ mod tests {
     #[test]
     fn it_renders_a_u128_scale_unsigned_integer() {
         assert_eq!(
-            render_value(Some(Type::UnsignedInt), "340282366920938463463374607431768211455")
-                .unwrap(),
+            render_value(
+                Some(Type::UnsignedInt),
+                "340282366920938463463374607431768211455"
+            )
+            .unwrap(),
             "340282366920938463463374607431768211455"
         );
     }
@@ -202,6 +215,9 @@ mod tests {
     }
     #[test]
     fn it_builds_a_whole_entity_retraction() {
-        assert_eq!(build_retract("task", "t1", None), "task!:\n  this: t1\n  ..: _\n");
+        assert_eq!(
+            build_retract("task", "t1", None),
+            "task!:\n  this: t1\n  ..: _\n"
+        );
     }
 }
