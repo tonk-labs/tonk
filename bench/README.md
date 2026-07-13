@@ -63,14 +63,30 @@ alias via the verified root-concept recipe).
 |---|---|---|
 | interview-build | 3/10 | render-gap persists as a *discovery* problem: the episode issued zero `tonk home`/`tonk view add`/`tonk concept add` commands — it drove every write through `tonk eval` heredocs and never learned the alias-repointing verb exists, so the home screenshot still shows the empty launcher |
 
-The capability gap is closed (the verbs exist and are verified end to end in
+The capability gap was closed (the verbs exist and are verified end to end in
 `rust/tonk-cli/tests/authoring.rs`) but the *orientation surfaces the episode
-actually reads* — the invite prompt and `tonk guide` — still teach eval-first
-and never mention `tonk home`. Judge friction also repeated the three
-notation constraints worth surfacing in `tonk guide notation` (mandatory
-attribute descriptions, rules must bind `this`, seed anchors need explicit
-`id:`). Next lever: put the authoring verbs in the guide/invite prompt, or
-have the episode's post-build checklist drive the space home URL.
+actually reads* — the invite prompt and `tonk guide` — still taught eval-first
+and never mentioned `tonk home`.
+
+### Post-discovery-fix measurement (2026-07-13, codex/gpt-5.5 episode)
+
+One change per the improvement loop: the guide index's loop now leads with
+the argument verbs and ends the build at the space home, and the
+agent-invite prompt names the four-verb build path (`concept add` →
+`assert` → `view add` → `home`).
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| interview-build | 9/10 | modeling back-reference cycles took two dry-run retries; a superseded anonymous view left a stale template live until hunted down and retracted |
+
+The episode used the verbs heavily (8x `concept add`, 8x `view add`, 11x
+`tonk home`, 11x `assert`, with `eval` for rules/effects) and the space-home
+screenshot shows the full built dashboard — the render gap that capped this
+scenario at 3/10 across three baselines is closed. Remaining blemishes for
+follow-up: the "No view for <concept>; showing the default" banner over an
+otherwise-correct render (the known reactor per-item-view fallback), a
+dark-on-dark hero style against the shell theme, and `tonk assert --help`
+(bare, no concept) rejecting the flag.
 
 `cold-onboard` was 7/10 both before and after the seed-reaches-remote fix, but
 the fix removed a confound: pre-fix the joined branch was barren (0
