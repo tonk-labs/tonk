@@ -1540,7 +1540,7 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 /// the `src` is stable for a given `(with, entity)`, so re-running on a
 /// later frame is a no-op once the element exists.
 fn handle_blob_image_frame(host: &Element) {
-    let Some(src) = blob_image_src(host) else {
+    let Some(url) = blob_image_src(host) else {
         return;
     };
     let Some(document) = window().and_then(|w| w.document()) else {
@@ -1556,9 +1556,33 @@ fn handle_blob_image_frame(host: &Element) {
             created
         }
     };
-    if img.get_attribute("src").as_deref() != Some(src.as_str()) {
-        let _ = img.set_attribute("src", &src);
+    // Idempotent per `(with, entity)`: the worker URL is stable, so once we've
+    // fetched the bytes for it, later frames are a no-op. `data-blob-url`
+    // records the route we last fetched — the `src` itself becomes an opaque
+    // object URL, so it can't double as the dedupe key.
+    if img.get_attribute("data-blob-url").as_deref() == Some(url.as_str()) {
+        return;
     }
+    let _ = img.set_attribute("data-blob-url", &url);
+
+    // Fetch the bytes *through* the relay and hand the `<img>` an object URL
+    // instead of the worker route: inside the sealed guest a native `<img src>`
+    // load of `/api/…/blob/…` bypasses the relay + service worker.
+    let img = img.clone();
+    spawn_local(async move {
+        let Some(object_url) = crate::blob_url::fetch_object_url(&url).await else {
+            return;
+        };
+        // Revoke the object URL we're replacing (if any): once the new `src`
+        // is set, the previous frame's bytes are no longer referenced.
+        if let Some(old) = img.get_attribute("src")
+            && old.starts_with("blob:")
+        {
+            let _ = web_sys::Url::revoke_object_url(&old);
+        }
+        let _ = img.set_attribute("src", &object_url);
+    });
+
     state::set(host, State::Ready);
 }
 
@@ -2977,6 +3001,30 @@ mod tests {
             serde_wasm_bindgen::to_value(&conclusions).unwrap()
         }
 
+        /// Replace `window.fetch` with a stub that records the requested URL
+        /// and returns a 200 with a small body — enough for `.blob()` +
+        /// `createObjectURL`. Mirrors the sealed-guest relay: the code under
+        /// test fetches bytes through `window.fetch`, not a native `<img>`
+        /// resource load.
+        fn stub_fetch_bytes(captured: Rc<RefCell<Option<String>>>) {
+            let stub = Closure::wrap(Box::new(move |url: JsValue, _init: JsValue| {
+                *captured.borrow_mut() = url.as_string();
+                let init = web_sys::ResponseInit::new();
+                init.set_status(200);
+                let resp =
+                    web_sys::Response::new_with_opt_str_and_init(Some("fakepng"), &init).unwrap();
+                Promise::resolve(&resp.into())
+            })
+                as Box<dyn FnMut(JsValue, JsValue) -> Promise>);
+            Reflect::set(
+                &window().unwrap(),
+                &"fetch".into(),
+                stub.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+            stub.forget();
+        }
+
         struct FakeHost {
             container: Element,
             state: Rc<RefCell<FakeState>>,
@@ -3269,12 +3317,18 @@ mod tests {
             );
         }
 
-        /// A display whose `model` is `tonk:blob` renders a single
-        /// `<img>` pointing at the worker's blob-bytes route, with the
-        /// repo/branch taken from the host's `with` attribute and the
-        /// blob entity from `entity`. No inline template, no iframe.
+        /// A display whose `model` is `tonk:blob` fetches the bytes through
+        /// the (relayed) `window.fetch` and points its single `<img>` at an
+        /// object URL — never at the worker route directly. Inside the sealed
+        /// guest (`about:srcdoc`) a native `<img src>` load bypasses the
+        /// relayed fetch and the service worker, hitting the dev server's SPA
+        /// fallback, so the URL must be a `blob:` object URL built from bytes
+        /// fetched through the relay.
         #[dialog_common::test]
-        async fn it_mounts_an_img_for_a_blob_model() {
+        async fn it_fetches_blob_bytes_and_mounts_an_object_url_img() {
+            let requested: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+            stub_fetch_bytes(requested.clone());
+
             // `model = "tonk:blob"` already looks like a URI (it contains
             // `:`), so — unlike the bare `"counter"` model name the other
             // fixtures use — `resolve_model_query` skips the Name-concept
@@ -3315,9 +3369,26 @@ mod tests {
             let img = await_selector(&display, "img")
                 .await
                 .expect("a tonk:blob model should mount an <img>");
+            // The object URL lands after the async fetch resolves.
+            let mut src = None;
+            for _ in 0..200 {
+                match img.get_attribute("src") {
+                    Some(s) => {
+                        src = Some(s);
+                        break;
+                    }
+                    None => sleep(5).await,
+                }
+            }
+            let src = src.expect("img src is set once the blob fetch resolves");
+            assert!(
+                src.starts_with("blob:") && src.contains('/'),
+                "src is an object URL, not the worker route or the raw entity: {src}",
+            );
             assert_eq!(
-                img.get_attribute("src").as_deref(),
+                requested.borrow().as_deref(),
                 Some("/api/repository/myrepo/branch/main/blob/blob:zHASH"),
+                "the bytes were fetched from the worker blob route through the relay",
             );
         }
 

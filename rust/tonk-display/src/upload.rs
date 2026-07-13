@@ -248,9 +248,17 @@ fn ingest(host: &HtmlElement, file: &web_sys::File) {
         let content_type = json["contentType"].as_str().unwrap_or(&mime).to_string();
         let size = json["size"].as_u64().unwrap_or(0);
 
+        // Read the image back FROM THE DB and preview those bytes — the whole
+        // round-trip in one go. Fetch the worker blob route through the relayed
+        // `window.fetch` and swap the preview to that object URL (a native
+        // `<img src>` load of the route would bypass the relay + service worker
+        // inside the sealed guest). On failure the reading-phase local preview
+        // stays put. Non-images get a status line instead.
         if content_type.starts_with("image/") {
-            if let Some(read) = crate::blob_url::blob_read_url(&with, &entity) {
-                show_preview(&host, &read);
+            if let Some(read) = crate::blob_url::blob_read_url(&with, &entity)
+                && let Some(obj) = crate::blob_url::fetch_object_url(&read).await
+            {
+                show_preview(&host, &obj);
             }
         } else {
             set_status(&host, &format!("{name} · {size} bytes"));
@@ -265,8 +273,17 @@ fn show_preview(host: &HtmlElement, src: &str) {
     if let Some(root) = host.shadow_root()
         && let Ok(Some(img)) = root.query_selector("[part=preview]")
     {
+        let prior = img.get_attribute("src");
         let _ = img.set_attribute("src", src);
         let _ = img.remove_attribute("hidden");
+        // Free the object URL we just replaced (the reading-phase local
+        // preview when swapping to the DB read-back), once nothing references it.
+        if let Some(prior) = prior
+            && prior.starts_with("blob:")
+            && prior != src
+        {
+            let _ = web_sys::Url::revoke_object_url(&prior);
+        }
     }
 }
 
@@ -391,7 +408,16 @@ mod tests {
 
     /// Replace `window.fetch` with a stub returning `status` + `json`.
     fn stub_fetch(status: u16, json: &'static str) {
-        let stub = Closure::wrap(Box::new(move |_url: JsValue, _init: JsValue| {
+        stub_fetch_capturing(status, json, Rc::new(RefCell::new(Vec::new())));
+    }
+
+    /// Like [`stub_fetch`], but records every requested URL into `urls` — so a
+    /// test can assert which routes were hit (e.g. the read-back GET).
+    fn stub_fetch_capturing(status: u16, json: &'static str, urls: Rc<RefCell<Vec<String>>>) {
+        let stub = Closure::wrap(Box::new(move |url: JsValue, _init: JsValue| {
+            if let Some(u) = url.as_string() {
+                urls.borrow_mut().push(u);
+            }
             let init = web_sys::ResponseInit::new();
             init.set_status(status);
             let resp = web_sys::Response::new_with_opt_str_and_init(Some(json), &init).unwrap();
@@ -424,9 +450,11 @@ mod tests {
     #[dialog_common::test]
     async fn it_uploads_and_emits_on_pick() {
         super::register();
-        stub_fetch(
+        let urls: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        stub_fetch_capturing(
             200,
             r#"{"entity":"blob:zH","contentType":"image/png","name":"a.png","size":3}"#,
+            urls.clone(),
         );
 
         let el = document().create_element("tonk-upload").unwrap();
@@ -465,9 +493,21 @@ mod tests {
             .query_selector("[part=preview]")
             .unwrap()
             .unwrap();
-        assert_eq!(
-            preview.get_attribute("src").as_deref(),
-            Some("/api/repository/repo/branch/main/blob/blob:zH"),
+        // After upload the preview is read back FROM THE DB: the bytes are
+        // fetched from the worker blob route through the relayed `window.fetch`
+        // and shown as an object URL (a native `<img src>` load of the route
+        // would bypass the relay + service worker inside the sealed guest).
+        let src = preview.get_attribute("src").expect("preview has a src");
+        assert!(
+            src.starts_with("blob:") && src.contains('/'),
+            "preview src is an object URL: {src}",
+        );
+        assert!(
+            urls.borrow()
+                .iter()
+                .any(|u| u == "/api/repository/repo/branch/main/blob/blob:zH"),
+            "the preview was read back from the DB via the blob route, got: {:?}",
+            urls.borrow(),
         );
     }
 
