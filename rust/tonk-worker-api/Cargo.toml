@@ -1,0 +1,26 @@
+[package]
+name = "tonk-worker-api"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+ipld-core = { workspace = true }
+lsp-types = { workspace = true }
+dialog-varsig = { workspace = true }
+dialog-capability = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

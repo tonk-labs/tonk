@@ -13,9 +13,9 @@ use dialog_query::ConceptQuery;
 use dialog_query::Output as _;
 
 use super::BranchReference;
-use super::Conclusion;
 use super::env::{BranchOpenProvider, LoadProvider, SelectProvider};
 use super::error::ReactorError;
+use super::{Conclusion, project};
 
 /// One-shot query effect. Built from
 /// [`BranchReference::query`](super::BranchReference::query).
@@ -53,9 +53,6 @@ impl<'a> QueryEffect<'a> {
             .try_vec()
             .await
             .map_err(ReactorError::QueryFailed)?;
-        Ok(conclusions
-            .iter()
-            .map(|c| Conclusion::project(c, &terms))
-            .collect())
+        Ok(conclusions.iter().map(|c| project(c, &terms)).collect())
     }
 }
