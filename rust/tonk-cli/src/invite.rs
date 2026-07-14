@@ -28,6 +28,7 @@ use url::Url;
 use crate::ExitCode;
 use crate::remote::{self, DEFAULT_REMOTE, META_BRANCH};
 use crate::site::{self, SITE_DIRNAME, SiteConfig, TonkSite};
+use crate::sync;
 
 /// Default base URL for minted invites. Mirrors
 /// [`tonk_invite::DEFAULT_BASE_URL`] — exposed here so
@@ -65,10 +66,17 @@ pub struct ClaimOutcome {
     pub remote_url: Option<Url>,
     /// Local name of the auto-registered remote (always
     /// [`crate::remote::DEFAULT_REMOTE`] when set), or `None` if
-    /// the invite carried no `remote=` URL. Tonk's normal
-    /// post-join `tonk pull` resolves this remote implicitly
-    /// because it's the only one configured.
+    /// the invite carried no `remote=` URL. When set, [`claim`]
+    /// also performs an initial pull from it (see [`synced`]).
+    ///
+    /// [`synced`]: Self::synced
     pub auto_configured_remote: Option<String>,
+    /// Whether the initial post-join pull from the auto-configured
+    /// remote succeeded and brought upstream state into the fresh
+    /// local `main`. `false` when the invite carried no remote, or
+    /// when the pull failed (e.g. the endpoint was unreachable) —
+    /// join still succeeds, and the user can retry with `tonk pull`.
+    pub synced: bool,
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -109,6 +117,28 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
+    // Push local state to the upstream before minting, so a joiner
+    // receives current repo state — including the stdlib seed that
+    // `tonk init` committed before any upstream existed. Mirrors
+    // `share`'s push-before-mint. No-op when the branch has no upstream
+    // (a local-only invite). Pull-before-push reconciles a possibly
+    // advanced upstream, best-effort; the push error is authoritative.
+    let has_upstream = {
+        let session = site
+            .branch()
+            .await
+            .map_err(|e| InviteError::Io(format!("acquire branch: {e}")))?;
+        session.handle().upstream().is_some()
+    };
+    if has_upstream {
+        if let Err(e) = sync::pull(site).await {
+            eprintln!("warning: pull before invite failed: {e}");
+        }
+        sync::push(site)
+            .await
+            .map_err(|e| InviteError::Io(format!("push before invite failed: {e}")))?;
+    }
+
     let (signer, seed) = generate_ephemeral().await?;
     let audience = signer.did();
 
@@ -186,6 +216,11 @@ pub async fn mint(
 ///    matching the layout `tonk init` produces (so all the
 ///    later read paths work uniformly across init- and
 ///    join-bootstrapped sites).
+/// 6. If the invite carried a `remote=` URL, register it, set it
+///    as the local `main`'s upstream, and pull once — a clean
+///    fast-forward into the freshly-created branch, so the joiner
+///    starts from the upstream's state rather than an empty branch
+///    that would diverge on the first local write.
 pub async fn claim(
     parent: &Path,
     invite_url: &str,
@@ -308,6 +343,7 @@ pub async fn claim(
     // surfaces; the remote's subject is the inviter's DID
     // (carried through on the claim chain), not the joiner's.
     let mut auto_configured_remote: Option<String> = None;
+    let mut synced = false;
     if let Some(url) = &remote_url {
         remote::add(&joined, DEFAULT_REMOTE, url.as_str(), Some(subject.clone()))
             .await
@@ -318,12 +354,28 @@ pub async fn claim(
             .await
             .map_err(|e| InviteError::Io(format!("failed to wire upstream from invite: {e}")))?;
         auto_configured_remote = Some(DEFAULT_REMOTE.to_owned());
+
+        // Pull upstream state into the just-created local `main`. The join
+        // provisioned `main` fresh and hasn't written to it, so this is a
+        // clean fast-forward — the joiner ends up with a faithful copy of the
+        // upstream, not an empty branch that silently diverges the moment they
+        // (or their agent) start asserting. Best-effort: an unreachable remote
+        // shouldn't fail an otherwise-complete join — the user can retry with
+        // `tonk pull` — but a real sync error is worth surfacing.
+        match sync::pull(&joined).await {
+            Ok(_) => synced = true,
+            Err(e) => eprintln!(
+                "warning: joined, but the initial pull from '{DEFAULT_REMOTE}' failed: {e}\n\
+                 run `tonk pull` before making changes so you don't diverge from upstream"
+            ),
+        }
     }
 
     Ok(ClaimOutcome {
         subject,
         remote_url,
         auto_configured_remote,
+        synced,
     })
 }
 

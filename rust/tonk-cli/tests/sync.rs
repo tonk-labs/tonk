@@ -10,7 +10,7 @@ use tonk_cli::eval::{Options, Source};
 use tonk_cli::sync;
 use tonk_schema::SyncState;
 
-use crate::common::{ATTRIBUTE_DECL, TestSite};
+use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, TestSite};
 
 /// Wire `main`'s upstream to a sibling branch in the same repo —
 /// the cheap in-process stand-in for a real remote, so a push has
@@ -42,6 +42,26 @@ async fn upstream_revision(test: &TestSite) -> Result<Option<Revision>> {
         .perform(&test.site.operator)
         .await?;
     Ok(upstream.revision())
+}
+
+mod when_checking_for_an_upstream {
+    use super::*;
+    use tonk_cli::remote;
+
+    #[dialog_common::test]
+    async fn it_reports_whether_main_tracks_an_upstream() -> Result<()> {
+        let test = TestSite::new().await?;
+        assert!(
+            !remote::upstream_configured(&test.site).await?,
+            "a fresh site has no upstream"
+        );
+        wire_sibling_upstream(&test).await?;
+        assert!(
+            remote::upstream_configured(&test.site).await?,
+            "wiring an upstream flips the check"
+        );
+        Ok(())
+    }
 }
 
 mod when_evaluating_with_an_upstream {
@@ -97,9 +117,82 @@ mod when_evaluating_with_an_upstream {
     }
 }
 
+mod when_asserting_with_an_upstream {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_auto_pushes_an_assert_to_the_upstream() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let before = upstream_revision(&test).await?;
+
+        tonk_cli::data_ops::assert_op(
+            &test.site,
+            "task",
+            None,
+            &[
+                "--title".into(),
+                "synced".into(),
+                "--done".into(),
+                "false".into(),
+            ],
+        )
+        .await?;
+
+        let after = upstream_revision(&test).await?;
+        assert_ne!(
+            before, after,
+            "a committing assert must push to the upstream like eval does"
+        );
+        Ok(())
+    }
+}
+
+mod when_minting_an_invite {
+    use super::*;
+    use tonk_cli::invite;
+
+    #[dialog_common::test]
+    async fn it_pushes_local_state_to_the_upstream_before_minting() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        // Commit something locally that has not been pushed, mirroring the
+        // stdlib seed sitting unpushed on a freshly-init'd repo.
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        assert!(
+            upstream_revision(&test).await?.is_none(),
+            "upstream starts empty — the local commit has not been pushed yet"
+        );
+
+        // Minting a local-only invite (no embedded remote URL) must still
+        // push, because the branch has an upstream.
+        invite::mint(&test.site, None, None).await?;
+
+        assert!(
+            upstream_revision(&test).await?.is_some(),
+            "mint must push the unpushed local state to the upstream"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_is_a_noop_push_when_no_upstream_is_configured() -> Result<()> {
+        // No upstream wired: mint must still succeed (local-only invite),
+        // not error trying to push.
+        let test = TestSite::new().await?;
+        let outcome = invite::mint(&test.site, None, None).await?;
+        assert!(
+            !outcome.url.is_empty(),
+            "a local-only invite still mints a URL"
+        );
+        Ok(())
+    }
+}
+
 mod when_reporting_status {
     use super::*;
-    use crate::common::CONCEPT_DECL;
 
     #[dialog_common::test]
     async fn it_reports_no_upstream_when_none_is_configured() -> Result<()> {

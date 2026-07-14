@@ -28,6 +28,74 @@ from-scratch`) that fixes the highest-leverage problem each iteration.
 | artifact-conversion | 9/10 | 4 friction items |
 | from-scratch | 3/10 | `view` concept not built-in on a fresh branch (see Known friction below) |
 
+### Baseline measurements (2026-07-08, codex/gpt-5.5 episodes)
+
+The three agent-onboarding scenarios, run on the real codex/gpt-5.5 episode
+runner. These are the "before" set for the agent-ergonomic-CLI work.
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| targeted-edit | 9/10 | reads the full guide + notation guide for a one-line edit (DSL learn-tax) |
+| interview-build | 3/10 | strong interview, but the build never surfaces on the space home (render-gap) + DSL notation-validation rejections |
+| cold-onboard | 7/10 | invite prompt gives no install hint; agent probes/filesystem-hunts for the CLI |
+
+### Post-rename measurements (2026-07-13, codex/gpt-5.5 episodes)
+
+Re-run of the two episode scenarios after the CLI data verbs went
+dialog-native (`assert`/`retract`/`query`/`schema` replacing
+`add`/`set`/`rm`/`list`/`describe`). Neither episode attempted an old
+verb; both oriented via `tonk schema`/`tonk concepts` and drove every
+write through `tonk eval` notation, accepted first try — the 07-08
+notation-validation rejections did not recur.
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| targeted-edit | 9/10 | 12 commands of filesystem grepping for store-resident data before settling on the schema/eval path |
+| interview-build | 3/10 | strong interview and clean notation, but the render-gap again: `tonk/space` home alias never repointed, so the build never surfaces on the space home |
+
+### Post-authoring-verbs measurement (2026-07-13, codex/gpt-5.5 episode)
+
+Re-run of interview-build after the authoring verbs landed (`tonk concept
+add`, `tonk view add` with auto-surface, `tonk home` re-pointing the space
+alias via the verified root-concept recipe).
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| interview-build | 3/10 | render-gap persists as a *discovery* problem: the episode issued zero `tonk home`/`tonk view add`/`tonk concept add` commands — it drove every write through `tonk eval` heredocs and never learned the alias-repointing verb exists, so the home screenshot still shows the empty launcher |
+
+The capability gap was closed (the verbs exist and are verified end to end in
+`rust/tonk-cli/tests/authoring.rs`) but the *orientation surfaces the episode
+actually reads* — the invite prompt and `tonk guide` — still taught eval-first
+and never mentioned `tonk home`.
+
+### Post-discovery-fix measurement (2026-07-13, codex/gpt-5.5 episode)
+
+One change per the improvement loop: the guide index's loop now leads with
+the argument verbs and ends the build at the space home, and the
+agent-invite prompt names the four-verb build path (`concept add` →
+`assert` → `view add` → `home`).
+
+| Scenario | Outcome | Top friction |
+|---|---|---|
+| interview-build | 9/10 | modeling back-reference cycles took two dry-run retries; a superseded anonymous view left a stale template live until hunted down and retracted |
+
+The episode used the verbs heavily (8x `concept add`, 8x `view add`, 11x
+`tonk home`, 11x `assert`, with `eval` for rules/effects) and the space-home
+screenshot shows the full built dashboard — the render gap that capped this
+scenario at 3/10 across three baselines is closed. Remaining blemishes for
+follow-up: the "No view for <concept>; showing the default" banner over an
+otherwise-correct render (the known reactor per-item-view fallback), a
+dark-on-dark hero style against the shell theme, and `tonk assert --help`
+(bare, no concept) rejecting the flag.
+
+`cold-onboard` was 7/10 both before and after the seed-reaches-remote fix, but
+the fix removed a confound: pre-fix the joined branch was barren (0
+`xyz.tonk.view` attributes) because `tonk invite` never pushed the
+`tonk init`-seeded standard library to the remote, so the agent had to
+hand-author `tonk:view`. Post-fix the joined branch carries the full stdlib (19
+`xyz.tonk.view` attributes), so the remaining 7/10 reflects real onboarding
+friction (no install hint, orientation) rather than the harness artifact.
+
 ## Usage
 
 ```sh

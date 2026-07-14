@@ -196,10 +196,20 @@ pub(crate) fn build_assertion_application(
                         // names, leaving the rest alone. (Carrying a
                         // blank here would be rejected by the wire-claim
                         // lowering, which only accepts concrete values.)
-                        // The retract side still blanks it so a `..: _`
-                        // rest-retraction can sweep it.
-                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        //
+                        // The retract side must leave it out too unless
+                        // `..: _` is present: `resolve_retraction_targets`
+                        // (tonk-evaluator) treats *any* field present in
+                        // `terms` as a blank as a retraction target and
+                        // only skips fields absent from the map. Blanking
+                        // every unmentioned field unconditionally here
+                        // would turn a per-field `age: _` retraction into
+                        // a whole-instance wipe the moment any other
+                        // field on the concept goes unmentioned — which
+                        // is every ordinary partial retraction.
                         if has_rest_retraction {
+                            retract_terms
+                                .insert(field_name.into(), Term::<dialog_query::Any>::blank());
                             any_retract = true;
                         }
                     }

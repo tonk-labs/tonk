@@ -38,7 +38,10 @@ pub fn context_field(name: &str) -> Option<String> {
 /// bridge context the host supplies. Falls back to `window.location.origin`
 /// when there is no bridge (the element running in the real top document).
 pub fn context_origin() -> Option<String> {
-    if let Some(origin) = context_field("origin") {
+    // Reject a forwarded `"null"` as well as an empty one: a nested host whose
+    // own location is `about:srcdoc` could forward the opaque `"null"`, and a
+    // literal `null` origin must never reach a same-origin URL.
+    if let Some(origin) = context_field("origin").filter(|o| o != "null") {
         return Some(origin);
     }
     window()?
@@ -167,4 +170,58 @@ pub async fn host_fetch_text(path: &str) -> Result<String, ErrorDetail> {
     .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("await text: {e:?}")))?;
     text.as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "fetch body not a string"))
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use js_sys::Object;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Install `window.tonk.context.origin = value` so the reader sees a
+    /// host-forwarded origin, mirroring what a parent portal's `ready`
+    /// envelope sets on a sealed guest.
+    fn set_context_origin(value: &str) {
+        let win = window().unwrap();
+        let tonk = Object::new();
+        let context = Object::new();
+        let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(value));
+        let _ = Reflect::set(&tonk, &"context".into(), &context);
+        let _ = Reflect::set(&win, &"tonk".into(), &tonk);
+    }
+
+    /// Clear `window.tonk` so a later test sees no bridge context (the
+    /// top-document state). `context_field` treats an undefined `tonk` as
+    /// absent, so setting it back to `undefined` is enough.
+    fn clear_context() {
+        let win = window().unwrap();
+        let _ = Reflect::set(&win, &"tonk".into(), &JsValue::UNDEFINED);
+    }
+
+    /// A real forwarded origin is returned verbatim — this is the value a
+    /// nested portal forwards down so a sealed guest can build a same-origin
+    /// invite link without reading its `about:srcdoc` location.
+    #[dialog_common::test]
+    async fn it_prefers_the_forwarded_context_origin() {
+        set_context_origin("https://example.test");
+        assert_eq!(context_origin().as_deref(), Some("https://example.test"));
+        clear_context();
+    }
+
+    /// A forwarded `"null"` (a nested host whose own location was
+    /// `about:srcdoc`) is treated as absent, so it never surfaces as a
+    /// literal `null` origin in an invite URL. It falls through to the real
+    /// harness location, which is never `"null"`.
+    #[dialog_common::test]
+    async fn it_treats_a_null_forwarded_origin_as_absent() {
+        set_context_origin("null");
+        assert_ne!(
+            context_origin().as_deref(),
+            Some("null"),
+            "a forwarded \"null\" must not surface as the origin",
+        );
+        clear_context();
+    }
 }

@@ -28,6 +28,23 @@ tonk concepts     # user-defined concepts: name<TAB>description
 tonk views        # entities with a text/html claim: name<TAB>entity<TAB>bytes
 tonk guide        # baked-in asserted-notation reference (also: guide notation|views|all)
 
+# Argument-based data verbs — a constrained front-end over `eval`.
+# Dialog vocabulary: you assert claims and retract them. A retraction
+# is itself an assertion invalidating an old claim, not a delete.
+tonk schema habit                             # one concept's schema, as re-submittable notation
+tonk assert habit --help                      # the concept's real flags (fields, types, required)
+tonk assert habit --name "Run" --target "5k"  # mint a new instance (typed flags from the branch schema)
+tonk assert habit <entity> --target "10k"     # assert superseding claims on an existing instance
+tonk query habit                              # every instance (add --json for machine output)
+tonk get habit <entity>                       # one instance
+tonk retract habit <entity> --field target    # retract one field (a many field loses every value)
+tonk retract habit <entity>                   # retract the whole instance
+
+# Authoring — schema, views, and the space home.
+tonk concept add habit --attr name:text:one   # anchored concept + typed attributes
+tonk view add habit --template '<b>{name}</b>'  # declarative view (auto-surfaces an unset home)
+tonk home habit                               # put habit's directory on the space home
+
 # CSV transfer over the main branch.
 tonk export --out data.csv
 tonk import data.csv

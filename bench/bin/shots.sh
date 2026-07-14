@@ -79,14 +79,17 @@ resolve_display() {
     fi
   fi
 
-  # Step 3: build the display URL in tonk-ui format:
-  #   /space/<SPACE_NAME>/<model>!tonk:view
-  # `<tonk-display model=<model> view=tonk:view>` resolves the view
-  # concept (tonk:view) to find the view instance whose model field
-  # matches, which is the view the agent defined. The view anchor name
-  # is not the right value for the `view` attribute — tonk:view is the
-  # concept that owns the view instance.
-  printf '%s/space/%s/%s!tonk:view' "$BENCH_URL" "$SPACE_NAME" "$model_name"
+  # Step 3: build the display URL as the model's directory route:
+  #   /space/<SPACE_NAME>/<model>
+  # This matches the `/{*model}` route (core.yaml), which mounts
+  # <tonk-display model=<model>> with no entity — directory mode, which
+  # resolves the model's view and renders its instances. The older
+  # `<model>!tonk:view` bang form no longer routes: `!` only has meaning
+  # in the `{entity}@{model}!{view}` route, which requires an `@entity`
+  # segment, so a bare `<model>!tonk:view` fell through to the directory
+  # route with the whole literal string as the model name and matched no
+  # concept.
+  printf '%s/space/%s/%s' "$BENCH_URL" "$SPACE_NAME" "$model_name"
 }
 
 n=0
@@ -96,6 +99,9 @@ while IFS= read -r line; do
   if [ "$line" = "home" ]; then
     url="$BENCH_URL/"
     name="$(printf '%02d-home' "$n")"
+  elif [ "$line" = "space" ]; then
+    url="$BENCH_URL/space/$SPACE_NAME/"
+    name="$(printf '%02d-space' "$n")"
   elif printf '%s' "$line" | grep -q '^display:'; then
     view_name="${line#display:}"
     name="$(printf '%02d-display-%s' "$n" "$view_name")"

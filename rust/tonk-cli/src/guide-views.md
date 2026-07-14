@@ -31,6 +31,12 @@ in place and never leave duplicate rows.
 `<tonk-display entity=<uri> model=<concept> view=<view-concept>>`
 renders a single entity. The resolution that trips people up:
 
+- `entity` must be an entity **URI** — something containing `:`
+  (`did:key:…`, `id:foo`, or `{this}`, which interpolates one). The
+  browser shell rejects a bare name (`entity=alice`) with
+  "`entity` must be an entity URI"; headless `tonk render` is more
+  lenient, so a template that SSRs fine can still break live. Always
+  write `{this}` or a URI.
 - `model` is the entity's concept; it projects the entity's fields.
 - `view` is a **view concept** (e.g. the built-in `tonk:view`), NOT a
   specific view instance. `<tonk-display>` resolves the view concept,
@@ -194,7 +200,7 @@ page!: &about
     <h1>About</h1>
 ```
 
-`tonk views` lists every entity carrying a `text/html` claim;
+`tonk view ls` lists every entity carrying a `text/html` claim;
 `tonk share view <name>` opens it in the iframe viewer. The viewer
 shell does not register `<tonk-display>`, so events won't fire there —
 use `tonk share display` for interactive, data-bound views.
@@ -202,5 +208,5 @@ use `tonk share display` for interactive, data-bound views.
 ---
 
 For interactivity (clicks, forms) see `tonk guide events`. Don't
-memorize built-ins — run `tonk schema` / `tonk concepts` /
-`tonk views` to see what's on the branch.
+memorize built-ins — run `tonk schema` / `tonk concept ls` /
+`tonk view ls` to see what's on the branch.

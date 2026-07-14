@@ -227,7 +227,20 @@ fn try_binding(
     // event-derived assertion gets a distinct, content-addressed
     // subject entity.
     match build_transact_body(descriptor, &concept, event, bound) {
-        Ok(body) => Some(body),
+        Ok(built) => {
+            // Blank form fields are omitted, not fatal — but a rule
+            // premise naming one will silently match nothing, which
+            // is indistinguishable from "the event didn't fire"
+            // without this breadcrumb.
+            if !built.blank_fields.is_empty() {
+                log_error(format!(
+                    "event handler: {concept}: blank fields omitted: {} — the command still \
+                     fired without them; a rule premise naming them will not match",
+                    built.blank_fields.join(", "),
+                ));
+            }
+            Some(built.body)
+        }
         Err(e) => {
             log_error(format!("event handler: build body for {concept}: {e}"));
             None

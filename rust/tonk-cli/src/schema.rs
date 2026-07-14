@@ -111,6 +111,34 @@ pub async fn render(site: &TonkSite) -> Result<String> {
     Ok(out)
 }
 
+/// Render one named concept's schema subset — the `attribute!:`
+/// declarations it references followed by its `concept!:` block —
+/// in the same re-submittable notation as [`render`]. Returns
+/// `Ok(None)` when no user concept has that name.
+pub async fn render_one(site: &TonkSite, name: &str) -> Result<Option<String>> {
+    let attrs = enumerate_attributes(site).await?;
+    let concepts = enumerate_concepts(site).await?;
+    let Some(concept) = concepts.iter().find(|c| c.name == name) else {
+        return Ok(None);
+    };
+    let uri_to_name: HashMap<String, String> = attrs
+        .iter()
+        .filter_map(|a| a.name.as_ref().map(|n| (a.the.clone(), n.clone())))
+        .collect();
+    let referenced: std::collections::HashSet<String> = concept
+        .descriptor
+        .with()
+        .iter()
+        .map(|(_, ad)| ad.the().to_string())
+        .collect();
+    let mut out = String::new();
+    for attr in attrs.iter().filter(|a| referenced.contains(&a.the)) {
+        render_attribute(&mut out, attr);
+    }
+    render_concept(&mut out, concept, &uri_to_name);
+    Ok(Some(out))
+}
+
 // ---------------------------------------------------------------- //
 // Data shapes                                                      //
 // ---------------------------------------------------------------- //
@@ -132,16 +160,29 @@ struct AttributeInfo {
     description: String,
 }
 
+/// A single named concept's schema — fields, types, cardinalities,
+/// and description — as read off the branch.
 #[derive(Debug)]
-struct ConceptInfo {
+pub struct ConceptInfo {
     /// Bookmark name. Required — anonymous concepts aren't yet
     /// surfaced.
-    name: String,
+    pub name: String,
     /// `dialog.meta/description` when present.
-    description: Option<String>,
+    pub description: Option<String>,
     /// Decoded descriptor — the source of truth for the rendered
     /// `with:` map.
-    descriptor: ConceptDescriptor,
+    pub descriptor: ConceptDescriptor,
+}
+
+/// Find a single user-defined concept by its bookmark name,
+/// returning its full descriptor (fields, types, cardinalities,
+/// descriptions) or `None`. Built-in concepts are excluded, matching
+/// `enumerate_concepts`.
+pub async fn find_concept(site: &TonkSite, name: &str) -> Result<Option<ConceptInfo>> {
+    Ok(enumerate_concepts(site)
+        .await?
+        .into_iter()
+        .find(|c| c.name == name))
 }
 
 // ---------------------------------------------------------------- //
@@ -353,7 +394,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 let _ = writeln!(out, "    {field}:");
                 let _ = writeln!(out, "      the:         {uri}");
                 if let Some(t) = attr_descriptor.content_type() {
-                    let _ = writeln!(out, "      as:          {}", type_to_notation(t));
+                    let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
                 let card = match attr_descriptor.cardinality() {
                     Cardinality::One => "one",
@@ -374,8 +415,8 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
 /// in `as:` slots. The serde rename on `ValueDataType` already
 /// produces these strings; serializing through serde_json gives
 /// us a quoted form (`"\"Text\""`) so we trim the quotes.
-fn type_to_notation(ty: Type) -> String {
-    match serde_json::to_string(&ty) {
+pub(crate) fn type_to_notation(ty: &Type) -> String {
+    match serde_json::to_string(ty) {
         Ok(s) => s.trim_matches('"').to_string(),
         Err(_) => format!("{ty:?}"),
     }

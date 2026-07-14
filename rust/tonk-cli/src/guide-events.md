@@ -136,11 +136,14 @@ Rules of the translation:
   posted and the event falls through to the next matching
   binding. Only a `the:` that doesn't address the event at all
   is silently dropped.
-- An **empty string** reads as "blank = omit" (like an empty form
-  field), so a required field that resolves to `""` also drops the
-  whole command, silently. If a field can legitimately be empty,
-  send a sentinel from the component (e.g. `<br>` for empty rich
-  text) rather than `""`.
+- A **blank** leaf (`""` from an empty text input, `null` from a
+  blank `<wa-input>`) is "not provided": the field is **omitted** and
+  the command still posts without it. No error is logged — but a rule
+  premise that names the missing field then matches nothing, so the
+  event silently does nothing. Read as little as possible from the
+  form and derive the rest in the rule from branch data; if a field
+  can legitimately be empty, send a sentinel from the component
+  (e.g. `<br>` for empty rich text) rather than `""`.
 - The `as:` type drives coercion: `text` → string, `entity` →
   string parsed as a URI (rejected if it has no `:`),
   `unsigned-integer` / `signed-integer` / `float` → number,
@@ -262,6 +265,18 @@ kebab `name="note-body"` won't resolve, since the path looks up
 `noteBody`. `preventDefault` fires synchronously so the page
 doesn't reload.
 
+**The prevent-default trap: an action field makes a command
+rule-proof.** A `dom.event.do/*` field projects as a side effect and
+stores **no value**, but a rule's `assert: <command>` premise
+requires every declared field present — so the premise matches zero
+rows and the rule never fires, even though the command transacts
+successfully. A form-submit command like `save` above is only for
+**handler-consumed** commands (typed Rust handlers). A command a
+`rule!:` consumes must NOT declare a `dom.event.do/*` field: fire it
+from a `<button type="button" onclick=…>` instead (no native submit
+exists, so nothing needs preventing) and read the form's controls
+via `dom.event.current-target.form.elements.<name>/value`.
+
 ### `rule!:` — the reactive layer
 
 A rule has a head with one polarity and a body of premises:
@@ -320,6 +335,86 @@ rule!:
 The rule fires on the click-derived `complete` transient and
 retracts the matched `todo`. The view's subscription sees the
 row disappear.
+
+### Minting a new entity from a rule (create forms)
+
+A rule head needs every field bound, **including `this`** — there is
+no formula that generates a fresh entity. To create durable state
+from an event (a "new post" form), bind the transient command's own
+content-derived entity as the new fact's identity. Fire the command
+from a plain `type="button"` (NOT a form submit — see the
+prevent-default trap below) and reach the form controls through
+`current-target.form`:
+
+```yaml
+command!: &publish
+  with:
+    body: { the: dom.event.current-target.form.elements.body/value, as: text }
+
+rule!:
+  assert!: post
+  when:
+    - assert: publish
+      where: { this: ?this, body: ?body }   # the transient's own entity
+```
+
+```yaml
+view!: &composer
+  model: board
+  display: !text/html |
+    <form>
+      <textarea name="body"></textarea>
+      <button type="button" onclick=publish>Post</button>
+    </form>
+```
+
+`type="button"` means there is no native submit to prevent, so the
+command needs no `dom.event.do/prevent-default` field — which is what
+keeps it rule-consumable.
+
+One durable entity per event, carrying the command's identity. The
+caveat: a command's entity is content-derived, so two events with
+identical parameters collide on the same entity. If duplicates must
+stay distinct, add a per-event nonce field to the command (e.g.
+`time: { the: dom.event/time-stamp, as: float }`) so each event's
+body — and therefore its entity — differs.
+
+Everything the head asserts must be bound in the body: read what the
+user typed from the form, and pull the rest (author, defaults) from
+persistent facts joined in additional `when:` premises, or bind
+constants with `==` / formula premises.
+
+### Debugging: the click did nothing
+
+The failure modes, from loud to silent:
+
+1. **Console warn "field … did not resolve against the event"** —
+   the path itself is wrong: a missing property step, a kebab-case
+   control name (each path segment camelCases, so `name="like-seed"`
+   is looked up as `likeSeed` — prefer single-word lowercase
+   `name=`s), or a value that won't coerce to `as:` (an `entity`
+   needs a `:`). The whole binding aborts; nothing posts.
+2. **No warn, but the rule didn't fire** — a form control resolved
+   blank (`""`/`null`), so the field was omitted and the posted
+   command doesn't satisfy the rule's premise. See the blank-leaf
+   bullet above.
+3. **The command transacts (POST 200) but the rule never fires** —
+   the command declares a `dom.event.do/*` field. Action fields
+   store no value, so a rule premise over that command matches zero
+   rows, always. See "the prevent-default trap"; fire the command
+   from a `type="button"` click instead.
+4. **The wrong rule fired (or two did)** — commands match
+   structurally, not by name; see "One command, one shape".
+5. **The form reloaded the page** — the command failed to build
+   (case 1), so its queued `prevent-default` never ran and the
+   native submit won.
+
+To isolate a rule from the DOM wiring, assert the command's shape
+directly with `tonk eval` and check the rule's output fact appears.
+Caveat: notation forces a value into every field — including ones the
+real DOM event can't produce (a blank input, an action field) — so a
+rule that fires under eval can still be unreachable from the DOM;
+cases 2 and 3 are exactly that false positive.
 
 ### Opening the view in tonk-ui
 

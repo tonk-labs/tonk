@@ -90,6 +90,32 @@ concept!: &task
     done:  task-done
 "#;
 
+/// Attributes for the cardinality-many lock tests: a one-cardinality
+/// `body` and a many-cardinality `tag`.
+pub const NOTE_ATTRIBUTE_DECL: &str = r#"
+attribute!: &note-body
+  description: "note body"
+  the:         xyz.tonk.note/body
+  as:          text
+  cardinality: one
+
+attribute!: &note-tag
+  description: "a tag on a note"
+  the:         xyz.tonk.note/tag
+  as:          text
+  cardinality: many
+"#;
+
+/// A `note` concept referencing the attributes above — one required
+/// one-cardinality field plus one required many-cardinality field.
+pub const NOTE_CONCEPT_DECL: &str = r#"
+concept!: &note
+  description: "a tagged note"
+  with:
+    body: note-body
+    tag:  note-tag
+"#;
+
 /// Seed schema for HTML views: a `text/html`-bound attribute and
 /// a `view` concept that uses it. Pasted at the top of any test
 /// that needs `view!` heads. Shared with [`tonk_cli::guide`] so the

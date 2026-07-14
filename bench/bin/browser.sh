@@ -114,11 +114,11 @@ wait_for() {
 
 # The SPA has rendered when the document is complete and the body has
 # real content (Leptos mounts into <body>). For tonk-ui specifically we
-# wait for <tonk-host> to be present — the root custom element that
-# TonkLauncher renders immediately on WASM init, before any async
-# data fetching completes.
+# wait for <tonk-site> to be present — the mount root since the
+# routing collapse (#567) replaced the old <tonk-host> element with a
+# document-level install plus a single <tonk-site> on <body>.
 wait_render() {
-  wait_for "document.readyState === 'complete' && document.querySelector('tonk-host') !== null" 30 render
+  wait_for "document.readyState === 'complete' && document.querySelector('tonk-site') !== null" 30 render
   sleep 1   # settle: fonts, async view frames
 }
 
