@@ -15,9 +15,9 @@ matters less than in other scenarios.
 - Outcome 1-3: got the CLI running but never completed the join.
 - Outcome 0: never got a working tonk command executed.
 
-Friction focus: everything before the first successful `tonk join` —
-install discovery (the prompt does not currently mention npx or where
-to get the binary), sandbox/path fights (the prompt hardcodes
-`mkdir -p ~/tonk/...`, which the episode sandbox denies), and
-orientation toil after joining. Quote the exact prompt line that
-misled the agent when you can.
+Friction focus: everything before the first successful join — whether
+`npx @tonk/cli` resolved and ran cleanly (the prompt now leads with it,
+so no global install is needed), whether the agent handled the
+"ask me where to keep the tonk" step sensibly instead of stalling or
+picking a denied path, and orientation toil after joining. Quote the
+exact prompt line that misled the agent when you can.

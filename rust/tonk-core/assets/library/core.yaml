@@ -456,10 +456,11 @@ view!:
 
     Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
-      mkdir -p ~/tonk/{name} &amp;&amp; cd ~/tonk/{name}
-      tonk join '{link}'
-      tonk guide        # how to drive the CLI
-      tonk schema       # concepts already on the branch
+    Ask me where I'd like to keep the &quot;{name}&quot; tonk on this machine, then cd into that folder and run:
+
+      npx @tonk/cli join '{link}'
+      npx @tonk/cli guide    # how to drive the CLI
+      npx @tonk/cli schema   # concepts already on the branch
 
     Then build."></wa-copy-button>
       </div>
@@ -467,12 +468,13 @@ view!:
 
     Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
-      mkdir -p ~/tonk/{name} &amp;&amp; cd ~/tonk/{name}
-      tonk join '{link}'
-      tonk guide        # how to drive the CLI
-      tonk schema       # concepts already on the branch
+    Ask me where I'd like to keep the "{name}" tonk on this machine, then cd into that folder and run:
 
-    Then build: define schema with `tonk concept add`, write data with `tonk assert`, add views with `tonk view add` — and finish with `tonk home &lt;concept&gt;` so the build lands on the space home.</pre>
+      npx @tonk/cli join '{link}'
+      npx @tonk/cli guide    # how to drive the CLI
+      npx @tonk/cli schema   # concepts already on the branch
+
+    Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.</pre>
     </div>
 
 # A space member, as seen in the "shared with" roster. Reads the

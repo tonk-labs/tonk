@@ -33,18 +33,18 @@ raw="$(awk '
   /<pre class="agent-prompt__pre">/ { f=1; sub(/.*<pre class="agent-prompt__pre">/, ""); print; next }
   f && /<\/pre>/ { sub(/<\/pre>.*/, ""); print; exit }
   f { print }
-' "$CORE_YAML" | sed -e 's/^    //' -e 's/&amp;/\&/g' -e 's/&quot;/"/g')"
+' "$CORE_YAML" | sed -e 's/^    //' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/&amp;/\&/g')"
 
 [ -n "$raw" ] || { echo "prompt: extraction from $CORE_YAML came up empty — did the agent-prompt view template change shape?" >&2; exit 1; }
 
-# Fill the template. The join URL is one composite placeholder; replace
-# it whole with the real minted invite URL. Use escaped copies as the
-# replacement text so a literal `&` (e.g. a synced repo's `&remote=`)
-# isn't treated as a back-reference to the matched pattern.
+# Fill the template. The join URL is the single `{link}` model field;
+# replace it whole with the real minted invite URL. Use escaped copies
+# as the replacement text so a literal `&` (e.g. a synced repo's
+# `&remote=`) isn't treated as a back-reference to the matched pattern.
 esc_url="$(psub_escape "$INVITE_URL")"
 esc_name="$(psub_escape "$NAME")"
 filled="$raw"
-filled="${filled//\{dom.host\/data-base\}?access=\{access\}\{remote\}#\{code\}/$esc_url}"
+filled="${filled//\{link\}/$esc_url}"
 filled="${filled//\{name\}/$esc_name}"
 filled="${filled//\{dom.host\/data-page\}/this repo}"
 
@@ -55,6 +55,6 @@ if printf '%s' "$filled" | grep -qE '\{(access|remote|code|name|dom\.host)' ; th
   printf '%s\n' "$filled" | grep -nE '\{' >&2
   exit 1
 fi
-printf '%s' "$filled" | grep -q "tonk join" || { echo "prompt: no 'tonk join' in rendered prompt" >&2; exit 1; }
+printf '%s' "$filled" | grep -q "@tonk/cli join" || { echo "prompt: no 'npx @tonk/cli join' in rendered prompt" >&2; exit 1; }
 
 printf '%s\n' "$filled"
