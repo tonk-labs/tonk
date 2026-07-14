@@ -4,6 +4,29 @@ Headless CLI for reading and writing tonk data and views as
 asserted-notation. You define concepts (schemas), assert facts against
 them, and publish views that render those facts.
 
+## Mental model: it's a datalog
+
+Everything on a branch is a **fact** — entity, attribute, value — as
+in datalog or Datomic. Nothing updates in place: you assert new claims,
+and a cardinality-one attribute supersedes its old value while a
+cardinality-many one accumulates. "Retract" is itself a claim that
+invalidates an earlier one.
+
+- **attribute** — a typed predicate (`the:` URI, `as:` type, cardinality)
+- **concept** — a named schema over attributes (its `with:` map);
+  a concept query matches entities carrying every required attribute
+- **query** — pattern matching with unification: the same `?x` across
+  expressions must take the same value, like datalog body clauses
+- **view** — an HTML template rendered over a concept's instances
+- **rule** — a datalog rule whose trigger premise is a transient
+  command fact produced by a DOM event; its head asserts/retracts facts
+
+Two consequences worth internalizing early: entity identity is
+content-addressed (re-asserting an identical body is a no-op; changing
+any field mints a NEW entity unless you bind the old one with `this:`),
+and bare lowercase tokens are symbols resolved through the name table —
+quote every string literal (`name: "alice"`, not `name: alice`).
+
 ## The loop
 
 1. Discover what's already on the branch — don't guess or memorize:

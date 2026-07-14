@@ -31,6 +31,12 @@ in place and never leave duplicate rows.
 `<tonk-display entity=<uri> model=<concept> view=<view-concept>>`
 renders a single entity. The resolution that trips people up:
 
+- `entity` must be an entity **URI** — something containing `:`
+  (`did:key:…`, `id:foo`, or `{this}`, which interpolates one). The
+  browser shell rejects a bare name (`entity=alice`) with
+  "`entity` must be an entity URI"; headless `tonk render` is more
+  lenient, so a template that SSRs fine can still break live. Always
+  write `{this}` or a URI.
 - `model` is the entity's concept; it projects the entity's fields.
 - `view` is a **view concept** (e.g. the built-in `tonk:view`), NOT a
   specific view instance. `<tonk-display>` resolves the view concept,

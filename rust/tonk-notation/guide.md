@@ -11,6 +11,14 @@ The examples below can be pasted into the editor and evaluated
 against a branch; the worked example near the top runs against an
 empty branch.
 
+If you know datalog or Datomic, map it directly: a branch is a set
+of entity–attribute–value facts; an assertion adds facts; `?x` is a
+logic variable; multiple expressions in one document join by
+unification, like the body clauses of a datalog rule; a concept is a
+named schema over a set of attributes. There is no update-in-place —
+a cardinality-one attribute supersedes on re-assertion, and
+retraction is itself a claim invalidating an earlier one.
+
 ## Two flavours of expression
 
 Every top-level entry in a document is one of two things,
