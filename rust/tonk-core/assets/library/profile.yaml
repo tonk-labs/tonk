@@ -1586,17 +1586,53 @@ view/directory!: &profile/fab/view
           cursor: default;
           opacity: 0.7;
         }
+        /* The in-flight spinner: rings drawn as circles showing only their TOP
+           border, chasing each other a beat apart so the arc leaves a fading
+           trail rather than reading as one hard tick.
+
+           The rings are PSEUDO-ELEMENTS, not child spans. The view template
+           renderer drops empty elements, so a `<span class="spinner"><span>
+           </span>…</span>` arrives in the DOM as an empty box — correctly sized
+           and completely blank, which is exactly what it looked like. Pseudo-
+           elements are pure CSS and cannot be stripped.
+
+           Sized in `em` so it tracks the bar's font, and drawn in
+           `currentColor` so it inherits the label's ink with no colour of its
+           own. */
         .fab__share-spinner {
-          width: 0.85em;
-          height: 0.85em;
-          border: 2px solid color-mix(in oklab, var(--fab-ink) 30%, transparent);
-          border-top-color: var(--fab-ink);
+          box-sizing: border-box;
+          display: inline-block;
+          position: relative;
+          width: 0.9em;
+          height: 0.9em;
+          flex: none;
+          border: 1.5px solid currentColor;
           border-radius: 50%;
-          animation: fab-share-spin 0.6s linear infinite;
+          border-color: currentColor transparent transparent transparent;
+          animation: fab-share-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
         }
-        @keyframes fab-share-spin { to { transform: rotate(360deg); } }
+        .fab__share-spinner::before,
+        .fab__share-spinner::after {
+          content: "";
+          box-sizing: border-box;
+          position: absolute;
+          /* Inset by the border width so the trailing rings sit ON the leading
+             ring's circle rather than concentric inside it. */
+          inset: -1.5px;
+          border: 1.5px solid currentColor;
+          border-radius: 50%;
+          border-color: currentColor transparent transparent transparent;
+          animation: inherit;
+        }
+        .fab__share-spinner::before { animation-delay: -0.3s; }
+        .fab__share-spinner::after { animation-delay: -0.15s; }
+        @keyframes fab-share-ring { to { transform: rotate(360deg); } }
+        /* Reduced motion: keep the ring (it is the only "working" cue the bar
+           has) but slow it to a crawl rather than strobing. */
         @media (prefers-reduced-motion: reduce) {
-          .fab__share-spinner { animation-duration: 2.4s; }
+          .fab__share-spinner,
+          .fab__share-spinner::before,
+          .fab__share-spinner::after { animation-duration: 4s; }
         }
         /* Copied. A green-tinted ink that still reads as success but stays
            legible on the inverted pill in both themes (the ink inverts with the

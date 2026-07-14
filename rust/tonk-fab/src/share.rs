@@ -130,11 +130,15 @@ impl CustomElement for TonkShare {
             let current = read_state(&host);
             if !current.accepts_click() {
                 // A mint is already in flight holding the clipboard promise.
-                // Swallow the click rather than let it submit a second mint,
-                // which would rotate the credential out from under the copy
-                // we're about to complete.
+                // Cancel the activation so the form does not submit a second
+                // mint, which would rotate the credential out from under the
+                // copy we're about to complete.
+                //
+                // `preventDefault` only — NOT `stopPropagation`. The click still
+                // has to reach `<tonk-fab>`, which toggles the roster for every
+                // click in the share zone. Swallowing it outright would make the
+                // menu unresponsive for as long as a mint is in flight.
                 event.prevent_default();
-                event.stop_propagation();
                 return;
             }
             // Whatever link is on screen right now is the PREVIOUS mint's. Note
@@ -404,7 +408,7 @@ mod tests {
     use super::*;
     use js_sys::Object;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-    use web_sys::window;
+    use web_sys::{Element, window};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -422,6 +426,21 @@ mod tests {
             ));
         }
         host
+    }
+
+    /// A host mounted inside an OPEN share segment, the way the FAB nests it:
+    /// `.fab__share.is-open > <tonk-share>`. Returns the segment so a test can
+    /// assert on its classes.
+    fn host_in_open_segment() -> (HtmlElement, Element) {
+        let document = window().expect("window").document().expect("document");
+        let segment = document.create_element("span").expect("create segment");
+        segment.set_class_name("fab__seg fab__share is-open");
+        let host: HtmlElement = document
+            .create_element("tonk-share")
+            .expect("create host")
+            .unchecked_into();
+        segment.append_child(&host).expect("nest host");
+        (host, segment)
     }
 
     /// A `tonk-display:result` detail, in the shape the display actually
@@ -531,6 +550,25 @@ mod tests {
         assert!(
             state.borrow().pending.is_none(),
             "settling must consume the pending copy, so a later frame can't re-settle it",
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_leaves_the_roster_alone_when_the_copy_settles() {
+        // `<tonk-share>` does not touch the dropdown. `<tonk-fab>` toggles
+        // `.is-open` on the segment for every click in the share zone, so the
+        // menu opens on the first click and closes on the second. Force-closing
+        // it here would desync that toggle: the click after an auto-close would
+        // re-OPEN the menu instead of closing it.
+        let (host, segment) = host_in_open_segment();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+
+        settle(&host, &state, Ok("https://tonk.xyz/@/new".to_owned()));
+
+        assert!(
+            segment.class_list().contains("is-open"),
+            "settling must leave the menu's open state to <tonk-fab>'s toggle",
         );
     }
 
