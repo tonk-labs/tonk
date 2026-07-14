@@ -3,9 +3,7 @@ main = "./result/tonk-access-service/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-routes = [
-  { pattern = "hub.tonk.xyz", custom_domain = true }
-]
+routes = [{ pattern = "hub.tonk.xyz", custom_domain = true }]
 
 [build]
 command = "nix build .#tonk-cloudflare-artifacts"
@@ -14,6 +12,7 @@ command = "nix build .#tonk-cloudflare-artifacts"
 directory = "./result/tonk-ui"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
+run_worker_first = ["/@", "/@/*"]
 
 [[r2_buckets]]
 binding = "BUCKET"
@@ -24,9 +23,7 @@ R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
 
 [env.staging]
-routes = [
-  { pattern = "staging.tonk.xyz", custom_domain = true }
-]
+routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
