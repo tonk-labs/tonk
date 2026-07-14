@@ -1,0 +1,108 @@
+name: 'CLI npm'
+
+# Manual-trigger only: builds the per-platform tonk binaries and
+# publishes @tonk/cli (plus its platform packages) to npm. Nothing
+# publishes on a normal push.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'npm version to publish (e.g. 0.4.0)'
+        required: true
+        default: '0.4.0'
+      dist-tag:
+        description: 'npm dist-tag'
+        required: true
+        default: 'latest'
+
+concurrency:
+  group: cli-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 'Build ${{ matrix.artifact-name }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk'
+        run: nix build --accept-flake-config .#tonk-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: result/bin/tonk
+
+  publish:
+    name: 'Publish to npm'
+    needs: ['build']
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-macos-arm64
+          path: artifacts/darwin-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-x86_64
+          path: artifacts/linux-x64
+      - name: Assemble platform packages
+        working-directory: rust/tonk-cli/npm
+        run: |
+          set -euo pipefail
+          install -Dm0755 "$GITHUB_WORKSPACE/artifacts/darwin-arm64/tonk" darwin-arm64/bin/tonk
+          install -Dm0755 "$GITHUB_WORKSPACE/artifacts/linux-x64/tonk"   linux-x64/bin/tonk
+      - name: Stamp version
+        working-directory: rust/tonk-cli/npm
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          for dir in darwin-arm64 linux-x64 cli; do
+            (cd "$dir" && npm version "$VERSION" --no-git-tag-version --allow-same-version)
+          done
+          # Pin the wrapper's optionalDependencies to the same version.
+          node -e '
+            const fs = require("fs");
+            const v = process.env.VERSION;
+            const p = "cli/package.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            for (const k of Object.keys(j.optionalDependencies || {})) {
+              j.optionalDependencies[k] = v;
+            }
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
+      - name: Publish
+        working-directory: rust/tonk-cli/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ inputs.dist-tag }}
+        run: |
+          set -euo pipefail
+          # Platform packages first: the wrapper's optionalDependencies
+          # point at them, so they must exist before it resolves.
+          npm publish darwin-arm64 --access public --tag "$TAG"
+          npm publish linux-x64   --access public --tag "$TAG"
+          npm publish cli         --access public --tag "$TAG"

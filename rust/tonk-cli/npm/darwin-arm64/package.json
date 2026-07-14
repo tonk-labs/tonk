@@ -1,0 +1,21 @@
+{
+  "name": "@tonk/cli-darwin-arm64",
+  "version": "0.4.0",
+  "description": "darwin-arm64 binary for @tonk/cli.",
+  "license": "MIT",
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git",
+    "directory": "rust/tonk-cli"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ]
+}

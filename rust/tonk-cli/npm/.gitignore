@@ -1,0 +1,5 @@
+# Native binaries are build artifacts injected by release CI (or a local
+# pack test); never commit them.
+darwin-arm64/bin/
+linux-x64/bin/
+*.tgz

@@ -1,0 +1,36 @@
+{
+  "name": "@tonk/cli",
+  "version": "0.4.0",
+  "description": "The Tonk stack command line utility.",
+  "license": "MIT",
+  "homepage": "https://github.com/tonk-labs/tonk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonk-labs/tonk.git",
+    "directory": "rust/tonk-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/tonk-labs/tonk/issues"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "crdt",
+    "local-first",
+    "tonk"
+  ],
+  "bin": {
+    "tonk": "bin/tonk.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@tonk/cli-darwin-arm64": "0.4.0",
+    "@tonk/cli-linux-x64": "0.4.0"
+  }
+}
