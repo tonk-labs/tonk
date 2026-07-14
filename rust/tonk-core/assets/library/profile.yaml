@@ -813,6 +813,13 @@ view/directory!: &profile/fab/view
   model: tonk:profile/fab
   display: |
     <tonk-fab>
+      <!-- NOTE: the click-away curtain (`.fab__scrim`) is NOT authored here.
+           `<tonk-fab>` injects it on connect, for two reasons: the view template
+           renderer drops empty elements (an authored `<div class="fab__scrim">
+           </div>` never reaches the DOM), and it must be a SIBLING of `.fab` —
+           `wrap_telescope_tiles` treats child[0] of `.fab` as the circle cap, so
+           a scrim nested inside would be mistaken for it. The stylesheet below
+           still owns how it looks and when it takes clicks. -->
       <div class="fab">
         <!-- LEFT CAP — the grab handle. A round-left segment (36×36) holding
              the live sync ring: the same host-chrome `<ui-sync-status>` element
@@ -1654,6 +1661,14 @@ view/directory!: &profile/fab/view
         /* The roster opens when the share segment is CLICKED (element.rs
            toggles `is-open`), like the repo switcher above. */
         .fab__share.is-open .fab__share-menu { display: flex; }
+        /* Click-away scrim. Resting: no box, no hit area — so it can never
+           swallow a click on the page while the bar is idle. While EITHER
+           dropdown is open it becomes a transparent, viewport-covering click
+           target, so a click anywhere outside a menu closes both (element.rs
+           handles the hit). It sits below the bar's own stacking context, so
+           the bar and its menus stay clickable through it. */
+        .fab__scrim { position: fixed; inset: 0; pointer-events: none; }
+        tonk-fab:has(.is-open) .fab__scrim { pointer-events: auto; }
         /* Mirrored: the bar is row-reversed, so the share zone is the LEFT
            end — its roster flips to anchor left (the repo switcher already
            re-anchors right via `.fab-mirror .fab__menu`). Row alignment
