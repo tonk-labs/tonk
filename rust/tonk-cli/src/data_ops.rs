@@ -3,7 +3,8 @@
 //! binary maps errors to exit codes.
 
 use crate::authoring::{
-    AuthoringError, build_concept_decl, build_home_recipe, build_view_decl, parse_attr_spec,
+    AuthoringError, build_concept_decl, build_home_recipe, build_view_decl, lint_view_template,
+    parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -491,10 +492,17 @@ pub async fn view_add(
     name: Option<&str>,
     template: &str,
 ) -> Result<String, DataOpError> {
-    require_concept(site, model).await?;
+    let info = require_concept(site, model).await?;
     if template.trim().is_empty() {
         return Err(AuthoringError::EmptyTemplate.into());
     }
+    let fields: Vec<String> = info
+        .descriptor
+        .with()
+        .iter()
+        .map(|(field, _)| field.to_string())
+        .collect();
+    let lint = lint_view_template(template, &fields);
     let anchor = name
         .map(str::to_string)
         .unwrap_or_else(|| format!("{model}-view"));
@@ -506,7 +514,11 @@ pub async fn view_add(
         auto_sync::enabled(false),
     )
     .await?;
-    let mut out = format!("asserted view {anchor}\n{}", outcome.stdout);
+    let mut out = format!("asserted view {anchor}\n");
+    for warning in &lint {
+        out.push_str(&format!("warning: {warning}\n"));
+    }
+    out.push_str(&outcome.stdout);
     if home_is_unset(site).await? {
         out.push('\n');
         out.push_str(&home(site, &[model.to_string()]).await?);

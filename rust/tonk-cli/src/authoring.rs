@@ -167,6 +167,110 @@ pub fn build_concept_decl(name: &str, description: Option<&str>, attrs: &[AttrSp
     out
 }
 
+/// Lint a view template against its model's field names. Returns
+/// warning lines (empty when clean). Both classes are live-shell
+/// failures that a headless render won't necessarily catch:
+///
+/// - a `{placeholder}` that names no field of the model renders
+///   blank (or literally) with no error anywhere;
+/// - a nested `<tonk-display entity=…>` whose value is a bare name
+///   is rejected by the browser shell ("`entity` must be an entity
+///   URI"), even though headless `tonk render` resolves it.
+///
+/// Purely lexical — warnings, never errors, because templates can
+/// carry CSS braces and exotic-but-valid values. Specials (`{this}`,
+/// `{dom.host/model}`-style paths, anything with `.`/`/`/`:` or
+/// whitespace inside the braces) are skipped.
+pub fn lint_view_template(template: &str, fields: &[String]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut flagged: Vec<String> = Vec::new();
+    for token in brace_tokens(template) {
+        if token == "this" || fields.iter().any(|f| f == &token) || flagged.contains(&token) {
+            continue;
+        }
+        flagged.push(token.clone());
+        warnings.push(format!(
+            "template references {{{token}}} but the model has no field '{token}' \
+             (fields: {}) — it will render blank",
+            fields.join(", "),
+        ));
+    }
+    for value in entity_attr_values(template) {
+        if value.starts_with('{') || value.contains(':') {
+            continue;
+        }
+        warnings.push(format!(
+            "entity={value} is a bare name; the browser shell requires an entity URI \
+             (did:key:…, id:…) — use {{this}} or a URI"
+        ));
+    }
+    warnings
+}
+
+/// Collect candidate `{field}` placeholder tokens: brace-enclosed
+/// runs that look like field names (lowercase start; lowercase,
+/// digits, `-` after). CSS blocks and path specials don't match —
+/// anything containing whitespace, `.`, `/`, `:`, `{`, or longer
+/// than 64 chars is skipped.
+fn brace_tokens(template: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{'
+            && let Some(end) = template[i + 1..].find(['}', '{']).map(|o| i + 1 + o)
+            && bytes[end] == b'}'
+            && end - i - 1 <= 64
+        {
+            let token = &template[i + 1..end];
+            let mut chars = token.chars();
+            let head_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase());
+            let tail_ok = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if head_ok && tail_ok {
+                out.push(token.to_string());
+            }
+            i = end + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Collect the values of `entity=` attributes in the template.
+/// Lexical: an `entity=` preceded by whitespace, with the value read
+/// to the closing quote (when quoted) or to the next whitespace /
+/// `>` / `/>` (when bare).
+fn entity_attr_values(template: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = template;
+    while let Some(pos) = rest.find("entity=") {
+        let preceded_ok = pos == 0
+            || rest[..pos]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_whitespace());
+        let after = &rest[pos + "entity=".len()..];
+        if !preceded_ok {
+            rest = after;
+            continue;
+        }
+        let value = match after.chars().next() {
+            Some(quote @ ('"' | '\'')) => after[1..].split(quote).next().unwrap_or(""),
+            _ => after
+                .split(|c: char| c.is_ascii_whitespace() || c == '>')
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('/'),
+        };
+        if !value.is_empty() {
+            out.push(value.to_string());
+        }
+        rest = after;
+    }
+    out
+}
+
 /// Build a `view!:` declaration document with a stable, name-derived
 /// `this:` (`id:{anchor}`) so re-authoring the same view (same
 /// anchor) supersedes rather than duplicates it. `template` is
@@ -303,6 +407,67 @@ mod tests {
         assert!(doc.contains("model: note"));
         assert!(doc.contains("<b>{title}</b>"));
     }
+    fn fields(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn it_passes_a_clean_template() {
+        let warnings = lint_view_template(
+            "<article><h2>{name}</h2><p>{age}</p><b>{this}</b></article>",
+            &fields(&["name", "age"]),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn it_flags_an_unknown_placeholder_once() {
+        let warnings = lint_view_template("<p>{nmae}</p><p>{nmae}</p>", &fields(&["name"]));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("{nmae}") && warnings[0].contains("name"));
+    }
+
+    #[test]
+    fn it_skips_css_blocks_and_path_specials() {
+        let warnings = lint_view_template(
+            "<style>.a { color: red; }</style>\
+             <div>{dom.host/model}</div>\
+             <span style=\"{color:red}\"></span>",
+            &fields(&["name"]),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn it_flags_a_bare_name_entity_reference() {
+        let warnings = lint_view_template(
+            "<tonk-display entity=alice model=person></tonk-display>",
+            &fields(&["name"]),
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("entity=alice"), "{warnings:?}");
+    }
+
+    #[test]
+    fn it_accepts_uri_and_interpolated_entity_references() {
+        let warnings = lint_view_template(
+            "<tonk-display entity={author} model=person></tonk-display>\
+             <tonk-display entity=did:key:zAbc model=person></tonk-display>\
+             <tonk-display entity=\"id:alice\" model=person></tonk-display>",
+            &fields(&["author"]),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn it_ignores_data_entity_attributes() {
+        let warnings = lint_view_template(
+            "<button data-entity=alice onclick=poke>go</button>",
+            &fields(&["name"]),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
     #[test]
     fn it_builds_the_home_recipe_per_the_verified_shape() {
         let doc = build_home_recipe(&["habit".into(), "entry".into()]);
