@@ -876,34 +876,43 @@ view/directory!: &profile/fab/view
              against this nested space branch (its origin repo). `<tonk-origin>`
              supplies `{origin}/join` as `data-base` for the copyable URL. -->
         <span class="fab__seg fab__share">
-            <tonk-origin>
-              <!-- The minted invite link. Shown once the mint lands; before
-                   that `tonk:agent-invite` does not resolve and the empty
-                   hidden fallbacks suppress tonk-display's built-in absence
-                   callout, so the bar shows only the "share" button below.
-                   When it resolves the display sets `data-state="ready"`, and
-                   the CSS sibling rule hides the button so the bar shows just
-                   the link + copy. `bind:base` supplies `{origin}/join`.
-                   Each display carries its own `with={dom.host/data-space}`
-                   (the active space) — routing is per element, not inherited
-                   from the wrapping span. -->
-              <tonk-display class="fab__invite-display" with={dom.host/data-space} entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite bind:base="data-base">
+            <!-- `<tonk-share>` makes minting and copying ONE click. A click on
+                 the "share" button opens a clipboard write against a promise
+                 (synchronously, while the click's user activation is still
+                 live — the async mint would otherwise outlive it and the
+                 browser would refuse the write), lets the click fall through to
+                 the mint form below, then resolves that promise with the invite
+                 URL as soon as the mint's frame arrives. It stamps its own
+                 `data-share-state` (idle → copying → copied → idle), which the
+                 stylesheet keys the label and spinner off. -->
+            <tonk-share>
+              <!-- The minted invite. Not shown: its whole job is to DELIVER the
+                   URL. When the mint lands, `tonk:agent-invite` resolves and
+                   this display dispatches a bubbling `tonk-display:result`
+                   carrying the assembled (already shortened) `link`, which
+                   `<tonk-share>` reads to complete the pending clipboard write.
+                   The user never sees or clicks a separate copy control, so the
+                   link itself needs no chrome. The empty hidden fallbacks
+                   suppress tonk-display's built-in absence callout.
+                   `with={dom.host/data-space}` (the active space) is per
+                   element — routing is not inherited from the wrapping span. -->
+              <tonk-display class="fab__invite-display" with={dom.host/data-space} entity={dom.host/data-space} model=tonk:agent-invite view=tonk:view/fab-invite>
                 <span slot="no-entity" hidden></span>
                 <span slot="no-model" hidden></span>
                 <span slot="loading" hidden></span>
               </tonk-display>
-              <!-- The mint trigger. The "share" form lives in a SPACE-branch
-                   view (core.yaml's `tonk:repository` directory view), mounted
-                   here no-entity inside the nested `with` context — so its
-                   `onsubmit=tonk:invite` binding both resolves its descriptor
-                   AND dispatches its claim on the SPACE's content branch, where
-                   the worker's InviteHandler mints for that repo. (Binding it in
-                   the FAB's own profile/meta template instead dispatched the
-                   claim to profile/meta with an empty origin repo.) Directory
-                   chrome renders regardless of whether the repo is named, so the
-                   "share" button is always present. -->
+              <!-- The mint trigger, and now the only visible control. The
+                   "share" form lives in a SPACE-branch view (core.yaml's
+                   `tonk:repository` directory view), mounted here no-entity
+                   inside the nested `with` context — so its `onsubmit=tonk:invite`
+                   binding both resolves its descriptor AND dispatches its claim
+                   on the SPACE's content branch, where the worker's InviteHandler
+                   mints for that repo. (Binding it in the FAB's own profile/meta
+                   template instead dispatched the claim to profile/meta with an
+                   empty origin repo.) Directory chrome renders regardless of
+                   whether the repo is named, so the button is always present. -->
               <tonk-display class="fab__share-mint" with={dom.host/data-space} model="tonk:repository"></tonk-display>
-            </tonk-origin>
+            </tonk-share>
             <nav class="fab__menu fab__share-menu">
               <tonk-display with={dom.host/data-space} model="tonk:member" view="tonk:view/fab-roster"></tonk-display>
             </nav>
@@ -1506,25 +1515,25 @@ view/directory!: &profile/fab/view
            `inline` instead made the button an inline-block sitting on the
            text baseline, so it rode up out of the pill. The roster `<nav>` is
            `position: absolute`, so it stays out of this flex flow. */
-        .fab__share tonk-origin,
-        .fab__share .fab__invite-display,
+        .fab__share tonk-share,
         .fab__share .fab__share-mint,
         .fab__share-mint tonk-view { display: contents; }
+        /* The invite display exists only to deliver the minted URL to
+           `<tonk-share>` (via its `tonk-display:result` event). It renders no
+           chrome of its own — the "share" button IS the control now — so it
+           takes up no space whether or not an invite has been minted. */
+        .fab__share .fab__invite-display { display: none; }
         .fab__share-form {
           display: inline-flex;
           align-items: center;
           gap: 4px;
         }
-        /* Once the invite link has rendered (the display reaches `ready`), drop
-           the "share" mint button so the bar shows just the link + copy. The
-           link display (B) precedes the mint display (A), so the sibling
-           combinator reaches the "share" button inside A. */
-        .fab__invite-display[data-state="ready"] ~ .fab__share-mint .fab__share-trigger,
-        .fab__invite-display[data-state="default-view"] ~ .fab__share-mint .fab__share-trigger { display: none; }
-        /* The "share" affordance shown before a link is minted: a text button
-           that submits the mint form. Full `--fab-ink`, bar font — reads exactly
-           like the account/repo labels beside it (the segment's own hover
-           supplies the highlight, so the label carries no dimmed resting state). */
+        /* The share control: one text button that mints AND copies. Full
+           `--fab-ink`, bar font — reads exactly like the account/repo labels
+           beside it (the segment's own hover supplies the highlight, so the
+           label carries no dimmed resting state). Its label is swapped per
+           `data-share-state` below, so the button reserves room for the widest
+           of the three ("copying…") and the bar doesn't reflow mid-cycle. */
         .fab__share-trigger {
           font: inherit;
           line-height: 1;
@@ -1533,54 +1542,71 @@ view/directory!: &profile/fab/view
           color: var(--fab-ink);
           cursor: pointer;
           padding: 0 2px;
-        }
-        /* The minted invite: a "Copy invite link" control that reads as part of
-           the pill — a plain `--fab-ink` label + link glyph in the bar's own
-           font, no button chrome, so it matches the bar's other labels. (The
-           <wa-copy-button> defaults its host colour to a quiet neutral grey,
-           invisible on the inverted pill, and its `button` part to a padded
-           icon-button; both are overridden below. Part styles from this outer
-           tree win over the component's own `.button` rules regardless of
-           specificity.) The button still carries the real absolute join URL and
-           copies it on click, briefly swapping to "Copied!"; the raw token is
-           never shown. */
-        .fab__invite { color: var(--fab-ink); }
-        /* Suppress the copy button's built-in hover tooltip. The visible label
-           already reads "Copy invite link", so the popup (the copy-label,
-           rendered by an internal <wa-tooltip> exported as `tooltip__base`) is
-           redundant. */
-        .fab__invite::part(tooltip__base) { display: none; }
-        .fab__invite::part(button) {
-          padding: 0;
-          border-radius: 0;
-          color: var(--fab-ink);
-          background: transparent;
-          transition: opacity 0.15s ease;
-        }
-        .fab__invite::part(button):hover {
-          background: transparent;
-          opacity: 0.7;
-        }
-        /* Icon + label sit inline within each state slot (copy / copied). */
-        .fab__invite-label {
           display: inline-flex;
           align-items: center;
-          line-height: 1;
           gap: 6px;
           white-space: nowrap;
-          /* Slotted into <wa-copy-button>, so it inherits WebAwesome's body
-             font (not the FAB's) — pin it back to the FAB face. */
-          font-family: "IBM Plex Sans Condensed", var(--wa-font-family-heading, sans-serif);
         }
-        /* The "Copied!" success state. WebAwesome tints its success slot green
-           (`var(--wa-color-success-on-quiet)`), tuned for a light background and
-           illegible on the inverted dark pill. These labels are OUR slotted
-           light-DOM spans, so recolour them directly (an explicit colour beats
-           the slot's inherited green): a green-tinted ink that still reads as
-           success but stays legible in both themes (the ink inverts with the
-           page, the green tint rides along). */
-        .fab__invite [slot="success-icon"] {
+        .fab__share-trigger:hover { opacity: 0.7; }
+        /* One label per state, exactly one shown. `<tonk-share>` stamps
+           `data-share-state` on itself; these rules reach down into the button's
+           labels, which live in a light-DOM view (core.yaml's `tonk:repository`
+           directory view), so the selector crosses no shadow boundary.
+
+           IDLE IS THE DEFAULT, and it is styled with no `tonk-share` in the
+           selector at all. So the button reads "share" even if `<tonk-share>`
+           never upgrades — a stale bundle, a wasm that failed to load, the
+           moment before registration. Keying idle off the element instead (e.g.
+           `tonk-share:not([data-share-state])`) hides EVERY label in exactly
+           those cases, leaving a blank button. */
+        .fab__share-label--idle {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .fab__share-label--copying,
+        .fab__share-label--copied,
+        .fab__share-label--failed { display: none; }
+        /* Once a state is stamped, that state's label replaces idle. */
+        tonk-share[data-share-state="copying"] .fab__share-label--idle,
+        tonk-share[data-share-state="copied"] .fab__share-label--idle,
+        tonk-share[data-share-state="failed"] .fab__share-label--idle { display: none; }
+        tonk-share[data-share-state="copying"] .fab__share-label--copying,
+        tonk-share[data-share-state="copied"] .fab__share-label--copied,
+        tonk-share[data-share-state="failed"] .fab__share-label--failed {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
+        /* In flight: the click landed and the mint is running. Dim + a spinner,
+           and no pointer — a second click is dropped by the element anyway (it
+           would rotate the credential out from under the pending copy), so the
+           cursor shouldn't invite one. */
+        tonk-share[data-share-state="copying"] .fab__share-trigger {
+          cursor: default;
+          opacity: 0.7;
+        }
+        .fab__share-spinner {
+          width: 0.85em;
+          height: 0.85em;
+          border: 2px solid color-mix(in oklab, var(--fab-ink) 30%, transparent);
+          border-top-color: var(--fab-ink);
+          border-radius: 50%;
+          animation: fab-share-spin 0.6s linear infinite;
+        }
+        @keyframes fab-share-spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+          .fab__share-spinner { animation-duration: 2.4s; }
+        }
+        /* Copied. A green-tinted ink that still reads as success but stays
+           legible on the inverted pill in both themes (the ink inverts with the
+           page, the green tint rides along). Reverts to "share" on its own after
+           a beat — the control never latches. */
+        tonk-share[data-share-state="copied"] .fab__share-trigger {
           color: color-mix(in oklab, var(--fab-ink) 68%, #3ddc84);
+        }
+        tonk-share[data-share-state="failed"] .fab__share-trigger {
+          color: color-mix(in oklab, var(--fab-ink) 68%, #ff6b6b);
         }
         /* The member roster dropdown — anchored to the share zone's RIGHT edge
            (the repo switcher anchors left). Inherits `.fab__menu`'s transparent
