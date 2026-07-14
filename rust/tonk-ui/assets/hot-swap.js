@@ -19,6 +19,11 @@
 
 ;(async () => {
   const LIBRARY_URL = "/library/core.yaml"
+  // The profile branch's own library — the Hub view and the FAB chrome. It is
+  // seeded onto the profile's meta branch, NOT the space content branch, so a
+  // core.yaml reseed never reaches it. Without reseeding this too, every
+  // profile.yaml edit needs the profile recreated to be seen.
+  const PROFILE_LIBRARY_URL = "/library/profile.yaml"
 
   // Pill label glyphs: a recycle mark for an in-place standard-library
   // reseed (live update, no reload), an eject mark for a full page
@@ -382,10 +387,32 @@
   // signal is a real rebuild (reload); an unchanged hash means only
   // an asset moved (trunk fires a generic `reload` for any pipeline
   // run, so we can't trust the signal alone).
+  // The served library text. BOTH documents are fetched and joined, because
+  // this string is what the change signal hashes: keying only on core.yaml
+  // would leave a profile.yaml-only edit undetected, so the FAB chrome would
+  // never reseed. `reseed` splits it back apart and sends each half to the
+  // branch it belongs on.
+  const LIBRARY_SEPARATOR = "\n#--- hot-swap: profile library ---\n"
   const fetchLibrary = async () => {
-    const response = await fetch(LIBRARY_URL, { cache: "no-store" })
-    if (!response.ok) throw new Error(`GET ${LIBRARY_URL} -> ${response.status}`)
-    return await response.text()
+    const [core, profile] = await Promise.all(
+      [LIBRARY_URL, PROFILE_LIBRARY_URL].map(async (url) => {
+        const response = await fetch(url, { cache: "no-store" })
+        if (!response.ok) throw new Error(`GET ${url} -> ${response.status}`)
+        return await response.text()
+      }),
+    )
+    return core + LIBRARY_SEPARATOR + profile
+  }
+  // Split a joined library back into `{ core, profile }`. Tolerates an older
+  // cached string with no separator (all of it is core).
+  const splitLibrary = (library) => {
+    const at = library.indexOf(LIBRARY_SEPARATOR)
+    return at === -1
+      ? { core: library, profile: null }
+      : {
+          core: library.slice(0, at),
+          profile: library.slice(at + LIBRARY_SEPARATOR.length),
+        }
   }
   // The previously-cached library — what was served (and applied) on
   // the last load. `force-cache` returns the cached copy without
@@ -394,19 +421,28 @@
   // fresh), so a reload picks up bootstrap edits made while away.
   const cachedLibrary = async () => {
     try {
-      const response = await fetch(LIBRARY_URL, { cache: "force-cache" })
-      if (!response.ok) return null
-      return await response.text()
+      const parts = await Promise.all(
+        [LIBRARY_URL, PROFILE_LIBRARY_URL].map(async (url) => {
+          const response = await fetch(url, { cache: "force-cache" })
+          return response.ok ? await response.text() : null
+        }),
+      )
+      if (parts.some((part) => part === null)) return null
+      return parts.join(LIBRARY_SEPARATOR)
     } catch (_) {
       return null
     }
   }
-  // Prime the HTTP cache with the current served library so the next
+  // Prime the HTTP cache with the current served libraries so the next
   // load's `cachedLibrary()` reflects what we just applied (otherwise
   // it would re-detect the same change and reseed every load).
   const primeLibraryCache = async () => {
     try {
-      await fetch(LIBRARY_URL, { cache: "reload" })
+      await Promise.all(
+        [LIBRARY_URL, PROFILE_LIBRARY_URL].map((url) =>
+          fetch(url, { cache: "reload" }),
+        ),
+      )
     } catch (_) {
       // Non-fatal: a failed prime just means an extra reseed next load.
     }
@@ -440,8 +476,20 @@
       return
     }
 
+    // The PROFILE branch carries a DIFFERENT library: `profile.yaml` (the Hub
+    // and the FAB chrome), not `core.yaml`. Seeding core.yaml there would leave
+    // every FAB edit unreachable until the profile was recreated — which is
+    // exactly what it used to mean.
+    const { core, profile } = splitLibrary(library)
+    const libraryFor = (branch) =>
+      branch.getAttribute("with").includes("@profile:") ? profile : core
+
     for (const branch of branches) {
-      const detail = { document: library }
+      const document = libraryFor(branch)
+      // An older cached string may carry no profile half; skip rather than
+      // seed `null` onto the profile branch.
+      if (!document) continue
+      const detail = { document }
       const event = new CustomEvent("tonk-evaluate", {
         detail,
         bubbles: true,
