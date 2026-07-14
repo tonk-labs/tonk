@@ -44,6 +44,26 @@ async fn upstream_revision(test: &TestSite) -> Result<Option<Revision>> {
     Ok(upstream.revision())
 }
 
+mod when_checking_for_an_upstream {
+    use super::*;
+    use tonk_cli::remote;
+
+    #[dialog_common::test]
+    async fn it_reports_whether_main_tracks_an_upstream() -> Result<()> {
+        let test = TestSite::new().await?;
+        assert!(
+            !remote::upstream_configured(&test.site).await?,
+            "a fresh site has no upstream"
+        );
+        wire_sibling_upstream(&test).await?;
+        assert!(
+            remote::upstream_configured(&test.site).await?,
+            "wiring an upstream flips the check"
+        );
+        Ok(())
+    }
+}
+
 mod when_evaluating_with_an_upstream {
     use super::*;
 

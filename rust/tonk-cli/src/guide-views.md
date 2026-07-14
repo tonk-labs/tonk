@@ -200,7 +200,7 @@ page!: &about
     <h1>About</h1>
 ```
 
-`tonk views` lists every entity carrying a `text/html` claim;
+`tonk view ls` lists every entity carrying a `text/html` claim;
 `tonk share view <name>` opens it in the iframe viewer. The viewer
 shell does not register `<tonk-display>`, so events won't fire there —
 use `tonk share display` for interactive, data-bound views.
@@ -208,5 +208,5 @@ use `tonk share display` for interactive, data-bound views.
 ---
 
 For interactivity (clicks, forms) see `tonk guide events`. Don't
-memorize built-ins — run `tonk schema` / `tonk concepts` /
-`tonk views` to see what's on the branch.
+memorize built-ins — run `tonk schema` / `tonk concept ls` /
+`tonk view ls` to see what's on the branch.

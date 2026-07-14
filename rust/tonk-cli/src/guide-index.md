@@ -31,15 +31,15 @@ quote every string literal (`name: "alice"`, not `name: alice`).
 
 1. Discover what's already on the branch — don't guess or memorize:
    - `tonk schema [<concept>]` — attributes and concepts, as re-submittable notation
-   - `tonk concepts` — user-defined concepts (name + description)
-   - `tonk views`    — entities carrying a renderable claim
+   - `tonk concept ls` — user-defined concepts (name + description)
+   - `tonk view ls`    — entities carrying a renderable claim
 2. Define schema: `tonk concept add <name> --attr <field>:<type>:<card> …`
    (types enumerate on a miss; `one`/`many` cardinality). The concept is
    immediately usable: `tonk assert <name> --help` shows its typed flags.
 3. Work the data with the argument verbs (each write auto-syncs):
    - `tonk assert <concept> --<field> <value> …`          — mint an instance
    - `tonk assert <concept> <entity> --<field> <value> …` — supersede fields
-   - `tonk query <concept>` / `tonk get <concept> <entity>` — read (`--json`)
+   - `tonk query <concept> [<entity>]` — read all or one (`--json`)
    - `tonk retract <concept> <entity> [--field <f>]`      — retract claims
 4. Give it a view and put it on the space home — a build nobody can see
    isn't done:

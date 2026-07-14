@@ -33,7 +33,7 @@ use tonk_cli::{ExitCode, guide, identity, schema, site};
     about = "Headless CLI for a datalog-flavoured, syncable fact store: define concepts, assert facts, query them, render views",
     version,
     propagate_version = true,
-    after_help = "The loop: orient, define concepts, assert facts, give them a view, share.\n\n  orient   guide · schema · concepts · views · status\n  author   concept add · view add · home\n  data     assert · query · get · retract\n  power    eval (asserted-notation) · render\n  collab   share · invite · join · push · pull · remote\n  setup    init · identity · blob · export · import · migrate · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
+    after_help = "The loop: orient, define concepts, assert facts, give them a view, share.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   share · invite · join · push · pull · remote\n  setup    init · blob · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -75,22 +75,6 @@ enum Command {
         #[arg(value_name = "CONCEPT")]
         concept: Option<String>,
     },
-
-    /// List user-defined concepts on the branch
-    ///
-    /// One row per concept, tab-separated `name<TAB>description`.
-    /// Built-in concepts (`attribute`, `concept`, …) are omitted —
-    /// they're resolvable everywhere and would just be noise.
-    #[command(after_help = "Examples:\n  tonk concepts")]
-    Concepts,
-
-    /// List renderable entities (those carrying a text/html claim)
-    ///
-    /// One row per entity, tab-separated `name<TAB>entity<TAB>bytes`.
-    /// Claim-driven: surfaces anything the host route would serve,
-    /// regardless of how the claim was asserted.
-    #[command(after_help = "Examples:\n  tonk views")]
-    Views,
 
     /// Report how local main relates to its upstream
     ///
@@ -159,32 +143,23 @@ enum Command {
         rest: Vec<String>,
     },
 
-    /// Read every instance of a concept, every field bound
+    /// Read instances of a concept, every field bound
     ///
-    /// Reads are queries in dialog. Read-only; nothing commits.
-    /// Filter flags (e.g. `--where`) are the intended future
-    /// direction; today the whole concept is returned.
-    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
+    /// With no entity, every instance; with an entity, just that
+    /// one. Reads are queries in dialog — read-only, nothing
+    /// commits. Filter flags (e.g. `--where`) are the intended
+    /// future direction; today the whole concept is returned.
+    #[command(
+        after_help = "Examples:\n  tonk query task\n  tonk query task alice\n  tonk query task --json"
+    )]
     Query {
         /// Name of the concept to query.
         #[arg(value_name = "CONCEPT")]
         concept: String,
-        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Read one instance of a concept by entity
-    ///
-    /// Every field bound. Read-only — the query commits nothing.
-    #[command(after_help = "Examples:\n  tonk get task alice\n  tonk get task alice --json")]
-    Get {
-        /// Name of the concept to fetch from.
-        #[arg(value_name = "CONCEPT")]
-        concept: String,
-        /// Bookmark name or `did:key:…` entity URI of the instance.
+        /// Optional bookmark name or `did:key:…` entity URI —
+        /// fetch just this instance.
         #[arg(value_name = "ENTITY")]
-        entity: String,
+        entity: Option<String>,
         /// Emit `EvaluateResponse` as pretty JSON instead of notation.
         #[arg(long)]
         json: bool,
@@ -302,8 +277,12 @@ enum Command {
     /// Show (or reset) the local profile DID
     ///
     /// With `--reset`, deletes the on-disk profile and creates a
-    /// fresh identity.
-    #[command(after_help = "Examples:\n  tonk identity\n  tonk identity --reset")]
+    /// fresh identity. Hidden from the command list: needed once,
+    /// ever, mostly when debugging delegation.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk identity\n  tonk identity --reset"
+    )]
     Identity {
         /// Wipe the on-disk profile and create a new one. This removes
         /// access to existing repos without re-delegation.
@@ -319,8 +298,12 @@ enum Command {
 
     /// Export local main's artifacts as CSV
     ///
-    /// Writes to stdout unless `--out <file>` is given.
-    #[command(after_help = "Examples:\n  tonk export\n  tonk export --out data.csv")]
+    /// Writes to stdout unless `--out <file>` is given. Hidden
+    /// from the command list: bulk-transfer plumbing.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk export\n  tonk export --out data.csv"
+    )]
     Export {
         /// Write the CSV to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
@@ -329,8 +312,9 @@ enum Command {
 
     /// Import artifacts from a CSV file onto local main
     ///
-    /// Commits each row as an assertion.
-    #[command(after_help = "Examples:\n  tonk import data.csv")]
+    /// Commits each row as an assertion. Hidden from the command
+    /// list: bulk-transfer plumbing.
+    #[command(hide = true, after_help = "Examples:\n  tonk import data.csv")]
     Import {
         /// The CSV file to read (`the,of,as,is,cause` columns).
         #[arg(value_name = "PATH")]
@@ -341,8 +325,12 @@ enum Command {
     ///
     /// Walks up from `$PWD` to find the source unless `--from` is
     /// supplied; the destination is always a sibling `.tonk/` of
-    /// the source.
-    #[command(after_help = "Examples:\n  tonk migrate\n  tonk migrate --from ../old --move")]
+    /// the source. Hidden from the command list: a one-time
+    /// converter for pre-tonk carry sites.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk migrate\n  tonk migrate --from ../old --move"
+    )]
     Migrate {
         /// Explicit source `.carry/` directory. Default: walk up
         /// from `$PWD`.
@@ -401,10 +389,13 @@ enum ShareCommand {
     /// `/space/<space-name>/branch/main/view/<entity>` with the body
     /// served from the entity's `text/html` claim. Events don't fire
     /// there — for interactive, data-bound views use `share display`.
-    #[command(after_help = "Examples:\n  tonk share view my-page")]
+    /// Hidden from the command list for exactly that reason: it's a
+    /// trap next to `share display`, which is what you almost always
+    /// want.
+    #[command(hide = true, after_help = "Examples:\n  tonk share view my-page")]
     View {
         /// Bookmark name or `did:key:…` entity URI for the view.
-        /// `tonk views` lists what's available.
+        /// `tonk view ls` lists what's available.
         #[arg(value_name = "NAME_OR_ENTITY")]
         target: String,
         /// Override the URL prefix the launcher is built against.
@@ -467,7 +458,9 @@ enum RemoteCommand {
     /// Register a UCAN-S3 access-service remote
     ///
     /// Writes the dialog remote handle and the meta-branch
-    /// `Remote` concept browsers read.
+    /// `Remote` concept browsers read. When no upstream is wired
+    /// yet, the new remote becomes `main`'s upstream (an existing
+    /// upstream is never touched — re-point with `set-upstream`).
     #[command(after_help = "Examples:\n  tonk remote add prod https://access.example.com")]
     Add {
         /// Local name for the remote.
@@ -546,6 +539,14 @@ enum ConceptCommand {
         #[arg(long, value_name = "TEXT")]
         description: Option<String>,
     },
+
+    /// List user-defined concepts on the branch
+    ///
+    /// One row per concept, tab-separated `name<TAB>description`.
+    /// Built-in concepts (`attribute`, `concept`, …) are omitted —
+    /// they're resolvable everywhere and would just be noise.
+    #[command(after_help = "Examples:\n  tonk concept ls")]
+    Ls,
 }
 
 #[derive(Subcommand, Debug)]
@@ -576,6 +577,14 @@ enum ViewCommand {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
     },
+
+    /// List renderable entities (those carrying a text/html claim)
+    ///
+    /// One row per entity, tab-separated `name<TAB>entity<TAB>bytes`.
+    /// Claim-driven: surfaces anything the host route would serve,
+    /// regardless of how the claim was asserted.
+    #[command(after_help = "Examples:\n  tonk view ls")]
+    Ls,
 }
 
 #[derive(Args, Debug)]
@@ -650,12 +659,9 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Eval(_) => ("eval", None),
         Command::Guide { .. } => ("guide", None),
         Command::Schema { .. } => ("schema", None),
-        Command::Concepts => ("concepts", None),
         Command::Query { .. } => ("query", None),
-        Command::Get { .. } => ("get", None),
         Command::Assert { .. } => ("assert", None),
         Command::Retract { .. } => ("retract", None),
-        Command::Views => ("views", None),
         Command::Migrate { .. } => ("migrate", None),
         Command::Export { .. } => ("export", None),
         Command::Render { .. } => ("render", None),
@@ -685,12 +691,14 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             "concept",
             Some(match command {
                 ConceptCommand::Add { .. } => "add",
+                ConceptCommand::Ls => "ls",
             }),
         ),
         Command::View { command } => (
             "view",
             Some(match command {
                 ViewCommand::Add { .. } => "add",
+                ViewCommand::Ls => "ls",
             }),
         ),
         Command::Home { .. } => ("home", None),
@@ -741,20 +749,20 @@ async fn main() {
         Command::Eval(args) => eval(args).await,
         Command::Guide { topic } => print_guide(topic.as_deref()),
         Command::Schema { concept } => print_schema(concept).await,
-        Command::Concepts => print_concepts().await,
-        Command::Query { concept, json } => query_op(concept, json).await,
-        Command::Get {
+        Command::Query {
             concept,
             entity,
             json,
-        } => get_op(concept, entity, json).await,
+        } => match entity {
+            Some(entity) => get_op(concept, entity, json).await,
+            None => query_op(concept, json).await,
+        },
         Command::Assert { concept, rest } => assert_cmd(concept, rest).await,
         Command::Retract {
             concept,
             entity,
             field,
         } => retract_op(concept, entity, field).await,
-        Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
         Command::Render { route, out } => render_op(route, out).await,
@@ -1107,7 +1115,35 @@ async fn remote_op(command: RemoteCommand) -> ExitCode {
             match remote::add(&site, &name, &url, subject).await {
                 Ok(outcome) => {
                     print_remote_add_outcome(&outcome);
-                    ExitCode::Success
+                    // A first remote with no upstream wired is a
+                    // foot-gun (writes only auto-sync once an
+                    // upstream exists), and add-then-set-upstream is
+                    // nearly always performed together — so the
+                    // first remote becomes the upstream by default.
+                    // An existing upstream is never touched.
+                    match remote::upstream_configured(&site).await {
+                        Ok(true) => ExitCode::Success,
+                        Ok(false) => match remote::set_upstream(&site, &name).await {
+                            Ok(upstream) => {
+                                print_set_upstream_outcome(&upstream);
+                                ExitCode::Success
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "error: remote added, but wiring it as the upstream \
+                                     failed: {err}\nretry with `tonk remote set-upstream {name}`"
+                                );
+                                err.exit_code()
+                            }
+                        },
+                        Err(err) => {
+                            eprintln!(
+                                "error: remote added, but checking the upstream failed: {err}\n\
+                                 wire it manually with `tonk remote set-upstream {name}`"
+                            );
+                            err.exit_code()
+                        }
+                    }
                 }
                 Err(err) => {
                     eprintln!("error: {err}");
@@ -1477,16 +1513,10 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
     }
 }
 
-async fn print_concepts() -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
-    };
-    let concepts = match schema::list_concepts(&site).await {
+/// List user-defined concepts (`tonk concept ls`), one
+/// tab-separated `name<TAB>description` row per concept.
+async fn list_concepts_op(site: &site::TonkSite) -> ExitCode {
+    let concepts = match schema::list_concepts(site).await {
         Ok(c) => c,
         Err(err) => return print_error(err.to_string()),
     };
@@ -1645,6 +1675,7 @@ async fn concept_op(command: ConceptCommand) -> ExitCode {
                 err.exit_code()
             }
         },
+        ConceptCommand::Ls => list_concepts_op(&site).await,
     }
 }
 
@@ -1701,6 +1732,7 @@ async fn view_op(command: ViewCommand) -> ExitCode {
                 }
             }
         }
+        ViewCommand::Ls => list_views_op(&site).await,
     }
 }
 
@@ -1731,16 +1763,10 @@ async fn home_op(models: Vec<String>) -> ExitCode {
     }
 }
 
-async fn print_views() -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
-    };
-    let listed = match views::list(&site).await {
+/// List renderable entities (`tonk view ls`), one tab-separated
+/// `name<TAB>entity<TAB>bytes` row per `text/html` claim carrier.
+async fn list_views_op(site: &site::TonkSite) -> ExitCode {
+    let listed = match views::list(site).await {
         Ok(v) => v,
         Err(err) => return print_error(err.to_string()),
     };
