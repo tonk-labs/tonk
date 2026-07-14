@@ -774,6 +774,11 @@ pub mod tests {
         /// The base58 membership seed the worker minted, read back from the
         /// session overlay via the `tonk:invitation` join.
         seed: [u8; 32],
+        /// The finished invite URL the handler assembled — what the share
+        /// view renders and the user copies. Read back from the overlay, so
+        /// tests can assert on the handler's ACTUAL output rather than on a
+        /// URL they reassembled from parts themselves.
+        link: String,
     }
 
     /// PUT a fresh repo and return both its routing key and subject DID.
@@ -857,19 +862,22 @@ pub mod tests {
 
         // Dispatch runs post-commit; poll the `tonk:invitation` join keyed
         // by the repo subject — `access`/`remote` from the durable
-        // authorization, `code` (the seed) from the session overlay.
+        // authorization, `code` (the seed) and `link` (the assembled URL)
+        // from the session overlay.
         for _ in 0..50 {
             let q = serde_json::json!({
                 "terms": {
                     "this": subject,
                     "access": { "?": { "name": "access" } },
                     "remote": { "?": { "name": "remote" } },
-                    "code": { "?": { "name": "code" } }
+                    "code": { "?": { "name": "code" } },
+                    "link": { "?": { "name": "link" } }
                 },
                 "predicate": { "with": {
                     "access": { "the": "xyz.tonk.authorization/proof", "as": "Text", "cardinality": "one" },
                     "remote": { "the": "xyz.tonk.authorization/remote", "as": "Text", "cardinality": "one" },
-                    "code": { "the": "xyz.tonk.credential/seed", "as": "Text", "cardinality": "one" }
+                    "code": { "the": "xyz.tonk.credential/seed", "as": "Text", "cardinality": "one" },
+                    "link": { "the": "xyz.tonk.credential/link", "as": "Text", "cardinality": "one" }
                 } }
             });
             let r = app
@@ -900,10 +908,13 @@ pub mod tests {
                     .as_slice()
                     .try_into()
                     .expect("overlay seed must be 32 bytes");
+                let link = row["fields"]["link"].as_str().unwrap_or_default();
+                assert!(!link.is_empty(), "invitation has empty link");
                 return MintedInvite {
                     access: access.to_owned(),
                     remote: remote.to_owned(),
                     seed,
+                    link: link.to_owned(),
                 };
             }
             // Yield to the microtask queue so the detached dispatch future
@@ -924,11 +935,12 @@ pub mod tests {
         assert!(!minted.access.is_empty());
     }
 
-    /// The minted credential seed lives in the session overlay only — it
-    /// must never reach durable storage. Proof: after the overlay is
-    /// cleared (which drops only in-memory facts, never touching the
-    /// branch tree), the credential seed is gone but the durably-committed
-    /// authorization proof remains.
+    /// The minted credential lives in the session overlay only — it must
+    /// never reach durable storage. That covers both the seed and the
+    /// assembled invite `link`, which carries the seed in its `#` fragment
+    /// and so is exactly as secret. Proof: after the overlay is cleared
+    /// (which drops only in-memory facts, never touching the branch tree),
+    /// both are gone but the durably-committed authorization proof remains.
     #[dialog_common::test]
     async fn it_keeps_the_credential_seed_out_of_storage() {
         let state = test_state().await;
@@ -985,12 +997,19 @@ pub mod tests {
 
         let proof = read(query("xyz.tonk.authorization/proof", "proof")).await;
         let seed = read(query("xyz.tonk.credential/seed", "seed")).await;
+        let link = read(query("xyz.tonk.credential/link", "link")).await;
 
         assert_eq!(proof.len(), 1, "authorization proof must be durable");
         assert_eq!(
             seed.len(),
             0,
             "credential seed must be overlay-only, never persisted (got {seed:?})",
+        );
+        assert_eq!(
+            link.len(),
+            0,
+            "invite link carries the seed in its fragment, so it must be \
+             overlay-only too, never persisted (got {link:?})",
         );
     }
 
@@ -1043,6 +1062,52 @@ pub mod tests {
         assert!(
             body["repository"]["subject"].is_string(),
             "a successful join must return the claimed repository's subject: {body}",
+        );
+    }
+
+    /// The URL the handler actually minted — the one the share view renders
+    /// and the user copies — is itself redeemable.
+    ///
+    /// The sibling test above rebuilds the URL from the stored `access` +
+    /// `seed`, so it would still pass if `link` were malformed or empty.
+    /// This one joins through `link` verbatim, closing that gap: it is the
+    /// only test that fails if the mint hands the user a broken link.
+    ///
+    /// It also pins the shortening fallback. The harness's worker scope
+    /// reports no `location.origin` and there is no shortcut service, so the
+    /// mint takes the no-origin path and shortening never happens — and that
+    /// fallback must still yield a *working* invite, not a degraded one. The
+    /// origin branch is covered by `it_builds_the_invite_url_on_the_worker_origin`
+    /// in `repository.rs`, which drives the URL builder directly.
+    #[dialog_common::test]
+    async fn it_joins_through_the_minted_link() {
+        let state = test_state().await;
+        let (app, _state, _lsp) = super::api_router_with_state(state);
+        let minted = mint_invite_via_command(&app, "invite-link-join").await;
+
+        // The seed rides in the fragment, never the query.
+        let seed = bs58::encode(minted.seed).into_string();
+        assert!(
+            minted.link.ends_with(&format!("#{seed}")),
+            "the minted link must carry the seed as its fragment: {}",
+            minted.link,
+        );
+        assert!(
+            minted.link.contains(&format!("access={}", minted.access)),
+            "the minted link must carry the delegation chain: {}",
+            minted.link,
+        );
+
+        // Redeem the handler's own URL, unmodified.
+        let (status, body) = post_join(&app, &minted.link).await;
+        assert!(
+            status.is_success(),
+            "the minted link must redeem, got {status}: {body}",
+        );
+        let outcome = body["outcome"].as_str().unwrap_or_default();
+        assert!(
+            outcome == "joined" || outcome == "renewed",
+            "expected a joined/renewed outcome from the minted link, got {outcome:?}: {body}",
         );
     }
 

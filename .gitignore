@@ -67,3 +67,4 @@ tmp/**
 temp/**
 .plans/**
 .claude/scheduled_tasks.lock
+.Trunk.dev.toml

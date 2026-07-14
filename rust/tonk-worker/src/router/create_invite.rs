@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience};
+use tonk_invite::{Invite, InviteAudience, shortcut::ShortcutRequest};
 use tonk_schema::Invitation;
 use url::Url;
 
@@ -212,6 +212,24 @@ pub async fn create_invite(
     let url_str = invite
         .to_url(base_url)
         .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
+
+    // Shorten against the link's own origin — the only origin that can
+    // serve the relative redirect back — when the caller supplied it
+    // (the UI always sends `window.origin`). The long URL is fully
+    // functional, so a failed PUT degrades to it rather than failing
+    // the mint. The hardcoded default base is never PUT to, keeping
+    // tests and offline mints network-free.
+    let url_str = if request.base_url.is_some() {
+        match shorten(&url_str).await {
+            Ok(short) => short,
+            Err(e) => {
+                log!("invite shortcut failed; using the full URL: {e}");
+                url_str
+            }
+        }
+    } else {
+        url_str
+    };
     let url = Url::parse(&url_str).map_err(|e| {
         TonkWorkerError::Internal(format!(
             "invite URL serializer produced an unparseable value: {e}"
@@ -232,6 +250,80 @@ pub async fn create_invite(
         },
     };
     Ok(Json(response))
+}
+
+/// Shorten a minted invite URL via the shortcut service on its own
+/// origin: PUT the path + query, assemble `{origin}/@/{hash}` with the
+/// seed fragment re-attached (the fragment never goes on the wire).
+///
+/// Shared with the `tonk:invite` command handler in [`super::repository`],
+/// the other mint path, so both shorten identically.
+pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
+    let request = ShortcutRequest::new(url)
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to derive shortcut: {e}")))?;
+    let hash = put_shortcut(request.endpoint.as_str(), request.target.clone()).await?;
+    request
+        .short_url(&hash)
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble short URL: {e}")))
+}
+
+/// PUT a shortcut target, returning the hash the service responds with.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestInit, Response};
+
+    let init = RequestInit::new();
+    init.set_method("PUT");
+    init.set_body(&target.into());
+    let request = Request::new_with_str_and_init(endpoint, &init)
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut request: {e:?}")))?;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut PUT: {e:?}")))?;
+    if !response.ok() {
+        return Err(TonkWorkerError::Internal(format!(
+            "shortcut PUT returned HTTP {}",
+            response.status()
+        )));
+    }
+    let text = JsFuture::from(
+        response
+            .text()
+            .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e:?}")))?;
+    text.as_string()
+        .ok_or_else(|| TonkWorkerError::Internal("shortcut response is not a string".to_owned()))
+}
+
+/// PUT a shortcut target, returning the hash the service responds with.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWorkerError> {
+    let response = reqwest::Client::new()
+        .put(endpoint)
+        .body(target)
+        .send()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut PUT: {e}")))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(TonkWorkerError::Internal(format!(
+            "shortcut PUT returned HTTP {status}: {detail}"
+        )));
+    }
+    response
+        .text()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e}")))
 }
 
 /// Probe `main`'s upstream and, when it points at a remote, pull the

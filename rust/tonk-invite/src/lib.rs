@@ -28,6 +28,8 @@
 //! [`Subject::Specific`]: dialog_ucan_core::subject::Subject::Specific
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
+pub mod shortcut;
+
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::{Scope, UcanProof};

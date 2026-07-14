@@ -114,6 +114,58 @@ mod when_managing_remotes {
     }
 }
 
+mod when_shortening_an_invite {
+    #[cfg(feature = "integration-tests")]
+    use anyhow::Result;
+    #[cfg(feature = "integration-tests")]
+    use tonk_access_service::helpers::AccessServiceAddress;
+    #[cfg(feature = "integration-tests")]
+    use tonk_cli::invite;
+    #[cfg(feature = "integration-tests")]
+    use tonk_cli::remote;
+
+    #[cfg(feature = "integration-tests")]
+    use crate::common;
+
+    /// Full loop against a live local shortcut service: mint the long
+    /// URL, shorten it (`PUT /@` on the link's own origin), then claim
+    /// the short link — the claim resolves the 301 by hand, splicing
+    /// the seed fragment back on the way a browser would.
+    #[dialog_common::test]
+    async fn it_shortens_and_claims_a_minted_invite(env: AccessServiceAddress) -> Result<()> {
+        let endpoint = env.access_service_url.as_str();
+        let inviter = common::TestSite::new().await?;
+        remote::add(&inviter.site, "origin", endpoint, None).await?;
+
+        let base = format!("{endpoint}/join");
+        let outcome = invite::mint(&inviter.site, Some(&base), Some(endpoint)).await?;
+        assert!(
+            outcome.url.contains("access="),
+            "long form: {}",
+            outcome.url
+        );
+
+        let short = invite::shorten(&outcome.url).await?;
+        assert!(
+            short.starts_with(&format!("{endpoint}/@/")),
+            "short form on the link's origin: {short}"
+        );
+        assert!(short.contains('#'), "seed fragment survives: {short}");
+        assert!(
+            !short.contains("access="),
+            "chain stays off the link: {short}"
+        );
+
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_config = common::isolated_config(&claimer_parent)?;
+        let claim_outcome = invite::claim(&claimer_parent, &short, claimer_config).await?;
+        assert_eq!(claim_outcome.subject, inviter.site.repository.did());
+        assert!(claim_outcome.remote_url.is_some());
+        Ok(())
+    }
+}
+
 mod when_claiming_an_invite_with_a_remote {
     use anyhow::Result;
     use tonk_cli::invite;

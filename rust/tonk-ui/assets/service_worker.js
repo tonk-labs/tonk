@@ -75,6 +75,20 @@ self.onactivate = event => {
 // browser side resumes via the existing reconnect loop against
 // the new worker.
 self.registration.addEventListener?.("updatefound", async () => {
+    // The event fires on the REGISTRATION, so every worker running this script
+    // hears it — including the newly-installing worker, about its own arrival.
+    // Only the OUTGOING worker may act on it: `onupdatefound` stops all sync
+    // work, and that flag is never cleared (a retiring worker must not re-arm
+    // `waitUntil`, or it pins itself in `waiting`). A new worker that ran it
+    // would latch itself off and then go on to serve the page while refusing
+    // every sync drain for the rest of its life.
+    //
+    // `registration.installing` is the incoming worker. If that is us, this is
+    // our own birth announcement, not our eviction notice.
+    if (self.serviceWorker && self.registration.installing === self.serviceWorker) {
+        log("Update found — that is us installing; staying live");
+        return;
+    }
     log("Update found — forwarding to wasm worker");
     try {
       const worker = await activateWorker();
@@ -261,6 +275,17 @@ async function serveAsset(event) {
 // which owns the guest rewrite and the resource cache.
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // Shortcut-service routes (`PUT /@`, `GET /@/{hash}`) belong to
+    // the edge worker, not this one. Not intercepting at all is the
+    // point: the edge answers `GET /@/{hash}` with a relative 301
+    // that the browser must follow natively so the short link's
+    // `#fragment` (an invite's seed) carries over to the target via
+    // RFC 7231 fragment inheritance. Serving the shell here would
+    // swallow the redirect for any user who already has this worker
+    // installed.
+    if (path === "/@" || path.startsWith("/@/")) {
+        return;
+    }
     if (event.request.mode === "navigate") {
         // `/api/*` navigations are real data-plane requests, not SPA
         // routes — a user visiting e.g. `/api/migrate/...` directly, or

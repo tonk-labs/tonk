@@ -20,6 +20,7 @@ use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::{Did, Principal};
 use thiserror::Error;
+use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::{Invitation, InvitedVia, Membership};
 use url::Url;
@@ -198,6 +199,17 @@ pub async fn claim(
         return Err(InviteError::SiteAlreadyExists(root));
     }
 
+    // Short links (`/@/{hash}#seed`) resolve to the long form first —
+    // the browser gets this from the 301 + fragment inheritance; here
+    // it's done by hand.
+    let resolved;
+    let invite_url = if is_shortcut(invite_url) {
+        resolved = resolve_shortcut(invite_url).await?;
+        resolved.as_str()
+    } else {
+        invite_url
+    };
+
     let invite = Invite::parse_url(invite_url)
         .await
         .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
@@ -313,6 +325,67 @@ pub async fn claim(
         remote_url,
         auto_configured_remote,
     })
+}
+
+/// Shorten a minted invite URL via the shortcut service on its own
+/// origin: PUT the path + query, assemble `{origin}/@/{hash}` with the
+/// seed fragment re-attached (the fragment never goes on the wire).
+pub async fn shorten(url: &str) -> Result<String, InviteError> {
+    let request = ShortcutRequest::new(url)
+        .map_err(|e| InviteError::Io(format!("failed to derive shortcut: {e}")))?;
+    let response = reqwest::Client::new()
+        .put(request.endpoint.clone())
+        .body(request.target.clone())
+        .send()
+        .await
+        .map_err(|e| InviteError::Io(format!("shortcut PUT failed: {e}")))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(InviteError::Io(format!(
+            "shortcut PUT returned HTTP {status}: {detail}"
+        )));
+    }
+    let hash = response
+        .text()
+        .await
+        .map_err(|e| InviteError::Io(format!("shortcut response: {e}")))?;
+    request
+        .short_url(&hash)
+        .map_err(|e| InviteError::Io(format!("failed to assemble short URL: {e}")))
+}
+
+/// Resolve a short link to the long invite URL it redirects to,
+/// re-attaching the fragment the way a browser would.
+async fn resolve_shortcut(short_url: &str) -> Result<String, InviteError> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| InviteError::Io(format!("failed to build HTTP client: {e}")))?;
+    let response = client
+        .get(short_url)
+        .send()
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to resolve invite link: {e}")))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(InviteError::InvalidInvite(
+            "invite link not found; it may have been mistyped or removed".to_owned(),
+        ));
+    }
+    if !response.status().is_redirection() {
+        return Err(InviteError::InvalidInvite(format!(
+            "invite link did not redirect (HTTP {})",
+            response.status()
+        )));
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            InviteError::InvalidInvite("invite link redirect carries no Location".to_owned())
+        })?;
+    resolve_location(short_url, location).map_err(|e| InviteError::InvalidInvite(e.to_string()))
 }
 
 /// Generate an ephemeral Ed25519 signer with an extractable

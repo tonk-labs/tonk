@@ -1154,7 +1154,14 @@ async fn mint_invite(base_url: String, remote_name: Option<String>) -> ExitCode 
     };
 
     match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
+            // Shorten against the link's own origin; the long URL is
+            // fully functional, so an unreachable shortcut service
+            // (offline, dev base) degrades with a warning.
+            match invite::shorten(&outcome.url).await {
+                Ok(short) => outcome.url = short,
+                Err(err) => eprintln!("warning: could not shorten the invite URL: {err}"),
+            }
             print_invite_outcome(&outcome);
             ExitCode::Success
         }

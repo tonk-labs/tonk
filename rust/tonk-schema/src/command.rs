@@ -259,10 +259,11 @@ pub struct Authorization {
 }
 
 /// The overlay-only fact a `tonk:invite` handler asserts: the private
-/// seed of the membership keypair, **keyed by the membership DID**
-/// (`this`). Asserted into the reactor's session overlay — never written
-/// to the branch tree, never replicated — so the secret stays out of
-/// storage while remaining queryable by the share view.
+/// seed of the membership keypair and the finished invite URL built from
+/// it, **keyed by the membership DID** (`this`). Asserted into the
+/// reactor's session overlay — never written to the branch tree, never
+/// replicated — so the secrets stay out of storage while remaining
+/// queryable by the share view.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Credential {
     /// The membership DID — the same entity its [`Authorization`] is
@@ -270,6 +271,9 @@ pub struct Credential {
     pub this: Entity,
     /// The base58 ed25519 seed (`#` fragment).
     pub seed: crate::domain::credential::Seed,
+    /// The complete invite URL, shortened when the shortcut service
+    /// answered. Carries the seed in its fragment, hence overlay-only.
+    pub link: crate::domain::credential::Link,
 }
 
 /// Request to redeem an invite URL and join its space.

@@ -447,18 +447,31 @@ pub mod authorization {
 }
 
 /// Attributes on the `tonk:credential` concept — the private ed25519
-/// seed of a membership principal. Asserted only into the reactor's
-/// session overlay (never replicated, never written to the branch
-/// tree), so the secret stays out of storage. `tonk:invitation` joins it
-/// with [`authorization`] to assemble the final invite URL.
+/// seed of a membership principal, and the finished invite URL built
+/// from it. Asserted only into the reactor's session overlay (never
+/// replicated, never written to the branch tree), so the secret stays
+/// out of storage. `tonk:invitation` joins it with [`authorization`] so
+/// the share view can render the link.
 pub mod credential {
     use super::Attribute;
 
     /// The base58-encoded ed25519 keypair seed — the `#` fragment of the
-    /// invite URL the view assembles.
+    /// invite URL.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.credential")]
     pub struct Seed(pub String);
+
+    /// The complete invite URL, assembled by the mint handler and
+    /// shortened when the shortcut service answers.
+    ///
+    /// Secret-bearing: the seed rides in its `#` fragment. It belongs on
+    /// this concept precisely because this concept is overlay-only, so
+    /// the URL inherits the same never-replicated guarantee as [`Seed`]
+    /// rather than needing one of its own.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.credential")]
+    #[cardinality(one)]
+    pub struct Link(pub String);
 }
 
 /// Attributes on the overlay-only `tonk:join/status` concept — the state

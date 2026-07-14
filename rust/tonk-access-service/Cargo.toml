@@ -32,6 +32,8 @@ dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 
 # Cryptography
+blake3 = { workspace = true }
+bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }
 
 # Serialization
@@ -43,6 +45,7 @@ getrandom = { workspace = true }
 getrandom_0_2 = { workspace = true }
 # Utilities
 thiserror = { workspace = true }
+url = { workspace = true }
 
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }
@@ -68,6 +71,11 @@ dialog-repository = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
 dialog-ucan-core = { workspace = true }
 futures-util = { workspace = true }
+reqwest = { workspace = true }
+# The client-side glue the mint handler shortens with. Exercised against
+# the real service so the two halves are tested against each other, not
+# against a restatement of the wire format.
+tonk-invite = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }

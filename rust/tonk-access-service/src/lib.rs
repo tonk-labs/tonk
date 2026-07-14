@@ -4,9 +4,13 @@
 //! It receives UCAN invocation containers, verifies them using `UcanAuthorizer`,
 //! and returns pre-signed S3 request descriptors.
 //!
-//! ## Endpoint
+//! ## Endpoints
 //!
 //! - `POST /ucan/` - Authorize a UCAN invocation container
+//! - `PUT /@` - Store a same-origin shortcut target (see the
+//!   [`shortcut`] module)
+//! - `GET /@/{hash}` - Permanent relative redirect to the stored
+//!   target
 //!
 //! ## Request Format
 //!
@@ -30,6 +34,7 @@ use worker::*;
 
 mod error;
 mod handlers;
+pub mod shortcut;
 
 /// Test helpers for integration testing.
 #[cfg(feature = "helpers")]
@@ -48,6 +53,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // UCAN authorization endpoint (with CORS preflight support)
         .options_async("/ucan/", handlers::ucan::handle_options)
         .post_async("/ucan/", handlers::ucan::handle)
+        // Shortcut service: permissionless same-origin link shortening
+        .options_async("/@", handlers::shortcut::handle_options)
+        .put_async("/@", handlers::shortcut::handle_put)
+        .options_async("/@/:hash", handlers::shortcut::handle_options)
+        .get_async("/@/:hash", handlers::shortcut::handle_get)
         // 404 for everything else
         .run(req, env)
         .await

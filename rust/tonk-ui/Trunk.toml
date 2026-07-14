@@ -60,8 +60,10 @@ watch = [
     "../tonk-tree/src",
 ]
 
-# Proxy for /ucan/ is configured via dev:web command.
-# Set UCAN_ENDPOINT env var to override the default.
+# Proxies for /ucan/ and /@ are appended by the dev:web command, which
+# points both at the access service it started (or, for /ucan/, at
+# UCAN_ENDPOINT). Their backend is only known at runtime, and trunk's TOML
+# does not interpolate, so they cannot be written here.
 
 # Serve the user guide at /guide/, matching the path it ships at on the
 # deployed site. The `dev:web` command launches `mdbook serve` on port

@@ -105,4 +105,5 @@ futures-util = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
+tonk-access-service = { workspace = true, features = ["helpers"] }
 wasm-bindgen-test = { workspace = true }
