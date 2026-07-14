@@ -1440,6 +1440,11 @@ fn print_claim_outcome(parent: &std::path::Path, outcome: &ClaimOutcome) {
         && let Some(url) = &outcome.remote_url
     {
         println!("remote:  {name} -> {url}");
+        if outcome.synced {
+            println!("synced:  pulled current state from {name}");
+        } else {
+            println!("synced:  no (run `tonk pull` before making changes)");
+        }
     }
 }
 
