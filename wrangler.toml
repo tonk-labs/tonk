@@ -12,7 +12,7 @@ command = "nix build .#tonk-cloudflare-artifacts"
 directory = "./result/tonk-ui"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
-run_worker_first = ["/@", "/@/*", "/ucan"]
+run_worker_first = ["/@", "/@/*", "/ucan", "/ucan/*"]
 
 [[r2_buckets]]
 binding = "BUCKET"
