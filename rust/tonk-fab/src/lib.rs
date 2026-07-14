@@ -11,10 +11,14 @@ pub mod logic;
 #[cfg(target_arch = "wasm32")]
 mod element;
 
+#[cfg(target_arch = "wasm32")]
+mod share;
+
 /// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
     element::register();
+    share::register();
 }
 
 /// No-op on non-wasm targets (tests / native build checks).

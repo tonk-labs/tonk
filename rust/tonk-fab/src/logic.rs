@@ -718,3 +718,82 @@ mod ratchet {
         assert_eq!(ratchet_min_width(80.0, 120.0, None), None);
     }
 }
+
+/// What the share control is doing, and therefore what it shows.
+///
+/// One click drives the whole cycle: `Idle` → `Copying` (mint in flight, the
+/// clipboard already holding an unresolved promise) → `Copied` → back to
+/// `Idle`. There is no state in which the control sits waiting for a *second*
+/// click to copy — that was the old two-control flow, where minting revealed a
+/// separate copy button that then stayed on the bar forever.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareState {
+    /// Resting: offers to share.
+    Idle,
+    /// A mint is in flight. The clipboard write is already pending on a
+    /// promise this state is waiting to resolve.
+    Copying,
+    /// The link is on the clipboard. Reverts to `Idle` after
+    /// [`COPIED_LINGER_MS`].
+    Copied,
+    /// The mint or the clipboard write failed. Also reverts to `Idle`, so the
+    /// control always returns to offering a retry rather than latching.
+    Failed,
+}
+
+impl ShareState {
+    /// The `data-share-state` attribute value. The view stylesheet keys its
+    /// label/spinner swap off this, so the element owns the state and the
+    /// stylesheet owns the look.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Copying => "copying",
+            Self::Copied => "copied",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Whether a click should start a new mint. A click while one is already
+    /// in flight is dropped: the clipboard holds exactly one pending promise
+    /// and a second mint would rotate the credential out from under it.
+    pub fn accepts_click(self) -> bool {
+        !matches!(self, Self::Copying)
+    }
+
+    /// Whether this state settles back to `Idle` on a timer.
+    pub fn is_transient(self) -> bool {
+        matches!(self, Self::Copied | Self::Failed)
+    }
+}
+
+/// How long the "copied" (or "failed") confirmation stays up before the
+/// control reverts to offering "share" again. Long enough to read, short
+/// enough that the bar doesn't keep showing a stale result.
+pub const COPIED_LINGER_MS: i32 = 2_000;
+
+#[cfg(test)]
+mod share {
+    use super::*;
+
+    #[test]
+    fn it_offers_a_retry_from_every_settled_state() {
+        // Only an in-flight mint refuses a click. Notably `Copied` accepts
+        // one: the link rotates per mint, so a second share is a legitimate
+        // ask, not a double-submit.
+        assert!(ShareState::Idle.accepts_click());
+        assert!(ShareState::Copied.accepts_click());
+        assert!(ShareState::Failed.accepts_click());
+        assert!(!ShareState::Copying.accepts_click());
+    }
+
+    #[test]
+    fn it_settles_only_the_confirmation_states() {
+        // Idle is already the resting state and Copying ends by resolving,
+        // not by timing out — neither is on a revert timer.
+        assert!(ShareState::Copied.is_transient());
+        assert!(ShareState::Failed.is_transient());
+        assert!(!ShareState::Idle.is_transient());
+        assert!(!ShareState::Copying.is_transient());
+    }
+}

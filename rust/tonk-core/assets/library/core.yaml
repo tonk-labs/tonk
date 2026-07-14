@@ -692,18 +692,20 @@ view/fab-roster!:
   display: |
     <span class="fab__menu-item fab__menu-item--member">{name}</span>
 
-# A compact invite-link view kind for the FAB bar. Distinct attribute
+# The FAB bar's invite view kind. Distinct attribute
 # (`xyz.tonk.view/fab-invite`) so `tonk:agent-invite` can carry both its
-# default agent-prompt view AND this compact bar link. Selected via
-# `view=tonk:view/fab-invite`. Renders a single "Copy invite link" button —
-# the raw access token is never shown; the `<wa-copy-button>` carries the
-# real absolute join URL (`{base}?access={access}{remote}#{code}`, `base` =
-# `{origin}/join` from a wrapping `<tonk-origin>`) and copies it on click,
-# briefly swapping its label to "Copied!". Resolves only once both invite
-# halves exist, so the FAB shows the "share" mint button until the mint lands.
+# default agent-prompt view AND this one. Selected via
+# `view=tonk:view/fab-invite`.
+#
+# It renders NOTHING. Minting and copying are one click on the FAB's "share"
+# button (`<tonk-share>`), so there is no second control to render: this view's
+# only job is to carry the minted `link` into the DOM, where the display's
+# `tonk-display:result` event delivers it to `<tonk-share>`, which completes the
+# clipboard write it opened on the click. The profile stylesheet hides the
+# display outright. The raw access token is never rendered.
 concept!: &view/fab-invite
   this: tonk:view/fab-invite
-  description: A compact invite-link view kind for the FAB bar.
+  description: Carries the minted invite link to the FAB's share control.
   with:
     model:
       description: Concept this view renders
@@ -711,19 +713,20 @@ concept!: &view/fab-invite
       cardinality: one
       as: entity
     display:
-      description: HTML template for the FAB compact invite link
+      description: HTML template carrying the minted invite link
       the: xyz.tonk.view/fab-invite
       cardinality: one
       as: text
 
+# Renders the link into a hidden element rather than a control. The display is
+# `display: none` in the FAB, so this is never seen; it exists because a view
+# must render *something* for the display to reach `ready` and dispatch the
+# `tonk-display:result` that hands `{link}` to `<tonk-share>`.
 view/fab-invite!:
   this: id:tonk:agent-invite/fab-invite
   model: tonk:agent-invite
   display: |
-    <wa-copy-button class="fab__invite" style="display: inline-flex; align-items: center; vertical-align: middle;" copy-label="Copy invite link for {name}" value="{link}">
-      <span slot="copy-icon" class="fab__invite-label"><wa-icon name="copy" style="opacity: 0.7;"></wa-icon>copy invite link</span>
-      <span slot="success-icon" class="fab__invite-label"><wa-icon name="check"></wa-icon>copied</span>
-    </wa-copy-button>
+    <span class="fab__invite-link" hidden>{link}</span>
 
 # The FAB share-mint trigger — a no-entity directory view over
 # `tonk:repository`, mounted in the FAB share zone via
@@ -752,7 +755,18 @@ view/directory!:
   model: tonk:repository
   display: |
     <form class="fab__share-form" data-invite="tonk:invite" onsubmit=tonk:invite>
-      <button type="submit" class="fab__share-trigger">share</button>
+      <button type="submit" class="fab__share-trigger">
+        <span class="fab__share-label fab__share-label--idle">share</span>
+        <span class="fab__share-label fab__share-label--copying">
+          <span class="fab__share-spinner"></span>copying…
+        </span>
+        <span class="fab__share-label fab__share-label--copied">
+          <wa-icon name="check"></wa-icon>copied
+        </span>
+        <span class="fab__share-label fab__share-label--failed">
+          <wa-icon name="triangle-exclamation"></wa-icon>failed
+        </span>
+      </button>
     </form>
 
 # NOTE: the FAB's pause affordance is no longer a space-side view. It moved to

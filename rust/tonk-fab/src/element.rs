@@ -105,6 +105,7 @@ impl CustomElement for TonkFab {
             .unwrap_or(false);
         if !already_bound {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
+            inject_scrim(this);
             wrap_telescope_tiles(this);
             attach_drag(this);
             attach_gestures(this);
@@ -142,12 +143,51 @@ impl CustomElement for TonkFab {
     }
 }
 
+/// Inject the click-away curtain: a viewport-covering, invisible click target
+/// that dismisses both dropdowns. It is created here rather than authored in the
+/// view template for two reasons:
+///
+///  - The template renderer drops EMPTY elements, so an authored
+///    `<div class="fab__scrim"></div>` never reaches the DOM.
+///  - It has to be a SIBLING of `.fab`, not a child: `wrap_telescope_tiles`
+///    takes child[0] of `.fab` to be the circle cap, so a scrim nested inside
+///    would be mistaken for it and the real cap would be wrapped as a
+///    collapsible tile.
+///
+/// The stylesheet (profile.yaml) owns the rest: it is `pointer-events: none`
+/// at rest and only becomes a live hit area while a menu is open
+/// (`tonk-fab:has(.is-open)`), so it can never swallow a click on the page
+/// while the bar is idle. Idempotent.
+fn inject_scrim(element: &HtmlElement) {
+    if element
+        .query_selector(".fab__scrim")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(scrim) = document.create_element("div") else {
+        return;
+    };
+    let _ = scrim.set_attribute("class", "fab__scrim");
+    // Before `.fab`, so the bar paints over it and menu rows stay clickable.
+    let _ = element.insert_before(scrim.as_ref(), element.first_child().as_ref());
+}
+
 /// Wrap each collapsible segment (every `.fab` child after the sync-circle cap)
 /// in a `.fab__tele` div whose `max-width` the telescope animates. Adds the
 /// `fab--anim` marker (enables the transition CSS) and the initial
 /// `fab--settled` state (the bar rests EXPANDED — all segments shown). Mirrors
 /// the wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
 /// so the view template stays a plain segment list.
+///
+/// Child[0] of `.fab` is taken to be the circle cap and is left unwrapped —
+/// which is why the click-away curtain hangs off `<tonk-fab>` rather than
+/// sitting inside `.fab` (see [`inject_scrim`]).
 fn wrap_telescope_tiles(element: &HtmlElement) {
     let Some(fab) = element.query_selector(".fab").ok().flatten() else {
         return;
@@ -210,7 +250,14 @@ fn attach_gestures(element: &HtmlElement) {
         let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
             return;
         };
-        if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
+        if t.closest(".fab__scrim").ok().flatten().is_some() {
+            // The click-away curtain. It only has a hit area while a dropdown is
+            // open (CSS: `.fab:has(.is-open) .fab__scrim`), so reaching here
+            // means the user clicked outside every menu — retract both. The
+            // curtain lies behind the bar, so this never fires for a click on
+            // the bar itself or on a menu row.
+            close_menus(&el_click);
+        } else if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
             // Alt/option-click toggles sync pause; a plain click folds/expands.
             // Pause is dispatched here (on the FAB, which reliably receives the
             // click — the cloned `<ui-sync-status>` inside the cap cannot own a
@@ -485,10 +532,12 @@ fn apply_mirror_from_handle(el: &HtmlElement) {
     }
 }
 
-/// Close both dropdowns (the ratcheted widths stay). A drag drops the
-/// `fab-dock-*` classes that give an open menu its vertical anchor, so an
-/// open menu would float mid-bar; dragging with a menu open isn't a state
-/// the chrome supports.
+/// Close both dropdowns (the ratcheted widths stay). Two callers:
+///
+/// - A drag: it drops the `fab-dock-*` classes that give an open menu its
+///   vertical anchor, so an open menu would float mid-bar; dragging with a menu
+///   open isn't a state the chrome supports.
+/// - The click-away curtain: a click outside every menu dismisses both.
 fn close_menus(el: &HtmlElement) {
     for sel in MENU_SEGMENTS {
         if let Some(seg) = el.query_selector(sel).ok().flatten() {
@@ -1089,4 +1138,179 @@ pub fn register() {
         return;
     }
     TonkFab::define("tonk-fab");
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_sys::window;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A FAB whose two dropdown segments are both open, plus the click-away
+    /// curtain — the shape the profile view renders.
+    fn open_fab() -> HtmlElement {
+        let document = window().expect("window").document().expect("document");
+        let fab: HtmlElement = document
+            .create_element("div")
+            .expect("create fab")
+            .unchecked_into();
+        fab.set_class_name("fab");
+        fab.set_inner_html(
+            r#"<div class="fab__scrim"></div>
+               <span class="fab__seg fab__repo is-open"></span>
+               <span class="fab__seg fab__share is-open"></span>"#,
+        );
+        fab
+    }
+
+    fn is_open(fab: &HtmlElement, selector: &str) -> bool {
+        fab.query_selector(selector)
+            .ok()
+            .flatten()
+            .map(|seg| seg.class_list().contains("is-open"))
+            .unwrap_or(false)
+    }
+
+    /// A `<tonk-fab>` holding the bar, the way the profile view renders it —
+    /// cap first, then the two dropdown segments.
+    fn fab_host() -> HtmlElement {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_inner_html(
+            r#"<div class="fab">
+                 <span class="fab__seg fab__cap-l"></span>
+                 <span class="fab__seg fab__repo"></span>
+                 <span class="fab__seg fab__share"></span>
+               </div>"#,
+        );
+        host
+    }
+
+    #[wasm_bindgen_test]
+    fn it_injects_the_curtain_outside_the_bar() {
+        // The curtain must be a SIBLING of `.fab`, never a child: the telescope
+        // takes child[0] of `.fab` to be the circle cap, so a curtain nested
+        // inside would be mistaken for the cap and the real cap would get
+        // wrapped as a collapsible tile.
+        let host = fab_host();
+        inject_scrim(&host);
+
+        let scrim = host
+            .query_selector(".fab__scrim")
+            .ok()
+            .flatten()
+            .expect("the curtain should be injected");
+        assert_eq!(
+            scrim.parent_element().map(|p| p.tag_name()).as_deref(),
+            Some("TONK-FAB"),
+            "the curtain must hang off <tonk-fab>, not off .fab",
+        );
+        assert!(
+            scrim.closest(".fab").ok().flatten().is_none(),
+            "the curtain must not be inside .fab — the telescope would wrap the cap",
+        );
+        // And it must precede the bar, so the bar paints over it.
+        assert_eq!(
+            host.first_element_child()
+                .map(|c| c.class_name())
+                .as_deref(),
+            Some("fab__scrim"),
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_injects_the_curtain_only_once() {
+        // `connected_callback` can run again on a reconnect; a second curtain
+        // would stack another hit area over the page.
+        let host = fab_host();
+        inject_scrim(&host);
+        inject_scrim(&host);
+
+        let children = host.children();
+        let scrims = (0..children.length())
+            .filter_map(|i| children.item(i))
+            .filter(|child| child.class_list().contains("fab__scrim"))
+            .count();
+        assert_eq!(scrims, 1, "a reconnect must not stack a second curtain");
+    }
+
+    #[wasm_bindgen_test]
+    fn it_dismisses_the_menus_when_the_curtain_is_clicked() {
+        // End-to-end through the real gesture handler: a click on the curtain
+        // must reach `close_menus`. Testing `close_menus` alone would still pass
+        // if the handler's curtain branch were deleted.
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        inject_scrim(&host);
+        attach_gestures(&host);
+        // The handler walks up from `event.target`, so the element has to be in
+        // the document for the click to dispatch and bubble.
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+        for selector in [".fab__repo", ".fab__share"] {
+            host.query_selector(selector)
+                .ok()
+                .flatten()
+                .expect("segment")
+                .class_list()
+                .add_1("is-open")
+                .expect("open");
+        }
+
+        let scrim = host
+            .query_selector(".fab__scrim")
+            .ok()
+            .flatten()
+            .expect("curtain");
+        // Must bubble: the listener lives on <tonk-fab>, not on the curtain.
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        let click = web_sys::MouseEvent::new_with_mouse_event_init_dict("click", &init)
+            .expect("click event");
+        scrim.dispatch_event(&click).expect("dispatch");
+
+        assert!(
+            !is_open(&host, ".fab__repo") && !is_open(&host, ".fab__share"),
+            "clicking the curtain must dismiss both dropdowns",
+        );
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_closes_both_dropdowns_at_once() {
+        // The curtain dismisses EVERY menu, not just the one that opened it —
+        // a click outside is a click outside for both.
+        let fab = open_fab();
+        assert!(is_open(&fab, ".fab__repo") && is_open(&fab, ".fab__share"));
+
+        close_menus(&fab);
+
+        assert!(
+            !is_open(&fab, ".fab__repo"),
+            "the repo switcher should close"
+        );
+        assert!(
+            !is_open(&fab, ".fab__share"),
+            "the share roster should close"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_is_a_no_op_when_nothing_is_open() {
+        // The curtain has no hit area unless a menu is open, but closing an
+        // already-closed bar must not throw or disturb the segments.
+        let fab = open_fab();
+        close_menus(&fab);
+        close_menus(&fab);
+        assert!(!is_open(&fab, ".fab__repo"));
+        assert!(!is_open(&fab, ".fab__share"));
+    }
 }
