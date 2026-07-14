@@ -13,7 +13,8 @@ Run commands from a directory at or below the one containing `.tonk/`.
 tonk guide            # one-screen index of the agent reference
 tonk schema           # every concept + attribute on the branch, as notation
 tonk schema <concept> # one concept's subset, same format
-tonk concepts         # name<TAB>description, one row per user concept
+tonk concept ls       # name<TAB>description, one row per user concept
+tonk view ls          # renderable entities (text/html claim carriers)
 tonk status           # synced | ahead | behind | diverged | no-upstream
 ```
 
@@ -27,7 +28,7 @@ required. Errors enumerate the valid options.
 tonk assert <concept> --<field> <value> …            # mint a new instance (all non-optional fields required)
 tonk assert <concept> <entity> --<field> <value> …   # supersede fields on an existing instance
 tonk query <concept> [--json]                        # every instance, every field bound
-tonk get <concept> <entity> [--json]                 # one instance
+tonk query <concept> <entity> [--json]               # one instance
 tonk retract <concept> <entity> --field <f>          # retract one field (a many-cardinality field loses every value)
 tonk retract <concept> <entity>                      # retract the whole instance
 ```
@@ -76,8 +77,8 @@ tonk eval -c '…' --dry-run    # preview without committing
 
 ```bash
 tonk push | tonk pull                       # sync main with its upstream
-tonk remote add <name> <url>                # register an access-service remote
-tonk remote set-upstream <name>             # track <name>/main
+tonk remote add <name> <url>                # register a remote; the first one becomes main's upstream
+tonk remote set-upstream <name>             # re-point which remote main tracks
 tonk invite [--remote <name>]               # mint a paste-able invite URL (pushes first)
 tonk join '<invite-url>'                    # claim an invite into a fresh .tonk/
 tonk share concept <name>                   # launcher URL onto a live concept view

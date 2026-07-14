@@ -146,6 +146,20 @@ pub async fn add(
     })
 }
 
+/// True when the local `main` branch already tracks an upstream.
+/// `tonk remote add` consults this to decide whether the remote it
+/// just registered should become the upstream by default — the
+/// add-then-set-upstream pair is nearly always performed together,
+/// and a first remote with no upstream wired is a foot-gun (writes
+/// auto-sync only once an upstream exists).
+pub async fn upstream_configured(site: &TonkSite) -> Result<bool, RemoteError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
+    Ok(session.handle().upstream().is_some())
+}
+
 /// Set the local `main` branch's upstream to `<remote>/main`,
 /// writing the corresponding `TrackingBranch` and remote-side
 /// `Branch` concepts on the meta branch.
