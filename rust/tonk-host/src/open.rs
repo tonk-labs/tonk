@@ -21,7 +21,11 @@
 //! The dialog gates LEAVING THE ORIGIN, not opening a tab: a cmd-clicked
 //! in-app link opens silently, an external link is always announced.
 
-use web_sys::Url;
+use crate::page_effect;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
+use web_sys::{Document, Element, HtmlDialogElement, HtmlElement, Url, window};
 
 /// Schemes a relayed href may carry. Everything else is rejected.
 ///
@@ -31,11 +35,6 @@ use web_sys::Url;
 const ALLOWED_SCHEMES: [&str; 4] = ["http:", "https:", "mailto:", "tel:"];
 
 /// What the page decided a relayed href is.
-//
-// The only caller outside this module's tests is `open_external`, which
-// lands with the dialog. Until then the lib target has no user and
-// `dead_code` fires on an item the tests exercise heavily.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Destination {
     /// Our own origin — open a tab with no dialog.
@@ -67,7 +66,6 @@ pub(crate) enum Destination {
 /// Split out from the DOM so it can be tested exhaustively — this is the
 /// security boundary, and it is worth more tests per line than anything
 /// else in the crate.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination {
     let Ok(url) = Url::new_with_base(href, base) else {
         return Destination::Rejected;
@@ -148,6 +146,272 @@ pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination
     Destination::External {
         label: url.origin(),
         url: url.href(),
+    }
+}
+
+/// Open `href` on behalf of a guest.
+///
+/// Forwards until it reaches the page (see `page_effect`), then resolves the
+/// href against the page's own URL — which is why a guest can send a bare
+/// `/path` without knowing its own origin (it has none; it is opaque).
+pub fn open_external(href: &str) {
+    if page_effect::forward("open", href) {
+        return;
+    }
+    let Some(win) = window() else {
+        return;
+    };
+    let (Ok(base), Ok(page_origin)) = (win.location().href(), win.location().origin()) else {
+        return;
+    };
+    match classify(href, &base, &page_origin) {
+        Destination::SameOrigin(url) => open_same_origin(&url),
+        Destination::External { url, label } => confirm_then_open(&url, &label),
+        Destination::Rejected => {
+            // The top page IS the real console, so warn directly. (The
+            // `__tonkRuntime` warn channel exists to lift GUEST errors out of
+            // an opaque origin that sanitizes them; nothing to lift here.)
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "tonk: refused to open `{href}` — scheme is not one of {ALLOWED_SCHEMES:?}"
+            )));
+        }
+    }
+}
+
+/// Open our own origin in a new tab, with no dialog — there is nothing to
+/// warn about.
+///
+/// Deliberately WITHOUT `noopener`, for two reasons that point the same way:
+/// the destination is our own origin, so an opener reference is harmless and
+/// ordinary; and `window.open` with `noopener` returns null unconditionally,
+/// which would destroy the only signal we have that the popup was blocked.
+///
+/// Blocking is a live possibility here: unlike the dialog path there is no
+/// confirm press, so this depends on the click's transient user activation
+/// surviving the relay from the guest. A same-origin destination degrades to
+/// a same-tab route change, which is a reasonable outcome — silently doing
+/// nothing, the bug this whole change exists to fix, is not.
+fn open_same_origin(url: &str) {
+    let Some(win) = window() else {
+        return;
+    };
+    match win.open_with_url_and_target(url, "_blank") {
+        Ok(Some(_)) => {}
+        _ => crate::navigate_to(url),
+    }
+}
+
+/// Announce an off-origin destination, and open it if the user agrees.
+///
+/// The Open press is itself a user activation IN THE TOP DOCUMENT, so this
+/// path never gambles on activation surviving the relay. The affordance and
+/// the mechanism reinforce each other.
+fn confirm_then_open(url: &str, label: &str) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(body) = document.body() else {
+        return;
+    };
+    ensure_styles(&document);
+
+    let Some(dialog) = build_dialog(&document, label, url) else {
+        return;
+    };
+    let Some(confirm) = dialog.query_selector(".tonk-open__confirm").ok().flatten() else {
+        return;
+    };
+    let Some(cancel) = dialog.query_selector(".tonk-open__cancel").ok().flatten() else {
+        return;
+    };
+
+    // One `close` listener owns teardown, so Esc, Cancel and Open all unwind
+    // through the same path and the buttons only have to decide intent.
+    on_event(dialog.unchecked_ref::<Element>(), "close", {
+        let dialog = dialog.clone();
+        move || {
+            dialog.remove();
+        }
+    });
+    on_event(&cancel, "click", {
+        let dialog = dialog.clone();
+        move || {
+            dialog.close();
+        }
+    });
+    on_event(&confirm, "click", {
+        let dialog = dialog.clone();
+        let document = document.clone();
+        let url = url.to_owned();
+        move || {
+            open_in_new_tab(&document, &url);
+            dialog.close();
+        }
+    });
+
+    let _ = body.append_child(&dialog);
+    let _ = dialog.show_modal();
+}
+
+/// Attach a listener that ignores its event. Leaked deliberately: the dialog
+/// is removed on `close`, which drops the last reference to the element the
+/// listeners are attached to, so nothing outlives the dialog.
+fn on_event<F: FnMut() + 'static>(target: &Element, event: &str, mut handler: F) {
+    let closure = Closure::wrap(Box::new(move |_: web_sys::Event| handler()) as Box<dyn FnMut(_)>);
+    let _ = target.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
+    closure.forget();
+}
+
+/// Build the dialog.
+///
+/// `label` is the destination's identity as `classify` computed it — the full
+/// origin for http(s), the address for `mailto:`/`tel:`. Render it as given:
+/// re-deriving it from `url` is how the port, scheme, and userinfo spoofs the
+/// classifier already closed get reopened.
+///
+/// Every attacker-controlled string goes in via `set_text_content`. There is
+/// no `set_inner_html` here and there must never be: this renders on the real
+/// origin, so interpolating a label or URL into markup would be a scripting
+/// hole in the trusted document — the exact thing the scheme allowlist exists
+/// to prevent, reintroduced one layer down.
+fn build_dialog(document: &Document, label: &str, url: &str) -> Option<HtmlDialogElement> {
+    let dialog: HtmlDialogElement = document
+        .create_element("dialog")
+        .ok()?
+        .dyn_into::<HtmlDialogElement>()
+        .ok()?;
+    let _ = dialog.set_attribute("class", "tonk-open");
+
+    let heading = document.create_element("h2").ok()?;
+    heading.set_text_content(Some("Open in a new tab?"));
+
+    let label_line = document.create_element("p").ok()?;
+    let _ = label_line.set_attribute("class", "tonk-open__label");
+    label_line.set_text_content(Some(label)); // text, never HTML
+
+    let url_line = document.create_element("p").ok()?;
+    let _ = url_line.set_attribute("class", "tonk-open__url");
+    url_line.set_text_content(Some(url)); // text, never HTML
+
+    let actions = document.create_element("div").ok()?;
+    let _ = actions.set_attribute("class", "tonk-open__actions");
+
+    let cancel = document.create_element("button").ok()?;
+    let _ = cancel.set_attribute("class", "tonk-open__cancel");
+    cancel.set_text_content(Some("Cancel"));
+
+    let confirm = document.create_element("button").ok()?;
+    let _ = confirm.set_attribute("class", "tonk-open__confirm");
+    confirm.set_text_content(Some("Open"));
+
+    let _ = actions.append_child(&cancel);
+    let _ = actions.append_child(&confirm);
+    let _ = dialog.append_child(&heading);
+    let _ = dialog.append_child(&label_line);
+    let _ = dialog.append_child(&url_line);
+    let _ = dialog.append_child(&actions);
+    Some(dialog)
+}
+
+/// Open `url` in a new tab by synthesizing an anchor and clicking it.
+///
+/// An anchor rather than `window.open` because it handles all four allowed
+/// schemes uniformly: `window.open("mailto:…")` can strand a blank tab, while
+/// an anchor click hands off to the mail client the way a real link does.
+///
+/// `noopener noreferrer` because this destination is off-origin: `noopener`
+/// denies it a handle on our window (reverse tabnabbing), `noreferrer` keeps
+/// the spot's URL out of its logs.
+fn open_in_new_tab(document: &Document, url: &str) {
+    let Ok(anchor) = document.create_element("a") else {
+        return;
+    };
+    let _ = anchor.set_attribute("href", url);
+    let _ = anchor.set_attribute("target", "_blank");
+    let _ = anchor.set_attribute("rel", "noopener noreferrer");
+    let Some(body) = document.body() else {
+        return;
+    };
+    // Some engines only dispatch a click on a connected element.
+    let _ = body.append_child(&anchor);
+    if let Some(anchor) = anchor.dyn_ref::<HtmlElement>() {
+        anchor.click();
+    }
+    anchor.remove();
+}
+
+/// Inject the dialog's stylesheet once.
+///
+/// Plain DOM and plain CSS, NOT `<wa-dialog>`: the Web Awesome loader is
+/// idle-injected rather than eager (see `tonk-ui/index.html`), because its
+/// statically-imported chunks would otherwise starve the boot data plane. A
+/// `wa-*` component could still be undefined when an early click lands. Every
+/// value is `var(--wa-token, literal)` so it matches the theme when loaded and
+/// still looks right before it is — the same technique the boot shell uses,
+/// and it keeps index.html's "nothing on the top page uses a wa-* component"
+/// true.
+fn ensure_styles(document: &Document) {
+    const STYLE_ID: &str = "tonk-open-style";
+    if document.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
+    let _ = style.set_attribute("id", STYLE_ID);
+    style.set_text_content(Some(
+        r#"
+dialog.tonk-open {
+  border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
+  border-radius: var(--wa-border-radius-l, 8px);
+  background: var(--wa-color-surface-raised, #fff);
+  color: var(--wa-color-text-normal, #18181b);
+  font-family: var(--wa-font-family-body, system-ui, sans-serif);
+  padding: 1.25rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+}
+dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
+.tonk-open h2 {
+  margin: 0 0 0.75rem;
+  font-size: var(--wa-font-size-l, 1.125rem);
+}
+.tonk-open__label {
+  margin: 0 0 0.25rem;
+  font-weight: 600;
+}
+/* The URL is attacker-chosen: it must wrap rather than widen the dialog,
+   and it must not be able to push the buttons off-screen. */
+.tonk-open__url {
+  margin: 0 0 1.25rem;
+  color: var(--wa-color-text-quiet, #71717a);
+  font-size: var(--wa-font-size-s, 0.875rem);
+  overflow-wrap: anywhere;
+  max-height: 4.5rem;
+  overflow-y: auto;
+}
+.tonk-open__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.tonk-open button {
+  border-radius: var(--wa-border-radius-m, 6px);
+  border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
+  background: var(--wa-color-neutral-fill-quiet, #f4f4f5);
+  color: inherit;
+  font: inherit;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+}
+.tonk-open__confirm {
+  background: var(--wa-color-brand-fill-loud, #3b4a0a);
+  border-color: var(--wa-color-brand-fill-loud, #3b4a0a);
+  color: var(--wa-color-brand-on-loud, #f4f7e4);
+}
+"#,
+    ));
+    if let Some(head) = document.head() {
+        let _ = head.append_child(&style);
     }
 }
 
@@ -465,6 +729,81 @@ mod tests {
                 label: "someone@example.com".to_owned(),
             },
             "a mailto is external regardless of the page origin"
+        );
+    }
+
+    /// The dialog renders on the REAL origin, so a hostile label or URL must
+    /// land as TEXT and never as markup.
+    ///
+    /// If this ever fails, the scheme allowlist has been outflanked one layer
+    /// down: the URL never had to be openable, because merely *describing* it
+    /// would have executed it. `set_text_content` is what holds this line, and
+    /// a single `set_inner_html` would break it silently — nothing else in the
+    /// change would look different.
+    ///
+    /// `classify` cannot actually produce these strings today (the parser
+    /// encodes them). This asserts the dialog is safe on its OWN terms, so it
+    /// stays safe if it ever gains another caller.
+    #[dialog_common::test]
+    async fn it_renders_a_hostile_label_and_url_as_text_not_markup() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+        let hostile_label = "<img src=x onerror=alert(1)>";
+        let hostile_url = "https://example.com/<script>alert(1)</script>";
+
+        let dialog =
+            build_dialog(&document, hostile_label, hostile_url).expect("the dialog should build");
+
+        assert!(
+            dialog.query_selector("img").ok().flatten().is_none(),
+            "a hostile label must not become an element"
+        );
+        assert!(
+            dialog.query_selector("script").ok().flatten().is_none(),
+            "a hostile url must not become an element"
+        );
+        assert_eq!(
+            dialog
+                .query_selector(".tonk-open__label")
+                .ok()
+                .flatten()
+                .and_then(|el| el.text_content()),
+            Some(hostile_label.to_owned()),
+            "the label should appear verbatim, as text"
+        );
+        assert_eq!(
+            dialog
+                .query_selector(".tonk-open__url")
+                .ok()
+                .flatten()
+                .and_then(|el| el.text_content()),
+            Some(hostile_url.to_owned()),
+            "the url should appear verbatim, as text"
+        );
+    }
+
+    /// The dialog says what it does. It opens a new tab and leaves the spot
+    /// running, so it must not claim the user is leaving.
+    #[dialog_common::test]
+    async fn it_names_the_action_without_claiming_the_user_leaves() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+
+        let dialog = build_dialog(&document, "https://example.com", "https://example.com/")
+            .expect("a dialog");
+
+        let text = dialog.text_content().unwrap_or_default();
+        assert!(
+            text.contains("Open in a new tab?"),
+            "the dialog should name the action, got: {text}"
+        );
+        assert!(
+            !text.contains("Leave"),
+            "the spot stays open, so the dialog must not say the user is leaving"
         );
     }
 }
