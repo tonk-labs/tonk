@@ -9,6 +9,7 @@
 
 pub mod manifest;
 pub mod receipt;
+pub mod state;
 
 /// Opt out of the background check for one run or an environment.
 /// Named to match `TONK_NO_SYNC` in [`crate::auto_sync`].
