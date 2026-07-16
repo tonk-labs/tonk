@@ -4534,7 +4534,6 @@ dependencies = [
  "serde_json",
  "tonk-common",
  "tonk-display",
- "tonk-fab",
  "tonk-host",
  "tonk-worker-api",
  "wasm-bindgen",
