@@ -121,15 +121,20 @@ mod tests {
         let calls = install_tonk("navigate");
 
         let forwarded = forward("navigate", "/space/abc");
+        let call_count = calls.length();
+        let first_arg = calls.get(0).as_string();
+
+        // Restore before asserting so a failure doesn't leak `window.tonk`
+        // into a later test running in the same page.
+        clear_tonk();
 
         assert!(forwarded, "a guest should forward the effect");
-        assert_eq!(calls.length(), 1, "the parent should have been called once");
+        assert_eq!(call_count, 1, "the parent should have been called once");
         assert_eq!(
-            calls.get(0).as_string(),
+            first_arg,
             Some("/space/abc".to_owned()),
             "the href should reach the parent verbatim"
         );
-        clear_tonk();
     }
 
     /// The top page has no `window.tonk` — it must perform the effect itself.
@@ -151,10 +156,12 @@ mod tests {
     async fn it_drops_rather_than_performs_when_the_bridge_lacks_the_method() {
         let _calls = install_tonk("navigate");
 
+        let dropped = forward("setTitle", "Notes — Tonk");
+        clear_tonk();
+
         assert!(
-            forward("setTitle", "Notes — Tonk"),
+            dropped,
             "a guest missing the method should still not perform locally"
         );
-        clear_tonk();
     }
 }
