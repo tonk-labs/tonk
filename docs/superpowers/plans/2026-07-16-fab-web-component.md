@@ -850,11 +850,38 @@ pub fn member_roster_query_body() -> String {
 Run: `cargo test -p tonk-fab member_roster`
 Expected: PASS.
 
-- [ ] **Step 5: Write the element**
+- [ ] **Step 5: Extract the shared subscribing scaffolding**
 
-Create `rust/tonk-fab/src/member_roster.rs` following `space_name.rs` exactly: `shadow() -> false`, `observed_attributes() -> &["space"]`, stamp `with` from `space_with`, plain `consumer::subscribe`, `RetryPolicy` on failure. On each frame, rebuild one `<span class="fab__menu-item fab__menu-item--member">{name}</span>` per conclusion — the markup the deleted `fab-roster` view used to supply.
+`<ui-space-name>` (Task 2) and this element share five things: `shadow() -> false`, an observed `space` attribute, stamping their own `with=`, plain `consumer::subscribe`, and `RetryPolicy` on failure. They differ only in the query body and how they render a frame.
+
+This is the second of three (`<ui-space-switcher>` in Task 5b is the third), so extract now rather than duplicating twice more. Create `rust/tonk-fab/src/subscribing.rs` holding the common scaffolding, and refactor `space_name.rs` onto it in the same commit — its tests from Task 2 must still pass unchanged, which is what proves the refactor safe.
+
+Suggested seam (adjust to what the two elements actually share once written):
+
+```rust
+/// The per-element behaviour a subscribing `ui-` child supplies; the
+/// scaffolding around it (with-stamping, subscribe, retry, teardown) is
+/// shared.
+pub trait Subscribing {
+    /// The subscribe body, built from the element's `space` attribute.
+    fn query_body(&self, space: &str) -> Result<String, String>;
+    /// Render one subscription frame into the host.
+    fn render(&self, host: &HtmlElement, payload: JsValue);
+    /// Tag distinguishing this element's subscription.
+    fn tag(&self) -> &'static str;
+}
+```
+
+- [ ] **Step 6: Write the element**
+
+Create `rust/tonk-fab/src/member_roster.rs` on that scaffolding. On each frame, rebuild one `<span class="fab__menu-item fab__menu-item--member">{name}</span>` per conclusion — the markup the deleted `fab-roster` view used to supply.
 
 Register in `lib.rs`.
+
+- [ ] **Step 7: Verify the refactor preserved Task 2's behaviour**
+
+Run: `cargo test -p tonk-fab`
+Expected: PASS — including every `space_name` / `logic` test from Task 2, unchanged.
 
 - [ ] **Step 6: Commit**
 
@@ -887,8 +914,10 @@ stale. This is the trade the spec names.
 - Modify: `rust/tonk-fab/src/logic.rs`, `rust/tonk-fab/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `RetryPolicy` (Task 1), `<ui-space-name>` (Task 2).
+- Consumes: `RetryPolicy` (Task 1), `<ui-space-name>` (Task 2), the `Subscribing` scaffolding extracted in Task 5.
 - Produces: `logic::space_list_query_body() -> String`, `<ui-space-switcher exclude="did:key:…">` via `space_switcher::register()`.
+
+Build this on Task 5's `subscribing.rs` scaffolding — it is the third of the three subscribing elements, so it should need only a query body and a render.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -942,8 +971,10 @@ Expected: PASS.
 
 - [ ] **Step 5: Write the element**
 
-Create `rust/tonk-fab/src/space_switcher.rs` following `space_name.rs`. It
-carries `with="main@profile:tonk"` (not a space `with`). Per frame, render one
+Create `rust/tonk-fab/src/space_switcher.rs` on Task 5's `subscribing.rs`
+scaffolding. Note it carries `with="main@profile:tonk"` (not a space `with`) —
+if the scaffolding assumes a space-derived `with`, this is the element that
+proves the seam needs to accept either. Per frame, render one
 `<a class="fab__menu-item" href="/space/{subject}">` per row, each containing
 `<ui-space-name space="{subject}">`. Skip rows where `kind == "tonk:profile"`
 or `subject == exclude`; stamp `data-status` so the existing CSS dims seeding
