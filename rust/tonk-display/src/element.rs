@@ -1542,22 +1542,20 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 /// replaces it through ordinary reconciliation. Idempotent: the route
 /// URL is stable for a given `(with, entity)`, so re-running on a later
 /// empty frame is a no-op once the element exists.
+///
+/// The disposed check and stale-slide sweep run *before* the img
+/// create-or-find: a model-specific view rendered on an earlier
+/// non-empty frame may itself contain a light-DOM `<img>`, and
+/// `query_selector` searches all descendants, not just the host's
+/// direct children. Sweeping the stale `<tonk-view>` slide first (and
+/// scoping the lookup to `:scope > img`) keeps the fallback from ever
+/// capturing that view's img.
 fn mount_blob_fallback_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
     let Some(url) = blob_image_src(host) else {
         return;
     };
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
-    };
-    let img = match host.query_selector("img").ok().flatten() {
-        Some(existing) => existing,
-        None => {
-            let Ok(created) = document.create_element("img") else {
-                return;
-            };
-            let _ = host.append_child(&created);
-            created
-        }
     };
     {
         let mut s = state.borrow_mut();
@@ -1566,7 +1564,9 @@ fn mount_blob_fallback_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
         }
         // A model-specific view may have mounted on an earlier non-empty
         // frame and since been retracted (the frame is empty again): drop
-        // its stale slides so the fallback doesn't render alongside them.
+        // its stale slides so the fallback doesn't render alongside them,
+        // and so its img (if any) can't be mistaken for the fallback's own
+        // below.
         let stale: Vec<String> = s
             .slides
             .keys()
@@ -1580,6 +1580,19 @@ fn mount_blob_fallback_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
                 let _: Result<Node, _> = parent.remove_child(&slide.item);
             }
         }
+    }
+    let img = match host.query_selector(":scope > img").ok().flatten() {
+        Some(existing) => existing,
+        None => {
+            let Ok(created) = document.create_element("img") else {
+                return;
+            };
+            let _ = host.append_child(&created);
+            created
+        }
+    };
+    {
+        let mut s = state.borrow_mut();
         if !s.slides.contains_key("__blob__") {
             s.slides.insert(
                 "__blob__".to_owned(),
@@ -3464,10 +3477,13 @@ mod tests {
                 "an empty view frame mounts the native <img> fallback",
             );
 
-            // A model-specific view lands: it replaces the fallback.
+            // A model-specific view lands: it replaces the fallback. Its
+            // display includes a light-DOM `<img>` of its own, so the
+            // round-trip below locks in that the fallback's lookup never
+            // captures the view's img.
             host.push_frame(
                 "view",
-                &rows(&[("did:key:zBlobView", &[("display", "<p>media view</p>")])]),
+                &rows(&[("did:key:zBlobView", &[("display", "<p>override <img></p>")])]),
             );
             assert!(
                 await_selector(&display, "tonk-view").await.is_some(),
@@ -3475,7 +3491,7 @@ mod tests {
             );
             let mut img_gone = false;
             for _ in 0..200 {
-                if display.query_selector("img").unwrap().is_none() {
+                if display.query_selector(":scope > img").unwrap().is_none() {
                     img_gone = true;
                     break;
                 }
@@ -3483,7 +3499,7 @@ mod tests {
             }
             assert!(
                 img_gone,
-                "the native fallback <img> is removed once the view mounts",
+                "the native fallback <img> (a direct child of the display) is removed once the view mounts",
             );
 
             // The view frame goes empty again (e.g. the view was retracted):
@@ -3491,8 +3507,8 @@ mod tests {
             // slide from the model-specific view must not linger alongside it.
             host.push_frame("view", &rows(&[]));
             assert!(
-                await_selector(&display, "img").await.is_some(),
-                "the native fallback <img> remounts once the view frame empties again",
+                await_selector(&display, ":scope > img").await.is_some(),
+                "the native fallback <img> remounts as a direct child once the view frame empties again",
             );
             let mut view_gone = false;
             for _ in 0..200 {
@@ -3505,6 +3521,10 @@ mod tests {
             assert!(
                 view_gone,
                 "the stale view slide is cleared when the frame empties again",
+            );
+            assert!(
+                display.query_selector(":scope > img").unwrap().is_some(),
+                "the remounted fallback <img> is a direct child of the display, not captured from the retracted view",
             );
         }
 
