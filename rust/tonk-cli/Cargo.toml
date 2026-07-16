@@ -79,7 +79,6 @@ flate2 = { workspace = true }
 semver = { workspace = true }
 sha2_0_10 = { workspace = true }
 tar = { workspace = true }
-tempfile = { workspace = true }
 # `string` on top of the workspace default: the schema-aware data
 # verbs (`add`/`set`) build a `clap::Command` at runtime from a
 # concept's field names (owned `String`s from the branch, not
