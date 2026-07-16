@@ -797,3 +797,56 @@ mod share {
         assert!(!ShareState::Copying.is_transient());
     }
 }
+
+/// The `with` attribute for a space's content branch: `main@{did}`.
+///
+/// Each `ui-` child carries its own `with` and subscribes through it —
+/// `resolve_with` reads the element's OWN attribute and never walks
+/// ancestors, so this must be stamped per element, not inherited.
+pub fn space_with(space_did: &str) -> String {
+    format!("main@{space_did}")
+}
+
+/// The subscribe body for a repository's name.
+///
+/// An INLINE predicate over the raw `xyz.tonk.repo/name` attribute — it names
+/// no concept, so nothing need be seeded on the space's branch and an old
+/// `core.yaml` cannot break it. Mirrors `<ui-sync-status>`'s
+/// `status_query_body`. `this` is bound to the repo subject by the caller.
+pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("repo_name_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": { "name": {
+            "the": "xyz.tonk.repo/name", "as": "String", "cardinality": "one"
+        } } },
+        "terms": { "this": subject, "name": { "?": { "name": "name" } } }
+    })
+    .to_string())
+}
+
+#[cfg(test)]
+mod space_name {
+    use super::*;
+
+    #[test]
+    fn it_builds_a_with_string_for_a_space_did() {
+        assert_eq!(space_with("did:key:z6Mk"), "main@did:key:z6Mk");
+    }
+
+    #[test]
+    fn it_queries_the_repo_name_by_raw_attribute() {
+        let body = repo_name_query_body("did:key:z6Mk").expect("query body builds");
+        // The raw attribute URI — NOT a concept name. Nothing seeded is needed,
+        // so an old core.yaml cannot break this read.
+        assert!(body.contains("xyz.tonk.repo/name"));
+        assert!(body.contains("did:key:z6Mk"));
+        assert!(!body.contains("tonk:repository"));
+    }
+
+    #[test]
+    fn it_rejects_an_empty_subject() {
+        assert!(repo_name_query_body("").is_err());
+    }
+}

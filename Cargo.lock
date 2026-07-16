@@ -4387,6 +4387,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonk-common",
+ "tonk-host",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
