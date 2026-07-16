@@ -1932,6 +1932,7 @@ view!: &hub-view
   model: tonk:hub
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-display model="space"></tonk-display>
     </div>
 
@@ -1966,6 +1967,7 @@ view!: &join/route-view
   model: tonk:join/route
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-display model="tonk:join/status"></tonk-display>
     </div>
 
@@ -1997,6 +1999,7 @@ view!: &inspector/route-view
   model: tonk:inspector/route
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-inspector with="main@profile:tonk"></tonk-inspector>
     </div>
 
@@ -2020,6 +2023,7 @@ view!: &diagnose/route-view
   model: tonk:diagnose/route
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-tree with="main@profile:tonk"></tonk-tree>
     </div>
 
@@ -2125,6 +2129,7 @@ view!: &not-found-view
                     color: var(--wa-color-text-normal); }
         .nf__home { margin-top: 8px; text-decoration: none; }
       </style>
+      <tonk-title text="Tonk"></tonk-title>
       <div class="nf">
         <div class="nf__code">404</div>
         <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
