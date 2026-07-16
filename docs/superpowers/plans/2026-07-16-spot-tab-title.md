@@ -610,16 +610,20 @@ view/title!:
 
 - [ ] **Step 2: Verify the notation still analyzes**
 
-Run: `cargo check -p tonk-worker --target wasm32-unknown-unknown`
-Expected: PASS — `core.yaml` is embedded with `include_str!`, so this catches a file that cannot be read, but NOT a notation error.
+The notation gate is native and fast:
 
-Be honest about the gap: the test that actually runs `core.yaml` through `parse → analyze → commit` is `it_seeds_blank_scaffold` in `rust/tonk-worker/src/router/repository.rs`, and its module is **wasm-gated** (`run_in_service_worker`, `repository.rs:3579`) — it does not run under native `cargo test`.
+Run: `cargo test -p tonk-worker --test standard_library`
+Expected: PASS — 9 tests, including `it_lowers_the_standard_library`.
 
-Run it — the wasm harness works in this worktree:
-Run: `cargo test -p tonk-worker --target wasm32-unknown-unknown it_seeds_blank_scaffold`
-Expected: PASS.
+That suite embeds each library with `include_str!` and runs it through
+`parse → analyze_local → lower`, the same front half the seed runs, so a parse error,
+an unresolved `&anchor`, a bad concept declaration, or a rule that won't lift fails
+here. If it fails, the scaffold is malformed and every new spot would fail to seed —
+fix it here rather than discovering it in Task 6.
 
-This is the notation gate. If it fails, the scaffold is malformed and every new spot would fail to seed — fix it here rather than discovering it in Task 6.
+Optionally also run the wasm-gated end-to-end seed (heavier, several minutes):
+`cargo test -p tonk-worker --target wasm32-unknown-unknown it_seeds_blank_scaffold`.
+It adds the `commit` half over `analyze_local`, but the native suite above is the gate.
 
 - [ ] **Step 3: Commit**
 
@@ -666,10 +670,14 @@ The `with={id} entity={id} … view=` shape mirrors the FAB's own name chip at `
 
 - [ ] **Step 2: Verify the notation still analyzes**
 
-Run: `cargo check -p tonk-worker --target wasm32-unknown-unknown`
-Expected: PASS.
+Run: `cargo test -p tonk-worker --test standard_library`
+Expected: PASS — 9 tests, including `it_lowers_the_profile_library`.
 
-Same gating caveat as Task 4, Step 2 — Task 6 is the real gate.
+This is the ONLY automated validation `profile.yaml` gets. Unlike `core.yaml`, the
+worker fetches `profile.yaml` at runtime (`PROFILE_LIBRARY_URL`) rather than embedding
+it, so no `cargo check` and no wasm seed test touches this file's notation — the
+`standard_library` suite embeds it with `include_str!` purely to lower it. A malformed
+edit here breaks the profile chrome, which is the shell every route renders through.
 
 - [ ] **Step 3: Commit**
 
