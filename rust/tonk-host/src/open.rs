@@ -22,10 +22,21 @@
 //! in-app link opens silently, an external link is always announced.
 
 use crate::page_effect;
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Document, Element, HtmlDialogElement, HtmlElement, Url, window};
+
+/// The listeners one dialog owns, held together so `close` can drop them all.
+///
+/// Shared because the `close` listener is itself in here: it has to reach the
+/// collection that owns it in order to empty it. That is a reference cycle, and
+/// emptying it on `close` is what breaks it — so a dialog that is never closed
+/// holds its listeners until the page goes, which is the one case where there is
+/// no page left to leak on.
+type Listeners = Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>;
 
 /// Schemes a relayed href may carry. Everything else is rejected.
 ///
@@ -33,6 +44,29 @@ use web_sys::{Document, Element, HtmlDialogElement, HtmlElement, Url, window};
 /// inert handoffs to an external handler and carry no script. Nothing else
 /// has a use case, and every addition is a new way to reach the real origin.
 const ALLOWED_SCHEMES: [&str; 4] = ["http:", "https:", "mailto:", "tel:"];
+
+/// The class every dialog this module builds carries, and the selector that
+/// finds one already on the page.
+///
+/// They must agree. The selector IS the stacking gate, so a drift between them
+/// would reopen it silently — the gate would simply never find the dialog it
+/// was looking for and every call would build another.
+const DIALOG_CLASS: &str = "tonk-open";
+const DIALOG_SELECTOR: &str = "dialog.tonk-open";
+
+/// Say so when a relayed click produces nothing.
+///
+/// The top page IS the real console, so warn directly. (The `__tonkRuntime`
+/// warn channel exists to lift GUEST errors out of an opaque origin that
+/// sanitizes them; nothing to lift here.)
+///
+/// Every caller below is a path where a user pressed a link and the page did
+/// nothing. Some are unreachable in practice, which is exactly why they must
+/// not be silent: an unreachable branch that fires is the one with no other
+/// evidence to debug it by.
+fn warn(message: &str) {
+    web_sys::console::warn_1(&JsValue::from_str(&format!("tonk: {message}")));
+}
 
 /// What the page decided a relayed href is.
 #[derive(Debug, PartialEq, Eq)]
@@ -167,14 +201,9 @@ pub fn open_external(href: &str) {
     match classify(href, &base, &page_origin) {
         Destination::SameOrigin(url) => open_same_origin(&url),
         Destination::External { url, label } => confirm_then_open(&url, &label),
-        Destination::Rejected => {
-            // The top page IS the real console, so warn directly. (The
-            // `__tonkRuntime` warn channel exists to lift GUEST errors out of
-            // an opaque origin that sanitizes them; nothing to lift here.)
-            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "tonk: refused to open `{href}` — scheme is not one of {ALLOWED_SCHEMES:?}"
-            )));
-        }
+        Destination::Rejected => warn(&format!(
+            "refused to open `{href}` — scheme is not one of {ALLOWED_SCHEMES:?}"
+        )),
     }
 }
 
@@ -206,40 +235,63 @@ fn open_same_origin(url: &str) {
 /// The Open press is itself a user activation IN THE TOP DOCUMENT, so this
 /// path never gambles on activation surviving the relay. The affordance and
 /// the mechanism reinforce each other.
+///
+/// ONE dialog at a time. This runs straight from the guest relay, so a spot
+/// posting `open` in a loop arrives here as fast as it can call; ungated, that
+/// stacks N modals on the real origin. Refusing the second is safe because a
+/// modal absorbs every pointer event on the top page — measured in Chrome, the
+/// backdrop hit-tests even over the guest's own iframe — so a USER cannot reach
+/// a second link while one is up. Any second call is therefore scripted, i.e.
+/// hostile or buggy, and the dialog already up is the one the user is
+/// answering. Nothing is lost by ignoring the newcomer.
 fn confirm_then_open(url: &str, label: &str) {
     let Some(document) = window().and_then(|w| w.document()) else {
+        warn("could not announce a link: there is no document");
         return;
     };
     let Some(body) = document.body() else {
+        warn("could not announce a link: the document has no body");
         return;
     };
+    if document
+        .query_selector(DIALOG_SELECTOR)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        warn(&format!(
+            "refused to announce `{url}` — a link dialog is already open"
+        ));
+        return;
+    }
     ensure_styles(&document);
 
     let Some(dialog) = build_dialog(&document, label, url) else {
+        warn(&format!("could not build the dialog announcing `{url}`"));
         return;
     };
     let Some(confirm) = dialog.query_selector(".tonk-open__confirm").ok().flatten() else {
+        warn("could not find the dialog's Open button");
         return;
     };
     let Some(cancel) = dialog.query_selector(".tonk-open__cancel").ok().flatten() else {
+        warn("could not find the dialog's Cancel button");
         return;
     };
 
-    // One `close` listener owns teardown, so Esc, Cancel and Open all unwind
-    // through the same path and the buttons only have to decide intent.
-    on_event(dialog.unchecked_ref::<Element>(), "close", {
-        let dialog = dialog.clone();
-        move || {
-            dialog.remove();
-        }
-    });
-    on_event(&cancel, "click", {
+    // Every listener the dialog owns, and the only thing keeping them alive.
+    // Dropping a `Closure` frees its Rust box and releases the JS shim
+    // wasm-bindgen rooted for it, so emptying this is what makes a dialog cost
+    // nothing once it is answered.
+    let listeners: Listeners = Rc::new(RefCell::new(Vec::new()));
+
+    listeners.borrow_mut().push(on_event(&cancel, "click", {
         let dialog = dialog.clone();
         move || {
             dialog.close();
         }
-    });
-    on_event(&confirm, "click", {
+    }));
+    listeners.borrow_mut().push(on_event(&confirm, "click", {
         let dialog = dialog.clone();
         let document = document.clone();
         let url = url.to_owned();
@@ -247,19 +299,57 @@ fn confirm_then_open(url: &str, label: &str) {
             open_in_new_tab(&document, &url);
             dialog.close();
         }
+    }));
+
+    // One `close` listener owns teardown, so Esc, Cancel and Open all unwind
+    // through the same path and the buttons only have to decide intent.
+    //
+    // `AsRef<Element>` holds statically, so no cast is needed here.
+    let close_listener = on_event(dialog.as_ref(), "close", {
+        let dialog = dialog.clone();
+        let listeners = Rc::clone(&listeners);
+        move || {
+            dialog.remove();
+            // Drop every listener, INCLUDING THIS ONE — that is what makes the
+            // dialog finite, and it is also why the drop cannot happen here:
+            // this closure is mid-call, and freeing its own box is a
+            // use-after-free on the value wasm-bindgen is executing. A
+            // microtask runs the moment this handler returns and the stack is
+            // clear.
+            let listeners = Rc::clone(&listeners);
+            wasm_bindgen_futures::spawn_local(async move {
+                listeners.borrow_mut().clear();
+            });
+        }
     });
+    listeners.borrow_mut().push(close_listener);
 
     let _ = body.append_child(&dialog);
     let _ = dialog.show_modal();
 }
 
-/// Attach a listener that ignores its event. Leaked deliberately: the dialog
-/// is removed on `close`, which drops the last reference to the element the
-/// listeners are attached to, so nothing outlives the dialog.
-fn on_event<F: FnMut() + 'static>(target: &Element, event: &str, mut handler: F) {
+/// Attach a listener that ignores its event, and hand the `Closure` back.
+///
+/// The caller MUST keep the returned `Closure` alive for as long as the
+/// listener may fire, and drop it when it may not — dropping it is what frees
+/// the Rust box and releases the JS shim wasm-bindgen rooted for it.
+///
+/// This used to end in `closure.forget()`, justified as "the dialog is removed
+/// on `close`, which drops the last reference". That was false twice over:
+/// `forget` leaks the box AND leaves the shim rooted for the life of the
+/// module, and every closure held its own `dialog` clone, so removing the
+/// dialog dropped nothing. Since `open_external` reaches here straight from the
+/// guest relay, an untrusted spot could drive that leak. Returning the handle
+/// makes the lifetime the caller's decision instead of a claim in a comment.
+#[must_use]
+fn on_event<F: FnMut() + 'static>(
+    target: &Element,
+    event: &str,
+    mut handler: F,
+) -> Closure<dyn FnMut(web_sys::Event)> {
     let closure = Closure::wrap(Box::new(move |_: web_sys::Event| handler()) as Box<dyn FnMut(_)>);
     let _ = target.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
-    closure.forget();
+    closure
 }
 
 /// Build the dialog.
@@ -280,7 +370,7 @@ fn build_dialog(document: &Document, label: &str, url: &str) -> Option<HtmlDialo
         .ok()?
         .dyn_into::<HtmlDialogElement>()
         .ok()?;
-    let _ = dialog.set_attribute("class", "tonk-open");
+    let _ = dialog.set_attribute("class", DIALOG_CLASS);
 
     let heading = document.create_element("h2").ok()?;
     heading.set_text_content(Some("Open in a new tab?"));
@@ -781,6 +871,150 @@ mod tests {
                 .and_then(|el| el.text_content()),
             Some(hostile_url.to_owned()),
             "the url should appear verbatim, as text"
+        );
+    }
+
+    /// Count the dialogs this module has put on the page, without disturbing
+    /// them. `query_selector_all` would want a web-sys feature this crate does
+    /// not carry, and every dialog is appended to `body`, so the first match in
+    /// document order plus its siblings is all of them.
+    fn count_open_dialogs(document: &Document) -> usize {
+        let mut count = 0;
+        let mut cursor = document.query_selector(DIALOG_SELECTOR).ok().flatten();
+        while let Some(element) = cursor {
+            if element.matches(DIALOG_SELECTOR).unwrap_or(false) {
+                count += 1;
+            }
+            cursor = element.next_element_sibling();
+        }
+        count
+    }
+
+    /// Take every dialog back off the page. A modal left standing makes the
+    /// rest of the document inert, which would break every test that runs after
+    /// this one in the binary — so this must run before any assertion, never
+    /// after one that could unwind past it.
+    fn drain_open_dialogs(document: &Document) {
+        while let Some(element) = document.query_selector(DIALOG_SELECTOR).ok().flatten() {
+            if let Some(dialog) = element.dyn_ref::<HtmlDialogElement>() {
+                dialog.close();
+            }
+            element.remove();
+        }
+    }
+
+    /// Let the event loop run one turn.
+    async fn next_tick() {
+        let window = web_sys::window().expect("a window in the test harness");
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
+                .expect("a timer in the test harness");
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// Wait until teardown has actually happened.
+    ///
+    /// This POLLS rather than ticking a fixed number of times, because the two
+    /// halves of teardown are queued on task sources with no ordering
+    /// relationship to each other: `close()` queues the `close` event on the DOM
+    /// manipulation task source, while `next_tick` queues on the timer task
+    /// source. A single tick genuinely does win the race sometimes, so asserting
+    /// after one is a flake, not a failure.
+    async fn wait_for_teardown(document: &Document) {
+        for _ in 0..50 {
+            if count_open_dialogs(document) == 0 {
+                // One more turn: `close` drops the listeners from a microtask,
+                // which has not run at the instant the dialog leaves the DOM.
+                next_tick().await;
+                return;
+            }
+            next_tick().await;
+        }
+        panic!("the dialog was never torn down");
+    }
+
+    /// Announce a link and close it the way Esc does, then let teardown finish.
+    async fn announce_and_close(document: &Document) {
+        confirm_then_open("https://example.com/a", "https://example.com");
+        let dialog = document
+            .query_selector(DIALOG_SELECTOR)
+            .ok()
+            .flatten()
+            .expect("the dialog should be on the page");
+        dialog.unchecked_ref::<HtmlDialogElement>().close();
+        wait_for_teardown(document).await;
+    }
+
+    /// A dialog must not cost the page memory for the rest of the session.
+    ///
+    /// `Closure::forget` — what this used to do — leaks the Rust box AND leaves
+    /// the closure's JS shim rooted in the wasm-bindgen heap forever, holding the
+    /// `url`, the `document`, and the whole detached dialog subtree with it. Every
+    /// external link reaches that path straight from the guest relay, so an
+    /// untrusted spot could drive the leak: unbounded growth on the real origin.
+    ///
+    /// `externref_heap_live_count` counts exactly what `forget` strands, so a flat
+    /// count across cycles is direct evidence the closures are dropped. The first
+    /// cycle is a warm-up — the stylesheet is injected once and is meant to stay,
+    /// so this measures the STEADY STATE rather than boot.
+    #[dialog_common::test]
+    async fn it_releases_the_dialog_when_it_closes() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+        drain_open_dialogs(&document);
+
+        announce_and_close(&document).await;
+        let before = wasm_bindgen::externref_heap_live_count();
+        for _ in 0..5 {
+            announce_and_close(&document).await;
+        }
+        let after = wasm_bindgen::externref_heap_live_count();
+
+        drain_open_dialogs(&document);
+
+        assert_eq!(
+            after, before,
+            "five announce/close cycles must leave nothing behind, got {before} -> {after}"
+        );
+    }
+
+    /// A modal dialog is a scarce resource on the trusted page, and this path
+    /// runs STRAIGHT FROM THE GUEST RELAY: a sealed spot posting `open` in a
+    /// loop reaches it as fast as it can call. Without a gate that stacks N
+    /// modals on the real origin.
+    ///
+    /// Refusing is safe because a modal makes the rest of the top document
+    /// inert, iframes included, so a *user* cannot reach a second link while
+    /// one is up. Any second call is scripted — hostile or buggy — and the
+    /// dialog already up is the one the user is answering.
+    #[dialog_common::test]
+    async fn it_refuses_to_stack_a_second_dialog() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+        drain_open_dialogs(&document);
+
+        confirm_then_open("https://example.com/a", "https://example.com");
+        let after_one = count_open_dialogs(&document);
+        confirm_then_open("https://evil.example/b", "https://evil.example");
+        let after_two = count_open_dialogs(&document);
+
+        // Restore the page BEFORE asserting: a failing assert unwinds, and a
+        // leaked modal would take the rest of the binary down with it.
+        drain_open_dialogs(&document);
+
+        assert_eq!(
+            after_one, 1,
+            "the first relayed link should announce itself"
+        );
+        assert_eq!(
+            after_two, 1,
+            "a second relayed link must not stack another modal on the real origin"
         );
     }
 
