@@ -2074,6 +2074,10 @@ view!: &space-view
   display: |
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
     <tonk-display with="main@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>
+    <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
+      <tonk-title slot="no-model" text="Untitled — Tonk"></tonk-title>
+      <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+    </tonk-display>
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The
 # router matches most-specific-first, so this `{*rest}` span never shadows `/`,
