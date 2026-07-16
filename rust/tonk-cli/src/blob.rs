@@ -90,8 +90,8 @@ fn mime_for_extension(ext: &str) -> String {
 ///
 /// `content_type` overrides the extension-inferred MIME type.
 /// Asserts `xyz.tonk.blob/content-type` (always) and
-/// `xyz.tonk.blob/name` (when `path` has a file name) on the blob
-/// entity in one transaction.
+/// `xyz.tonk.blob/name` (always; defaults to the entity string when
+/// `path` has no file name) on the blob entity in one transaction.
 pub async fn add(
     site: &TonkSite,
     path: &Path,
@@ -136,13 +136,15 @@ pub async fn add(
         .map_err(|e| BlobError::Site(format!("write blob: {e}")))?;
 
     // Extrinsic metadata as ordinary facts on the blob entity.
-    let mut tx = session
+    // `name` always lands: the `tonk:blob` concept query behind the
+    // seeded media view matches only rows with every field present, so
+    // a nameless blob would never render. A path with no file name
+    // (`.`/`..`) falls back to the content-addressed entity string.
+    let tx = session
         .handle()
         .transaction()
-        .assert(ContentType::of(entity.clone()).is(content_type.clone()));
-    if let Some(n) = name {
-        tx = tx.assert(Name::of(entity.clone()).is(n));
-    }
+        .assert(ContentType::of(entity.clone()).is(content_type.clone()))
+        .assert(Name::of(entity.clone()).is(name.unwrap_or_else(|| entity.to_string())));
     tx.commit()
         .perform(&site.operator)
         .await
