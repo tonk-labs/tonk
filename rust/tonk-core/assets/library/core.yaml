@@ -1764,9 +1764,10 @@ view!:
             customElements.define("tonk-blob-media", class extends HTMLElement {
               static observedAttributes = ["entity", "content-type", "name", "with"];
               #objectUrl = null;
+              #generation = 0;
               connectedCallback() { this.render(); }
               attributeChangedCallback() { if (this.isConnected) this.render(); }
-              disconnectedCallback() { this.revoke(); }
+              disconnectedCallback() { this.#generation++; this.revoke(); }
               revoke() {
                 if (this.#objectUrl) {
                   URL.revokeObjectURL(this.#objectUrl);
@@ -1789,6 +1790,7 @@ view!:
                 return URL.createObjectURL(await resp.blob());
               }
               render() {
+                this.#generation++;
                 const key = [
                   this.getAttribute("with"),
                   this.getAttribute("entity"),
@@ -1805,8 +1807,13 @@ view!:
                   root.innerHTML = "<style>img { max-width: 100%; }</style>" +
                     "<img part=\"media\">";
                   root.querySelector("img").alt = name;
+                  const generation = this.#generation;
                   this.objectUrl().then((u) => {
                     if (!u) return;
+                    if (generation !== this.#generation) {
+                      URL.revokeObjectURL(u);
+                      return;
+                    }
                     this.#objectUrl = u;
                     root.querySelector("img").src = u;
                   });
