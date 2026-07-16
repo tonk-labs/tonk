@@ -15,7 +15,11 @@ use web_sys::window;
 ///
 /// An empty title is a no-op, not a blank tab: a view renders a blank
 /// `{name}` until the fact resolves, and letting that through would
-/// wipe a title that was already correct.
+/// wipe a title that was already correct. The guard runs before
+/// forwarding so a blank render dies at its source rather than being
+/// posted up the frame chain for each parent to re-drop. (`navigate_to`
+/// forwards as its very first statement — it has no such guard, so the
+/// two differ deliberately.)
 ///
 /// In a guest this forwards to the parent instead (see `page_effect`):
 /// `document.title` in a sealed iframe is invisible, so writing it there
