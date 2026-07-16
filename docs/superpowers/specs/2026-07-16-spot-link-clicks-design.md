@@ -125,11 +125,20 @@ same recursion as `context_origin()` (`tonk-host/src/bridge.rs:40-52`), which so
 identical "the real value lives N frames up" problem.
 
 **The discriminator is `window.tonk` presence, not `window === window.top`.**
-`window.tonk` is assigned at exactly one place — `bridge.rs:381`, inside
-`BOOTSTRAP_JS`, which only ever runs in a guest's `srcdoc`. No Rust sets it; the top
-page never has one. So its presence means precisely "I am a portal guest with a bridge
-to my parent". A `window.top` check would encode "I am the outermost frame", which is a
-different claim and would break if the Tonk page were ever itself embedded.
+`BOOTSTRAP_JS` (`bridge.rs:381`) installs it, parent-pushed into a guest's `srcdoc` —
+and `shared.rs` always sets `srcdoc`, never `src`, so every realm the element runtime
+enters got there that way.
+
+It is **not** the only assignment: `tonk-worker/assets/bridge.js:128` also does
+`globalThis.tonk = bridge`. That realm is disjoint — `bridge.js` is loaded only by
+`wrap_html_body` (`router/host.rs:170`), serving agent-authored HTML into an SW-routed
+`src` iframe, which never runs the element runtime and so never calls `forward`. **The
+invariant is therefore "a realm that loads `bridge.js` never runs the element runtime",**
+not "only the bootstrap assigns `window.tonk`". Under it, a present `tonk` at a
+`forward` call site is always the portal bridge, and means precisely "I am a portal guest
+with a bridge to my parent". A `window.top` check would encode "I am the outermost
+frame", which is a different claim and would break if the Tonk page were ever itself
+embedded.
 
 Applies to `navigate` and `title`. `open` (PR 2) registers as the third.
 
@@ -277,7 +286,7 @@ mechanism:
 | Path | Activation | Mechanism | If blocked |
 |---|---|---|---|
 | Dialog (external) | the **Open press**, in the top document | synthesize `<a target="_blank" rel="noopener noreferrer">` and click it | cannot be — activation is guaranteed |
-| No dialog (same-origin) | must survive two `postMessage` hops from depth 2 | `window.open(href, "_blank", "noopener")` | returns `null` → fall back to same-tab `navigate_to(href)` |
+| No dialog (same-origin) | must survive two `postMessage` hops from depth 2 | `window.open(href, "_blank")` — **no `noopener`** | returns `null` → fall back to same-tab `navigate_to(href)` |
 
 **The interstitial removes the popup-blocker risk rather than adding cost.** Without it,
 every external open would depend on transient activation propagating across the relay —
@@ -288,6 +297,16 @@ activation in the top document, so the dialog path never gambles.
 The no-dialog path does gamble, which is why it uses `window.open` — the one mechanism
 whose failure is **detectable** (`null` return). An in-app path degrading to a same-tab
 navigation is a reasonable outcome; silently doing nothing is not.
+
+**And that is exactly why the no-dialog path omits `noopener`, which an earlier draft of
+this spec prescribed.** Measured: `window.open` with `noopener` returns `null`
+*unconditionally* — the spec severs the opener relationship, so there is no handle to
+return. That destroys the only blocked-popup signal there is, and every same-origin
+cmd-click would degrade to a same-tab navigation forever, silently. The cost of omitting
+it is nil here: the destination is our own origin, so an opener reference is ordinary and
+harmless. `noopener` still goes on every *external* anchor, where the destination is not
+ours and reverse tabnabbing is real. **Do not re-add it to the `window.open` call to make
+the two paths look alike.**
 
 `anchor.click()` is used on the dialog path because it handles `mailto:`/`tel:`
 correctly — `window.open("mailto:…")` can strand a blank tab, while an anchor click
@@ -351,8 +370,11 @@ data: views and components are facts a collaborator or agent can assert into a s
 - **Parse, don't prefix-match.** `web_sys::Url` only. `JaVaScRiPt:`, leading whitespace,
   and embedded newlines all defeat string comparison and are exactly how this class of
   bug ships.
-- **`rel="noopener noreferrer"`** on every synthesized anchor; `noopener` on every
-  `window.open`. Prevents reverse tabnabbing.
+- **`rel="noopener noreferrer"`** on every synthesized anchor — that is the path that
+  leaves our origin, and it is where reverse tabnabbing is real. The same-origin
+  `window.open` deliberately has no `noopener`: the destination is ours, and `noopener`
+  would return `null` unconditionally and destroy the blocked-popup signal (see "Two open
+  paths, two mechanisms").
 - **No intermediate gate.** All policy is at the top page, so there is no
   "confirmed" flag an intermediate document could forward and spot content could forge.
 - **Accepted:** spot content can render a *fake* dialog inside its own iframe rect. It
@@ -403,10 +425,13 @@ All tests use `#[dialog_common::test]` and `it_does_x` naming, per repo conventi
 - **Popup blocked on the no-dialog path.** Mitigated by the `null`-return fallback to a
   same-tab navigation. If activation propagation turns out worse than expected in
   Safari, the fallback is the behaviour, and it is acceptable.
-- **Forwarding depends on `window.tonk` meaning "I am a guest".** Verified: assigned
-  only at `bridge.rs:381` inside `BOOTSTRAP_JS`. If a future change ever installs
-  `window.tonk` on the top page, every page effect silently no-ops by posting to a
-  parent that isn't listening. Pin the assumption in a comment at the forwarding site.
+- **Forwarding depends on `window.tonk` meaning "I am a guest".** It holds because the
+  realms are disjoint, not because the bootstrap is the only assignment —
+  `tonk-worker/assets/bridge.js:128` installs one too, in realms that never run the
+  element runtime. Break that separation (the runtime into `wrap_html_body`, or
+  `bridge.js` into a runtime guest), or install a `window.tonk` on the top page, and
+  every page effect silently no-ops at once. The assumption is pinned in a comment at
+  the forwarding site.
 - **`navigate_to`'s fallback is still wrong** even after PR 1 — it will still misread a
   `SecurityError` as "no history access". PR 1 makes it unreachable rather than correct.
   Worth a comment; a real fix means distinguishing the two failures.
