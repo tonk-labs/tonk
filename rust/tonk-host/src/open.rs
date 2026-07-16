@@ -15,7 +15,8 @@
 //!    `JaVaScRiPt:` / leading whitespace / embedded newlines all defeat
 //!    string comparison. The URL parser normalises every one of them
 //!    into a canonical `protocol`.
-//! 2. Never interpolate the URL or host into HTML. Text nodes only.
+//! 2. Never interpolate the URL or the name it is shown under into HTML.
+//!    Text nodes only.
 //!
 //! The dialog gates LEAVING THE ORIGIN, not opening a tab: a cmd-clicked
 //! in-app link opens silently, an external link is always announced.
@@ -39,10 +40,12 @@ const ALLOWED_SCHEMES: [&str; 4] = ["http:", "https:", "mailto:", "tel:"];
 pub(crate) enum Destination {
     /// Our own origin — open a tab with no dialog.
     SameOrigin(String),
-    /// Off-origin, on the allowlist — confirm first. `host` is what the
-    /// dialog names; for `mailto:`/`tel:` it is the address, which is the
-    /// only meaningful thing to show.
-    External { url: String, host: String },
+    /// Off-origin, on the allowlist — confirm first.
+    ///
+    /// `label` is what the dialog names as the destination's identity: the
+    /// full origin (`scheme://host:port`) for `http`/`https`, and the address
+    /// for `mailto:`/`tel:`, which have no origin to name.
+    External { url: String, label: String },
     /// Not openable.
     Rejected,
 }
@@ -54,6 +57,12 @@ pub(crate) enum Destination {
 /// against. Anything else fails closed: a mismatch classifies our own
 /// origin as external, which shows a needless dialog but opens nothing
 /// unannounced.
+///
+/// `base` must be the page's own absolute URL (`window.location.href`) and
+/// agree with `page_origin`. Both ways of getting it wrong also fail closed:
+/// an invalid `base` makes every href unparseable and so `Rejected`, and a
+/// `base` disagreeing with `page_origin` makes our own links spuriously
+/// `External` — noisy, never silent.
 ///
 /// Split out from the DOM so it can be tested exhaustively — this is the
 /// security boundary, and it is worth more tests per line than anything
@@ -68,11 +77,11 @@ pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination
         return Destination::Rejected;
     }
     // WHAT WE DISPLAY IS EXACTLY WHAT WE OPEN. `https://tonk.example@evil.com/`
-    // has a truthful `host` of `evil.com`, but its `href` reads as ours — and a
-    // user reads the URL, so a dialog showing both would be spoofed by the very
-    // string it exists to warn about. Strip userinfo before anything is derived
-    // from the URL and no `Destination` can carry the disguise; the same edit
-    // keeps credentials out of a same-origin navigation.
+    // has a truthful origin of `https://evil.com`, but its `href` reads as
+    // ours — and a user reads the URL, so a dialog showing both would be
+    // spoofed by the very string it exists to warn about. Strip userinfo before
+    // anything is derived from the URL and no `Destination` can carry the
+    // disguise; the same edit keeps credentials out of a same-origin navigation.
     //
     // This cannot move a URL between origins: userinfo is not part of an
     // origin, so `origin()` below reads the same either way.
@@ -84,29 +93,60 @@ pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination
     url.set_password("");
     // `origin` is `"null"` for `mailto:`/`tel:` (opaque path, no host), so
     // they can never collide with a real page origin and are always external.
+    // Their `label` is the address, which means the address must actually BE
+    // one — the parser is happy to accept plenty that is not.
     if protocol == "mailto:" || protocol == "tel:" {
-        // The address IS the name in the dialog, and these two schemes are the
-        // only ones that can reach here with an empty one: the parser rejects
-        // an `http`/`https` URL with no host, but `mailto:` parses happily to
-        // an empty path. It opens nothing, and it would ask the user to
-        // approve a blank — so it is not openable.
+        // An authority is the sharp case. `mailto://tonk.example/x` parses
+        // with a host and a pathname of `/x`, so it would NAME `/x` while
+        // OPENING `mailto://tonk.example/x` — display and destination
+        // disagreeing, which is the one thing this must never do. No real
+        // mail or tel address has an authority, so its presence is enough.
+        //
+        // Userinfo is not theoretical here either: the setters above are inert
+        // only while the host is null, so `mailto://user:pw@evil.com/x` really
+        // does parse with credentials and really is stripped.
+        if !url.host().is_empty() {
+            return Destination::Rejected;
+        }
         let address = url.pathname();
-        if address.is_empty() {
+        // A path-shaped address is the same disagreement without the host:
+        // `mailto:/x` names `/x`, which is not an address either.
+        if address.starts_with('/') {
+            return Destination::Rejected;
+        }
+        // A blank name is worse than no dialog: it asks the user to approve
+        // NOTHING. `mailto:` is empty, `mailto:%20` is a space, `tel:.` is
+        // bare punctuation — none of them name something a person can judge,
+        // and every real address carries a letter or a digit. Decoding is only
+        // how we make that judgement; the label stays the raw pathname, so
+        // what we display is still exactly what we open. A malformed escape
+        // fails to decode and so fails closed.
+        let decoded = js_sys::decode_uri_component(&address)
+            .map(String::from)
+            .unwrap_or_default();
+        if !decoded.chars().any(char::is_alphanumeric) {
             return Destination::Rejected;
         }
         return Destination::External {
-            host: address,
+            label: address,
             url: url.href(),
         };
     }
     if url.origin() == page_origin {
         return Destination::SameOrigin(url.href());
     }
-    // `host` comes from the parser, so an IDN homograph is already punycoded
-    // (`аpple.com` shows as `xn--pple-43d.com`) — one reason to display the
-    // parsed host rather than anything from the href.
+    // Name the ORIGIN, not the host. A host cannot express an origin: it drops
+    // the scheme, so `http://tonk.example/` — which is NOT our origin — would
+    // be named `tonk.example`, printing our own identity on a dialog warning
+    // about leaving us. A plain-http downgrade must not read as home. The
+    // origin is also exactly what the comparison above uses, so the dialog
+    // names the same thing the decision was made on.
+    //
+    // It comes from the parser, so an IDN homograph is already punycoded
+    // (`аpple.com` names `https://xn--pple-43d.com`) — one reason to display
+    // the parsed origin rather than anything lifted from the href.
     Destination::External {
-        host: url.host(),
+        label: url.origin(),
         url: url.href(),
     }
 }
@@ -148,7 +188,7 @@ mod tests {
             classified("https://example.com/docs/x"),
             Destination::External {
                 url: "https://example.com/docs/x".to_owned(),
-                host: "example.com".to_owned(),
+                label: "https://example.com".to_owned(),
             },
             "a cross-origin https URL should be announced"
         );
@@ -156,7 +196,7 @@ mod tests {
             classified("//example.com/docs/x"),
             Destination::External {
                 url: "https://example.com/docs/x".to_owned(),
-                host: "example.com".to_owned(),
+                label: "https://example.com".to_owned(),
             },
             "a protocol-relative URL inherits the page scheme and is external"
         );
@@ -164,21 +204,21 @@ mod tests {
             classified("http://example.com/"),
             Destination::External {
                 url: "http://example.com/".to_owned(),
-                host: "example.com".to_owned(),
+                label: "http://example.com".to_owned(),
             },
             "plain http is allowed, and is external even on the same host"
         );
     }
 
     /// `mailto:`/`tel:` have no origin. They are external by construction, and
-    /// the address stands in for the host in the dialog.
+    /// the address stands in for it as the name in the dialog.
     #[dialog_common::test]
-    async fn it_shows_the_address_as_the_host_for_mail_and_tel() {
+    async fn it_names_the_address_for_mail_and_tel() {
         assert_eq!(
             classified("mailto:someone@example.com"),
             Destination::External {
                 url: "mailto:someone@example.com".to_owned(),
-                host: "someone@example.com".to_owned(),
+                label: "someone@example.com".to_owned(),
             },
             "a mailto address should be what the dialog names"
         );
@@ -186,7 +226,7 @@ mod tests {
             classified("tel:+15551234567"),
             Destination::External {
                 url: "tel:+15551234567".to_owned(),
-                host: "+15551234567".to_owned(),
+                label: "+15551234567".to_owned(),
             },
             "a tel number should be what the dialog names"
         );
@@ -233,18 +273,18 @@ mod tests {
         );
     }
 
-    /// The dialog names the host the browser will actually connect to, not
+    /// The dialog names the origin the browser will actually connect to, not
     /// whatever the href is dressed up to look like. Userinfo before the `@`
     /// and a backslash the parser rewrites to `/` both make an href READ as
     /// ours while resolving elsewhere — the whole point of naming
-    /// `url.host()` rather than anything lifted out of the raw string.
+    /// `url.origin()` rather than anything lifted out of the raw string.
     #[dialog_common::test]
-    async fn it_names_the_real_host_when_the_href_disguises_it() {
+    async fn it_names_the_real_origin_when_the_href_disguises_it() {
         assert_eq!(
             classified("https://tonk.example@evil.com/"),
             Destination::External {
                 url: "https://evil.com/".to_owned(),
-                host: "evil.com".to_owned(),
+                label: "https://evil.com".to_owned(),
             },
             "userinfo is not the host — the connection goes to evil.com"
         );
@@ -252,7 +292,7 @@ mod tests {
             classified("https://evil.com\\@tonk.example/"),
             Destination::External {
                 url: "https://evil.com/@tonk.example/".to_owned(),
-                host: "evil.com".to_owned(),
+                label: "https://evil.com".to_owned(),
             },
             "a backslash normalises to `/`, leaving tonk.example in the path"
         );
@@ -269,7 +309,7 @@ mod tests {
             classified("https://tonk.example@evil.com/"),
             Destination::External {
                 url: "https://evil.com/".to_owned(),
-                host: "evil.com".to_owned(),
+                label: "https://evil.com".to_owned(),
             },
             "a username disguising the URL as ours must not survive"
         );
@@ -277,7 +317,7 @@ mod tests {
             classified("https://tonk.example:hunter2@evil.com/x?a=1#f"),
             Destination::External {
                 url: "https://evil.com/x?a=1#f".to_owned(),
-                host: "evil.com".to_owned(),
+                label: "https://evil.com".to_owned(),
             },
             "a password must not survive either, and the rest of the URL must"
         );
@@ -290,51 +330,39 @@ mod tests {
             classified("https://@evil.com/"),
             Destination::External {
                 url: "https://evil.com/".to_owned(),
-                host: "evil.com".to_owned(),
+                label: "https://evil.com".to_owned(),
             },
             "an empty userinfo leaves no residue"
         );
     }
 
-    /// Stripping userinfo must not move a URL between origins. Userinfo is not
-    /// part of an origin, so it cannot — but the whole fix is worthless if it
-    /// can, so pin it: the disguised href stays external, and the same-origin
-    /// one stays ours.
+    /// A userinfo that reads like ANOTHER origin must not push our own URL off
+    /// it. `https://evil.com@tonk.example/x` connects to `tonk.example`;
+    /// `evil.com` is a username. This is the mirror of the disguise the tests
+    /// above pin — there the userinfo reads as ours and the host is hostile,
+    /// here it reads as hostile and the host is ours — and both come out right
+    /// for the same reason: classification reads the host and nothing else.
     #[dialog_common::test]
-    async fn it_does_not_let_stripping_userinfo_change_the_origin() {
-        for (href, expected) in [
-            (
-                "https://tonk.example@evil.com/",
-                Destination::External {
-                    url: "https://evil.com/".to_owned(),
-                    host: "evil.com".to_owned(),
-                },
-            ),
-            (
-                "https://evil.com@tonk.example/x",
-                Destination::SameOrigin("https://tonk.example/x".to_owned()),
-            ),
-        ] {
-            assert_eq!(
-                classified(href),
-                expected,
-                "`{href}` must classify on its host, not its userinfo"
-            );
-        }
+    async fn it_classifies_on_the_host_not_the_userinfo() {
+        assert_eq!(
+            classified("https://evil.com@tonk.example/x"),
+            Destination::SameOrigin("https://tonk.example/x".to_owned()),
+            "`evil.com` here is a username — the connection is to ours"
+        );
     }
 
-    /// `host` keeps the port; `hostname` drops it. A URL on our hostname at
-    /// another port is a DIFFERENT origin, so naming `hostname` would print
-    /// `tonk.example` on a dialog for `https://tonk.example:8443` — the one
-    /// case where the two getters disagree, and the reason `classify` must
-    /// keep using `host`.
+    /// An origin carries the port. A URL on our hostname at another port is a
+    /// DIFFERENT origin, so a name that dropped the port would print
+    /// `tonk.example` on a dialog for `https://tonk.example:8443`. This is the
+    /// sibling of the scheme case: every part of the origin has to survive
+    /// into the name, or the name can be confused with ours.
     #[dialog_common::test]
-    async fn it_keeps_the_port_in_the_host_it_names() {
+    async fn it_keeps_the_port_in_the_origin_it_names() {
         assert_eq!(
             classified("https://tonk.example:8443/x"),
             Destination::External {
                 url: "https://tonk.example:8443/x".to_owned(),
-                host: "tonk.example:8443".to_owned(),
+                label: "https://tonk.example:8443".to_owned(),
             },
             "another port is another origin, and the port must be visible"
         );
@@ -353,13 +381,13 @@ mod tests {
             classified("https://\u{0430}pple.com/"),
             Destination::External {
                 url: "https://xn--pple-43d.com/".to_owned(),
-                host: "xn--pple-43d.com".to_owned(),
+                label: "https://xn--pple-43d.com".to_owned(),
             },
             "a homograph should be named in punycode, not as `apple.com`"
         );
     }
 
-    /// A `mailto:`/`tel:` with no address opens nothing, and its `host` is the
+    /// A `mailto:`/`tel:` with no address opens nothing, and its `label` is the
     /// empty pathname — a confirmation dialog naming NOTHING. Asking the user
     /// to approve a blank is worse than not asking, so it is not openable.
     #[dialog_common::test]
@@ -376,6 +404,45 @@ mod tests {
         );
     }
 
+    /// A scheme downgrade keeps our hostname. `http://tonk.example/` is NOT our
+    /// origin, so naming `tonk.example` would print OUR OWN identity on the
+    /// dialog for a destination that is not us — a plain-http downgrade reading
+    /// as home is exactly the confusion the dialog exists to prevent. The name
+    /// must carry the scheme, so it can never be mistaken for our origin.
+    #[dialog_common::test]
+    async fn it_names_an_origin_a_scheme_downgrade_cannot_disguise() {
+        assert_eq!(
+            classified("http://tonk.example/"),
+            Destination::External {
+                url: "http://tonk.example/".to_owned(),
+                label: "http://tonk.example".to_owned(),
+            },
+            "a scheme downgrade on our own hostname must not be named as us"
+        );
+    }
+
+    /// `mailto:`/`tel:` name their address, so an href whose address is not an
+    /// address must not reach the dialog. `mailto://tonk.example/x` is the sharp
+    /// one: it would name `/x` while opening `mailto://tonk.example/x` — display
+    /// and destination disagreeing, which is the one thing this must never do.
+    #[dialog_common::test]
+    async fn it_rejects_a_mail_or_tel_href_that_names_a_non_address() {
+        for href in [
+            "mailto:/x",
+            "mailto://tonk.example/x",
+            "mailto://user:pw@evil.com/x",
+            "mailto:%20",
+            "tel:.",
+            "tel://evil.com/x",
+        ] {
+            assert_eq!(
+                classified(href),
+                Destination::Rejected,
+                "`{href}` does not name an address and must not be openable"
+            );
+        }
+    }
+
     /// An opaque page origin serialises as the string `"null"`. No `http`/
     /// `https` URL ever has that origin, and `mailto:`/`tel:` — the only
     /// allowed schemes that do — return before the comparison. So a page that
@@ -387,7 +454,7 @@ mod tests {
             classify("https://example.com/x", BASE, "null"),
             Destination::External {
                 url: "https://example.com/x".to_owned(),
-                host: "example.com".to_owned(),
+                label: "https://example.com".to_owned(),
             },
             "`null` must never match a real URL's origin"
         );
@@ -395,7 +462,7 @@ mod tests {
             classify("mailto:someone@example.com", BASE, "null"),
             Destination::External {
                 url: "mailto:someone@example.com".to_owned(),
-                host: "someone@example.com".to_owned(),
+                label: "someone@example.com".to_owned(),
             },
             "a mailto is external regardless of the page origin"
         );
