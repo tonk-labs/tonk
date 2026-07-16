@@ -233,7 +233,14 @@ fn it_stays_silent_and_succeeds_when_the_check_cannot_reach_the_release() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("error"), "stderr: {stderr}");
     assert!(!stderr.contains("is available"), "stderr: {stderr}");
-    // last_checked_at still advanced, so an offline machine backs off.
+    // last_checked_at must actually advance, so an offline machine backs
+    // off to a daily retry instead of re-checking on every command. Parse
+    // rather than substring-match: serde always emits the key, so
+    // `contains("last_checked_at")` would pass even when it is null.
     let state = std::fs::read_to_string(dir.path().join("update.json")).expect("state");
-    assert!(state.contains("last_checked_at"), "state: {state}");
+    let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse state");
+    assert!(
+        !parsed["last_checked_at"].is_null(),
+        "last_checked_at should have advanced despite the failed check: {state}"
+    );
 }
