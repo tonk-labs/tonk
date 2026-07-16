@@ -398,6 +398,34 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_falls_through_an_unrecognized_receipt_channel_to_env_then_stable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: tests in this mod run on one thread per process
+        // invocation; nothing else reads these vars concurrently.
+        unsafe { std::env::set_var(STATE_ENV, dir.path()) };
+        unsafe { std::env::remove_var("TONK_CHANNEL") };
+
+        // A receipt channel label of "beta" is unrecognized: it must
+        // not panic and must not win, falling through to the env.
+        receipt::store(&receipt::Receipt {
+            channel: "beta".to_owned(),
+            version: "0.4.0".to_owned(),
+            commit: "abc".to_owned(),
+            install_dir: "/usr/local/bin".to_owned(),
+            installed_at: "2026-07-16T00:00:00Z".to_owned(),
+        })
+        .expect("store");
+
+        assert_eq!(resolve_channel(), Channel::Stable);
+
+        unsafe { std::env::set_var("TONK_CHANNEL", "staging") };
+        assert_eq!(resolve_channel(), Channel::Staging);
+
+        unsafe { std::env::remove_var("TONK_CHANNEL") };
+        unsafe { std::env::remove_var(STATE_ENV) };
+    }
+
+    #[dialog_common::test]
     fn it_abbreviates_a_commit_without_panicking_on_short_input() {
         assert_eq!(short_commit("27b74e22b1234567"), "27b74e2");
         assert_eq!(short_commit("abc"), "abc");
