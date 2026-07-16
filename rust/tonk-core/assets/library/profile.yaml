@@ -1997,7 +1997,7 @@ view!: &inspector/route-view
   model: tonk:inspector/route
   display: |
     <div class="display-view-slot">
-      <tonk-inspector with="main@profile:tonk" source=home></tonk-inspector>
+      <tonk-inspector with="main@profile:tonk"></tonk-inspector>
     </div>
 
 route!: &route/diagnose

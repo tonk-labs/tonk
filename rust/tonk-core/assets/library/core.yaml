@@ -1191,7 +1191,7 @@ view/directory!:
   this: tonk:inspector/directory
   model: inspector
   display: |
-    <tonk-inspector source=home />
+    <tonk-inspector />
 
 # The canonical bridge from the `portal` concept to the
 # `<tonk-portal>` element. `html:` forces the binding through

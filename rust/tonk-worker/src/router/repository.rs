@@ -1734,10 +1734,10 @@ async fn seed_and_initialize(
 
     if !branches.is_empty() {
         // Fetch every library document this repo seeds — core, then the
-        // chosen template, then (home only) the showcase demo. Concatenated
-        // and evaluated in ONE commit per branch so the rule engine
-        // saturates over the whole document at once (the name flash fix).
-        let urls = seed_library_urls(template, display_name);
+        // chosen template. Concatenated and evaluated in ONE commit per
+        // branch so the rule engine saturates over the whole document at
+        // once (the name flash fix).
+        let urls = seed_library_urls(template);
         let mut documents: Vec<String> = Vec::with_capacity(urls.len());
         for url in &urls {
             let document = fetch_standard_library(url)
@@ -1801,37 +1801,16 @@ const WIKI_LIBRARY_URL: &str = "/library/wiki.yaml";
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const BOARD_LIBRARY_URL: &str = "/library/board.yaml";
 
-/// URL of the served showcase-demo notation asset (`demo.yaml`),
-/// copied into the dist alongside `core.yaml`. Seeded on top of the
-/// scaffold, but only into the default `home` repository, so every
-/// other repo starts with zero sheet instances. Only referenced
-/// from the SW-scoped background seed path.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
-
-/// The default display label for the repository created for a fresh
-/// profile. The showcase demo is seeded only when the create carries
-/// this label; every other repository gets the scaffold alone and
-/// renders empty until populated. This is a label, not an address —
-/// the repository's identity is still its minted DID.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const DEFAULT_REPOSITORY_NAME: &str = "home";
-
 /// The ordered list of library documents to concatenate and seed for a
 /// new repo. Core is always first. The `sheets` template appends the
 /// sheets workspace (which overrides the `tonk/space` alias to the
 /// binder); the `wiki` template appends the wiki (tree + block canvas,
 /// same alias override); the `board` template appends the card canvas
-/// (columns of text/checklist/table cards, same alias override). The
-/// default `home` repo gets sheets + the showcase demo, so it keeps
-/// opening into the populated binder. Every other template value
-/// (including `blank`, `agent`, or an unknown one) is core alone —
-/// the lean default that renders the blank canvas.
+/// (columns of text/checklist/table cards, same alias override). Every
+/// other template value (including `blank`, `agent`, or an unknown one)
+/// is core alone — the lean default that renders the blank canvas.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_library_urls(template: Option<&str>, display_name: &str) -> Vec<&'static str> {
-    if display_name == DEFAULT_REPOSITORY_NAME {
-        return vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL, DEMO_LIBRARY_URL];
-    }
+fn seed_library_urls(template: Option<&str>) -> Vec<&'static str> {
     match template {
         Some("sheets") => vec![STANDARD_LIBRARY_URL, SHEETS_LIBRARY_URL],
         Some("wiki") => vec![STANDARD_LIBRARY_URL, WIKI_LIBRARY_URL],
@@ -3287,8 +3266,8 @@ pub async fn attach_remote(
 }
 
 /// Seed-split regression tests: the scaffold (`core.yaml`) makes a
-/// repository renderable but seeds zero instances, and the showcase
-/// (`demo.yaml`) layers the demo content on top, resolving its bare
+/// repository renderable but seeds zero instances, and a template
+/// (`sheets.yaml`, …) layers its workspace on top, resolving its bare
 /// concept references against the committed scaffold.
 ///
 /// These embed the real assets via `include_str!` and seed them
@@ -3559,16 +3538,13 @@ mod seed_library_urls_tests {
 
     #[test]
     fn it_seeds_core_only_for_a_blank_repo() {
-        assert_eq!(
-            seed_library_urls(None, "anything"),
-            vec!["/library/core.yaml"],
-        );
+        assert_eq!(seed_library_urls(None), vec!["/library/core.yaml"],);
     }
 
     #[test]
     fn it_appends_sheets_for_the_sheets_template() {
         assert_eq!(
-            seed_library_urls(Some("sheets"), "anything"),
+            seed_library_urls(Some("sheets")),
             vec!["/library/core.yaml", "/library/sheets.yaml"],
         );
     }
@@ -3576,7 +3552,7 @@ mod seed_library_urls_tests {
     #[test]
     fn it_appends_wiki_for_the_wiki_template() {
         assert_eq!(
-            seed_library_urls(Some("wiki"), "anything"),
+            seed_library_urls(Some("wiki")),
             vec!["/library/core.yaml", "/library/wiki.yaml"],
         );
     }
@@ -3584,7 +3560,7 @@ mod seed_library_urls_tests {
     #[test]
     fn it_appends_board_for_the_board_template() {
         assert_eq!(
-            seed_library_urls(Some("board"), "anything"),
+            seed_library_urls(Some("board")),
             vec!["/library/core.yaml", "/library/board.yaml"],
         );
     }
@@ -3592,20 +3568,8 @@ mod seed_library_urls_tests {
     #[test]
     fn it_seeds_core_for_an_unknown_template() {
         assert_eq!(
-            seed_library_urls(Some("garden"), "anything"),
+            seed_library_urls(Some("garden")),
             vec!["/library/core.yaml"],
-        );
-    }
-
-    #[test]
-    fn it_seeds_sheets_and_demo_for_the_home_repo() {
-        assert_eq!(
-            seed_library_urls(None, "home"),
-            vec![
-                "/library/core.yaml",
-                "/library/sheets.yaml",
-                "/library/demo.yaml",
-            ],
         );
     }
 }
@@ -3631,10 +3595,9 @@ mod tests {
     use crate::router::evaluate::evaluate_body;
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
 
-    /// The scaffold and showcase notation, embedded at compile time.
+    /// The scaffold notation, embedded at compile time.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
     const SHEETS: &str = include_str!("../../../tonk-core/assets/library/sheets.yaml");
-    const DEMO: &str = include_str!("../../../tonk-core/assets/library/demo.yaml");
 
     /// Create a fresh repo and return its router, wrapped state, and
     /// minted routing key. PUTs a branchless `{}` so the worker seeds
@@ -4079,30 +4042,6 @@ mod tests {
             count(&state, repo, "blank:\n").await,
             1,
             "blank scaffold resolves the blank model to the repo subject",
-        );
-    }
-
-    /// The showcase, seeded on top of the scaffold, resolves its bare
-    /// concept references (`workspace/sheet`, `person`, …) against the
-    /// committed scaffold and lands the demo instances — what the
-    /// default `home` repo gets. Guards the cross-document resolution
-    /// the split depends on.
-    #[dialog_common::test]
-    async fn it_seeds_showcase_on_top_of_scaffold() {
-        let (_app, state, repo) = fresh_repo("test-seed-showcase").await;
-        let repo = repo.as_str();
-        seed(&state, repo, CORE).await;
-        seed(&state, repo, SHEETS).await;
-        seed(&state, repo, DEMO).await;
-
-        assert!(
-            count(&state, repo, "workspace/sheet:\n").await >= 1,
-            "showcase must seed at least one sheet instance",
-        );
-        assert_eq!(
-            count(&state, repo, "person:\n").await,
-            2,
-            "showcase must seed the Alice and Bob person instances",
         );
     }
 
