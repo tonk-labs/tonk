@@ -2047,26 +2047,54 @@ else
   state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/tonk"
 fi
 
+# Escape a value for use inside a JSON string: backslashes first, then
+# quotes. An install dir containing either would otherwise emit JSON the
+# CLI silently fails to parse (it reads the receipt with `.ok()`).
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Everything that can fail lives here, and it is only ever called as an
+# `if` condition, so a failure skips the receipt instead of aborting an
+# install whose binary is already in place. `mkdir -p` succeeds on an
+# existing directory even when it is unwritable, so the write itself has
+# to be guarded, not just the mkdir.
+write_receipt() {
+  mkdir -p "$state_dir" 2>/dev/null || return 1
+  cat > "$state_dir/install.json" 2>/dev/null <<EOF || return 1
+{
+  "channel": "$channel",
+  "version": "$m_version",
+  "commit": "$m_commit",
+  "install_dir": "$(json_escape "$INSTALL_DIR")",
+  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+  return 0
+}
+
 if fetch "${url%/*}/manifest.json" "$tmp/manifest.json" 2>/dev/null; then
   # Pull two string fields out without requiring jq.
   m_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
   m_commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
   if [ -n "$m_version" ] && [ -n "$m_commit" ]; then
-    if mkdir -p "$state_dir" 2>/dev/null; then
-      cat > "$state_dir/install.json" <<EOF
-{
-  "channel": "$channel",
-  "version": "$m_version",
-  "commit": "$m_commit",
-  "install_dir": "$INSTALL_DIR",
-  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
+    if write_receipt; then
       say "recorded install receipt in $state_dir"
     fi
   fi
 fi
 ```
+
+**Why the write is guarded and not just the `mkdir`.** `mkdir -p` exits 0
+when the directory already exists, *regardless of whether it is writable* —
+it never checks write permission. So on a pre-existing unwritable state dir
+(a prior sudo-owned install, a managed home, a read-only CI home) or a full
+disk, an unguarded `cat > "$state_dir/install.json"` fails and `set -eu`
+aborts the whole script — **after** the binary is already installed. The user
+would see a failed install despite a working `tonk`, and the PATH note and
+`--version` smoke test below would never run. Putting every fallible step
+inside a function called as an `if` condition makes a write failure skip the
+receipt, which is the whole point of "best-effort".
 
 `${url%/*}` strips the asset name off the download URL, leaving the release directory — so the manifest is fetched from the same release the archive came from, whether that resolved via `latest/download` or an explicit tag.
 
@@ -2092,6 +2120,26 @@ TONK_UPDATE_STATE=$(mktemp -d) TONK_INSTALL_DIR=$(mktemp -d) sh install.sh && \
 Expected: an `install.json` with a `channel`, `version`, `commit`, `install_dir`, and `installed_at`.
 
 **Note:** this only succeeds once Task 10 has published a `manifest.json` to the release. Until then the fetch 404s and the install completes with no receipt — which is exactly the required behaviour, and worth confirming by running the command above *before* Task 10 and seeing the install still succeed.
+
+Then verify the best-effort guarantee against the failure mode that actually
+breaks it — a state dir that exists but cannot be written:
+
+```bash
+ro=$(mktemp -d) && chmod 555 "$ro"
+TONK_UPDATE_STATE="$ro" TONK_INSTALL_DIR=$(mktemp -d) sh install.sh; echo "exit=$?"
+chmod 755 "$ro"
+```
+
+Expected: `exit=0`, the binary installed, no receipt, and the script's trailing
+`--version` output still printed. A non-zero exit here means the receipt block
+can fail an install, which is the one thing it must never do.
+
+Finally, exercise the success path, which the real release cannot until Task 10
+ships the asset. Serve a fake release locally (`manifest.json`, `checksums.txt`,
+and a matching `tonk-<platform>.tar.gz`) with `python3 -m http.server`, point a
+**copy** of `install.sh` outside the repo at it, and confirm the resulting
+`install.json` carries all five fields. Use a `TONK_INSTALL_DIR` containing a
+double quote to confirm `json_escape` keeps the JSON parseable.
 
 - [ ] **Step 3: Commit**
 
