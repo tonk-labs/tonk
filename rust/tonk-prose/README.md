@@ -131,7 +131,17 @@ Copy each package's `assets/` to its own directory and load the shell
 with the crate's `install("/tonk-prose/tonk-prose.js")` or a module
 script. `tonk-ui`'s `index.html` already ships the bundle at
 `/tonk-prose/` (a `copy-dir` link next to tonk-code's, with a
-matching `Trunk.toml` watch entry), so host code or guest bridges can
-load it from there. Install `tonk-code` too to get embedded code
-editors with language highlighting; without it, code blocks stay
-editable as plain text.
+matching `Trunk.toml` watch entry). Install `tonk-code` too to get
+embedded code editors with language highlighting; without it, code
+blocks stay editable as plain text.
+
+## Inside `<tonk-site>` guests
+
+tonk-portal injects the bundle into every sealed guest iframe
+(`bridge.rs`), alongside tonk-code: the parent fetches the shell +
+editor core as text, the guest mints blob URLs for both, hands the
+core's blob to `window.__tonkProseEditor` (the shell consults that
+global before falling back to `import.meta.url` resolution, which is
+dead at a blob origin), and imports the shell. Guest views can
+therefore render `<tonk-prose>` directly and get the full editor,
+including `<tonk-code>`-backed code blocks.

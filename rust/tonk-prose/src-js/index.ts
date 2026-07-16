@@ -58,11 +58,22 @@ export type ReadyDetail = {
   editor: ProseEditor;
 };
 
-/** Resolve the URL of the editor-core chunk relative to this module.
- *  `import.meta.url` is the URL `tonk-prose.js` was loaded from, so
- *  the core chunk lives next to it regardless of where the consumer
- *  mounted the bundle (root, /assets/, CDN, …). */
+/** Resolve the URL of the editor-core chunk.
+ *
+ *  Default: relative to this module — `import.meta.url` is the URL
+ *  `tonk-prose.js` was loaded from, so the core chunk lives next to
+ *  it regardless of where the consumer mounted the bundle (root,
+ *  /assets/, CDN, …).
+ *
+ *  Override: `window.__tonkProseEditor` (a URL string). Sealed
+ *  environments that import this shell from a minted `blob:` URL
+ *  (tonk-portal guests) have no working relative resolution — the
+ *  injector mints a blob for the core chunk too and hands its URL
+ *  over via this global before importing the shell. */
 function editorChunkUrl(): string {
+  const override = (globalThis as { __tonkProseEditor?: unknown })
+    .__tonkProseEditor;
+  if (typeof override === "string" && override) return override;
   return new URL("./tonk-prose-editor.js", import.meta.url).href;
 }
 
