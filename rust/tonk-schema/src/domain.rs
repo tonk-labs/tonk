@@ -296,6 +296,36 @@ pub mod command {
         pub struct Space(pub Entity);
     }
 
+    /// Attributes the `tonk/rename-repository` command carries when the FAB
+    /// dispatches it from the PROFILE branch.
+    pub mod rename_repository {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The new repository name, read from the chip's `<tonk-editable>` on
+        /// commit. The derived attribute is
+        /// `dom.event.current-target/value`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target")]
+        pub struct Value(pub String);
+
+        /// The target space DID — the repository to rename. Read by the handler
+        /// in place of the dispatch origin, so the command can be defined and
+        /// dispatched on the PROFILE branch and the FAB depends on nothing
+        /// seeded per-space. Mirrors `pause_sync::Space`. The derived attribute
+        /// is `xyz.tonk.rename-repository/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.rename-repository")]
+        pub struct Space(pub Entity);
+
+        /// Per-command marker keeping this shape distinct from `profile/rename`,
+        /// which also reads `dom.event.current-target/value`. The derived
+        /// attribute is `dom.event.current-target.dataset/rename`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Rename(pub Entity);
+    }
+
     /// Attributes the `profile/rename` command reads from the identity
     /// chip's `<tonk-editable>` commit event.
     pub mod rename {

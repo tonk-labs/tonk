@@ -101,11 +101,11 @@ impl CommandEnv {
 /// transient's facts — which a typed `Provider`, receiving only the
 /// decoded command, can't do.
 ///
-/// Repository rename needs no command here: the standard-library
-/// `tonk/rename-repository` rule writes the new name straight into the
-/// repository's own `tonk/repository` concept on its content branch,
-/// which syncs across devices and is the single source of truth the Hub
-/// and banner both read.
+/// [`RenameRepositoryHandler`] serves the FAB's repository-name chip
+/// (`tonk/rename-repository`): a profile-branch command carrying its
+/// target `space`, since a claim dispatched from the profile branch has
+/// no space-side rule to consume it (see
+/// [`tonk_schema::command::RenameRepository`]).
 ///
 /// [`RemoveSpaceHandler`] serves the Hub's per-row delete confirm
 /// (`space/remove`): replica retraction, reactor eviction, storage
@@ -113,6 +113,7 @@ impl CommandEnv {
 ///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
 /// [`RemoveSpaceHandler`]: super::repository::RemoveSpaceHandler
+/// [`RenameRepositoryHandler`]: super::repository::RenameRepositoryHandler
 pub fn command_registry() -> CommandRegistry<CommandEnv> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
@@ -122,6 +123,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::repository::InviteHandler::new()));
         registry.register(Box::new(super::repository::PauseSyncHandler::new()));
         registry.register(Box::new(super::repository::ProfileRenameHandler::new()));
+        registry.register(Box::new(super::repository::RenameRepositoryHandler::new()));
         registry.register(Box::new(super::join::JoinHandler::new()));
         registry.register(Box::new(super::session::LoadHandler::new()));
         registry

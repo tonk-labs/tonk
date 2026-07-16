@@ -1137,6 +1137,173 @@ async fn run_profile_rename(
     Ok(())
 }
 
+/// Outcome of a rename, surfaced rather than swallowed.
+///
+/// `PauseSyncHandler` logs and returns on a missing replica. Rename must not:
+/// a silently-dropped rename looks successful to the user, which is the
+/// failure class this whole design attacks.
+///
+/// Compiled for the wasm handler that uses it and for native tests (see
+/// [`rename_outcome`]) — never for a plain native build, where it would sit
+/// unused and trip the `-D warnings` dead-code lint.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RenameOutcome {
+    /// The rename committed.
+    Renamed,
+    /// The rename did not commit; the caller must not treat this as success.
+    Failed,
+}
+
+/// Map a rename result to an outcome the chip can reflect.
+///
+/// Pure and native-testable — the handler around it is wasm-gated, so this is
+/// the seam where the "do not swallow a failed rename" decision is pinned.
+/// Any error is `Failed`: `RepositoryError` carries no `NotFound` variant, so
+/// an absent replica arrives as `Internal` from the acquire, and the chip's
+/// response is the same either way — revert, do not show a phantom success.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutcome {
+    match result {
+        Ok(()) => RenameOutcome::Renamed,
+        Err(_) => RenameOutcome::Failed,
+    }
+}
+
+/// Post-commit handler for the [`RenameRepository`] command.
+///
+/// The space-side `tonk/rename-repository` rule (`core.yaml`) binds the
+/// command's `subject` to `?this` and asserts the new name directly — but
+/// that rule lives on the space's OWN branch, so it can never see a claim
+/// dispatched from the profile branch. This handler is the worker-side
+/// replacement: it reads the target `space` off the command (like
+/// [`PauseSyncHandler`]) rather than the dispatch origin, so the FAB's name
+/// chip can dispatch from the profile branch with nothing seeded per-space.
+///
+/// [`RenameRepository`]: tonk_schema::command::RenameRepository
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct RenameRepositoryHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RenameRepositoryHandler {
+    /// Cache `RenameRepository`'s trigger attributes so the registry indexes
+    /// this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::RenameRepository::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameRepositoryHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::RenameRepository::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        // Decode synchronously to read the target space off the command — the
+        // handler renames THAT repository, not the dispatch origin's, so the
+        // command can be dispatched from the profile branch.
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::RenameRepository::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = decoded else { return };
+            let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
+                log!("RenameRepository: unparseable target space, skipping");
+                return;
+            };
+            // `repo_key()` is the FULL DID, not a suffix.
+            let repo = did.repo_key().to_owned();
+            log!("command RenameRepository repo={}", repo);
+
+            let result = run_rename_repository(&env, &repo, &command.name.0).await;
+            let failure_detail = result.as_ref().err().map(ToString::to_string);
+            if rename_outcome(result) == RenameOutcome::Failed {
+                log!(
+                    "RenameRepository for repo '{}' failed: {}",
+                    repo,
+                    failure_detail.unwrap_or_default()
+                );
+            }
+        })
+    }
+}
+
+/// Assert the repository's own [`RepositoryName`] on its content branch,
+/// keyed by the subject DID — the same fact the space-side
+/// `tonk/rename-repository` rule used to write. Split out from
+/// [`RenameRepositoryHandler::run`] so the caller funnels every failure
+/// through [`rename_outcome`] rather than a bare `?`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_rename_repository(
+    env: &crate::router::CommandEnv,
+    repo: &str,
+    name: &str,
+) -> Result<(), RepositoryError> {
+    use tonk_schema::prelude::DidExt as _;
+
+    let tonk = env.state().read().await;
+
+    // The durable key: the repository's own subject DID, read straight off
+    // the branch handle rather than re-parsed from `repo` (they're the same
+    // DID either way).
+    let session = tonk
+        .reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("{repo}/{CONTENT_BRANCH} not found: {e}"))
+        })?;
+    let subject = session.handle().of().this();
+
+    log!("RenameRepository repo={} name={}", repo, name);
+
+    // Commit the new name through the reactor so subscriptions re-poll. `name`
+    // is cardinality-one, so the assert supersedes the prior value — the same
+    // fact the standard-library rule wrote.
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(RepositoryName {
+            this: subject,
+            name: tonk_schema::domain::repo::Name(name.to_string()),
+        })
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
+
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    Ok(())
+}
+
 /// Post-commit handler for the [`RemoveSpace`] command.
 ///
 /// Fired when the user confirms a Hub row's delete overlay. Removal is
@@ -3571,6 +3738,29 @@ mod seed_library_urls_tests {
             seed_library_urls(Some("garden")),
             vec!["/library/core.yaml"],
         );
+    }
+}
+
+/// The rename result → outcome mapping. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod rename_outcome_tests {
+    use super::{RenameOutcome, rename_outcome};
+    use crate::RepositoryError;
+
+    #[dialog_common::test]
+    fn it_maps_a_failed_rename_to_failed_rather_than_success() {
+        // `PauseSyncHandler` logs and returns on a missing replica. Rename must
+        // not: a silently-dropped rename looks successful to the user, which is
+        // the exact failure class this design attacks.
+        // `RepositoryError` has no `NotFound` variant — an absent replica
+        // surfaces as `Internal` from the acquire.
+        let outcome = rename_outcome(Err(RepositoryError::Internal("no such replica".into())));
+        assert_eq!(outcome, RenameOutcome::Failed);
+    }
+
+    #[dialog_common::test]
+    fn it_maps_a_successful_rename_to_renamed() {
+        assert_eq!(rename_outcome(Ok(())), RenameOutcome::Renamed);
     }
 }
 

@@ -185,6 +185,30 @@ impl Command for PauseSync {
     type Output = ();
 }
 
+/// Rename a space's repository from the FAB.
+///
+/// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot consume a
+/// claim dispatched on the profile branch, so this carries its target `space`
+/// and is executed by a worker handler instead — the `PauseSync` pattern. That
+/// is what lets the FAB's name chip depend on nothing seeded per-space.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct RenameRepository {
+    /// The command entity (a fresh id per commit).
+    pub this: Entity,
+    /// The new name, read from the editable's value on commit.
+    pub name: crate::domain::command::rename_repository::Value,
+    /// The target space DID — the repository to rename.
+    pub space: crate::domain::command::rename_repository::Space,
+    /// Per-command marker distinguishing this from `profile/rename`, which
+    /// shares the `{this, value}` shape.
+    pub marker: crate::domain::command::rename_repository::Rename,
+}
+
+impl Command for RenameRepository {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Request to rename the current profile (set the member display name).
 ///
 /// Asserted transiently when the topbar identity chip's `<tonk-editable>`
@@ -340,4 +364,89 @@ pub struct JoinFailure {
     pub reason: crate::domain::join::Reason,
     /// Failure class: `malformed` | `audience-mismatch` | `claim-failed`.
     pub kind: crate::domain::join::Kind,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+
+    use super::*;
+    use dialog_artifacts::{Artifact, Changes, Instruction};
+    use dialog_query::{
+        Application, ConceptDescriptor, Conclusion, Descriptor, Match, Statement, Term,
+    };
+    use std::collections::HashMap;
+
+    // `tonk-worker`'s command dispatch decodes a transient command from its
+    // raw `(the, of, is)` facts via `dialog_reactor::command::Decode` — but
+    // `dialog-reactor` depends on `tonk-schema` (it registers handlers for
+    // these very concepts), so `tonk-schema` cannot depend back on
+    // `dialog-reactor` without a cycle. These two helpers replicate that
+    // decode/encode glue purely in terms of `dialog-query` (already a
+    // dependency here) so this module's decode behaviour is pinned by a
+    // test in the same crate the command type lives in, matching the
+    // sibling regression tests for `CreateSpace`/`RemoveSpace` decode in
+    // `dialog-reactor/src/command.rs`.
+
+    /// Flatten a single concept instance into its raw facts, mirroring what
+    /// a real transient commit leaves behind for the worker to decode.
+    fn encode<C: Statement>(concept: C) -> Vec<Artifact> {
+        let mut changes = Changes::new();
+        concept.assert(&mut changes);
+        changes
+            .into_instructions()
+            .into_iter()
+            .map(|instruction| match instruction {
+                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Retract(a) => a,
+            })
+            .collect()
+    }
+
+    /// Decode a concept from raw facts, exactly as
+    /// `dialog_reactor::command::decode_concept` does (that function is not
+    /// reachable from here — see the module doc above).
+    fn decode<C>(this: Entity, facts: &[Artifact]) -> Option<C>
+    where
+        C: dialog_query::Concept<Conclusion = C> + Conclusion + Descriptor<ConceptDescriptor>,
+        C::Application: Default + Application<Conclusion = C>,
+    {
+        let query = C::Application::default();
+        let descriptor = <C as Descriptor<ConceptDescriptor>>::descriptor();
+        let attribute_to_field: HashMap<String, String> = descriptor
+            .with()
+            .iter()
+            .map(|(field, attribute)| (attribute.the().to_string(), field.to_string()))
+            .collect();
+
+        let mut source = Match::new();
+        source.bind(&Term::var("this"), this.into()).ok()?;
+        for artifact in facts {
+            if let Some(field) = attribute_to_field.get(&artifact.the.to_string()) {
+                source.bind(&Term::var(field), artifact.is.clone()).ok()?;
+            }
+        }
+        query.realize(source).ok()
+    }
+
+    #[dialog_common::test]
+    fn it_decodes_rename_repository_naming_its_target_space() {
+        // The handler must read the target space off the COMMAND, not the
+        // dispatch origin — that is what lets the FAB dispatch from the
+        // profile branch with nothing seeded per-space.
+        let command = RenameRepository {
+            this: "cmd:1".parse().unwrap(),
+            name: crate::domain::command::rename_repository::Value("Renamed".into()),
+            space: crate::domain::command::rename_repository::Space(
+                "did:key:z6Mk".parse().unwrap(),
+            ),
+            marker: crate::domain::command::rename_repository::Rename(
+                "tonk:repository".parse().unwrap(),
+            ),
+        };
+        let facts = encode(command);
+        let decoded: RenameRepository =
+            decode("cmd:1".parse().unwrap(), &facts).expect("decodes from its own facts");
+        assert_eq!(decoded.space.0.to_string(), "did:key:z6Mk");
+        assert_eq!(decoded.name.0, "Renamed");
+    }
 }
