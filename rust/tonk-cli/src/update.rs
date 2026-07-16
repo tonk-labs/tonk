@@ -7,7 +7,7 @@
 //! update bumps it, staging churn does not), `tonk update` compares
 //! commits (catching same-version rebuilds).
 
-use anyhow::Context as _;
+use anyhow::{Context as _, bail};
 
 pub mod fetch;
 pub mod manifest;
@@ -125,6 +125,19 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
         });
     }
 
+    // Resolved and guarded up front, before any network call: the
+    // design says the npm/nix rule is enforced by where we actually
+    // live, not by trusting a receipt, so the guard must run before
+    // the "already current" shortcut below could return early and
+    // before the ~10MB archive download that would otherwise precede
+    // `swap::install`'s own check. `swap::install` keeps its check too,
+    // as defense in depth.
+    let target = running_binary()?;
+    if let Some(foreign) = swap::foreign_install(&target) {
+        bail!("{}", foreign.refusal(&target));
+    }
+    let install_dir = target_dir(&target);
+
     let channel = resolve_channel();
     let platform = manifest::platform().with_context(|| {
         format!(
@@ -139,8 +152,15 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
 
     // Commit, not version: on a rolling channel the same version can
     // be many builds, and someone who typed `tonk update` wants the
-    // build the channel is actually serving.
-    if receipt::load().is_some_and(|receipt| receipt.commit == remote.commit) {
+    // build the channel is actually serving. Gated on install_dir too:
+    // a receipt only describes the copy that wrote it, so two
+    // `install.sh` copies (or a stale receipt beside an npm/nix copy)
+    // must not share one "already current" answer. A false mismatch
+    // just costs a redundant reinstall — the safe direction, versus
+    // wrongly claiming current.
+    if receipt::load().is_some_and(|receipt| {
+        receipt.commit == remote.commit && receipt.install_dir == install_dir
+    }) {
         return Ok(format!(
             "already current: {local_version} ({}, {})",
             short_commit(&remote.commit),
@@ -157,15 +177,9 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
         )
     })?;
 
-    let target = running_binary()?;
     let archive = fetch::archive(channel, &asset).await?;
     swap::install(&archive, &expected, &target)?;
 
-    let install_dir = target
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_string_lossy()
-        .into_owned();
     let stored = receipt::store(&receipt::Receipt {
         channel: channel.as_str().to_owned(),
         version: remote.version.clone(),
@@ -278,6 +292,15 @@ pub fn nag() {
 fn running_binary() -> anyhow::Result<std::path::PathBuf> {
     let path = std::env::current_exe().context("could not locate the running tonk binary")?;
     Ok(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+/// `target`'s parent directory as stored in [`receipt::Receipt::install_dir`].
+fn target_dir(target: &std::path::Path) -> String {
+    target
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

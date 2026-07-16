@@ -37,6 +37,19 @@ impl ForeignInstall {
             ForeignInstall::Npm => "an npm install",
         }
     }
+
+    /// The message shown when refusing to touch `target`.
+    ///
+    /// Shared by the early guard in `update::run` and by [`install`]'s
+    /// own defense-in-depth check, so the wording lives in one place.
+    pub fn refusal(self, target: &Path) -> String {
+        format!(
+            "{} is {} — tonk will not overwrite it; {}",
+            target.display(),
+            self.label(),
+            self.remedy()
+        )
+    }
 }
 
 /// Classify a binary path we must not overwrite.
@@ -104,12 +117,7 @@ fn temp_path(target: &Path) -> PathBuf {
 /// byte-for-byte what it was.
 pub fn install(archive: &[u8], expected_sha: &str, target: &Path) -> anyhow::Result<()> {
     if let Some(foreign) = foreign_install(target) {
-        bail!(
-            "{} is {} — tonk will not overwrite it; {}",
-            target.display(),
-            foreign.label(),
-            foreign.remedy()
-        );
+        bail!("{}", foreign.refusal(target));
     }
     verify_sha256(archive, expected_sha)?;
 
@@ -330,6 +338,20 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".tonk-update-"))
             .collect();
         assert!(leftovers.is_empty(), "temp file left behind");
+    }
+
+    #[dialog_common::test]
+    fn it_shares_the_refusal_message_between_the_helper_and_install() {
+        let target = Path::new("/nix/store/abc/bin/tonk");
+        let foreign = foreign_install(target).expect("foreign");
+        let message = foreign.refusal(target);
+        assert!(message.contains("will not overwrite"));
+        assert!(message.contains("nix flake update"));
+
+        let archive = archive_with("#!/bin/sh\necho 'tonk 0.5.0'\n");
+        let sha = sha_of(&archive);
+        let err = install(&archive, &sha, target).expect_err("must refuse");
+        assert_eq!(err.to_string(), message);
     }
 
     #[dialog_common::test]
