@@ -881,6 +881,11 @@ canonical protocol, which is the whole reason a prefix check is unsafe."
 - Consumes: `classify`, `Destination` (Task 4); `page_effect::forward` (Task 1); `crate::navigate_to` (Task 2).
 - Produces: `pub fn open_external(href: &str)` — the entry point `tonk-portal`'s dispatcher calls in Task 6.
 
+**Two obligations carried from Task 4:**
+
+1. **Remove `#[cfg_attr(not(test), allow(dead_code))]` from both `Destination` and `classify`.** Task 4 added them because nothing outside its tests called them yet; `open_external` is now that caller. Unlike a plain `allow(dead_code)`, clippy does NOT flag these as redundant — `-D warnings` will stay green with them left on, so nothing but this instruction catches it. Remove them and confirm the gate is still clean.
+2. **Do not add any sanitising of your own to the dialog.** Task 4 established the invariant that **what we display is exactly what we open**: `Destination` carries no userinfo, and `host` deliberately retains the port (`tonk.example:8443` is a different origin from `tonk.example`, and anyone can bind it). Render `host` and `url` exactly as given. Do not "tidy" `host` to `hostname`, and do not reconstruct a URL for display — both would reintroduce a spoof the classifier already closed.
+
 Most of this task is DOM plumbing whose behaviour only exists in a real browser, and Task 8 verifies it there. But `build_dialog` is the exception and must not be waved through: it is where an attacker-controlled string meets the trusted document, and it is fully testable. Step 1 pins it.
 
 - [ ] **Step 1: Write the failing test**
