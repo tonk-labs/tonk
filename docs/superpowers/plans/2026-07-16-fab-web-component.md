@@ -22,6 +22,7 @@ Spec: `docs/superpowers/specs/2026-07-16-fab-web-component-design.md`
 - **Attribute URIs verbatim**, kebab-cased as declared. Read-path segments are kebab→camel-cased.
 - **Empty fields must be omitted from claims, not sent as `""`** — the extractor drops empty fields, and a rule premise requiring all fields then matches zero rows.
 - **Never subscribe to rule-derived conclusions.** Rules are seeded and frozen exactly like views. Read asserted facts only.
+- **Crate dependency direction:** `dialog-reactor` depends on `tonk-schema`, never the reverse. So `tonk-schema` CANNOT reach `dialog_reactor::command::{Decode, decode_concept}`. Any test that decodes a command with the real decoder belongs in `dialog-reactor/src/command.rs` (beside `it_decodes_create_space_from_name_only_facts`) or in `tonk-worker` (which depends on both). **Never hand-copy the decoder into a test** — a test that reimplements the decoder passes while the real path breaks, which is the exact silent-failure class this project exists to prevent.
 
 ## File Structure
 
@@ -432,7 +433,7 @@ Rename is a declarative rule on the *space* branch (`core.yaml:825`) — a profi
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `rust/tonk-schema/src/command.rs`'s test module:
+Add to **`rust/dialog-reactor/src/command.rs`**'s test module — NOT `tonk-schema`. `dialog-reactor` depends on `tonk-schema`, so only it can decode these commands with the real `decode_concept`. Put this beside its siblings `it_decodes_create_space_from_name_only_facts` (~line 491) and `it_decodes_remove_space_from_a_data_remove_fact` (~line 510), and follow their exact shape (`entity(...)`, `Changes::new()`, `the!(...)`, `facts_for(changes)`, `Type::decode(this, &facts)`):
 
 ```rust
 #[dialog_common::test]
