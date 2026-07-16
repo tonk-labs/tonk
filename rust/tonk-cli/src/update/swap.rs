@@ -120,7 +120,25 @@ pub fn install(archive: &[u8], expected_sha: &str, target: &Path) -> anyhow::Res
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
-    result
+    result.map_err(|err| with_permission_hint(err, target))
+}
+
+/// Add the directory and the `sudo` hint to a permission failure.
+///
+/// Both the temp write and the rename land in the target's own
+/// directory, so an unwritable directory can fail at either. Attaching
+/// the hint here — where every failure funnels through — keeps it
+/// reachable without duplicating the message at each call site.
+fn with_permission_hint(err: anyhow::Error, target: &Path) -> anyhow::Error {
+    let denied = err
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io| io.kind() == std::io::ErrorKind::PermissionDenied);
+    if !denied {
+        return err;
+    }
+    let dir = target.parent().unwrap_or(Path::new(".")).display();
+    err.context(format!("{dir} is not writable — try `sudo tonk update`"))
 }
 
 /// Everything up to and including the rename.
@@ -163,13 +181,7 @@ fn prepare(archive: &[u8], temp: &Path, target: &Path) -> anyhow::Result<()> {
         );
     }
 
-    std::fs::rename(temp, target).with_context(|| {
-        format!(
-            "could not replace {} (is {} writable? try `sudo tonk update`)",
-            target.display(),
-            target.parent().unwrap_or(Path::new(".")).display()
-        )
-    })
+    std::fs::rename(temp, target).with_context(|| format!("could not replace {}", target.display()))
 }
 
 #[cfg(test)]
@@ -327,5 +339,38 @@ mod tests {
         let err =
             install(&archive, &sha, Path::new("/nix/store/abc/bin/tonk")).expect_err("must refuse");
         assert!(err.to_string().contains("will not overwrite"));
+    }
+
+    #[cfg(unix)]
+    #[dialog_common::test]
+    fn it_suggests_sudo_when_the_target_directory_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("tonk");
+        std::fs::write(&target, "old").expect("write");
+
+        // Read+execute but not write: the temp file cannot be created,
+        // which is where an unwritable /usr/local/bin actually fails.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("chmod");
+
+        let archive = archive_with("#!/bin/sh\necho 'tonk 0.5.0'\n");
+        let sha = sha_of(&archive);
+        let result = install(&archive, &sha, &target);
+
+        // Restore before asserting, so a failed assert still lets the
+        // tempdir clean itself up.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod");
+
+        let err = result.expect_err("must fail on an unwritable directory");
+        let message = format!("{err:#}");
+        assert!(message.contains("sudo tonk update"), "message: {message}");
+        assert!(
+            message.contains(&dir.path().display().to_string()),
+            "message: {message}"
+        );
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "old");
     }
 }
