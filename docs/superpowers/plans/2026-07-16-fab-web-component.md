@@ -18,6 +18,9 @@ Spec: `docs/superpowers/specs/2026-07-16-fab-web-component-design.md`
 - **Commits:** Conventional Commits — `type(scope): subject`, imperative, lowercase, no trailing period, under ~72 chars.
 - **PRs target `origin/staging`**, not `main`.
 - **Lint gate:** `cargo clippy --workspace --all-targets --all-features` + `cargo fmt --check`. `--all-features` compiles integration tests, so per-crate clippy can be green while the gate fails.
+- **Run `cargo fmt` before every commit — it is a VERIFY step, not background reading.** Tasks 2 and 2b each committed unformatted code and needed an external `chore: fmt` to clean up. Every task's verify list must include `cargo fmt` followed by `cargo fmt --check`.
+- **Environment (macOS 27):** the beta breaks Apple's libffi closure trampolines, which kills `remarshal`, which kills *every* crane/nix build (`Assertion failed: (trampoline_handle) … closures.c:258`, exit 134, before cargo runs). A darwin-only `flake.nix` overlay rebuilds `remarshal` on `libffiReal` and fixes it. That overlay is currently **uncommitted and not on `origin/staging`** — without it, no nix build works on this OS.
+- **The wasm suite takes >600s.** `nix develop -c test:web:debug` runs 917 tests. Do not cap it at a 600s timeout: the runner SIGTERMs in-flight tests and reports them as *failures*, which reads as a real regression and is not one.
 - **wasm-gate discipline:** DOM code is `#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]`. Pure logic stays native-testable, or a native `-D warnings` build flags it dead.
 - **Attribute URIs verbatim**, kebab-cased as declared. Read-path segments are kebab→camel-cased.
 - **Empty fields must be omitted from claims, not sent as `""`** — the extractor drops empty fields, and a rule premise requiring all fields then matches zero rows.
