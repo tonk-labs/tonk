@@ -288,7 +288,7 @@ Expected: PASS.
 Run: `cargo test -p tonk-portal --target wasm32-unknown-unknown title_text`
 Expected: PASS — `it_reads_text_only_from_a_title_message`.
 
-Same harness caveat as Task 1: if the wasm runner cannot start, record it and continue.
+The wasm harness works in this worktree — run it and report real output.
 
 - [ ] **Step 5: Commit**
 
@@ -543,10 +543,11 @@ Add to `rust/tonk-guest/src/bin/guest.rs` in `start()`, immediately after the ex
 Run: `cargo check -p tonk-portal -p tonk-guest --target wasm32-unknown-unknown --all-targets`
 Expected: PASS.
 
-Run: `cargo test -p tonk-portal --target wasm32-unknown-unknown push_title`
+Run: `cargo test -p tonk-portal --target wasm32-unknown-unknown title::`
 Expected: PASS — `it_pushes_only_a_non_empty_text`, `it_does_nothing_without_a_bridge`.
 
-Same harness caveat as Task 1.
+The filter matches the module path, not the function under test: `push_title` is the
+function's name, not a test's, and filtering on it selects nothing.
 
 - [ ] **Step 5: Commit**
 
@@ -614,11 +615,11 @@ Expected: PASS — `core.yaml` is embedded with `include_str!`, so this catches 
 
 Be honest about the gap: the test that actually runs `core.yaml` through `parse → analyze → commit` is `it_seeds_blank_scaffold` in `rust/tonk-worker/src/router/repository.rs`, and its module is **wasm-gated** (`run_in_service_worker`, `repository.rs:3579`) — it does not run under native `cargo test`.
 
-Run it if the wasm harness is available:
+Run it — the wasm harness works in this worktree:
 Run: `cargo test -p tonk-worker --target wasm32-unknown-unknown it_seeds_blank_scaffold`
 Expected: PASS.
 
-If the harness cannot start, the real gate is Task 6's browser check: seeding runs at spot creation, so a malformed scaffold breaks creating a new spot loudly and immediately. Do not skip Task 6.
+This is the notation gate. If it fails, the scaffold is malformed and every new spot would fail to seed — fix it here rather than discovering it in Task 6.
 
 - [ ] **Step 3: Commit**
 
@@ -723,5 +724,6 @@ State plainly which of the four states passed and which did not. If a wasm test 
 ## Notes for the implementer
 
 - **Order matters.** Tasks 1-3 are bottom-up; each compiles against the one before. Tasks 4-5 supply the data. Nothing is observable until Task 5, and nothing is verified until Task 6.
-- **The wasm test harness is a known local gap.** Per the repo's history, running wasm tests on this machine needs Safari automation enabled or Chrome at the default `/Applications` path with a major-matched chromedriver. A harness that will not start is not a red test — but it does mean Task 6 is load-bearing, not optional.
+- **The wasm test harness works here** (verified during execution: `cargo test -p <crate> --target wasm32-unknown-unknown <filter>` runs headless Chrome and passes). Earlier drafts of this plan warned it might not start; that warning was wrong for this machine. Run the tests and report real output — a skipped wasm test is not acceptable.
+- **Task 6 is still load-bearing.** Unit tests stub the bridge and cannot observe the rendered chain or the depth assumption, which fails silently by retitling an iframe.
 - **Two guards, deliberately.** Both `title_text` (parse) and `set_title` (assignment) reject an empty string, and `push_title` drops one before it is sent. Belt and braces: a blank `{name}` renders routinely, and wiping a correct title is a visible regression.
