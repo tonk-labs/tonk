@@ -2078,7 +2078,11 @@ if fetch "${url%/*}/manifest.json" "$tmp/manifest.json" 2>/dev/null; then
   m_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
   m_commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
   if [ -n "$m_version" ] && [ -n "$m_commit" ]; then
-    if write_receipt; then
+    # 2>/dev/null on the call, not just inside: the shell opens the
+    # redirect target before `cat` runs, so `cat`'s own redirect cannot
+    # suppress a "Permission denied" for an unwritable state dir. This is
+    # best-effort, so it stays silent.
+    if write_receipt 2>/dev/null; then
       say "recorded install receipt in $state_dir"
     fi
   fi
