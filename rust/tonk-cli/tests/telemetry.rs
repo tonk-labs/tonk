@@ -69,7 +69,14 @@ fn run_tonk_guide(
         .env("TONK_POSTHOG_KEY", "test-key")
         .env("TONK_POSTHOG_ENDPOINT", endpoint)
         .env_remove("DO_NOT_TRACK")
-        .env_remove("TONK_TELEMETRY");
+        .env_remove("TONK_TELEMETRY")
+        // This branch's release check runs at the end of every command.
+        // These tests are about telemetry, not updates: opting out keeps
+        // them off the network, and stops them stamping the developer's
+        // real update.json. TONK_UPDATE_STATE is belt-and-braces — if the
+        // check ever runs anyway, it must not touch real state.
+        .env("TONK_NO_UPDATE_CHECK", "1")
+        .env("TONK_UPDATE_STATE", state_dir);
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
