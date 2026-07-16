@@ -1457,7 +1457,7 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
     let expected = manifest::parse_checksums(&checksums, &asset)
         .with_context(|| format!("no checksum entry for {asset} on the {} channel", channel.as_str()))?;
 
-    let target = std::env::current_exe().context("could not locate the running tonk binary")?;
+    let target = running_binary()?;
     let archive = fetch::archive(channel, &asset).await?;
     swap::install(&archive, &expected, &target)?;
 
@@ -1498,6 +1498,20 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
 pub fn short_commit(commit: &str) -> &str {
     let end = commit.len().min(7);
     &commit[..end]
+}
+
+/// The binary to replace: the running one, symlinks resolved.
+///
+/// Canonicalized because the foreign-install guard matches on the
+/// path. A nix profile puts a symlink at `~/.nix-profile/bin/tonk`
+/// pointing into `/nix/store`; without resolving it the guard would
+/// miss the store prefix and rename over nix's symlink. An
+/// `install.sh` install is a real file, so this is a no-op there.
+/// If canonicalization fails, fall back to the raw path rather than
+/// refusing to update.
+fn running_binary() -> anyhow::Result<std::path::PathBuf> {
+    let path = std::env::current_exe().context("could not locate the running tonk binary")?;
+    Ok(std::fs::canonicalize(&path).unwrap_or(path))
 }
 ```
 
