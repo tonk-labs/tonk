@@ -53,6 +53,9 @@ pub fn start() {
     // to route the sub-path against the space's route table, rendering its match
     // in a further-nested sealed iframe.
     tonk_portal::register_site();
+    // `<tonk-title>` names the browser tab. Headless: it renders nothing
+    // and pushes its text to the host page, which owns `document.title`.
+    tonk_portal::register_title();
 }
 
 /// Fetch the sigil sprite over the host bridge, mint a same-origin blob URL,
