@@ -61,7 +61,7 @@ pub fn install() {
     // all, so a `click`-only listener can never see one.
     let mut listeners = Vec::with_capacity(2);
     for event in ["click", "auxclick"] {
-        let listener = make_nav_listener();
+        let listener = make_nav_listener(call_bridge);
         let _ = document.add_event_listener_with_callback_and_bool(
             event,
             listener.as_ref().unchecked_ref(),
@@ -99,16 +99,20 @@ enum Intent {
 }
 
 /// Build the document click listener that relays link activation to the host.
-fn make_nav_listener() -> Listener {
+///
+/// `relay` is the bridge call to make — `(method, href)`. Production passes
+/// [`call_bridge`]; it is a parameter only so a test can pin WHICH method a
+/// given click selects, which is the whole of this function's logic.
+fn make_nav_listener(relay: impl Fn(&str, &str) + 'static) -> Listener {
     Closure::wrap(Box::new(move |event: Event| match classify_click(&event) {
         Intent::Ignore => {}
         Intent::Navigate(href) => {
             event.prevent_default();
-            call_bridge("navigate", &href);
+            relay("navigate", &href);
         }
         Intent::Open(href) => {
             event.prevent_default();
-            call_bridge("open", &href);
+            relay("open", &href);
         }
     }) as Box<dyn FnMut(Event)>)
 }
@@ -310,22 +314,38 @@ mod tests {
     /// here navigates the test page away mid-run and a `javascript:` href
     /// executes. Production cancels for the same reason.
     fn dispatch(target: &EventTarget, kind: &str, event: &Event) -> Intent {
-        let seen = Rc::new(RefCell::new(Intent::Ignore));
+        // `Option`, not an `Intent::Ignore` sentinel: a listener that never ran
+        // must be a message, not a value indistinguishable from a real `Ignore`.
+        let seen = Rc::new(RefCell::new(None));
         let sink = Rc::clone(&seen);
         let listener = Closure::wrap(Box::new(move |event: Event| {
-            *sink.borrow_mut() = classify_click(&event);
+            *sink.borrow_mut() = Some(classify_click(&event));
             event.prevent_default();
         }) as Box<dyn FnMut(Event)>);
-        target
-            .add_event_listener_with_callback(kind, listener.as_ref().unchecked_ref())
-            .expect("add listener");
-        target.dispatch_event(event).expect("dispatch");
-        seen.replace(Intent::Ignore)
+        with_listener(target, kind, &listener, || {
+            target.dispatch_event(event).expect("dispatch");
+        });
+        seen.borrow_mut().take().expect("the listener ran")
     }
 
-    /// Dispatch a real `MouseEvent` carrying `click`'s button and modifier
-    /// state, as the browser would deliver it.
-    fn classify(target: &EventTarget, click: &Click) -> Intent {
+    /// Register `listener` on `target` for the duration of `body`, then remove
+    /// it. A closure dropped while still registered leaves the target calling
+    /// into freed memory ("closure invoked after being dropped") the moment any
+    /// later event reaches it.
+    fn with_listener(target: &EventTarget, kind: &str, listener: &Listener, body: impl FnOnce()) {
+        let callback = listener.as_ref().unchecked_ref();
+        target
+            .add_event_listener_with_callback(kind, callback)
+            .expect("add listener");
+        body();
+        target
+            .remove_event_listener_with_callback(kind, callback)
+            .expect("remove listener");
+    }
+
+    /// A real `MouseEvent` carrying `click`'s button and modifier state, as the
+    /// browser would deliver it.
+    fn mouse_event(click: &Click) -> MouseEvent {
         let init = MouseEventInit::new();
         init.set_bubbles(true);
         init.set_cancelable(true);
@@ -333,14 +353,109 @@ mod tests {
         init.set_meta_key(click.meta);
         init.set_ctrl_key(click.ctrl);
         init.set_shift_key(click.shift);
-        let event =
-            MouseEvent::new_with_mouse_event_init_dict(click.kind, &init).expect("a mouse event");
-        dispatch(target, click.kind, &event)
+        MouseEvent::new_with_mouse_event_init_dict(click.kind, &init).expect("a mouse event")
+    }
+
+    fn classify(target: &EventTarget, click: &Click) -> Intent {
+        dispatch(target, click.kind, &mouse_event(click))
     }
 
     /// Classify a click on an `<a href=…>` with no other attributes.
     fn classify_href(href: &str, click: &Click) -> Intent {
         classify(anchor(&[("href", href)]).unchecked_ref(), click)
+    }
+
+    /// What the production listener did with a click: the bridge call it
+    /// relayed, if any, and whether it cancelled the event.
+    struct Relayed {
+        call: Option<(String, String)>,
+        cancelled: bool,
+    }
+
+    /// Dispatch `click` at `target` through the REAL [`make_nav_listener`],
+    /// recording the bridge call it selects.
+    ///
+    /// This is what pins the arm mapping. `classify_click` returning
+    /// `Navigate` says nothing about which bridge method the listener then
+    /// calls with it — swapping the two arms inverts every link in the app and
+    /// no classifier test can see it. Driving the production closure and
+    /// recording the method NAME is the only assertion that can.
+    fn relay(target: &EventTarget, click: &Click) -> Relayed {
+        let calls = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&calls);
+        let listener = make_nav_listener(move |method: &str, arg: &str| {
+            *sink.borrow_mut() = Some((method.to_owned(), arg.to_owned()));
+        });
+        let mut cancelled = false;
+        with_listener(target, click.kind, &listener, || {
+            // `dispatch_event` reports the event was NOT cancelled, which is
+            // exactly `preventDefault` having gone uncalled.
+            cancelled = !target
+                .dispatch_event(&mouse_event(click))
+                .expect("dispatch");
+        });
+        Relayed {
+            call: calls.borrow_mut().take(),
+            cancelled,
+        }
+    }
+
+    /// The mapping the whole change exists for: a plain in-app click reaches
+    /// the host's ROUTER, not its new-tab path.
+    #[dialog_common::test]
+    async fn it_relays_a_plain_in_app_click_to_navigate() {
+        let relayed = relay(
+            anchor(&[("href", "/space/abc")]).unchecked_ref(),
+            &Click::plain(),
+        );
+        assert_eq!(
+            relayed.call,
+            Some(("navigate".to_owned(), "/space/abc".to_owned())),
+            "an in-app click should call the bridge's `navigate` with the raw href"
+        );
+        assert!(
+            relayed.cancelled,
+            "the relayed click must be cancelled, or the guest follows the link too"
+        );
+    }
+
+    /// The other half of the mapping: a new-tab click reaches the host's `open`
+    /// and must never be handed to the router as a route.
+    #[dialog_common::test]
+    async fn it_relays_a_new_tab_click_to_open() {
+        let click = Click {
+            meta: true,
+            ..Click::plain()
+        };
+        let relayed = relay(
+            anchor(&[("href", "https://example.com/x")]).unchecked_ref(),
+            &click,
+        );
+        assert_eq!(
+            relayed.call,
+            Some(("open".to_owned(), "https://example.com/x".to_owned())),
+            "a new-tab click should call the bridge's `open` with the raw href"
+        );
+        assert!(
+            relayed.cancelled,
+            "the relayed click must be cancelled, or the guest follows the link too"
+        );
+    }
+
+    /// An ignored click is not the host's business at all: no bridge call, and
+    /// the event left alone for the browser to act on.
+    #[dialog_common::test]
+    async fn it_relays_nothing_for_an_ignored_click() {
+        let bare = document().create_element("div").expect("a div");
+        let relayed = relay(bare.unchecked_ref(), &Click::plain());
+        assert_eq!(
+            relayed.call, None,
+            "a click with no link to follow should reach the bridge not at all"
+        );
+        assert!(
+            !relayed.cancelled,
+            "an ignored click must keep its default action; the browser owns it"
+        );
     }
 
     /// A plain click on an in-app path is the one case the host performs in
