@@ -223,7 +223,7 @@ And add to the module doc-comment list, after the `- [`telemetry`]` line:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cargo test --package tonk-cli --lib update::manifest`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::manifest)'`
 Expected: 5 tests pass.
 
 - [ ] **Step 6: Commit**
@@ -307,7 +307,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test --package tonk-cli --lib update::tests`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::tests)'`
 Expected: FAIL — `cannot find function is_newer`, `cannot find type Channel`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -393,7 +393,7 @@ pub fn is_newer(local: &str, remote: &str) -> bool {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --package tonk-cli --lib update::tests`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::tests)'`
 Expected: 7 tests pass.
 
 - [ ] **Step 5: Commit**
@@ -559,7 +559,7 @@ Add to the `mod tests` block in `rust/tonk-cli/src/update.rs`:
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cargo test --package tonk-cli --lib update::`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::)'`
 Expected: FAIL — `cannot find function resolve_channel`, unresolved module `receipt`.
 
 - [ ] **Step 4: Write minimal implementation**
@@ -594,7 +594,7 @@ pub fn resolve_channel() -> Channel {
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cargo test --package tonk-cli --lib update::`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::)'`
 Expected: all pass (3 receipt tests + 8 update tests).
 
 - [ ] **Step 6: Commit**
@@ -874,7 +874,7 @@ pub mod state;
 
 - [ ] **Step 3: Run tests to verify they pass**
 
-Run: `cargo test --package tonk-cli --lib update::state`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::state)'`
 Expected: 12 tests pass.
 
 - [ ] **Step 4: Commit**
@@ -1337,7 +1337,7 @@ pub mod swap;
 
 - [ ] **Step 3: Run tests to verify they pass**
 
-Run: `cargo test --package tonk-cli --lib update::swap`
+Run: `cargo nextest run --package tonk-cli --lib -E 'test(update::swap)'`
 Expected: 11 tests pass.
 
 - [ ] **Step 4: Commit**
@@ -1687,7 +1687,7 @@ path = "tests/update.rs"
 
 - [ ] **Step 7: Run the tests**
 
-Run: `cargo test --package tonk-cli --test update`
+Run: `cargo nextest run --package tonk-cli --test update`
 Expected: 3 tests pass.
 
 - [ ] **Step 8: Commit**
@@ -1939,7 +1939,7 @@ fn it_stays_silent_and_succeeds_when_the_check_cannot_reach_the_release() {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test --package tonk-cli --test update`
+Run: `cargo nextest run --package tonk-cli --test update`
 Expected: 8 tests pass.
 
 - [ ] **Step 5: Commit**
@@ -2196,8 +2196,18 @@ git commit -m "docs: document tonk update and the release check"
 
 - [ ] **Full test suite**
 
-Run: `cargo test --package tonk-cli`
+Run: `cargo nextest run --package tonk-cli`
 Expected: all pass, including the 8 `update` integration tests.
+
+**Use `cargo nextest run`, not `cargo test`.** nextest is this repo's runner
+(it's in the flake dev shell, and `.config/nextest.toml` already forces
+integration tests into a serial group to avoid deadlock). It runs each test
+in its own process, which is what makes the `set_var`/`remove_var` env
+overrides in these tests safe — the same assumption `telemetry.rs` already
+relies on, stated in its SAFETY comments. Under `cargo test`, every test in
+a binary shares one process across threads, so the tests that point
+`TONK_UPDATE_STATE` at their own tempdir race and fail. That is a property
+of the runner, not a defect in the tests.
 
 - [ ] **The lint gate** (this is the real gate — workspace clippy with `--all-targets --all-features`, not per-crate)
 
