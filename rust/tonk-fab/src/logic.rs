@@ -851,6 +851,54 @@ mod space_name {
     }
 }
 
+/// The subscribe body for a space's member roster.
+///
+/// ONE inline predicate carrying all three fields on the same entity, in
+/// directory mode (`this` unbound), so each member returns as a row. Three
+/// separate subscriptions would need client-side row-joining that no existing
+/// element does.
+///
+/// All three are required fields: a member missing a synced name or role is
+/// invisible. That matches the seeded view's behaviour, but it is now this
+/// element's choice.
+pub fn member_roster_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
+            "role":   { "the": "xyz.tonk.membership/role",   "as": "Entity", "cardinality": "one" },
+            "name":   { "the": "xyz.tonk.membership/name",   "as": "String", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":   { "?": { "name": "this" } },
+            "member": { "?": { "name": "member" } },
+            "role":   { "?": { "name": "role" } },
+            "name":   { "?": { "name": "name" } }
+        }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod member_roster {
+    use super::*;
+
+    #[test]
+    fn it_queries_all_member_fields_in_one_directory_predicate() {
+        let body = member_roster_query_body();
+        assert!(body.contains("xyz.tonk.membership/name"));
+        assert!(body.contains("xyz.tonk.membership/member"));
+        assert!(body.contains("xyz.tonk.membership/role"));
+        // Directory mode: `this` is an unbound variable, so every member row
+        // comes back. A bound `this` would return one. `serde_json::Value`'s
+        // `Display` is the COMPACT formatter (no spaces around `:`/`,`), so
+        // the substring below has none either — a pretty-printed literal
+        // (with spaces) never matches the actual body.
+        assert!(body.contains("\"this\":{\"?\""));
+        // No concept named — nothing seeded is consulted.
+        assert!(!body.contains("tonk:member"));
+    }
+}
+
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
 /// A transient carrying the target `space` and the new `value`. Dispatched

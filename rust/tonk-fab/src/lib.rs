@@ -13,6 +13,9 @@ pub mod retry;
 mod element;
 
 #[cfg(target_arch = "wasm32")]
+mod member_roster;
+
+#[cfg(target_arch = "wasm32")]
 mod share;
 
 #[cfg(target_arch = "wasm32")]
@@ -27,6 +30,7 @@ pub fn register() {
     element::register();
     share::register();
     space_name::register();
+    member_roster::register();
 }
 
 /// No-op on non-wasm targets (tests / native build checks).

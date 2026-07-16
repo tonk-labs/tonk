@@ -10,6 +10,11 @@
 //! No host is installed here, so nothing answers the event and no frame
 //! arrives. That is deliberate: this pins what the ELEMENT does. Host
 //! delivery is proven in production by `<ui-sync-status>`.
+//!
+//! Also covers `<ui-member-roster>`, built on the same `subscribing`
+//! scaffolding as `<ui-space-name>` — see the tests below the space-name
+//! ones. Both elements are proven against the identical `reset`/`update`
+//! delegate contract the scaffolding installs.
 
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
@@ -278,5 +283,148 @@ async fn it_renders_the_name_from_a_delivered_frame() {
         editable.text_content().as_deref(),
         Some("Renamed Again"),
         "a delivered update frame must be consumed and rendered, not ignored"
+    );
+}
+
+// --- <ui-member-roster>, built on the same subscribing scaffolding ---
+//
+// These mirror the `<ui-space-name>` tests above rather than living in a
+// separate file: both elements are proven against the same `reset`/`update`
+// delegate contract the scaffolding installs, so keeping them side by side
+// makes that shared contract visible in one place. Nothing above is edited.
+
+const ROSTER_TAG: &str = "ui-member-roster";
+
+/// Mount a `<ui-member-roster space=SPACE>` and return it.
+fn mount_roster() -> web_sys::HtmlElement {
+    tonk_fab::register();
+    let el = document()
+        .create_element(ROSTER_TAG)
+        .expect("create")
+        .dyn_into::<web_sys::HtmlElement>()
+        .expect("html element");
+    el.set_attribute("space", SPACE).expect("set space");
+    document()
+        .body()
+        .expect("body")
+        .append_child(el.as_ref())
+        .expect("append");
+    el
+}
+
+/// A single member conclusion row, shaped like a real subscription result:
+/// `{ this, fields: { this, member, role, name } }`.
+fn member_row(this_id: &str, name: &str) -> JsValue {
+    let fields = js_sys::Object::new();
+    js_sys::Reflect::set(&fields, &"this".into(), &JsValue::from_str(this_id)).expect("set this");
+    js_sys::Reflect::set(
+        &fields,
+        &"member".into(),
+        &JsValue::from_str("did:key:zMember"),
+    )
+    .expect("set member");
+    js_sys::Reflect::set(&fields, &"role".into(), &JsValue::from_str("tonk:member"))
+        .expect("set role");
+    js_sys::Reflect::set(&fields, &"name".into(), &JsValue::from_str(name)).expect("set name");
+    let row = js_sys::Object::new();
+    js_sys::Reflect::set(&row, &"this".into(), &JsValue::from_str(this_id)).expect("set row this");
+    js_sys::Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
+    row.into()
+}
+
+/// A `reset` snapshot payload: a bare array of member rows.
+fn roster_reset_payload(rows: &[(&str, &str)]) -> JsValue {
+    let arr = js_sys::Array::new();
+    for (id, name) in rows {
+        arr.push(&member_row(id, name));
+    }
+    arr.into()
+}
+
+/// An `update` delta payload: `{ asserted, retracted }`. Retracted rows only
+/// need to carry `this` to identify what to remove.
+fn roster_update_payload(asserted: &[(&str, &str)], retracted: &[&str]) -> JsValue {
+    let asserted_arr = js_sys::Array::new();
+    for (id, name) in asserted {
+        asserted_arr.push(&member_row(id, name));
+    }
+    let retracted_arr = js_sys::Array::new();
+    for id in retracted {
+        retracted_arr.push(&member_row(id, ""));
+    }
+    let payload = js_sys::Object::new();
+    js_sys::Reflect::set(&payload, &"asserted".into(), &asserted_arr).expect("set asserted");
+    js_sys::Reflect::set(&payload, &"retracted".into(), &retracted_arr).expect("set retracted");
+    payload.into()
+}
+
+/// Invoke `element.reset`/`element.update` for the roster tag, exactly as the
+/// host's `deliver_frame` does.
+fn deliver_roster(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(&opts, &"tag".into(), &JsValue::from_str(ROSTER_TAG)).expect("set tag");
+    let f = js_sys::Reflect::get(el, &method.into())
+        .unwrap_or_else(|_| panic!("{method} present on element"))
+        .dyn_into::<js_sys::Function>()
+        .unwrap_or_else(|_| panic!("{method} is a function"));
+    f.call2(el, payload, &opts.into())
+        .unwrap_or_else(|_| panic!("{method} call"));
+}
+
+/// Read the rendered member names off the roster host, in DOM order.
+fn rendered_names(el: &web_sys::HtmlElement) -> Vec<String> {
+    let children = el.children();
+    (0..children.length())
+        .filter_map(|i| children.item(i))
+        .filter(|c| c.class_list().contains("fab__menu-item--member"))
+        .filter_map(|c| c.text_content())
+        .collect()
+}
+
+#[dialog_common::test]
+async fn it_registers_the_roster_as_a_custom_element() {
+    tonk_fab::register();
+    let defined = window().expect("window").custom_elements().get(ROSTER_TAG);
+    assert!(
+        !defined.is_undefined(),
+        "tonk_fab::register() must define <ui-member-roster>"
+    );
+}
+
+#[dialog_common::test]
+async fn it_renders_the_roster_from_delivered_frames() {
+    // Mirrors `it_renders_the_name_from_a_delivered_frame`: no host is
+    // installed in this crate's tests, so deliver frames the exact way
+    // `tonk-host::ops::deliver_frame` does — call `reset`/`update` directly
+    // on the element. An element that subscribes and never renders is the
+    // bug this whole scaffolding exists to catch.
+    let el = mount_roster();
+    assert!(
+        rendered_names(&el).is_empty(),
+        "no members render before any frame arrives"
+    );
+
+    deliver_roster(
+        &el,
+        "reset",
+        &roster_reset_payload(&[("member:1", "Alice"), ("member:2", "Bob")]),
+    );
+    assert_eq!(
+        rendered_names(&el),
+        vec!["Alice".to_string(), "Bob".to_string()],
+        "a delivered reset frame must be consumed and rendered as one span per member"
+    );
+
+    // A subsequent `update` delta must also be consumed: retract Alice,
+    // assert Carol — Bob, untouched by the delta, must remain.
+    deliver_roster(
+        &el,
+        "update",
+        &roster_update_payload(&[("member:3", "Carol")], &["member:1"]),
+    );
+    assert_eq!(
+        rendered_names(&el),
+        vec!["Bob".to_string(), "Carol".to_string()],
+        "a delivered update frame must retract, assert, and re-render, not be ignored"
     );
 }
