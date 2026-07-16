@@ -244,21 +244,32 @@ const EDITOR_STYLESHEET = `
   }
 
   /* ——— The Typora reveal ———
-     Markers are literal text (.md-markup spans). Hidden at rest;
-     revealed inside the block the caret sits in. The reveal is a
-     class toggle driven by one node decoration — see reveal.ts. */
-  .md-markup { display: none; }
-  /* Reveal only while the editor is focused — an unfocused editor
-     reads as rendered markdown, Typora-style. */
-  .ProseMirror-focused .md-active .md-markup {
-    display: inline;
+     Markers are literal text (.md-markup spans), hidden at rest and
+     revealed by two selection-driven decorations (see reveal.ts):
+
+       md-active — the caret's textblock. Reveals *block* markers
+                   (.md-block: the heading "# " prefix), which
+                   belong to the whole line.
+       md-edit   — the caret's edit range (the mark run it touches).
+                   Reveals *inline* markers only for that span: the
+                   caret in bold shows its "**", in a link its "["
+                   and "](url)"; other spans stay rendered.
+
+     ProseMirror may paint the md-edit class onto the marker span
+     itself or onto a decoration span nested inside it, so both
+     shapes are matched. Reveal only while the editor is focused —
+     an unfocused editor reads as rendered markdown, Typora-style. */
+  .md-markup {
+    display: none;
     color: var(--tonk-prose-marker);
     font-weight: 400;
     font-style: normal;
   }
-  /* Marker text inside revealed code spans shouldn't get the chip
-     background twice. */
-  .md-active code .md-markup { background: none; }
+  .ProseMirror-focused .md-active .md-markup.md-block,
+  .ProseMirror-focused .md-markup.md-edit,
+  .ProseMirror-focused .md-markup:has(.md-edit) {
+    display: inline;
+  }
 
   /* Placeholder (empty doc): ghost text via CSS content. */
   .tonk-prose-empty::before {

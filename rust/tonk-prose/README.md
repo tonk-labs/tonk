@@ -11,8 +11,14 @@ follows [allusion](https://github.com/Gozala/allusion), modernized:
 
 - **Markers are literal text.** Syntax characters are stored as text
   nodes carrying a `markup` mark, hidden/revealed *purely via CSS*
-  keyed off one selection-driven node decoration. Cursor movement
-  never mutates the document.
+  keyed off two selection-driven decorations: the caret's block
+  (reveals block markers like the heading `# `) and the caret's
+  *edit range* — the mark run it touches, resolved through the
+  markers' `of` attr (allusion's `marks`) so a caret on a bare `**`
+  counts as inside the strong span beside it. Only that span's
+  markers show: caret in bold reveals its `**`, caret in a link
+  reveals `[` and `](url)`, everything else stays rendered. Cursor
+  movement never mutates the document.
 - **A debounced reparse loop instead of inline input rules.** Because
   markers are text, a textblock's `textContent` *is* its markdown
   source. ~120ms after you stop typing, edited blocks are reparsed
