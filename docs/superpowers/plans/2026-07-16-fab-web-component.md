@@ -420,6 +420,43 @@ git commit -m "feat(tonk-fab): read space name from its own branch, unseeded"
 
 ---
 
+### Task 2b: Close the gate with a wasm test
+
+Task 2's native tests only prove the query-body STRING is built correctly. They
+prove nothing about the browser, which is where the whole mechanism lives. A
+manual look proves nothing for the next person either — pin it in CI.
+
+The test asserts the three things that are actually novel:
+
+1. `<ui-space-name>` registers via `tonk_fab::register()`.
+2. It stamps its OWN `with="main@{did}"`. This is the real novelty:
+   `<ui-sync-status>` receives `with` from a view template, whereas this
+   element must set it from Rust, and `resolve_with` (`context.rs:23`) reads
+   only an element's own attribute and never walks ancestors.
+3. It dispatches `tonk-subscribe` (`tonk-host/src/lib.rs:41`) carrying the RAW
+   attribute query — `xyz.tonk.repo/name`, with no concept named.
+
+No host is installed in a bare wasm test, so nothing answers the event and no
+frame arrives. That is deliberate: this pins what the ELEMENT does. Host
+delivery is already proven in production by `<ui-sync-status>`.
+
+**Files:** Create `rust/tonk-fab/tests/space_name_element.rs`.
+
+Model on `rust/tonk-inspector/tests/render.rs`:
+`#![cfg(all(target_arch = "wasm32", target_os = "unknown"))]` +
+`wasm_bindgen_test_configure!(run_in_browser)` + `#[dialog_common::test]`.
+
+Run with `nix develop -c test:web:debug`.
+
+**Known environment limit:** wasm browser tests may not run on darwin — the
+flake wires chromedriver only on Linux, and darwin needs safaridriver enabled
+or a major-matched chromedriver. If the harness cannot run locally, the test
+must still compile for wasm32
+(`cargo build -p tonk-fab --target wasm32-unknown-unknown --tests`) and CI runs
+it. Never fake a green.
+
+---
+
 ### Task 3: `RenameRepository` command + handler
 
 Rename is a declarative rule on the *space* branch (`core.yaml:825`) — a profile-dispatched claim has no rule there to consume it. It needs a worker handler shaped like `PauseSyncHandler`. This is the one place the design changes semantics.
