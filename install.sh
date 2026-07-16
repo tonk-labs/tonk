@@ -159,6 +159,41 @@ fi
 
 say "installed tonk to $dest"
 
+# Record what we installed, so `tonk update` knows which channel to
+# check and can answer "already current" without downloading an
+# archive. Best-effort: an older release has no manifest.json, and a
+# receipt we cannot write is not a reason to fail an install.
+#
+# Mirrors `update::receipt::Receipt`; TONK_UPDATE_STATE overrides the
+# directory for tests, matching the CLI.
+if [ -n "${TONK_UPDATE_STATE:-}" ]; then
+  state_dir="$TONK_UPDATE_STATE"
+elif [ "$os" = "Darwin" ]; then
+  state_dir="$HOME/Library/Application Support/tonk"
+else
+  state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/tonk"
+fi
+
+if fetch "${url%/*}/manifest.json" "$tmp/manifest.json" 2>/dev/null; then
+  # Pull two string fields out without requiring jq.
+  m_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
+  m_commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
+  if [ -n "$m_version" ] && [ -n "$m_commit" ]; then
+    if mkdir -p "$state_dir" 2>/dev/null; then
+      cat > "$state_dir/install.json" <<EOF
+{
+  "channel": "$channel",
+  "version": "$m_version",
+  "commit": "$m_commit",
+  "install_dir": "$INSTALL_DIR",
+  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+      say "recorded install receipt in $state_dir"
+    fi
+  fi
+fi
+
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "note: $INSTALL_DIR is not on your PATH; add it, e.g. export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
