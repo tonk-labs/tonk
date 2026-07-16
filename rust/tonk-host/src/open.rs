@@ -324,8 +324,29 @@ fn confirm_then_open(url: &str, label: &str) {
     });
     listeners.borrow_mut().push(close_listener);
 
-    let _ = body.append_child(&dialog);
-    let _ = dialog.show_modal();
+    // A FAILURE HERE MUST NOT WEDGE THE FEATURE. The stacking gate above finds
+    // a dialog by selector, and only the `close` event takes one back off the
+    // page — so a dialog that is appended but never shown emits no `close`, is
+    // found forever, and every subsequent link on the page is refused. Take it
+    // back off on either failure, and the wedge becomes a single lost click.
+    //
+    // Clearing `listeners` is the same teardown `close` does, for the same
+    // reason: the `close` listener holds an `Rc` to the collection that owns
+    // it, so nothing else breaks the cycle. It is safe to do inline here (and
+    // not from a microtask, as `close` must) because no closure is mid-call —
+    // and the dialog they were attached to is unreachable from this point.
+    if body.append_child(&dialog).is_err() {
+        warn(&format!("could not attach the dialog announcing `{url}`"));
+        listeners.borrow_mut().clear();
+        return;
+    }
+    if let Err(error) = dialog.show_modal() {
+        warn(&format!(
+            "could not show the dialog announcing `{url}`: {error:?}"
+        ));
+        dialog.remove();
+        listeners.borrow_mut().clear();
+    }
 }
 
 /// Attach a listener that ignores its event, and hand the `Closure` back.
