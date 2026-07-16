@@ -1,0 +1,275 @@
+// The heavy chunk: ProseMirror assembly for `<tonk-prose>`. Loaded
+// by the shell (`../index.ts`) via dynamic import on the first
+// element connect — nothing here may be imported *statically* from
+// the shell (types excepted).
+
+import { EditorState, Plugin, TextSelection } from "prosemirror-state";
+import { Slice } from "prosemirror-model";
+import { EditorView } from "prosemirror-view";
+import { history } from "prosemirror-history";
+import { dropCursor } from "prosemirror-dropcursor";
+import { gapCursor } from "prosemirror-gapcursor";
+import { schema } from "./schema";
+import { parseMarkdown, serializeMarkdown } from "./markdown";
+import { buildInputRules } from "./input-rules";
+import { buildKeymap, baseKeymap } from "./keymap";
+import { keymap } from "prosemirror-keymap";
+import { reparse } from "./reparse";
+import { reveal } from "./reveal";
+import { placeholder, placeholderKey } from "./placeholder";
+import { codeBlocks } from "./code-block";
+import type { EditorOptions, ProseEditor } from "./api";
+
+/** Parse pasted plain text as markdown — Typora's paste behavior.
+ *  Pastes into code contexts keep default (verbatim) handling. */
+function markdownPastePlugin(): Plugin {
+  return new Plugin({
+    props: {
+      clipboardTextParser(text, $context) {
+        // Falsy result falls through to the default (verbatim) path.
+        if ($context.parent.type.spec.code) return null as unknown as Slice;
+        const doc = parseMarkdown(text);
+        // maxOpen produces the natural open depths so pasting a
+        // single paragraph mid-sentence splices inline.
+        return Slice.maxOpen(doc.content);
+      },
+    },
+  });
+}
+
+export function createEditor(
+  parent: HTMLElement,
+  options: EditorOptions,
+): ProseEditor {
+  injectStylesheet(parent);
+
+  let readOnly = options.readOnly;
+
+  const state = EditorState.create({
+    doc: parseMarkdown(options.doc),
+    plugins: [
+      // Reparse first: its plugin view sees every transaction, and
+      // its state must be reset by flush metas before anything else
+      // reads it. Order among the rest is not load-bearing except
+      // code-block arrow keys before the base keymap.
+      reparse(),
+      reveal(),
+      buildInputRules(schema),
+      ...codeBlocks(),
+      buildKeymap(),
+      keymap(baseKeymap),
+      history(),
+      dropCursor(),
+      gapCursor(),
+      placeholder(options.placeholder),
+      markdownPastePlugin(),
+    ],
+  });
+
+  const view = new EditorView(parent, {
+    state,
+    editable: () => !readOnly,
+    attributes: { class: "md-doc" },
+    dispatchTransaction(tr) {
+      const next = view.state.apply(tr);
+      view.updateState(next);
+      if (tr.docChanged) {
+        options.onChange(serializeMarkdown(next.doc));
+      }
+    },
+  });
+
+  return {
+    view,
+
+    getMarkdown(): string {
+      return serializeMarkdown(view.state.doc);
+    },
+
+    setMarkdown(markdown: string): void {
+      const doc = parseMarkdown(markdown);
+      const tr = view.state.tr.replaceWith(
+        0,
+        view.state.doc.content.size,
+        doc.content,
+      );
+      // Park the caret at the start — the previous selection has no
+      // meaning in the new document.
+      tr.setSelection(TextSelection.atStart(tr.doc));
+      view.dispatch(tr);
+    },
+
+    setReadOnly(next: boolean): void {
+      readOnly = next;
+      // Re-run the `editable` prop.
+      view.setProps({});
+    },
+
+    setPlaceholder(text: string): void {
+      view.dispatch(view.state.tr.setMeta(placeholderKey, text));
+    },
+
+    focus(): void {
+      view.focus();
+    },
+
+    destroy(): void {
+      view.destroy();
+    },
+  };
+}
+
+/** Editor document stylesheet, injected once per root node (the
+ *  shell's shadow root in practice). Everything routes through the
+ *  `--tonk-prose-*` variables the shell defines on the host. */
+function injectStylesheet(parent: HTMLElement): void {
+  const root = parent.getRootNode();
+  const container = root instanceof ShadowRoot ? root : document.head;
+  if (container.querySelector("style[data-tonk-prose-editor]")) return;
+  const style = document.createElement("style");
+  style.setAttribute("data-tonk-prose-editor", "");
+  style.textContent = EDITOR_STYLESHEET;
+  container.append(style);
+}
+
+const EDITOR_STYLESHEET = `
+  .md-doc {
+    font-family: var(--tonk-prose-font);
+    font-size: var(--tonk-prose-font-size);
+    line-height: 1.6;
+    color: var(--tonk-prose-fg);
+    padding: var(--tonk-prose-padding);
+    max-width: var(--tonk-prose-max-width);
+    margin: 0 auto;
+    outline: none;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    caret-color: var(--tonk-prose-accent);
+    height: 100%;
+    box-sizing: border-box;
+  }
+
+  .md-doc ::selection { background: var(--tonk-prose-selection); }
+
+  .md-doc p { margin: 0 0 0.75em; }
+
+  .md-doc h1, .md-doc h2, .md-doc h3,
+  .md-doc h4, .md-doc h5, .md-doc h6 {
+    line-height: 1.25;
+    margin: 1.1em 0 0.5em;
+    font-weight: 650;
+  }
+  .md-doc h1:first-child, .md-doc h2:first-child,
+  .md-doc h3:first-child, .md-doc p:first-child { margin-top: 0; }
+  .md-doc h1 { font-size: 1.9em; }
+  .md-doc h2 { font-size: 1.5em; }
+  .md-doc h3 { font-size: 1.25em; }
+  .md-doc h4 { font-size: 1.05em; }
+  .md-doc h5 { font-size: 1em; }
+  .md-doc h6 { font-size: 0.9em; color: var(--tonk-prose-fg-muted); }
+
+  .md-doc blockquote {
+    margin: 0 0 0.75em;
+    padding: 0 1em;
+    border-left: 3px solid var(--tonk-prose-border);
+    color: var(--tonk-prose-blockquote);
+  }
+
+  .md-doc ul, .md-doc ol { padding-left: 1.6em; margin: 0 0 0.75em; }
+  .md-doc li > p { margin-bottom: 0.25em; }
+
+  .md-doc hr {
+    border: none;
+    border-top: 2px solid var(--tonk-prose-border);
+    margin: 1.5em 0;
+  }
+
+  .md-doc a {
+    color: var(--tonk-prose-accent);
+    text-decoration: none;
+  }
+  .md-doc a:hover { text-decoration: underline; }
+
+  .md-doc code {
+    font-family: var(--tonk-prose-mono);
+    font-size: 0.875em;
+    background: var(--tonk-prose-code-bg);
+    color: var(--tonk-prose-code-fg);
+    border-radius: 4px;
+    padding: 0.15em 0.35em;
+  }
+
+  .md-doc img {
+    max-width: 100%;
+    border-radius: var(--tonk-prose-radius);
+  }
+
+  /* Embedded code editors. The <tonk-code> element brings its own
+     frame; the wrapper only spaces it. The plain fallback mimics a
+     quiet code surface. */
+  .md-code-block { margin: 0 0 0.75em; }
+  .md-code-block-plain {
+    font-family: var(--tonk-prose-mono);
+    font-size: 0.875em;
+    background: var(--tonk-prose-code-bg);
+    color: var(--tonk-prose-code-fg);
+    border: 1px solid var(--tonk-prose-border);
+    border-radius: var(--tonk-prose-radius);
+    padding: 0.75em 1em;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .md-code-block-plain code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  /* ——— The Typora reveal ———
+     Markers are literal text (.md-markup spans). Hidden at rest;
+     revealed inside the block the caret sits in. The reveal is a
+     class toggle driven by one node decoration — see reveal.ts. */
+  .md-markup { display: none; }
+  /* Reveal only while the editor is focused — an unfocused editor
+     reads as rendered markdown, Typora-style. */
+  .ProseMirror-focused .md-active .md-markup {
+    display: inline;
+    color: var(--tonk-prose-marker);
+    font-weight: 400;
+    font-style: normal;
+  }
+  /* Marker text inside revealed code spans shouldn't get the chip
+     background twice. */
+  .md-active code .md-markup { background: none; }
+
+  /* Placeholder (empty doc): ghost text via CSS content. */
+  .tonk-prose-empty::before {
+    content: attr(data-placeholder);
+    color: var(--tonk-prose-fg-muted);
+    font-style: italic;
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+
+  /* ProseMirror needs these for correct behavior. */
+  .ProseMirror { position: relative; }
+  .ProseMirror-hideselection *::selection { background: transparent; }
+  .ProseMirror-selectednode { outline: 2px solid var(--tonk-prose-accent); }
+  .ProseMirror-gapcursor {
+    display: none;
+    pointer-events: none;
+    position: absolute;
+  }
+  .ProseMirror-gapcursor:after {
+    content: "";
+    display: block;
+    position: absolute;
+    top: -2px;
+    width: 20px;
+    border-top: 1px solid var(--tonk-prose-fg);
+    animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+  }
+  @keyframes ProseMirror-cursor-blink { to { visibility: hidden; } }
+  .ProseMirror-focused .ProseMirror-gapcursor { display: block; }
+`;
