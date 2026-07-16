@@ -1,0 +1,206 @@
+//! Shared scaffolding for the FAB's subscribing `ui-` children.
+//!
+//! `<ui-space-name>`, `<ui-member-roster>`, and (soon) `<ui-space-switcher>`
+//! all: render with `shadow() -> false`, observe a `space` attribute, stamp
+//! their OWN `with="main@{did}"` on connect (`resolve_with` reads an
+//! element's own attribute and never walks ancestors, so each element must
+//! stamp it itself, not inherit it), subscribe via plain `consumer::subscribe`
+//! (not `subscribe_with_route` — that has one caller, the portal bridge, and
+//! is not this precedent), retry a failed subscribe with a bounded
+//! `RetryPolicy` before giving up to a terminal `data-state="unavailable"`,
+//! and install `reset`/`update` frame delegates so the host's delivered
+//! frames are actually consumed.
+//!
+//! That last point is load-bearing: `<ui-space-name>` originally subscribed
+//! but never wired a delegate to consume the answer, so it silently showed
+//! "Untitled" forever (see commit 71d1c58ac). Routing both frame kinds
+//! through [`Subscribing::render_reset`]/[`Subscribing::render_update`] here
+//! makes consumption structural — an element built on this scaffolding
+//! cannot subscribe without also rendering.
+//!
+//! What elements differ on is the query body and how a frame renders, so
+//! that is exactly the seam [`Subscribing`] exposes.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use js_sys::{Function, JSON, Reflect};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::spawn_local;
+use web_sys::{Element, HtmlElement, window};
+
+use tonk_host::consumer::{self, Subscription};
+
+use crate::retry::RetryPolicy;
+
+/// The per-instance frame-delegate closure shape: `(payload, opts)`, matching
+/// what the host's `invoke_method_marked` calls with.
+type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
+
+/// The per-element behaviour a subscribing `ui-` child supplies; the
+/// scaffolding around it (with-stamping, subscribe, retry, teardown) is
+/// shared.
+///
+/// `render_reset`/`render_update` are split, not a single `render`, because
+/// the two frame kinds carry different shapes: `reset` delivers a bare array
+/// of every current conclusion, `update` delivers `{ asserted, retracted }`
+/// deltas — `<ui-space-name>` already needed to tell them apart (a delta's
+/// newest asserted row wins; a bare retract leaves the chip alone), so the
+/// scaffolding names both rather than pushing that dispatch into every
+/// implementer.
+pub trait Subscribing {
+    /// The subscribe body, built from the element's own `space` attribute.
+    fn query_body(&self, space: &str) -> Result<String, String>;
+    /// Render a full snapshot (`reset`) frame into the host.
+    fn render_reset(&self, host: &HtmlElement, payload: &JsValue);
+    /// Render an incremental (`update`) delta frame into the host.
+    fn render_update(&self, host: &HtmlElement, payload: &JsValue);
+    /// Tag distinguishing this element's subscription — also used as the log
+    /// prefix on a failed subscribe.
+    fn tag(&self) -> &'static str;
+}
+
+/// The shared subscribe/retry/teardown state a subscribing element's
+/// `CustomElement` struct embeds alongside its own fields.
+#[derive(Default)]
+pub struct Scaffold {
+    subscription: Rc<RefCell<Option<Subscription>>>,
+    retry: Rc<RefCell<RetryPolicy>>,
+    reset: Rc<RefCell<Option<FrameClosure>>>,
+    update: Rc<RefCell<Option<FrameClosure>>>,
+}
+
+impl Scaffold {
+    /// Run from `connected_callback`: stamp `with`, install the `reset`/
+    /// `update` frame delegates (forwarded from the prototype shims
+    /// [`install_frame_shims`] installs), and subscribe.
+    ///
+    /// A no-op when `space` is absent or empty (an unsubstituted `{id}`
+    /// placeholder, say) — the attribute-changed callback re-runs this once
+    /// it lands.
+    pub fn connect(&self, this: &HtmlElement, behaviour: Rc<dyn Subscribing>) {
+        let Some(space) = this.get_attribute("space").filter(|s| !s.is_empty()) else {
+            return;
+        };
+        // Stamp our own routing context: `resolve_with` reads THIS element's
+        // attribute and never walks ancestors.
+        let _ = this.set_attribute("with", &crate::logic::space_with(&space));
+
+        // Install the per-instance `reset` delegate: the host calls
+        // `element.reset(conclusions, { tag })` for the first (and any
+        // reconnect) frame, and the prototype shim installed by
+        // `install_frame_shims` forwards it here.
+        let render = behaviour.clone();
+        let host = this.clone();
+        let reset: FrameClosure =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                render.render_reset(&host, &payload);
+            }));
+        let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
+        *self.reset.borrow_mut() = Some(reset);
+
+        // Install the per-instance `update` delegate: subsequent changes
+        // arrive as an incremental delta, not another snapshot.
+        let render = behaviour.clone();
+        let host = this.clone();
+        let update: FrameClosure =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                render.render_update(&host, &payload);
+            }));
+        let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
+        *self.update.borrow_mut() = Some(update);
+
+        let subscription = self.subscription.clone();
+        let retry = self.retry.clone();
+        let host = this.clone();
+        spawn_local(async move {
+            if !host.is_connected() || subscription.borrow().is_some() {
+                return;
+            }
+            subscribe(&host, &space, behaviour.as_ref(), subscription, retry);
+        });
+    }
+
+    /// Run from `disconnected_callback`: drop the subscription and frame
+    /// delegates.
+    pub fn disconnect(&self) {
+        self.subscription.borrow_mut().take();
+        self.reset.borrow_mut().take();
+        self.update.borrow_mut().take();
+    }
+}
+
+fn subscribe(
+    host: &HtmlElement,
+    space: &str,
+    behaviour: &dyn Subscribing,
+    subscription: Rc<RefCell<Option<Subscription>>>,
+    retry: Rc<RefCell<RetryPolicy>>,
+) {
+    let tag = behaviour.tag();
+    let body = match behaviour.query_body(space) {
+        Ok(body) => body,
+        Err(err) => {
+            tonk_common::log!("{tag}: query build failed: {err}");
+            return;
+        }
+    };
+    let Ok(parsed) = JSON::parse(&body) else {
+        tonk_common::log!("{tag}: query JSON parse failed");
+        return;
+    };
+    let consumer_el: Element = host.clone().into();
+    let tag_val = JsValue::from_str(tag);
+    match consumer::subscribe(&consumer_el, &parsed, Some(&tag_val)) {
+        Ok(sub) => {
+            retry.borrow_mut().reset();
+            *subscription.borrow_mut() = Some(sub);
+        }
+        Err(err) => {
+            // Bounded, unlike the host's default resubscribe loop.
+            let delay = retry.borrow_mut().next_delay_ms();
+            match delay {
+                Some(_) => tonk_common::log!("{tag}: subscribe failed, will retry: {err:?}"),
+                None => {
+                    tonk_common::log!("{tag}: subscribe failed, giving up: {err:?}");
+                    let _ = host.set_attribute("data-state", "unavailable");
+                }
+            }
+        }
+    }
+}
+
+/// Whether `tag` is already a registered custom element.
+pub fn already_registered(tag: &str) -> bool {
+    window()
+        .map(|win| !win.custom_elements().get(tag).is_undefined())
+        .unwrap_or(false)
+}
+
+/// Install the prototype `reset`/`update` method shims (forwarding to the
+/// per-instance `__tonkReset`/`__tonkUpdate` delegates [`Scaffold::connect`]
+/// installs) so host subscription frames reach the element — the same
+/// pattern `<ui-sync-status>` uses.
+pub fn install_frame_shims(tag: &str) {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get(tag);
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let update_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+}

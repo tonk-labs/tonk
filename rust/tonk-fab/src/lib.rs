@@ -18,6 +18,9 @@ mod share;
 #[cfg(target_arch = "wasm32")]
 mod space_name;
 
+#[cfg(target_arch = "wasm32")]
+mod subscribing;
+
 /// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {

@@ -37,13 +37,10 @@ use js_sys::{Function, JSON, Object, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event, HtmlElement, window};
 
-use tonk_host::consumer::{self, Subscription};
-
 use crate::logic::{rename_repo_claim_json, repo_name_query_body};
-use crate::retry::RetryPolicy;
+use crate::subscribing;
 
 /// Shown before the first frame and for a repo with no name — matches the
 /// existing "Untitled" fallback the seeded view rendered.
@@ -51,26 +48,43 @@ const UNTITLED: &str = "Untitled";
 
 const SUB_TAG: &str = "ui-space-name";
 
-/// The per-instance frame-delegate closure shape: `(payload, opts)`, matching
-/// what the host's `invoke_method_marked` calls with.
-type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
-
 /// The editable child's `change`-commit listener closure.
 type ChangeClosure = Closure<dyn FnMut(Event)>;
 
 #[derive(Default)]
 pub struct UiSpaceNameElement {
-    subscription: Rc<RefCell<Option<Subscription>>>,
-    retry: Rc<RefCell<RetryPolicy>>,
+    scaffold: subscribing::Scaffold,
     /// The last name the live subscription actually delivered — the value a
     /// no-op or failed rename reverts the chip to. Seeded to `UNTITLED` in
     /// `inject_children` so a commit issued before the first frame arrives
     /// reverts to the same placeholder the chip shows, rather than the
     /// zero-value empty string a bare `Default` would leave it at.
     current_name: Rc<RefCell<String>>,
-    reset: Rc<RefCell<Option<FrameClosure>>>,
-    update: Rc<RefCell<Option<FrameClosure>>>,
     change: Rc<RefCell<Option<ChangeClosure>>>,
+}
+
+/// This element's [`subscribing::Subscribing`] behaviour: the raw-attribute
+/// repo-name query, and rendering a delivered frame into the chip.
+struct SpaceNameBehaviour {
+    current_name: Rc<RefCell<String>>,
+}
+
+impl subscribing::Subscribing for SpaceNameBehaviour {
+    fn query_body(&self, space: &str) -> Result<String, String> {
+        repo_name_query_body(space)
+    }
+
+    fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
+        on_frame(host, payload.clone(), &self.current_name);
+    }
+
+    fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
+        on_delta(host, payload.clone(), &self.current_name);
+    }
+
+    fn tag(&self) -> &'static str {
+        SUB_TAG
+    }
 }
 
 impl CustomElement for UiSpaceNameElement {
@@ -96,38 +110,15 @@ impl CustomElement for UiSpaceNameElement {
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let Some(space) = this.get_attribute("space").filter(|s| !s.is_empty()) else {
+        if this
+            .get_attribute("space")
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
             // No space yet (an unsubstituted `{id}` placeholder, say) — the
             // attribute callback re-runs this when it lands.
             return;
-        };
-        // Stamp our own routing context: `resolve_with` reads THIS element's
-        // attribute and never walks ancestors.
-        let _ = this.set_attribute("with", &crate::logic::space_with(&space));
-
-        // Install the per-instance `reset` delegate: the host calls
-        // `element.reset(conclusions, { tag })` for the first (and any
-        // reconnect) frame, and the prototype shim installed in `register`
-        // forwards it here.
-        let current_name = self.current_name.clone();
-        let host = this.clone();
-        let reset: FrameClosure =
-            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
-                on_frame(&host, payload, &current_name);
-            }));
-        let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
-        *self.reset.borrow_mut() = Some(reset);
-
-        // Install the per-instance `update` delegate: subsequent name changes
-        // arrive as an incremental delta, not another snapshot.
-        let current_name = self.current_name.clone();
-        let host = this.clone();
-        let update: FrameClosure =
-            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
-                on_delta(&host, payload, &current_name);
-            }));
-        let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
-        *self.update.borrow_mut() = Some(update);
+        }
 
         // Attach the commit listener to the `<tonk-editable>` child. There is
         // no `tonk-display` event delegation here (this markup is Rust-owned,
@@ -144,62 +135,15 @@ impl CustomElement for UiSpaceNameElement {
             *self.change.borrow_mut() = Some(on_change);
         }
 
-        let subscription = self.subscription.clone();
-        let retry = self.retry.clone();
-        let host = this.clone();
-        spawn_local(async move {
-            if !host.is_connected() || subscription.borrow().is_some() {
-                return;
-            }
-            subscribe_name(&host, &space, subscription, retry);
+        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(SpaceNameBehaviour {
+            current_name: self.current_name.clone(),
         });
+        self.scaffold.connect(this, behaviour);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        self.subscription.borrow_mut().take();
-        self.reset.borrow_mut().take();
-        self.update.borrow_mut().take();
+        self.scaffold.disconnect();
         self.change.borrow_mut().take();
-    }
-}
-
-fn subscribe_name(
-    host: &HtmlElement,
-    space: &str,
-    subscription: Rc<RefCell<Option<Subscription>>>,
-    retry: Rc<RefCell<RetryPolicy>>,
-) {
-    let body = match repo_name_query_body(space) {
-        Ok(body) => body,
-        Err(err) => {
-            tonk_common::log!("ui-space-name: query build failed: {err}");
-            return;
-        }
-    };
-    let Ok(parsed) = JSON::parse(&body) else {
-        tonk_common::log!("ui-space-name: query JSON parse failed");
-        return;
-    };
-    let consumer_el: Element = host.clone().into();
-    let tag = JsValue::from_str(SUB_TAG);
-    match consumer::subscribe(&consumer_el, &parsed, Some(&tag)) {
-        Ok(sub) => {
-            retry.borrow_mut().reset();
-            *subscription.borrow_mut() = Some(sub);
-        }
-        Err(err) => {
-            // Bounded, unlike the host's default resubscribe loop.
-            let delay = retry.borrow_mut().next_delay_ms();
-            match delay {
-                Some(_) => {
-                    tonk_common::log!("ui-space-name: subscribe failed, will retry: {err:?}")
-                }
-                None => {
-                    tonk_common::log!("ui-space-name: subscribe failed, giving up: {err:?}");
-                    let _ = host.set_attribute("data-state", "unavailable");
-                }
-            }
-        }
     }
 }
 
@@ -329,35 +273,9 @@ fn dispatch_rename(space: &str, name: &str) {
 /// `__tonkUpdate` delegates) so host subscription frames reach the element —
 /// the same pattern `<ui-sync-status>` uses.
 pub fn register() {
-    let registered = window()
-        .map(|win| !win.custom_elements().get("ui-space-name").is_undefined())
-        .unwrap_or(false);
-    if registered {
+    if subscribing::already_registered(SUB_TAG) {
         return;
     }
-    UiSpaceNameElement::define("ui-space-name");
-    install_frame_shims();
-}
-
-fn install_frame_shims() {
-    let Some(win) = window() else {
-        return;
-    };
-    let constructor = win.custom_elements().get("ui-space-name");
-    if constructor.is_undefined() {
-        return;
-    }
-    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
-        return;
-    };
-    let reset_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
-    );
-    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
-    let update_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
-    );
-    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+    UiSpaceNameElement::define(SUB_TAG);
+    subscribing::install_frame_shims(SUB_TAG);
 }
