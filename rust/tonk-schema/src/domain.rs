@@ -269,6 +269,16 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.dataset")]
         pub struct Invite(pub Entity);
+
+        /// The target space DID — the repository to mint the invite for. Lets
+        /// `tonk:invite` be dispatched from the profile branch: the handler
+        /// reads the target from this field instead of the dispatch origin
+        /// (`CommandEnv::origin`, empty for a routeless profile-branch
+        /// dispatch), mirroring `pause_sync::Space`. The derived attribute is
+        /// `xyz.tonk.invite/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite")]
+        pub struct Space(pub Entity);
     }
 
     /// Attributes the `tonk:pause-sync` command carries.

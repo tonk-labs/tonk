@@ -35,8 +35,9 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, dock_from_conclusions, mirrored,
-    nearest_dock, pause_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, create_space_claim_json, dock_claim_json,
+    dock_from_conclusions, mirrored, nearest_dock, pause_claim_json, profile_rename_claim_json,
+    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -152,6 +153,8 @@ impl CustomElement for TonkFab {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
             attach_drag(this);
             attach_gestures(this);
+            attach_create_space_form(this);
+            attach_profile_name_commit(this);
             preload_menu_widths(this);
         }
         // Restore the persisted position and apply it to our own style.
@@ -296,8 +299,15 @@ fn dispatch_pause_from_cap(cap: &Element) {
         return;
     };
 
-    let claim = pause_claim_json(&command, &space, js_sys::Date::now());
-    let json_str = match serde_json::to_string(&claim) {
+    transact(&pause_claim_json(&command, &space, js_sys::Date::now()));
+}
+
+/// Dispatch a `TransactRequest` JSON body via `window.tonk.transact(...)`,
+/// routeless. Shared by every FAB-owned command dispatch (pause, dock
+/// persistence, create-space, profile-rename) — each builds its own claim
+/// JSON via `crate::logic` and hands it here.
+fn transact(claim: &serde_json::Value) {
+    let json_str = match serde_json::to_string(claim) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -308,15 +318,145 @@ fn dispatch_pause_from_cap(cap: &Element) {
     else {
         return;
     };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
+    let Some(transact_fn) = Reflect::get(&tonk, &"transact".into())
         .ok()
         .and_then(|v| v.dyn_into::<Function>().ok())
     else {
         return;
     };
     if let Some(obj) = js_sys::JSON::parse(&json_str).ok() {
-        transact.call1(&tonk, &obj).ok();
+        transact_fn.call1(&tonk, &obj).ok();
     }
+}
+
+/// Attach the create-space wizard's `submit` handler directly to
+/// `#fab-space-create-form`.
+///
+/// This markup used to live inside a `<tonk-display model="tonk:profile/fab">`
+/// wrapper, whose own render pass rewrote `onsubmit=space/create` into
+/// `data-onsubmit` and installed a `tonk-display::events::delegate::Delegate`
+/// that resolved the concept descriptor and dispatched the claim (see
+/// `markup.rs`'s module docs). `<tonk-fab>` sets this markup via
+/// `set_inner_html` directly, so no such delegate exists — this reimplements,
+/// from Rust, the three things that delegate did for this one form:
+/// `preventDefault()` (else the browser falls through to a native GET submit
+/// and reloads the page with `?name=` — see `tonk-display/src/events/
+/// extract.rs` around line 631), reading the submitted fields, and dismissing
+/// the dialog (`maybe_dismiss_overlay` in `tonk-display/src/events/
+/// delegate.rs`).
+///
+/// The form is static markup present at connect time (unlike the profile-name
+/// chip, which may render asynchronously), so a direct listener — rather than
+/// delegation on the host — is enough.
+fn attach_create_space_form(element: &HtmlElement) {
+    let Some(form) = element
+        .query_selector("#fab-space-create-form")
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let on_submit = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Unconditional and first: the browser has already run native
+        // constraint validation by the time `submit` fires, so this only
+        // ever suppresses the reload, never a legitimate validation error.
+        event.prevent_default();
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let name = form_field(&target, "name");
+        let remote = form_field(&target, "remote");
+        let template = form_field(&target, "template");
+        transact(&create_space_claim_json(&name, &remote, &template));
+        dismiss_overlay(&target);
+    });
+    let target: &web_sys::EventTarget = form.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("submit", on_submit.as_ref().unchecked_ref());
+    on_submit.forget();
+}
+
+/// Read `form.elements[field].value` the way `dom.event.current-target.
+/// elements.<field>/value` reads it in the browser: a plain `Reflect` walk,
+/// not a typed `HtmlFormElement`/`HtmlInputElement` cast. That matters for
+/// `template`: three radios share `name="template"`, so
+/// `form.elements.template` is a `RadioNodeList`, not a single control —
+/// its own `.value` getter already resolves to the checked radio's value,
+/// exactly like a single input's. A typed cast to `HtmlInputElement` would
+/// fail on that shape; the untyped walk handles both uniformly.
+fn form_field(form: &Element, field: &str) -> String {
+    Reflect::get(form, &JsValue::from_str("elements"))
+        .and_then(|elements| Reflect::get(&elements, &JsValue::from_str(field)))
+        .and_then(|item| Reflect::get(&item, &JsValue::from_str("value")))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// Reimplements `tonk_display::events::delegate::maybe_dismiss_overlay` for
+/// FAB-owned markup, where no `Delegate` is installed to run the original.
+/// `target` is the element the effect fired on (the form, for a submit).
+///
+/// Two markers, each a no-op unless present — see the original for why:
+/// - `[data-close-dialog]` closes the nearest `<wa-dialog>` (sets `open =
+///   false`).
+/// - `[data-close-radio="<id>"]` re-checks the CSS-paging radio with that id
+///   and, when the marked element is itself a form, resets it. The FAB's own
+///   create form doesn't carry this marker (only the Hub's onboarding
+///   overlay and remove-confirm forms do), so this branch is currently a
+///   no-op here — kept for parity with the original and in case a future
+///   FAB-owned form adds one.
+fn dismiss_overlay(target: &Element) {
+    if let Some(marked) = target.closest("[data-close-dialog]").ok().flatten()
+        && let Some(dialog) = marked.closest("wa-dialog").ok().flatten()
+    {
+        let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
+    }
+    if let Some(marked) = target.closest("[data-close-radio]").ok().flatten()
+        && let Some(id) = marked.get_attribute("data-close-radio")
+        && let Some(doc) = marked.owner_document()
+        && let Some(radio) = doc.get_element_by_id(&id)
+    {
+        let _ = Reflect::set(&radio, &JsValue::from_str("checked"), &JsValue::TRUE);
+        if let Ok(reset_fn) = Reflect::get(&marked, &JsValue::from_str("reset"))
+            .and_then(|v| v.dyn_into::<Function>())
+        {
+            let _ = reset_fn.call0(&marked);
+        }
+    }
+}
+
+/// Attach a delegated `change` listener on the whole `<tonk-fab>` host for
+/// the profile-name chip's commit, mirroring `attach_gestures`'s click
+/// delegation (not `dispatch_pause_from_cap`'s direct-child lookup): the
+/// chip's `<tonk-editable data-rename="tonk:profile">` renders inside a
+/// nested `<tonk-display model="tonk:profile/name">` — asynchronously,
+/// after that display's own subscribe resolves — so a listener attached
+/// once at connect time to a `query_selector` result would silently find
+/// nothing. Delegation on the host catches the bubbling `change`
+/// (`tonk-workspace::editable` dispatches a bubbling native `Event`)
+/// whenever it eventually appears.
+///
+/// Filters on `[data-rename="tonk:profile"]` specifically: the create-space
+/// dialog's own `change`-firing radios also live under this host and must
+/// not be mistaken for a name commit.
+fn attach_profile_name_commit(element: &HtmlElement) {
+    let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let Some(editable) = target
+            .closest("[data-rename=\"tonk:profile\"]")
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let name = editable.text_content().unwrap_or_default();
+        transact(&profile_rename_claim_json(&name));
+    });
+    let target: &web_sys::EventTarget = element.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+    on_change.forget();
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -964,36 +1104,9 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
 }
 
 /// Persist `dock` by calling `window.tonk.transact(request)`. The request is the
-/// `TransactRequest` JSON produced by `dock_claim_json`, parsed back to a JS
-/// object via `JSON.parse` (the bridge accepts any structured-clonable object).
+/// `TransactRequest` JSON produced by `dock_claim_json`.
 fn persist_dock(dock: Dock) {
-    let claim = dock_claim_json(dock);
-    let json_str = match serde_json::to_string(&claim) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let Some(win) = window() else {
-        return;
-    };
-    let tonk = match Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    {
-        Some(t) => t,
-        None => return,
-    };
-    let transact_fn = match Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    {
-        Some(f) => f,
-        None => return,
-    };
-    let js_obj = match js_sys::JSON::parse(&json_str).ok() {
-        Some(v) => v,
-        None => return,
-    };
-    transact_fn.call1(&tonk, &js_obj).ok();
+    transact(&dock_claim_json(dock));
 }
 
 /// On connect, query the persisted FAB dock from `window.tonk.query(...)` and

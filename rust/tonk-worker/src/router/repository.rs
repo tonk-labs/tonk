@@ -567,23 +567,24 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
 
 /// Post-commit handler for the [`Invite`] command.
 ///
-/// When the share form's `<form onsubmit=tonk:invite>` commits a
-/// transient [`Invite`], this handler generates a fresh membership
-/// keypair, delegates the *origin* repository's access to its DID,
-/// base58-encodes the resulting delegation chain, and asserts a durable
-/// [`Authorization`] fact keyed by that DID on the repository's content
-/// branch (`main`). It then asserts the private seed as a [`Credential`]
-/// into the reactor's session overlay (never replicated). The share view
-/// joins the two via `tonk:invitation` and assembles the final URL.
+/// When the FAB's share control (`<tonk-share>`) dispatches a transient
+/// [`Invite`], this handler generates a fresh membership keypair, delegates
+/// the *target* repository's access to its DID, base58-encodes the
+/// resulting delegation chain, and asserts a durable [`Authorization`] fact
+/// keyed by that DID on the repository's content branch (`main`). It then
+/// asserts the private seed as a [`Credential`] into the reactor's session
+/// overlay (never replicated). The share view joins the two via
+/// `tonk:invitation` and assembles the final URL.
 ///
-/// The repository is not a command field: it is read from
-/// [`CommandEnv::origin`](crate::router::CommandEnv::origin) (the branch
-/// the commit landed in), so the form needs no `data-subject` stamp.
+/// The repository is read from the command's `space` field, not
+/// [`CommandEnv::origin`](crate::router::CommandEnv::origin): `Invite` is
+/// dispatched routeless from the FAB's own profile-branch context (see
+/// `tonk-fab::logic::invite_claim_json`), where the origin repo is always
+/// empty — mirroring [`PauseSyncHandler`] and [`RenameRepositoryHandler`].
 ///
 /// A custom handler (not a plain `Provider<Invite>`) is required because
 /// it reads durable repository state the decoded command alone does not
-/// carry, writes to the reactor's session overlay, and targets the repo
-/// from the origin rather than a command field.
+/// carry and writes to the reactor's session overlay.
 ///
 /// [`Invite`]: tonk_schema::command::Invite
 /// [`Authorization`]: tonk_schema::command::Authorization
@@ -626,25 +627,32 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
         use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously (the caller still holds the lock) only to
-        // confirm this is an `Invite` command — it carries no payload the
-        // handler needs (the repo comes from the origin, the keypair is
-        // minted here).
-        let is_invite = facts
+        // Decode synchronously to read the target space off the command —
+        // the handler mints for THAT space, not the dispatch origin, so
+        // `tonk:invite` can be dispatched from the profile branch. Mirrors
+        // `PauseSyncHandler`/`RenameRepositoryHandler`.
+        let target = facts
             .first()
             .map(|artifact| artifact.of.clone())
             .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
-            .is_some();
+            .and_then(|command| {
+                command
+                    .space
+                    .0
+                    .to_string()
+                    .parse::<dialog_varsig::Did>()
+                    .ok()
+            })
+            .map(|did| did.repo_key().to_owned());
         let env = env.clone();
 
         Box::pin(async move {
-            if !is_invite {
+            let Some(repo_name) = target else {
+                log!("Invite: no/unparseable target space, skipping");
                 return;
-            }
-            // The repository to delegate is read from the origin — the
-            // branch the commit landed in — not from a command field.
-            let repo_name = env.origin().repo.clone();
+            };
             log!("command Invite repo={}", repo_name);
 
             if let Err(error) = run_invite(&env, &repo_name).await {

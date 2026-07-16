@@ -1008,6 +1008,253 @@ mod rename_repo {
     }
 }
 
+/// Build a `TransactRequest` JSON body for the `space/create` command.
+///
+/// Inlines the descriptor `profile.yaml` declares for `command!: &space/create`
+/// — the same shape, verbatim attribute URIs (`dom.event.current-target.
+/// elements.<field>/value`, matching what a real form submit's read-path would
+/// have produced) — so nothing seeded on the profile branch is consulted.
+/// `this` is omitted so the worker mints it from `(descriptor, parameters)`.
+///
+/// `name` is always sent (the wizard's hidden input always carries the
+/// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
+/// alone — an absent `name` fact means the command never fires at all).
+/// `remote` and `template` are read directly off the transient's facts by
+/// the handler (not decoded as typed `CreateSpace` fields), so an empty
+/// value is omitted rather than sent as `""` — an omitted fact and a
+/// filtered-empty fact land the same way handler-side, but omitting mirrors
+/// what the browser's own event extractor would have done, and keeps this
+/// consistent with [`rename_repo_claim_json`].
+pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
+    let mut parameters = json!({ "name": name });
+    if !remote.is_empty() {
+        parameters["remote"] = json!(remote);
+    }
+    if !template.is_empty() {
+        parameters["template"] = json!(template);
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "A request to create a new space from the wizard form.",
+                        "with": {
+                            "name":     { "the": "dom.event.current-target.elements.name/value", "as": "String" },
+                            "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "String" },
+                            "template": { "the": "dom.event.current-target.elements.template/value", "as": "String" }
+                        }
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod create_space {
+    use super::*;
+
+    #[test]
+    fn it_uses_the_declared_form_attribute_uris_for_create_space() {
+        let claim = create_space_claim_json("Untitled", "https://x", "wiki");
+        let text = claim.to_string();
+        // Verbatim, kebab-cased as declared — the handler matches on these.
+        assert!(text.contains("dom.event.current-target.elements.name/value"));
+        assert!(text.contains("dom.event.current-target.elements.remote/value"));
+        assert!(text.contains("dom.event.current-target.elements.template/value"));
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(params["name"], "Untitled");
+        assert_eq!(params["remote"], "https://x");
+        assert_eq!(params["template"], "wiki");
+    }
+
+    #[test]
+    fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
+        let claim = create_space_claim_json("Untitled", "", "blank");
+        // The descriptor's `with.remote` mapping is always present (it is
+        // schema metadata) — what must be absent is the `remote` PARAMETER,
+        // the thing that actually becomes a fact. Asserting on a bare
+        // substring of the whole claim would also match the `with.remote`
+        // key and pass even if the parameter were still being sent.
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("remote")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
+        let claim = create_space_claim_json("Untitled", "https://x", "");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("template")
+                .is_none()
+        );
+    }
+}
+
+/// Build a `TransactRequest` JSON body for the `profile/rename` command.
+///
+/// Inlines the descriptor `profile.yaml` declares for `command!:
+/// &profile/rename` — so renaming the signed-in member depends on nothing
+/// seeded on the profile branch. `this` is omitted so the worker mints it
+/// from `(descriptor, parameters)`.
+///
+/// An empty `name` is omitted entirely, mirroring [`rename_repo_claim_json`]:
+/// the extractor drops empty fields, and `ProfileRename`'s `name` field is
+/// required, so an absent fact means the command doesn't decode at all — the
+/// same "commit a blank, nothing changes" behaviour `ProfileRenameHandler`
+/// itself would otherwise have to special-case.
+pub fn profile_rename_claim_json(name: &str) -> Value {
+    let mut parameters = json!({ "marker": "tonk:profile" });
+    if !name.is_empty() {
+        parameters["name"] = json!(name);
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Rename the signed-in member (set their display name).",
+                        "with": {
+                            "name":   { "the": "dom.event.current-target/value", "as": "String" },
+                            "marker": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod profile_rename {
+    use super::*;
+
+    #[test]
+    fn it_inlines_the_rename_descriptor_and_marks_the_profile() {
+        let claim = profile_rename_claim_json("Ada");
+        let text = claim.to_string();
+        assert!(text.contains("dom.event.current-target/value"));
+        assert!(text.contains("dom.event.current-target.dataset/rename"));
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(params["name"], "Ada");
+        assert_eq!(params["marker"], "tonk:profile");
+    }
+
+    #[test]
+    fn it_omits_an_empty_name_rather_than_sending_a_blank() {
+        let claim = profile_rename_claim_json("");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("name")
+                .is_none()
+        );
+    }
+}
+
+/// Build a `TransactRequest` JSON body for the `tonk:invite` command.
+///
+/// Inlines the descriptor (mirroring `core.yaml`'s `command!: &tonk/invite`)
+/// plus a `space` field — mirroring [`pause_claim_json`]'s `space` — so the
+/// handler mints for the named repository instead of reading the dispatch
+/// origin, which is empty when `<tonk-share>` dispatches routeless from the
+/// FAB's own profile-branch context. `this` is omitted so the worker mints
+/// it from `(descriptor, parameters)`; `time` makes each click a distinct
+/// transient so repeated Share clicks reliably re-fire the handler and
+/// rotate the credential.
+pub fn invite_claim_json(space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Mint a repo invite — generates a membership keypair and delegation.",
+                        "with": {
+                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
+                            "space":  { "the": "xyz.tonk.invite/space", "as": "Entity" },
+                            "marker": { "the": "dom.event.current-target.dataset/invite", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "space": space,
+                    "marker": "tonk:invite"
+                }
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod invite {
+    use super::*;
+
+    #[test]
+    fn it_names_the_target_space_on_the_invite() {
+        let claim = invite_claim_json("did:key:z6Mk", 1.0);
+        assert!(claim.to_string().contains("xyz.tonk.invite/space"));
+        assert!(claim.to_string().contains("did:key:z6Mk"));
+        let app = &claim["claims"][0]["application"];
+        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
+        assert_eq!(app["parameters"]["marker"], "tonk:invite");
+        assert_eq!(app["parameters"]["time"], 1.0);
+        assert!(app["parameters"].get("this").is_none());
+    }
+}
+
+/// The subscribe body for the FAB's minted invite link.
+///
+/// An INLINE predicate over the raw `xyz.tonk.credential/link` attribute —
+/// not the rule-derived `tonk:agent-invite` view the seeded FAB used to
+/// read: rules, like views, are frozen at whatever `core.yaml` seeded a
+/// space with, so reading the raw attribute instead depends on nothing
+/// seeded. `this` is bound to the space's own subject DID (the same entity
+/// `InviteHandler` keys the credential by), mirroring
+/// [`repo_name_query_body`].
+pub fn invite_link_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("invite_link_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": { "link": {
+            "the": "xyz.tonk.credential/link", "as": "String", "cardinality": "one"
+        } } },
+        "terms": { "this": subject, "link": { "?": { "name": "link" } } }
+    })
+    .to_string())
+}
+
+#[cfg(test)]
+mod invite_link {
+    use super::*;
+
+    #[test]
+    fn it_reads_the_invite_link_not_the_rule_derived_agent_invite() {
+        let body = invite_link_query_body("did:key:z6Mk").expect("query body builds");
+        // `tonk:agent-invite` is rule-derived; rules are frozen like views.
+        assert!(body.contains("xyz.tonk.credential/link"));
+        assert!(!body.contains("agent-invite"));
+        assert!(body.contains("did:key:z6Mk"));
+    }
+
+    #[test]
+    fn it_rejects_an_empty_subject() {
+        assert!(invite_link_query_body("").is_err());
+    }
+}
+
 #[cfg(test)]
 mod stylesheet {
     #[test]

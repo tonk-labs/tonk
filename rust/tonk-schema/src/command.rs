@@ -113,20 +113,22 @@ impl Command for Load {
 
 /// Request to mint a repository invite.
 ///
-/// Asserted transiently when the user submits the share form (a
-/// `<form onsubmit=tonk:invite>` in the standard library). The worker
-/// handler generates a fresh membership keypair, delegates the
-/// repository's access to its DID, asserts a durable [`Authorization`]
-/// (the public delegation chain) into storage, and asserts the private
-/// seed as a [`Credential`] into the reactor's session overlay (never
-/// replicated). The share view joins the two via `tonk:invitation` and
-/// assembles the final URL.
+/// Asserted transiently when the FAB's share control is clicked
+/// (`<tonk-share>`, `tonk-fab`). The worker handler generates a fresh
+/// membership keypair, delegates the repository's access to its DID,
+/// asserts a durable [`Authorization`] (the public delegation chain) into
+/// storage, and asserts the private seed as a [`Credential`] into the
+/// reactor's session overlay (never replicated). The share view joins the
+/// two via `tonk:invitation` and assembles the final URL.
 ///
-/// The command carries only the click's `time` — no audience, no
-/// secret. The repository to delegate is read from the command's origin
-/// (`CommandEnv::origin`), the branch the commit landed in. The
-/// timestamp makes each click a distinct transient so repeated Share
-/// clicks reliably re-fire the handler and rotate the credential.
+/// The command carries the target `space` and the click's `time` — no
+/// audience, no secret. `space` is read by the handler in place of the
+/// dispatch origin (`CommandEnv::origin`, empty for a routeless
+/// profile-branch dispatch), mirroring [`PauseSync`] and
+/// [`RenameRepository`] — so the FAB's share affordance depends on nothing
+/// seeded per-space. The timestamp makes each click a distinct transient so
+/// repeated Share clicks reliably re-fire the handler and rotate the
+/// credential.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Invite {
     /// The command entity (a fresh id per invocation).
@@ -134,6 +136,9 @@ pub struct Invite {
     /// The submit event's timestamp — distinguishes one click from the
     /// next so the transient re-fires.
     pub time: crate::domain::command::invite::TimeStamp,
+    /// The target space DID — the repository to mint the invite for. Read
+    /// by the handler in place of the dispatch origin.
+    pub space: crate::domain::command::invite::Space,
     /// Per-command marker (read from the share form's `data-invite`) that
     /// gives `Invite` an attribute no other command carries — so a
     /// `tonk:pause-sync` transient (identical `{this, time}` shape otherwise)
