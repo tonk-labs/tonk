@@ -7,6 +7,7 @@
 //! update bumps it, staging churn does not), `tonk update` compares
 //! commits (catching same-version rebuilds).
 
+pub mod fetch;
 pub mod manifest;
 pub mod receipt;
 pub mod state;
