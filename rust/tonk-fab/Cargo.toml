@@ -43,6 +43,7 @@ web-sys = { workspace = true, features = [
     "Node",
     "PointerEvent",
     "ResizeObserver",
+    "Text",
     "Window",
 ] }
 

@@ -899,6 +899,46 @@ mod member_roster {
     }
 }
 
+/// The subscribe body for the profile's space list.
+///
+/// Reads the PROFILE branch's replica records by raw attribute. `name` is
+/// deliberately absent: each row renders the space's OWN repo name via
+/// `<ui-space-name>`, since the profile-side replica name goes stale.
+/// Directory mode (`this` unbound), so every replica record returns as a row.
+pub fn space_list_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "subject": { "the": "xyz.tonk.replica/subject", "as": "Entity", "cardinality": "one" },
+            "kind":    { "the": "xyz.tonk.replica/kind",    "as": "Entity", "cardinality": "one" },
+            "status":  { "the": "xyz.tonk.replica/status",  "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":    { "?": { "name": "this" } },
+            "subject": { "?": { "name": "subject" } },
+            "kind":    { "?": { "name": "kind" } },
+            "status":  { "?": { "name": "status" } }
+        }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod space_list {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_profile_space_list_by_raw_attribute() {
+        let body = space_list_query_body();
+        assert!(body.contains("xyz.tonk.replica/subject"));
+        assert!(body.contains("xyz.tonk.replica/kind"));
+        assert!(body.contains("xyz.tonk.replica/status"));
+        // Directory mode over every replica record.
+        assert!(body.contains("\"this\":{\"?\""));
+        // No concept named — nothing seeded is consulted.
+        assert!(!body.contains("tonk:space"));
+    }
+}
+
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
 /// A transient carrying the target `space` and the new `value`. Dispatched

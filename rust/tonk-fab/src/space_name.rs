@@ -70,8 +70,9 @@ struct SpaceNameBehaviour {
 }
 
 impl subscribing::Subscribing for SpaceNameBehaviour {
-    fn query_body(&self, space: &str) -> Result<String, String> {
-        repo_name_query_body(space)
+    fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
+        let space = this.get_attribute("space").unwrap_or_default();
+        repo_name_query_body(&space)
     }
 
     fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {

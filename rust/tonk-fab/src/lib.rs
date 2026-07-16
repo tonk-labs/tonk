@@ -22,6 +22,9 @@ mod share;
 mod space_name;
 
 #[cfg(target_arch = "wasm32")]
+mod space_switcher;
+
+#[cfg(target_arch = "wasm32")]
 mod subscribing;
 
 /// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
@@ -31,6 +34,7 @@ pub fn register() {
     share::register();
     space_name::register();
     member_roster::register();
+    space_switcher::register();
 }
 
 /// No-op on non-wasm targets (tests / native build checks).

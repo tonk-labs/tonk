@@ -49,9 +49,37 @@ type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 /// newest asserted row wins; a bare retract leaves the chip alone), so the
 /// scaffolding names both rather than pushing that dispatch into every
 /// implementer.
+///
+/// `resolve_with`/`query_body` both take the host element rather than a
+/// pre-extracted `space` string because implementers disagree on where their
+/// routing context comes from: `<ui-space-name>`/`<ui-member-roster>` derive
+/// `main@{did}` from their own `space` attribute (the default
+/// [`Subscribing::resolve_with`] below), but `<ui-space-switcher>` reads the
+/// PROFILE branch — its `with` is the fixed literal `"main@profile:tonk"`,
+/// not derived from any attribute at all. Handing the element to the
+/// implementer, rather than hard-assuming a `space`-shaped attribute in the
+/// scaffolding, is what lets both coexist.
 pub trait Subscribing {
-    /// The subscribe body, built from the element's own `space` attribute.
-    fn query_body(&self, space: &str) -> Result<String, String>;
+    /// Resolve the `with` routing context to stamp on the element and
+    /// subscribe through. `None` means the context isn't ready yet (an
+    /// unsubstituted `{id}` placeholder, say) — the attribute-changed
+    /// callback re-runs [`Scaffold::connect`] once it lands.
+    ///
+    /// Default: read this element's own `space` attribute and map it through
+    /// [`crate::logic::space_with`] (`main@{did}`) — the shape
+    /// `<ui-space-name>` and `<ui-member-roster>` both use. An implementer
+    /// whose routing context isn't space-derived (`<ui-space-switcher>`)
+    /// overrides this.
+    fn resolve_with(&self, this: &HtmlElement) -> Option<String> {
+        this.get_attribute("space")
+            .filter(|s| !s.is_empty())
+            .map(|space| crate::logic::space_with(&space))
+    }
+    /// The subscribe body. Reads whatever attribute(s) on `this` the query
+    /// needs — `<ui-space-name>` reads `space` for the subject it binds
+    /// `this` to, `<ui-member-roster>`/`<ui-space-switcher>` ignore `this`
+    /// entirely (directory-mode queries with no subject to bind).
+    fn query_body(&self, this: &HtmlElement) -> Result<String, String>;
     /// Render a full snapshot (`reset`) frame into the host.
     fn render_reset(&self, host: &HtmlElement, payload: &JsValue);
     /// Render an incremental (`update`) delta frame into the host.
@@ -76,16 +104,16 @@ impl Scaffold {
     /// `update` frame delegates (forwarded from the prototype shims
     /// [`install_frame_shims`] installs), and subscribe.
     ///
-    /// A no-op when `space` is absent or empty (an unsubstituted `{id}`
-    /// placeholder, say) — the attribute-changed callback re-runs this once
-    /// it lands.
+    /// A no-op when [`Subscribing::resolve_with`] returns `None` (routing
+    /// context not ready yet — an unsubstituted `{id}` placeholder, say) —
+    /// the attribute-changed callback re-runs this once it lands.
     pub fn connect(&self, this: &HtmlElement, behaviour: Rc<dyn Subscribing>) {
-        let Some(space) = this.get_attribute("space").filter(|s| !s.is_empty()) else {
+        let Some(with) = behaviour.resolve_with(this) else {
             return;
         };
         // Stamp our own routing context: `resolve_with` reads THIS element's
-        // attribute and never walks ancestors.
-        let _ = this.set_attribute("with", &crate::logic::space_with(&space));
+        // own attributes and never walks ancestors.
+        let _ = this.set_attribute("with", &with);
 
         // Install the per-instance `reset` delegate: the host calls
         // `element.reset(conclusions, { tag })` for the first (and any
@@ -118,7 +146,7 @@ impl Scaffold {
             if !host.is_connected() || subscription.borrow().is_some() {
                 return;
             }
-            subscribe(&host, &space, behaviour.as_ref(), subscription, retry);
+            subscribe(&host, behaviour.as_ref(), subscription, retry);
         });
     }
 
@@ -133,13 +161,12 @@ impl Scaffold {
 
 fn subscribe(
     host: &HtmlElement,
-    space: &str,
     behaviour: &dyn Subscribing,
     subscription: Rc<RefCell<Option<Subscription>>>,
     retry: Rc<RefCell<RetryPolicy>>,
 ) {
     let tag = behaviour.tag();
-    let body = match behaviour.query_body(space) {
+    let body = match behaviour.query_body(host) {
         Ok(body) => body,
         Err(err) => {
             tonk_common::log!("{tag}: query build failed: {err}");

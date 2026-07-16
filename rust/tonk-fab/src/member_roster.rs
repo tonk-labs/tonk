@@ -70,10 +70,10 @@ struct MemberRosterBehaviour {
 }
 
 impl subscribing::Subscribing for MemberRosterBehaviour {
-    fn query_body(&self, _space: &str) -> Result<String, String> {
+    fn query_body(&self, _this: &HtmlElement) -> Result<String, String> {
         // Directory mode binds no subject — the query reads every member row
         // on whichever branch `with` (stamped from `space` by the
-        // scaffolding) points at.
+        // scaffolding's default `resolve_with`) points at.
         Ok(member_roster_query_body())
     }
 
