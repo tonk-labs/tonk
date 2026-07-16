@@ -483,6 +483,40 @@ mod tests {
         assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// The blob route accepts bodies past axum's 2 MiB extractor default —
+    /// real image files routinely exceed it — up to the route's own
+    /// [`crate::router::BLOB_UPLOAD_LIMIT`] ceiling.
+    #[dialog_common::test]
+    async fn it_accepts_an_upload_larger_than_the_axum_default_limit() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-large").await;
+
+        let payload = vec![0xabu8; 3 * 1024 * 1024];
+        let up = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/blob"))
+                    .method("POST")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(payload.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            up.status(),
+            StatusCode::OK,
+            "a 3 MiB upload lands (the 2 MiB axum default would 413 it)",
+        );
+        let body = axum::body::to_bytes(up.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["size"], payload.len());
+    }
+
     #[dialog_common::test]
     async fn it_defaults_the_name_fact_to_the_entity_when_no_header_is_sent() {
         let tonk = test_state().await;
