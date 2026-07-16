@@ -2,7 +2,7 @@
 
 ## Problem
 
-`rust/tonk-cli/README.md` says it outright: "There is no self-update
+The root `README.md` says it outright: "There is no self-update
 command yet. To upgrade, re-run the install command." Users installed
 via `install.sh` have no way to learn a newer `tonk` exists, and no way
 to get it without re-running a `curl | sh` they have to remember.

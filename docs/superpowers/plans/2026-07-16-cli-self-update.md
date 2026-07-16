@@ -2015,6 +2015,10 @@ git add rust/tonk-cli/src/update.rs rust/tonk-cli/src/bin/tonk.rs rust/tonk-cli/
 git commit -m "feat(tonk-cli): check for new releases daily and nag on stderr"
 ```
 
+- [ ] **Step 6: Note the fallout for other binary-spawning tests**
+
+Wiring the check into `main`'s tail (Step 2) means every test that spawns the real `tonk` binary now performs a release check unless it opts out — not just `tests/update.rs`. `tests/telemetry.rs`'s `run_tonk_guide` helper spawns the binary without setting `TONK_NO_UPDATE_CHECK` or `TONK_UPDATE_STATE`, so it hit the network and stamped the developer's real `update.json`, and went flaky under full-suite load when the added latency pushed past its 5s `recv_timeout`. Fixed by adding `.env("TONK_NO_UPDATE_CHECK", "1")` and `.env("TONK_UPDATE_STATE", state_dir)` to that helper.
+
 ---
 
 ### Task 9: `install.sh` writes the receipt
@@ -2251,18 +2255,24 @@ git commit -m "ci(cli): publish a release manifest for tonk update"
 
 **Files:**
 - Modify: `README.md:72-82` (the "Update" section)
-- Modify: `rust/tonk-cli/README.md` (the "Update" section, same text)
 
 **Interfaces:** none
 
-- [ ] **Step 1: Locate both copies**
+- [ ] **Step 1: Locate the claim**
 
 Run: `grep -rn "There is no self-update command yet" README.md rust/tonk-cli/README.md`
-Expected: a hit in each. Both get the same replacement.
+Expected: exactly one hit, in the root `README.md`.
+
+**Only the root `README.md` has an Update section.** `rust/tonk-cli/README.md`
+is a flat `## Usage` file and has never carried Install/Update/Quick-start
+headings — an earlier draft of this plan claimed the section was duplicated
+across both, which is wrong. Do not add one to the crate README; the root
+README is the user-facing install/update surface, and inventing a second copy
+would create two things to keep in sync for no gain.
 
 - [ ] **Step 2: Replace the Update section**
 
-In each file, replace the section that begins `### Update` and ends before `### Quick start` with:
+In `README.md`, replace the section that begins `### Update` and ends before `### Quick start` with:
 
 ````markdown
 ### Update
@@ -2304,7 +2314,7 @@ Expected: no matches.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add README.md rust/tonk-cli/README.md
+git add README.md
 git commit -m "docs: document tonk update and the release check"
 ```
 
