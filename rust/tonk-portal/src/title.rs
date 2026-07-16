@@ -25,7 +25,7 @@ impl CustomElement for TitleElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["text"]
+        &["text", "hidden"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -50,7 +50,30 @@ impl CustomElement for TitleElement {
 /// Best-effort at every step: a blank text (a view whose `{name}` has
 /// not resolved) or an absent bridge (the element connected before the
 /// bootstrap) leaves the tab exactly as it is.
+///
+/// A `<tonk-title>` mounted as a `<tonk-display>` slot fallback
+/// (`slot="no-model"` etc.) is present in the DOM from the moment the
+/// view template is cloned in — `tonk-display` only toggles `hidden` on
+/// slot children, it never adds or removes them. So this element's own
+/// `connected_callback` fires at mount regardless of which lifecycle
+/// state is actually current, and would otherwise push a title before
+/// the display has settled. `hidden` is the signal that this instance
+/// is not the active slot; bail on it rather than push.
+///
+/// This is race-free because custom-element `connected_callback`s fire
+/// parent-first in tree order: `<tonk-display>`'s `connected_callback`
+/// calls `state::set(&host, State::Loading)` synchronously as its first
+/// statement, which projects slots (sets `hidden` on every non-matching
+/// slot child) before any child `<tonk-title>` connects. A later
+/// transition to `no-model`/`no-entity` removes `hidden` from the
+/// matching child, firing `attribute_changed_callback` and pushing the
+/// title at the right moment. A non-slotted `<tonk-title>` (a plain
+/// child of a view template, not a slot fallback) never receives
+/// `hidden` and is unaffected.
 fn push_title(this: &HtmlElement) {
+    if this.has_attribute("hidden") {
+        return;
+    }
     let Some(text) = this.get_attribute("text").filter(|text| !text.is_empty()) else {
         return;
     };
@@ -163,6 +186,33 @@ mod tests {
             captured(),
             None,
             "a missing text attribute should not reach the bridge"
+        );
+    }
+
+    /// A slot fallback stays in the DOM for the display's whole
+    /// lifetime, `hidden` toggling which one is current. A hidden
+    /// `<tonk-title>` must push nothing regardless of its `text`;
+    /// clearing `hidden` must push it, mirroring the moment
+    /// `tonk-display` projects the matching slot.
+    #[dialog_common::test]
+    async fn it_does_not_push_while_hidden() {
+        install_stub();
+        let element = element_with_text(Some("Untitled — Tonk"));
+        let _ = element.set_attribute("hidden", "");
+
+        push_title(&element);
+        assert_eq!(
+            captured(),
+            None,
+            "a hidden slot fallback should not push its text"
+        );
+
+        let _ = element.remove_attribute("hidden");
+        push_title(&element);
+        assert_eq!(
+            captured(),
+            Some("Untitled — Tonk".to_owned()),
+            "clearing hidden should push the text"
         );
     }
 
