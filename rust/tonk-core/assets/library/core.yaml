@@ -1809,14 +1809,17 @@ view!:
                   root.querySelector("img").alt = name;
                   const generation = this.#generation;
                   this.objectUrl().then((u) => {
-                    if (!u) return;
+                    if (!u) {
+                      delete this.dataset.rendered;
+                      return;
+                    }
                     if (generation !== this.#generation) {
                       URL.revokeObjectURL(u);
                       return;
                     }
                     this.#objectUrl = u;
                     root.querySelector("img").src = u;
-                  });
+                  }).catch(() => { delete this.dataset.rendered; });
                   return;
                 }
                 root.innerHTML =
@@ -1835,7 +1838,12 @@ view!:
                 root.querySelector("[part=name]").textContent = name;
                 root.querySelector("[part=badge]").textContent = type || "file";
                 root.querySelector("[part=action]").addEventListener("click", async () => {
-                  const u = await this.objectUrl();
+                  let u;
+                  try {
+                    u = await this.objectUrl();
+                  } catch {
+                    return;
+                  }
                   if (!u) return;
                   const a = document.createElement("a");
                   a.href = u;
