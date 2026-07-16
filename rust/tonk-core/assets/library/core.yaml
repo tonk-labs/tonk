@@ -1733,3 +1733,112 @@ concept!: &blob
       the: xyz.tonk.blob/name
       cardinality: one
       as: text
+
+# ============================================================
+# BLOB MEDIA VIEW
+# ============================================================
+
+# The standard renderer for `tonk:blob` entities, seeded as ordinary
+# branch data so it is overridable: re-assert a view with the same
+# `this:` to replace it (the display element also keeps a native
+# `<img>` fallback for branches without this row). Image content
+# types render inline; every other type renders as a file card with
+# a lazy download action.
+#
+# The renderer is author JavaScript riding the view as an inert
+# `<script type="tonk/module">` holder, executed once per realm by
+# `<tonk-component>`. Bytes are fetched through the relayed
+# `window.fetch` and handed to the media element as an object URL —
+# inside the sealed guest a native `src=/api/…` load bypasses the
+# relay and the service worker. The blob route is scoped by the
+# host's `with` attribute ("{branch}@{repo}"), forwarded through the
+# `{dom.host/with}` binding.
+view!:
+  this: tonk:blob/media-view
+  model: tonk:blob
+  display: |
+    <div subject={this}>
+      <tonk-component>
+        <script type="tonk/module">
+          customElements.get("tonk-blob-media") ||
+            customElements.define("tonk-blob-media", class extends HTMLElement {
+              static observedAttributes = ["entity", "content-type", "name", "with"];
+              #objectUrl = null;
+              connectedCallback() { this.render(); }
+              attributeChangedCallback() { if (this.isConnected) this.render(); }
+              disconnectedCallback() { this.revoke(); }
+              revoke() {
+                if (this.#objectUrl) {
+                  URL.revokeObjectURL(this.#objectUrl);
+                  this.#objectUrl = null;
+                }
+              }
+              url() {
+                const scope = this.getAttribute("with") || "";
+                const entity = this.getAttribute("entity") || "";
+                const at = scope.indexOf("@");
+                if (at < 1 || !entity || scope.includes("{")) return null;
+                return "/api/repository/" + scope.slice(at + 1) +
+                  "/branch/" + scope.slice(0, at) + "/blob/" + entity;
+              }
+              async objectUrl() {
+                const url = this.url();
+                if (!url) return null;
+                const resp = await window.fetch(url);
+                if (!resp.ok) return null;
+                return URL.createObjectURL(await resp.blob());
+              }
+              render() {
+                const key = [
+                  this.getAttribute("with"),
+                  this.getAttribute("entity"),
+                  this.getAttribute("content-type"),
+                  this.getAttribute("name"),
+                ].join("|");
+                if (this.dataset.rendered === key) return;
+                this.dataset.rendered = key;
+                const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+                const type = this.getAttribute("content-type") || "";
+                const name = this.getAttribute("name") || this.getAttribute("entity") || "";
+                this.revoke();
+                if (type.startsWith("image/")) {
+                  root.innerHTML = "<style>img { max-width: 100%; }</style>" +
+                    "<img part=\"media\">";
+                  root.querySelector("img").alt = name;
+                  this.objectUrl().then((u) => {
+                    if (!u) return;
+                    this.#objectUrl = u;
+                    root.querySelector("img").src = u;
+                  });
+                  return;
+                }
+                root.innerHTML =
+                  "<style>" +
+                  "[part=card] { display: flex; align-items: center; gap: 0.75rem; " +
+                  "padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; " +
+                  "max-width: 28rem; font-family: system-ui, sans-serif; }" +
+                  "[part=name] { flex: 1; overflow-wrap: anywhere; }" +
+                  "[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; " +
+                  "border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }" +
+                  "[part=action] { cursor: pointer; }" +
+                  "</style>" +
+                  "<div part=\"card\"><span part=\"name\"></span>" +
+                  "<span part=\"badge\"></span>" +
+                  "<button part=\"action\" type=\"button\">Download</button></div>";
+                root.querySelector("[part=name]").textContent = name;
+                root.querySelector("[part=badge]").textContent = type || "file";
+                root.querySelector("[part=action]").addEventListener("click", async () => {
+                  const u = await this.objectUrl();
+                  if (!u) return;
+                  const a = document.createElement("a");
+                  a.href = u;
+                  a.download = name;
+                  a.click();
+                  URL.revokeObjectURL(u);
+                });
+              }
+            });
+        </script>
+      </tonk-component>
+      <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
+    </div>
