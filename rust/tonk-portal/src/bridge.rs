@@ -577,17 +577,49 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
           parent.postMessage({__tonkRuntime:"warn",error:"tonk-code inject: "+String(codeErr)+(codeErr&&codeErr.stack?"\n"+codeErr.stack:"")},"*");
         }
       }
-      // The <tonk-prose> markdown editor: a lazy shell + editor-core pair.
-      // The shell resolves the core chunk via import.meta.url, dead at this
-      // origin — it consults window.__tonkProseEditor first (a hook the shell
-      // provides for exactly this environment), so mint the graph, hand the
-      // core's blob URL over, then import the shell. Injected AFTER tonk-code
-      // so code blocks inside documents upgrade to embedded <tonk-code>
-      // editors (the node view checks for the element at draw time).
+      // The <tonk-prose> markdown editor. LAZY end-to-end: the boot payload
+      // carries only the ~4 kB registration shell; the ~400 kB editor core
+      // crosses the boundary only when the first <tonk-prose> actually
+      // connects. The shell resolves the core via import.meta.url, dead at
+      // this origin — it consults window.__tonkProseEditor first, and
+      // accepts a FUNCTION returning a promised URL: ours asks the trusted
+      // parent for the core's bytes (`need-prose`), mints blobs from the
+      // `inject-prose` reply, and resolves the core's blob URL. Imported
+      // AFTER tonk-code so code blocks inside documents upgrade to embedded
+      // <tonk-code> editors (the node view checks for the element at draw
+      // time).
       if (d.prose && d.prose.length) {
         try {
           var proseBlobs=mintGraph(d.prose);
-          window.__tonkProseEditor=proseBlobs["tonk-prose-editor.js"]||"";
+          var proseCore=null;
+          window.__tonkProseEditor=function(){
+            if (!proseCore) {
+              proseCore=new Promise(function(resolve,reject){
+                var timer=setTimeout(function(){
+                  window.removeEventListener("message",onProse);
+                  reject(new Error("tonk-prose: no inject-prose reply from parent"));
+                },15000);
+                var onProse=function(e){
+                  var m=e.data; if(!m||m.__tonkRuntime!=="inject-prose") return;
+                  clearTimeout(timer);
+                  window.removeEventListener("message",onProse);
+                  try {
+                    var blobs=mintGraph(m.prose||[]);
+                    var url=blobs["tonk-prose-editor.js"];
+                    if (url) resolve(url);
+                    else reject(new Error("tonk-prose: editor core missing from inject-prose"));
+                  } catch(err) { reject(err); }
+                };
+                window.addEventListener("message",onProse);
+                parent.postMessage({__tonkRuntime:"need-prose"},"*");
+              });
+              // A failed request must not poison the cache — the shell also
+              // clears its module promise on failure, so the next element
+              // connect retries the whole handshake.
+              proseCore.catch(function(){ proseCore=null; });
+            }
+            return proseCore;
+          };
           await import(proseBlobs["tonk-prose.js"]);
         } catch(proseErr) {
           // Same containment as tonk-code: a missing markdown editor must not
@@ -722,11 +754,14 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // it can't be one self-contained module — the guest mints a blob per file.
     let code = bundle_graph_entries(fetch_tonk_code_bundles().await);
 
-    // The `<tonk-prose>` markdown editor graph (lazy shell + editor core),
-    // injected the same way so guest views can render a fully functional
-    // Typora-style editor. Its code blocks embed the `<tonk-code>` element
+    // The `<tonk-prose>` markdown editor SHELL only (~4 kB): enough to
+    // register the element so guest markup upgrades. The editor core stays
+    // out of the boot payload — the guest requests it over `need-prose` the
+    // first time an element actually connects (see the listener in
+    // `install_message_listener`), so guests that never render an editor
+    // never pay for one. Its code blocks embed the `<tonk-code>` element
     // injected above.
-    let prose = bundle_graph_entries(fetch_tonk_prose_bundles().await);
+    let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
 
     let payload = Object::new();
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
@@ -921,14 +956,50 @@ async fn fetch_tonk_code_bundles() -> Vec<(String, String)> {
     fetch_bundle_graph("/tonk-code", &["tonk-code.js", "tonk-code-lang-dialog-yaml.js"]).await
 }
 
-/// Fetch the `<tonk-prose>` markdown-editor bundle graph from `/tonk-prose/`
-/// for guest injection: the lazy shell plus the editor core it dynamically
-/// imports on first element connect. Listed explicitly (rather than relying
-/// on the graph walk) because the shell references the core through a
-/// runtime-computed URL, not a literal `"./…"` specifier.
+/// Fetch ONLY the `<tonk-prose>` registration shell for the guest boot
+/// payload. Deliberately not `fetch_bundle_graph`: the shell's source
+/// mentions `"./tonk-prose-editor.js"` (its default-resolution fallback),
+/// and the graph walk would follow it — eagerly shipping the ~400 kB core
+/// to every guest, which is exactly what the lazy split avoids.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_tonk_prose_bundles() -> Vec<(String, String)> {
-    fetch_bundle_graph("/tonk-prose", &["tonk-prose.js", "tonk-prose-editor.js"]).await
+async fn fetch_tonk_prose_shell() -> Vec<(String, String)> {
+    match fetch_text("/tonk-prose/tonk-prose.js").await {
+        Ok(src) => vec![("tonk-prose.js".to_owned(), src)],
+        Err(e) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "/tonk-prose inject: skipping tonk-prose.js: {e}"
+            )));
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch the `<tonk-prose>` editor-core graph (the core chunk plus anything
+/// it transitively imports) for the on-demand `need-prose` reply.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_tonk_prose_core() -> Vec<(String, String)> {
+    fetch_bundle_graph("/tonk-prose", &["tonk-prose-editor.js"]).await
+}
+
+/// Reply to a guest's `need-prose` request: fetch the editor-core graph
+/// (the parent is trusted + networked; the sealed guest can't fetch) and
+/// post it back as an `inject-prose` envelope on the guest's window. Called
+/// from the page-level message listener when the first `<tonk-prose>` in
+/// that guest connects. Best-effort like the boot inject — an empty graph
+/// makes the guest's promise reject and the element render empty rather
+/// than wedging the runtime.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn inject_prose_core(iframe: &HtmlIFrameElement) {
+    let Some(content_window) = iframe.content_window() else {
+        return;
+    };
+    spawn_local(async move {
+        let prose = bundle_graph_entries(fetch_tonk_prose_core().await);
+        let payload = Object::new();
+        let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject-prose".into());
+        let _ = Reflect::set(&payload, &"prose".into(), &prose);
+        let _ = content_window.post_message(&payload, "*");
+    });
 }
 
 /// Fetch a code-split editor bundle graph (`entries` + every `./…` chunk they
@@ -1133,6 +1204,19 @@ pub(crate) fn install_message_listener() {
                         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                         if let Some(iframe) = matched {
                             inject_runtime(&iframe);
+                        }
+                    }
+                    // Lazy `<tonk-prose>` editor core: the boot payload only
+                    // carries the registration shell; the guest asks for the
+                    // core when the first element connects.
+                    "need-prose" => {
+                        let matched = registry.borrow().iter().find_map(|entry| {
+                            let cw: JsValue = entry.iframe.content_window()?.into();
+                            (cw == source).then(|| entry.iframe.clone())
+                        });
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        if let Some(iframe) = matched {
+                            inject_prose_core(&iframe);
                         }
                     }
                     "error" => {

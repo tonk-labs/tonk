@@ -137,11 +137,16 @@ blocks stay editable as plain text.
 
 ## Inside `<tonk-site>` guests
 
-tonk-portal injects the bundle into every sealed guest iframe
-(`bridge.rs`), alongside tonk-code: the parent fetches the shell +
-editor core as text, the guest mints blob URLs for both, hands the
-core's blob to `window.__tonkProseEditor` (the shell consults that
-global before falling back to `import.meta.url` resolution, which is
-dead at a blob origin), and imports the shell. Guest views can
-therefore render `<tonk-prose>` directly and get the full editor,
-including `<tonk-code>`-backed code blocks.
+tonk-portal wires the element into every sealed guest iframe
+(`bridge.rs`), *preserving the lazy split*: the boot payload carries
+only the ~4 kB registration shell, so guests that never render an
+editor never pay for one. When the first `<tonk-prose>` connects,
+the shell calls `window.__tonkProseEditor` — in guests, a function
+that asks the trusted parent for the editor core (`need-prose`),
+mints blob URLs from the `inject-prose` reply, and resolves the
+core's blob (relative `import.meta.url` resolution is dead at a
+blob origin, and sealed guests can't fetch). The handshake runs
+once per guest; failures reject and retry on the next connect
+instead of wedging the runtime. Guest views can therefore render
+`<tonk-prose>` directly and get the full editor, including
+`<tonk-code>`-backed code blocks.
