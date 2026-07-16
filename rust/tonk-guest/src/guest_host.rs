@@ -94,6 +94,12 @@ enum Intent {
     /// first is the HOST's call, not ours — this guest is untrusted, so its
     /// classification is routing, never policy.
     Open(String),
+    /// A fragment link, carrying the part after the `#`. Cancelled and
+    /// scrolled HERE — see [`classify_click`] for why it is neither native nor
+    /// relayed.
+    Fragment(String),
+    /// `href=""`. Cancelled and warned about; it names no destination.
+    Empty,
     /// Not ours. Left to the browser.
     Ignore,
 }
@@ -114,7 +120,64 @@ fn make_nav_listener(relay: impl Fn(&str, &str) + 'static) -> Listener {
             event.prevent_default();
             relay("open", &href);
         }
+        Intent::Fragment(fragment) => {
+            event.prevent_default();
+            scroll_to_fragment(&fragment);
+        }
+        Intent::Empty => {
+            event.prevent_default();
+            warn("ignored a link with an empty href: it names no destination");
+        }
     }) as Box<dyn FnMut(Event)>)
+}
+
+/// Say so when a click produces nothing.
+///
+/// The guest's console is sanitized out of the parent's, which is why the
+/// portal bootstrap relays uncaught errors up over `__tonkRuntime:"warn"`.
+/// This is not an error, though — it is a note to whoever authored the view,
+/// who is looking at the guest's own console when they look at all.
+fn warn(message: &str) {
+    web_sys::console::warn_1(&JsValue::from_str(&format!("tonk: {message}")));
+}
+
+/// Scroll the guest's OWN document to `fragment` (the part after the `#`),
+/// which is the whole of what a fragment link means here. Returns whether
+/// there was somewhere to go.
+///
+/// This is what the browser would have done for a same-document fragment, done
+/// by hand because in a `srcdoc` guest it is not one — see [`classify_click`].
+///
+/// An empty fragment (`href="#"`) and `#top` are the document's top per the
+/// HTML spec's "scroll to the fragment" steps, but only when nothing carries
+/// that id. An id that matches nothing else scrolls nowhere: the click is
+/// still cancelled, because the alternative is loading the app inside the spot.
+fn scroll_to_fragment(fragment: &str) -> bool {
+    let Some(window) = window() else {
+        return false;
+    };
+    let Some(document) = window.document() else {
+        return false;
+    };
+    // The id is a raw URL fragment, so a non-ASCII or spaced id arrives
+    // percent-encoded (`#Ünïcode` → `#%C3%9Cn%C3%AFcode`) while the attribute
+    // it must match is not. Try the raw form first — an id may legitimately
+    // contain a `%` — then the decoded one. A malformed escape simply fails to
+    // decode and leaves the raw attempt standing.
+    let target = document.get_element_by_id(fragment).or_else(|| {
+        js_sys::decode_uri_component(fragment)
+            .ok()
+            .and_then(|decoded| document.get_element_by_id(&String::from(decoded)))
+    });
+    if let Some(target) = target {
+        target.scroll_into_view();
+        return true;
+    }
+    if fragment.is_empty() || fragment.eq_ignore_ascii_case("top") {
+        window.scroll_to_with_x_and_y(0.0, 0.0);
+        return true;
+    }
+    false
 }
 
 /// Decide what a click means.
@@ -136,13 +199,32 @@ fn classify_click(event: &Event) -> Intent {
     let Some(anchor) = event.target().and_then(closest_anchor) else {
         return Intent::Ignore;
     };
-    let Some(href) = anchor.get_attribute("href").filter(|h| !h.is_empty()) else {
+    let Some(href) = anchor.get_attribute("href") else {
         return Intent::Ignore;
     };
-    // A fragment is same-document and needs no host: the browser handles it
-    // inside the guest, where the scrolling actually has to happen.
-    if href.starts_with('#') {
-        return Intent::Ignore;
+    // A FRAGMENT IS NOT SAME-DOCUMENT HERE, and leaving it native is the worst
+    // outcome available. This guest's document URL is `about:srcdoc`, but its
+    // BASE URL is inherited from the parent — so `#foo` resolves against
+    // `https://origin/space/{id}`, which differs from `about:srcdoc` by far
+    // more than a fragment. The browser therefore treats it as a full
+    // navigation and loads the ENTIRE Tonk app inside the spot's own iframe,
+    // at an opaque origin, recursively. Measured in Chrome under production's
+    // exact sandbox: `#foo` → `http://localhost:8731/index.html#foo`, and the
+    // guest unloads.
+    //
+    // Relaying it would be wrong for the mirror reason: the host would resolve
+    // `#foo` against ITS url (`/space/{id}`) and open a duplicate spot scrolled
+    // nowhere. The fragment addresses the guest's own document, so the guest is
+    // the only frame that can honour it — cancel, and scroll here.
+    if let Some(fragment) = href.strip_prefix('#') {
+        return Intent::Fragment(fragment.to_owned());
+    }
+    // `href=""` is the same whole-app load one hop shorter: it resolves to the
+    // bare inherited base URL. It reaches users through a view template whose
+    // field has not resolved (`<a href="{url}">` renders blank), so it is a
+    // live path and not a curiosity.
+    if href.is_empty() {
+        return Intent::Empty;
     }
 
     let wants_new_tab = mouse.meta_key()
@@ -576,14 +658,72 @@ mod tests {
         );
     }
 
-    /// A fragment is same-document: the scrolling has to happen inside the
-    /// guest, so the host must not be involved at all.
+    /// A fragment addresses the GUEST's document, so it is neither the host's
+    /// business nor the browser's: the guest is the only frame that can honour
+    /// it, and the only one that must cancel it.
     #[dialog_common::test]
-    async fn it_ignores_a_fragment() {
+    async fn it_classifies_a_fragment_as_the_guest_s_own_scroll() {
         assert_eq!(
             classify_href("#section", &Click::plain()),
-            Intent::Ignore,
-            "a fragment should be left to the browser"
+            Intent::Fragment("section".to_owned()),
+            "a fragment should be scrolled to inside the guest"
+        );
+        assert_eq!(
+            classify_href("#", &Click::plain()),
+            Intent::Fragment(String::new()),
+            "a bare `#` is the top of the guest's document"
+        );
+    }
+
+    /// The fragment row beats the modifier row. A cmd-clicked `#x` is not a new
+    /// tab, even though a browser would make one: the host would resolve `#x`
+    /// against `/space/{id}` and open a duplicate spot scrolled nowhere.
+    #[dialog_common::test]
+    async fn it_classifies_a_modified_fragment_click_as_a_fragment() {
+        let click = Click {
+            meta: true,
+            ..Click::plain()
+        };
+        assert_eq!(
+            classify_href("#section", &click),
+            Intent::Fragment("section".to_owned()),
+            "a modified fragment click is still the guest's own scroll"
+        );
+    }
+
+    /// A fragment is NOT same-document in a `srcdoc` guest: the document URL is
+    /// `about:srcdoc` but the BASE URL is inherited from the parent, so `#foo`
+    /// resolves to `https://origin/space/{id}#foo` — a different document. Left
+    /// native, the browser loads the whole app inside the spot's iframe.
+    #[dialog_common::test]
+    async fn it_cancels_a_fragment_click_rather_than_letting_it_navigate() {
+        let relayed = relay(
+            anchor(&[("href", "#section")]).unchecked_ref(),
+            &Click::plain(),
+        );
+        assert!(
+            relayed.cancelled,
+            "a fragment click must be cancelled, or the guest navigates to the parent's URL"
+        );
+        assert_eq!(
+            relayed.call, None,
+            "a fragment addresses the guest's own document — the host must not be involved"
+        );
+    }
+
+    /// `href=""` resolves to the BARE parent URL, which is the same whole-app
+    /// load one hop shorter. A blank field in a view template (`<a href="{url}">`
+    /// before the field resolves) is the way this reaches a user.
+    #[dialog_common::test]
+    async fn it_cancels_an_empty_href_click() {
+        let relayed = relay(anchor(&[("href", "")]).unchecked_ref(), &Click::plain());
+        assert!(
+            relayed.cancelled,
+            "an empty href must be cancelled, or the guest reloads the app inside itself"
+        );
+        assert_eq!(
+            relayed.call, None,
+            "an empty href names no destination — nothing to relay"
         );
     }
 
@@ -615,8 +755,8 @@ mod tests {
         }
     }
 
-    /// A click with no anchor above it, or an anchor with nothing to go to, is
-    /// not ours.
+    /// A click with no anchor above it is not ours. An anchor with an EMPTY
+    /// href is: left alone it reloads the app inside the spot.
     #[dialog_common::test]
     async fn it_ignores_a_click_with_no_link_to_follow() {
         let bare = document().create_element("div").expect("a div");
@@ -627,9 +767,58 @@ mod tests {
         );
         assert_eq!(
             classify_href("", &Click::plain()),
-            Intent::Ignore,
-            "an empty href should be ignored"
+            Intent::Empty,
+            "an empty href names nothing, but must still be cancelled"
         );
+    }
+
+    /// The scroll a fragment click stands in for. `href="#x"` means "put the
+    /// element with id `x` in view", and in a `srcdoc` guest nothing else will
+    /// do it.
+    #[dialog_common::test]
+    async fn it_scrolls_the_guest_to_a_fragment_target() {
+        let document = document();
+        let body = document.body().expect("a body");
+        let target = document.create_element("div").expect("a div");
+        target
+            .set_attribute("id", "tonk-test-fragment-target")
+            .expect("set the id");
+        body.append_child(&target).expect("attach the target");
+
+        let found = scroll_to_fragment("tonk-test-fragment-target");
+        let top = scroll_to_fragment("");
+        let missing = scroll_to_fragment("tonk-test-no-such-id");
+
+        // Leave the shared document as it was found, before any assertion can
+        // unwind past the cleanup.
+        target.remove();
+
+        assert!(found, "an id that exists should be scrolled into view");
+        assert!(top, "an empty fragment is the top of the document");
+        assert!(
+            !missing,
+            "an id that matches nothing has nowhere to scroll to"
+        );
+    }
+
+    /// A percent-encoded fragment must still find its element: the href is a
+    /// URL, the `id` attribute is not, so `#%C3%9C` and `id="Ü"` are the same
+    /// target spelled two ways.
+    #[dialog_common::test]
+    async fn it_scrolls_to_a_percent_encoded_fragment_target() {
+        let document = document();
+        let body = document.body().expect("a body");
+        let target = document.create_element("div").expect("a div");
+        target
+            .set_attribute("id", "tonk-test-\u{00DC}")
+            .expect("set the id");
+        body.append_child(&target).expect("attach the target");
+
+        let found = scroll_to_fragment("tonk-test-%C3%9C");
+
+        target.remove();
+
+        assert!(found, "a percent-encoded fragment should find its element");
     }
 
     /// A non-mouse event reaching the listener must not be classified as a

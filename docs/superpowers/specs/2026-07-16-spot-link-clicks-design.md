@@ -23,7 +23,8 @@ never granted. So `https://…`, `mailto:`, `target="_blank"`, and modified clic
 (cmd/ctrl/middle — which bail at `guest_host.rs:86-90`) are all inert.
 
 In scope: external `http(s)` links, `mailto:`/`tel:`, `target="_blank"` on in-app
-paths, and modified clicks. Out of scope: in-page fragments.
+paths, modified clicks, and in-page fragments — which turned out to be inert only in the
+sense that they take the whole app with them (see the routing table).
 
 ## The depth constraint is the whole design
 
@@ -146,19 +147,36 @@ and on any modified click. It gains a classifier:
 
 | Click | Destination | Action |
 |---|---|---|
-| **any** | `#fragment` | untouched — left native. Checked FIRST, before modifiers |
+| **any** | `#fragment` | `preventDefault` + scroll **inside the guest**. Never relayed. Checked FIRST, before modifiers |
+| **any** | `href=""` | `preventDefault` + warn. Never relayed |
 | plain | `/…` (not `//`) | `navigate` (unchanged) |
 | plain | `http`/`https`/`mailto`/`tel` | `preventDefault` + `open` |
 | plain, `target="_blank"` | `/…` | `preventDefault` + `open` |
 | cmd/ctrl/shift/middle | `/…` or external | `preventDefault` + `open` |
 | any | anything else | `preventDefault` + `open` — the host refuses it and warns |
 
-**The fragment row comes first, and beats the modifier row.** A cmd-clicked `#x` is left
-native rather than opened in a tab, even though that is what a browser would do
-natively. The fragment addresses the **guest's** document, and the guest is
-`about:srcdoc`: the host resolving `#x` against its own URL (`/space/{id}`) would open a
-duplicate spot scrolled nowhere, not the anchor the user aimed at. Ignoring is both in
-scope ("fragments left native") and the better outcome.
+**The fragment row comes first, and beats the modifier row.** It is also the one row
+where *both* alternatives are wrong, which is why it is neither native nor relayed:
+
+- **Not native.** A fragment is **not same-document in a `srcdoc` guest**. The document's
+  URL is `about:srcdoc`, but its **base URL is inherited from the parent**, so `#foo`
+  resolves to `https://origin/space/{id}#foo` — differing from `about:srcdoc` by far more
+  than a fragment. That is a full navigation, and it loads the **entire Tonk app inside
+  the spot's iframe**, at an opaque origin, recursively. Measured in Chrome under
+  production's exact sandbox: `#foo` → `http://localhost:8731/index.html#foo`, guest
+  unloaded. `href=""` is the same load one hop shorter — it resolves to the bare parent
+  URL, and a view template whose field has not resolved (`<a href="{url}">` renders
+  blank) is how a user reaches it.
+- **Not relayed.** The host would resolve `#foo` against **its** URL (`/space/{id}`) and
+  open a duplicate spot scrolled nowhere.
+
+The fragment addresses the guest's own document, so the guest is the only frame that can
+honour it: cancel, then `getElementById` + `scrollIntoView` in the guest. A bare `#` or
+`#top` is the top of the document. An id that matches nothing scrolls nowhere and is
+**still cancelled** — the alternative is loading the app inside the spot.
+
+(An earlier draft of this spec asserted the native path was correct here, and the guest
+shipped that way. It was wrong for the reason above.)
 
 **The last row is not a filter, and the guest does not "drop" anything.** It relays
 hrefs it fully expects the host to refuse, `javascript:` included. Guest-side scheme
@@ -402,11 +420,10 @@ All tests use `#[dialog_common::test]` and `it_does_x` naming, per repo conventi
 
 In scope: PR 1 (forwarding for `navigate` + `title`), PR 2 (the `open` effect —
 external links, `mailto:`/`tel:`, `target="_blank"`, modified clicks, allowlist,
-dialog).
+dialog, and the in-guest fragment scroll).
 
 Out of scope, deliberately:
 
-- **In-page fragments.** Left native.
 - **Sub-route titles.** PR 1 unblocks them; nobody has asked for them.
 - **Deleting `fab.rs` and fixing the stale comments.** A worthwhile separate cleanup,
   not mixed into a security-sensitive change.
