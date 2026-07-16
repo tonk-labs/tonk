@@ -177,7 +177,7 @@ mod tests {
 Run: `cargo test -p tonk-host --target wasm32-unknown-unknown page_effect`
 Expected: FAIL — `cannot find function 'forward' in this scope`.
 
-> **Note on running wasm tests locally:** per `project_wasm_tests_need_safari_automation` / `project_wasm_tests_chrome_route`, these need either `safaridriver` enabled (run with `-j1`) or Chrome at the default `/Applications` path with a major-matched chromedriver. If neither is available, run the compile check (`cargo clippy -p tonk-host --target wasm32-unknown-unknown --all-targets`) and defer execution to CI.
+> **The wasm test harness works in this worktree — verified 2026-07-16.** `cargo test -p tonk-host --target wasm32-unknown-unknown` runs headless Chrome and executes `run_in_browser` tests (confirmed: `title::tests::it_sets_a_non_empty_title_and_ignores_an_empty_one ... ok`). **Every task MUST actually run its tests and paste the real output.** Deferring to CI is not acceptable, and neither is a compile-only check standing in for a test run.
 
 - [ ] **Step 4: Write the implementation**
 
@@ -869,9 +869,93 @@ canonical protocol, which is the whole reason a prefix check is unsafe."
 - Consumes: `classify`, `Destination` (Task 4); `page_effect::forward` (Task 1); `crate::navigate_to` (Task 2).
 - Produces: `pub fn open_external(href: &str)` — the entry point `tonk-portal`'s dispatcher calls in Task 6.
 
-- [ ] **Step 1: Write the implementation**
+Most of this task is DOM plumbing whose behaviour only exists in a real browser, and Task 8 verifies it there. But `build_dialog` is the exception and must not be waved through: it is where an attacker-controlled string meets the trusted document, and it is fully testable. Step 1 pins it.
 
-Append to `rust/tonk-host/src/open.rs`, above the `mod tests` block. (This task is DOM-side and browser-verified in Task 8 rather than unit-tested; `classify` in Task 4 carries the logic that can be asserted in isolation.)
+- [ ] **Step 1: Write the failing test**
+
+In `rust/tonk-host/src/open.rs`, add to the existing `mod tests` block:
+
+```rust
+    /// The dialog renders on the REAL origin, so a hostile host or URL must
+    /// land as TEXT and never as markup.
+    ///
+    /// If this ever fails, the scheme allowlist has been outflanked one layer
+    /// down: the URL never had to be openable, because merely *describing* it
+    /// would have executed it. `set_text_content` is what holds this line, and
+    /// a single `set_inner_html` would break it silently — nothing else in the
+    /// change would look different.
+    #[dialog_common::test]
+    async fn it_renders_a_hostile_host_and_url_as_text_not_markup() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+        let hostile_host = "<img src=x onerror=alert(1)>";
+        let hostile_url = "https://example.com/<script>alert(1)</script>";
+
+        let dialog =
+            build_dialog(&document, hostile_host, hostile_url).expect("the dialog should build");
+
+        assert!(
+            dialog.query_selector("img").ok().flatten().is_none(),
+            "a hostile host must not become an element"
+        );
+        assert!(
+            dialog.query_selector("script").ok().flatten().is_none(),
+            "a hostile url must not become an element"
+        );
+        assert_eq!(
+            dialog
+                .query_selector(".tonk-open__host")
+                .ok()
+                .flatten()
+                .and_then(|el| el.text_content()),
+            Some(hostile_host.to_owned()),
+            "the host should appear verbatim, as text"
+        );
+        assert_eq!(
+            dialog
+                .query_selector(".tonk-open__url")
+                .ok()
+                .flatten()
+                .and_then(|el| el.text_content()),
+            Some(hostile_url.to_owned()),
+            "the url should appear verbatim, as text"
+        );
+    }
+
+    /// The dialog says what it does. It opens a new tab and leaves the spot
+    /// running, so it must not claim the user is leaving.
+    #[dialog_common::test]
+    async fn it_names_the_action_without_claiming_the_user_leaves() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+
+        let dialog =
+            build_dialog(&document, "example.com", "https://example.com/").expect("a dialog");
+
+        let text = dialog.text_content().unwrap_or_default();
+        assert!(
+            text.contains("Open in a new tab?"),
+            "the dialog should name the action, got: {text}"
+        );
+        assert!(
+            !text.contains("Leave"),
+            "the spot stays open, so the dialog must not say the user is leaving"
+        );
+    }
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test -p tonk-host --target wasm32-unknown-unknown open`
+Expected: FAIL — `cannot find function 'build_dialog' in this scope`.
+
+- [ ] **Step 3: Write the implementation**
+
+Append to `rust/tonk-host/src/open.rs`, above the `mod tests` block.
 
 ```rust
 /// Open `href` on behalf of a guest.
@@ -1136,20 +1220,25 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
 }
 ```
 
-- [ ] **Step 2: Verify it compiles and lints**
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cargo test -p tonk-host --target wasm32-unknown-unknown open`
+Expected: PASS — 7 tests (Task 4's five, plus these two).
+
+- [ ] **Step 5: Verify it compiles and lints**
 
 ```bash
 cargo clippy -p tonk-host --target wasm32-unknown-unknown --all-targets -- -D warnings
 cargo fmt --check
 ```
-Expected: clean. If `HtmlDialogElement` is unresolved, Step 1 of Task 4 (the Cargo feature) was skipped.
+Expected: clean. If `HtmlDialogElement` or `HtmlHeadElement` is unresolved, Step 1 of Task 4 (the Cargo features) was skipped.
 
-- [ ] **Step 3: Run the crate's tests**
+- [ ] **Step 6: Run the crate's whole suite**
 
 Run: `cargo test -p tonk-host --target wasm32-unknown-unknown`
-Expected: PASS — Task 4's classification tests still pass; no new tests here.
+Expected: PASS — everything, including PR 1's forwarding tests.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add rust/tonk-host/src/open.rs
