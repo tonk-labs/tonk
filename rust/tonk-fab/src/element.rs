@@ -61,6 +61,35 @@ extern "C" {
 /// any app stacking context.
 const FAB_Z_INDEX: &str = "2147483646";
 
+/// The id of the injected stylesheet, so injection is idempotent.
+const STYLE_ID: &str = "tonk-fab-styles";
+
+/// Inject the FAB stylesheet once per document.
+///
+/// The element has no shadow root (`shadow()` below returns `false`), so the
+/// CSS is global rather than scoped. It must be guarded: the element re-binds
+/// on every clone (`tonk-display` clones the chrome view and mounts the
+/// clone), and an unguarded injection would append a duplicate `<style>` per
+/// mount. Keyed off a stable element id rather than a JS expando, since a
+/// clone landing in a FRESH document still needs the stylesheet — an expando
+/// guard (like `__tonkFabBound` below) would follow the clone and skip it.
+fn ensure_stylesheet() {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    if document.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
+    let _ = style.set_attribute("id", STYLE_ID);
+    style.set_text_content(Some(include_str!("fab.css")));
+    if let Some(head) = document.head() {
+        let _ = head.append_child(style.as_ref());
+    }
+}
+
 /// How far (CSS px) the pointer must travel from the press origin before it
 /// counts as a drag rather than a click. Below this the press toggles the
 /// telescope; above it the FAB moves and the click is suppressed.
@@ -82,6 +111,11 @@ impl CustomElement for TonkFab {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        // Outside the `__tonkFabBound` guard below: a clone landing in a
+        // fresh document still needs the stylesheet, and this is itself
+        // idempotent (keyed off a stable element id, not the expando).
+        ensure_stylesheet();
+
         // Float the element: fixed-position, high z-index. Its left/top come
         // from the restored position below.
         let style = this.style();

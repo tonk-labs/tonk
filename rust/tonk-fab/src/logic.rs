@@ -1007,3 +1007,17 @@ mod rename_repo {
         );
     }
 }
+
+#[cfg(test)]
+mod stylesheet {
+    #[test]
+    fn it_ships_the_stylesheet_with_the_crate() {
+        let css = include_str!("fab.css");
+        // A representative selector from each zone, so a truncated or
+        // partial copy fails rather than passing silently.
+        assert!(css.contains(".fab__cap-l"));
+        assert!(css.contains(".fab__menu-item"));
+        assert!(css.contains(".fab__share-label"));
+        assert!(css.contains(".wizard__card"));
+    }
+}
