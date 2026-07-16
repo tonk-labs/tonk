@@ -1527,18 +1527,30 @@ concept!: &workspace/shell
       the: xyz.tonk.site/replica
       cardinality: one
       as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
 
 # The shell mounts the space's content via the `tonk/space` alias on the active
 # replica. The alias resolves to `tonk:blank` by default (lean repo, no
 # template); seeding `sheets.yaml` overrides it to `tonk:binder`. The
 # `.display-view-slot` wrapper is the bare-route fill-height layout.
+#
+# The content display is scoped with `with="{branch}@{repo}"`, exactly as
+# the directory/entity route views scope theirs: consumers below the home
+# route that build worker URLs (`<tonk-upload>`, the blob media view's
+# `{dom.host/with}`) need the branch@repo pair on their host chain —
+# subscriptions inherit the site's pinned context without it, but URL
+# builders have nothing to inherit.
 view!: &workspace/shell/view
   this: id:tonk:workspace/shell/view
   model: tonk:workspace/shell
   display: |
     <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
       <div class='display-view-slot'>
-        <tonk-display entity={replica} model=tonk/space />
+        <tonk-display entity={replica} model=tonk/space with="{branch}@{repo}" />
       </div>
     </div>
 
