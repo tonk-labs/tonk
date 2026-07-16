@@ -17,9 +17,9 @@
 //!   query(body?)      -> Promise<Conclusion[]>,
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
-//!   navigate(href)     -> void,
-//!   setTitle(text)     -> void,
-//!   open(href)         -> void,
+//!   navigate(href)    -> void,
+//!   setTitle(text)    -> void,
+//!   open(href)        -> void,
 //!   ready: Promise<void>,
 //! }
 //! ```
