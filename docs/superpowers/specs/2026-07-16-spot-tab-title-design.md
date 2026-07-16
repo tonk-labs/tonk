@@ -70,12 +70,50 @@ once: view row in `core.yaml`, mount in `profile.yaml`.
 ## Interpolation happens in the view, not the mount
 
 Children of `<tonk-display>` are **slot fallbacks** (`no-model`, `no-entity`,
-`loading`) — not a template. Field interpolation happens only in the resolved
-view's `display:` template.
+`loading`, `no-view`) — not a template. Field interpolation happens only in the
+resolved view's `display:` template.
 
 So `<tonk-title text="{name} — Tonk">` written as a direct child of the mount would
 render the literal text `{name} — Tonk`. The `{name}` binding has to sit inside a
 view row.
+
+## Slot fallbacks are never inert — they are `hidden`-toggled
+
+This is the sharpest edge in the whole design, and an earlier draft of this spec got
+it wrong.
+
+`update_slot_children` (`rust/tonk-display/src/state.rs:516-552`) projects a slot by
+**toggling the `hidden` attribute**. It never adds or removes children, and
+`clear_host` preserves `[slot]` children (`element.rs:733-748`). Every slot child is
+therefore in the DOM from the moment the view template is cloned in, whatever the
+display's state.
+
+For a rendered `<span>` that is invisible and harmless. For a **headless** element it
+is not: `<tonk-title>` renders nothing, `hidden` means nothing to it, and its
+`connected_callback` fires at mount regardless — so a slotted `<tonk-title>` would
+push a title before the name ever resolved.
+
+`<tonk-title>` therefore observes `hidden` and bails while it is set. That is
+race-free, not lucky: `<tonk-display>`'s `connected_callback` calls
+`state::set(host, State::Loading)` as its **first statement** (`element.rs:298-300`),
+`state::set` projects slots synchronously (`state.rs:134-156`), and custom-element
+callbacks fire parent-first in tree order. The display has already hidden its
+non-matching slot children before any child `<tonk-title>` connects.
+
+The correct behaviour then falls out of the same mechanism that broke it: entering
+`no-model` *removes* `hidden`, which fires `attribute_changed_callback` and pushes
+"Untitled — Tonk" at exactly the right moment.
+
+## Absence states are `danger`, not silence
+
+The other thing an earlier draft got wrong. `State::NoModel | State::NoView |
+State::NoEntity` all map to a **`danger`** callout variant
+(`rust/tonk-display/src/state.rs:351-352`).
+
+So an absence state with no matching slot child does not degrade quietly — it paints
+a red `<wa-callout>` into the host. "Just omit the slot and the tab keeps its old
+title" is not an available option; omitting a slot is how you *get* the error box.
+Every absence state the mount can reach needs a slot child, even an empty one.
 
 ## The view kind
 
@@ -124,7 +162,9 @@ convention the existing name-view uses to render "Untitled" until the name lands
 
 ## Components
 
-Five changes, each small.
+Six changes, each small. The last two exist because of mechanics an earlier draft of
+this spec got wrong — see "Slot fallbacks are never inert" and "Absence states are
+`danger`".
 
 ### 1. `tonk-host` — `set_title`
 
@@ -195,24 +235,47 @@ Add to `space-view` (`profile.yaml:2075-2079`), beside the existing FAB mount. T
 <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
   <tonk-title slot="no-model" text="Untitled — Tonk"></tonk-title>
   <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+  <span slot="no-view"></span>
 </tonk-display>
 ```
 
-No `loading` slot: while the name is in flight the tab should keep whatever it
-already reads rather than flash "Untitled".
+Every slot here is load-bearing, including the empty one:
+
+- **`no-model` / `no-entity`** carry "Untitled — Tonk". They push only when projected,
+  because `<tonk-title>` bails while `hidden` is set.
+- **`no-view`** is an empty `<span>`, not a `<tonk-title>`. A spot predating this
+  change resolves no view; the span pushes no title (so the tab keeps "Tonk") while
+  still satisfying `update_slot_children`, which is what suppresses the red `danger`
+  callout. Omitting it does not mean "no title" — it means a visible error box.
+- **No `loading` slot** — with the `hidden` guard in place, nothing pushes during
+  loading anyway, so the tab keeps whatever it already reads rather than flashing.
 
 The route pattern stays declared once, in the `route!:` table. No Rust file learns
 what `/space/{id}` means.
 
+## Every route owns its title
+
+Navigation is `pushState`, never a reload (`rust/tonk-host/src/navigate.rs:117-123`),
+so `document.title` survives a route change. A spot title would otherwise stay on the
+tab after navigating back to the hub.
+
+So each non-space route view carries `<tonk-title text="Tonk"></tonk-title>`, and the
+title becomes a property each route asserts rather than a global someone must
+remember to clear. Resetting on `disconnected_callback` would be the wrong shape — it
+would race the next mount.
+
 ## Scope
 
-In scope: the `/space/{id}` and `/space/{id}/{*rest}` routes.
+In scope: the `/space/{id}` and `/space/{id}/{*rest}` routes carry the spot's name.
+Every other route asserts the static "Tonk" — not as a feature, but because
+`pushState` navigation would otherwise leave a spot's title on the tab (see "Every
+route owns its title"). The originally-planned alternative, leaving other routes
+untouched, is not available: it reads as a stale title, not a neutral one.
 
 Out of scope, deliberately:
 
-- **Other routes.** The hub, `/join`, `/inspector`, `/diagnose` keep the static
-  "Tonk". Each is a separate `route!:` entry with its own view; titling the hub is
-  one more `<tonk-title>` in that view and can follow if wanted.
+- **A distinct title per non-space route** (e.g. "Join — Tonk"). Every non-space
+  route asserts plain "Tonk". Giving them their own names is a later, cheap change.
 - **Sub-route detail in the title.** Naming the open document within a spot would
   need a depth-2 relay (see the depth table). Not built.
 - **The profile-side `xyz.tonk.replica/name`.** Not read, matching the hub.
@@ -225,9 +288,16 @@ Out of scope, deliberately:
 reseed. So a spot that already exists has no `tonk:view/title` row, its
 `view=tonk:view/title` never resolves, and its tab keeps reading "Tonk".
 
-This degrades gracefully rather than breaking, and it is why the mount deliberately
-carries **no `slot="no-view"`**: giving one a title would pin every pre-existing
-spot to a permanent "Untitled — Tonk", which is worse than the honest "Tonk".
+It degrades gracefully only because the mount carries an **empty** `slot="no-view"`.
+Two ways to get this wrong, both of which an earlier draft did:
+
+- Putting a `<tonk-title>` in that slot pins every pre-existing spot to a permanent
+  "Untitled — Tonk", which is worse than the honest "Tonk".
+- Omitting the slot entirely paints a red "View not found" callout on every
+  pre-existing spot, because `NoView` is a `danger` variant. That is a visible
+  regression on the whole existing install base, not a quiet no-op.
+
+The empty `<span>` is the only option that actually delivers "old spots keep 'Tonk'".
 
 Backfilling is a separate change with an established precedent — the one-shot
 `GET /api/migrate/repo-vs-profile` endpoint (`rust/tonk-worker/src/router/migration.rs`)
@@ -267,6 +337,13 @@ built here; new spots get titles, old spots keep "Tonk" until someone asks.
 - **Depth regression.** If the space view is ever moved into a deeper guest, the
   title silently stops working — it would retitle an iframe, with no error. The
   constraint is documented at the element and at the mount.
+- **Headless elements in slots.** `<tonk-title>`'s `hidden` guard rests on
+  `<tonk-display>` projecting slots synchronously in `connected_callback`, before
+  children connect. If that ever became async, every slotted `<tonk-title>` would
+  push at mount again and the tab would flash "Untitled". The assumption is pinned in
+  a comment at the element; it is the kind of thing that breaks quietly.
+- **A new route without a `<tonk-title>`** inherits the previous route's title, since
+  `pushState` never clears it. Any route view added later needs one.
 - **Silent failure on old spots.** The feature simply does nothing on spots created
   before it, which is easy to misread as a bug. Documented above as a limitation
   with a backfill path.
