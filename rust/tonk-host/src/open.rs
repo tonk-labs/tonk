@@ -67,6 +67,21 @@ pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination
     if !ALLOWED_SCHEMES.contains(&protocol.as_str()) {
         return Destination::Rejected;
     }
+    // WHAT WE DISPLAY IS EXACTLY WHAT WE OPEN. `https://tonk.example@evil.com/`
+    // has a truthful `host` of `evil.com`, but its `href` reads as ours — and a
+    // user reads the URL, so a dialog showing both would be spoofed by the very
+    // string it exists to warn about. Strip userinfo before anything is derived
+    // from the URL and no `Destination` can carry the disguise; the same edit
+    // keeps credentials out of a same-origin navigation.
+    //
+    // This cannot move a URL between origins: userinfo is not part of an
+    // origin, so `origin()` below reads the same either way.
+    //
+    // BOTH setters are required. Clearing the username alone rewrites
+    // `https://u:pw@evil.com/` to `https://:pw@evil.com/` — the password, and
+    // the `@` that does the disguising, both survive.
+    url.set_username("");
+    url.set_password("");
     // `origin` is `"null"` for `mailto:`/`tel:` (opaque path, no host), so
     // they can never collide with a real page origin and are always external.
     if protocol == "mailto:" || protocol == "tel:" {
@@ -228,7 +243,7 @@ mod tests {
         assert_eq!(
             classified("https://tonk.example@evil.com/"),
             Destination::External {
-                url: "https://tonk.example@evil.com/".to_owned(),
+                url: "https://evil.com/".to_owned(),
                 host: "evil.com".to_owned(),
             },
             "userinfo is not the host — the connection goes to evil.com"
@@ -241,6 +256,71 @@ mod tests {
             },
             "a backslash normalises to `/`, leaving tonk.example in the path"
         );
+    }
+
+    /// What the dialog displays must be exactly what the page opens. Userinfo
+    /// makes those two disagree: `https://tonk.example@evil.com/` has a truthful
+    /// `host` of `evil.com`, but its `href` READS as ours, and a user reads the
+    /// URL. Strip it here so no `Destination` can carry a disguise — or, on the
+    /// same-origin path, credentials the page would then navigate with.
+    #[dialog_common::test]
+    async fn it_strips_userinfo_from_the_url_it_carries() {
+        assert_eq!(
+            classified("https://tonk.example@evil.com/"),
+            Destination::External {
+                url: "https://evil.com/".to_owned(),
+                host: "evil.com".to_owned(),
+            },
+            "a username disguising the URL as ours must not survive"
+        );
+        assert_eq!(
+            classified("https://tonk.example:hunter2@evil.com/x?a=1#f"),
+            Destination::External {
+                url: "https://evil.com/x?a=1#f".to_owned(),
+                host: "evil.com".to_owned(),
+            },
+            "a password must not survive either, and the rest of the URL must"
+        );
+        assert_eq!(
+            classified("https://user:pw@tonk.example/x"),
+            Destination::SameOrigin("https://tonk.example/x".to_owned()),
+            "credentials must not survive into a same-origin navigation"
+        );
+        assert_eq!(
+            classified("https://@evil.com/"),
+            Destination::External {
+                url: "https://evil.com/".to_owned(),
+                host: "evil.com".to_owned(),
+            },
+            "an empty userinfo leaves no residue"
+        );
+    }
+
+    /// Stripping userinfo must not move a URL between origins. Userinfo is not
+    /// part of an origin, so it cannot — but the whole fix is worthless if it
+    /// can, so pin it: the disguised href stays external, and the same-origin
+    /// one stays ours.
+    #[dialog_common::test]
+    async fn it_does_not_let_stripping_userinfo_change_the_origin() {
+        for (href, expected) in [
+            (
+                "https://tonk.example@evil.com/",
+                Destination::External {
+                    url: "https://evil.com/".to_owned(),
+                    host: "evil.com".to_owned(),
+                },
+            ),
+            (
+                "https://evil.com@tonk.example/x",
+                Destination::SameOrigin("https://tonk.example/x".to_owned()),
+            ),
+        ] {
+            assert_eq!(
+                classified(href),
+                expected,
+                "`{href}` must classify on its host, not its userinfo"
+            );
+        }
     }
 
     /// `host` keeps the port; `hostname` drops it. A URL on our hostname at
