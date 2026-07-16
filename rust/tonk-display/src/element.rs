@@ -1564,6 +1564,22 @@ fn mount_blob_fallback_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
         if s.disposed {
             return;
         }
+        // A model-specific view may have mounted on an earlier non-empty
+        // frame and since been retracted (the frame is empty again): drop
+        // its stale slides so the fallback doesn't render alongside them.
+        let stale: Vec<String> = s
+            .slides
+            .keys()
+            .filter(|k| k.as_str() != "__blob__")
+            .cloned()
+            .collect();
+        for name in stale {
+            if let Some(slide) = s.slides.remove(&name)
+                && let Some(parent) = slide.item.parent_node()
+            {
+                let _: Result<Node, _> = parent.remove_child(&slide.item);
+            }
+        }
         if !s.slides.contains_key("__blob__") {
             s.slides.insert(
                 "__blob__".to_owned(),
@@ -3468,6 +3484,27 @@ mod tests {
             assert!(
                 img_gone,
                 "the native fallback <img> is removed once the view mounts",
+            );
+
+            // The view frame goes empty again (e.g. the view was retracted):
+            // the fallback remounts an `<img>`, and the stale `<tonk-view>`
+            // slide from the model-specific view must not linger alongside it.
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, "img").await.is_some(),
+                "the native fallback <img> remounts once the view frame empties again",
+            );
+            let mut view_gone = false;
+            for _ in 0..200 {
+                if display.query_selector("tonk-view").unwrap().is_none() {
+                    view_gone = true;
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                view_gone,
+                "the stale view slide is cleared when the frame empties again",
             );
         }
 
