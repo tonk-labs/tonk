@@ -927,6 +927,39 @@ view/label!:
   display: |
     {name}
 
+# A tab-title view kind. Its `display` template lives under a distinct
+# attribute (`xyz.tonk.view/title`) so a model can carry the editable
+# `tonk:view` banner, the plain `tonk:view/label` text, AND a title
+# template without the three colliding under the default resolution.
+# `<tonk-display>` selects it explicitly with `view=tonk:view/title`.
+concept!: &view/title
+  this: tonk:view/title
+  description: A browser-tab-title view selected via `view=tonk:view/title`.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the title view
+      the: xyz.tonk.view/title
+      cardinality: one
+      as: text
+
+# The repository's name as the browser tab's title. The space chrome
+# mounts this via `<tonk-display model=tonk:repository entity={id}
+# view=tonk:view/title>` inside a per-space `with={id}` routing context,
+# so the tab names the focused spot (read from that space's
+# `tonk/repository`, the cross-device source of truth). `<tonk-title>`
+# renders nothing — it pushes the text to the host page, which owns
+# `document.title`.
+view/title!:
+  this: id:tonk:repository/title-view
+  model: tonk:repository
+  display: |
+    <tonk-title text="{name} — Tonk"></tonk-title>
+
 # ============================================================
 # BOARD
 # ============================================================
@@ -1191,7 +1224,7 @@ view/directory!:
   this: tonk:inspector/directory
   model: inspector
   display: |
-    <tonk-inspector source=home />
+    <tonk-inspector />
 
 # The canonical bridge from the `portal` concept to the
 # `<tonk-portal>` element. `html:` forces the binding through

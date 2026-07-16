@@ -207,6 +207,12 @@ fn event_origin(ev: &CustomEvent) -> Option<Element> {
 /// sealed guest, the portal's pinned context from the bridge
 /// (`window.tonk.context.with`). A malformed `with` attribute is a
 /// parse error the caller surfaces to the consumer.
+///
+/// A `branch` with no `space` outside profile mode is rejected: the
+/// repository segment is required and there is no default space to
+/// fill it with, so honoring it would silently target the wrong repo.
+/// `consumer::apply_route` never emits that shape; hand-authored JS
+/// dispatching a raw `detail` can, and gets a parse error.
 fn route_from(
     detail: &Object,
     origin: Option<&Element>,
@@ -214,9 +220,15 @@ fn route_from(
     let space = get_string(detail, "space");
     let branch = get_string(detail, "branch");
     let profile = get_bool(detail, "profile");
-    // Explicit route on the detail: a repository, the profile flag, or a
-    // bare branch (all produced by `apply_route`).
-    if space.is_some() || profile || branch.is_some() {
+    if branch.is_some() && space.is_none() && !profile {
+        return Err(ErrorDetail::new(
+            ErrorKind::Parse,
+            "detail.branch requires detail.space (or detail.profile)",
+        ));
+    }
+    // Explicit route on the detail: a repository or the profile flag
+    // (both produced by `apply_route`).
+    if space.is_some() || profile {
         return Ok((space, branch, profile));
     }
     let Some(origin) = origin else {

@@ -235,6 +235,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
+    // Retitle the HOST page's tab: the opaque guest can't touch
+    // parent.document.title. `<tonk-title>` posts its text here and the
+    // parent performs the real assignment. Fire-and-forget (no response).
+    setTitle:function(text){
+      ready.then(function(){port.postMessage({v:1,type:"title",text:text});});
+    },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
     // request on its real origin and streams the response back; we rebuild a
@@ -1180,6 +1186,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&data),
+            "title" => handle_title(&data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             _ => {}
         }
@@ -1425,6 +1432,27 @@ fn handle_navigate(data: &JsValue) {
         return;
     };
     tonk_host::navigate_to(&href);
+}
+
+/// Set the host page's tab title on the guest's behalf. The guest's
+/// `<tonk-title>` posts `{v:1, type:"title", text}`; this runs in the
+/// parent document, which is where `document.title` lives.
+fn handle_title(data: &JsValue) {
+    let Some(text) = title_text(data) else {
+        return;
+    };
+    tonk_host::set_title(&text);
+}
+
+/// Read `text` out of a `{ type: "title", text }` message, or `None` when
+/// the message isn't a title or carries no usable text. The dispatcher
+/// has already matched on `type`; re-checking it here keeps the parse
+/// independently testable, as `navigate_href` does in `tonk-host`.
+fn title_text(data: &JsValue) -> Option<String> {
+    if get_str(data, "type")? != "title" {
+        return None;
+    }
+    get_str(data, "text").filter(|text| !text.is_empty())
 }
 
 /// Perform a same-origin fetch on the host and stream the response back. The
@@ -3263,5 +3291,49 @@ mod tests {
             .await
             .expect("await body");
         assert_eq!(body.as_string().as_deref(), Some("{\"q\":1}"));
+    }
+
+    fn title_message(kind: &str, text: &str) -> JsValue {
+        let object = js_sys::Object::new();
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("type"),
+            &JsValue::from_str(kind),
+        );
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("text"),
+            &JsValue::from_str(text),
+        );
+        object.into()
+    }
+
+    /// `title_text` accepts only a `{ type: "title", text }` shape with
+    /// non-empty text; everything else yields `None`, so an unrelated
+    /// message never retitles the tab and an unresolved `{name}` never
+    /// blanks it. We assert the parse, not the assignment — performing
+    /// it would retitle the test harness itself.
+    #[dialog_common::test]
+    async fn it_reads_text_only_from_a_title_message() {
+        assert_eq!(
+            title_text(&title_message("title", "Notes — Tonk")),
+            Some("Notes — Tonk".to_owned()),
+            "a title message with text should yield it"
+        );
+        assert_eq!(
+            title_text(&title_message("title", "")),
+            None,
+            "an empty text should yield None"
+        );
+        assert_eq!(
+            title_text(&title_message("other", "Notes — Tonk")),
+            None,
+            "a non-title message should yield None"
+        );
+        assert_eq!(
+            title_text(&JsValue::from_str("not an object")),
+            None,
+            "a non-object payload should yield None"
+        );
     }
 }

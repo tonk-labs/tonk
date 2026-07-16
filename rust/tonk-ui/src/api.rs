@@ -1,8 +1,7 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
-    BranchConfiguration, EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse,
-    ProfileInfo, QueryResponse, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse, QueryResponse, RepositoryInfo,
     SyncResponse, SyncStatusResponse,
 };
 
@@ -25,13 +24,6 @@ struct ErrorDetail {
     #[serde(default)]
     range: Option<lsp_types::Range>,
 }
-
-/// Default repository name used by the UI.
-pub const DEFAULT_REPO: &str = "home";
-/// Default branch name.
-const DEFAULT_BRANCH: &str = "main";
-/// Path of the UCAN access service, resolved against the window origin.
-const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
 fn into_api_error<T>(error: T) -> TonkUiError
 where
@@ -112,109 +104,6 @@ pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError>
             Err(TonkUiError::ApiError(format!(
                 "GET /api/profile/repository returned {}: {}",
                 status, text
-            )))
-        }
-    }
-}
-
-/// Ensures the profile has at least one space, then returns the
-/// hosting document's service-worker Client ID (the `X-Tonk-Client-Id`
-/// response header the worker stamps on every response).
-///
-/// Idempotency is keyed on profile *state*, not on a fixed repository
-/// address: a repository's identity is a freshly minted `did:key`, so
-/// there is no stable name to `If-None-Match` against. We `GET
-/// /api/profile` (which also carries the client-id header) and only
-/// create a space when the profile lists zero. The new space is created
-/// without a fixed identifier — the worker mints the routing key — and
-/// labeled [`DEFAULT_REPO`], a display name only.
-///
-/// The create body wires up an `origin` remote pointing at the UCAN
-/// access service (resolved against the current window origin) and sets
-/// the default branch to track `origin/{branch}`.
-pub async fn init() -> Result<String, TonkUiError> {
-    tonk_host::ready::wait().await;
-    tonk_common::log!("Ensuring the profile has at least one space...");
-
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/profile", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(TonkUiError::ApiError(format!(
-            "GET /api/profile returned {}: {}",
-            status, text
-        )));
-    }
-
-    // The client id rides on every worker response, including this GET.
-    let client_id = response
-        .headers()
-        .get("x-tonk-client-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
-            TonkUiError::ApiError(
-                "GET /api/profile response missing X-Tonk-Client-Id header".to_string(),
-            )
-        })?;
-
-    let profile = response
-        .json::<ProfileInfo>()
-        .await
-        .map_err(into_api_error)?;
-
-    // Profile already has a space → nothing to create. The user lands on
-    // the Hub and picks one.
-    if !profile.space.is_empty() {
-        tonk_common::log!(
-            "Profile already has {} space(s); skipping default create",
-            profile.space.len()
-        );
-        return Ok(client_id);
-    }
-
-    tonk_common::log!(
-        "Profile has no spaces; creating the default '{}'",
-        DEFAULT_REPO
-    );
-
-    let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
-    // The origin remote is a UCAN-over-S3 access endpoint; the worker
-    // decodes this into its real `SiteAddress`.
-    let configuration = RepositoryConfiguration::default()
-        .remote("origin", RemoteConfiguration::ucan(service_url))
-        // The branch's standard library (the built-in concepts,
-        // views, commands, rules + demo content) is seeded by the
-        // service worker at repository creation: it fetches the
-        // served `/library/core.yaml` asset and runs it through the
-        // evaluate pipeline. The shell no longer ships it in the PUT
-        // body, so the library updates without rebuilding the wasm.
-        .branch(
-            DEFAULT_BRANCH,
-            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
-        );
-
-    // The path segment is only the display label; the worker mints the
-    // routing key and returns it in the `RepositoryInfo`.
-    let response = reqwest::Client::new()
-        .put(format!("{}/api/repository/{}", origin(), DEFAULT_REPO))
-        .json(&configuration)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    match response.status() {
-        StatusCode::CREATED => Ok(client_id),
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "PUT /api/repository/{} returned {}: {}",
-                DEFAULT_REPO, status, text
             )))
         }
     }
