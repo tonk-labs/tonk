@@ -201,3 +201,82 @@ async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately(
     js_sys::Reflect::delete_property(&win, &"tonk".into()).ok();
     drop(transact_cb);
 }
+
+/// A single conclusion row shaped like a real subscription result:
+/// `{ fields: { name } }`.
+fn conclusion_row(name: &str) -> JsValue {
+    let fields = js_sys::Object::new();
+    js_sys::Reflect::set(&fields, &"name".into(), &JsValue::from_str(name)).expect("set name");
+    let row = js_sys::Object::new();
+    js_sys::Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
+    row.into()
+}
+
+/// A `reset` snapshot payload: a bare array of conclusion rows, as
+/// `tonk-host::consumer` delivers on the first (or reconnect) frame.
+fn reset_payload(name: &str) -> JsValue {
+    let rows = js_sys::Array::new();
+    rows.push(&conclusion_row(name));
+    rows.into()
+}
+
+/// An `update` delta payload: `{ asserted, retracted }`.
+fn update_payload(name: &str) -> JsValue {
+    let asserted = js_sys::Array::new();
+    asserted.push(&conclusion_row(name));
+    let payload = js_sys::Object::new();
+    js_sys::Reflect::set(&payload, &"asserted".into(), &asserted).expect("set asserted");
+    payload.into()
+}
+
+/// Invoke `element.reset`/`element.update` exactly as the host's
+/// `deliver_frame` does: read the method off the element (installed on the
+/// prototype by `install_frame_shims`) and call it with `element` as `this`.
+fn deliver(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(&opts, &"tag".into(), &JsValue::from_str("ui-space-name"))
+        .expect("set tag");
+    let f = js_sys::Reflect::get(el, &method.into())
+        .unwrap_or_else(|_| panic!("{method} present on element"))
+        .dyn_into::<js_sys::Function>()
+        .unwrap_or_else(|_| panic!("{method} is a function"));
+    f.call2(el, payload, &opts.into())
+        .unwrap_or_else(|_| panic!("{method} call"));
+}
+
+#[dialog_common::test]
+async fn it_renders_the_name_from_a_delivered_frame() {
+    // No host is installed in this crate's tests (see the module doc), so
+    // deliver frames the exact way `tonk-host::ops::deliver_frame` does:
+    // call the `reset`/`update` methods directly on the element. This is the
+    // path that shipped broken — the element subscribed and asked the right
+    // question, but had no delegate wired up to consume the answer, so the
+    // chip stayed on "Untitled" forever. See commit 71d1c58ac.
+    let el = mount();
+    let editable = el
+        .query_selector("tonk-editable")
+        .expect("query")
+        .expect("<tonk-editable> child rendered");
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Untitled"),
+        "chip renders the placeholder before any frame arrives"
+    );
+
+    deliver(&el, "reset", &reset_payload("Real Spot"));
+
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Real Spot"),
+        "a delivered reset frame must be consumed and rendered, not ignored"
+    );
+
+    // A subsequent `update` delta must also be consumed and re-render the chip.
+    deliver(&el, "update", &update_payload("Renamed Again"));
+
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Renamed Again"),
+        "a delivered update frame must be consumed and rendered, not ignored"
+    );
+}
