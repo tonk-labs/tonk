@@ -5,6 +5,16 @@
 set -euo pipefail
 
 ROOT="${ROOT:?}"
+
+# This harness drives a real `tonk` binary (site.sh, shots.sh, and
+# scenario scripts all call $ROOT/target/release/tonk directly, from
+# this process's own real HOME). A release check would hit github.com
+# on every run, stamp the developer's real update.json, and put a nag
+# on stderr that metrics.sh greps as agent friction — so opt the whole
+# harness out. episode.sh separately opts out the agent's own tonk
+# calls, since those run under EPISODE_HOME rather than inheriting this.
+export TONK_NO_UPDATE_CHECK=1
+
 SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N]}"; shift
 SCRIPTED=0; RUNS=1
 while [ $# -gt 0 ]; do
