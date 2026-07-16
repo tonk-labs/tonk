@@ -393,12 +393,23 @@ mod tests {
     }
 
     /// Without a bridge installed the push is a silent no-op, not a
-    /// panic: the element may connect before the bootstrap does.
+    /// panic: the element may connect before the bootstrap does. A
+    /// panic would fail this outright; the assertion additionally
+    /// pins that nothing was pushed.
     #[dialog_common::test]
     async fn it_does_nothing_without_a_bridge() {
+        install_stub();
         let win = window().expect("a window in the test harness");
+        let _ = Reflect::set(&win, &JsValue::from_str("__title"), &JsValue::UNDEFINED);
         let _ = Reflect::set(&win, &JsValue::from_str("tonk"), &JsValue::UNDEFINED);
+
         push_title(&element_with_text(Some("Notes — Tonk")));
+
+        assert_eq!(
+            captured(),
+            None,
+            "an absent bridge should push nothing at all"
+        );
     }
 }
 ```
@@ -479,6 +490,12 @@ fn push_title(this: &HtmlElement) {
 }
 
 /// `window.tonk`, if the portal bootstrap installed it.
+///
+/// A deliberate local copy of the same helper in `tonk-guest`'s
+/// `guest_host.rs`: `tonk-guest` depends on this crate, not the other
+/// way round, so it cannot be imported. Twelve lines of boilerplate is
+/// a smaller cost than hoisting a shared module through `tonk-host`
+/// for a second caller. Hoist if a third appears.
 fn window_tonk() -> Option<Object> {
     let win = window()?;
     Reflect::get(&win, &JsValue::from_str("tonk"))
