@@ -29,6 +29,7 @@ web-sys = { workspace = true, features = [
     "DomTokenList",
     "Element",
     "Event",
+    "EventInit",
     "EventTarget",
     "FontFaceSet",
     "HtmlCollection",

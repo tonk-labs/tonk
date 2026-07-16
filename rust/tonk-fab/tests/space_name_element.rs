@@ -128,3 +128,76 @@ async fn it_dispatches_a_subscribe_carrying_the_raw_attribute_query() {
 
     drop(cb);
 }
+
+#[dialog_common::test]
+async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately() {
+    // Mock `window.tonk.transact` to capture the routeless dispatch — there is
+    // no installed host in this test (see the module doc), so nothing else
+    // would observe it.
+    let captured: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let sink = captured.clone();
+    let transact_cb = Closure::<dyn FnMut(JsValue)>::new(move |req: JsValue| {
+        let json = js_sys::JSON::stringify(&req)
+            .map(String::from)
+            .unwrap_or_default();
+        *sink.borrow_mut() = Some(json);
+    });
+    let win = window().expect("window");
+    let tonk = js_sys::Object::new();
+    js_sys::Reflect::set(&tonk, &"transact".into(), transact_cb.as_ref()).expect("set transact");
+    js_sys::Reflect::set(&win, &"tonk".into(), &tonk).expect("set window.tonk");
+
+    let el = mount();
+    let editable = el
+        .query_selector("tonk-editable")
+        .expect("query")
+        .expect("<tonk-editable> child rendered");
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Untitled"),
+        "chip renders the placeholder before any frame arrives"
+    );
+
+    // Simulate an edit commit: `<tonk-editable>` sets its own text then
+    // dispatches a bubbling `change` on blur — mirror that directly rather
+    // than depending on its dblclick/focus/blur choreography, which isn't
+    // registered here (no host, no `tonk-workspace::register()` in this crate).
+    editable.set_text_content(Some("Renamed Space"));
+    let init = web_sys::EventInit::new();
+    init.set_bubbles(true);
+    let change = web_sys::Event::new_with_event_init_dict("change", &init).expect("event");
+    editable.dispatch_event(&change).expect("dispatch change");
+
+    yield_for(10).await;
+
+    let json = captured
+        .borrow()
+        .clone()
+        .expect("window.tonk.transact must be called on commit");
+    // The descriptor rides WITH the claim — nothing seeded is consulted.
+    assert!(
+        json.contains("xyz.tonk.rename-repository/space"),
+        "claim must inline the rename-repository descriptor: {json}"
+    );
+    assert!(
+        json.contains(SPACE),
+        "claim must name the target space: {json}"
+    );
+    assert!(
+        json.contains("Renamed Space"),
+        "claim must carry the typed name: {json}"
+    );
+
+    // The chip never optimistically keeps the typed text: by the time the
+    // claim dispatches it must already show the prior (pre-frame) name again
+    // — nothing here confirms the rename actually committed.
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Untitled"),
+        "chip must revert to the previous name, not keep the typed one"
+    );
+
+    js_sys::Reflect::delete_property(&win, &"tonk".into()).ok();
+    drop(transact_cb);
+}
