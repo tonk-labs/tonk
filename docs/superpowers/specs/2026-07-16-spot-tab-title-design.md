@@ -241,6 +241,15 @@ built here; new spots get titles, old spots keep "Tonk" until someone asks.
   not the DOM effect — accepts only a well-formed `{type:"title", text}` with
   non-empty text; rejects other types, empty text, and non-object payloads. Uses
   `#[dialog_common::test]`, matching the file it copies.
+- **`set_title`**: unlike `navigate_to` — which the existing tests avoid
+  performing, since navigating would tear the harness out from under them —
+  setting a title is harmless in a `run_in_browser` test. So it is asserted
+  directly: a non-empty title reaches `document.title`; an empty one leaves the
+  previous title standing.
+- **The element** (`push_title`): asserted against a stubbed
+  `window.tonk.setTitle` that records what it was handed — a non-empty `text`
+  rides the bridge, a blank or absent one does not, and a missing bridge is a
+  no-op rather than a panic.
 - **The `core.yaml` additions** validate via `analyze_local` (seed tests are
   wasm-gated), per the established practice for library notation.
 - **The rendered chain** (name fact → view template → attribute → `document.title`)
@@ -249,9 +258,6 @@ built here; new spots get titles, old spots keep "Tonk" until someone asks.
   pre-existing spot still reads "Tonk". Per
   `project_wasm_tests_need_safari_automation`, local wasm tests need Safari
   automation or a major-matched chromedriver.
-
-Note `set_title` itself is not meaningfully unit-testable beyond its guard —
-asserting it would mean asserting on the test harness's own document title.
 
 ## Risks
 
