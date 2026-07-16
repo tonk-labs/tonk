@@ -2077,6 +2077,15 @@ view!: &space-view
     <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
       <tonk-title slot="no-model" text="Untitled — Tonk"></tonk-title>
       <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+      <!-- A spot created before `tonk:view/title` existed has no
+           `view/title!:` row on its branch, so `view=tonk:view/title`
+           resolves nothing and the display enters `no-view` — a `danger`
+           state. `update_slot_children` toggles `hidden`, it never adds
+           or removes children, so with no matching slot child the
+           built-in red `<wa-callout>` fires. This inert child suppresses
+           that callout while pushing no title, leaving the tab exactly
+           as it was — the old spot behavior. -->
+      <span slot="no-view"></span>
     </tonk-display>
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The
