@@ -1767,7 +1767,7 @@ view!:
               #generation = 0;
               connectedCallback() { this.render(); }
               attributeChangedCallback() { if (this.isConnected) this.render(); }
-              disconnectedCallback() { this.#generation++; this.revoke(); }
+              disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
               revoke() {
                 if (this.#objectUrl) {
                   URL.revokeObjectURL(this.#objectUrl);
@@ -1790,7 +1790,6 @@ view!:
                 return URL.createObjectURL(await resp.blob());
               }
               render() {
-                this.#generation++;
                 const key = [
                   this.getAttribute("with"),
                   this.getAttribute("entity"),
@@ -1799,6 +1798,7 @@ view!:
                 ].join("|");
                 if (this.dataset.rendered === key) return;
                 this.dataset.rendered = key;
+                this.#generation++;
                 const root = this.shadowRoot || this.attachShadow({ mode: "open" });
                 const type = this.getAttribute("content-type") || "";
                 const name = this.getAttribute("name") || this.getAttribute("entity") || "";
