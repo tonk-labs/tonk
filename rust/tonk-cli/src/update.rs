@@ -95,10 +95,9 @@ pub fn is_newer(local: &str, remote: &str) -> bool {
 /// `TONK_CHANNEL` is what `install.sh` reads, so honouring it lets a
 /// receipt-less copy still be checked against the right release.
 pub fn resolve_channel() -> Channel {
-    if let Some(receipt) = receipt::load() {
-        if let Some(channel) = Channel::from_label(&receipt.channel) {
-            return channel;
-        }
+    if let Some(channel) = receipt::load().and_then(|receipt| Channel::from_label(&receipt.channel))
+    {
+        return channel;
     }
     std::env::var("TONK_CHANNEL")
         .ok()
