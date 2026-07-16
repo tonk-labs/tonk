@@ -7,6 +7,7 @@
 //! iframe to fit.
 
 pub mod logic;
+pub mod retry;
 
 #[cfg(target_arch = "wasm32")]
 mod element;
