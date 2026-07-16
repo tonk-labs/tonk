@@ -25,16 +25,23 @@ and an entry in the wrapper's `optionalDependencies`.
 ## Publishing (maintainers)
 
 Publishing runs in CI so every platform binary is built reproducibly —
-you cannot build the Linux binary from a Mac. It is **manual-trigger
-only**; nothing publishes on a normal push.
+you cannot build the Linux binary from a Mac. It is **tag-driven**;
+nothing publishes on a normal push.
 
 1. One-time: add an `NPM_TOKEN` repository secret (an npm automation
    token for the `@tonk` scope with publish rights).
-2. Run the **CLI npm** workflow (`.github/workflows/cli-npm.yml`) via
-   *Actions → CLI npm → Run workflow*, setting `version` (e.g. `0.4.0`)
-   and `dist-tag` (`latest`). It builds both binaries, stamps the
-   version across all three package.jsons, and publishes the platform
-   packages first, then the wrapper.
+2. Bump the version (see below) and land it.
+3. Push a `v<version>` tag matching the Cargo workspace version, e.g.
+   `git tag v0.5.0 && git push origin v0.5.0`. That fires
+   `.github/workflows/cli-npm.yml`, which builds both binaries, stamps
+   the version across all three package.jsons, and publishes the
+   platform packages first, then the wrapper.
+
+The tag is the source of the version, and the workflow **refuses to
+publish if it disagrees with the Cargo workspace version** — so the
+bump has to land before the tag. The dist-tag is derived, not chosen:
+a prerelease version (`0.5.1-rc.1`) publishes under `next`, anything
+else under `latest`.
 
 To verify locally without publishing, from `rust/tonk-cli/npm`:
 
@@ -44,7 +51,7 @@ nix build --accept-flake-config ../../..#tonk-cli
 install -Dm0755 ../../../result/bin/tonk darwin-arm64/bin/tonk
 npm pack ./darwin-arm64 ./cli            # produces .tgz tarballs
 # smoke-test the launcher against the packed tarballs:
-tmp=$(mktemp -d) && npm --prefix "$tmp" install ./tonk-cli-darwin-arm64-*.tgz ./tonk-cli-0.4.0.tgz
+tmp=$(mktemp -d) && npm --prefix "$tmp" install ./tonk-cli-darwin-arm64-*.tgz ./tonk-cli-0.5.0.tgz
 "$tmp/node_modules/.bin/tonk" --help
 ```
 

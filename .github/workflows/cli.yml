@@ -70,6 +70,23 @@ jobs:
           rm tonk
           # Checksums the installer verifies before installing.
           sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          # Release identity for `tonk update`. The version string alone
+          # cannot identify a build on a rolling tag, so carry the commit.
+          version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
+            | grep -m1 '^version' \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+          cat > manifest.json <<EOF
+          {
+            "version": "$version",
+            "commit": "${{ github.sha }}",
+            "channel": "staging",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          # Fail the release rather than publish a manifest the CLI
+          # cannot parse.
+          python3 -c 'import json,sys; m=json.load(open("manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
+          cat manifest.json
       - name: Delete existing staging release
         run: gh release delete tonk-staging --yes --cleanup-tag || true
         env:
@@ -103,6 +120,7 @@ jobs:
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
             checksums.txt
+            manifest.json
             install.sh
 
   publish-stable:
@@ -134,6 +152,23 @@ jobs:
           rm tonk
           # Checksums the installer verifies before installing.
           sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          # Release identity for `tonk update`. The version string alone
+          # cannot identify a build on a rolling tag, so carry the commit.
+          version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
+            | grep -m1 '^version' \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+          cat > manifest.json <<EOF
+          {
+            "version": "$version",
+            "commit": "${{ github.sha }}",
+            "channel": "stable",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          # Fail the release rather than publish a manifest the CLI
+          # cannot parse.
+          python3 -c 'import json,sys; m=json.load(open("manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
+          cat manifest.json
       - name: Delete existing rolling release
         run: gh release delete tonk-latest --yes --cleanup-tag || true
         env:
@@ -171,4 +206,5 @@ jobs:
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
             checksums.txt
+            manifest.json
             install.sh
