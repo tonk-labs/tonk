@@ -8,6 +8,7 @@
 //! commits (catching same-version rebuilds).
 
 pub mod manifest;
+pub mod receipt;
 
 /// Opt out of the background check for one run or an environment.
 /// Named to match `TONK_NO_SYNC` in [`crate::auto_sync`].
@@ -84,6 +85,24 @@ pub fn is_newer(local: &str, remote: &str) -> bool {
     remote > local
 }
 
+/// Which channel this copy tracks: the receipt, else `TONK_CHANNEL`,
+/// else stable.
+///
+/// The receipt wins because it records what was actually installed;
+/// `TONK_CHANNEL` is what `install.sh` reads, so honouring it lets a
+/// receipt-less copy still be checked against the right release.
+pub fn resolve_channel() -> Channel {
+    if let Some(receipt) = receipt::load() {
+        if let Some(channel) = Channel::from_label(&receipt.channel) {
+            return channel;
+        }
+    }
+    std::env::var("TONK_CHANNEL")
+        .ok()
+        .and_then(|label| Channel::from_label(&label))
+        .unwrap_or(Channel::Stable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +155,35 @@ mod tests {
         assert_eq!(Channel::from_label("stable"), Some(Channel::Stable));
         assert_eq!(Channel::from_label("nonsense"), None);
         assert_eq!(Channel::Staging.as_str(), "staging");
+    }
+
+    #[dialog_common::test]
+    fn it_resolves_the_channel_from_receipt_then_env_then_stable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: tests in this mod run on one thread per process
+        // invocation; nothing else reads these vars concurrently.
+        unsafe { std::env::set_var(STATE_ENV, dir.path()) };
+        unsafe { std::env::remove_var("TONK_CHANNEL") };
+
+        // No receipt, no env: stable.
+        assert_eq!(resolve_channel(), Channel::Stable);
+
+        // Env alone is honoured.
+        unsafe { std::env::set_var("TONK_CHANNEL", "staging") };
+        assert_eq!(resolve_channel(), Channel::Staging);
+
+        // A receipt wins over the env.
+        receipt::store(&receipt::Receipt {
+            channel: "stable".to_owned(),
+            version: "0.4.0".to_owned(),
+            commit: "abc".to_owned(),
+            install_dir: "/usr/local/bin".to_owned(),
+            installed_at: "2026-07-16T00:00:00Z".to_owned(),
+        })
+        .expect("store");
+        assert_eq!(resolve_channel(), Channel::Stable);
+
+        unsafe { std::env::remove_var("TONK_CHANNEL") };
+        unsafe { std::env::remove_var(STATE_ENV) };
     }
 }
