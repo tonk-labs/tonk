@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - **All tests use `#[dialog_common::test]`**, named `it_does_x`, grouped by behaviour. Never `#[wasm_bindgen_test]` directly.
+- **A test that mutates shared browser state (`window.tonk`, `document.title`) must restore it BEFORE its assertions**, not after. Every test in a crate shares one `window`, and a failed assertion unwinds past any cleanup that follows it — leaking the stub into every later test and turning one failure into a cascade of unrelated ones. Capture what you need into locals, restore, then assert. `rust/tonk-portal/src/bridge.rs:2643` is the established pattern.
 - **Browser-only test modules** are gated `#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]` with `wasm_bindgen_test_configure!(run_in_browser);`, matching `navigate.rs:141-146` and `title.rs:29-34`.
 - **No `mod.rs`** — use `foo.rs` + `foo/` form.
 - **No emojis** in code, commits, or output.
@@ -349,22 +350,28 @@ and add this test after `it_recognises_only_a_sync_message`:
 
         navigate_to("/space/forwarded");
 
+        let after = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        // Restore BEFORE asserting so a failure doesn't leak `window.tonk`
+        // into every later test in this binary — a panic unwinds past any
+        // cleanup placed after the assertions. `bridge.rs:2643` does exactly
+        // this, for exactly this reason. `calls` is an independent handle, so
+        // clearing the stub does not disturb what it already recorded.
+        clear_tonk();
+
         assert_eq!(calls.length(), 1, "the parent should have been called once");
         assert_eq!(
             calls.get(0).as_string(),
             Some("/space/forwarded".to_owned()),
             "the href should reach the parent verbatim"
         );
-        let after = window()
-            .expect("a window in the test harness")
-            .location()
-            .href()
-            .expect("a location href");
         assert_eq!(
             before, after,
             "a forwarded navigation must not move this document"
         );
-        clear_tonk();
     }
 ```
 
@@ -489,6 +496,13 @@ and add this test after `it_sets_a_non_empty_title_and_ignores_an_empty_one`:
 
         set_title("Forwarded — Tonk");
 
+        let title_after = document_title();
+        // Restore BEFORE asserting — a panic unwinds past any cleanup placed
+        // after the assertions, leaking the stub into every later test in this
+        // binary (it would make the test above forward its title instead of
+        // setting it). `bridge.rs:2643` does the same, for the same reason.
+        clear_tonk();
+
         assert_eq!(calls.length(), 1, "the parent should have been called once");
         assert_eq!(
             calls.get(0).as_string(),
@@ -496,11 +510,9 @@ and add this test after `it_sets_a_non_empty_title_and_ignores_an_empty_one`:
             "the text should reach the parent verbatim"
         );
         assert_eq!(
-            document_title(),
-            "Before — Tonk",
+            title_after, "Before — Tonk",
             "a forwarded title must not retitle this document"
         );
-        clear_tonk();
     }
 
     /// The empty guard runs BEFORE forwarding: a blank render is dropped at
@@ -512,8 +524,8 @@ and add this test after `it_sets_a_non_empty_title_and_ignores_an_empty_one`:
 
         set_title("");
 
+        clear_tonk(); // before asserting — see above
         assert_eq!(calls.length(), 0, "an empty title should not be forwarded");
-        clear_tonk();
     }
 ```
 
