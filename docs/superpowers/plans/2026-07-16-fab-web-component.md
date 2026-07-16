@@ -42,7 +42,7 @@ Spec: `docs/superpowers/specs/2026-07-16-fab-web-component-design.md`
 | `rust/tonk-core/assets/library/core.yaml` (modify) | Delete 3 FAB views. Keep `name-view` and `tonk:view/label`. |
 | `rust/tonk-core/assets/library/profile.yaml` (modify) | Delete the FAB view + 3 concepts; rewrite the chrome view's mount. |
 | `rust/tonk-fab/src/space_switcher.rs` (create) | `<ui-space-switcher>` — profile-branch space list + per-row name. |
-| `rust/tonk-worker/tests/fab_drift.rs` (create) | The load-bearing regression test: hand-built claims agree with handler trigger attributes; an old library still lowers. |
+| `rust/tonk-worker/tests/fab_drift.rs` (create) | The load-bearing regression test: hand-built claims agree with the attribute URIs their handlers index on. |
 
 **Task order rationale:** Task 1 (retry policy) and Task 2 (`<ui-space-name>` read) are the spike — they validate the one mechanism with no worked example (a top-level `ui-` element subscribing from Rust-built markup). Tasks 3-4 complete that zone's write path. Only then does the bulk markup move (Tasks 6-8) proceed. **If Task 2 fails, stop and re-plan — every later task assumes it.**
 
@@ -540,12 +540,14 @@ Add to `rust/tonk-worker/src/router/repository.rs`'s test module:
 
 ```rust
 #[dialog_common::test]
-fn it_maps_a_missing_replica_to_not_found_rather_than_success() {
+fn it_maps_a_failed_rename_to_failed_rather_than_success() {
     // PauseSyncHandler logs and returns on a missing replica. Rename must
     // not: a silently-dropped rename looks successful to the user, which is
     // the exact failure class this design attacks.
-    let outcome = rename_outcome(Err(RepositoryError::NotFound("did:key:zAbsent".into())));
-    assert_eq!(outcome, RenameOutcome::NotFound);
+    // `RepositoryError` has no NotFound variant — an absent replica surfaces
+    // as Internal from the acquire.
+    let outcome = rename_outcome(Err(RepositoryError::Internal("no such replica".into())));
+    assert_eq!(outcome, RenameOutcome::Failed);
 }
 
 #[dialog_common::test]
@@ -567,17 +569,20 @@ Add to `rust/tonk-worker/src/router/repository.rs`, modelled on `PauseSyncHandle
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RenameOutcome {
     Renamed,
-    NotFound,
+    Failed,
 }
 
 /// Map a rename result to an outcome the chip can reflect.
 ///
 /// Pure and native-testable — the handler around it is wasm-gated, so this is
-/// the seam where the "do not swallow NotFound" decision is pinned.
+/// the seam where the "do not swallow a failed rename" decision is pinned.
+/// Any error is `Failed`: `RepositoryError` carries no NotFound variant, so an
+/// absent replica arrives as `Internal` from the acquire, and the chip's
+/// response is the same either way — revert, do not show a phantom success.
 pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutcome {
     match result {
         Ok(()) => RenameOutcome::Renamed,
-        Err(_) => RenameOutcome::NotFound,
+        Err(_) => RenameOutcome::Failed,
     }
 }
 
@@ -1257,29 +1262,20 @@ git commit -m "refactor(tonk-core): stop seeding FAB chrome into spaces"
 
 The property the whole design buys, which nothing currently tests. Without it, a future change can silently reintroduce the drift.
 
-The existing `standard_library.rs` harness is native-only (`#![cfg(not(target_arch = "wasm32"))]`) and runs `parse → analyze_local → lower` — it has no live system, so "render the FAB against a seeded branch" is not expressible there. Two tests that ARE expressible, and together pin the real property:
+There is deliberately **no old-`core.yaml` fixture here.** The whole point of the design is that the FAB consults nothing seeded — it reads raw attribute URIs and inlines its own descriptors — so no native test needs an old library to prove it. Seeding a fixture would test the seed, not the FAB. (The `standard_library.rs` harness is native-only and runs `parse → analyze_local → lower` with no live system, so "render the FAB against a seeded branch" isn't expressible there anyway.)
 
-1. **Claim/handler attribute agreement.** The FAB hand-builds claims; handlers index on attribute URIs (`dialog-reactor/src/command.rs:52-83`). If those two ever disagree, the command dies silently — the failure this design exists to prevent. `trigger_attributes()` makes this exactly testable.
-2. **An old library still lowers**, so the fixture the design claims to support is real.
+What CAN drift, and what these tests pin:
 
-Full end-to-end rendering against an old seed stays a browser check (Task 11, Step 5) — that is honest about what these tests do and don't cover.
+1. **Claim ↔ handler attribute agreement.** The FAB hand-builds claims; handlers index on attribute URIs (`dialog-reactor/src/command.rs:52-83`). If the two disagree, the command decodes as nothing, the handler never runs, and the UI still looks successful — the exact failure this design exists to prevent. `trigger_attributes()` makes it exactly testable.
+2. **Query ↔ written-attribute agreement.** The FAB reads a raw attribute; the worker writes facts under the schema's domain type. Diverge and the chip silently blanks.
+
+Full end-to-end against a real old spot stays a browser check (Task 11, Step 5) — honest about what these tests do and don't cover.
 
 **Files:**
 - Create: `rust/tonk-worker/tests/fab_drift.rs`
-- Create: `rust/tonk-worker/tests/fixtures/core-pre-fab.yaml`
 - Modify: `rust/tonk-worker/Cargo.toml` (add `tonk-fab` to `[dev-dependencies]`)
 
-- [ ] **Step 1: Build the fixture from a genuine old library**
-
-Not hand-trimmed — a real `core.yaml` from before #572 decoupled sync-pause:
-
-```bash
-mkdir -p rust/tonk-worker/tests/fixtures
-git show 81e4c0aa0^:rust/tonk-core/assets/library/core.yaml \
-  > rust/tonk-worker/tests/fixtures/core-pre-fab.yaml
-```
-
-- [ ] **Step 2: Add the dev-dependency**
+- [ ] **Step 1: Add the dev-dependency**
 
 `tonk-fab`'s `logic` module is native (`pub mod logic;` is ungated), so the
 worker's native test can call it. Add to `rust/tonk-worker/Cargo.toml`:
@@ -1289,7 +1285,7 @@ worker's native test can call it. Add to `rust/tonk-worker/Cargo.toml`:
 tonk-fab = { path = "../tonk-fab" }
 ```
 
-- [ ] **Step 3: Write the failing test**
+- [ ] **Step 2: Write the failing test**
 
 Create `rust/tonk-worker/tests/fab_drift.rs`:
 
@@ -1300,7 +1296,9 @@ Create `rust/tonk-worker/tests/fab_drift.rs`:
 //! `core.yaml` is seeded once at repo creation and never re-seeded, so every
 //! existing space's descriptors are frozen at the version that created it.
 //! The FAB survives that by consulting nothing seeded: it reads raw attribute
-//! URIs and inlines its own command descriptors.
+//! URIs and inlines its own command descriptors. That is why there is no old
+//! -library fixture here — there is nothing seeded for it to be checked
+//! against.
 //!
 //! The load-bearing invariant is that a hand-built claim carries exactly the
 //! attributes its handler indexes on. If they drift apart the command decodes
@@ -1313,10 +1311,6 @@ Create `rust/tonk-worker/tests/fab_drift.rs`:
 #![cfg(not(target_arch = "wasm32"))]
 
 use tonk_fab::logic;
-
-/// A genuine pre-#572 library, embedded (not read at runtime) so it travels
-/// inside a `cargo nextest archive` — same reason `standard_library.rs` does.
-const ANCIENT_CORE: &str = include_str!("fixtures/core-pre-fab.yaml");
 
 #[dialog_common::test]
 fn it_builds_rename_claims_carrying_every_attribute_the_handler_triggers_on() {
@@ -1355,36 +1349,28 @@ fn it_reads_the_repo_name_attribute_the_schema_writes() {
     let body = logic::repo_name_query_body("did:key:z6Mk").expect("builds");
     assert!(body.contains("xyz.tonk.repo/name"));
 }
-
-#[dialog_common::test]
-fn it_lowers_a_library_from_before_the_fab_views_existed() {
-    // The fixture the design claims to support must be a real, lowerable
-    // library — otherwise the browser check in Task 11 proves nothing.
-    let document = tonk_notation::parse(ANCIENT_CORE).expect("ancient core parses");
-    tonk_analyzer::analyze_local(&document).expect("ancient core analyzes");
-}
 ```
 
-- [ ] **Step 4: Run to verify it fails**
+- [ ] **Step 3: Run to verify it fails**
 
 Run: `cargo test -p tonk-worker --test fab_drift`
 Expected: FAIL — `rename_repo_claim_json` / `invite_claim_json` not found until Tasks 4 and 8 land.
 
-- [ ] **Step 5: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p tonk-worker --test fab_drift`
-Expected: PASS, 4 tests.
+Expected: PASS, 3 tests.
 
-If `analyze_local`'s exact path differs, copy the invocation from
-`rust/tonk-worker/tests/standard_library.rs` — it runs the same front half
-against every real asset.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add rust/tonk-worker/tests rust/tonk-worker/Cargo.toml
 git commit -m "test(tonk-worker): pin FAB claims against handler trigger attributes"
 ```
+
+Note: `standard_library.rs` reaches the analyzer as
+`tonk_analyzer::analyzer::analyze_local` (not `tonk_analyzer::analyze_local`).
+Copy any lowering invocation from there verbatim rather than guessing.
 
 ---
 
