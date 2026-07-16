@@ -248,7 +248,11 @@ pub async fn upload(
                 Some(Ok(artifact)) => {
                     String::try_from(artifact.is).unwrap_or_else(|_| entity.to_string())
                 }
-                _ => entity.to_string(),
+                Some(Err(e)) => {
+                    log!("blob: name query error: {:?}", e);
+                    entity.to_string()
+                }
+                None => entity.to_string(),
             }
         }
     };
