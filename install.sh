@@ -159,6 +159,62 @@ fi
 
 say "installed tonk to $dest"
 
+# Record what we installed, so `tonk update` knows which channel to
+# check and can answer "already current" without downloading an
+# archive. Best-effort: an older release has no manifest.json, and a
+# receipt we cannot write is not a reason to fail an install.
+#
+# Mirrors `update::receipt::Receipt`; TONK_UPDATE_STATE overrides the
+# directory for tests, matching the CLI.
+if [ -n "${TONK_UPDATE_STATE:-}" ]; then
+  state_dir="$TONK_UPDATE_STATE"
+elif [ "$os" = "Darwin" ]; then
+  state_dir="$HOME/Library/Application Support/tonk"
+else
+  state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/tonk"
+fi
+
+# Escape a value for use inside a JSON string: backslashes first, then
+# quotes. An install dir containing either would otherwise emit JSON the
+# CLI silently fails to parse (it reads the receipt with `.ok()`).
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Everything that can fail lives here, and it is only ever called as an
+# `if` condition, so a failure skips the receipt instead of aborting an
+# install whose binary is already in place. `mkdir -p` succeeds on an
+# existing directory even when it is unwritable, so the write itself has
+# to be guarded, not just the mkdir.
+write_receipt() {
+  mkdir -p "$state_dir" 2>/dev/null || return 1
+  cat > "$state_dir/install.json" 2>/dev/null <<EOF || return 1
+{
+  "channel": "$channel",
+  "version": "$m_version",
+  "commit": "$m_commit",
+  "install_dir": "$(json_escape "$INSTALL_DIR")",
+  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+  return 0
+}
+
+if fetch "${url%/*}/manifest.json" "$tmp/manifest.json" 2>/dev/null; then
+  # Pull two string fields out without requiring jq.
+  m_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
+  m_commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json")"
+  if [ -n "$m_version" ] && [ -n "$m_commit" ]; then
+    # 2>/dev/null on the call, not just inside: the shell opens the
+    # redirect target before `cat` runs, so `cat`'s own redirect cannot
+    # suppress a "Permission denied" for an unwritable state dir. This is
+    # best-effort, so it stays silent.
+    if write_receipt 2>/dev/null; then
+      say "recorded install receipt in $state_dir"
+    fi
+  fi
+fi
+
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "note: $INSTALL_DIR is not on your PATH; add it, e.g. export PATH=\"$INSTALL_DIR:\$PATH\"" ;;

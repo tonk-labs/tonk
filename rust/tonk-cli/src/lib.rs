@@ -25,6 +25,7 @@
 //! - [`migrate`] — copy a `.carry/` directory to `.tonk/`.
 //! - [`guide`] — the asserted-notation reference, baked in.
 //! - [`telemetry`] — anonymous usage telemetry (PostHog), opt-out.
+//! - [`update`] — self-update: `tonk update` plus the release check.
 
 pub mod authoring;
 pub mod auto_sync;
@@ -45,6 +46,7 @@ pub mod site;
 pub mod sync;
 pub mod telemetry;
 pub mod transfer;
+pub mod update;
 pub mod views;
 
 /// CLI exit codes.
