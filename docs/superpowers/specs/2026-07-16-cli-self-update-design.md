@@ -196,6 +196,15 @@ like an oversight: the check has no caller depending on its result and
 no user intent behind it. On failure it still bumps `last_checked_at`,
 so an offline laptop retries daily rather than every command.
 
+**Timeout:** the check budget is 5s (`CHECK_TIMEOUT`), covering
+native-root loading, DNS, TCP, TLS, and the GET on a freshly built
+reqwest client, not just the request itself. The human chose 5s over
+an initial 2s: a timeout still advances `last_checked_at`, so a
+machine that is merely slower than the budget — not offline — would
+otherwise back off to a daily retry forever and never once complete
+the check, silently losing the nag for good instead of just running
+it late.
+
 **`tonk update` fails loudly** — non-zero, distinct message per mode:
 unreachable GitHub, missing manifest for the channel (a bad
 `TONK_RELEASE` pin), no checksum entry for this platform, unsupported

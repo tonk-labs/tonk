@@ -217,7 +217,17 @@ pub fn short_commit(commit: &str) -> &str {
 /// How long the background check may take before we give up on it.
 /// It runs concurrently with the 300ms telemetry flush, so the worst
 /// case is roughly this once a day, not on every command.
-pub const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+///
+/// The budget has to cover native-root loading, DNS, TCP, TLS, and the
+/// GET itself on a freshly built reqwest client — not just the request
+/// on an already-warm connection. It is deliberately not tighter than
+/// 5s: on timeout `last_checked_at` still advances (so an offline
+/// machine backs off to a daily retry, which is correct), but a
+/// machine that is merely slower than the timeout would back off
+/// forever and never once complete the check — silently losing the
+/// nag for good rather than just running it late. The human chose 5s
+/// over an initial 2s for exactly this reason.
+pub const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Whether the background check is allowed to run at all.
 fn check_permitted() -> bool {

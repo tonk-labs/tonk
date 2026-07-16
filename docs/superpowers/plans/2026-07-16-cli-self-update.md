@@ -27,7 +27,7 @@
 - **Release tags:** stable → `latest/download/…`; staging → `download/tonk-staging/…` (matches `install.sh`).
 - **Assets:** `tonk-macos-arm64.tar.gz`, `tonk-linux-x86_64.tar.gz`. Published platforms are darwin/arm64 and linux/x86_64 only.
 - **Nag/check interval:** 24h each.
-- **Timeouts:** background check 2s; it runs concurrently with the existing 300ms telemetry flush.
+- **Timeouts:** background check 5s; it runs concurrently with the existing 300ms telemetry flush. (Raised from an initial 2s: the human chose 5s so a link that's merely slower than the timeout — not offline — doesn't silently lose the nag forever, since a timeout still advances `last_checked_at` and backs off to a daily retry.)
 
 ## File Structure
 
@@ -1777,7 +1777,17 @@ Add to `rust/tonk-cli/src/update.rs`, after `run`:
 /// How long the background check may take before we give up on it.
 /// It runs concurrently with the 300ms telemetry flush, so the worst
 /// case is roughly this once a day, not on every command.
-pub const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+///
+/// The budget has to cover native-root loading, DNS, TCP, TLS, and the
+/// GET itself on a freshly built reqwest client — not just the request
+/// on an already-warm connection. It is deliberately not tighter than
+/// 5s: on timeout `last_checked_at` still advances (so an offline
+/// machine backs off to a daily retry, which is correct), but a
+/// machine that is merely slower than the timeout would back off
+/// forever and never once complete the check — silently losing the
+/// nag for good rather than just running it late. The human chose 5s
+/// over an initial 2s for exactly this reason.
+pub const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Whether the background check is allowed to run at all.
 fn check_permitted() -> bool {
