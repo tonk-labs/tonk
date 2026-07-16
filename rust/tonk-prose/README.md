@@ -93,7 +93,13 @@ Events:
   converts via the reparse loop; deleting a marker converts back.
 - Block syntax: `> `, `- `/`* `/`+ `, `1. ` wrap on typing (input
   rules; one Backspace undoes the wrap). `## ` headings convert via
-  the loop. `---` becomes a rule, `![alt](src)` an image.
+  the loop. `---` becomes a rule.
+- Images are *expanded* (allusion's `expandedImage`): the document
+  stores the literal `![alt](src)` source under an `image_markup`
+  mark, hidden/revealed like any marker, while a widget decoration
+  renders the picture right after it. Typing image syntax converts
+  through the loop, editing the source re-points the preview, and
+  breaking the syntax degrades it to text.
 - Code blocks: type ` ```lang ` (with a space) or ` ``` `/` ```lang `
   followed by Enter. Arrow keys walk in and out of the embedded
   editor at its edges; Backspace in an empty block turns it back
@@ -115,8 +121,11 @@ from the consumer's design system; the variables are the contract.
 ## Serving alongside `<tonk-code>`
 
 Both bundles resolve sibling chunks relative to their own module URL.
-Copy each package's `assets/` to its own directory (as `tonk-ui`'s
-`index.html` does for tonk-code) and call the crate's
-`install("/tonk-prose/tonk-prose.js")` from the host binary. Install
-`tonk-code` too to get embedded code editors with language
-highlighting; without it, code blocks stay editable as plain text.
+Copy each package's `assets/` to its own directory and load the shell
+with the crate's `install("/tonk-prose/tonk-prose.js")` or a module
+script. `tonk-ui`'s `index.html` already ships the bundle at
+`/tonk-prose/` (a `copy-dir` link next to tonk-code's, with a
+matching `Trunk.toml` watch entry), so host code or guest bridges can
+load it from there. Install `tonk-code` too to get embedded code
+editors with language highlighting; without it, code blocks stay
+editable as plain text.

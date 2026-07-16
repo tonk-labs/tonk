@@ -521,6 +521,21 @@
             data-target-path="tonk-code"
         />
 
+        <!-- `<tonk-prose>` markdown editor bundle, same layout contract
+       as tonk-code above: the shell (`tonk-prose.js`) registers the
+       element and lazily imports the ProseMirror core
+       (`tonk-prose-editor.js`) from a sibling URL on first connect,
+       so both files must sit in the same directory. Load it with the
+       crate's `install("/tonk-prose/tonk-prose.js")` or a module
+       script; code blocks upgrade to embedded `<tonk-code>` editors
+       when that element is defined. -->
+        <link
+            data-trunk
+            rel="copy-dir"
+            href="../tonk-prose/assets"
+            data-target-path="tonk-prose"
+        />
+
         <!-- Async like the webawesome sheet above (trunk forwards the
          extra attributes to the emitted link, entity-escaped but decoded
          by the HTML parser). First paint therefore needs no external CSS

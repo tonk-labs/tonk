@@ -17,6 +17,7 @@ import { keymap } from "prosemirror-keymap";
 import { reparse } from "./reparse";
 import { reveal } from "./reveal";
 import { placeholder, placeholderKey } from "./placeholder";
+import { imagePreview } from "./image-preview";
 import { codeBlocks } from "./code-block";
 import type { EditorOptions, ProseEditor } from "./api";
 
@@ -62,6 +63,7 @@ export function createEditor(
       dropCursor(),
       gapCursor(),
       placeholder(options.placeholder),
+      imagePreview(),
       markdownPastePlugin(),
     ],
   });
@@ -202,6 +204,22 @@ const EDITOR_STYLESHEET = `
   .md-doc img {
     max-width: 100%;
     border-radius: var(--tonk-prose-radius);
+  }
+
+  /* Expanded-image previews: the widget that follows the (usually
+     hidden) source text. Block display gives the picture its own
+     line, Typora-style; the source text above it reads as a
+     caption while editing. */
+  .md-image-preview {
+    display: block;
+    margin: 0.25em 0;
+  }
+  .md-image-broken {
+    min-width: 6em;
+    min-height: 2.5em;
+    border: 1px dashed var(--tonk-prose-border);
+    color: var(--tonk-prose-fg-muted);
+    font-size: 0.8em;
   }
 
   /* Embedded code editors. The <tonk-code> element brings its own
