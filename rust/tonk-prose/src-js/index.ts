@@ -65,15 +65,22 @@ export type ReadyDetail = {
  *  it regardless of where the consumer mounted the bundle (root,
  *  /assets/, CDN, …).
  *
- *  Override: `window.__tonkProseEditor` (a URL string). Sealed
- *  environments that import this shell from a minted `blob:` URL
- *  (tonk-portal guests) have no working relative resolution — the
- *  injector mints a blob for the core chunk too and hands its URL
- *  over via this global before importing the shell. */
-function editorChunkUrl(): string {
+ *  Override: `window.__tonkProseEditor`. Sealed environments that
+ *  import this shell from a minted `blob:` URL (tonk-portal guests)
+ *  have no working relative resolution — the injector provides this
+ *  global instead. Either a URL string (core already minted), or a
+ *  function returning the URL / a promise of it — the lazy form:
+ *  the guest asks its trusted parent for the core's bytes only when
+ *  the first element actually connects, keeping the boot payload at
+ *  the shell alone. */
+async function editorChunkUrl(): Promise<string> {
   const override = (globalThis as { __tonkProseEditor?: unknown })
     .__tonkProseEditor;
   if (typeof override === "string" && override) return override;
+  if (typeof override === "function") {
+    const url = await (override as () => string | Promise<string>)();
+    if (typeof url === "string" && url) return url;
+  }
   return new URL("./tonk-prose-editor.js", import.meta.url).href;
 }
 
@@ -84,8 +91,9 @@ let editorModule: Promise<EditorModule> | null = null;
 
 function loadEditorModule(): Promise<EditorModule> {
   if (!editorModule) {
-    editorModule = import(/* @vite-ignore */ editorChunkUrl()).then(
-      (mod) => mod as EditorModule,
+    editorModule = editorChunkUrl().then(
+      (url) =>
+        import(/* @vite-ignore */ url).then((mod) => mod as EditorModule),
     );
     editorModule.catch(() => {
       editorModule = null;
