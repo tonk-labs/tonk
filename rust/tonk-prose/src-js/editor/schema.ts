@@ -19,10 +19,33 @@ export const schema = new Schema({
   nodes: baseSchema.spec.nodes,
   marks: baseSchema.spec.marks
     .addToEnd("markup", {
+      attrs: {
+        // "inline" markers (`**`, `` ` ``, `[`, `](url)`) reveal per
+        // edit range; "block" markers (the heading `# ` prefix)
+        // reveal whenever their block is active.
+        kind: { default: "inline" },
+        // The content marks this marker belongs to (allusion's
+        // `marks` attr): identity keys (markup.ts `markKey`) of the
+        // delimiter run(s) enclosing it, innermost last. This is
+        // what lets the reveal plugin know that the caret sitting
+        // on a bare `**` text node is "inside" the strong span next
+        // to it. Flat strings on purpose — attr values must stay
+        // cycle-free (the DOM serializer walks them recursively).
+        of: { default: [] },
+      },
       // Text typed at a marker's edge must not inherit the mark.
       inclusive: false,
       // No parseDOM: markers exist only when materialized by us.
-      toDOM: () => ["span", { class: "md-markup" }, 0],
+      toDOM: (mark) => [
+        "span",
+        {
+          class:
+            mark.attrs.kind === "block"
+              ? "md-markup md-block"
+              : "md-markup",
+        },
+        0,
+      ],
     })
     // Images, expanded (allusion's `expandedImage`, as a mark): the
     // editor document stores an image as its literal source text
