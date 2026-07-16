@@ -5,7 +5,8 @@
 //! around the viewport. It is NOT a portal and uses no iframe — it lives in the
 //! same document as its content and moves itself directly. The FAB chrome uses
 //! it to float the profile pill over the space content, but nothing here is
-//! FAB-specific beyond the `.fab` class names the view supplies.
+//! FAB-specific beyond the `.fab` class names [`crate::markup::fab_html`]
+//! authors.
 //!
 //! - Telescope collapse/expand: the bar rests EXPANDED (all segments shown).
 //!   A plain click on the circle toggles it — the segments after the cap
@@ -27,8 +28,9 @@
 //!   only exist at rest); the visual right-anchored flips key off
 //!   `fab-mirror` instead, since that is the class still present mid-drag. A
 //!   press that never moves past a small threshold is a click.
-//! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted dock (or a default bottom-right), and applies its classes.
+//! - `inject_children` authors the bar (already wrapped for the telescope —
+//!   see `fab_html`); connect restores the persisted dock (or a default
+//!   bottom-right) and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
@@ -108,7 +110,16 @@ impl CustomElement for TonkFab {
         &[]
     }
 
-    fn inject_children(&mut self, _this: &HtmlElement) {}
+    /// Author the FAB's own DOM. The `space` attribute is stamped by the
+    /// mounting view (`<tonk-fab with="main@profile:tonk" space="{id}">`) and
+    /// is already resolved by the time `inject_children` runs — per the
+    /// `custom-elements` crate, this is deferred to (and runs before) the
+    /// first `connectedCallback`, i.e. after HTML parsing has set the
+    /// element's attributes.
+    fn inject_children(&mut self, this: &HtmlElement) {
+        let space = this.get_attribute("space").unwrap_or_default();
+        this.set_inner_html(&crate::markup::fab_html(&space));
+    }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         // Outside the `__tonkFabBound` guard below: a clone landing in a
@@ -139,8 +150,6 @@ impl CustomElement for TonkFab {
             .unwrap_or(false);
         if !already_bound {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
-            inject_scrim(this);
-            wrap_telescope_tiles(this);
             attach_drag(this);
             attach_gestures(this);
             preload_menu_widths(this);
@@ -177,93 +186,19 @@ impl CustomElement for TonkFab {
     }
 }
 
-/// Inject the click-away curtain: a viewport-covering, invisible click target
-/// that dismisses both dropdowns. It is created here rather than authored in the
-/// view template for two reasons:
-///
-///  - The template renderer drops EMPTY elements, so an authored
-///    `<div class="fab__scrim"></div>` never reaches the DOM.
-///  - It has to be a SIBLING of `.fab`, not a child: `wrap_telescope_tiles`
-///    takes child[0] of `.fab` to be the circle cap, so a scrim nested inside
-///    would be mistaken for it and the real cap would be wrapped as a
-///    collapsible tile.
-///
-/// The stylesheet (profile.yaml) owns the rest: it is `pointer-events: none`
-/// at rest and only becomes a live hit area while a menu is open
-/// (`tonk-fab:has(.is-open)`), so it can never swallow a click on the page
-/// while the bar is idle. Idempotent.
-fn inject_scrim(element: &HtmlElement) {
-    if element
-        .query_selector(".fab__scrim")
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return;
-    }
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    let Ok(scrim) = document.create_element("div") else {
-        return;
-    };
-    let _ = scrim.set_attribute("class", "fab__scrim");
-    // Before `.fab`, so the bar paints over it and menu rows stay clickable.
-    let _ = element.insert_before(scrim.as_ref(), element.first_child().as_ref());
-}
-
-/// Wrap each collapsible segment (every `.fab` child after the sync-circle cap)
-/// in a `.fab__tele` div whose `max-width` the telescope animates. Adds the
-/// `fab--anim` marker (enables the transition CSS) and the initial
-/// `fab--settled` state (the bar rests EXPANDED — all segments shown). Mirrors
-/// the wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
-/// so the view template stays a plain segment list.
-///
-/// Child[0] of `.fab` is taken to be the circle cap and is left unwrapped —
-/// which is why the click-away curtain hangs off `<tonk-fab>` rather than
-/// sitting inside `.fab` (see [`inject_scrim`]).
-fn wrap_telescope_tiles(element: &HtmlElement) {
-    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
-        return;
-    };
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    // Children after the first (the `.fab__cap-l` circle) are collapsible.
-    let children = fab.children();
-    let mut tiles: Vec<Element> = Vec::new();
-    for i in 1..children.length() {
-        if let Some(child) = children.item(i) {
-            // Skip anything already wrapped (defensive against a re-run).
-            if child.class_list().contains("fab__tele") {
-                continue;
-            }
-            tiles.push(child);
-        }
-    }
-    for tile in &tiles {
-        let Ok(wrapper) = document.create_element("div") else {
-            continue;
-        };
-        let _ = wrapper.set_attribute("class", "fab__tele");
-        // Start each wrapper EXPANDED — the bar rests open (every segment shown),
-        // not as a bare circle. `max-width: none` + `margin-left: 0` is the same
-        // resting geometry `schedule_settle` leaves after an expand; the matching
-        // `fab--settled` class below makes the wrappers overflow-visible so the
-        // dropdowns can escape. `set_telescope` drives these on toggle.
-        let style = wrapper.unchecked_ref::<HtmlElement>().style();
-        let _ = style.set_property("max-width", "none");
-        let _ = style.set_property("margin-left", "0px");
-        // Insert the wrapper where the tile is, then move the tile inside it.
-        if let Some(parent) = tile.parent_node() {
-            let _ = parent.insert_before(&wrapper, Some(tile));
-            let _ = wrapper.append_child(tile);
-        }
-    }
-    // Rest EXPANDED + settled (no `fab--collapsed`), so the first circle click
-    // collapses. `fab--anim` still gates the transitions for later toggles.
-    fab.class_list().add_2("fab--anim", "fab--settled").ok();
-}
+/// The click-away curtain (`.fab__scrim`) and the `.fab__tele` telescope
+/// wrappers used to be retrofitted here at runtime — `inject_scrim` and
+/// `wrap_telescope_tiles` — because the view-rendered markup this element
+/// used to wrap had no chance to shape its own DOM: the view renderer
+/// dropped empty elements (so an authored `<div class="fab__scrim"></div>`
+/// never reached the DOM) and the scrim had to land as a runtime-inserted
+/// SIBLING of `.fab`, never a child, or the child-order inference that found
+/// the circle cap would mistake it for a collapsible tile. Now that
+/// [`crate::markup::fab_html`] authors the whole subtree directly (see
+/// `inject_children` above), both are emitted as real markup instead:
+/// `.fab__scrim` is a literal sibling of `.fab`, and every collapsible
+/// segment already comes wrapped in its own `.fab__tele` div with the
+/// resting `fab--anim fab--settled` classes stamped on `.fab` itself.
 
 /// Attach the FAB's NATIVE click gesture listener. Because only the circle is
 /// draggable (see `attach_drag`), the pointer is never captured over a
@@ -336,12 +271,12 @@ fn attach_gestures(element: &HtmlElement) {
 
 /// Toggle sync pause for the active space. Reads the target space and the
 /// command URI off the cap's `<ui-sync-status with="branch@repo" onpause=…>`
-/// (the space DID was baked into `with` at render time from
-/// `{dom.host/data-space}`), builds the `tonk:pause-sync` transient, and
-/// dispatches it through `window.tonk.transact` — routeless, so it lands on the
-/// FAB portal's own context (`main@profile:tonk`, where the command is defined
-/// and its handler reads the target space from the command). Nothing space-side
-/// is required, and this runs from the FAB's own click listener, which — unlike
+/// (`markup::fab_html` stamps `with="main@{space}"` there), builds the
+/// `tonk:pause-sync` transient, and dispatches it through
+/// `window.tonk.transact` — routeless, so it lands on the FAB portal's own
+/// context (`main@profile:tonk`, where the command is defined and its
+/// handler reads the target space from the command). Nothing space-side is
+/// required, and this runs from the FAB's own click listener, which — unlike
 /// a listener on the cloned `<ui-sync-status>` — reliably receives the click.
 fn dispatch_pause_from_cap(cap: &Element) {
     let Some(status) = cap.query_selector("ui-sync-status").ok().flatten() else {
@@ -351,9 +286,7 @@ fn dispatch_pause_from_cap(cap: &Element) {
         .get_attribute("onpause")
         .filter(|c| !c.is_empty())
         .unwrap_or_else(|| "tonk:pause-sync".to_owned());
-    // The cap's `with` is a `branch@repo` location (or a bare repo); the space
-    // is the repo half. The FAB renders `<ui-sync-status with={dom.host/data-
-    // space}>`, so this is the active space's DID with no branch prefix.
+    // The cap's `with` is a `branch@repo` location — take the repo half.
     let Some(space) = status
         .get_attribute("with")
         .filter(|w| !w.is_empty() && !w.contains('{'))
@@ -1207,8 +1140,9 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// A `<tonk-fab>` holding the bar, the way the profile view renders it —
-    /// cap first, then the two dropdown segments.
+    /// A `<tonk-fab>` holding the bar, the way `markup::fab_html` authors it —
+    /// the scrim as a sibling of `.fab`, cap first, then the two dropdown
+    /// segments.
     fn fab_host() -> HtmlElement {
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
@@ -1216,7 +1150,8 @@ mod tests {
             .expect("create host")
             .unchecked_into();
         host.set_inner_html(
-            r#"<div class="fab">
+            r#"<div class="fab__scrim"></div>
+               <div class="fab">
                  <span class="fab__seg fab__cap-l"></span>
                  <span class="fab__seg fab__repo"></span>
                  <span class="fab__seg fab__share"></span>
@@ -1226,61 +1161,12 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_injects_the_curtain_outside_the_bar() {
-        // The curtain must be a SIBLING of `.fab`, never a child: the telescope
-        // takes child[0] of `.fab` to be the circle cap, so a curtain nested
-        // inside would be mistaken for the cap and the real cap would get
-        // wrapped as a collapsible tile.
-        let host = fab_host();
-        inject_scrim(&host);
-
-        let scrim = host
-            .query_selector(".fab__scrim")
-            .ok()
-            .flatten()
-            .expect("the curtain should be injected");
-        assert_eq!(
-            scrim.parent_element().map(|p| p.tag_name()).as_deref(),
-            Some("TONK-FAB"),
-            "the curtain must hang off <tonk-fab>, not off .fab",
-        );
-        assert!(
-            scrim.closest(".fab").ok().flatten().is_none(),
-            "the curtain must not be inside .fab — the telescope would wrap the cap",
-        );
-        // And it must precede the bar, so the bar paints over it.
-        assert_eq!(
-            host.first_element_child()
-                .map(|c| c.class_name())
-                .as_deref(),
-            Some("fab__scrim"),
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn it_injects_the_curtain_only_once() {
-        // `connected_callback` can run again on a reconnect; a second curtain
-        // would stack another hit area over the page.
-        let host = fab_host();
-        inject_scrim(&host);
-        inject_scrim(&host);
-
-        let children = host.children();
-        let scrims = (0..children.length())
-            .filter_map(|i| children.item(i))
-            .filter(|child| child.class_list().contains("fab__scrim"))
-            .count();
-        assert_eq!(scrims, 1, "a reconnect must not stack a second curtain");
-    }
-
-    #[wasm_bindgen_test]
     fn it_dismisses_the_menus_when_the_curtain_is_clicked() {
         // End-to-end through the real gesture handler: a click on the curtain
         // must reach `close_menus`. Testing `close_menus` alone would still pass
         // if the handler's curtain branch were deleted.
         let document = window().expect("window").document().expect("document");
         let host = fab_host();
-        inject_scrim(&host);
         attach_gestures(&host);
         // The handler walks up from `event.target`, so the element has to be in
         // the document for the click to dispatch and bubble.

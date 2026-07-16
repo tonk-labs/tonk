@@ -2077,7 +2077,7 @@ view!: &space-view
   model: tonk:space/chrome
   display: |
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-    <tonk-display with="main@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>
+    <tonk-fab with="main@profile:tonk" space="{id}"></tonk-fab>
     <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
       <tonk-title slot="no-model" text="Untitled — Tonk"></tonk-title>
       <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
