@@ -146,19 +146,32 @@ and on any modified click. It gains a classifier:
 
 | Click | Destination | Action |
 |---|---|---|
+| **any** | `#fragment` | untouched — left native. Checked FIRST, before modifiers |
 | plain | `/…` (not `//`) | `navigate` (unchanged) |
 | plain | `http`/`https`/`mailto`/`tel` | `preventDefault` + `open` |
 | plain, `target="_blank"` | `/…` | `preventDefault` + `open` |
 | cmd/ctrl/shift/middle | `/…` or external | `preventDefault` + `open` |
-| plain | `#fragment` | untouched — left native |
-| any | anything else | `preventDefault`, dropped |
+| any | anything else | `preventDefault` + `open` — the host refuses it and warns |
 
-Dropping unknown schemes in the guest is defense in depth, not the control — the host
-re-checks. The guest is untrusted; its classification is a convenience, never a
-guarantee.
+**The fragment row comes first, and beats the modifier row.** A cmd-clicked `#x` is left
+native rather than opened in a tab, even though that is what a browser would do
+natively. The fragment addresses the **guest's** document, and the guest is
+`about:srcdoc`: the host resolving `#x` against its own URL (`/space/{id}`) would open a
+duplicate spot scrolled nowhere, not the anchor the user aimed at. Ignoring is both in
+scope ("fragments left native") and the better outcome.
 
-`closest_anchor_href` (`guest_host.rs:111-115`) keeps reading the **raw attribute**, not
-the resolved `.href` property, which an opaque origin mangles to `null/…`.
+**The last row is not a filter, and the guest does not "drop" anything.** It relays
+hrefs it fully expects the host to refuse, `javascript:` included. Guest-side scheme
+filtering would be security theatre: a component can call `window.tonk.open` directly,
+so the guest is never the control — the host's allowlist is, and it is the only thing
+standing between an attacker-authored href and the real origin. Relaying also gets a
+console warning out of the host instead of a silently dead click, which is the bug this
+whole change exists to fix.
+
+`closest_anchor` (`guest_host.rs`) reads the **raw attribute**, not the resolved `.href`
+property, which an opaque origin mangles to `null/…`. `target` likewise, via
+`get_attribute` — which also keeps `HtmlAnchorElement` out of the crate's web-sys
+features. Resolution is the host's job: it is the only frame with a real base URL.
 
 ### Bridge: a sixth message type
 
