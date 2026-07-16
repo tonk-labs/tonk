@@ -224,16 +224,23 @@ A native `<dialog>` + `showModal()` gives focus trap and Esc for free, styled wi
 claim ("Nothing on the TOP page uses a `<wa-*>` COMPONENT") true, and adds no dependency
 on loader timing.
 
-Copy names the host prominently and the full URL beneath it:
+Copy names the destination's **origin** prominently and the full URL beneath it:
 
 ```
 Open in a new tab?
 
-example.com
+https://example.com
 https://example.com/docs/x
 
             [ Cancel ]  [ Open ]
 ```
+
+The prominent line is the full origin — `scheme://host:port` — not a bare host. This
+is not cosmetic. A bare host cannot express an origin, so `http://tonk.example/` would
+announce itself as `tonk.example`: our own site, for a destination that is not our
+origin. The same argument kills `hostname`, which drops the port when
+`tonk.example:8443` is a different origin anyone can bind. Both were demonstrated
+against the real parser, and both are pinned by tests.
 
 Not "Leave this spot?" — with `noopener` and `_blank`, the spot stays open and the user
 does not leave.
