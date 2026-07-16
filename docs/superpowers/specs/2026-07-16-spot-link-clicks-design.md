@@ -200,6 +200,56 @@ gate for spot content to forge past.
 every case: a cmd-clicked in-app link opens silently; an external link is always
 announced.
 
+`classify` returns `Destination::{ SameOrigin(url), External { url, label }, Rejected }`.
+
+### What the dialog names: `label`, and why it is not the host
+
+`label` is the destination's identity: the **full origin** (`scheme://host:port`) for
+http(s), the address for `mailto:`/`tel:` (which have no origin). The dialog renders it
+verbatim. Every plausible-looking simplification here is a demonstrated vulnerability —
+each was found by probing the real parser, not by reading the spec:
+
+- **`hostname` drops the port.** `tonk.example:8443` is a different origin from
+  `tonk.example`, and anyone can bind a port.
+- **`host` drops the scheme.** `http://tonk.example/` would announce itself as
+  `tonk.example` — our own site — for a destination that is not our origin. A plain
+  downgrade reads as home.
+- **A reconstructed URL can carry userinfo.** `https://tonk.example@evil.com/` reads as
+  ours while going to `evil.com`.
+
+So `classify` strips userinfo (username **and** password — clearing only the username
+leaves `https://:pw@evil.com/`, where the password and the disguising `@` both survive)
+and hands the dialog strings that are already correct. The invariant is: **what we
+display is exactly what we open.** Stripping cannot flip a classification, because
+userinfo is not part of an origin.
+
+`mailto:`/`tel:` must name something a person can judge, so an address whose decoded form
+carries no alphanumeric is rejected, as is one with an authority or a rooted path —
+`mailto://tonk.example/x` would otherwise name `/x` beside a URL reading `tonk.example`,
+which is display and destination disagreeing.
+
+One thing the dialog does **not** have to defend against: the parser percent-encodes
+non-ASCII in path/query/fragment and punycodes hosts, so both fields are always ASCII. A
+right-to-left override (`https://evil.com/#‮gpj.exe`) arrives as `#%E2%80%AEgpj.exe`.
+That is *why* a text node suffices, not merely convention.
+
+### One dialog at a time
+
+`open_external` runs straight from the guest relay, so a hostile spot could post `open`
+in a loop. Without a gate that stacks N modal dialogs on the trusted page — and, before
+the closures were given an owner, leaked the whole detached dialog subtree each time
+(measured: 7 wasm heap slots per link). So `confirm_then_open` refuses while a dialog is
+already up.
+
+This costs nothing real: a modal dialog makes the rest of the top document inert,
+and its backdrop hit-tests even over the guest's iframe, so a *user* cannot reach a
+second link while one is open. Any second call is scripted — hostile or buggy — and the
+dialog already up is the one the user is answering.
+
+(Inertness does not propagate into a nested browsing context for *programmatic* focus: a
+scripted `focus()` inside the guest still lands. That is measured, and it strengthens the
+case for the gate rather than weakening it.)
+
 ### Two open paths, two mechanisms
 
 `window.open` and programmatic `anchor.click({target:_blank})` both require transient
@@ -293,10 +343,18 @@ data: views and components are facts a collaborator or agent can assert into a s
 
 ## Errors
 
-A rejected scheme is dropped and reported over the existing `__tonkRuntime:"warn"`
-channel (`bridge.rs:447-458`), which exists precisely because an opaque origin sanitizes
-guest errors out of the parent console. A silently-dropped click is the current bug; the
-fix should not reproduce it in a narrower form.
+A rejected scheme is dropped and `console.warn`ed by the top page, naming the href and
+the allowlist. No bridge channel is involved: rejection happens on the page, which is
+already the real console. (The `__tonkRuntime:"warn"` relay at `bridge.rs:447-458` exists
+to lift **guest** errors out of an opaque origin that sanitizes them out of the parent
+console — a different problem. An earlier draft of this spec said the rejection rode that
+channel; it does not.)
+
+`confirm_then_open` warns on each of its own bail paths too — no document, no body, the
+dialog failing to build. All are unreachable in practice, but a silently-dropped click is
+the bug this change exists to fix, and reproducing it in a narrower form inside the fix
+would be worse than the original: the user would have clicked a link that the code
+deliberately chose not to open, and said nothing.
 
 ## Testing
 
