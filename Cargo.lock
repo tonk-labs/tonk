@@ -4733,6 +4733,7 @@ dependencies = [
  "tonk-analyzer",
  "tonk-common",
  "tonk-evaluator",
+ "tonk-fab",
  "tonk-invite",
  "tonk-language-server",
  "tonk-notation",
