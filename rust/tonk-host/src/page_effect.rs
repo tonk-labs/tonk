@@ -48,10 +48,6 @@ use web_sys::window;
 /// If `window.tonk` is ever installed on the top page, every page effect
 /// silently no-ops. That is the assumption to check first if they all stop
 /// working at once.
-///
-/// Not yet called outside this module's tests: `navigate_to`, `set_title`,
-/// and `open_external` are wired to it in later tasks of this plan.
-#[allow(dead_code)]
 pub(crate) fn forward(method: &str, arg: &str) -> bool {
     let Some(win) = window() else {
         return false;
