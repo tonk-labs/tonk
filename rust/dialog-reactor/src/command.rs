@@ -524,6 +524,41 @@ mod tests {
         assert_eq!(decoded.subject.0, subject);
     }
 
+    /// The FAB's repository-name chip dispatches `tonk:rename-repository`
+    /// from the PROFILE branch, so the handler cannot read the target
+    /// repository from the dispatch origin — it must read it off the
+    /// command itself. Assert both the new `name` and the target `space`
+    /// DID decode from the transient's raw facts.
+    #[dialog_common::test]
+    fn it_decodes_rename_repository_naming_its_target_space() {
+        use tonk_schema::command::RenameRepository;
+
+        let this = entity("did:key:zRenameRepository");
+        let target_space = entity("did:key:zTargetSpace");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target/value")
+            .of(this.clone())
+            .is("Renamed".to_string())
+            .assert(&mut changes);
+        the!("xyz.tonk.rename-repository/space")
+            .of(this.clone())
+            .is(target_space.clone())
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/rename")
+            .of(this.clone())
+            .is(entity("tonk:repository"))
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+
+        let decoded = RenameRepository::decode(this, &facts)
+            .expect("RenameRepository must decode from its raw facts");
+        assert_eq!(decoded.name.0, "Renamed");
+        assert_eq!(
+            decoded.space.0, target_space,
+            "the handler must rename the space named by the command, not the dispatch origin"
+        );
+    }
+
     /// Regression: a `tonk/rename-repository` transient carries
     /// `dataset/subject` plus the new name. It must NOT decode as
     /// `RemoveSpace` — a remove command keyed on `dataset/subject`
