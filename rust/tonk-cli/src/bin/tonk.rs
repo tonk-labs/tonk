@@ -758,6 +758,8 @@ async fn main() {
     }
 
     let started = std::time::Instant::now();
+    // `cli.command` is moved by the dispatch below, so ask now.
+    let is_update = matches!(cli.command, Command::Update { .. });
     let exit = match cli.command {
         Command::Init { label } => init(label).await,
         Command::Identity { reset } => identity(reset).await,
@@ -800,9 +802,28 @@ async fn main() {
         } => update(disable_check, enable_check).await,
     };
 
-    if let Some(recorder) = recorder {
-        recorder.finish(exit, started.elapsed()).await;
+    let duration = started.elapsed();
+
+    // `tonk update` speaks for itself: a nag mid-update contradicts
+    // the command that just ran, and the toggle must stay silent.
+    // Run the check alongside the telemetry flush rather than in
+    // front of the command, so the marginal cost is one small GET
+    // parallel to a request already in flight.
+    let check = async {
+        if !is_update {
+            tonk_cli::update::check().await;
+        }
+    };
+    match recorder {
+        Some(recorder) => {
+            tokio::join!(recorder.finish(exit, duration), check);
+        }
+        None => check.await,
     }
+    if !is_update {
+        tonk_cli::update::nag();
+    }
+
     std::process::exit(exit.into_raw());
 }
 

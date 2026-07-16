@@ -200,6 +200,72 @@ pub fn short_commit(commit: &str) -> &str {
     &commit[..end]
 }
 
+/// How long the background check may take before we give up on it.
+/// It runs concurrently with the 300ms telemetry flush, so the worst
+/// case is roughly this once a day, not on every command.
+pub const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the background check is allowed to run at all.
+fn check_permitted() -> bool {
+    // CI is noise, not an audience: nobody acts on a nag there.
+    if std::env::var_os("CI").is_some() {
+        return false;
+    }
+    if std::env::var_os(NO_CHECK_ENV).is_some() {
+        return false;
+    }
+    true
+}
+
+/// Refresh the cached release info if it is stale.
+///
+/// Deliberately silent on every failure — offline, DNS, rate limit,
+/// 404. Nothing depends on the result and the user did not ask for
+/// it, so a failure here must never print or change an exit code.
+/// `last_checked_at` still advances, so an offline machine retries
+/// daily rather than on every command.
+pub async fn check() {
+    if !check_permitted() {
+        return;
+    }
+    let mut state = state::load();
+    if !state::should_check(&state, chrono::Utc::now()) {
+        return;
+    }
+    let fetched = tokio::time::timeout(CHECK_TIMEOUT, fetch::manifest(resolve_channel())).await;
+    state.last_checked_at = Some(chrono::Utc::now().to_rfc3339());
+    if let Ok(Ok(manifest)) = fetched {
+        state.latest_version = Some(manifest.version);
+        state.latest_commit = Some(manifest.commit);
+    }
+    let _ = state::store(&state);
+}
+
+/// Print the nag if the cache says a newer version exists.
+///
+/// Reads the cache rather than an in-flight check, so a check that
+/// misses the exit window just shifts the nag one invocation later.
+/// stderr, always: agents parse this CLI's stdout.
+pub fn nag() {
+    if !check_permitted() {
+        return;
+    }
+    let mut state = state::load();
+    let now = chrono::Utc::now();
+    if !state::should_nag(&state, env!("CARGO_PKG_VERSION"), now) {
+        return;
+    }
+    let Some(latest) = state.latest_version.clone() else {
+        return;
+    };
+    eprintln!(
+        "tonk {latest} is available (you have {}) — run `tonk update`",
+        env!("CARGO_PKG_VERSION")
+    );
+    state.last_nagged_at = Some(now.to_rfc3339());
+    let _ = state::store(&state);
+}
+
 /// The binary to replace: the running one, symlinks resolved.
 ///
 /// Canonicalized because the foreign-install guard matches on the

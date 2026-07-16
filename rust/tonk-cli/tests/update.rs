@@ -137,3 +137,103 @@ fn it_toggles_the_background_check_without_touching_the_network() {
     let state = std::fs::read_to_string(dir.path().join("update.json")).expect("state");
     assert!(state.contains("\"check_enabled\": true"), "state: {state}");
 }
+
+/// Run a command that reaches main's exit path with no repo and no
+/// network of its own, so the nag runs against a controlled cache.
+///
+/// NOT `--version`: clap handles that inside `Cli::parse()` and exits
+/// before main's tail ever runs, so the check and nag would never run
+/// and these tests would pass while proving nothing. `tonk telemetry`
+/// (status) needs no repo, prints two predictable lines, and exits
+/// through the tail. Without `TONK_POSTHOG_KEY` it sends nothing.
+fn run_probe(
+    endpoint: &str,
+    state_dir: &std::path::Path,
+    extra: &[(&str, &str)],
+) -> std::process::Output {
+    let mut cmd = Command::new(binary());
+    cmd.arg("telemetry")
+        .env("TONK_UPDATE_ENDPOINT", endpoint)
+        .env("TONK_UPDATE_STATE", state_dir)
+        // Keep `tonk telemetry` off the real telemetry.json too.
+        .env("TONK_TELEMETRY_STATE", state_dir)
+        .env_remove("CI")
+        .env_remove("TONK_CHANNEL")
+        .env_remove("TONK_NO_UPDATE_CHECK")
+        .env_remove("TONK_POSTHOG_KEY");
+    for (key, value) in extra {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("run tonk telemetry")
+}
+
+#[dialog_common::test]
+fn it_nags_on_stderr_when_the_release_is_newer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let endpoint = serve(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stderr.contains("99.0.0 is available"), "stderr: {stderr}");
+    assert!(stderr.contains("run `tonk update`"), "stderr: {stderr}");
+    // stdout is parsed by agents and must stay clean.
+    assert!(!stdout.contains("is available"), "stdout: {stdout}");
+}
+
+#[dialog_common::test]
+fn it_does_not_nag_when_the_release_is_not_newer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let endpoint = serve(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("0.0.1", "aaa0001"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("is available"));
+}
+
+#[dialog_common::test]
+fn it_does_not_nag_when_opted_out() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let endpoint = serve(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[("TONK_NO_UPDATE_CHECK", "1")]);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("is available"));
+    // Opting out must not even leave state behind.
+    assert!(!dir.path().join("update.json").exists());
+}
+
+#[dialog_common::test]
+fn it_does_not_nag_in_ci() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let endpoint = serve(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[("CI", "true")]);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("is available"));
+}
+
+#[dialog_common::test]
+fn it_stays_silent_and_succeeds_when_the_check_cannot_reach_the_release() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Nothing listening: the check must fail invisibly.
+    let output = run_probe("http://127.0.0.1:1/releases", dir.path(), &[]);
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error"), "stderr: {stderr}");
+    assert!(!stderr.contains("is available"), "stderr: {stderr}");
+    // last_checked_at still advanced, so an offline machine backs off.
+    let state = std::fs::read_to_string(dir.path().join("update.json")).expect("state");
+    assert!(state.contains("last_checked_at"), "state: {state}");
+}
