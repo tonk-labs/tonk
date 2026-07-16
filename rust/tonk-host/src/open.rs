@@ -465,12 +465,22 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
   margin: 0 0 0.75rem;
   font-size: var(--wa-font-size-l, 1.125rem);
 }
+/* THE LABEL IS ATTACKER-CHOSEN TOO, and it is the line the user reads as the
+   destination's identity — so it is the one that most has to stay on screen.
+   A host can carry 253 characters with every label under 63 and still resolve:
+   `https://tonk.example.verify.verify…secure.evil.com` measured 1235px of
+   content in a 448px line inside a 490px dialog, its right edge 371px past a
+   1280px viewport. The user reads `https://tonk.example.verify.verify…` and
+   never reaches `.evil.com`. Wrap and scroll it, exactly as the URL below. */
 .tonk-open__label {
   margin: 0 0 0.25rem;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  max-height: 4.5rem;
+  overflow-y: auto;
 }
-/* The URL is attacker-chosen: it must wrap rather than widen the dialog,
-   and it must not be able to push the buttons off-screen. */
+/* The URL is attacker-chosen in the same way, and must likewise wrap rather
+   than widen the dialog or push the buttons off-screen. */
 .tonk-open__url {
   margin: 0 0 1.25rem;
   color: var(--wa-color-text-quiet, #71717a);
@@ -1015,6 +1025,39 @@ mod tests {
         assert_eq!(
             after_two, 1,
             "a second relayed link must not stack another modal on the real origin"
+        );
+    }
+
+    /// The label is the line the user reads as the destination's identity, and
+    /// it is ATTACKER-CHOSEN: a host can carry 253 characters with every label
+    /// under 63 and still resolve. Unwrapped it measured 1235px of content in a
+    /// 448px line, running 371px past the viewport — so the user read
+    /// `https://tonk.example.verify.verify…` and never reached `.evil.com`, the
+    /// dialog spoofed by the very string it exists to warn about.
+    #[dialog_common::test]
+    async fn it_keeps_a_long_label_inside_the_dialog() {
+        let document = web_sys::window()
+            .expect("a window in the test harness")
+            .document()
+            .expect("a document in the test harness");
+        drain_open_dialogs(&document);
+
+        let host = format!("tonk.example.{}secure.evil.com", "verify.".repeat(17));
+        confirm_then_open("https://evil.com/", &format!("https://{host}"));
+        let label = document
+            .query_selector(".tonk-open__label")
+            .ok()
+            .flatten()
+            .expect("the dialog should be on the page");
+        let (scroll_width, client_width) = (label.scroll_width(), label.client_width());
+
+        // Restore the page BEFORE asserting: a failing assert unwinds, and a
+        // leaked modal would take the rest of the binary down with it.
+        drain_open_dialogs(&document);
+
+        assert!(
+            scroll_width <= client_width,
+            "the label must wrap inside the dialog, got {scroll_width}px of content in {client_width}px"
         );
     }
 
