@@ -121,7 +121,10 @@ async fn it_dispatches_a_subscribe_carrying_the_raw_attribute_query() {
         "subscribe must NOT name a concept: {detail}"
     );
     // Bound to this space's subject.
-    assert!(detail.contains(SPACE), "subscribe must bind the subject: {detail}");
+    assert!(
+        detail.contains(SPACE),
+        "subscribe must bind the subject: {detail}"
+    );
 
     drop(cb);
 }

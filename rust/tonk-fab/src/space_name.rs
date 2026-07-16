@@ -103,7 +103,9 @@ fn subscribe_name(
             // Bounded, unlike the host's default resubscribe loop.
             let delay = retry.borrow_mut().next_delay_ms();
             match delay {
-                Some(_) => tonk_common::log!("ui-space-name: subscribe failed, will retry: {err:?}"),
+                Some(_) => {
+                    tonk_common::log!("ui-space-name: subscribe failed, will retry: {err:?}")
+                }
                 None => {
                     tonk_common::log!("ui-space-name: subscribe failed, giving up: {err:?}");
                     let _ = host.set_attribute("data-state", "unavailable");
