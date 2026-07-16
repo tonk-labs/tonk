@@ -353,6 +353,20 @@ enum Command {
         #[arg(value_name = "ACTION")]
         action: Option<TelemetryAction>,
     },
+
+    /// Update tonk to the latest release
+    ///
+    /// Upgrades installs made by the install script. Copies installed
+    /// via npm or nix are left to those tools.
+    #[command(after_help = "Examples:\n  tonk update\n  tonk update --disable-check")]
+    Update {
+        /// Stop checking for new releases in the background.
+        #[arg(long, conflicts_with = "enable_check")]
+        disable_check: bool,
+        /// Resume checking for new releases in the background.
+        #[arg(long)]
+        enable_check: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -703,6 +717,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         ),
         Command::Home { .. } => ("home", None),
         Command::Telemetry { .. } => ("telemetry", None),
+        Command::Update { .. } => ("update", None),
         Command::Blob { command } => (
             "blob",
             Some(match command {
@@ -779,6 +794,10 @@ async fn main() {
         Command::View { command } => view_op(command).await,
         Command::Home { models } => home_op(models).await,
         Command::Telemetry { action } => telemetry_op(action),
+        Command::Update {
+            disable_check,
+            enable_check,
+        } => update(disable_check, enable_check).await,
     };
 
     if let Some(recorder) = recorder {
@@ -1848,6 +1867,22 @@ fn telemetry_op(action: Option<TelemetryAction>) -> ExitCode {
                 Err(e) => print_error(format!("could not persist telemetry setting: {e}")),
             }
         }
+    }
+}
+
+/// `tonk update` — upgrade in place, or toggle the background check.
+async fn update(disable_check: bool, enable_check: bool) -> ExitCode {
+    let set_check = match (disable_check, enable_check) {
+        (true, _) => Some(false),
+        (_, true) => Some(true),
+        _ => None,
+    };
+    match tonk_cli::update::run(set_check).await {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::Success
+        }
+        Err(err) => print_error(format!("{err:#}")),
     }
 }
 

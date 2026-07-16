@@ -46,6 +46,10 @@ name = "telemetry"
 path = "tests/telemetry.rs"
 
 [[test]]
+name = "update"
+path = "tests/update.rs"
+
+[[test]]
 name = "blob"
 path = "tests/blob.rs"
 

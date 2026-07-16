@@ -7,6 +7,8 @@
 //! update bumps it, staging churn does not), `tonk update` compares
 //! commits (catching same-version rebuilds).
 
+use anyhow::Context as _;
+
 pub mod fetch;
 pub mod manifest;
 pub mod receipt;
@@ -105,6 +107,113 @@ pub fn resolve_channel() -> Channel {
         .unwrap_or(Channel::Stable)
 }
 
+/// Handle `tonk update`. Returns the line to print on success.
+///
+/// `set_check` toggles the background check and returns without
+/// touching the binary — `--disable-check` / `--enable-check`.
+///
+/// Unlike the background check, every failure here is loud: the user
+/// asked for this, so a silent no-op would be a lie.
+pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
+    if let Some(enabled) = set_check {
+        let mut state = state::load();
+        state.check_enabled = enabled;
+        state::store(&state).context("could not persist the update-check setting")?;
+        return Ok(match enabled {
+            true => "update check enabled".to_owned(),
+            false => "update check disabled".to_owned(),
+        });
+    }
+
+    let channel = resolve_channel();
+    let platform = manifest::platform().with_context(|| {
+        format!(
+            "no published tonk build for {}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    })?;
+
+    let remote = fetch::manifest(channel).await?;
+    let local_version = env!("CARGO_PKG_VERSION");
+
+    // Commit, not version: on a rolling channel the same version can
+    // be many builds, and someone who typed `tonk update` wants the
+    // build the channel is actually serving.
+    if receipt::load().is_some_and(|receipt| receipt.commit == remote.commit) {
+        return Ok(format!(
+            "already current: {local_version} ({}, {})",
+            short_commit(&remote.commit),
+            channel.as_str()
+        ));
+    }
+
+    let asset = manifest::asset_name(platform);
+    let checksums = fetch::checksums(channel).await?;
+    let expected = manifest::parse_checksums(&checksums, &asset).with_context(|| {
+        format!(
+            "no checksum entry for {asset} on the {} channel",
+            channel.as_str()
+        )
+    })?;
+
+    let target = running_binary()?;
+    let archive = fetch::archive(channel, &asset).await?;
+    swap::install(&archive, &expected, &target)?;
+
+    let install_dir = target
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_string_lossy()
+        .into_owned();
+    let stored = receipt::store(&receipt::Receipt {
+        channel: channel.as_str().to_owned(),
+        version: remote.version.clone(),
+        commit: remote.commit.clone(),
+        install_dir,
+        installed_at: chrono::Utc::now().to_rfc3339(),
+    });
+    // The binary is already swapped; a receipt we couldn't write is
+    // worth a warning, not a failure that implies the update failed.
+    if let Err(err) = stored {
+        eprintln!("warning: updated, but could not write the install receipt: {err}");
+    }
+
+    // A fresh check next run rather than a stale "newer available".
+    let mut state = state::load();
+    state.latest_version = Some(remote.version.clone());
+    state.latest_commit = Some(remote.commit.clone());
+    let _ = state::store(&state);
+
+    Ok(format!(
+        "updated {} -> {} ({}, {})",
+        local_version,
+        remote.version,
+        short_commit(&remote.commit),
+        channel.as_str()
+    ))
+}
+
+/// First 7 characters of a git SHA, as git itself abbreviates.
+pub fn short_commit(commit: &str) -> &str {
+    let end = commit.len().min(7);
+    &commit[..end]
+}
+
+/// The binary to replace: the running one, symlinks resolved.
+///
+/// Canonicalized because the foreign-install guard matches on the
+/// path. A nix profile puts a symlink at `~/.nix-profile/bin/tonk`
+/// pointing into `/nix/store`; without resolving it the guard would
+/// miss the store prefix and rename over nix's symlink. An
+/// `install.sh` install is a real file, so this is a no-op there.
+/// If canonicalization fails, fall back to the raw path rather than
+/// refusing to update.
+fn running_binary() -> anyhow::Result<std::path::PathBuf> {
+    let path = std::env::current_exe().context("could not locate the running tonk binary")?;
+    Ok(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +296,12 @@ mod tests {
 
         unsafe { std::env::remove_var("TONK_CHANNEL") };
         unsafe { std::env::remove_var(STATE_ENV) };
+    }
+
+    #[dialog_common::test]
+    fn it_abbreviates_a_commit_without_panicking_on_short_input() {
+        assert_eq!(short_commit("27b74e22b1234567"), "27b74e2");
+        assert_eq!(short_commit("abc"), "abc");
+        assert_eq!(short_commit(""), "");
     }
 }
