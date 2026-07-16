@@ -27,10 +27,45 @@ import { Fragment, Mark, Node } from "prosemirror-model";
 import { schema } from "./schema";
 
 const markupType = schema.marks.markup;
+const imageMarkupType = schema.marks.image_markup;
 
 /** True when `node` is a marker text node. */
 export function isMarkup(node: Node): boolean {
   return node.isText && Boolean(markupType.isInSet(node.marks));
+}
+
+/** True when `node` is expanded-image source text. */
+export function isImageMarkup(node: Node): boolean {
+  return node.isText && Boolean(imageMarkupType.isInSet(node.marks));
+}
+
+/** The image source syntax, as the serializer emits it. Kept as a
+ *  pattern *source* — global RegExp objects are stateful
+ *  (`lastIndex` survives calls, and even `matchAll` starts from
+ *  it), so every user builds a fresh instance instead of sharing
+ *  one. */
+const IMAGE_SYNTAX = String.raw`!\[([^\]]*)\]\(([^)\s]*)(?:\s+"([^"]*)")?\)`;
+
+/** Whole-string image match. */
+const EXACT_IMAGE = new RegExp(`^${IMAGE_SYNTAX}$`);
+
+/** All image-source occurrences in `text` (a merged text run can
+ *  hold several adjacent images). Shared with the preview-widget
+ *  plugin. */
+export function matchImages(text: string): RegExpExecArray[] {
+  return [...text.matchAll(new RegExp(IMAGE_SYNTAX, "g"))] as RegExpExecArray[];
+}
+
+/** Literal source text for an image node, or null when the node's
+ *  attrs can't be represented losslessly (e.g. `]` in the alt text).
+ *  Callers keep the atomic node in that case — the block then simply
+ *  opts out of the reparse loop, which is safe. */
+function imageSource(node: Node): string | null {
+  const alt = (node.attrs.alt as string | null) ?? "";
+  const src = (node.attrs.src as string | null) ?? "";
+  const title = node.attrs.title as string | null;
+  const source = title ? `![${alt}](${src} "${title}")` : `![${alt}](${src})`;
+  return EXACT_IMAGE.test(source) ? source : null;
 }
 
 function marker(text: string): Node {
@@ -125,6 +160,20 @@ export function materializeInline(content: Fragment): Fragment {
       }
     }
 
+    // Expand image atoms into their literal source text (tagged
+    // with `image_markup`), keeping any content marks (e.g. an
+    // image inside a link) so demarkup can restore them. Atoms
+    // whose attrs have no lossless text form stay atomic.
+    if (child.type === schema.nodes.image) {
+      const source = imageSource(child);
+      if (source !== null) {
+        out.push(
+          schema.text(source, imageMarkupType.create().addToSet(child.marks)),
+        );
+        return;
+      }
+    }
+
     out.push(child);
   });
 
@@ -165,11 +214,38 @@ export function materializeDoc(node: Node): Node {
   return node.copy(Fragment.from(children));
 }
 
-/** Strip marker text from a textblock's inline content. */
+/** Strip marker text from a textblock's inline content, folding
+ *  expanded-image source text back into image nodes. */
 function demarkupInline(content: Fragment): Fragment {
   const out: Node[] = [];
   content.forEach((child) => {
-    if (!isMarkup(child)) out.push(child);
+    if (isMarkup(child)) return;
+    if (isImageMarkup(child) && child.text) {
+      const marks = imageMarkupType.removeFromSet(child.marks);
+      let cursor = 0;
+      for (const match of matchImages(child.text)) {
+        const [source, alt, src, title] = match;
+        if (match.index > cursor) {
+          // Mid-edit leftovers around a valid image (rare, transient
+          // — the reparse loop normalizes them away) serialize as
+          // plain text rather than vanishing.
+          out.push(schema.text(child.text.slice(cursor, match.index), marks));
+        }
+        out.push(
+          schema.nodes.image.create(
+            { src, alt: alt || null, title: title || null },
+            null,
+            marks,
+          ),
+        );
+        cursor = match.index + source.length;
+      }
+      if (cursor < child.text.length) {
+        out.push(schema.text(child.text.slice(cursor), marks));
+      }
+      return;
+    }
+    out.push(child);
   });
   return Fragment.from(out);
 }
@@ -185,10 +261,12 @@ export function demarkupDoc(node: Node): Node {
 }
 
 /** A textblock is loop-eligible when its content is pure text —
- *  inline leaves (images, hard breaks) have no faithful text form,
- *  so `textContent` would lie about the source and a reparse could
- *  destroy them. Those blocks keep their structure; only explicit
- *  edits change them. */
+ *  inline leaves have no faithful text form, so `textContent` would
+ *  lie about the source and a reparse could destroy them. Images
+ *  normally don't hit this: they're expanded to source text by
+ *  materialization. What remains are hard breaks and the rare image
+ *  whose attrs can't round-trip through the source syntax; those
+ *  blocks keep their structure and only explicit edits change them. */
 export function isPlainTextblock(node: Node): boolean {
   if (!node.isTextblock || node.type.spec.code) return false;
   let plain = true;

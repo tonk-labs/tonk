@@ -2,7 +2,7 @@
 // (reparse.ts) cannot do, because they change the *tree around* the
 // textblock rather than the textblock itself: wrapping into
 // blockquotes and lists, switching to fenced code blocks, and the
-// atomic replacements (horizontal rule, image).
+// horizontal-rule replacement.
 //
 // Deliberately absent: heading and inline-mark rules (`**bold**`,
 // `` `code` ``, `[text](url)`, `# `). Those are the reparse loop's
@@ -66,24 +66,6 @@ function horizontalRuleRule(nodeType: NodeType): InputRule {
   );
 }
 
-/** `![alt](src)` → image node. Images are atoms (no faithful text
- *  form), so the reparse loop deliberately never creates them —
- *  this rule is the only typing path. */
-function imageRule(nodeType: NodeType): InputRule {
-  return new InputRule(
-    /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)$/,
-    (state, match, start, end) => {
-      const [, alt, src, title] = match;
-      if (!src) return null;
-      return state.tr.replaceRangeWith(
-        start,
-        end,
-        nodeType.create({ src, alt: alt || null, title: title || null }),
-      );
-    },
-  );
-}
-
 export function buildInputRules(schema: Schema): Plugin {
   return inputRules({
     rules: [
@@ -92,7 +74,9 @@ export function buildInputRules(schema: Schema): Plugin {
       orderedListRule(schema.nodes.ordered_list),
       codeBlockRule(schema.nodes.code_block),
       horizontalRuleRule(schema.nodes.horizontal_rule),
-      imageRule(schema.nodes.image),
+      // No image rule: images are expanded-image source text
+      // (markup.ts), so typing `![alt](src)` converts through the
+      // reparse loop like every other inline syntax.
     ],
   });
 }
