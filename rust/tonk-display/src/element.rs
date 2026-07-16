@@ -1203,18 +1203,6 @@ fn slide_keys(conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
 
-    // A `tonk:blob` model renders as a single media element pointing at
-    // the worker's blob-bytes route — no inline template, no iframe. The
-    // check is on the host `model` attribute (not a projected frame
-    // field), so it fires even on an empty view frame and needs no
-    // dedicated view concept.
-    if host.get_attribute("model").as_deref() == Some("tonk:blob") {
-        drop(s);
-        handle_blob_image_frame(host);
-        dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
-        return;
-    }
-
     // A view whose projected `type` is `text/html` is a full HTML
     // document mounted into a `<tonk-portal>` — whose bridge fetches
     // the entity's own data through the live `tonk` object — rather
@@ -1231,6 +1219,19 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // we're already showing the default (avoid re-querying every empty
     // frame).
     if conclusions.is_empty() {
+        // A `tonk:blob` model with no model-specific view falls back to
+        // the native single-`<img>` renderer instead of the `_:_`
+        // default view: a blob's payload is bytes, not facts, so the
+        // generic fallbacks have nothing to show. Registered as a
+        // default slide, so a later non-empty view frame (the seeded
+        // media view, or a user override) replaces it through ordinary
+        // slide reconciliation.
+        if host.get_attribute("model").as_deref() == Some("tonk:blob") {
+            drop(s);
+            mount_blob_fallback_frame(host, state);
+            dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+            return;
+        }
         let need_default = !s.default_slide;
         drop(s);
         if need_default {
@@ -1536,17 +1537,51 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 }
 
 /// Mount (or refresh) a single `<img>` whose `src` is the worker's
-/// content-addressed blob route for this display's `entity`. Idempotent:
-/// the `src` is stable for a given `(with, entity)`, so re-running on a
-/// later frame is a no-op once the element exists.
-fn handle_blob_image_frame(host: &Element) {
+/// content-addressed blob route for this display's `entity`, registered
+/// as a default slide (key `"__blob__"`) so a model-specific view frame
+/// replaces it through ordinary reconciliation. Idempotent: the route
+/// URL is stable for a given `(with, entity)`, so re-running on a later
+/// empty frame is a no-op once the element exists.
+///
+/// The disposed check and stale-slide sweep run *before* the img
+/// create-or-find: a model-specific view rendered on an earlier
+/// non-empty frame may itself contain a light-DOM `<img>`, and
+/// `query_selector` searches all descendants, not just the host's
+/// direct children. Sweeping the stale `<tonk-view>` slide first (and
+/// scoping the lookup to `:scope > img`) keeps the fallback from ever
+/// capturing that view's img.
+fn mount_blob_fallback_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
     let Some(url) = blob_image_src(host) else {
         return;
     };
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
-    let img = match host.query_selector("img").ok().flatten() {
+    {
+        let mut s = state.borrow_mut();
+        if s.disposed {
+            return;
+        }
+        // A model-specific view may have mounted on an earlier non-empty
+        // frame and since been retracted (the frame is empty again): drop
+        // its stale slides so the fallback doesn't render alongside them,
+        // and so its img (if any) can't be mistaken for the fallback's own
+        // below.
+        let stale: Vec<String> = s
+            .slides
+            .keys()
+            .filter(|k| k.as_str() != "__blob__")
+            .cloned()
+            .collect();
+        for name in stale {
+            if let Some(slide) = s.slides.remove(&name)
+                && let Some(parent) = slide.item.parent_node()
+            {
+                let _: Result<Node, _> = parent.remove_child(&slide.item);
+            }
+        }
+    }
+    let img = match host.query_selector(":scope > img").ok().flatten() {
         Some(existing) => existing,
         None => {
             let Ok(created) = document.create_element("img") else {
@@ -1556,6 +1591,20 @@ fn handle_blob_image_frame(host: &Element) {
             created
         }
     };
+    {
+        let mut s = state.borrow_mut();
+        if !s.slides.contains_key("__blob__") {
+            s.slides.insert(
+                "__blob__".to_owned(),
+                Slide {
+                    display: String::new(),
+                    item: img.clone(),
+                    view_el: img.clone(),
+                },
+            );
+        }
+        s.default_slide = true;
+    }
     // Idempotent per `(with, entity)`: the worker URL is stable, so once we've
     // fetched the bytes for it, later frames are a no-op. `data-blob-url`
     // records the route we last fetched — the `src` itself becomes an opaque
@@ -3389,6 +3438,93 @@ mod tests {
                 requested.borrow().as_deref(),
                 Some("/api/repository/myrepo/branch/main/blob/blob:zHASH"),
                 "the bytes were fetched from the worker blob route through the relay",
+            );
+        }
+
+        /// A model-specific view for `tonk:blob` (the seeded media view, or
+        /// a user override) wins over the native `<img>` fallback: the
+        /// fallback is registered as a default slide, so a non-empty view
+        /// frame replaces it through ordinary slide reconciliation.
+        #[dialog_common::test]
+        async fn it_replaces_the_native_blob_img_when_a_view_resolves() {
+            let requested: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+            stub_fetch_bytes(requested.clone());
+            let blob_resolve_responses = vec![
+                name_row("did:key:zViewConcept"),
+                rows(&[(
+                    "did:key:zViewConcept",
+                    &[(
+                        "source",
+                        r#"{"with":{"model":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
+                    )],
+                )]),
+            ];
+            let host =
+                FakeHost::install_with_model(blob_resolve_responses, Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "tonk:blob", "blob:zHASH");
+            display.set_attribute("with", "main@myrepo").unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            // Empty view frame first: the native fallback mounts.
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, "img").await.is_some(),
+                "an empty view frame mounts the native <img> fallback",
+            );
+
+            // A model-specific view lands: it replaces the fallback. Its
+            // display includes a light-DOM `<img>` of its own, so the
+            // round-trip below locks in that the fallback's lookup never
+            // captures the view's img.
+            host.push_frame(
+                "view",
+                &rows(&[("did:key:zBlobView", &[("display", "<p>override <img></p>")])]),
+            );
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the non-empty view frame mounts a <tonk-view> slide",
+            );
+            let mut img_gone = false;
+            for _ in 0..200 {
+                if display.query_selector(":scope > img").unwrap().is_none() {
+                    img_gone = true;
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                img_gone,
+                "the native fallback <img> (a direct child of the display) is removed once the view mounts",
+            );
+
+            // The view frame goes empty again (e.g. the view was retracted):
+            // the fallback remounts an `<img>`, and the stale `<tonk-view>`
+            // slide from the model-specific view must not linger alongside it.
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, ":scope > img").await.is_some(),
+                "the native fallback <img> remounts as a direct child once the view frame empties again",
+            );
+            let mut view_gone = false;
+            for _ in 0..200 {
+                if display.query_selector("tonk-view").unwrap().is_none() {
+                    view_gone = true;
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                view_gone,
+                "the stale view slide is cleared when the frame empties again",
+            );
+            assert!(
+                display.query_selector(":scope > img").unwrap().is_some(),
+                "the remounted fallback <img> is a direct child of the display, not captured from the retracted view",
             );
         }
 

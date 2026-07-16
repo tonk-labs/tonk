@@ -54,10 +54,13 @@ pub(crate) fn connect_portal(
     // (so declarative `onsubmit=` bindings run); it does NOT let a form
     // navigate the guest away, because the runtime installs a global
     // capture-phase `submit` guard that `preventDefault`s every
-    // submission before its native action. We deliberately withhold
+    // submission before its native action. `allow-downloads` lets a guest
+    // trigger a save (e.g. the blob file card's Download button, which
+    // clicks an `<a download>` over an object URL); without it Chrome
+    // silently blocks the download. We deliberately withhold
     // `allow-top-navigation` and `allow-same-origin` — the guest still
     // can't reach the parent or a real origin.
-    let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms");
+    let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms allow-downloads");
 
     // Delegate the `clipboard-write` Permissions Policy into the guest so
     // its copy buttons (e.g. the share dialog's invite-link copy) can call

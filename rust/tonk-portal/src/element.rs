@@ -221,8 +221,9 @@ mod tests {
         // No `allow-same-origin`: the iframe is an opaque origin and
         // reaches the parent only over the bridge's `MessagePort`.
         // `allow-forms` lets a guest `<form>` fire its `submit` event (a
-        // capture-phase guard cancels the native navigation).
-        assert_eq!(sandbox, "allow-scripts allow-forms");
+        // capture-phase guard cancels the native navigation); `allow-downloads`
+        // lets a guest trigger a save (e.g. the blob file card's Download).
+        assert_eq!(sandbox, "allow-scripts allow-forms allow-downloads");
     }
 
     #[dialog_common::test]
