@@ -72,6 +72,10 @@ mod navigate;
 #[cfg(target_arch = "wasm32")]
 pub use navigate::navigate_to;
 #[cfg(target_arch = "wasm32")]
+mod title;
+#[cfg(target_arch = "wasm32")]
+pub use title::set_title;
+#[cfg(target_arch = "wasm32")]
 mod ops;
 #[cfg(target_arch = "wasm32")]
 pub use context::{resolve_with, route_of};

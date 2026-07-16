@@ -1932,6 +1932,7 @@ view!: &hub-view
   model: tonk:hub
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-display model="space"></tonk-display>
     </div>
 
@@ -1966,6 +1967,7 @@ view!: &join/route-view
   model: tonk:join/route
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-display model="tonk:join/status"></tonk-display>
     </div>
 
@@ -1997,7 +1999,8 @@ view!: &inspector/route-view
   model: tonk:inspector/route
   display: |
     <div class="display-view-slot">
-      <tonk-inspector with="main@profile:tonk" source=home></tonk-inspector>
+      <tonk-title text="Tonk"></tonk-title>
+      <tonk-inspector with="main@profile:tonk"></tonk-inspector>
     </div>
 
 route!: &route/diagnose
@@ -2020,6 +2023,7 @@ view!: &diagnose/route-view
   model: tonk:diagnose/route
   display: |
     <div class="display-view-slot">
+      <tonk-title text="Tonk"></tonk-title>
       <tonk-tree with="main@profile:tonk"></tonk-tree>
     </div>
 
@@ -2074,6 +2078,19 @@ view!: &space-view
   display: |
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
     <tonk-display with="main@profile:tonk" model="tonk:profile/fab" data-space="{id}"></tonk-display>
+    <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
+      <tonk-title slot="no-model" text="Untitled — Tonk"></tonk-title>
+      <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+      <!-- A spot created before `tonk:view/title` existed has no
+           `view/title!:` row on its branch, so `view=tonk:view/title`
+           resolves nothing and the display enters `no-view` — a `danger`
+           state. `update_slot_children` toggles `hidden`, it never adds
+           or removes children, so with no matching slot child the
+           built-in red `<wa-callout>` fires. This inert child suppresses
+           that callout while pushing no title, leaving the tab exactly
+           as it was — the old spot behavior. -->
+      <span slot="no-view"></span>
+    </tonk-display>
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The
 # router matches most-specific-first, so this `{*rest}` span never shadows `/`,
@@ -2112,6 +2129,7 @@ view!: &not-found-view
                     color: var(--wa-color-text-normal); }
         .nf__home { margin-top: 8px; text-decoration: none; }
       </style>
+      <tonk-title text="Tonk"></tonk-title>
       <div class="nf">
         <div class="nf__code">404</div>
         <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>

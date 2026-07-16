@@ -167,7 +167,7 @@ Verified without a browser (native + compile):
 - `it_decodes_create_space_from_name_only_facts` — `CreateSpace` matches a frozen, name-only descriptor.
 - `remote_from_facts_tests` — reads a `Value::String` remote, a `Value::Entity` (URL) remote, none, and blank.
 - `space_config_tests` — local-only vs `origin`/`origin-main` shape.
-- `tonk-worker/tests/standard_library.rs` — `core.yaml`/`profile.yaml`/`demo.yaml` lower cleanly.
+- `tonk-worker/tests/standard_library.rs` — `core.yaml`/`profile.yaml` and each template lower cleanly.
 - Worker wasm build + `tonk-workspace` wasm build/tests compile; clippy clean on touched crates (native and wasm).
 
 Still browser-only (needs a running app): the create→sync round-trip end to end, the `data-dialog` open, `<wa-input>` value round-trip, and the visual layout of the topbar/launchpad. Local wasm integration tests need Safari/Chrome automation.
