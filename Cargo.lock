@@ -4400,6 +4400,7 @@ version = "0.5.0"
 dependencies = [
  "console_error_panic_hook",
  "custom-elements",
+ "dialog-common",
  "js-sys",
  "tonk-board",
  "tonk-display",
@@ -4412,6 +4413,7 @@ dependencies = [
  "tonk-workspace",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "web-sys",
 ]
 
