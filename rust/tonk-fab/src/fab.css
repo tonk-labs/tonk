@@ -196,6 +196,24 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
   padding: 0;
   justify-content: center;
   cursor: grab;
+  /* The browser must not race us for touch gestures on the drag handle —
+     without this, mobile scroll/zoom recognizers usually win and the drag
+     stutters or dies. Scoped to the cap so touch behaviour anywhere else
+     on the bar (and the compact strip's own pan) is untouched. */
+  touch-action: none;
+}
+/* On coarse pointers the 36px cap grows an invisible 52px hit area
+   (>=44px Apple/Android guidance) without visual change. The cap is
+   `position: relative` via `.fab__seg`, so the inset anchors to it; the
+   pseudo-element is part of the cap for hit-testing, so both the drag
+   arming and the tap gesture route through `closest(".fab__cap-l")`
+   exactly as before. */
+@media (pointer: coarse) {
+  .fab__cap-l::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
 }
 /* The far end cap: a fixed 18px round-right nub that finishes the bar
    (the wireframe's `cp-cap-r` without its toggle glyph). Half the

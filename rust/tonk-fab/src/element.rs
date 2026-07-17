@@ -98,6 +98,11 @@ fn ensure_stylesheet() {
 /// telescope; above it the FAB moves and the click is suppressed.
 const DRAG_THRESHOLD_PX: f64 = 4.0;
 
+/// The drag threshold for TOUCH pointers. Wider than the mouse threshold: a
+/// finger wobbles a few px during a plain tap, and promoting that to a drag
+/// would eat the tap-to-toggle gesture.
+const TOUCH_DRAG_THRESHOLD_PX: f64 = 8.0;
+
 /// The `<tonk-fab>` custom element.
 #[derive(Default)]
 pub struct TonkFab;
@@ -177,6 +182,7 @@ impl CustomElement for TonkFab {
         // buttons-up move.
         this.dataset().delete("fabPressing");
         this.dataset().delete("fabMoved");
+        this.dataset().delete("fabTouch");
     }
 
     fn attribute_changed_callback(
@@ -889,13 +895,27 @@ fn attach_drag(element: &HtmlElement) {
         if e.button() != 0 {
             return;
         }
-        let on_circle = e
+        let Some(cap) = e
             .target()
             .and_then(|t| t.dyn_into::<Element>().ok())
             .and_then(|el| el.closest(".fab__cap-l").ok().flatten())
-            .is_some();
-        if !on_circle {
+        else {
             return;
+        };
+        // TOUCH presses capture IMMEDIATELY, and on the CAP (not the host):
+        // a fast flick outruns even the window listeners' first delivery on
+        // some mobile browsers, and deferred capture is the desktop
+        // compromise that lets a stationary mouse press click — a touch tap
+        // still clicks with capture held, because capture retargets pointer
+        // events to the cap, which is exactly where the tap's click routes
+        // anyway. Capturing on the host instead would retarget the click to
+        // the host and break tap-to-toggle (`attach_gestures` walks
+        // `closest(".fab__cap-l")` from the click target).
+        if e.pointer_type() == "touch" {
+            el_down.dataset().set("fabTouch", "1").ok();
+            cap.set_pointer_capture(e.pointer_id()).ok();
+        } else {
+            el_down.dataset().delete("fabTouch");
         }
         // DELTA-based drag: remember the pointer's start AND the element's start
         // `left`/`top`, then translate by the pointer delta. No grab-offset or
@@ -941,11 +961,22 @@ fn attach_drag(element: &HtmlElement) {
         // Promote to a DRAG once past the dead zone; take capture only then, so a
         // stationary press stays a plain native click.
         if el_move.dataset().get("fabMoved").is_none() {
-            if dx.hypot(dy) < DRAG_THRESHOLD_PX {
+            let touch = el_move.dataset().get("fabTouch").is_some();
+            let threshold = if touch {
+                TOUCH_DRAG_THRESHOLD_PX
+            } else {
+                DRAG_THRESHOLD_PX
+            };
+            if dx.hypot(dy) < threshold {
                 return;
             }
             el_move.dataset().set("fabMoved", "1").ok();
-            el_move.set_pointer_capture(e.pointer_id()).ok();
+            // A touch press already holds capture on the cap (see
+            // `on_down`); re-capturing on the host would retarget the
+            // post-drag click mid-gesture.
+            if !touch {
+                el_move.set_pointer_capture(e.pointer_id()).ok();
+            }
             if let Some(fab) = el_move.query_selector(".fab").ok().flatten() {
                 fab.class_list().add_1("dragging").ok();
             }
@@ -1028,7 +1059,18 @@ fn finish_drag(el: &HtmlElement, pointer_id: i32) {
     if !moved {
         return;
     }
-    el.release_pointer_capture(pointer_id).ok();
+    let touch = el.dataset().get("fabTouch").is_some();
+    el.dataset().delete("fabTouch");
+    if touch {
+        // Touch capture lives on the cap (see `attach_drag`). Explicit
+        // release is belt-and-braces — pointerup implicitly releases — but
+        // pointercancel paths keep it honest.
+        if let Some(cap) = el.query_selector(".fab__cap-l").ok().flatten() {
+            cap.release_pointer_capture(pointer_id).ok();
+        }
+    } else {
+        el.release_pointer_capture(pointer_id).ok();
+    }
     if let Some(fab) = el.query_selector(".fab").ok().flatten() {
         fab.class_list().remove_1("dragging").ok();
     }
