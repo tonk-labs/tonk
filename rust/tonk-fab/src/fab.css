@@ -161,6 +161,84 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 .fab__tele--end     { order: 4; }
 /* The chevron cap is compact-only; wide mode shows the decorative nub. */
 .fab__more { display: none; }
+/* ── Compact mode ─────────────────────────────────────────────────
+   `fab--compact` is set on `.fab` by element.rs when the EXPANDED bar
+   plus both 16px dock insets would overflow the viewport (measured, not
+   device-sniffed — a narrow desktop window compacts too). Layout: the
+   circle cap stays the fixed left cap, the chevron replaces the end nub
+   as the fixed right cap, and the segments page horizontally between
+   them in a native scroll-snap strip — swipe momentum for free, and no
+   gesture code to fight the drag (which arms only on the circle cap). */
+.fab--compact { max-inline-size: calc(100vw - 32px); }
+.fab--compact .fab__strip {
+  display: flex;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Numeric so the collapse transition below can interpolate to 0:
+     viewport minus circle cap (36) + chevron cap (36) + insets (32) +
+     two 2px bar gaps. */
+  max-width: calc(100vw - 108px);
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  transition: max-width 0.4s ease;
+}
+.fab--compact .fab__strip::-webkit-scrollbar { display: none; }
+.fab--compact .fab__page {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  /* Just under the strip width: the next page's leading edge peeks
+     ~24px, signalling there is more to swipe to (no page dots). */
+  min-width: calc(100% - 24px);
+  scroll-snap-align: start;
+}
+/* Pages own the sizing now; tiles and segments shrink into them.
+   Scoped to `.fab__page` descendants: the circle cap and the chevron
+   cap are `.fab__seg`s OUTSIDE the strip and must keep their fixed
+   36px sizing — an unscoped `.fab--compact .fab__seg` outranks their
+   single-class rules and breaks both caps. */
+.fab--compact .fab__page .fab__tele { flex: 1 1 auto; min-width: 0; }
+.fab--compact .fab__page .fab__seg { min-width: 0; flex: 1 1 auto; padding: 0 14px; }
+/* Order is DOM order inside the strip (page 1 first); clear the
+   wide-mode reordering. */
+.fab--compact .fab__tele--account,
+.fab--compact .fab__tele--repo,
+.fab--compact .fab__tele--share { order: 0; }
+/* The right cap swaps: nub out, chevron in. */
+.fab--compact .fab__end { display: none; }
+.fab--compact .fab__more {
+  display: inline-flex;
+  flex: none;
+  inline-size: 36px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.fab--compact .fab__more wa-icon { transition: transform 0.2s ease; }
+/* Collapse in compact: the strip and chevron retract into the circle
+   (CSS transitions, not per-tile inline styles — see set_telescope). */
+.fab--compact .fab__tele--end {
+  transition: max-width 0.4s ease, margin-left 0.4s ease;
+  max-width: 40px;
+}
+.fab--compact.fab--collapsed .fab__strip,
+.fab--compact.fab--collapsed .fab__tele--end {
+  max-width: 0;
+  margin-left: -2px;
+  overflow: hidden;
+}
+/* Dragging locks the pager so paging and dragging cannot interleave. */
+.fab.dragging .fab__strip { overflow: hidden; }
+@media (prefers-reduced-motion: reduce) {
+  .fab--compact .fab__strip,
+  .fab--compact .fab__tele--end,
+  .fab--compact .fab__more wa-icon { transition: none; }
+}
 /* A segment: its own cream surface + ink, an inset highlight/shadow that
    reads like the wireframe's pressed-plastic pill. Middle segments are
    square; the caps below round their outer edge. */

@@ -36,7 +36,7 @@
 
 use crate::logic::{
     DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
-    dock_claim_json, dock_from_conclusions, mirrored, nearest_dock, pause_claim_json,
+    dock_claim_json, dock_from_conclusions, is_compact, mirrored, nearest_dock, pause_claim_json,
     profile_rename_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
@@ -162,6 +162,9 @@ impl CustomElement for TonkFab {
             attach_create_space_form(this);
             attach_profile_name_commit(this);
             preload_menu_widths(this);
+            attach_resize(this);
+            attach_strip_scroll(this);
+            update_compact_mode(this);
         }
         // Restore the persisted position and apply it to our own style.
         restore_position(this);
@@ -737,6 +740,17 @@ fn toggle_telescope(element: &HtmlElement) {
 /// Drive the telescope to the given state. `collapsing = true` retracts the
 /// tiles into the circle; `false` unfolds them to their measured widths.
 fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
+    // Compact collapse is CSS-driven: the strip and the chevron cap
+    // transition their own max-width (see `.fab--compact.fab--collapsed`
+    // in fab.css). Driving per-tile inline max-widths here would zero out
+    // the pages the strip lays out.
+    if fab.class_list().contains("fab--compact") {
+        fab.class_list()
+            .toggle_with_force("fab--collapsed", collapsing)
+            .ok();
+        return;
+    }
+
     let tiles = telescope_tiles(fab);
     let count = tiles.len();
 
@@ -866,6 +880,7 @@ fn measure_tile_widths(tiles: &[Element]) -> Vec<f64> {
 /// measured width. Stashes the timer id so a re-toggle (or disconnect) cancels it.
 fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     let fab_for_settle = fab.clone();
+    let el_for_settle = element.clone();
     let settle_once = Closure::<dyn Fn()>::new(move || {
         fab_for_settle.class_list().add_1("fab--settled").ok();
         // Unclamp shown tiles: drop the inline `max-width` pinned during the
@@ -882,6 +897,10 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
             let style = tile.unchecked_ref::<HtmlElement>().style();
             let _ = style.set_property("max-width", "none");
         }
+        // Content settling is the moment the bar reaches its true width —
+        // the one growth path (invite link, long rename) a resize never
+        // sees. Re-check the fit here.
+        update_compact_mode(&el_for_settle);
     });
     let settle_fn = settle_once
         .as_ref()
@@ -890,6 +909,84 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     settle_once.forget();
     let id = set_timeout(&settle_fn, telescope_settle_ms(count) as i32);
     element.dataset().set("settleTimer", &id.to_string()).ok();
+}
+
+/// Re-evaluate compact mode from the WOULD-BE expanded bar width — the same
+/// input whichever mode we are in, so the threshold cannot flap. Called on
+/// connect, on guest-window resize, and when the telescope settles (content
+/// like a minted invite link can widen the bar without a resize).
+fn update_compact_mode(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let compact = is_compact(expanded_bar_width(&fab), viewport_width());
+    if fab.class_list().contains("fab--compact") == compact {
+        return;
+    }
+    // Crossing modes resets transient UI state: menus close (their anchors
+    // change shape entirely) and the telescope re-opens expanded with no
+    // stale per-tile clamps — a wide-mode collapse leaves inline
+    // `max-width: 0` on every tile, which would zero out the compact pages.
+    close_menus(element);
+    fab.class_list().remove_1("fab--collapsed").ok();
+    fab.class_list().add_1("fab--settled").ok();
+    for tile in telescope_tiles(&fab) {
+        let style = tile.unchecked_ref::<HtmlElement>().style();
+        let _ = style.remove_property("max-width");
+        let _ = style.remove_property("margin-left");
+        let _ = style.remove_property("transition-delay");
+        tile.class_list().remove_1("fab__tele--hidden").ok();
+    }
+    fab.class_list()
+        .toggle_with_force("fab--compact", compact)
+        .ok();
+}
+
+/// The bar's expanded width. Measured directly when expanded; a compact bar
+/// is momentarily unclamped within one task — no paint can happen before the
+/// classes are restored — the same trick `menu_natural_width` uses on closed
+/// menus. Known gap, accepted: a WIDE bar collapsed to its circle
+/// under-reports here (its tiles hold inline `max-width: 0` that no class
+/// removal lifts), so shrinking the viewport while collapsed-wide defers the
+/// flip to compact until the next expand's settle pass re-evaluates — and a
+/// collapsed circle always fits anyway.
+fn expanded_bar_width(fab: &Element) -> f64 {
+    let cl = fab.class_list();
+    let was_compact = cl.contains("fab--compact");
+    if was_compact {
+        cl.remove_1("fab--compact").ok();
+    }
+    let width = fab.get_bounding_client_rect().width();
+    if was_compact {
+        cl.add_1("fab--compact").ok();
+    }
+    width
+}
+
+/// Re-evaluate compact mode whenever the guest window resizes. The overlay
+/// iframe is pinned full-viewport, so its window size IS the app viewport.
+fn attach_resize(element: &HtmlElement) {
+    let el = element.clone();
+    let on_resize = Closure::<dyn FnMut()>::new(move || update_compact_mode(&el));
+    if let Some(win) = window() {
+        let target: &web_sys::EventTarget = win.unchecked_ref();
+        let _ =
+            target.add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref());
+    }
+    on_resize.forget();
+}
+
+/// A swipe on the compact strip moves the segments out from under their
+/// anchored dropdowns — dismiss them rather than drag them along.
+fn attach_strip_scroll(element: &HtmlElement) {
+    let Some(strip) = element.query_selector(".fab__strip").ok().flatten() else {
+        return;
+    };
+    let el = element.clone();
+    let on_scroll = Closure::<dyn FnMut()>::new(move || close_menus(&el));
+    let target: &web_sys::EventTarget = strip.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("scroll", on_scroll.as_ref().unchecked_ref());
+    on_scroll.forget();
 }
 
 /// Attach pointer event listeners for free drag-and-drop. The element moves
@@ -1433,5 +1530,86 @@ mod tests {
         close_menus(&fab);
         assert!(!is_open(&fab, ".fab__repo"));
         assert!(!is_open(&fab, ".fab__share"));
+    }
+
+    #[wasm_bindgen_test]
+    fn it_compacts_when_the_expanded_bar_cannot_fit() {
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+        let fab = host
+            .query_selector(".fab")
+            .ok()
+            .flatten()
+            .expect("bar")
+            .unchecked_into::<HtmlElement>();
+        // The fixture loads no stylesheet, so every element here is plain
+        // block/inline layout. `.fab`'s own rect would otherwise just fill
+        // its container regardless of content (a block `<div>`'s `width:
+        // auto` fills its containing block; it does not shrink-to-fit or
+        // grow with an overflowing child) — insensitive to the oversized
+        // segment below and unable to exercise `expanded_bar_width` at all.
+        // Reproduce the three fab.css facts the measurement actually
+        // depends on: `.fab` itself is `inline-flex` (shrink-to-fit, so an
+        // unshrinkable child can push its rect past the viewport);
+        // `.fab__strip`/`.fab__page` are `display: contents` (they
+        // disappear from the box tree, so their `.fab__tele` descendants
+        // become direct flex items of `.fab`, exactly as fab.css flattens
+        // them); and `.fab__tele` is `flex: 0 0 auto` (no shrink, so an
+        // oversized tile isn't compressed back down by the flex algorithm).
+        let _ = fab.style().set_property("display", "inline-flex");
+        for sel in [".fab__strip", ".fab__page"] {
+            if let Ok(list) = host.query_selector_all(sel) {
+                for i in 0..list.length() {
+                    if let Some(node) = list.item(i) {
+                        let _ = node
+                            .unchecked_into::<HtmlElement>()
+                            .style()
+                            .set_property("display", "contents");
+                    }
+                }
+            }
+        }
+        if let Ok(list) = host.query_selector_all(".fab__tele") {
+            for i in 0..list.length() {
+                if let Some(node) = list.item(i) {
+                    let _ = node
+                        .unchecked_into::<HtmlElement>()
+                        .style()
+                        .set_property("flex", "0 0 auto");
+                }
+            }
+        }
+        let wide = host
+            .query_selector(".fab__repo")
+            .ok()
+            .flatten()
+            .expect("repo segment")
+            .unchecked_into::<HtmlElement>();
+        // Per-property, not a `cssText` blob: `CSSStyleDeclaration.setProperty
+        // ("cssText", …)` is a Blink/Gecko-only quirk that WebKit/Safari does
+        // not honor (confirmed empirically — the style attribute never gets
+        // created), which would silently leave this element at its default
+        // zero size under Safari's local wasm-test route.
+        let _ = wide.style().set_property("display", "inline-block");
+        let _ = wide.style().set_property("width", "9999px");
+
+        update_compact_mode(&host);
+        assert!(
+            fab.class_list().contains("fab--compact"),
+            "a bar wider than any viewport must compact"
+        );
+
+        let _ = wide.style().set_property("width", "10px");
+        update_compact_mode(&host);
+        assert!(
+            !fab.class_list().contains("fab--compact"),
+            "a bar that fits again must leave compact mode"
+        );
+        host.remove();
     }
 }
