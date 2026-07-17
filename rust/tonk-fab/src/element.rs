@@ -35,9 +35,9 @@
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, create_space_claim_json, dock_claim_json,
-    dock_from_conclusions, mirrored, nearest_dock, pause_claim_json, profile_rename_claim_json,
-    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
+    dock_claim_json, dock_from_conclusions, mirrored, nearest_dock, pause_claim_json,
+    profile_rename_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -1068,8 +1068,21 @@ fn read_data_f64(el: &HtmlElement, key: &str) -> f64 {
 
 /// Track the FAB at `(left, top)` (viewport top-left) with plain `left`/`top`
 /// during a drag — no corner anchoring, so it follows the cursor 1:1 without
-/// jumping as it crosses the viewport midlines.
+/// jumping as it crosses the viewport midlines. Clamped so the bar can never
+/// leave the viewport, whatever the pointer does. (The mirror-flip
+/// compensation in `apply_mirror_from_handle` writes `left` directly and is
+/// not clamped — the very next pointer move re-clamps, so any excursion
+/// lasts one frame at most.)
 fn track_position(el: &HtmlElement, left: f64, top: f64) {
+    let rect = el.get_bounding_client_rect();
+    let (left, top) = clamp_position(
+        left,
+        top,
+        rect.width(),
+        rect.height(),
+        viewport_width(),
+        viewport_height(),
+    );
     let style = el.style();
     let _ = style.remove_property("right");
     let _ = style.remove_property("bottom");
