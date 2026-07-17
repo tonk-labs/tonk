@@ -146,6 +146,21 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
     drop-shadow(0 1px 2px rgba(20, 22, 8, 0.22))
     drop-shadow(0 8px 22px rgba(20, 22, 8, 0.20));
 }
+/* ── Compact grouping (inert on wide viewports) ───────────────────
+   The strip and pages exist for the compact pager (see `.fab--compact`
+   below). On wide viewports they generate NO boxes, so the tiles are
+   direct flex items of `.fab` exactly as before — and flex `order`
+   restores the wide bar's visual order (account, repo, share, end),
+   which the DOM gives up to group page 2 (share, account) together.
+   The circle cap keeps default order 0, so it stays first. */
+.fab__strip,
+.fab__page { display: contents; }
+.fab__tele--account { order: 1; }
+.fab__tele--repo    { order: 2; }
+.fab__tele--share   { order: 3; }
+.fab__tele--end     { order: 4; }
+/* The chevron cap is compact-only; wide mode shows the decorative nub. */
+.fab__more { display: none; }
 /* A segment: its own cream surface + ink, an inset highlight/shadow that
    reads like the wireframe's pressed-plastic pill. Middle segments are
    square; the caps below round their outer edge. */

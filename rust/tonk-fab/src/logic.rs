@@ -1399,6 +1399,7 @@ mod stylesheet {
         assert!(css.contains(".fab__menu-item"));
         assert!(css.contains(".fab__share-label"));
         assert!(css.contains(".wizard__card"));
+        assert!(css.contains(".fab__strip"));
     }
 }
 

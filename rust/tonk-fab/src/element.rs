@@ -803,18 +803,39 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
     }
 }
 
-/// Collect the `.fab__tele` wrapper tiles in DOM order.
+/// Collect the `.fab__tele` wrapper tiles, sorted into VISUAL order. The
+/// DOM groups tiles by compact page (repo before share/account) while CSS
+/// `order` restores the wide bar's visual order — the telescope stagger
+/// must follow what the eye sees, not the DOM. A child scan no longer
+/// works: the tiles live inside `.fab__strip` > `.fab__page` wrappers.
 fn telescope_tiles(fab: &Element) -> Vec<Element> {
     let mut out = Vec::new();
-    let children = fab.children();
-    for i in 0..children.length() {
-        if let Some(child) = children.item(i)
-            && child.class_list().contains("fab__tele")
-        {
-            out.push(child);
+    if let Ok(list) = fab.query_selector_all(".fab__tele") {
+        for i in 0..list.length() {
+            if let Some(node) = list.item(i)
+                && let Ok(el) = node.dyn_into::<Element>()
+            {
+                out.push(el);
+            }
         }
     }
+    out.sort_by_key(tile_rank);
     out
+}
+
+/// The wide bar's visual position of a tile — must match the CSS `order`
+/// values in `fab.css` (account 1, repo 2, share 3, end 4).
+fn tile_rank(tile: &Element) -> u8 {
+    let cl = tile.class_list();
+    if cl.contains("fab__tele--account") {
+        0
+    } else if cl.contains("fab__tele--repo") {
+        1
+    } else if cl.contains("fab__tele--share") {
+        2
+    } else {
+        3
+    }
 }
 
 /// Measure each tile's natural width by momentarily unclamping it (max-width
@@ -1322,8 +1343,19 @@ mod tests {
             r#"<div class="fab__scrim"></div>
                <div class="fab">
                  <span class="fab__seg fab__cap-l"></span>
-                 <span class="fab__seg fab__repo"></span>
-                 <span class="fab__seg fab__share"></span>
+                 <div class="fab__strip">
+                   <div class="fab__page fab__page--main">
+                     <div class="fab__tele fab__tele--repo"><span class="fab__seg fab__repo"></span></div>
+                   </div>
+                   <div class="fab__page fab__page--more">
+                     <div class="fab__tele fab__tele--share"><span class="fab__seg fab__share"></span></div>
+                     <div class="fab__tele fab__tele--account"><span class="fab__seg fab__account"></span></div>
+                   </div>
+                 </div>
+                 <div class="fab__tele fab__tele--end">
+                   <span class="fab__seg fab__cap-r fab__end" aria-hidden="true"></span>
+                   <button type="button" class="fab__seg fab__cap-r fab__more"></button>
+                 </div>
                </div>"#,
         );
         host
