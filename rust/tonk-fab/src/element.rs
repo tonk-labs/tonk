@@ -95,7 +95,8 @@ fn ensure_stylesheet() {
 
 /// How far (CSS px) the pointer must travel from the press origin before it
 /// counts as a drag rather than a click. Below this the press toggles the
-/// telescope; above it the FAB moves and the click is suppressed.
+/// telescope; above it the FAB moves and the click is suppressed. Touch pointers
+/// use `TOUCH_DRAG_THRESHOLD_PX` instead.
 const DRAG_THRESHOLD_PX: f64 = 4.0;
 
 /// The drag threshold for TOUCH pointers. Wider than the mouse threshold: a
@@ -1055,12 +1056,12 @@ fn attach_drag(element: &HtmlElement) {
 /// guard in `pointermove`.
 fn finish_drag(el: &HtmlElement, pointer_id: i32) {
     el.dataset().delete("fabPressing");
+    let touch = el.dataset().get("fabTouch").is_some();
+    el.dataset().delete("fabTouch");
     let moved = el.dataset().get("fabMoved").is_some();
     if !moved {
         return;
     }
-    let touch = el.dataset().get("fabTouch").is_some();
-    el.dataset().delete("fabTouch");
     if touch {
         // Touch capture lives on the cap (see `attach_drag`). Explicit
         // release is belt-and-braces — pointerup implicitly releases — but
