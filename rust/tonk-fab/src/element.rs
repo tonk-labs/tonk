@@ -666,12 +666,11 @@ fn apply_mirror_from_handle(el: &HtmlElement) {
     }
 }
 
-/// Close both dropdowns (the ratcheted widths stay). Two callers:
-///
-/// - A drag: it drops the `fab-dock-*` classes that give an open menu its
-///   vertical anchor, so an open menu would float mid-bar; dragging with a menu
-///   open isn't a state the chrome supports.
-/// - The click-away curtain: a click outside every menu dismisses both.
+/// Dismiss all transient overlays — both dropdowns and the compact vertical
+/// menu (ratcheted widths stay). Called by any interaction that invalidates
+/// an open overlay's anchoring: a drag (which drops the `fab-dock-*` classes
+/// anchoring the menu to the bar, so an open menu would float unanchored
+/// mid-bar), mode switches, pager swipes, or click-away.
 fn close_menus(el: &HtmlElement) {
     for sel in MENU_SEGMENTS {
         if let Some(seg) = el.query_selector(sel).ok().flatten() {
