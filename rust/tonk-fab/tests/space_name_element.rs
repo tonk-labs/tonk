@@ -710,3 +710,162 @@ async fn it_appends_the_static_action_items_after_the_rows() {
         "new item must read \"new\""
     );
 }
+
+// --- <ui-profile-name>, built on the same subscribing scaffolding ---
+//
+// Mirrors `it_renders_the_name_from_a_delivered_frame` above: no host is
+// installed in this crate's tests (see the module doc), so frames are
+// delivered the exact way `tonk-host::ops::deliver_frame` does — call
+// `reset`/`update` directly on the element. An element that subscribes and
+// never renders is the bug this whole scaffolding exists to catch — see
+// commit 71d1c58ac.
+//
+// Like `<ui-space-switcher>`, this element's routing context is NOT derived
+// from an attribute — it always reads the PROFILE branch
+// (`main@profile:tonk`).
+
+const PROFILE_NAME_TAG: &str = "ui-profile-name";
+
+/// Mount a `<ui-profile-name>` and return it.
+fn mount_profile_name() -> web_sys::HtmlElement {
+    tonk_fab::register();
+    let el = document()
+        .create_element(PROFILE_NAME_TAG)
+        .expect("create")
+        .dyn_into::<web_sys::HtmlElement>()
+        .expect("html element");
+    document()
+        .body()
+        .expect("body")
+        .append_child(el.as_ref())
+        .expect("append");
+    el
+}
+
+/// A single display-name conclusion row: `{ fields: { name } }`.
+fn profile_name_row(name: &str) -> JsValue {
+    let fields = js_sys::Object::new();
+    js_sys::Reflect::set(&fields, &"name".into(), &JsValue::from_str(name)).expect("set name");
+    let row = js_sys::Object::new();
+    js_sys::Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
+    row.into()
+}
+
+/// A `reset` snapshot payload: a bare array of one conclusion row.
+fn profile_name_reset_payload(name: &str) -> JsValue {
+    let rows = js_sys::Array::new();
+    rows.push(&profile_name_row(name));
+    rows.into()
+}
+
+/// An `update` delta payload: `{ asserted, retracted }`.
+fn profile_name_update_payload(name: &str) -> JsValue {
+    let asserted = js_sys::Array::new();
+    asserted.push(&profile_name_row(name));
+    let payload = js_sys::Object::new();
+    js_sys::Reflect::set(&payload, &"asserted".into(), &asserted).expect("set asserted");
+    payload.into()
+}
+
+/// Invoke `element.reset`/`element.update` for the profile-name tag, exactly
+/// as the host's `deliver_frame` does.
+fn deliver_profile_name(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(&opts, &"tag".into(), &JsValue::from_str(PROFILE_NAME_TAG))
+        .expect("set tag");
+    let f = js_sys::Reflect::get(el, &method.into())
+        .unwrap_or_else(|_| panic!("{method} present on element"))
+        .dyn_into::<js_sys::Function>()
+        .unwrap_or_else(|_| panic!("{method} is a function"));
+    f.call2(el, payload, &opts.into())
+        .unwrap_or_else(|_| panic!("{method} call"));
+}
+
+#[dialog_common::test]
+async fn it_registers_profile_name_as_a_custom_element() {
+    tonk_fab::register();
+    let defined = window()
+        .expect("window")
+        .custom_elements()
+        .get(PROFILE_NAME_TAG);
+    assert!(
+        !defined.is_undefined(),
+        "tonk_fab::register() must define <ui-profile-name>"
+    );
+}
+
+#[dialog_common::test]
+async fn it_stamps_the_profile_routing_context_for_the_name_chip() {
+    let el = mount_profile_name();
+    assert_eq!(
+        el.get_attribute("with").as_deref(),
+        Some("main@profile:tonk"),
+        "the profile-name chip must stamp the fixed profile routing \
+         context, not a space-derived one"
+    );
+}
+
+#[dialog_common::test]
+async fn it_renders_no_fallback_text_before_any_frame_arrives() {
+    // Unlike <ui-space-name>'s "Untitled", there is no seeded default here:
+    // the worker's petname fallback is computed, not persisted, so an empty
+    // render is correct until a rename lands.
+    let el = mount_profile_name();
+    let editable = el
+        .query_selector("tonk-editable")
+        .expect("query")
+        .expect("<tonk-editable> child rendered");
+    assert_eq!(
+        editable.text_content().unwrap_or_default(),
+        "",
+        "the name chip must render empty, not a fallback, before any frame"
+    );
+}
+
+#[dialog_common::test]
+async fn it_renders_the_profile_name_from_a_delivered_frame() {
+    // This is the path that shipped broken for <ui-space-name>: an element
+    // that subscribes and asks the right question but never consumes the
+    // answer. No host is installed in this crate's tests, so frames are
+    // delivered the exact way `tonk-host::ops::deliver_frame` does.
+    let el = mount_profile_name();
+    let editable = el
+        .query_selector("tonk-editable")
+        .expect("query")
+        .expect("<tonk-editable> child rendered");
+    assert_eq!(editable.text_content().unwrap_or_default(), "");
+
+    deliver_profile_name(&el, "reset", &profile_name_reset_payload("Ada"));
+
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Ada"),
+        "a delivered reset frame must be consumed and rendered, not ignored"
+    );
+
+    // A subsequent `update` delta must also be consumed and re-render the chip.
+    deliver_profile_name(&el, "update", &profile_name_update_payload("Ada Renamed"));
+
+    assert_eq!(
+        editable.text_content().as_deref(),
+        Some("Ada Renamed"),
+        "a delivered update frame must be consumed and rendered, not ignored"
+    );
+}
+
+#[dialog_common::test]
+async fn it_carries_the_data_rename_marker_for_element_rs_delegation() {
+    // `element.rs::attach_profile_name_commit` delegates a `change` listener
+    // on the whole `<tonk-fab>` host, filtering on
+    // `[data-rename="tonk:profile"]` — this element does not dispatch its
+    // own commit, so the marker must be present for that delegate to find.
+    let el = mount_profile_name();
+    let editable = el
+        .query_selector("tonk-editable")
+        .expect("query")
+        .expect("<tonk-editable> child rendered");
+    assert_eq!(
+        editable.get_attribute("data-rename").as_deref(),
+        Some("tonk:profile")
+    );
+}

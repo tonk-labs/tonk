@@ -292,9 +292,12 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 }
 /* Collapse the display wrapper so the editable is `.fab__name`'s direct
    flex item and centres on the bar axis (same treatment as the spot
-   name), rather than sitting on its own inline baseline. */
+   name), rather than sitting on its own inline baseline. `<ui-profile-name>`
+   is the Rust-owned replacement for the deleted `tonk:profile/name-view`
+   `<tonk-display>` — same collapse treatment, not a shadow root. */
 .fab__name tonk-display,
-.fab__name tonk-view { display: contents; }
+.fab__name tonk-view,
+.fab__name ui-profile-name { display: contents; }
 /* The name is an inline `<tonk-editable>`: reads as plain text until
    hovered/focused, then shows an editable affordance. Clamped to the
    same width as the static name; the clamp lifts on focus so the full

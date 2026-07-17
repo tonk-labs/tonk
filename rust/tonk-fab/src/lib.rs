@@ -17,6 +17,9 @@ mod element;
 mod member_roster;
 
 #[cfg(target_arch = "wasm32")]
+mod profile_name;
+
+#[cfg(target_arch = "wasm32")]
 mod share;
 
 #[cfg(target_arch = "wasm32")]
@@ -34,6 +37,7 @@ pub fn register() {
     element::register();
     share::register();
     space_name::register();
+    profile_name::register();
     member_roster::register();
     space_switcher::register();
 }

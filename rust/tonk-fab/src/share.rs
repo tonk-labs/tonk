@@ -1,9 +1,10 @@
 //! The `<tonk-share>` custom element — mint an invite and copy it, on one click.
 //!
-//! It wraps the share zone's two `<tonk-display>`s (the mint trigger and the
-//! invite link) and turns them into a single control. Clicking it mints a fresh
-//! invite AND puts the resulting URL on the clipboard, without a second click,
-//! then reverts to offering "share" again.
+//! It wraps the share button (authored directly in `markup.rs` — the deleted
+//! `tonk:repository/fab-share` view used to supply it) and turns a click into
+//! a single control that mints a fresh invite AND puts the resulting URL on
+//! the clipboard, without a second click, then reverts to offering "share"
+//! again.
 //!
 //! ## Why this needs an element at all
 //!
@@ -21,11 +22,30 @@
 //!
 //! ## How the URL gets here
 //!
-//! We do not plumb it out of the claim. The mint's own transact receipt is
-//! discarded by the event delegate, but the minted invite lands on
-//! `tonk:agent-invite` (with the assembled, shortened `link`), and the invite
-//! `<tonk-display>` re-renders and dispatches a bubbling `tonk-display:result`
-//! carrying that conclusion. This element listens for it and reads `link`.
+//! This element is built on the shared `subscribing` scaffolding (like
+//! `<ui-space-name>`), stamping its own `with` from its `space` attribute and
+//! subscribing to [`crate::logic::invite_link_query_body`] — an INLINE
+//! predicate over the raw `xyz.tonk.credential/link` attribute, not the
+//! rule-derived `tonk:agent-invite` view the deleted `<tonk-display>` used to
+//! read (rules, like views, are frozen at whatever `core.yaml` seeded a space
+//! with). `render_reset`/`render_update` track the live link in
+//! `current_link` and, if a copy is pending, settle it once a NEW link
+//! (different from what was on screen at click time) arrives.
+//!
+//! ## Dispatching the mint
+//!
+//! There is no `<tonk-display>` delegate installed on this Rust-owned markup
+//! to resolve the button's `onsubmit` binding (see `markup.rs`'s module doc),
+//! so the click handler dispatches `tonk:invite` itself via
+//! `window.tonk.transact`, mirroring `element.rs::dispatch_pause_from_cap`
+//! and `space_name.rs::dispatch_rename`.
+//!
+//! A failed mint has no explicit error signal in this design (the deleted
+//! `<tonk-display>`'s error slot is gone with it): a subscription simply
+//! never yields a new link. A pending copy is only ever abandoned on
+//! disconnect (see `disconnected_callback`) — there is no timeout. That
+//! matches this crate's scope (fixing the orphaned mounts), not a redesign
+//! of mint failure handling.
 //!
 //! [`ClipboardItem`]: https://developer.mozilla.org/en-US/docs/Web/API/ClipboardItem
 
@@ -33,13 +53,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Array, Function, Object, Promise, Reflect};
+use js_sys::{Array, Function, JSON, Object, Promise, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use web_sys::{CustomEvent, HtmlElement, window};
+use web_sys::{HtmlElement, window};
 
-use crate::logic::{COPIED_LINGER_MS, ShareState};
+use crate::logic::{COPIED_LINGER_MS, ShareState, invite_claim_json, invite_link_query_body};
+use crate::subscribing;
 
 #[wasm_bindgen]
 extern "C" {
@@ -86,8 +107,15 @@ struct ShareStateCell {
 /// Dropped (and removed) on disconnect.
 type ListenerEntry = (String, Closure<dyn FnMut(web_sys::Event)>);
 
+const SUB_TAG: &str = "tonk-share";
+
 pub struct TonkShare {
     state: Rc<RefCell<ShareStateCell>>,
+    /// The last link a subscription frame delivered, tracked here because
+    /// there is no longer a DOM element (the deleted invite `<tonk-display>`)
+    /// to read it back off at click time.
+    current_link: Rc<RefCell<Option<String>>>,
+    scaffold: subscribing::Scaffold,
     listeners: Vec<ListenerEntry>,
 }
 
@@ -95,22 +123,59 @@ impl Default for TonkShare {
     fn default() -> Self {
         Self {
             state: Rc::new(RefCell::new(ShareStateCell::default())),
+            current_link: Rc::new(RefCell::new(None)),
+            scaffold: subscribing::Scaffold::default(),
             listeners: Vec::new(),
         }
     }
 }
 
+/// This element's [`subscribing::Subscribing`] behaviour: the space-derived
+/// (default `resolve_with`) routing context, the raw-attribute invite-link
+/// query, and settling a pending copy when a fresh link lands.
+struct ShareLinkBehaviour {
+    state: Rc<RefCell<ShareStateCell>>,
+    current_link: Rc<RefCell<Option<String>>>,
+}
+
+impl subscribing::Subscribing for ShareLinkBehaviour {
+    fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
+        let space = this.get_attribute("space").unwrap_or_default();
+        invite_link_query_body(&space)
+    }
+
+    fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
+        if let Some(link) = read_link_from_frame(payload) {
+            handle_link(host, &self.state, &self.current_link, link);
+        }
+    }
+
+    fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
+        if let Some(link) = read_link_from_delta(payload) {
+            handle_link(host, &self.state, &self.current_link, link);
+        }
+    }
+
+    fn tag(&self) -> &'static str {
+        SUB_TAG
+    }
+}
+
 impl CustomElement for TonkShare {
-    /// No Shadow DOM — `<tonk-share>` is a transparent wrapper around the two
-    /// `<tonk-display>`s the FAB template puts inside it.
+    /// No Shadow DOM — `<tonk-share>` is a transparent wrapper around the
+    /// share button `markup.rs` puts inside it.
     ///
     /// `custom-elements` defaults this to `true`, which attaches a shadow root.
     /// A shadow root with no `<slot>` renders none of the light-DOM children,
-    /// so the mint button and the invite display would both vanish — the
-    /// element would connect with an empty subtree and the bar would show an
-    /// empty box where the share control belongs.
+    /// so the mint button would vanish — the element would connect with an
+    /// empty subtree and the bar would show an empty box where the share
+    /// control belongs.
     fn shadow() -> bool {
         false
+    }
+
+    fn observed_attributes() -> &'static [&'static str] {
+        &["space"]
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
@@ -120,93 +185,63 @@ impl CustomElement for TonkShare {
         // stay synchronous all the way to `clipboard.write()` — any `await`
         // before it spends the activation and the write is refused.
         //
-        // We do NOT dispatch the mint ourselves. The inner `<form
-        // onsubmit=tonk:invite>` (a space-branch view) already does, and its
-        // binding is what carries the right routing context. We let the click
-        // through to it and only arrange for the result to be copied.
+        // Unlike the deleted `<tonk-display>`-mounted view, there is no
+        // delegate to resolve the button's form submission into a claim, so
+        // this handler ALSO dispatches the mint itself (`dispatch_invite`),
+        // synchronously, after opening the clipboard write — both calls stay
+        // in the same click task, so activation is still live for both.
         let state = Rc::clone(&self.state);
+        let current_link = Rc::clone(&self.current_link);
         let host = this.clone();
         let on_click = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            // The button is `type="submit"` inside a `<form>` (for layout
+            // parity with the deleted view's exact markup — see
+            // `markup.rs`), but nothing resolves its native submission into
+            // anything useful: always suppress it, then dispatch ourselves.
+            event.prevent_default();
+
             let current = read_state(&host);
             if !current.accepts_click() {
                 // A mint is already in flight holding the clipboard promise.
-                // Cancel the activation so the form does not submit a second
-                // mint, which would rotate the credential out from under the
-                // copy we're about to complete.
-                //
-                // `preventDefault` only — NOT `stopPropagation`. The click still
-                // has to reach `<tonk-fab>`, which toggles the roster for every
-                // click in the share zone. Swallowing it outright would make the
-                // menu unresponsive for as long as a mint is in flight.
-                event.prevent_default();
+                // A second mint would rotate the credential out from under
+                // the copy we're about to complete.
                 return;
             }
-            // Whatever link is on screen right now is the PREVIOUS mint's. Note
-            // it so a frame still carrying it isn't mistaken for our result.
-            let stale = rendered_link(&host);
+            let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) else {
+                return;
+            };
+            // Whatever link the last subscription frame delivered is the
+            // PREVIOUS mint's. Note it so a frame still carrying it isn't
+            // mistaken for our result.
+            let stale = current_link.borrow().clone();
             match open_clipboard_write(Rc::clone(&state), stale) {
                 Ok(()) => set_state(&host, ShareState::Copying),
                 // No clipboard (an insecure context, a denied permission, or a
-                // browser without the promise form). The mint still runs — the
-                // click falls through to the form — so the link is minted and
-                // rendered; it just isn't auto-copied. Better than blocking the
-                // share outright.
+                // browser without the promise form). The mint still runs — so
+                // the link is minted and the subscription still updates; it
+                // just isn't auto-copied. Better than blocking the share
+                // outright.
                 Err(e) => {
                     warn(&format!("share: clipboard unavailable: {e:?}"));
                     set_state(&host, ShareState::Copying);
                 }
             }
+            dispatch_invite(&space, js_sys::Date::now());
         });
         add_listener(this, "click", &on_click);
         self.listeners.push(("click".to_owned(), on_click));
+    }
 
-        // The invite `<tonk-display>` re-renders when the mint's conclusion
-        // arrives and dispatches a bubbling `tonk-display:result` carrying it.
-        // That is our "the URL exists now" signal.
-        let state = Rc::clone(&self.state);
-        let host = this.clone();
-        let on_result = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-            // Ignore frames that arrive when we aren't waiting on one: the
-            // invite display re-renders on any subscription frame, including
-            // ones no click of ours provoked.
-            let stale = match state.borrow().pending.as_ref() {
-                Some(pending) => pending.stale.clone(),
-                None => return,
-            };
-            let Some(link) = event
-                .dyn_ref::<CustomEvent>()
-                .and_then(|e| link_from_detail(&e.detail()))
-            else {
-                return;
-            };
-            // Still the previous mint's link — the new one hasn't landed yet.
-            // Keep the clipboard write open and wait for the next frame.
-            if Some(&link) == stale.as_ref() {
-                return;
-            }
-            settle(&host, &state, Ok(link));
+    fn connected_callback(&mut self, this: &HtmlElement) {
+        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(ShareLinkBehaviour {
+            state: Rc::clone(&self.state),
+            current_link: Rc::clone(&self.current_link),
         });
-        add_listener(this, "tonk-display:result", &on_result);
-        self.listeners
-            .push(("tonk-display:result".to_owned(), on_result));
-
-        // A failed mint surfaces as the display's error event. Without this the
-        // control would sit in `Copying` forever and the clipboard would keep
-        // an unresolved promise open.
-        let state = Rc::clone(&self.state);
-        let host = this.clone();
-        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
-            if state.borrow().pending.is_none() {
-                return;
-            }
-            settle(&host, &state, Err("the invite display reported an error"));
-        });
-        add_listener(this, "tonk-display:error", &on_error);
-        self.listeners
-            .push(("tonk-display:error".to_owned(), on_error));
+        self.scaffold.connect(this, behaviour);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        self.scaffold.disconnect();
         for (event_type, closure) in self.listeners.drain(..) {
             let target: &web_sys::EventTarget = this.unchecked_ref();
             let _ = target
@@ -224,6 +259,35 @@ impl CustomElement for TonkShare {
                 &JsValue::from_str("share: element detached"),
             );
         }
+    }
+}
+
+/// Dispatch the `tonk:invite` claim via `window.tonk.transact`, routeless —
+/// mirroring `element.rs::dispatch_pause_from_cap` and
+/// `space_name.rs::dispatch_rename`. There is no `<tonk-display>` delegate
+/// installed on this Rust-owned markup to resolve the button's form
+/// submission into a claim, so the click handler dispatches it directly.
+fn dispatch_invite(space: &str, time: f64) {
+    let claim = invite_claim_json(space, time);
+    let json_str = match serde_json::to_string(&claim) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let Some(win) = window() else { return };
+    let Some(tonk) = Reflect::get(&win, &"tonk".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Object>().ok())
+    else {
+        return;
+    };
+    let Some(transact) = Reflect::get(&tonk, &"transact".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Function>().ok())
+    else {
+        return;
+    };
+    if let Ok(obj) = JSON::parse(&json_str) {
+        transact.call1(&tonk, &obj).ok();
     }
 }
 
@@ -337,30 +401,69 @@ fn arm_revert(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>) {
     ));
 }
 
-/// Read the invite URL out of a `tonk-display:result` detail.
+/// Track a freshly delivered link and, if a copy is pending, settle it —
+/// unless this is still the previous mint's link (the new one hasn't landed
+/// yet, and the subscription can re-deliver the same row on an unrelated
+/// frame).
 ///
-/// The detail is a serialized conclusion, `{ this, fields: { … } }` — the
-/// concept's attributes live under `fields`, NOT at the top level. `link` is
-/// the assembled (and shortened) invite URL the worker's mint asserted onto
-/// `tonk:credential`.
-///
-/// Absent before a mint lands: the display also frames the bare
-/// `tonk:repository` name (`fields: { name }`), which carries no link. Those
-/// frames must not settle a pending copy.
-fn link_from_detail(detail: &JsValue) -> Option<String> {
-    let fields = Reflect::get(detail, &JsValue::from_str("fields")).ok()?;
-    let link = Reflect::get(&fields, &JsValue::from_str("link")).ok()?;
-    link.as_string().filter(|s| !s.is_empty())
+/// `current_link` is updated UNCONDITIONALLY, pending copy or not: it is the
+/// replacement for reading the old `<tonk-display>`'s rendered DOM text, and
+/// that used to update on every frame regardless of whether a copy was in
+/// flight.
+fn handle_link(
+    host: &HtmlElement,
+    state: &Rc<RefCell<ShareStateCell>>,
+    current_link: &Rc<RefCell<Option<String>>>,
+    link: String,
+) {
+    let pending_stale = state
+        .borrow()
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.stale.clone());
+    let is_pending = state.borrow().pending.is_some();
+    *current_link.borrow_mut() = Some(link.clone());
+    if !is_pending {
+        return;
+    }
+    // Still the previous mint's link — the new one hasn't landed yet. Keep
+    // the clipboard write open and wait for the next frame.
+    if Some(&link) == pending_stale.as_ref() {
+        return;
+    }
+    settle(host, state, Ok(link));
 }
 
-/// The link the invite display is currently showing — i.e. the last mint's, if
-/// any. The `fab-invite` view renders it into a hidden `.fab__invite-link`.
-/// `None` before the first mint.
-fn rendered_link(host: &HtmlElement) -> Option<String> {
-    let el = host.query_selector(".fab__invite-link").ok().flatten()?;
-    let text = el.text_content()?;
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.to_owned())
+/// A subscription snapshot (`reset`) frame: the invite link off the first
+/// (and only — cardinality-one) conclusion row.
+fn read_link_from_frame(payload: &JsValue) -> Option<String> {
+    let conclusions = js_sys::Array::from(payload);
+    read_link_field(&conclusions.get(0))
+}
+
+/// An incremental `update` frame: `{ asserted, retracted }`. `link` is
+/// cardinality-one, so the newest asserted row carries the current value; a
+/// bare retract (no asserted) is a no-op here.
+fn read_link_from_delta(payload: &JsValue) -> Option<String> {
+    let asserted =
+        Reflect::get(payload, &JsValue::from_str("asserted")).unwrap_or(JsValue::UNDEFINED);
+    let rows = js_sys::Array::from(&asserted);
+    read_link_field(&rows.get(rows.length().saturating_sub(1)))
+}
+
+/// Read `conclusion.fields.link` off a raw subscription row — the assembled
+/// (and shortened) invite URL the worker's mint asserted onto the space's
+/// `xyz.tonk.credential/link` attribute. `None` for a missing/empty row or an
+/// empty link.
+fn read_link_field(row: &JsValue) -> Option<String> {
+    if row.is_undefined() || row.is_null() {
+        return None;
+    }
+    Reflect::get(row, &JsValue::from_str("fields"))
+        .ok()
+        .and_then(|fields| Reflect::get(&fields, &JsValue::from_str("link")).ok())
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Stamp the state on the host. The view stylesheet keys the label and spinner
@@ -412,20 +515,15 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// A host carrying the invite display's rendered link, exactly as the
-    /// `fab-invite` view emits it.
-    fn host_showing(link: Option<&str>) -> HtmlElement {
+    /// A fresh, unconnected host — plenty for tests that only exercise the
+    /// state-machine helpers (`set_state`/`read_state`/`settle`), not a
+    /// delivered subscription frame.
+    fn fresh_host() -> HtmlElement {
         let document = window().expect("window").document().expect("document");
-        let host: HtmlElement = document
+        document
             .create_element("div")
             .expect("create host")
-            .unchecked_into();
-        if let Some(link) = link {
-            host.set_inner_html(&format!(
-                r#"<span class="fab__invite-link" hidden>{link}</span>"#
-            ));
-        }
-        host
+            .unchecked_into()
     }
 
     /// A host mounted inside an OPEN share segment, the way the FAB nests it:
@@ -443,35 +541,42 @@ mod tests {
         (host, segment)
     }
 
-    /// A `tonk-display:result` detail, in the shape the display actually
-    /// dispatches: a serialized conclusion `{ this, fields: { … } }`. The
-    /// concept's attributes are nested under `fields` — reading `link` off the
-    /// top level (as an earlier cut of this did) always finds nothing, and the
-    /// copy hangs forever waiting for a link that is right there.
-    fn detail_with_fields(pairs: &[(&str, &str)]) -> JsValue {
+    /// A subscription row, in the shape a real delivered conclusion takes:
+    /// `{ fields: { … } }`. The concept's attributes are nested under
+    /// `fields` — reading `link` off the top level always finds nothing.
+    fn row_with_fields(pairs: &[(&str, &str)]) -> JsValue {
         let fields = Object::new();
         for (key, value) in pairs {
             Reflect::set(&fields, &JsValue::from_str(key), &JsValue::from_str(value))
                 .expect("set field");
         }
-        let detail = Object::new();
-        Reflect::set(
-            &detail,
-            &JsValue::from_str("this"),
-            &JsValue::from_str("did:key:zSubject"),
-        )
-        .expect("set this");
-        Reflect::set(&detail, &JsValue::from_str("fields"), &fields).expect("set fields");
-        detail.into()
+        let row = Object::new();
+        Reflect::set(&row, &JsValue::from_str("fields"), &fields).expect("set fields");
+        row.into()
+    }
+
+    /// A `reset` snapshot payload: a bare array of one conclusion row.
+    fn reset_payload(pairs: &[(&str, &str)]) -> JsValue {
+        let rows = js_sys::Array::new();
+        rows.push(&row_with_fields(pairs));
+        rows.into()
+    }
+
+    /// An `update` delta payload: `{ asserted, retracted }`.
+    fn update_payload(pairs: &[(&str, &str)]) -> JsValue {
+        let asserted = js_sys::Array::new();
+        asserted.push(&row_with_fields(pairs));
+        let payload = Object::new();
+        Reflect::set(&payload, &JsValue::from_str("asserted"), &asserted).expect("set asserted");
+        payload.into()
     }
 
     #[wasm_bindgen_test]
     fn it_reads_the_link_out_of_the_conclusions_fields() {
         // The link is nested under `fields`, alongside the invite's other
-        // attributes — exactly as the display serializes a real minted invite.
+        // attributes — exactly as a real minted invite's row is shaped.
         assert_eq!(
-            link_from_detail(&detail_with_fields(&[
-                ("name", "home"),
+            read_link_field(&row_with_fields(&[
                 ("link", "https://tonk.xyz/@/abc"),
                 ("code", "zSeed"),
             ])),
@@ -480,51 +585,118 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_ignores_the_pre_mint_frame() {
-        // Before a mint lands, the display still frames the repo's bare name
-        // (`fields: { name }`) — no `link`. Treating that as the result settles
-        // the copy with nothing, so the guard has to hold out for a real link.
-        assert_eq!(
-            link_from_detail(&detail_with_fields(&[("name", "home")])),
-            None
-        );
-    }
-
-    #[wasm_bindgen_test]
     fn it_ignores_a_malformed_or_empty_frame() {
-        assert_eq!(link_from_detail(&Object::new().into()), None);
-        assert_eq!(link_from_detail(&detail_with_fields(&[("link", "")])), None);
+        assert_eq!(read_link_field(&Object::new().into()), None);
+        assert_eq!(read_link_field(&row_with_fields(&[("link", "")])), None);
+        assert_eq!(read_link_field(&JsValue::UNDEFINED), None);
     }
 
     #[wasm_bindgen_test]
-    fn it_sees_no_rendered_link_before_the_first_mint() {
-        // A space that has never been shared renders no invite, so there is no
-        // stale link to guard against.
-        assert_eq!(rendered_link(&host_showing(None)), None);
-    }
-
-    #[wasm_bindgen_test]
-    fn it_reads_the_previous_mints_link_off_the_dom() {
-        // This is what makes the stale guard work: on click we can see which
-        // link is already on screen, so we know to keep waiting when a frame
-        // still carries it.
+    fn it_reads_a_reset_snapshot_and_an_update_delta() {
         assert_eq!(
-            rendered_link(&host_showing(Some("https://tonk.xyz/@/old"))),
-            Some("https://tonk.xyz/@/old".to_owned()),
+            read_link_from_frame(&reset_payload(&[("link", "https://tonk.xyz/@/a")])),
+            Some("https://tonk.xyz/@/a".to_owned()),
         );
+        assert_eq!(
+            read_link_from_delta(&update_payload(&[("link", "https://tonk.xyz/@/b")])),
+            Some("https://tonk.xyz/@/b".to_owned()),
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_sees_no_current_link_before_the_first_frame() {
+        // A space that has never been shared has delivered no frame yet, so
+        // there is no stale link to guard against.
+        let current_link: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        assert_eq!(*current_link.borrow(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn it_tracks_the_link_from_every_frame_even_with_no_copy_pending() {
+        // Mirrors what reading the old `<tonk-display>`'s rendered DOM text
+        // used to do: `current_link` reflects the last delivered frame
+        // regardless of whether a copy is in flight.
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        let current_link: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+        handle_link(
+            &host,
+            &state,
+            &current_link,
+            "https://tonk.xyz/@/first".to_owned(),
+        );
+
+        assert_eq!(
+            *current_link.borrow(),
+            Some("https://tonk.xyz/@/first".to_owned())
+        );
+        // No copy was pending, so nothing settles.
+        assert_eq!(read_state(&host), ShareState::Idle);
+    }
+
+    #[wasm_bindgen_test]
+    fn it_settles_a_pending_copy_when_a_fresh_link_lands() {
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        let current_link: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        // The link on screen at click time — what the click captured as
+        // `stale`.
+        open_clipboard_write(Rc::clone(&state), Some("https://tonk.xyz/@/old".to_owned()))
+            .expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+
+        handle_link(
+            &host,
+            &state,
+            &current_link,
+            "https://tonk.xyz/@/new".to_owned(),
+        );
+
+        assert_eq!(read_state(&host), ShareState::Copied);
+        assert!(
+            state.borrow().pending.is_none(),
+            "a fresh link must settle the pending copy",
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_keeps_waiting_when_a_frame_still_carries_the_stale_link() {
+        // The subscription can re-deliver the previous mint's row before the
+        // new one lands — that must not be mistaken for the result.
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        let current_link: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        open_clipboard_write(Rc::clone(&state), Some("https://tonk.xyz/@/old".to_owned()))
+            .expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+
+        handle_link(
+            &host,
+            &state,
+            &current_link,
+            "https://tonk.xyz/@/old".to_owned(),
+        );
+
+        assert_eq!(
+            read_state(&host),
+            ShareState::Copying,
+            "a frame still carrying the stale link must not settle the copy",
+        );
+        assert!(state.borrow().pending.is_some());
     }
 
     #[wasm_bindgen_test]
     fn it_defaults_to_idle_before_the_element_upgrades() {
         // No `data-share-state` yet — the button must read "share", not blank.
-        assert_eq!(read_state(&host_showing(None)), ShareState::Idle);
+        assert_eq!(read_state(&fresh_host()), ShareState::Idle);
     }
 
     #[wasm_bindgen_test]
     fn it_round_trips_every_state_through_the_dom() {
         // The stylesheet keys the label swap off this attribute, so a state
         // that doesn't survive the round-trip renders the wrong label.
-        let host = host_showing(None);
+        let host = fresh_host();
         for state in [
             ShareState::Idle,
             ShareState::Copying,
@@ -538,7 +710,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn it_settles_a_pending_copy_and_shows_copied() {
-        let host = host_showing(None);
+        let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
@@ -574,7 +746,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn it_shows_failed_when_the_mint_errors() {
-        let host = host_showing(None);
+        let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
@@ -589,10 +761,9 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn it_settles_only_once() {
-        // The invite display re-renders on every subscription frame. Only the
-        // first frame after a click may settle the copy; a later one must find
-        // nothing pending and leave the confirmation alone.
-        let host = host_showing(None);
+        // Only the first frame after a click may settle the copy; a later
+        // one must find nothing pending and leave the confirmation alone.
+        let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
 

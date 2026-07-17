@@ -939,6 +939,42 @@ mod space_list {
     }
 }
 
+/// The subscribe body for the signed-in member's profile display name.
+///
+/// An INLINE predicate over the raw `xyz.tonk.profile/display-name`
+/// attribute — not the deleted `tonk:profile/name-view`, which was a
+/// per-space-seeded template. Directory mode (`this` unbound): the profile
+/// branch carries at most one such row (the member's own override), so no
+/// subject needs binding, unlike [`repo_name_query_body`]'s repo-scoped
+/// read. Absent until the user renames (the worker's `petname` fallback is
+/// computed, not persisted), so an empty result is expected, not an error.
+pub fn profile_name_query_body() -> String {
+    json!({
+        "predicate": { "with": { "name": {
+            "the": "xyz.tonk.profile/display-name", "as": "String", "cardinality": "one"
+        } } },
+        "terms": { "this": { "?": { "name": "this" } }, "name": { "?": { "name": "name" } } }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod profile_name {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_profile_display_name_by_raw_attribute() {
+        let body = profile_name_query_body();
+        // The raw attribute URI — NOT the deleted `tonk:profile/name-view`.
+        // Nothing seeded is needed, so an old core.yaml cannot break this.
+        assert!(body.contains("xyz.tonk.profile/display-name"));
+        assert!(!body.contains("tonk:profile/name"));
+        // Directory mode: `this` is unbound (see `member_roster_query_body`'s
+        // test for why the compact-JSON substring below has no spaces).
+        assert!(body.contains("\"this\":{\"?\""));
+    }
+}
+
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
 /// A transient carrying the target `space` and the new `value`. Dispatched

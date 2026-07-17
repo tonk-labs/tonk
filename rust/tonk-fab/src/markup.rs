@@ -60,11 +60,13 @@
 //! `tonk-display::events::preprocess` would have produced, which at least
 //! keeps the browser from treating it as inline JS. It still does not
 //! dispatch `space/create` — no delegate reads `data-onsubmit` outside a
-//! `<tonk-display>` — the same gap the profile-name chip and share zone have
-//! (their command dispatch is explicitly a follow-up task; this one needs
-//! the same kind of hand-rolled `window.tonk.transact` wiring `ui-space-name`
-//! and `element.rs::dispatch_pause_from_cap` already use for Rust-owned
-//! markup).
+//! `<tonk-display>`. The profile-name chip's own commit (`<ui-profile-name>`,
+//! `profile_name.rs`) and the share button's mint (`<tonk-share>`,
+//! `share.rs`) had the identical gap and are now fixed the same way every
+//! other Rust-owned command dispatch is: hand-rolled `window.tonk.transact`
+//! wiring, matching `ui-space-name::dispatch_rename` and
+//! `element.rs::dispatch_pause_from_cap`. This wizard form is the one
+//! dispatch still left as a follow-up.
 
 /// Build the FAB's inner markup — the bar and the create-space dialog — for
 /// the given space DID. The returned string is meant to be set as
@@ -77,7 +79,7 @@ pub fn fab_html(space_did: &str) -> String {
   <span class="fab__seg fab__cap-l fab__circle"><ui-sync-status with="main@{space}" onpause="tonk:pause-sync"></ui-sync-status></span>
   <div class="fab__tele">
     <span class="fab__seg fab__account">
-      <span class="fab__name"><tonk-display model="tonk:profile/name"></tonk-display></span>
+      <span class="fab__name"><ui-profile-name></ui-profile-name></span>
     </span>
   </div>
   <div class="fab__tele">
@@ -90,13 +92,21 @@ pub fn fab_html(space_did: &str) -> String {
   </div>
   <div class="fab__tele">
     <span class="fab__seg fab__share">
-      <tonk-share>
-        <tonk-display class="fab__invite-display" with="{space}" entity="{space}" model="tonk:agent-invite" view="tonk:view/fab-invite">
-          <span slot="no-entity" hidden></span>
-          <span slot="no-model" hidden></span>
-          <span slot="loading" hidden></span>
-        </tonk-display>
-        <tonk-display class="fab__share-mint" with="{space}" model="tonk:repository"></tonk-display>
+      <tonk-share space="{space}">
+        <form class="fab__share-form">
+          <button type="submit" class="fab__share-trigger">
+            <span class="fab__share-label fab__share-label--idle">share</span>
+            <span class="fab__share-label fab__share-label--copying">
+              <span class="fab__share-spinner"></span>copying…
+            </span>
+            <span class="fab__share-label fab__share-label--copied">
+              <wa-icon name="check"></wa-icon>copied
+            </span>
+            <span class="fab__share-label fab__share-label--failed">
+              <wa-icon name="triangle-exclamation"></wa-icon>failed
+            </span>
+          </button>
+        </form>
       </tonk-share>
       <nav class="fab__menu fab__share-menu">
         <ui-member-roster space="{space}"></ui-member-roster>
@@ -198,5 +208,44 @@ mod tests {
         // Must be non-empty: the extractor omits blank fields, so a blank
         // name would store no fact and the create command would never fire.
         assert!(html.contains(r#"<input type="hidden" name="name" value="Untitled">"#));
+    }
+
+    #[test]
+    fn it_mounts_no_tonk_display_for_deleted_views() {
+        // Regression guard: `tonk:profile/name-view`, `tonk:view/fab-invite`,
+        // and `tonk:repository/fab-share` are all deleted from the stdlib
+        // (see this crate's module doc). A `<tonk-display>` mounting any of
+        // them resolves nothing and renders a callout — "No view for
+        // tonk:repository" / "Model not found" — which is the exact bug this
+        // crate exists to fix. The FAB must not mount ANY `<tonk-display>`:
+        // it depends on nothing seeded into a space's database.
+        let html = fab_html("did:key:z6Mk");
+        assert!(
+            !html.contains("tonk-display"),
+            "the FAB must not mount any <tonk-display> — it renders its own \
+             markup from raw attributes, not a seeded view: {html}"
+        );
+        // Named explicitly too, so this test still catches a reintroduction
+        // even if some future `<tonk-display>` use were legitimate elsewhere
+        // in this markup.
+        assert!(!html.contains("tonk:profile/name"));
+        assert!(!html.contains("tonk:view/fab-invite"));
+        assert!(!html.contains(r#"model="tonk:repository""#));
+    }
+
+    #[test]
+    fn it_authors_the_share_button_markup_directly() {
+        // The share button used to live in the deleted `tonk:repository/
+        // fab-share` view; it is now authored here instead. The classes must
+        // match exactly — `fab.css` styles these selectors directly.
+        let html = fab_html("did:key:z6Mk");
+        assert!(html.contains("fab__share-trigger"));
+        assert!(html.contains("fab__share-label--idle"));
+        assert!(html.contains("fab__share-label--copying"));
+        assert!(html.contains("fab__share-label--copied"));
+        assert!(html.contains("fab__share-label--failed"));
+        // `<tonk-share>` must carry its own `space` so it can subscribe to
+        // this space's minted invite link and dispatch the mint itself.
+        assert!(html.contains(r#"<tonk-share space="did:key:z6Mk">"#));
     }
 }
