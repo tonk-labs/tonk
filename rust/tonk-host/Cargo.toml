@@ -30,6 +30,10 @@ web-sys = { workspace = true, features = [
   "CustomEvent",
   "CustomEventInit",
   "console",
+  # `Window::get_computed_style` — the confirm-button test asserts the
+  # cascade's own answer, which is the only thing that can catch a rule
+  # that is present but loses on specificity.
+  "CssStyleDeclaration",
   "Document",
   "DomException",
   "Element",

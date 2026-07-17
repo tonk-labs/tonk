@@ -516,18 +516,67 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
   gap: 0.5rem;
 }
 .tonk-open button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* A 40px floor on the hit area. The visible chrome is smaller than the
+     comfortable target on a touch screen, so drive the height from here
+     rather than from vertical padding. */
+  min-height: 2.5rem;
+  padding: 0 1rem;
   border-radius: var(--wa-border-radius-m, 6px);
   border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
   background: var(--wa-color-neutral-fill-quiet, #f4f4f5);
   color: inherit;
   font: inherit;
-  padding: 0.4rem 0.9rem;
+  line-height: 1;
   cursor: pointer;
+  /* Never `transition: all` — name the properties, so a layout property added
+     later cannot start animating by accident. Transitions rather than
+     keyframes because a pointer entering and leaving has to be interruptible
+     mid-flight; a keyframe would have to finish first. */
+  transition-property: background-color, border-color, filter, scale;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
-.tonk-open__confirm {
+.tonk-open button:hover {
+  background: var(--wa-color-neutral-fill-normal, #e4e4e7);
+}
+/* Tactile feedback on press. 0.96 is the floor that still reads as a press;
+   below ~0.95 the button looks like it is shrinking away from the cursor. */
+.tonk-open button:active {
+  scale: 0.96;
+}
+/* `:focus-visible`, not `:focus` — a mouse press should not leave a ring
+   behind, but a keyboard user must always be able to see what Enter will hit.
+   This dialog is modal and takes focus, so that matters more here than usual. */
+.tonk-open button:focus-visible {
+  outline: 2px solid var(--wa-color-brand-fill-loud, #3b4a0a);
+  outline-offset: 2px;
+}
+/* The element selector matters. `.tonk-open button` is (0,1,1) and a bare
+   `.tonk-open__confirm` is (0,1,0), so the base rule won and the primary
+   action rendered IDENTICAL to Cancel — the one button the dialog exists to
+   make the user think about looked like the one to ignore. */
+.tonk-open button.tonk-open__confirm {
   background: var(--wa-color-brand-fill-loud, #3b4a0a);
   border-color: var(--wa-color-brand-fill-loud, #3b4a0a);
   color: var(--wa-color-brand-on-loud, #f4f7e4);
+}
+/* Web Awesome ships no `*-hover` token, and `brand-fill-normal` is LIGHTER
+   than `-loud`, so stepping tokens would make hover read as less prominent
+   rather than more. Darkening resolves correctly against whatever the theme
+   computes, in light mode or dark. */
+.tonk-open button.tonk-open__confirm:hover {
+  filter: brightness(0.92);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tonk-open button {
+    transition-duration: 0s;
+  }
+  .tonk-open button:active {
+    scale: 1;
+  }
 }
 "#,
     ));
@@ -1102,6 +1151,57 @@ mod tests {
         assert!(
             !text.contains("Leave"),
             "the spot stays open, so the dialog must not say the user is leaving"
+        );
+    }
+
+    /// The two buttons must not look alike. This shipped broken: the base rule
+    /// `.tonk-open button` is (0,1,1) and the bare `.tonk-open__confirm` was
+    /// (0,1,0), so the element selector won and Open rendered identical to
+    /// Cancel — the one button the dialog exists to make the user consider
+    /// looked like the one to ignore.
+    ///
+    /// Asserts the computed fill actually differs rather than that some
+    /// declaration exists, because the bug was never a missing rule: the rule
+    /// was there and lost. Only the cascade's own answer can catch that, so
+    /// the dialog has to be in the document to have a computed style at all.
+    #[dialog_common::test]
+    async fn it_distinguishes_the_confirm_button_from_cancel() {
+        let window = web_sys::window().expect("a window in the test harness");
+        let document = window.document().expect("a document in the test harness");
+        let body = document.body().expect("a body in the test harness");
+        ensure_styles(&document);
+
+        let dialog = build_dialog(&document, "https://example.com", "https://example.com/")
+            .expect("a dialog");
+        let _ = body.append_child(&dialog);
+
+        let fill = |selector: &str| {
+            let element = dialog
+                .query_selector(selector)
+                .ok()
+                .flatten()
+                .expect("the button should exist");
+            window
+                .get_computed_style(&element)
+                .ok()
+                .flatten()
+                .and_then(|style| style.get_property_value("background-color").ok())
+                .unwrap_or_default()
+        };
+        let cancel = fill(".tonk-open__cancel");
+        let confirm = fill(".tonk-open__confirm");
+
+        // Restore before asserting: a panic unwinds past cleanup placed after,
+        // leaving a dialog in the shared document for every later test.
+        dialog.remove();
+
+        assert_ne!(
+            confirm, cancel,
+            "the primary action must not render identically to Cancel"
+        );
+        assert!(
+            !confirm.is_empty(),
+            "the confirm button should compute a real background"
         );
     }
 }
