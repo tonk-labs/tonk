@@ -1535,6 +1535,25 @@ mod tests {
     #[wasm_bindgen_test]
     fn it_compacts_when_the_expanded_bar_cannot_fit() {
         let document = window().expect("window").document().expect("document");
+        // `expanded_bar_width` only measures correctly because it removes
+        // `fab--compact` before reading the rect (then restores it) — a
+        // naive measurement while the class is still applied would read the
+        // clamped-down size instead of the bar's true would-be-expanded
+        // size. The fixture otherwise loads no stylesheet, so nothing here
+        // would catch a regression that measured before unclamping. Inject
+        // the one rule that actually exercises that: a real `.fab--compact`
+        // clamp, matching fab.css's compact-mode intent, that would corrupt
+        // a naive measurement if `expanded_bar_width` didn't remove the
+        // class first.
+        const CLAMP_STYLE_ID: &str = "it-compacts-when-the-expanded-bar-cannot-fit-clamp";
+        let clamp_style = document.create_element("style").expect("create style");
+        let _ = clamp_style.set_attribute("id", CLAMP_STYLE_ID);
+        clamp_style.set_text_content(Some(
+            ".fab--compact { max-inline-size: 50px; overflow: hidden; }",
+        ));
+        if let Some(head) = document.head() {
+            head.append_child(&clamp_style).expect("mount clamp style");
+        }
         let host = fab_host();
         document
             .body()
@@ -1604,6 +1623,19 @@ mod tests {
             "a bar wider than any viewport must compact"
         );
 
+        // The bar is still oversized and now genuinely carries
+        // `fab--compact` (with the clamp rule above in effect). Re-evaluate
+        // while clamped: a correct `expanded_bar_width` removes the class
+        // before measuring, so it still sees the true oversized width and
+        // stays compact. A regression that measured before removing the
+        // class would read the clamped ~50px, decide the bar fits, and
+        // wrongly drop the class here.
+        update_compact_mode(&host);
+        assert!(
+            fab.class_list().contains("fab--compact"),
+            "re-evaluating while clamped must measure the unclamped width"
+        );
+
         let _ = wide.style().set_property("width", "10px");
         update_compact_mode(&host);
         assert!(
@@ -1611,5 +1643,6 @@ mod tests {
             "a bar that fits again must leave compact mode"
         );
         host.remove();
+        clamp_style.remove();
     }
 }
