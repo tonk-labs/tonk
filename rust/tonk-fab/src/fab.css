@@ -159,8 +159,13 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 .fab__tele--repo    { order: 2; }
 .fab__tele--share   { order: 3; }
 .fab__tele--end     { order: 4; }
-/* The chevron cap is compact-only; wide mode shows the decorative nub. */
-.fab__more { display: none; }
+/* The chevron cap is compact-only; wide mode shows the decorative nub.
+   The hide rule must OUTRANK `.fab__seg`'s `display: inline-flex` (the
+   chevron carries both classes, and `.fab__seg` sits later in this sheet,
+   so a bare same-specificity `.fab__more` loses the tie and the chevron
+   leaks into the wide bar). `:not(.fab--compact)` both raises specificity
+   and scopes the rule so it can never fight the compact show rule. */
+.fab:not(.fab--compact) .fab__more { display: none; }
 /* ── Compact mode ─────────────────────────────────────────────────
    `fab--compact` is set on `.fab` by element.rs when the EXPANDED bar
    plus both 16px dock insets would overflow the viewport (measured, not
