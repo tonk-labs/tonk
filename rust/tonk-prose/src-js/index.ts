@@ -24,9 +24,15 @@
 //                     and replace it.
 //
 // Events:
-//   change   — CustomEvent<{value}>. Fires after every user edit
-//              (programmatic `.value` writes do not refire). `value`
-//              is the markdown serialization of the new document.
+//   change   — CustomEvent<{value}>. Fires after user edits go idle
+//              (debounced), coalescing a typing burst into one event;
+//              programmatic `.value` writes do not refire. `value` is
+//              the markdown serialization of the current document. A
+//              value written back into `.value` that matches one we
+//              just dispatched (a store round-trip of our own edit) is
+//              recognized as an echo and dropped, so it can't disturb
+//              the caret; a genuine out-of-band value replaces only the
+//              changed span (see the editor's `setMarkdown`).
 //   ready    — fires once, after the editor core chunk has loaded
 //              and the ProseMirror view is mounted.
 //
@@ -42,6 +48,16 @@ import type { ProseEditor, EditorModule } from "./editor/api";
 
 const OBSERVED = ["value", "readonly", "placeholder", "auto-focus"] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
+
+/** Idle gap before a burst of edits dispatches one `change`. Long
+ *  enough to coalesce fast typing, short enough that a store commit
+ *  still feels responsive after a pause. */
+const CHANGE_DEBOUNCE_MS = 400;
+
+/** How many dispatched-but-not-yet-echoed values to remember for the
+ *  round-trip drop. A handful covers overlapping in-flight commits; a
+ *  value whose echo never lands is evicted once the cap is passed. */
+const SENT_VALUES_CAP = 8;
 
 /** Detail object dispatched on the `change` event. */
 export type ChangeDetail = {
@@ -131,9 +147,23 @@ class TonkProseElement extends HTMLElement {
    *  loading. Applied (last-write-wins) when the editor mounts. */
   #pendingValue: string | null = null;
 
-  /** Suppress the `change` event during programmatic `.value`
-   *  writes so consumers don't see their own writes echoed back. */
-  #suppressChange = false;
+  /** Debounce timer for the outward `change` event. Coalesces a burst
+   *  of keystrokes into one dispatch after an idle gap, so a consumer
+   *  that commits each `change` to a store isn't hit per-keystroke. */
+  #changeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** The latest edited markdown awaiting a debounced `change`
+   *  dispatch, or null when nothing is pending. */
+  #pendingChange: string | null = null;
+
+  /** Values we've dispatched via `change` but not yet seen written
+   *  back. When a consumer round-trips our own edit through a store
+   *  and back into `value`, the incoming write matches one of these
+   *  and is dropped instead of re-applied — that's what stops the
+   *  store echo from fighting the caret. Keyed by value string;
+   *  bounded (a late echo that never arrives is evicted once the set
+   *  passes a small cap, so it can't grow without bound). */
+  #sentValues: Set<string> = new Set();
 
   /** Pending teardown scheduled by `disconnectedCallback`. Reactive
    *  frameworks (Leptos, mostly) detach and re-attach DOM nodes
@@ -185,14 +215,7 @@ class TonkProseElement extends HTMLElement {
       readOnly: this.hasAttribute("readonly"),
       placeholder: this.getAttribute("placeholder") ?? "",
       onChange: (value) => {
-        if (this.#suppressChange) return;
-        this.dispatchEvent(
-          new CustomEvent<ChangeDetail>("change", {
-            detail: { value },
-            bubbles: true,
-            composed: true,
-          }),
-        );
+        this.#scheduleChange(value);
       },
     });
     this.#pendingValue = null;
@@ -215,6 +238,39 @@ class TonkProseElement extends HTMLElement {
     }
   }
 
+  /** Record the latest edited markdown and (re)arm the debounce. The
+   *  `change` event dispatches once the edits go idle, carrying the
+   *  most recent value. */
+  #scheduleChange(value: string): void {
+    this.#pendingChange = value;
+    if (this.#changeTimer !== null) clearTimeout(this.#changeTimer);
+    this.#changeTimer = setTimeout(() => this.#flushChange(), CHANGE_DEBOUNCE_MS);
+  }
+
+  /** Dispatch the pending debounced `change`, if any. Records the
+   *  value as sent so a consumer round-tripping it back into `value`
+   *  is recognized as our own echo and dropped. */
+  #flushChange(): void {
+    this.#changeTimer = null;
+    const value = this.#pendingChange;
+    this.#pendingChange = null;
+    if (value === null) return;
+    // Remember what we emitted so the store echo can be dropped.
+    // Cap the set so a value that never round-trips can't leak.
+    this.#sentValues.add(value);
+    if (this.#sentValues.size > SENT_VALUES_CAP) {
+      const oldest = this.#sentValues.values().next().value;
+      if (oldest !== undefined) this.#sentValues.delete(oldest);
+    }
+    this.dispatchEvent(
+      new CustomEvent<ChangeDetail>("change", {
+        detail: { value },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
   disconnectedCallback(): void {
     if (this.#teardownScheduled) return;
     this.#teardownScheduled = true;
@@ -224,6 +280,12 @@ class TonkProseElement extends HTMLElement {
       // `isConnected` flips back to true if the framework
       // re-inserted us within the deferral window.
       if (this.isConnected) return;
+      // Flush any debounced edit before tearing down, so the last
+      // keystrokes before removal aren't lost.
+      if (this.#changeTimer !== null) {
+        clearTimeout(this.#changeTimer);
+        this.#flushChange();
+      }
       this.#mountToken++;
       this.#editor?.destroy();
       this.#editor = null;
@@ -264,19 +326,23 @@ class TonkProseElement extends HTMLElement {
   }
 
   set value(next: string) {
+    // Our own edit, round-tripped back through a store: drop it. The
+    // value matches one we dispatched via `change` and haven't yet
+    // seen written back, so re-applying it would only disturb the
+    // caret (and any edits made since). Consume the token so a later
+    // genuine write of the same text still lands.
+    if (this.#sentValues.delete(next)) return;
+
     if (!this.#editor) {
       // Editor core still loading (or element not yet connected):
       // buffer the write, the mount applies it.
       this.#pendingValue = next;
       return;
     }
-    if (next === this.#editor.getMarkdown()) return;
-    this.#suppressChange = true;
-    try {
-      this.#editor.setMarkdown(next);
-    } finally {
-      this.#suppressChange = false;
-    }
+    // `setMarkdown` no-ops when `next` already matches the buffer and
+    // otherwise replaces only the blocks that differ, preserving the
+    // caret — so a genuine out-of-band change doesn't reset the view.
+    this.#editor.setMarkdown(next);
   }
 
   /** Move keyboard focus into the document. */
