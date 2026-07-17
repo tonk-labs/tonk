@@ -45,13 +45,16 @@ const options = {
   target: ["es2022"],
   minify: true,
   sourcemap: true,
-  // Splitting keeps module identities unique across the shell and the
-  // editor chunk (same rationale as tonk-code: shared modules must
-  // resolve to a single copy so `instanceof` checks hold). The shell
-  // imports the editor entry only via dynamic import, so esbuild
-  // already emits it as a separate chunk; splitting additionally
-  // hoists anything they'd otherwise both inline.
-  splitting: true,
+  // No code splitting: the shell must be ONE self-contained file. It's
+  // postMessaged into sealed guests as a single string and blob-minted
+  // there (tonk-portal), where a cross-file `import "./chunk-….js"`
+  // can't resolve. Splitting is safe to drop because the shell and the
+  // editor share no stateful module — the shell imports only the pure
+  // `content`/`hlc` logic and dynamic-imports the editor entry, which
+  // is emitted as its own file regardless. (The ProseMirror `schema`
+  // singleton lives entirely inside the editor chunk, so there's no
+  // cross-entry identity to protect, unlike a shared-schema setup.)
+  splitting: false,
   external: [],
   logLevel: "info",
 };

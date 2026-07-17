@@ -12,26 +12,32 @@
 // that mount many editors fetch the core exactly once.
 //
 // Attributes (all reflected on the host element):
-//   value       — initial markdown source. Reactive: writes after
-//                 connect replace the document in-place.
+//   content     — versioned `content` envelope (content.ts): the
+//                 markdown plus an HLC ETag. The sync channel — write
+//                 it back through a store and the element drops its own
+//                 echo by the version. A bare markdown string is also
+//                 accepted (no version → always adopted).
+//   value       — bare markdown source (a subset of `content`).
+//                 Reactive: an out-of-band write patches only the span
+//                 that differs, preserving the caret.
 //   readonly    — boolean attribute. Presence locks the editor.
 //   placeholder — ghost text shown while the document is empty.
 //   auto-focus  — boolean attribute. Focus the editor once mounted.
 //
 // Properties:
-//   .value : string — round-trips with the document as markdown.
-//                     Reads serialize the current doc; writes parse
-//                     and replace it.
+//   .value : string   — round-trips the document as bare markdown.
+//   .content : string — round-trips as the versioned envelope.
+//   .version : string — the current HLC as a decimal string (read).
 //
 // Events:
-//   change   — CustomEvent<{value}>. Fires after user edits go idle
-//              (debounced), coalescing a typing burst into one event;
-//              programmatic `.value` writes do not refire. `value` is
-//              the markdown serialization of the current document. A
-//              value written back into `.value` that matches one we
-//              just dispatched (a store round-trip of our own edit) is
-//              recognized as an echo and dropped, so it can't disturb
-//              the caret; a genuine out-of-band value replaces only the
+//   change   — CustomEvent<{value, content}>. Fires after user edits
+//              go idle (debounced), coalescing a typing burst into one
+//              event; programmatic writes do not refire. `value` is the
+//              markdown; `content` is the versioned envelope. Writing
+//              `content` back through a store round-trips the HLC, so
+//              the element recognizes its own echo (version not newer)
+//              and drops it — the caret is never disturbed by a
+//              round-trip. A genuinely newer write patches only the
 //              changed span (see the editor's `setMarkdown`).
 //   ready    — fires once, after the editor core chunk has loaded
 //              and the ProseMirror view is mounted.
@@ -45,8 +51,16 @@
 // element stays decoupled from any consumer's design system.
 
 import type { ProseEditor, EditorModule } from "./editor/api";
+import { Clock, formatHlc } from "./editor/hlc";
+import { parseContent, formatContent } from "./editor/content";
 
-const OBSERVED = ["value", "readonly", "placeholder", "auto-focus"] as const;
+const OBSERVED = [
+  "content",
+  "value",
+  "readonly",
+  "placeholder",
+  "auto-focus",
+] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
 /** Idle gap before a burst of edits dispatches one `change`. Long
@@ -54,15 +68,15 @@ type ObservedAttr = (typeof OBSERVED)[number];
  *  still feels responsive after a pause. */
 const CHANGE_DEBOUNCE_MS = 400;
 
-/** How many dispatched-but-not-yet-echoed values to remember for the
- *  round-trip drop. A handful covers overlapping in-flight commits; a
- *  value whose echo never lands is evicted once the cap is passed. */
-const SENT_VALUES_CAP = 8;
-
 /** Detail object dispatched on the `change` event. */
 export type ChangeDetail = {
-  /** Markdown serialization of the document after the edit. */
+  /** Markdown serialization of the document after the edit. The plain
+   *  text, for consumers that only want the value. */
   value: string;
+  /** The versioned `content` envelope (value + HLC ETag). Write this
+   *  back through a store and the element recognizes its own echo by
+   *  the HLC, dropping it instead of fighting the caret. */
+  content: string;
 };
 
 /** Detail object dispatched on the `ready` event. */
@@ -156,14 +170,19 @@ class TonkProseElement extends HTMLElement {
    *  dispatch, or null when nothing is pending. */
   #pendingChange: string | null = null;
 
-  /** Values we've dispatched via `change` but not yet seen written
-   *  back. When a consumer round-trips our own edit through a store
-   *  and back into `value`, the incoming write matches one of these
-   *  and is dropped instead of re-applied — that's what stops the
-   *  store echo from fighting the caret. Keyed by value string;
-   *  bounded (a late echo that never arrives is evicted once the set
-   *  passes a small cap, so it can't grow without bound). */
-  #sentValues: Set<string> = new Set();
+  /** This element's Hybrid Logical Clock. Every outbound `change`
+   *  stamps a fresh HLC; every adopted inbound `content` advances it.
+   *  Monotonic, so it orders our own writes even across a wonky system
+   *  clock. */
+  readonly #clock = new Clock();
+
+  /** The highest HLC this element has issued or adopted. An incoming
+   *  `content` is our own echo (or otherwise not newer) exactly when
+   *  its HLC is `<= this`; such writes are ignored, which is what
+   *  stops a store round-trip from fighting the caret. A genuinely
+   *  newer write (greater HLC, or a bare value with no HLC) is
+   *  adopted. */
+  #lastKnownHlc = 0n;
 
   /** Pending teardown scheduled by `disconnectedCallback`. Reactive
    *  frameworks (Leptos, mostly) detach and re-attach DOM nodes
@@ -210,8 +229,29 @@ class TonkProseElement extends HTMLElement {
     // in flight.
     if (token !== this.#mountToken || !this.isConnected) return;
 
+    // Initial document: a `.value`/`content` write that landed before
+    // mount wins (`#pendingValue`); otherwise take the `content`
+    // attribute, else the bare `value` attribute. Parse through the
+    // envelope so an initial `content` seeds `#lastKnownHlc` too — a
+    // later echo of that same version is then correctly recognized.
+    let doc: string;
+    if (this.#pendingValue !== null) {
+      doc = this.#pendingValue;
+    } else {
+      const attr = this.getAttribute("content") ?? this.getAttribute("value");
+      if (attr === null) {
+        doc = "";
+      } else {
+        const parsed = parseContent(attr);
+        doc = parsed.value;
+        if (parsed.hlc !== null && parsed.hlc > this.#lastKnownHlc) {
+          this.#lastKnownHlc = this.#clock.receive(parsed.hlc);
+        }
+      }
+    }
+
     const editor = mod.createEditor(this.#mount, {
-      doc: this.#pendingValue ?? this.getAttribute("value") ?? "",
+      doc,
       readOnly: this.hasAttribute("readonly"),
       placeholder: this.getAttribute("placeholder") ?? "",
       onChange: (value) => {
@@ -247,24 +287,21 @@ class TonkProseElement extends HTMLElement {
     this.#changeTimer = setTimeout(() => this.#flushChange(), CHANGE_DEBOUNCE_MS);
   }
 
-  /** Dispatch the pending debounced `change`, if any. Records the
-   *  value as sent so a consumer round-tripping it back into `value`
-   *  is recognized as our own echo and dropped. */
+  /** Dispatch the pending debounced `change`, if any. Stamps a fresh
+   *  HLC and advances `#lastKnownHlc`, so when the consumer round-trips
+   *  the emitted `content` back through a store the element recognizes
+   *  it (HLC not newer) and drops it instead of re-applying. */
   #flushChange(): void {
     this.#changeTimer = null;
     const value = this.#pendingChange;
     this.#pendingChange = null;
     if (value === null) return;
-    // Remember what we emitted so the store echo can be dropped.
-    // Cap the set so a value that never round-trips can't leak.
-    this.#sentValues.add(value);
-    if (this.#sentValues.size > SENT_VALUES_CAP) {
-      const oldest = this.#sentValues.values().next().value;
-      if (oldest !== undefined) this.#sentValues.delete(oldest);
-    }
+    const hlc = this.#clock.tick();
+    this.#lastKnownHlc = hlc;
+    const content = formatContent({ hlc, value });
     this.dispatchEvent(
       new CustomEvent<ChangeDetail>("change", {
-        detail: { value },
+        detail: { value, content },
         bubbles: true,
         composed: true,
       }),
@@ -298,11 +335,15 @@ class TonkProseElement extends HTMLElement {
     next: string | null,
   ): void {
     switch (name) {
+      case "content":
+        this.#adopt(next ?? "");
+        break;
       case "value":
         // Reflect attribute → property only when they diverge so we
-        // don't fight the user's keystrokes.
+        // don't fight the user's keystrokes. `value=` is the bare
+        // (un-versioned) channel; it flows through the same adoption.
         if ((next ?? "") !== this.value) {
-          this.value = next ?? "";
+          this.#adopt(next ?? "");
         }
         break;
       case "readonly":
@@ -318,31 +359,61 @@ class TonkProseElement extends HTMLElement {
     }
   }
 
-  /** Current document as markdown. */
+  /** Adopt an incoming write — either a versioned `content` envelope
+   *  or a bare markdown string (which parses as an HLC-less value and
+   *  is always adopted). The HLC gate is the whole point: a write whose
+   *  HLC is not newer than what we've issued/seen is our own echo (or
+   *  otherwise stale) and is ignored, so a store round-trip can't
+   *  disturb the caret; a genuinely newer write advances our clock and
+   *  patches the document. */
+  #adopt(raw: string): void {
+    const { hlc, value } = parseContent(raw);
+    if (hlc !== null) {
+      if (hlc <= this.#lastKnownHlc) return; // our echo, or not newer
+      this.#lastKnownHlc = this.#clock.receive(hlc);
+    }
+    if (!this.#editor) {
+      // Editor core still loading (or element not yet connected):
+      // buffer the value, the mount applies it.
+      this.#pendingValue = value;
+      return;
+    }
+    // `setMarkdown` no-ops when `value` already matches the buffer and
+    // otherwise replaces only the span that differs, preserving the
+    // caret — so a genuine out-of-band change doesn't reset the view.
+    this.#editor.setMarkdown(value);
+  }
+
+  /** Current document as markdown (the bare value — a subset of
+   *  `content`). */
   get value(): string {
     if (this.#editor) return this.#editor.getMarkdown();
     if (this.#pendingValue !== null) return this.#pendingValue;
-    return this.getAttribute("value") ?? "";
+    const attr = this.getAttribute("content") ?? this.getAttribute("value");
+    return attr === null ? "" : parseContent(attr).value;
   }
 
   set value(next: string) {
-    // Our own edit, round-tripped back through a store: drop it. The
-    // value matches one we dispatched via `change` and haven't yet
-    // seen written back, so re-applying it would only disturb the
-    // caret (and any edits made since). Consume the token so a later
-    // genuine write of the same text still lands.
-    if (this.#sentValues.delete(next)) return;
+    this.#adopt(next);
+  }
 
-    if (!this.#editor) {
-      // Editor core still loading (or element not yet connected):
-      // buffer the write, the mount applies it.
-      this.#pendingValue = next;
-      return;
-    }
-    // `setMarkdown` no-ops when `next` already matches the buffer and
-    // otherwise replaces only the blocks that differ, preserving the
-    // caret — so a genuine out-of-band change doesn't reset the view.
-    this.#editor.setMarkdown(next);
+  /** Current document as a versioned `content` envelope: the markdown
+   *  plus the last HLC this element issued or adopted. Writing this
+   *  back through a store round-trips the version, so the element drops
+   *  its own echo. */
+  get content(): string {
+    return formatContent({ hlc: this.#lastKnownHlc, value: this.value });
+  }
+
+  set content(next: string) {
+    this.#adopt(next);
+  }
+
+  /** The last HLC this element issued or adopted, as a decimal string
+   *  (`"0"` before any edit). Read-only view for consumers that want
+   *  the version without parsing `content`. */
+  get version(): string {
+    return formatHlc(this.#lastKnownHlc);
   }
 
   /** Move keyboard focus into the document. */
