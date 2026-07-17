@@ -819,7 +819,7 @@ pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
     }
     Ok(json!({
         "predicate": { "with": { "name": {
-            "the": "xyz.tonk.repo/name", "as": "String", "cardinality": "one"
+            "the": "xyz.tonk.repo/name", "as": "Text", "cardinality": "one"
         } } },
         "terms": { "this": subject, "name": { "?": { "name": "name" } } }
     })
@@ -866,7 +866,7 @@ pub fn member_roster_query_body() -> String {
         "predicate": { "with": {
             "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
             "role":   { "the": "xyz.tonk.membership/role",   "as": "Entity", "cardinality": "one" },
-            "name":   { "the": "xyz.tonk.membership/name",   "as": "String", "cardinality": "one" }
+            "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" }
         } },
         "terms": {
             "this":   { "?": { "name": "this" } },
@@ -951,7 +951,7 @@ mod space_list {
 pub fn profile_name_query_body() -> String {
     json!({
         "predicate": { "with": { "name": {
-            "the": "xyz.tonk.profile/display-name", "as": "String", "cardinality": "one"
+            "the": "xyz.tonk.profile/display-name", "as": "Text", "cardinality": "one"
         } } },
         "terms": { "this": { "?": { "name": "this" } }, "name": { "?": { "name": "name" } } }
     })
@@ -1002,7 +1002,7 @@ pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
                     "concept": {
                         "description": "Rename a space's repository from the FAB.",
                         "with": {
-                            "value":  { "the": "dom.event.current-target/value", "as": "String" },
+                            "value":  { "the": "dom.event.current-target/value", "as": "Text" },
                             "space":  { "the": "xyz.tonk.rename-repository/space", "as": "Entity" },
                             "rename": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
                         }
@@ -1078,9 +1078,9 @@ pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Valu
                     "concept": {
                         "description": "A request to create a new space from the wizard form.",
                         "with": {
-                            "name":     { "the": "dom.event.current-target.elements.name/value", "as": "String" },
-                            "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "String" },
-                            "template": { "the": "dom.event.current-target.elements.template/value", "as": "String" }
+                            "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
+                            "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
+                            "template": { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
                         }
                     }
                 },
@@ -1160,7 +1160,7 @@ pub fn profile_rename_claim_json(name: &str) -> Value {
                     "concept": {
                         "description": "Rename the signed-in member (set their display name).",
                         "with": {
-                            "name":   { "the": "dom.event.current-target/value", "as": "String" },
+                            "name":   { "the": "dom.event.current-target/value", "as": "Text" },
                             "marker": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
                         }
                     }
@@ -1265,7 +1265,7 @@ pub fn invite_link_query_body(subject: &str) -> Result<String, String> {
     }
     Ok(json!({
         "predicate": { "with": { "link": {
-            "the": "xyz.tonk.credential/link", "as": "String", "cardinality": "one"
+            "the": "xyz.tonk.credential/link", "as": "Text", "cardinality": "one"
         } } },
         "terms": { "this": subject, "link": { "?": { "name": "link" } } }
     })
@@ -1302,5 +1302,61 @@ mod stylesheet {
         assert!(css.contains(".fab__menu-item"));
         assert!(css.contains(".fab__share-label"));
         assert!(css.contains(".wizard__card"));
+    }
+}
+
+/// The `as` type variants the worker's query and transact bodies accept.
+///
+/// `String` is NOT one of them: the wire enum is dialog's, not Rust's, and
+/// a body carrying `"as": "String"` is rejected outright — queries with
+/// `invalid query body: data did not match any variant of untagged enum
+/// Predicate`, claims with `unknown variant `String``. That failure is
+/// total and silent from the UI's side: the subscription never delivers and
+/// the command never fires, so a chip renders its fallback and a button
+/// spins forever, exactly as if the data were merely absent.
+///
+/// Asserting a body *contains* an attribute URI does not catch this — the
+/// body is well-formed JSON either way. Only the variant name matters.
+#[cfg(test)]
+const WIRE_TYPES: [&str; 6] = ["Text", "Entity", "Float", "Integer", "Bytes", "Boolean"];
+
+#[cfg(test)]
+mod wire_types {
+    use super::*;
+
+    /// Every `as` in every body this module builds must name a variant the
+    /// worker accepts. Regression: all nine originally said `String`, which
+    /// killed every FAB read and every FAB command at once.
+    #[test]
+    fn it_only_names_type_variants_the_worker_accepts() {
+        let bodies: Vec<String> = vec![
+            repo_name_query_body("did:key:zX").expect("repo name"),
+            member_roster_query_body(),
+            space_list_query_body(),
+            profile_name_query_body(),
+            invite_link_query_body("did:key:zX").expect("invite link"),
+            rename_repo_claim_json("did:key:zX", "N").to_string(),
+            create_space_claim_json("N", "https://r", "wiki").to_string(),
+            profile_rename_claim_json("N").to_string(),
+            invite_claim_json("did:key:zX", 1.0).to_string(),
+            pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),
+            dock_claim_json(crate::logic::Dock::BottomRight).to_string(),
+        ];
+
+        for body in &bodies {
+            for found in body.split("\"as\":").skip(1) {
+                let variant = found
+                    .trim_start()
+                    .trim_start_matches('"')
+                    .split('"')
+                    .next()
+                    .unwrap_or("");
+                assert!(
+                    WIRE_TYPES.contains(&variant),
+                    "`as: {variant}` is not a wire type the worker accepts \
+                     (expected one of {WIRE_TYPES:?}) in body: {body}"
+                );
+            }
+        }
     }
 }
