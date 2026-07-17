@@ -86,9 +86,9 @@ async fn it_injects_the_stylesheet_exactly_once_across_multiple_mounts() {
 /// alongside `fab__more` — and `.fab__seg { display: inline-flex }` sits
 /// LATER in the stylesheet than a bare `.fab__more { display: none }`, so a
 /// same-specificity hide rule loses the tie and the chevron leaks into the
-/// wide bar (where clicking it opens the vertical menu on desktop). This
-/// pins the COMPUTED style with the real injected stylesheet, in both modes
-/// — exactly what the class-toggle unit tests cannot see.
+/// wide bar as a clickable stray control. This pins the COMPUTED style with
+/// the real injected stylesheet, in both modes — exactly what the
+/// class-toggle unit tests cannot see.
 #[dialog_common::test]
 async fn it_hides_the_chevron_cap_outside_compact_mode() {
     let host = mount();
