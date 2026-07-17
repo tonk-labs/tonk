@@ -36,30 +36,6 @@
           overlays = [
             (import rust-overlay)
             (import ./nix/esbuild.nix)
-            # macOS 27 (beta 26A5378j) rejects the vm_remap that Apple's
-            # libffi fork uses to allocate closure trampolines, so every
-            # ctypes closure aborts (even Apple's system Python). crane
-            # renders Cargo.toml files with remarshal (Python), which hits
-            # this and kills all cargo builds. Rebuild remarshal on upstream
-            # (MIT) libffi, whose allocation path still works. Drop once
-            # nixpkgs' darwin libffi (or the OS) is fixed.
-            (
-              final: prev:
-              prev.lib.optionalAttrs prev.stdenv.isDarwin {
-                remarshal =
-                  let
-                    # `self = py` ties the interpreter's package set to the
-                    # overridden interpreter; without it, `.pkgs` is built
-                    # from the stock python3 and the libffi swap is a no-op.
-                    py = prev.python3.override {
-                      self = py;
-                      libffi = prev.libffiReal;
-                    };
-                  in
-                  with py.pkgs;
-                  toPythonApplication remarshal;
-              }
-            )
           ];
         };
         filter = nix-filter.lib;
