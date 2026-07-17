@@ -55,9 +55,11 @@ regardless of device.
 
 Invite claims redelegate the ephemeral key to the **root DID** as audience. No
 root key is needed at claim time: the claiming device signs the redelegation
-with the ephemeral seed from the invite URL, and its own `root → device` link
-completes the chain. A device without an account claims with its device DID
-exactly as today; the two coexist.
+with the ephemeral seed from the invite URL — delegating *to* a DID needs no
+signature from the audience — and its own `root → device` link completes the
+chain. A linked device knows its root DID without holding the root key: the
+`root → device` delegation names the root as issuer. A device without an
+account claims with its device DID exactly as today; the two coexist.
 
 ### Device linking
 
@@ -71,6 +73,26 @@ A ceremony on an existing device:
 Direct root delegation is chosen over device chains (`A → B`) so revocation
 stays atomic: one device, one delegation, and revoking a device cannot orphan
 others.
+
+A device with no other linked device self-links via the recovery-shaped flow:
+email + code fetches the escrow blob, the passphrase decrypts it locally on
+that device, and the root key in memory mints `root → thisProfile` before
+being wiped. A second device is never required, because custody of the
+ciphertext is server-side.
+
+### Re-anchoring pre-link claims
+
+A device that claimed spaces before linking holds chains terminating at its
+device DID (`space → eph → device`), which other devices cannot use. At link
+time the device re-anchors: for each held capability it mints
+`device → rootDID` (its own key suffices; no ceremony), saves it to the shared
+UCAN store, and re-asserts its roster rows under the root DID. Those chains
+become `space → eph → device → root → otherDevice` — longer but valid.
+
+Trade-off: re-anchored chains flow through the old device DID, so revoking
+that device later severs them. The clean-up is a fresh invite claim or a
+founder re-delegation; rosters keyed on the root DID make the affected spaces
+discoverable.
 
 ### Revocation
 
