@@ -1673,10 +1673,8 @@ concept!: &blob
 
 # The standard renderer for `tonk:blob` entities, seeded as ordinary
 # branch data so it is overridable: re-assert a view with the same
-# `this:` to replace it (the display element also keeps a native
-# `<img>` fallback for branches without this row). Image content
-# types render inline; every other type renders as a file card with
-# a lazy download action.
+# `this:` to replace it. Image content types render inline; every
+# other type renders as a file card with a lazy download action.
 #
 # The renderer is author JavaScript riding the view as an inert
 # `<script type="tonk/module">` holder, executed once per realm by
