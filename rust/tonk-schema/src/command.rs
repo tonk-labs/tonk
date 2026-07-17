@@ -121,14 +121,24 @@ impl Command for Load {
 /// reactor's session overlay (never replicated). The share view joins the
 /// two via `tonk:invitation` and assembles the final URL.
 ///
-/// The command carries the target `space` and the click's `time` — no
-/// audience, no secret. `space` is read by the handler in place of the
-/// dispatch origin (`CommandEnv::origin`, empty for a routeless
-/// profile-branch dispatch), mirroring [`PauseSync`] and
-/// [`RenameRepository`] — so the FAB's share affordance depends on nothing
-/// seeded per-space. The timestamp makes each click a distinct transient so
-/// repeated Share clicks reliably re-fire the handler and rotate the
-/// credential.
+/// Deliberately a minimal matched shape, like [`CreateSpace`]: a command
+/// concept must keep decoding against the descriptor an *older* seeded
+/// `core.yaml` carries, and every existing space's `tonk:invite` descriptor
+/// is frozen at `{this, time, marker}` (no `space` field). A required
+/// `space` field here would make those transients silently fail to match
+/// (the transient commits, no handler runs) — see `CreateSpace`'s doc and
+/// `docs/space-sync-remotes-and-launchpad.md` §3.1, which hit the identical
+/// mistake with `CreateSpace.remote`.
+///
+/// The FAB's newer profile-dispatched share affordance (routeless, so
+/// `CommandEnv::origin` is empty) still needs to name its target: it does
+/// so by asserting the `xyz.tonk.invite/space` attribute on the same
+/// transient WITHOUT it being a matched concept field — the worker's
+/// `InviteHandler` reads it opportunistically from the raw facts
+/// (`invite_space_from_facts`, mirroring `remote_from_facts`), falling back
+/// to the dispatch origin when it's absent. The timestamp makes each click
+/// a distinct transient so repeated Share clicks reliably re-fire the
+/// handler and rotate the credential.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Invite {
     /// The command entity (a fresh id per invocation).
@@ -136,9 +146,6 @@ pub struct Invite {
     /// The submit event's timestamp — distinguishes one click from the
     /// next so the transient re-fires.
     pub time: crate::domain::command::invite::TimeStamp,
-    /// The target space DID — the repository to mint the invite for. Read
-    /// by the handler in place of the dispatch origin.
-    pub space: crate::domain::command::invite::Space,
     /// Per-command marker (read from the share form's `data-invite`) that
     /// gives `Invite` an attribute no other command carries — so a
     /// `tonk:pause-sync` transient (identical `{this, time}` shape otherwise)

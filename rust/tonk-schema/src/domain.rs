@@ -270,12 +270,19 @@ pub mod command {
         #[domain("dom.event.current-target.dataset")]
         pub struct Invite(pub Entity);
 
-        /// The target space DID — the repository to mint the invite for. Lets
-        /// `tonk:invite` be dispatched from the profile branch: the handler
-        /// reads the target from this field instead of the dispatch origin
+        /// The target space DID — the repository to mint the invite for.
+        /// Lets `tonk:invite` be dispatched from the profile branch: the
+        /// FAB's routeless share claim asserts this attribute so the
+        /// worker's `InviteHandler` can read the target from the raw facts
+        /// (`invite_space_from_facts`) instead of the dispatch origin
         /// (`CommandEnv::origin`, empty for a routeless profile-branch
-        /// dispatch), mirroring `pause_sync::Space`. The derived attribute is
-        /// `xyz.tonk.invite/space`.
+        /// dispatch).
+        ///
+        /// NOT a field on [`crate::command::Invite`]: every existing space's
+        /// `tonk:invite` descriptor is frozen without it (see that type's
+        /// doc), so it stays a fact the handler reads opportunistically,
+        /// mirroring `pause_sync::Space`'s intent without being a matched
+        /// concept field. The derived attribute is `xyz.tonk.invite/space`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.invite")]
         pub struct Space(pub Entity);

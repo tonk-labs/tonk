@@ -565,6 +565,44 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
     }
 }
 
+/// The FAB's routeless share claim's target-space attribute — the
+/// `xyz.tonk.invite/space` fact asserted alongside the `tonk:invite`
+/// transient. Kept in sync with
+/// [`tonk_schema::domain::command::invite::Space`]'s derived attribute.
+///
+/// NOT a matched field on [`tonk_schema::command::Invite`]: every existing
+/// space's `tonk:invite` descriptor is frozen without it, and a required
+/// field would make those transients silently fail to match (the transient
+/// commits, no handler runs) — see that type's doc and
+/// `docs/space-sync-remotes-and-launchpad.md` §3.1, which hit the identical
+/// mistake with `CreateSpace.remote`.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
+
+/// Read the target space DID from a `tonk:invite` transient's facts,
+/// opportunistically — mirrors [`remote_from_facts`]/[`template_from_facts`].
+///
+/// `Some` when the FAB's newer profile-dispatched share claim named its
+/// target explicitly (asserted as either a `Value::Entity` DID or a
+/// `Value::String`, tolerating both representations like `remote_from_facts`
+/// does). `None` for an older claim carrying no such fact — the handler
+/// falls back to the dispatch origin in that case.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == INVITE_SPACE_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(space) => Some(space.clone()),
+            Value::Entity(entity) => Some(entity.to_string()),
+            _ => None,
+        })
+        .map(|space| space.trim().to_string())
+        .filter(|space| !space.is_empty())
+}
+
 /// Post-commit handler for the [`Invite`] command.
 ///
 /// When the FAB's share control (`<tonk-share>`) dispatches a transient
@@ -626,33 +664,27 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously to read the target space off the command —
-        // the handler mints for THAT space, not the dispatch origin, so
-        // `tonk:invite` can be dispatched from the profile branch. Mirrors
-        // `PauseSyncHandler`/`RenameRepositoryHandler`.
-        let target = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
-            .and_then(|command| {
-                command
-                    .space
-                    .0
-                    .to_string()
-                    .parse::<dialog_varsig::Did>()
-                    .ok()
-            })
-            .map(|did| did.repo_key().to_owned());
+        // Read the target space off the facts opportunistically (NOT a
+        // matched `Invite` field — see `invite_space_from_facts`) so the
+        // FAB's routeless, profile-dispatched share claim can name its
+        // target. Fall back to the dispatch origin when the fact is
+        // absent — the shape every existing space's frozen `tonk:invite`
+        // descriptor still dispatches, mirroring `PauseSyncHandler`/
+        // `RenameRepositoryHandler` for the named-target case and
+        // `ProfileRenameHandler` for the origin fallback.
+        let repo_name = invite_space_from_facts(facts)
+            .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
+            .map(|did| did.repo_key().to_owned())
+            .unwrap_or_else(|| env.origin().repo.clone());
         let env = env.clone();
 
         Box::pin(async move {
-            let Some(repo_name) = target else {
-                log!("Invite: no/unparseable target space, skipping");
+            if repo_name.is_empty() {
+                log!("Invite: no target space (no fact, empty origin), skipping");
                 return;
-            };
+            }
             log!("command Invite repo={}", repo_name);
 
             if let Err(error) = run_invite(&env, &repo_name).await {
@@ -3632,6 +3664,96 @@ mod template_from_facts_tests {
             .is("   ".to_string())
             .assert(&mut changes);
         assert!(template_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
+/// The opportunistic invite-target reader `InviteHandler` uses. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_space_from_facts_tests {
+    use super::invite_space_from_facts;
+    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement, Value};
+    use dialog_query::the;
+
+    const DID: &str = "did:key:zTargetSpace";
+
+    fn artifacts(changes: Changes) -> Vec<Artifact> {
+        changes
+            .into_instructions()
+            .into_iter()
+            .map(|instruction| match instruction {
+                Instruction::Assert(artifact)
+                | Instruction::Replace(artifact)
+                | Instruction::Retract(artifact) => artifact,
+            })
+            .collect()
+    }
+
+    /// Seed the always-present `time` fact (every `tonk:invite` transient
+    /// carries it, matched or not).
+    fn time_fact(changes: &mut Changes, of: &Entity) {
+        the!("dom.event/time-stamp")
+            .of(of.clone())
+            .is(1.0)
+            .assert(changes);
+    }
+
+    #[test]
+    fn it_reads_an_entity_space() {
+        // A DID deserializes as `Value::Entity` (any string with a `:`) —
+        // the FAB's routeless share claim asserts it this way.
+        let did_value: Value = serde_json::from_str(&format!("\"{DID}\"")).unwrap();
+        let did = match did_value {
+            Value::Entity(entity) => entity,
+            other => panic!("DID should deserialize as Entity, got {other:?}"),
+        };
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        the!("xyz.tonk.invite/space")
+            .of(of)
+            .is(did)
+            .assert(&mut changes);
+        assert_eq!(
+            invite_space_from_facts(&artifacts(changes)).as_deref(),
+            Some(DID),
+        );
+    }
+
+    #[test]
+    fn it_reads_a_string_space() {
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        the!("xyz.tonk.invite/space")
+            .of(of)
+            .is(DID.to_string())
+            .assert(&mut changes);
+        assert_eq!(
+            invite_space_from_facts(&artifacts(changes)).as_deref(),
+            Some(DID),
+        );
+    }
+
+    #[test]
+    fn it_returns_none_without_a_space_fact() {
+        // The shape every existing space's frozen `tonk:invite` descriptor
+        // dispatches — the handler must fall back to the dispatch origin.
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        assert!(invite_space_from_facts(&artifacts(changes)).is_none());
+    }
+
+    #[test]
+    fn it_treats_a_blank_space_as_none() {
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        the!("xyz.tonk.invite/space")
+            .of(of)
+            .is("   ".to_string())
+            .assert(&mut changes);
+        assert!(invite_space_from_facts(&artifacts(changes)).is_none());
     }
 }
 
