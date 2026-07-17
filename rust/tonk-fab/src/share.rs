@@ -331,10 +331,18 @@ fn open_clipboard_write(
 
     // A rejected write (permission denied, or the promise we reject when the
     // mint fails) must not surface as an unhandled rejection.
+    //
+    // `forget` hands the closure's memory to JS for good. The write is still
+    // in flight when this scope ends, so dropping the closure here would free
+    // it while the browser still holds the reference: the eventual rejection
+    // would then invoke freed memory and throw ("closure invoked recursively
+    // or after being dropped") rather than warn. The leak is one small closure
+    // per share click, bounded by user clicks.
     let on_rejected = Closure::<dyn FnMut(JsValue)>::new(|e: JsValue| {
         warn(&format!("share: clipboard write failed: {e:?}"));
     });
     let _ = clipboard.write(&Array::of1(&item)).catch(&on_rejected);
+    on_rejected.forget();
 
     state.borrow_mut().pending = Some(pending);
     Ok(())
@@ -495,15 +503,23 @@ fn warn(message: &str) {
     web_sys::console::warn_1(&JsValue::from_str(message));
 }
 
-/// Register `<tonk-share>`. Idempotent.
+/// Register `<tonk-share>`. Idempotent. Installs the prototype `reset`/
+/// `update` method shims (forwarding to the per-instance `__tonkReset`/
+/// `__tonkUpdate` delegates) so host subscription frames reach the element —
+/// the same pattern every other `subscribing`-built element uses.
+///
+/// Without the shims the element subscribes fine and then goes deaf: the host
+/// delivers a frame by calling `element.reset(...)`, finds no such method, and
+/// drops it. No frame ever carries the minted link in, so the pending copy
+/// never settles and the control pins on `Copying` — which
+/// [`ShareState::accepts_click`] refuses, leaving the button dead for the rest
+/// of the session.
 pub fn register() {
-    let Some(win) = window() else {
-        return;
-    };
-    if !win.custom_elements().get("tonk-share").is_undefined() {
+    if subscribing::already_registered(SUB_TAG) {
         return;
     }
-    TonkShare::define("tonk-share");
+    TonkShare::define(SUB_TAG);
+    subscribing::install_frame_shims(SUB_TAG);
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
