@@ -239,6 +239,8 @@ fn attach_gestures(element: &HtmlElement) {
             // curtain lies behind the bar, so this never fires for a click on
             // the bar itself or on a menu row.
             close_menus(&el_click);
+        } else if t.closest(".fab__more").ok().flatten().is_some() {
+            toggle_more_menu(&el_click);
         } else if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
             // Alt/option-click toggles sync pause; a plain click folds/expands.
             // Pause is dispatched here (on the FAB, which reliably receives the
@@ -503,6 +505,21 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     }
 }
 
+/// Toggle the compact vertical menu (`fab--menu` on `.fab`): every control
+/// stacked full-width, anchored to the bar like the dropdowns. Opening it
+/// first closes any open dropdown — the vertical menu owns the whole field,
+/// and the dropdowns re-open INSIDE it as inline accordions (CSS).
+fn toggle_more_menu(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let opening = !fab.class_list().contains("fab--menu");
+    close_menus(element);
+    fab.class_list()
+        .toggle_with_force("fab--menu", opening)
+        .ok();
+}
+
 /// Measure the menu's natural (max-content) width — momentarily overriding
 /// the stylesheet's `width: 100%`, reading the box, restoring — and stamp the
 /// segment's inline `min-width` to the RATCHETED target (never below a prior
@@ -660,6 +677,9 @@ fn close_menus(el: &HtmlElement) {
         if let Some(seg) = el.query_selector(sel).ok().flatten() {
             seg.class_list().remove_1("is-open").ok();
         }
+    }
+    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
+        fab.class_list().remove_1("fab--menu").ok();
     }
 }
 
@@ -1644,5 +1664,74 @@ mod tests {
         );
         host.remove();
         clamp_style.remove();
+    }
+
+    fn has_menu(host: &HtmlElement) -> bool {
+        host.query_selector(".fab")
+            .ok()
+            .flatten()
+            .map(|fab| fab.class_list().contains("fab--menu"))
+            .unwrap_or(false)
+    }
+
+    fn bubbling_click() -> web_sys::MouseEvent {
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        web_sys::MouseEvent::new_with_mouse_event_init_dict("click", &init).expect("click event")
+    }
+
+    #[wasm_bindgen_test]
+    fn it_toggles_the_vertical_menu_from_the_chevron() {
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        attach_gestures(&host);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+
+        let chevron = host
+            .query_selector(".fab__more")
+            .ok()
+            .flatten()
+            .expect("chevron");
+        chevron.dispatch_event(&bubbling_click()).expect("dispatch");
+        assert!(has_menu(&host), "a chevron click opens the vertical menu");
+
+        chevron.dispatch_event(&bubbling_click()).expect("dispatch");
+        assert!(!has_menu(&host), "a second click closes it again");
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_dismisses_the_vertical_menu_from_the_curtain() {
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        attach_gestures(&host);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+
+        host.query_selector(".fab")
+            .ok()
+            .flatten()
+            .expect("bar")
+            .class_list()
+            .add_1("fab--menu")
+            .expect("open");
+        let scrim = host
+            .query_selector(".fab__scrim")
+            .ok()
+            .flatten()
+            .expect("curtain");
+        scrim.dispatch_event(&bubbling_click()).expect("dispatch");
+        assert!(
+            !has_menu(&host),
+            "the click-away curtain closes the vertical menu"
+        );
+        host.remove();
     }
 }

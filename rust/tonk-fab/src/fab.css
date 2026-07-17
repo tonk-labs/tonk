@@ -239,6 +239,52 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
   .fab--compact .fab__tele--end,
   .fab--compact .fab__more wa-icon { transition: none; }
 }
+/* ── The chevron's vertical menu (compact only in practice) ───────
+   `fab--menu` pops the strip out of the bar as an absolutely-anchored
+   vertical stack — the same anchoring the dropdowns use (away from the
+   docked edge, dock-keyed), so it always unfolds into view. The bar
+   itself shrinks to its two caps while the menu is up, iOS-style. */
+.fab--menu .fab__strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-width: none;
+  overflow: visible;
+  z-index: 100;
+}
+.fab-dock-top .fab--menu .fab__strip { top: 100%; margin-top: 7px; }
+.fab-dock-bottom .fab--menu .fab__strip { bottom: 100%; margin-bottom: 7px; }
+/* Pages dissolve; every tile is its own full-width row. Scoped to the
+   strip: the end tile (chevron cap) sits outside it and keeps its bar
+   styling while the menu is up. */
+.fab--menu .fab__page { display: contents; }
+.fab--menu .fab__strip .fab__tele {
+  max-width: none !important;
+  overflow: visible;
+  min-width: 0;
+}
+.fab--menu .fab__strip .fab__seg {
+  width: 100%;
+  box-sizing: border-box;
+  block-size: 36px;
+  border-radius: 2px;
+  flex: none;
+}
+/* An open dropdown renders INLINE as an accordion row under its
+   segment instead of floating: the segment's tile stacks them. */
+.fab--menu .fab__tele--repo,
+.fab--menu .fab__tele--share { display: flex; flex-direction: column; gap: 7px; }
+.fab--menu .fab__repo.is-open .fab__menu,
+.fab--menu .fab__share.is-open .fab__share-menu {
+  position: static;
+  margin: 7px 0 0;
+  width: 100%;
+}
+/* The chevron flips while the menu is up. */
+.fab--menu .fab__more wa-icon { transform: rotate(90deg); }
 /* A segment: its own cream surface + ink, an inset highlight/shadow that
    reads like the wireframe's pressed-plastic pill. Middle segments are
    square; the caps below round their outer edge. */
@@ -766,7 +812,8 @@ tonk-share[data-share-state="failed"] .fab__share-trigger {
    handles the hit). It sits below the bar's own stacking context, so
    the bar and its menus stay clickable through it. */
 .fab__scrim { position: fixed; inset: 0; pointer-events: none; }
-tonk-fab:has(.is-open) .fab__scrim { pointer-events: auto; }
+tonk-fab:has(.is-open) .fab__scrim,
+tonk-fab:has(.fab--menu) .fab__scrim { pointer-events: auto; }
 /* Mirrored: the bar is row-reversed, so the share zone is the LEFT
    end — its roster flips to anchor left (the repo switcher already
    re-anchors right via `.fab-mirror .fab__menu`). Row alignment
