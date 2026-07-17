@@ -1178,9 +1178,21 @@ mod profile_rename {
     #[test]
     fn it_inlines_the_rename_descriptor_and_marks_the_profile() {
         let claim = profile_rename_claim_json("Ada");
-        let text = claim.to_string();
-        assert!(text.contains("dom.event.current-target/value"));
-        assert!(text.contains("dom.event.current-target.dataset/rename"));
+        let with = &claim["claims"][0]["application"]["predicate"]["concept"]["with"];
+        // Assert the EXACT attribute, not a substring: `contains` on
+        // "…dataset/rename" also matches "…dataset/rename-repository", so a
+        // marker silently pointed at the repo-rename attribute would still
+        // pass. That collision is not hypothetical — both commands once
+        // derived `dataset/rename` and every spot rename also renamed the
+        // profile, because decoding matches on which attributes are present
+        // and never on their values. `dialog-reactor`'s
+        // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
+        // invariant; this pins the claim this crate actually builds.
+        assert_eq!(with["name"]["the"], "dom.event.current-target/value");
+        assert_eq!(
+            with["marker"]["the"],
+            "dom.event.current-target.dataset/rename"
+        );
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Ada");
         assert_eq!(params["marker"], "tonk:profile");
