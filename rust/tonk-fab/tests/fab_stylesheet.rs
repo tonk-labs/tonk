@@ -81,3 +81,78 @@ async fn it_injects_the_stylesheet_exactly_once_across_multiple_mounts() {
     second.remove();
     first.remove();
 }
+
+/// The chevron cap is a compact-only control, but it carries `fab__seg`
+/// alongside `fab__more` — and `.fab__seg { display: inline-flex }` sits
+/// LATER in the stylesheet than a bare `.fab__more { display: none }`, so a
+/// same-specificity hide rule loses the tie and the chevron leaks into the
+/// wide bar as a clickable stray control. This pins the COMPUTED style with
+/// the real injected stylesheet, in both modes — exactly what the
+/// class-toggle unit tests cannot see.
+#[dialog_common::test]
+async fn it_hides_the_chevron_cap_outside_compact_mode() {
+    let host = mount();
+    let more = host
+        .query_selector(".fab__more")
+        .expect("query")
+        .expect("chevron authored");
+    let display = |el: &web_sys::Element| {
+        window()
+            .expect("window")
+            .get_computed_style(el)
+            .expect("computed style")
+            .expect("style declaration")
+            .get_property_value("display")
+            .expect("display value")
+    };
+
+    assert_eq!(
+        display(&more),
+        "none",
+        "the wide bar must not render the compact chevron cap"
+    );
+
+    let fab = host
+        .query_selector(".fab")
+        .expect("query")
+        .expect("bar authored");
+    fab.class_list()
+        .add_1("fab--compact")
+        .expect("enter compact");
+    // Collapsed-compact retracts the chevron with the strip: the end tile
+    // clamps to zero width (a transitionable clamp, not display:none). This
+    // is the "button hides when the fab is collapsed" contract.
+    // `fab--settled` comes off with the collapse — its unclamp rule
+    // (`max-width: none` on shown tiles) outranks the collapse clamp, and
+    // set_telescope enforces the exclusivity (pinned by the element test
+    // `it_collapses_the_compact_bar_with_a_dropdown_open`).
+    fab.class_list().remove_1("fab--settled").expect("unsettle");
+    fab.class_list().add_1("fab--collapsed").expect("collapse");
+    let end_tile = host
+        .query_selector(".fab__tele--end")
+        .expect("query")
+        .expect("end tile authored");
+    assert_eq!(
+        window()
+            .expect("window")
+            .get_computed_style(&end_tile)
+            .expect("computed style")
+            .expect("style declaration")
+            .get_property_value("max-width")
+            .expect("max-width value"),
+        "0px",
+        "collapsing the compact bar must clamp the chevron's tile away"
+    );
+    fab.class_list().remove_1("fab--collapsed").expect("expand");
+    fab.class_list().add_1("fab--settled").expect("resettle");
+    // Not a literal `inline-flex` check: the chevron is a flex ITEM (its
+    // tile is `display: flex`), so browsers blockify the computed value to
+    // plain `flex`. What matters is that compact mode shows it at all.
+    assert_ne!(
+        display(&more),
+        "none",
+        "compact mode must show the chevron cap"
+    );
+
+    host.remove();
+}

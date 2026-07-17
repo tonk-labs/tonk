@@ -45,6 +45,8 @@ web-sys = { workspace = true, features = [
     "NodeList",
     "PointerEvent",
     "ResizeObserver",
+    "ScrollBehavior",
+    "ScrollToOptions",
     "Text",
     "Window",
 ] }

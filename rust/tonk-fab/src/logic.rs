@@ -199,6 +199,55 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
+/// The stylesheet's dock inset — `tonk-fab.fab-dock-* { …: 16px }` in
+/// `fab.css`. The compact-mode fit test must account for it on both sides.
+pub const DOCK_INSET_PX: f64 = 16.0;
+
+/// Whether the bar must render compact: the fully EXPANDED bar plus both
+/// dock insets no longer fits the viewport width. Keyed on the would-be
+/// expanded width (not the current rendered width), so the threshold is the
+/// same entering and leaving compact and cannot oscillate.
+pub fn is_compact(expanded_width: f64, viewport_width: f64) -> bool {
+    expanded_width + 2.0 * DOCK_INSET_PX > viewport_width
+}
+
+/// Clamp a dragged bar's top-left corner so the bar stays fully inside the
+/// viewport. The origin clamp runs LAST: a bar wider or taller than the
+/// viewport pins to the left/top edge, keeping the grab handle reachable.
+pub fn clamp_position(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    vw: f64,
+    vh: f64,
+) -> (f64, f64) {
+    (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
+}
+
+/// Whether the compact pager's strip rests at its scroll end — the state in
+/// which the arrow's next tap wraps to the start, and the glyph flips to
+/// point back so the wrap is announced rather than silent. Tolerates a small
+/// epsilon (browsers report fractional scroll positions), and a strip with
+/// nothing to scroll is NOT "at the end": its arrow keeps pointing forward
+/// and its tap is a harmless no-op.
+pub fn strip_at_end(scroll_left: f64, client_width: f64, scroll_width: f64) -> bool {
+    let max = scroll_width - client_width;
+    max > 0.0 && scroll_left >= max - 2.0
+}
+
+/// The scroll offset the compact pager's arrow advances the strip to: one
+/// page-width forward per tap, wrapping back to the start from the end
+/// ([`strip_at_end`]).
+pub fn strip_page_target(scroll_left: f64, client_width: f64, scroll_width: f64) -> f64 {
+    let max = (scroll_width - client_width).max(0.0);
+    if strip_at_end(scroll_left, client_width, scroll_width) {
+        0.0
+    } else {
+        (scroll_left + client_width).min(max)
+    }
+}
+
 /// The telescope animation duration, in milliseconds — each tile's
 /// `max-width` transition (wireframe `--dur: .4s`).
 pub const TELESCOPE_MS: u64 = 400;
@@ -357,6 +406,65 @@ mod mirror {
 }
 
 #[cfg(test)]
+mod compact {
+    use super::*;
+
+    #[test]
+    fn a_bar_that_fits_with_both_insets_is_not_compact() {
+        assert!(!is_compact(300.0, 400.0));
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_viewport_minus_insets_is_compact() {
+        assert!(is_compact(380.0, 400.0));
+    }
+
+    #[test]
+    fn the_exact_fit_is_not_compact() {
+        // 368 + 2*16 == 400: still fits; only strictly-greater flips it, so
+        // the threshold is identical in both directions and cannot flap.
+        assert!(!is_compact(368.0, 400.0));
+    }
+}
+
+#[cfg(test)]
+mod clamp {
+    use super::*;
+
+    #[test]
+    fn an_inside_position_is_untouched() {
+        assert_eq!(
+            clamp_position(100.0, 50.0, 300.0, 36.0, 1000.0, 800.0),
+            (100.0, 50.0)
+        );
+    }
+
+    #[test]
+    fn it_clamps_every_edge() {
+        // Past the origin pins to 0.
+        assert_eq!(
+            clamp_position(-20.0, -5.0, 300.0, 36.0, 1000.0, 800.0),
+            (0.0, 0.0)
+        );
+        // Right/bottom overflow pins to viewport minus the bar.
+        assert_eq!(
+            clamp_position(900.0, 790.0, 300.0, 36.0, 1000.0, 800.0),
+            (700.0, 764.0)
+        );
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_viewport_pins_to_the_origin() {
+        // vw - width is negative; the origin wins (max runs last) so the
+        // bar's left edge — and the circle cap on it — stays reachable.
+        assert_eq!(
+            clamp_position(50.0, 10.0, 500.0, 36.0, 400.0, 800.0),
+            (0.0, 10.0)
+        );
+    }
+}
+
+#[cfg(test)]
 mod corrected {
     use super::*;
 
@@ -439,6 +547,52 @@ mod dock {
     fn an_unknown_symbol_has_no_dock() {
         assert_eq!(Dock::from_symbol("tonk:middle"), None);
         assert_eq!(Dock::from_symbol(""), None);
+    }
+}
+
+#[cfg(test)]
+mod pager {
+    use super::*;
+
+    #[test]
+    fn a_mid_strip_tap_advances_one_page_width() {
+        assert_eq!(strip_page_target(0.0, 300.0, 800.0), 300.0);
+    }
+
+    #[test]
+    fn the_last_advance_clamps_to_the_end() {
+        // 800 - 300 = 500 is the max offset; 300 + 300 = 600 overshoots it.
+        assert_eq!(strip_page_target(300.0, 300.0, 800.0), 500.0);
+    }
+
+    #[test]
+    fn a_tap_at_the_end_wraps_to_the_start() {
+        assert_eq!(strip_page_target(500.0, 300.0, 800.0), 0.0);
+        // Fractional resting positions a couple px shy of the end wrap too.
+        assert_eq!(strip_page_target(498.5, 300.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn a_strip_with_nothing_to_scroll_stays_at_the_start() {
+        assert_eq!(strip_page_target(0.0, 300.0, 300.0), 0.0);
+        assert_eq!(strip_page_target(0.0, 300.0, 250.0), 0.0);
+    }
+
+    #[test]
+    fn the_end_state_drives_the_arrow_flip() {
+        assert!(!strip_at_end(0.0, 300.0, 800.0));
+        assert!(!strip_at_end(300.0, 300.0, 800.0));
+        assert!(strip_at_end(500.0, 300.0, 800.0));
+        // Fractionally shy of the end still counts as the end.
+        assert!(strip_at_end(498.5, 300.0, 800.0));
+    }
+
+    #[test]
+    fn a_strip_with_nothing_to_scroll_is_not_at_the_end() {
+        // The arrow must keep pointing forward when there is nothing to
+        // page — a back-arrow on a strip that never moved reads as broken.
+        assert!(!strip_at_end(0.0, 300.0, 300.0));
+        assert!(!strip_at_end(0.0, 300.0, 250.0));
     }
 }
 
@@ -1314,6 +1468,7 @@ mod stylesheet {
         assert!(css.contains(".fab__menu-item"));
         assert!(css.contains(".fab__share-label"));
         assert!(css.contains(".wizard__card"));
+        assert!(css.contains(".fab__strip"));
     }
 }
 

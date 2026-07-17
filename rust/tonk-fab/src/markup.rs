@@ -36,7 +36,10 @@
 //! this module owns the whole subtree, both are authored directly: the
 //! `.fab__scrim` div is a literal sibling of `.fab`, and every collapsible
 //! segment is already inside its own `.fab__tele` wrapper with the resting
-//! `fab--anim fab--settled` classes stamped on `.fab` itself.
+//! `fab--anim fab--settled` classes stamped on `.fab` itself. The tele tiles
+//! are further grouped into `.fab__strip` > `.fab__page` pages (repo alone,
+//! then share + account) for the compact scroll-snap pager — `display:
+//! contents` on wide viewports, so that grouping renders no boxes there.
 //!
 //! ## The wizard's `onsubmit` cannot fire yet
 //!
@@ -77,44 +80,51 @@ pub fn fab_html(space_did: &str) -> String {
         r#"<div class="fab__scrim"></div>
 <div class="fab fab--anim fab--settled">
   <span class="fab__seg fab__cap-l fab__circle"><ui-sync-status with="main@{space}" onpause="tonk:pause-sync"></ui-sync-status></span>
-  <div class="fab__tele">
-    <span class="fab__seg fab__account">
-      <span class="fab__name"><ui-profile-name></ui-profile-name></span>
-    </span>
+  <div class="fab__strip">
+    <div class="fab__page fab__page--main">
+      <div class="fab__tele fab__tele--repo">
+        <span class="fab__seg fab__repo">
+          <span class="fab__space"><ui-space-name space="{space}"></ui-space-name></span>
+          <ui-dropdown class="fab__menu" exclude="{space}">
+            <ui-space-switcher exclude="{space}"></ui-space-switcher>
+          </ui-dropdown>
+        </span>
+      </div>
+    </div>
+    <div class="fab__page fab__page--more">
+      <div class="fab__tele fab__tele--share">
+        <span class="fab__seg fab__share">
+          <tonk-share space="{space}">
+            <form class="fab__share-form">
+              <button type="submit" class="fab__share-trigger">
+                <span class="fab__share-label fab__share-label--idle">share</span>
+                <span class="fab__share-label fab__share-label--copying">
+                  <span class="fab__share-spinner"></span>copying…
+                </span>
+                <span class="fab__share-label fab__share-label--copied">
+                  <wa-icon name="check"></wa-icon>copied
+                </span>
+                <span class="fab__share-label fab__share-label--failed">
+                  <wa-icon name="triangle-exclamation"></wa-icon>failed
+                </span>
+              </button>
+            </form>
+          </tonk-share>
+          <nav class="fab__menu fab__share-menu">
+            <ui-member-roster space="{space}"></ui-member-roster>
+          </nav>
+        </span>
+      </div>
+      <div class="fab__tele fab__tele--account">
+        <span class="fab__seg fab__account">
+          <span class="fab__name"><ui-profile-name></ui-profile-name></span>
+        </span>
+      </div>
+    </div>
   </div>
-  <div class="fab__tele">
-    <span class="fab__seg fab__repo">
-      <span class="fab__space"><ui-space-name space="{space}"></ui-space-name></span>
-      <ui-dropdown class="fab__menu" exclude="{space}">
-        <ui-space-switcher exclude="{space}"></ui-space-switcher>
-      </ui-dropdown>
-    </span>
-  </div>
-  <div class="fab__tele">
-    <span class="fab__seg fab__share">
-      <tonk-share space="{space}">
-        <form class="fab__share-form">
-          <button type="submit" class="fab__share-trigger">
-            <span class="fab__share-label fab__share-label--idle">share</span>
-            <span class="fab__share-label fab__share-label--copying">
-              <span class="fab__share-spinner"></span>copying…
-            </span>
-            <span class="fab__share-label fab__share-label--copied">
-              <wa-icon name="check"></wa-icon>copied
-            </span>
-            <span class="fab__share-label fab__share-label--failed">
-              <wa-icon name="triangle-exclamation"></wa-icon>failed
-            </span>
-          </button>
-        </form>
-      </tonk-share>
-      <nav class="fab__menu fab__share-menu">
-        <ui-member-roster space="{space}"></ui-member-roster>
-      </nav>
-    </span>
-  </div>
-  <div class="fab__tele">
+  <div class="fab__tele fab__tele--end">
     <span class="fab__seg fab__cap-r fab__end" aria-hidden="true"></span>
+    <button type="button" class="fab__seg fab__cap-r fab__more" aria-label="Show more controls"><wa-icon name="chevron-right"></wa-icon></button>
   </div>
 </div>
 <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog" style="--width: 40rem">
@@ -231,6 +241,48 @@ mod tests {
         assert!(!html.contains("tonk:profile/name"));
         assert!(!html.contains("tonk:view/fab-invite"));
         assert!(!html.contains(r#"model="tonk:repository""#));
+    }
+
+    #[test]
+    fn it_groups_the_tiles_into_compact_pages() {
+        let html = fab_html("did:key:z6Mk");
+        // Page 1 holds the space name + switcher; page 2 share then account.
+        // The strip and pages are `display: contents` on wide viewports, so
+        // this grouping is invisible there; compact mode makes them the
+        // scroll-snap pager.
+        let strip = html.find("fab__strip").expect("strip present");
+        let main = html.find("fab__page--main").expect("main page present");
+        let more = html.find("fab__page--more").expect("more page present");
+        let repo = html.find("fab__tele--repo").expect("repo tile present");
+        let share = html.find("fab__tele--share").expect("share tile present");
+        let account = html
+            .find("fab__tele--account")
+            .expect("account tile present");
+        assert!(
+            strip < main && main < more,
+            "strip wraps the pages in order"
+        );
+        assert!(
+            main < repo && repo < more,
+            "the repo tile is page 1's content"
+        );
+        assert!(
+            more < share && share < account,
+            "page 2 is share, then account"
+        );
+    }
+
+    #[test]
+    fn it_authors_the_chevron_beside_the_end_nub() {
+        let html = fab_html("did:key:z6Mk");
+        // Both live in the end tile, OUTSIDE the strip: the chevron is a
+        // fixed right cap (like the circle on the left), never scrolled away
+        // with the pages. CSS shows exactly one of the pair per mode.
+        let end_tile = html.find("fab__tele--end").expect("end tile present");
+        let nub = html.find("fab__end").expect("nub present");
+        let more = html.find("fab__more").expect("chevron present");
+        assert!(end_tile < nub && end_tile < more);
+        assert!(html.contains(r#"<button type="button" class="fab__seg fab__cap-r fab__more""#));
     }
 
     #[test]
