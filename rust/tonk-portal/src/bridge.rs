@@ -17,6 +17,9 @@
 //!   query(body?)      -> Promise<Conclusion[]>,
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
+//!   navigate(href)    -> void,
+//!   setTitle(text)    -> void,
+//!   open(href)        -> void,
 //!   ready: Promise<void>,
 //! }
 //! ```
@@ -240,6 +243,14 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // parent performs the real assignment. Fire-and-forget (no response).
     setTitle:function(text){
       ready.then(function(){port.postMessage({v:1,type:"title",text:text});});
+    },
+    // Open a link from the HOST: the opaque guest has neither `allow-popups`
+    // nor `allow-top-navigation`, so a click on an external link posts its
+    // raw href here and the parent decides — resolving it against the real
+    // origin, allowlisting the scheme, and confirming anything off-origin.
+    // Fire-and-forget (no response).
+    open:function(href){
+      ready.then(function(){port.postMessage({v:1,type:"open",href:href});});
     },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
@@ -1187,6 +1198,7 @@ fn make_dispatcher(
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&data),
             "title" => handle_title(&data),
+            "open" => handle_open(&data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             _ => {}
         }
@@ -1453,6 +1465,26 @@ fn title_text(data: &JsValue) -> Option<String> {
         return None;
     }
     get_str(data, "text").filter(|text| !text.is_empty())
+}
+
+/// Open a link on the guest's behalf. The sealed guest has no `allow-popups`
+/// and no `allow-top-navigation`, so it cannot open anything itself; it posts
+/// the raw href and `tonk_host::open_external` — running on the page, which is
+/// the only place that can both resolve and open it — decides what happens.
+fn handle_open(data: &JsValue) {
+    let Some(href) = open_href(data) else {
+        return;
+    };
+    tonk_host::open_external(&href);
+}
+
+/// Read `href` out of an `{ type: "open", href }` message, or `None` when the
+/// message isn't an open or carries no usable href. Mirrors `title_text`.
+fn open_href(data: &JsValue) -> Option<String> {
+    if get_str(data, "type")? != "open" {
+        return None;
+    }
+    get_str(data, "href").filter(|href| !href.is_empty())
 }
 
 /// Perform a same-origin fetch on the host and stream the response back. The
@@ -3332,6 +3364,65 @@ mod tests {
         );
         assert_eq!(
             title_text(&JsValue::from_str("not an object")),
+            None,
+            "a non-object payload should yield None"
+        );
+    }
+
+    /// `open_href` accepts only a well-formed `{type:"open", href}`. The
+    /// dispatcher has already matched on `type`; re-checking here keeps the
+    /// parse independently testable, as `title_text` does.
+    #[dialog_common::test]
+    async fn it_reads_href_only_from_an_open_message() {
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("open"),
+        );
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("href"),
+            &JsValue::from_str("https://example.com/"),
+        );
+        assert_eq!(
+            open_href(&message.into()),
+            Some("https://example.com/".to_owned()),
+            "an open message with an href should yield it"
+        );
+
+        let empty = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &empty,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("open"),
+        );
+        let _ = js_sys::Reflect::set(&empty, &JsValue::from_str("href"), &JsValue::from_str(""));
+        assert_eq!(
+            open_href(&empty.into()),
+            None,
+            "an empty href should yield None"
+        );
+
+        let other = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &other,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("navigate"),
+        );
+        let _ = js_sys::Reflect::set(
+            &other,
+            &JsValue::from_str("href"),
+            &JsValue::from_str("https://example.com/"),
+        );
+        assert_eq!(
+            open_href(&other.into()),
+            None,
+            "a non-open message should yield None"
+        );
+
+        assert_eq!(
+            open_href(&JsValue::from_str("not an object")),
             None,
             "a non-object payload should yield None"
         );

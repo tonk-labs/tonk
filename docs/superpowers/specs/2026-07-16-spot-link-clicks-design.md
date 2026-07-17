@@ -23,7 +23,8 @@ never granted. So `https://…`, `mailto:`, `target="_blank"`, and modified clic
 (cmd/ctrl/middle — which bail at `guest_host.rs:86-90`) are all inert.
 
 In scope: external `http(s)` links, `mailto:`/`tel:`, `target="_blank"` on in-app
-paths, and modified clicks. Out of scope: in-page fragments.
+paths, modified clicks, and in-page fragments — which turned out to be inert only in the
+sense that they take the whole app with them (see the routing table).
 
 ## The depth constraint is the whole design
 
@@ -124,11 +125,20 @@ same recursion as `context_origin()` (`tonk-host/src/bridge.rs:40-52`), which so
 identical "the real value lives N frames up" problem.
 
 **The discriminator is `window.tonk` presence, not `window === window.top`.**
-`window.tonk` is assigned at exactly one place — `bridge.rs:381`, inside
-`BOOTSTRAP_JS`, which only ever runs in a guest's `srcdoc`. No Rust sets it; the top
-page never has one. So its presence means precisely "I am a portal guest with a bridge
-to my parent". A `window.top` check would encode "I am the outermost frame", which is a
-different claim and would break if the Tonk page were ever itself embedded.
+`BOOTSTRAP_JS` (`bridge.rs:381`) installs it, parent-pushed into a guest's `srcdoc` —
+and `shared.rs` always sets `srcdoc`, never `src`, so every realm the element runtime
+enters got there that way.
+
+It is **not** the only assignment: `tonk-worker/assets/bridge.js:128` also does
+`globalThis.tonk = bridge`. That realm is disjoint — `bridge.js` is loaded only by
+`wrap_html_body` (`router/host.rs:170`), serving agent-authored HTML into an SW-routed
+`src` iframe, which never runs the element runtime and so never calls `forward`. **The
+invariant is therefore "a realm that loads `bridge.js` never runs the element runtime",**
+not "only the bootstrap assigns `window.tonk`". Under it, a present `tonk` at a
+`forward` call site is always the portal bridge, and means precisely "I am a portal guest
+with a bridge to my parent". A `window.top` check would encode "I am the outermost
+frame", which is a different claim and would break if the Tonk page were ever itself
+embedded.
 
 Applies to `navigate` and `title`. `open` (PR 2) registers as the third.
 
@@ -146,19 +156,49 @@ and on any modified click. It gains a classifier:
 
 | Click | Destination | Action |
 |---|---|---|
+| **any** | `#fragment` | `preventDefault` + scroll **inside the guest**. Never relayed. Checked FIRST, before modifiers |
+| **any** | `href=""` | `preventDefault` + warn. Never relayed |
 | plain | `/…` (not `//`) | `navigate` (unchanged) |
 | plain | `http`/`https`/`mailto`/`tel` | `preventDefault` + `open` |
 | plain, `target="_blank"` | `/…` | `preventDefault` + `open` |
 | cmd/ctrl/shift/middle | `/…` or external | `preventDefault` + `open` |
-| plain | `#fragment` | untouched — left native |
-| any | anything else | `preventDefault`, dropped |
+| any | anything else | `preventDefault` + `open` — the host refuses it and warns |
 
-Dropping unknown schemes in the guest is defense in depth, not the control — the host
-re-checks. The guest is untrusted; its classification is a convenience, never a
-guarantee.
+**The fragment row comes first, and beats the modifier row.** It is also the one row
+where *both* alternatives are wrong, which is why it is neither native nor relayed:
 
-`closest_anchor_href` (`guest_host.rs:111-115`) keeps reading the **raw attribute**, not
-the resolved `.href` property, which an opaque origin mangles to `null/…`.
+- **Not native.** A fragment is **not same-document in a `srcdoc` guest**. The document's
+  URL is `about:srcdoc`, but its **base URL is inherited from the parent**, so `#foo`
+  resolves to `https://origin/space/{id}#foo` — differing from `about:srcdoc` by far more
+  than a fragment. That is a full navigation, and it loads the **entire Tonk app inside
+  the spot's iframe**, at an opaque origin, recursively. Measured in Chrome under
+  production's exact sandbox: `#foo` → `http://localhost:8731/index.html#foo`, guest
+  unloaded. `href=""` is the same load one hop shorter — it resolves to the bare parent
+  URL, and a view template whose field has not resolved (`<a href="{url}">` renders
+  blank) is how a user reaches it.
+- **Not relayed.** The host would resolve `#foo` against **its** URL (`/space/{id}`) and
+  open a duplicate spot scrolled nowhere.
+
+The fragment addresses the guest's own document, so the guest is the only frame that can
+honour it: cancel, then `getElementById` + `scrollIntoView` in the guest. A bare `#` or
+`#top` is the top of the document. An id that matches nothing scrolls nowhere and is
+**still cancelled** — the alternative is loading the app inside the spot.
+
+(An earlier draft of this spec asserted the native path was correct here, and the guest
+shipped that way. It was wrong for the reason above.)
+
+**The last row is not a filter, and the guest does not "drop" anything.** It relays
+hrefs it fully expects the host to refuse, `javascript:` included. Guest-side scheme
+filtering would be security theatre: a component can call `window.tonk.open` directly,
+so the guest is never the control — the host's allowlist is, and it is the only thing
+standing between an attacker-authored href and the real origin. Relaying also gets a
+console warning out of the host instead of a silently dead click, which is the bug this
+whole change exists to fix.
+
+`closest_anchor` (`guest_host.rs`) reads the **raw attribute**, not the resolved `.href`
+property, which an opaque origin mangles to `null/…`. `target` likewise, via
+`get_attribute` — which also keeps `HtmlAnchorElement` out of the crate's web-sys
+features. Resolution is the host's job: it is the only frame with a real base URL.
 
 ### Bridge: a sixth message type
 
@@ -187,6 +227,56 @@ gate for spot content to forge past.
 every case: a cmd-clicked in-app link opens silently; an external link is always
 announced.
 
+`classify` returns `Destination::{ SameOrigin(url), External { url, label }, Rejected }`.
+
+### What the dialog names: `label`, and why it is not the host
+
+`label` is the destination's identity: the **full origin** (`scheme://host:port`) for
+http(s), the address for `mailto:`/`tel:` (which have no origin). The dialog renders it
+verbatim. Every plausible-looking simplification here is a demonstrated vulnerability —
+each was found by probing the real parser, not by reading the spec:
+
+- **`hostname` drops the port.** `tonk.example:8443` is a different origin from
+  `tonk.example`, and anyone can bind a port.
+- **`host` drops the scheme.** `http://tonk.example/` would announce itself as
+  `tonk.example` — our own site — for a destination that is not our origin. A plain
+  downgrade reads as home.
+- **A reconstructed URL can carry userinfo.** `https://tonk.example@evil.com/` reads as
+  ours while going to `evil.com`.
+
+So `classify` strips userinfo (username **and** password — clearing only the username
+leaves `https://:pw@evil.com/`, where the password and the disguising `@` both survive)
+and hands the dialog strings that are already correct. The invariant is: **what we
+display is exactly what we open.** Stripping cannot flip a classification, because
+userinfo is not part of an origin.
+
+`mailto:`/`tel:` must name something a person can judge, so an address whose decoded form
+carries no alphanumeric is rejected, as is one with an authority or a rooted path —
+`mailto://tonk.example/x` would otherwise name `/x` beside a URL reading `tonk.example`,
+which is display and destination disagreeing.
+
+One thing the dialog does **not** have to defend against: the parser percent-encodes
+non-ASCII in path/query/fragment and punycodes hosts, so both fields are always ASCII. A
+right-to-left override (`https://evil.com/#‮gpj.exe`) arrives as `#%E2%80%AEgpj.exe`.
+That is *why* a text node suffices, not merely convention.
+
+### One dialog at a time
+
+`open_external` runs straight from the guest relay, so a hostile spot could post `open`
+in a loop. Without a gate that stacks N modal dialogs on the trusted page — and, before
+the closures were given an owner, leaked the whole detached dialog subtree each time
+(measured: 7 wasm heap slots per link). So `confirm_then_open` refuses while a dialog is
+already up.
+
+This costs nothing real: a modal dialog makes the rest of the top document inert,
+and its backdrop hit-tests even over the guest's iframe, so a *user* cannot reach a
+second link while one is open. Any second call is scripted — hostile or buggy — and the
+dialog already up is the one the user is answering.
+
+(Inertness does not propagate into a nested browsing context for *programmatic* focus: a
+scripted `focus()` inside the guest still lands. That is measured, and it strengthens the
+case for the gate rather than weakening it.)
+
 ### Two open paths, two mechanisms
 
 `window.open` and programmatic `anchor.click({target:_blank})` both require transient
@@ -196,7 +286,7 @@ mechanism:
 | Path | Activation | Mechanism | If blocked |
 |---|---|---|---|
 | Dialog (external) | the **Open press**, in the top document | synthesize `<a target="_blank" rel="noopener noreferrer">` and click it | cannot be — activation is guaranteed |
-| No dialog (same-origin) | must survive two `postMessage` hops from depth 2 | `window.open(href, "_blank", "noopener")` | returns `null` → fall back to same-tab `navigate_to(href)` |
+| No dialog (same-origin) | must survive two `postMessage` hops from depth 2 | `window.open(href, "_blank")` — **no `noopener`** | returns `null` → fall back to same-tab `navigate_to(href)` |
 
 **The interstitial removes the popup-blocker risk rather than adding cost.** Without it,
 every external open would depend on transient activation propagating across the relay —
@@ -207,6 +297,16 @@ activation in the top document, so the dialog path never gambles.
 The no-dialog path does gamble, which is why it uses `window.open` — the one mechanism
 whose failure is **detectable** (`null` return). An in-app path degrading to a same-tab
 navigation is a reasonable outcome; silently doing nothing is not.
+
+**And that is exactly why the no-dialog path omits `noopener`, which an earlier draft of
+this spec prescribed.** Measured: `window.open` with `noopener` returns `null`
+*unconditionally* — the spec severs the opener relationship, so there is no handle to
+return. That destroys the only blocked-popup signal there is, and every same-origin
+cmd-click would degrade to a same-tab navigation forever, silently. The cost of omitting
+it is nil here: the destination is our own origin, so an opener reference is ordinary and
+harmless. `noopener` still goes on every *external* anchor, where the destination is not
+ours and reverse tabnabbing is real. **Do not re-add it to the `window.open` call to make
+the two paths look alike.**
 
 `anchor.click()` is used on the dialog path because it handles `mailto:`/`tel:`
 correctly — `window.open("mailto:…")` can strand a blank tab, while an anchor click
@@ -224,16 +324,23 @@ A native `<dialog>` + `showModal()` gives focus trap and Esc for free, styled wi
 claim ("Nothing on the TOP page uses a `<wa-*>` COMPONENT") true, and adds no dependency
 on loader timing.
 
-Copy names the host prominently and the full URL beneath it:
+Copy names the destination's **origin** prominently and the full URL beneath it:
 
 ```
 Open in a new tab?
 
-example.com
+https://example.com
 https://example.com/docs/x
 
             [ Cancel ]  [ Open ]
 ```
+
+The prominent line is the full origin — `scheme://host:port` — not a bare host. This
+is not cosmetic. A bare host cannot express an origin, so `http://tonk.example/` would
+announce itself as `tonk.example`: our own site, for a destination that is not our
+origin. The same argument kills `hostname`, which drops the port when
+`tonk.example:8443` is a different origin anyone can bind. Both were demonstrated
+against the real parser, and both are pinned by tests.
 
 Not "Leave this spot?" — with `noopener` and `_blank`, the spot stays open and the user
 does not leave.
@@ -263,8 +370,11 @@ data: views and components are facts a collaborator or agent can assert into a s
 - **Parse, don't prefix-match.** `web_sys::Url` only. `JaVaScRiPt:`, leading whitespace,
   and embedded newlines all defeat string comparison and are exactly how this class of
   bug ships.
-- **`rel="noopener noreferrer"`** on every synthesized anchor; `noopener` on every
-  `window.open`. Prevents reverse tabnabbing.
+- **`rel="noopener noreferrer"`** on every synthesized anchor — that is the path that
+  leaves our origin, and it is where reverse tabnabbing is real. The same-origin
+  `window.open` deliberately has no `noopener`: the destination is ours, and `noopener`
+  would return `null` unconditionally and destroy the blocked-popup signal (see "Two open
+  paths, two mechanisms").
 - **No intermediate gate.** All policy is at the top page, so there is no
   "confirmed" flag an intermediate document could forward and spot content could forge.
 - **Accepted:** spot content can render a *fake* dialog inside its own iframe rect. It
@@ -273,10 +383,18 @@ data: views and components are facts a collaborator or agent can assert into a s
 
 ## Errors
 
-A rejected scheme is dropped and reported over the existing `__tonkRuntime:"warn"`
-channel (`bridge.rs:447-458`), which exists precisely because an opaque origin sanitizes
-guest errors out of the parent console. A silently-dropped click is the current bug; the
-fix should not reproduce it in a narrower form.
+A rejected scheme is dropped and `console.warn`ed by the top page, naming the href and
+the allowlist. No bridge channel is involved: rejection happens on the page, which is
+already the real console. (The `__tonkRuntime:"warn"` relay at `bridge.rs:447-458` exists
+to lift **guest** errors out of an opaque origin that sanitizes them out of the parent
+console — a different problem. An earlier draft of this spec said the rejection rode that
+channel; it does not.)
+
+`confirm_then_open` warns on each of its own bail paths too — no document, no body, the
+dialog failing to build. All are unreachable in practice, but a silently-dropped click is
+the bug this change exists to fix, and reproducing it in a narrower form inside the fix
+would be worse than the original: the user would have clicked a link that the code
+deliberately chose not to open, and said nothing.
 
 ## Testing
 
@@ -307,10 +425,13 @@ All tests use `#[dialog_common::test]` and `it_does_x` naming, per repo conventi
 - **Popup blocked on the no-dialog path.** Mitigated by the `null`-return fallback to a
   same-tab navigation. If activation propagation turns out worse than expected in
   Safari, the fallback is the behaviour, and it is acceptable.
-- **Forwarding depends on `window.tonk` meaning "I am a guest".** Verified: assigned
-  only at `bridge.rs:381` inside `BOOTSTRAP_JS`. If a future change ever installs
-  `window.tonk` on the top page, every page effect silently no-ops by posting to a
-  parent that isn't listening. Pin the assumption in a comment at the forwarding site.
+- **Forwarding depends on `window.tonk` meaning "I am a guest".** It holds because the
+  realms are disjoint, not because the bootstrap is the only assignment —
+  `tonk-worker/assets/bridge.js:128` installs one too, in realms that never run the
+  element runtime. Break that separation (the runtime into `wrap_html_body`, or
+  `bridge.js` into a runtime guest), or install a `window.tonk` on the top page, and
+  every page effect silently no-ops at once. The assumption is pinned in a comment at
+  the forwarding site.
 - **`navigate_to`'s fallback is still wrong** even after PR 1 — it will still misread a
   `SecurityError` as "no history access". PR 1 makes it unreachable rather than correct.
   Worth a comment; a real fix means distinguishing the two failures.
@@ -324,11 +445,10 @@ All tests use `#[dialog_common::test]` and `it_does_x` naming, per repo conventi
 
 In scope: PR 1 (forwarding for `navigate` + `title`), PR 2 (the `open` effect —
 external links, `mailto:`/`tel:`, `target="_blank"`, modified clicks, allowlist,
-dialog).
+dialog, and the in-guest fragment scroll).
 
 Out of scope, deliberately:
 
-- **In-page fragments.** Left native.
 - **Sub-route titles.** PR 1 unblocks them; nobody has asked for them.
 - **Deleting `fab.rs` and fixing the stale comments.** A worthwhile separate cleanup,
   not mixed into a security-sensitive change.

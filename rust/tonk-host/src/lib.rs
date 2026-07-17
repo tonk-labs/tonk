@@ -74,6 +74,10 @@ mod page_effect;
 #[cfg(target_arch = "wasm32")]
 pub use navigate::navigate_to;
 #[cfg(target_arch = "wasm32")]
+mod open;
+#[cfg(target_arch = "wasm32")]
+pub use open::open_external;
+#[cfg(target_arch = "wasm32")]
 mod title;
 #[cfg(target_arch = "wasm32")]
 pub use title::set_title;

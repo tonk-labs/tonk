@@ -37,17 +37,33 @@ use web_sys::window;
 /// effect on its own document). Returns `false` only for a real page, which
 /// must perform the effect itself.
 ///
-/// The discriminator is `window.tonk`, assigned at exactly one place —
-/// `BOOTSTRAP_JS` in `tonk-portal/src/bridge.rs`, which only ever runs in a
-/// guest's `srcdoc`. No Rust assigns it and the top page never has one, so
-/// its presence means precisely "I am a portal guest with a bridge to my
-/// parent". Deliberately NOT `window === window.top`, which encodes "I am
-/// the outermost frame" — a different claim that would break if the Tonk
-/// page were ever itself embedded.
+/// The discriminator is `window.tonk`. Two places install one, so the
+/// invariant is not "only the bootstrap assigns it" — it is that
+/// **a realm that loads `bridge.js` never runs the element runtime**:
 ///
-/// If `window.tonk` is ever installed on the top page, every page effect
-/// silently no-ops. That is the assumption to check first if they all stop
-/// working at once.
+/// - `BOOTSTRAP_JS` (`tonk-portal/src/bridge.rs`) installs the bridge this
+///   module posts to. It is parent-pushed into a guest's `srcdoc`, and
+///   `shared.rs` always sets `srcdoc`, never `src` — so every realm the
+///   element runtime enters got there this way.
+/// - `tonk-worker/assets/bridge.js` also does `globalThis.tonk = bridge`
+///   (`worker.rs` documents it). It is loaded only by `wrap_html_body`
+///   (`tonk-worker/src/router/host.rs`), which serves agent-authored HTML
+///   into an SW-routed `src` iframe — a realm with no element runtime in it,
+///   and so no caller of `forward`.
+///
+/// The two never meet, so wherever `forward` runs, a present `tonk` is the
+/// portal bridge and its presence means precisely "I am a portal guest with a
+/// bridge to my parent". Deliberately NOT `window === window.top`, which
+/// encodes "I am the outermost frame" — a different claim that would break if
+/// the Tonk page were ever itself embedded.
+///
+/// VIOLATE THAT AND EVERY PAGE EFFECT DIES AT ONCE, SILENTLY. Adding the
+/// element runtime to `wrap_html_body`, or `bridge.js` to a runtime guest,
+/// makes `forward` find a `tonk` with no `navigate`/`setTitle`/`open`: it
+/// takes the guest branch, drops the effect, and returns `true`. Installing a
+/// `window.tonk` of either kind on the TOP page does the same there. That is
+/// the assumption to check first if navigation, titles, and link opening all
+/// stop working together.
 pub(crate) fn forward(method: &str, arg: &str) -> bool {
     let Some(win) = window() else {
         return false;

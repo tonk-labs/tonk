@@ -881,6 +881,20 @@ canonical protocol, which is the whole reason a prefix check is unsafe."
 - Consumes: `classify`, `Destination` (Task 4); `page_effect::forward` (Task 1); `crate::navigate_to` (Task 2).
 - Produces: `pub fn open_external(href: &str)` — the entry point `tonk-portal`'s dispatcher calls in Task 6.
 
+**Two obligations carried from Task 4:**
+
+1. **Remove `#[cfg_attr(not(test), allow(dead_code))]` from both `Destination` and `classify`.** Task 4 added them because nothing outside its tests called them yet; `open_external` is now that caller. Unlike a plain `allow(dead_code)`, clippy does NOT flag these as redundant — `-D warnings` will stay green with them left on, so nothing but this instruction catches it. Remove them and confirm the gate is still clean.
+2. **Do not add any sanitising of your own to the dialog, and do not re-derive what it names.** Task 4 established the invariant that **what we display is exactly what we open**. `Destination::External { url, label }` — note `label`, not `host`. `label` is the destination's identity as the classifier computed it: the **full origin** (`scheme://host:port`) for http(s), the address for `mailto:`/`tel:`. Render `label` and `url` exactly as given.
+
+   Every shortcut here is a known vulnerability, each one demonstrated against the real parser during Task 4:
+   - `hostname` drops the port — `tonk.example:8443` is a different origin from `tonk.example`, and anyone can bind it.
+   - `host` drops the scheme — `http://tonk.example/` would name `tonk.example`, i.e. our own site, for a destination that is not our origin.
+   - Reconstructing a URL for display can reintroduce userinfo — `https://tonk.example@evil.com/` reads as ours while going to `evil.com`.
+
+   The classifier closed all three. The dialog's only job is to not reopen them.
+
+**One thing you do NOT have to defend against:** the URL parser percent-encodes non-ASCII in path/query/fragment and punycodes hosts, so both fields are **always ASCII** — a right-to-left override (`https://evil.com/#‮gpj.exe`) arrives as `#%E2%80%AEgpj.exe`. That is *why* a text node is sufficient, not merely conventional.
+
 Most of this task is DOM plumbing whose behaviour only exists in a real browser, and Task 8 verifies it there. But `build_dialog` is the exception and must not be waved through: it is where an attacker-controlled string meets the trusted document, and it is fully testable. Step 1 pins it.
 
 - [ ] **Step 1: Write the failing test**
@@ -888,7 +902,7 @@ Most of this task is DOM plumbing whose behaviour only exists in a real browser,
 In `rust/tonk-host/src/open.rs`, add to the existing `mod tests` block:
 
 ```rust
-    /// The dialog renders on the REAL origin, so a hostile host or URL must
+    /// The dialog renders on the REAL origin, so a hostile label or URL must
     /// land as TEXT and never as markup.
     ///
     /// If this ever fails, the scheme allowlist has been outflanked one layer
@@ -896,21 +910,25 @@ In `rust/tonk-host/src/open.rs`, add to the existing `mod tests` block:
     /// would have executed it. `set_text_content` is what holds this line, and
     /// a single `set_inner_html` would break it silently — nothing else in the
     /// change would look different.
+    ///
+    /// `classify` cannot actually produce these strings today (the parser
+    /// encodes them). This asserts the dialog is safe on its OWN terms, so it
+    /// stays safe if it ever gains another caller.
     #[dialog_common::test]
-    async fn it_renders_a_hostile_host_and_url_as_text_not_markup() {
+    async fn it_renders_a_hostile_label_and_url_as_text_not_markup() {
         let document = web_sys::window()
             .expect("a window in the test harness")
             .document()
             .expect("a document in the test harness");
-        let hostile_host = "<img src=x onerror=alert(1)>";
+        let hostile_label = "<img src=x onerror=alert(1)>";
         let hostile_url = "https://example.com/<script>alert(1)</script>";
 
         let dialog =
-            build_dialog(&document, hostile_host, hostile_url).expect("the dialog should build");
+            build_dialog(&document, hostile_label, hostile_url).expect("the dialog should build");
 
         assert!(
             dialog.query_selector("img").ok().flatten().is_none(),
-            "a hostile host must not become an element"
+            "a hostile label must not become an element"
         );
         assert!(
             dialog.query_selector("script").ok().flatten().is_none(),
@@ -918,12 +936,12 @@ In `rust/tonk-host/src/open.rs`, add to the existing `mod tests` block:
         );
         assert_eq!(
             dialog
-                .query_selector(".tonk-open__host")
+                .query_selector(".tonk-open__label")
                 .ok()
                 .flatten()
                 .and_then(|el| el.text_content()),
-            Some(hostile_host.to_owned()),
-            "the host should appear verbatim, as text"
+            Some(hostile_label.to_owned()),
+            "the label should appear verbatim, as text"
         );
         assert_eq!(
             dialog
@@ -945,8 +963,8 @@ In `rust/tonk-host/src/open.rs`, add to the existing `mod tests` block:
             .document()
             .expect("a document in the test harness");
 
-        let dialog =
-            build_dialog(&document, "example.com", "https://example.com/").expect("a dialog");
+        let dialog = build_dialog(&document, "https://example.com", "https://example.com/")
+            .expect("a dialog");
 
         let text = dialog.text_content().unwrap_or_default();
         assert!(
@@ -987,7 +1005,7 @@ pub fn open_external(href: &str) {
     };
     match classify(href, &base, &page_origin) {
         Destination::SameOrigin(url) => open_same_origin(&url),
-        Destination::External { url, host } => confirm_then_open(&url, &host),
+        Destination::External { url, label } => confirm_then_open(&url, &label),
         Destination::Rejected => {
             // The top page IS the real console, so warn directly. (The
             // `__tonkRuntime` warn channel exists to lift GUEST errors out of
@@ -1027,7 +1045,7 @@ fn open_same_origin(url: &str) {
 /// The Open press is itself a user activation IN THE TOP DOCUMENT, so this
 /// path never gambles on activation surviving the relay. The affordance and
 /// the mechanism reinforce each other.
-fn confirm_then_open(url: &str, host: &str) {
+fn confirm_then_open(url: &str, label: &str) {
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -1036,7 +1054,7 @@ fn confirm_then_open(url: &str, host: &str) {
     };
     ensure_styles(&document);
 
-    let Some(dialog) = build_dialog(&document, host, url) else {
+    let Some(dialog) = build_dialog(&document, label, url) else {
         return;
     };
     let Some(confirm) = dialog.query_selector(".tonk-open__confirm").ok().flatten() else {
@@ -1085,12 +1103,17 @@ fn on_event<F: FnMut() + 'static>(target: &Element, event: &str, mut handler: F)
 
 /// Build the dialog.
 ///
+/// `label` is the destination's identity as `classify` computed it — the full
+/// origin for http(s), the address for `mailto:`/`tel:`. Render it as given:
+/// re-deriving it from `url` is how the port, scheme, and userinfo spoofs the
+/// classifier already closed get reopened.
+///
 /// Every attacker-controlled string goes in via `set_text_content`. There is
 /// no `set_inner_html` here and there must never be: this renders on the real
-/// origin, so interpolating a host or URL into markup would be a scripting
+/// origin, so interpolating a label or URL into markup would be a scripting
 /// hole in the trusted document — the exact thing the scheme allowlist exists
 /// to prevent, reintroduced one layer down.
-fn build_dialog(document: &Document, host: &str, url: &str) -> Option<HtmlDialogElement> {
+fn build_dialog(document: &Document, label: &str, url: &str) -> Option<HtmlDialogElement> {
     let dialog: HtmlDialogElement = document
         .create_element("dialog")
         .ok()?
@@ -1101,9 +1124,9 @@ fn build_dialog(document: &Document, host: &str, url: &str) -> Option<HtmlDialog
     let heading = document.create_element("h2").ok()?;
     heading.set_text_content(Some("Open in a new tab?"));
 
-    let host_line = document.create_element("p").ok()?;
-    let _ = host_line.set_attribute("class", "tonk-open__host");
-    host_line.set_text_content(Some(host)); // text, never HTML
+    let label_line = document.create_element("p").ok()?;
+    let _ = label_line.set_attribute("class", "tonk-open__label");
+    label_line.set_text_content(Some(label)); // text, never HTML
 
     let url_line = document.create_element("p").ok()?;
     let _ = url_line.set_attribute("class", "tonk-open__url");
@@ -1123,7 +1146,7 @@ fn build_dialog(document: &Document, host: &str, url: &str) -> Option<HtmlDialog
     let _ = actions.append_child(&cancel);
     let _ = actions.append_child(&confirm);
     let _ = dialog.append_child(&heading);
-    let _ = dialog.append_child(&host_line);
+    let _ = dialog.append_child(&label_line);
     let _ = dialog.append_child(&url_line);
     let _ = dialog.append_child(&actions);
     Some(dialog)
@@ -1191,7 +1214,7 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
   margin: 0 0 0.75rem;
   font-size: var(--wa-font-size-l, 1.125rem);
 }
-.tonk-open__host {
+.tonk-open__label {
   margin: 0 0 0.25rem;
   font-weight: 600;
 }
@@ -1644,7 +1667,7 @@ The view's template needs:
 
 | Action | Expected |
 |---|---|
-| Click `external https` | Dialog: "Open in a new tab?", host `example.com`, full URL beneath |
+| Click `external https` | Dialog: "Open in a new tab?", naming the **full origin** `https://example.com` (with the scheme — a bare `example.com` is the bug Task 4 fixed), full URL beneath |
 | Dialog → Cancel | Dialog closes. No tab. Spot untouched. |
 | Dialog → Esc | Same as Cancel. |
 | Dialog → Open | New tab loads example.com. Spot still there, still working. |
