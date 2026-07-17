@@ -225,14 +225,23 @@ pub fn clamp_position(
     (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
 }
 
+/// Whether the compact pager's strip rests at its scroll end — the state in
+/// which the arrow's next tap wraps to the start, and the glyph flips to
+/// point back so the wrap is announced rather than silent. Tolerates a small
+/// epsilon (browsers report fractional scroll positions), and a strip with
+/// nothing to scroll is NOT "at the end": its arrow keeps pointing forward
+/// and its tap is a harmless no-op.
+pub fn strip_at_end(scroll_left: f64, client_width: f64, scroll_width: f64) -> bool {
+    let max = scroll_width - client_width;
+    max > 0.0 && scroll_left >= max - 2.0
+}
+
 /// The scroll offset the compact pager's arrow advances the strip to: one
-/// page-width forward per tap, wrapping back to the start once the end is
-/// reached. "At the end" tolerates a small epsilon — browsers report
-/// fractional scroll positions, and a strip resting within a couple of px
-/// of its maximum must wrap rather than dead-end the arrow.
+/// page-width forward per tap, wrapping back to the start from the end
+/// ([`strip_at_end`]).
 pub fn strip_page_target(scroll_left: f64, client_width: f64, scroll_width: f64) -> f64 {
     let max = (scroll_width - client_width).max(0.0);
-    if scroll_left >= max - 2.0 {
+    if strip_at_end(scroll_left, client_width, scroll_width) {
         0.0
     } else {
         (scroll_left + client_width).min(max)
@@ -567,6 +576,23 @@ mod pager {
     fn a_strip_with_nothing_to_scroll_stays_at_the_start() {
         assert_eq!(strip_page_target(0.0, 300.0, 300.0), 0.0);
         assert_eq!(strip_page_target(0.0, 300.0, 250.0), 0.0);
+    }
+
+    #[test]
+    fn the_end_state_drives_the_arrow_flip() {
+        assert!(!strip_at_end(0.0, 300.0, 800.0));
+        assert!(!strip_at_end(300.0, 300.0, 800.0));
+        assert!(strip_at_end(500.0, 300.0, 800.0));
+        // Fractionally shy of the end still counts as the end.
+        assert!(strip_at_end(498.5, 300.0, 800.0));
+    }
+
+    #[test]
+    fn a_strip_with_nothing_to_scroll_is_not_at_the_end() {
+        // The arrow must keep pointing forward when there is nothing to
+        // page — a back-arrow on a strip that never moved reads as broken.
+        assert!(!strip_at_end(0.0, 300.0, 300.0));
+        assert!(!strip_at_end(0.0, 300.0, 250.0));
     }
 }
 

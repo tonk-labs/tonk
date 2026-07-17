@@ -37,8 +37,8 @@
 use crate::logic::{
     DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
     dock_claim_json, dock_from_conclusions, is_compact, mirrored, nearest_dock, pause_claim_json,
-    profile_rename_claim_json, ratchet_min_width, strip_page_target, telescope_delay_ms,
-    telescope_settle_ms,
+    profile_rename_claim_json, ratchet_min_width, strip_at_end, strip_page_target,
+    telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -1021,6 +1021,8 @@ fn update_compact_mode(element: &HtmlElement) {
     fab.class_list()
         .toggle_with_force("fab--compact", compact)
         .ok();
+    // A fresh mode starts the pager at page 1 with a forward arrow.
+    sync_pager_arrow(element);
 }
 
 /// The bar's expanded width. Measured directly when expanded; a compact bar
@@ -1064,10 +1066,34 @@ fn attach_strip_scroll(element: &HtmlElement) {
         return;
     };
     let el = element.clone();
-    let on_scroll = Closure::<dyn FnMut()>::new(move || close_menus(&el));
+    let on_scroll = Closure::<dyn FnMut()>::new(move || {
+        close_menus(&el);
+        sync_pager_arrow(&el);
+    });
     let target: &web_sys::EventTarget = strip.unchecked_ref();
     let _ = target.add_event_listener_with_callback("scroll", on_scroll.as_ref().unchecked_ref());
     on_scroll.forget();
+}
+
+/// Point the pager arrow at what its next tap DOES: forward mid-strip,
+/// back (`fab__more--back`, a 180° glyph flip) once the strip rests at its
+/// end and the next tap wraps to the start. Driven from the strip's scroll
+/// events and from mode changes, so swipes and taps both keep it honest.
+fn sync_pager_arrow(element: &HtmlElement) {
+    let Some(strip) = element.query_selector(".fab__strip").ok().flatten() else {
+        return;
+    };
+    let Some(more) = element.query_selector(".fab__more").ok().flatten() else {
+        return;
+    };
+    let at_end = strip_at_end(
+        strip.scroll_left() as f64,
+        strip.client_width() as f64,
+        strip.scroll_width() as f64,
+    );
+    more.class_list()
+        .toggle_with_force("fab__more--back", at_end)
+        .ok();
 }
 
 /// Attach pointer event listeners for free drag-and-drop. The element moves

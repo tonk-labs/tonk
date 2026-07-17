@@ -174,7 +174,15 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
    as the fixed right cap, and the segments page horizontally between
    them in a native scroll-snap strip — swipe momentum for free, and no
    gesture code to fight the drag (which arms only on the circle cap). */
-.fab--compact { max-inline-size: calc(100vw - 32px); }
+.fab--compact {
+  max-inline-size: calc(100vw - 32px);
+  /* Horizontal-only for the WHOLE compact bar, not just the strip: a
+     swipe starting on the chevron, a cap, or a between-segment gap could
+     otherwise pan the page vertically and ride the pill off-screen. The
+     circle cap's own `touch-action: none` still wins for drags (the
+     effective action is the intersection down the touched chain). */
+  touch-action: pan-x;
+}
 .fab--compact .fab__strip {
   display: flex;
   gap: 2px;
@@ -232,23 +240,37 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 .fab--compact .fab__more {
   display: inline-flex;
   flex: none;
-  inline-size: 22px;
+  /* The nub's exact geometry (`.fab__end` is 18px) so the arrow reads as
+     the pill's terminator, not a separate button; `appearance`/`margin`
+     zeroed because iOS Safari's UA button styling otherwise floats the
+     button off the bar's axis. */
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  inline-size: 18px;
+  block-size: 100%;
+  align-self: stretch;
   padding: 0;
   align-items: center;
   justify-content: center;
   border: 0;
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: 10px;
 }
-/* On coarse pointers the 22px chevron grows an invisible >=44px hit area,
+/* The arrow points at what the next tap does: forward mid-strip, back
+   once the strip rests at the end and the tap wraps to the start
+   (element.rs toggles the class from the strip's scroll position). */
+.fab--compact .fab__more wa-icon { transition: transform 0.2s ease; }
+.fab__more--back wa-icon { transform: rotate(180deg); }
+/* On coarse pointers the 18px chevron grows an invisible >=44px hit area,
    mirroring the circle cap's treatment (`.fab__seg` supplies the
    `position: relative` anchor). */
 @media (pointer: coarse) {
   .fab__more::after {
     content: "";
     position: absolute;
-    inset: -11px;
+    inset: -13px;
   }
 }
 /* Collapse in compact: the strip and chevron retract into the circle
@@ -284,7 +306,8 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .fab--compact .fab__strip,
-  .fab--compact .fab__tele--end { transition: none; }
+  .fab--compact .fab__tele--end,
+  .fab--compact .fab__more wa-icon { transition: none; }
 }
 /* A segment: its own cream surface + ink, an inset highlight/shadow that
    reads like the wireframe's pressed-plastic pill. Middle segments are
