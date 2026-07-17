@@ -544,7 +544,7 @@ mod tests {
             .of(this.clone())
             .is(target_space.clone())
             .assert(&mut changes);
-        the!("dom.event.current-target.dataset/rename")
+        the!("dom.event.current-target.dataset/rename-repository")
             .of(this.clone())
             .is(entity("tonk:repository"))
             .assert(&mut changes);
@@ -581,6 +581,81 @@ mod tests {
         assert!(
             RemoveSpace::decode(this, &facts).is_none(),
             "a rename-shaped transient must not decode as RemoveSpace"
+        );
+    }
+
+    /// Regression for the bug this pair of tests exists to prevent:
+    /// renaming a space's repository was ALSO renaming the user's profile.
+    /// `ProfileRename` and `RenameRepository` both used to derive the same
+    /// `dom.event.current-target.dataset/rename` marker attribute, making
+    /// `ProfileRename`'s `{value, marker}` shape a strict SUBSET of a
+    /// repo-rename transient's `{value, marker, space}` — so a repo-rename
+    /// decoded as BOTH commands and both handlers fired. Command decoding
+    /// matches on which attributes are PRESENT, never their values, so a
+    /// shared marker value (`tonk:repository` vs `tonk:profile`) never
+    /// disambiguated anything. The fix is a DISTINCT ATTRIBUTE per command
+    /// — `dataset/rename-repository` here — the same pattern
+    /// `remove::Remove` already uses (see
+    /// `it_does_not_decode_a_rename_transient_as_remove_space` above).
+    #[dialog_common::test]
+    fn it_does_not_decode_a_repo_rename_as_a_profile_rename() {
+        use tonk_schema::command::{ProfileRename, RenameRepository};
+
+        let this = entity("did:key:zRepoRename");
+        let target_space = entity("did:key:zTargetSpace");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target/value")
+            .of(this.clone())
+            .is("Renamed".to_string())
+            .assert(&mut changes);
+        the!("xyz.tonk.rename-repository/space")
+            .of(this.clone())
+            .is(target_space.clone())
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/rename-repository")
+            .of(this.clone())
+            .is(entity("tonk:repository"))
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+
+        assert!(
+            RenameRepository::decode(this.clone(), &facts).is_some(),
+            "a repo-rename transient must decode as RenameRepository"
+        );
+        assert!(
+            ProfileRename::decode(this, &facts).is_none(),
+            "a repo-rename transient must NOT also decode as ProfileRename — \
+             that is the bug: renaming a spot was also renaming the profile"
+        );
+    }
+
+    /// Converse of the above: a profile-rename transient (no `space`, and
+    /// the `profile/rename` marker attribute) must not decode as
+    /// `RenameRepository`, which requires `space` regardless.
+    #[dialog_common::test]
+    fn it_does_not_decode_a_profile_rename_as_a_repo_rename() {
+        use tonk_schema::command::{ProfileRename, RenameRepository};
+
+        let this = entity("did:key:zProfileRename");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target/value")
+            .of(this.clone())
+            .is("Ada".to_string())
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/rename")
+            .of(this.clone())
+            .is(entity("tonk:profile"))
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+
+        assert!(
+            ProfileRename::decode(this.clone(), &facts).is_some(),
+            "a profile-rename transient must decode as ProfileRename"
+        );
+        assert!(
+            RenameRepository::decode(this, &facts).is_none(),
+            "a profile-rename transient must not decode as RenameRepository \
+             (it carries no `space`)"
         );
     }
 

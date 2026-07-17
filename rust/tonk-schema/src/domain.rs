@@ -335,12 +335,22 @@ pub mod command {
         #[domain("xyz.tonk.rename-repository")]
         pub struct Space(pub Entity);
 
-        /// Per-command marker keeping this shape distinct from `profile/rename`,
-        /// which also reads `dom.event.current-target/value`. The derived
-        /// attribute is `dom.event.current-target.dataset/rename`.
+        /// Per-command marker. Decoding matches on which ATTRIBUTES are
+        /// present, never on their values — so a same-named `Rename` marker
+        /// here and in `command::rename` would both derive
+        /// `dom.event.current-target.dataset/rename`, making this command's
+        /// attribute set a strict subset of `profile/rename`'s and letting a
+        /// repo-rename transient decode as BOTH commands (the bug this type
+        /// name fixes: renaming a space's repository was also renaming the
+        /// user's profile). What keeps the two shapes disjoint is a
+        /// DISTINCT ATTRIBUTE, not a distinct marker VALUE — same precedent
+        /// as `command::remove::Remove` (`space/remove`'s `data-remove`,
+        /// deliberately not `data-subject`, so it can't also decode every
+        /// rename). The derived attribute is
+        /// `dom.event.current-target.dataset/rename-repository`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.dataset")]
-        pub struct Rename(pub Entity);
+        pub struct RenameRepository(pub Entity);
     }
 
     /// Attributes the `profile/rename` command reads from the identity

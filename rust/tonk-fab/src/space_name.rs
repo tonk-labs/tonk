@@ -98,7 +98,7 @@ impl CustomElement for UiSpaceNameElement {
             return;
         };
         editable.set_text_content(Some(UNTITLED));
-        let _ = editable.set_attribute("data-rename", "tonk:repository");
+        let _ = editable.set_attribute("data-rename-repository", "tonk:repository");
         let _ = this.append_child(&editable);
     }
 

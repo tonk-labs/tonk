@@ -212,8 +212,10 @@ pub struct RenameRepository {
     /// The target space DID — the repository to rename.
     pub space: crate::domain::command::rename_repository::Space,
     /// Per-command marker distinguishing this from `profile/rename`, which
-    /// shares the `{this, value}` shape.
-    pub marker: crate::domain::command::rename_repository::Rename,
+    /// shares the `{this, value}` shape. A DISTINCT ATTRIBUTE (not a
+    /// distinct marker value) is what keeps the shapes disjoint — see
+    /// `domain::command::rename_repository::RenameRepository`'s doc.
+    pub marker: crate::domain::command::rename_repository::RenameRepository,
 }
 
 impl Command for RenameRepository {

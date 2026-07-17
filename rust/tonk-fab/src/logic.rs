@@ -988,7 +988,7 @@ mod profile_name {
 pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
     let mut parameters = json!({
         "space": space,
-        "rename": "tonk:repository"
+        "rename-repository": "tonk:repository"
     });
     if !name.is_empty() {
         parameters["value"] = json!(name);
@@ -1002,9 +1002,9 @@ pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
                     "concept": {
                         "description": "Rename a space's repository from the FAB.",
                         "with": {
-                            "value":  { "the": "dom.event.current-target/value", "as": "Text" },
-                            "space":  { "the": "xyz.tonk.rename-repository/space", "as": "Entity" },
-                            "rename": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
+                            "value":            { "the": "dom.event.current-target/value", "as": "Text" },
+                            "space":            { "the": "xyz.tonk.rename-repository/space", "as": "Entity" },
+                            "rename-repository": { "the": "dom.event.current-target.dataset/rename-repository", "as": "Entity" }
                         }
                     }
                 },
