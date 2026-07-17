@@ -11,15 +11,21 @@
 // bundle but never mount an editor pay only for this shell; pages
 // that mount many editors fetch the core exactly once.
 //
-// Attributes (all reflected on the host element):
-//   content     — versioned `content` envelope (content.ts): the
-//                 markdown plus an HLC ETag. The sync channel — write
-//                 it back through a store and the element drops its own
-//                 echo by the version. A bare markdown string is also
-//                 accepted (no version → always adopted).
-//   value       — bare markdown source (a subset of `content`).
-//                 Reactive: an out-of-band write patches only the span
-//                 that differs, preserving the caret.
+// Content channel — the element's *text content*, the way `<textarea>`
+// carries its value: put the content between the tags
+// (`<tonk-prose>…</tonk-prose>`), and a store binds it as element text.
+// Text content is newline- and markup-safe (a `<` in the markdown stays
+// literal, and CRLF survives) — unlike an attribute value, which a
+// binding layer can normalize in transit. The content may be a versioned
+// `content` envelope (content.ts: markdown + HLC ETag) or bare markdown
+// (no version → always adopted). Store-driven updates are observed via a
+// MutationObserver; the element drops its own round-tripped echo by the
+// HLC version, so a store write-back never fights the caret.
+//
+// Attributes:
+//   value       — legacy/convenience content source, same parsing as the
+//                 text channel; the text child takes precedence when both
+//                 are present.
 //   readonly    — boolean attribute. Presence locks the editor.
 //   placeholder — ghost text shown while the document is empty.
 //   auto-focus  — boolean attribute. Focus the editor once mounted.
@@ -161,6 +167,13 @@ class TonkProseElement extends HTMLElement {
    *  loading. Applied (last-write-wins) when the editor mounts. */
   #pendingValue: string | null = null;
 
+  /** Observes the light-DOM text child — the primary content channel,
+   *  the way `<textarea>` carries its value. A store binds the content
+   *  as element text (`<tonk-prose>{content}</tonk-prose>`), which the
+   *  view writes via `set_text_content`: newline- and markup-safe,
+   *  unlike an attribute value that can be normalized in transit. */
+  #textObserver: MutationObserver | null = null;
+
   /** Debounce timer for the outward `change` event. Coalesces a burst
    *  of keystrokes into one dispatch after an idle gap, so a consumer
    *  that commits each `change` to a store isn't hit per-keystroke. */
@@ -208,10 +221,36 @@ class TonkProseElement extends HTMLElement {
     // If we were about to tear down (framework move), cancel — the
     // re-attach happened first and the live editor carries on.
     this.#teardownScheduled = false;
+
+    // Watch the light-DOM text child for store-driven content updates.
+    // Installed once; survives the editor's own lifecycle since the
+    // editor lives in the shadow root and never touches light DOM.
+    if (!this.#textObserver) {
+      this.#textObserver = new MutationObserver(() => this.#onLightContent());
+      this.#textObserver.observe(this, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    }
+
     if (this.#editor) return;
 
     const token = ++this.#mountToken;
     void this.#mountEditor(token);
+  }
+
+  /** The element's light-DOM text — its content channel. Excludes the
+   *  shadow root (where the editor renders), so it's the clean input a
+   *  store writes via `set_text_content`. */
+  #lightContent(): string {
+    return this.textContent ?? "";
+  }
+
+  /** A light-DOM text change (the store wrote new content). Adopt it —
+   *  the HLC gate drops our own echo, a newer write patches the doc. */
+  #onLightContent(): void {
+    this.#adopt(this.#lightContent());
   }
 
   async #mountEditor(token: number): Promise<void> {
@@ -229,24 +268,24 @@ class TonkProseElement extends HTMLElement {
     // in flight.
     if (token !== this.#mountToken || !this.isConnected) return;
 
-    // Initial document: a `.value`/`content` write that landed before
-    // mount wins (`#pendingValue`); otherwise take the `content`
-    // attribute, else the bare `value` attribute. Parse through the
-    // envelope so an initial `content` seeds `#lastKnownHlc` too — a
-    // later echo of that same version is then correctly recognized.
-    let doc: string;
-    if (this.#pendingValue !== null) {
-      doc = this.#pendingValue;
-    } else {
-      const attr = this.getAttribute("content") ?? this.getAttribute("value");
-      if (attr === null) {
-        doc = "";
-      } else {
-        const parsed = parseContent(attr);
-        doc = parsed.value;
-        if (parsed.hlc !== null && parsed.hlc > this.#lastKnownHlc) {
-          this.#lastKnownHlc = this.#clock.receive(parsed.hlc);
-        }
+    // Initial document, in priority order:
+    //   1. a `.value`/`content` property write buffered before mount,
+    //   2. the light-DOM text child (the primary content channel),
+    //   3. the `content`/`value` attribute (legacy / convenience).
+    // Each is parsed through the envelope so an initial versioned
+    // content seeds `#lastKnownHlc` — a later echo of that same version
+    // is then correctly recognized and dropped.
+    let raw: string | null = this.#pendingValue;
+    if (raw === null) {
+      const light = this.#lightContent();
+      raw = light !== "" ? light : (this.getAttribute("content") ?? this.getAttribute("value"));
+    }
+    let doc = "";
+    if (raw !== null) {
+      const parsed = parseContent(raw);
+      doc = parsed.value;
+      if (parsed.hlc !== null && parsed.hlc > this.#lastKnownHlc) {
+        this.#lastKnownHlc = this.#clock.receive(parsed.hlc);
       }
     }
 
@@ -323,6 +362,8 @@ class TonkProseElement extends HTMLElement {
         clearTimeout(this.#changeTimer);
         this.#flushChange();
       }
+      this.#textObserver?.disconnect();
+      this.#textObserver = null;
       this.#mountToken++;
       this.#editor?.destroy();
       this.#editor = null;
@@ -389,8 +430,10 @@ class TonkProseElement extends HTMLElement {
   get value(): string {
     if (this.#editor) return this.#editor.getMarkdown();
     if (this.#pendingValue !== null) return this.#pendingValue;
-    const attr = this.getAttribute("content") ?? this.getAttribute("value");
-    return attr === null ? "" : parseContent(attr).value;
+    const light = this.#lightContent();
+    const raw =
+      light !== "" ? light : (this.getAttribute("content") ?? this.getAttribute("value"));
+    return raw === null ? "" : parseContent(raw).value;
   }
 
   set value(next: string) {

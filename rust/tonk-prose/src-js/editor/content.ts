@@ -52,10 +52,14 @@ const VERSION_HEADER = "Tonk-Prose-Version";
 const VERSION = "1";
 
 /** True when `text` looks like a content envelope (vs bare markdown):
- *  its first line is our version header. */
+ *  its first line is our version header. Case-insensitive: layers the
+ *  envelope passes through (DOM attribute reflection, stores) may
+ *  normalize header casing, so `tonk-prose-version:` must still be
+ *  recognized — otherwise a mangled envelope is mistaken for bare
+ *  markdown and its own headers leak into the document. */
 export function isEnvelope(text: string): boolean {
-  const head = `${VERSION_HEADER}:`;
-  return text.startsWith(head);
+  return text.slice(0, VERSION_HEADER.length + 1).toLowerCase() ===
+    `${VERSION_HEADER.toLowerCase()}:`;
 }
 
 /** Decode a `content` string into `{ hlc, value }`. Accepts either the

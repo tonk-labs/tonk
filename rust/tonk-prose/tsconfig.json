@@ -15,5 +15,6 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src-js/**/*.ts"]
+  "include": ["src-js/**/*.ts"],
+  "exclude": ["src-js/**/*.test.ts"]
 }
