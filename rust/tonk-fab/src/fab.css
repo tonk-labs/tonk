@@ -234,6 +234,12 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 }
 /* Dragging locks the pager so paging and dragging cannot interleave. */
 .fab.dragging .fab__strip { overflow: hidden; }
+/* A floating dropdown cannot render inside the compact scroll strip —
+   its overflow clips an absolutely-positioned menu to the bar's height.
+   Compact taps route to the vertical menu instead (element.rs); this
+   guard covers any other path that sets `is-open` outside menu mode. */
+.fab--compact:not(.fab--menu) .fab__repo.is-open .fab__menu,
+.fab--compact:not(.fab--menu) .fab__share.is-open .fab__share-menu { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .fab--compact .fab__strip,
   .fab--compact .fab__tele--end,

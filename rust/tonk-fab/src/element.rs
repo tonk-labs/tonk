@@ -271,9 +271,17 @@ fn attach_gestures(element: &HtmlElement) {
                 let _ = seg.class_list().remove_1("is-open");
             }
         } else if let Some(seg) = t.closest(".fab__repo").ok().flatten() {
-            toggle_menu(&el_click, &seg, ".fab__share");
+            if compact_without_menu(&el_click) {
+                toggle_more_menu(&el_click);
+            } else {
+                toggle_menu(&el_click, &seg, ".fab__share");
+            }
         } else if let Some(seg) = t.closest(".fab__share").ok().flatten() {
-            toggle_menu(&el_click, &seg, ".fab__repo");
+            if compact_without_menu(&el_click) {
+                toggle_more_menu(&el_click);
+            } else {
+                toggle_menu(&el_click, &seg, ".fab__repo");
+            }
         }
     });
 
@@ -520,6 +528,19 @@ fn toggle_more_menu(element: &HtmlElement) {
         .ok();
 }
 
+/// Whether the bar is compact with the vertical menu closed — the state in
+/// which a floating dropdown must not open: the scroll strip's `overflow`
+/// clips an absolutely-positioned menu to the bar's own height, so the
+/// segment tap routes to the vertical menu instead (where the same menus
+/// render as inline accordions).
+fn compact_without_menu(element: &HtmlElement) -> bool {
+    element
+        .query_selector(".fab.fab--compact:not(.fab--menu)")
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 /// Measure the menu's natural (max-content) width — momentarily overriding
 /// the stylesheet's `width: 100%`, reading the box, restoring — and stamp the
 /// segment's inline `min-width` to the RATCHETED target (never below a prior
@@ -764,6 +785,11 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
     // in fab.css). Driving per-tile inline max-widths here would zero out
     // the pages the strip lays out.
     if fab.class_list().contains("fab--compact") {
+        // A collapse retracts EVERYTHING, including the vertical menu:
+        // `.fab--compact.fab--collapsed .fab__strip` out-specifies
+        // `.fab--menu .fab__strip`, so an open menu left standing here would
+        // be clipped to nothing with its scrim still armed.
+        close_menus(element);
         fab.class_list()
             .toggle_with_force("fab--collapsed", collapsing)
             .ok();
@@ -1730,6 +1756,82 @@ mod tests {
         assert!(
             !has_menu(&host),
             "the click-away curtain closes the vertical menu"
+        );
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_routes_a_compact_segment_tap_to_the_vertical_menu() {
+        // In compact mode the floating dropdown would be clipped to the
+        // ~36px scroll strip (`overflow-x: auto` forces `overflow-y: auto`
+        // too), so a segment tap must open the vertical menu instead — the
+        // menus render as inline accordions there. Through the real gesture
+        // path, like the other tests here.
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        attach_gestures(&host);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+
+        host.query_selector(".fab")
+            .ok()
+            .flatten()
+            .expect("bar")
+            .class_list()
+            .add_1("fab--compact")
+            .expect("compact");
+
+        let repo = host
+            .query_selector(".fab__repo")
+            .ok()
+            .flatten()
+            .expect("repo segment");
+        repo.dispatch_event(&bubbling_click()).expect("dispatch");
+
+        assert!(
+            has_menu(&host),
+            "a compact segment tap must open the vertical menu"
+        );
+        assert!(
+            !is_open(&host, ".fab__repo"),
+            "a compact segment tap must not open the floating dropdown"
+        );
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_closes_the_vertical_menu_when_the_compact_bar_collapses() {
+        // `.fab--compact.fab--collapsed .fab__strip` out-specifies
+        // `.fab--menu .fab__strip`, so collapsing while the vertical menu is
+        // open would clip it to nothing with its scrim still armed. A
+        // collapse must retract the menu first.
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        attach_gestures(&host);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+
+        let fab = host.query_selector(".fab").ok().flatten().expect("bar");
+        fab.class_list().add_1("fab--compact").expect("compact");
+        fab.class_list().add_1("fab--menu").expect("menu open");
+
+        let cap = host
+            .query_selector(".fab__cap-l")
+            .ok()
+            .flatten()
+            .expect("cap");
+        // A plain bubbling click — not the alt-click pause gesture.
+        cap.dispatch_event(&bubbling_click()).expect("dispatch");
+
+        assert!(
+            !has_menu(&host),
+            "collapsing the compact bar must close the vertical menu"
         );
         host.remove();
     }
