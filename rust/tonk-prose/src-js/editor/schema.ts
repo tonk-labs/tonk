@@ -18,6 +18,15 @@ import { Schema } from "prosemirror-model";
 export const schema = new Schema({
   nodes: baseSchema.spec.nodes,
   marks: baseSchema.spec.marks
+    // GFM strikethrough (`~~text~~`). Delimiter handling mirrors the
+    // other inline marks: `~~` is stored as literal `markup` text
+    // (markup.ts), revealed per edit range, and demarkup/serialize
+    // regenerate it. Rendered as <del>, with a CSS line-through.
+    .addToEnd("strikethrough", {
+      inclusive: false,
+      parseDOM: [{ tag: "del" }, { tag: "s" }, { tag: "strike" }],
+      toDOM: () => ["del", 0],
+    })
     .addToEnd("markup", {
       attrs: {
         // "inline" markers (`**`, `` ` ``, `[`, `](url)`) reveal per

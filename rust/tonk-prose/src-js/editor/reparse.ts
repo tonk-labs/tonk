@@ -29,9 +29,37 @@
 
 import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
 import type { EditorState, Transaction } from "prosemirror-state";
+import type { Node, ResolvedPos } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
+import { schema } from "./schema";
 import { parseCleanMarkdown } from "./markdown";
-import { materializeBlock, isPlainTextblock } from "./markup";
+import { materializeDoc, isPlainTextblock } from "./markup";
+
+/** Descend a parsed subtree through its blockquote wrappers, counting
+ *  the depth, to the single textblock inside — or null if the shape
+ *  isn't a straight chain of single-child blockquotes ending in one
+ *  textblock (e.g. a list, or a quote holding several paragraphs). */
+function unwrapQuoted(node: Node): { depth: number; block: Node } | null {
+  let depth = 0;
+  let cur = node;
+  while (cur.type === schema.nodes.blockquote) {
+    if (cur.childCount !== 1) return null;
+    depth++;
+    cur = cur.firstChild!;
+  }
+  if (!cur.isTextblock) return null;
+  return { depth, block: cur };
+}
+
+/** How many blockquotes enclose the textblock at `$block` (the
+ *  resolved position *inside* the block). */
+function quoteDepthAt($block: ResolvedPos): number {
+  let depth = 0;
+  for (let d = $block.depth - 1; d >= 0; d--) {
+    if ($block.node(d).type === schema.nodes.blockquote) depth++;
+  }
+  return depth;
+}
 
 /** How long after the last edit the reparse fires. Allusion used
  *  80ms; slightly longer keeps the swap out of fast typing bursts. */
@@ -72,40 +100,99 @@ function touchedBlocks(tr: Transaction): number[] {
 }
 
 /** Reparse one dirty block inside `tr`; returns true when the block
- *  was swapped. `pos` must point at the block in `tr.doc`. */
+ *  (or its enclosing blockquote nesting) was swapped. `pos` must
+ *  point at the block in `tr.doc`. */
 function reparseBlock(tr: Transaction, pos: number): boolean {
   const node = tr.doc.nodeAt(pos);
   if (!node || !isPlainTextblock(node)) return false;
 
+  // The block's line already carries its `> ` blockquote prefixes as
+  // literal marker text (materializeDoc), so `textContent` is the
+  // full markdown source for this line — leading `>`s included.
   const source = node.textContent;
   if (!source) return false;
 
   const parsed = parseCleanMarkdown(source);
   if (parsed.childCount !== 1) return false;
-  const block = materializeBlock(parsed.firstChild!);
+
+  // The parse tells us the block's target type *and* how many
+  // blockquotes should enclose it (from leading `>`s in the source).
+  const unwrapped = unwrapQuoted(parsed.firstChild!);
+  if (!unwrapped) return false;
+
+  const $pos = tr.doc.resolve(pos);
+  const actualDepth = quoteDepthAt(tr.doc.resolve(pos + 1));
+  // The reparsed line loses its list-item context (it parses as a bare
+  // paragraph), so pass whether the block lives in a list item — that's
+  // what turns a leading `[ ] ` into a checkbox marker rather than text.
+  const inListItem = $pos.parent.type === schema.nodes.list_item;
+  const materialized = materializeDoc(parsed.firstChild!, "", inListItem);
+  const block = unwrapQuoted(materialized)!.block;
 
   if (!block.isTextblock) return false;
-  if (block.eq(node)) return false;
   // Lossless-swap guard: the text the user sees must be preserved
   // exactly (this rules out escape-resolution differences and any
   // parse that ate characters).
   if (block.textContent !== source) return false;
 
-  const $pos = tr.doc.resolve(pos);
-  const index = $pos.index();
-  if (!$pos.parent.canReplaceWith(index, index + 1, block.type)) return false;
-
-  // Caret offset within the block, if the selection head is inside.
-  // Pure text ⇒ document offsets are text offsets ⇒ the offset is
-  // valid in the swapped block too.
   const { head } = tr.selection;
   const inBlock = head >= pos + 1 && head <= pos + node.nodeSize - 1;
   const offset = inBlock ? head - (pos + 1) : null;
 
-  tr.replaceWith(pos, pos + node.nodeSize, block);
+  // Same quote depth: swap the textblock in place, wrapper untouched.
+  if (unwrapped.depth === actualDepth) {
+    if (block.eq(node)) return false;
+    const index = $pos.index();
+    if (!$pos.parent.canReplaceWith(index, index + 1, block.type)) return false;
+    tr.replaceWith(pos, pos + node.nodeSize, block);
+    if (offset !== null) {
+      const target = Math.min(pos + 1 + offset, pos + block.nodeSize - 1);
+      tr.setSelection(TextSelection.create(tr.doc, target));
+    }
+    return true;
+  }
+
+  // Quote depth changed: a `>` was typed (sink) or deleted (lift).
+  // Rebuild the enclosing blockquote nesting from the fresh parse.
+  // `$block` resolves inside the textblock so ancestor walks see the
+  // blockquote chain.
+  const $block = tr.doc.resolve(pos + 1);
+
+  // The outermost single-child blockquote enclosing the block — the
+  // top of the chain we can restructure without disturbing siblings.
+  // If a multi-child blockquote sits between the block and the depth
+  // we need to reach, we can't lift/sink cleanly: bail (the inline
+  // content still reparses on the next pass).
+  let topDepth = $block.depth; // the textblock's own depth
+  for (let d = $block.depth - 1; d >= 1; d--) {
+    if ($block.node(d).type !== schema.nodes.blockquote) break;
+    if ($block.node(d).childCount !== 1) break;
+    topDepth = d;
+  }
+  const removableQuotes = $block.depth - topDepth; // single-child quotes above
+
+  // Lift needs at least `actualDepth - unwrapped.depth` removable
+  // quotes; without them a sibling would be split. Sink always works
+  // (we just wrap the block itself).
+  if (actualDepth > unwrapped.depth && removableQuotes < actualDepth - unwrapped.depth) {
+    return false;
+  }
+
+  const from = $block.before(topDepth);
+  const to = $block.after(topDepth);
+  const $from = tr.doc.resolve(from);
+  const parentDepth = topDepth - 1;
+  const index = $from.index(parentDepth);
+  if (!$from.node(parentDepth).canReplaceWith(index, index + 1, materialized.type)) {
+    return false;
+  }
+  tr.replaceWith(from, to, materialized);
 
   if (offset !== null) {
-    const target = Math.min(pos + 1 + offset, pos + block.nodeSize - 1);
+    // Inner textblock content begins after `unwrapped.depth` blockquote
+    // openings plus the block's own opening token.
+    const innerStart = from + unwrapped.depth + 1;
+    const target = Math.min(innerStart + offset, innerStart + block.content.size);
     tr.setSelection(TextSelection.create(tr.doc, target));
   }
   return true;

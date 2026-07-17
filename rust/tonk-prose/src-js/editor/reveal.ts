@@ -24,7 +24,7 @@ import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import type { EditorState } from "prosemirror-state";
 import type { Node, ResolvedPos } from "prosemirror-model";
-import { effectiveMarks } from "./markup";
+import { effectiveMarks, contentMarks, isMarker } from "./markup";
 
 export const revealKey = new PluginKey<DecorationSet>("tonk-prose-reveal");
 
@@ -38,15 +38,52 @@ function findEditRange($head: ResolvedPos): { from: number; to: number } | null 
 
   // Mark keys "at" the caret: union over the child before and after
   // it (a caret between two children belongs to both sides).
+  //
+  // A *marker* touching the caret is treated asymmetrically. Its
+  // styled content sits on one side of it, so the caret is only
+  // "inside" that span when it's on the content side. When the caret
+  // has moved to the marker's *outer* edge — content past a closing
+  // `**` (marker is `before`, its content is the child before it) or
+  // before an opening `**` (marker is `after`, its content is the
+  // child after it) — the marker must NOT anchor, or the reveal
+  // clings to the marker the caret just left (`**bold|**` instead of
+  // `**bold**|`). Real content nodes anchor from either side.
   const before = parent.childBefore(offset);
   const after = parent.childAfter(offset);
   const anchor = new Set<string>();
-  const addAll = (node: Node | null) => {
-    if (!node) return;
-    for (const key of effectiveMarks(node)) anchor.add(key);
+  const addKeys = (keys: readonly string[]) => {
+    for (const key of keys) anchor.add(key);
   };
-  addAll(before.node);
-  addAll(after.node);
+  // `before` — caret to its right. A marker here anchors only if its
+  // span continues to the right (opening marker), i.e. its outer
+  // (left) neighbor does NOT already carry its content marks.
+  if (before.node) {
+    if (isMarker(before.node)) {
+      const outer = parent.childBefore(before.offset).node;
+      const outerContent = outer ? contentMarks(outer) : [];
+      const inner = effectiveMarks(before.node).filter(
+        (key) => !outerContent.includes(key),
+      );
+      addKeys(inner);
+    } else {
+      addKeys(effectiveMarks(before.node));
+    }
+  }
+  // `after` — caret to its left. A marker here anchors only if its
+  // span continues to the left (closing marker), i.e. its outer
+  // (right) neighbor does NOT already carry its content marks.
+  if (after.node) {
+    if (isMarker(after.node)) {
+      const outer = parent.childAfter(after.offset + after.node.nodeSize).node;
+      const outerContent = outer ? contentMarks(outer) : [];
+      const inner = effectiveMarks(after.node).filter(
+        (key) => !outerContent.includes(key),
+      );
+      addKeys(inner);
+    } else {
+      addKeys(effectiveMarks(after.node));
+    }
+  }
   if (anchor.size === 0) return null;
 
   const intersects = (node: Node) =>

@@ -18,6 +18,7 @@ import { reparse } from "./reparse";
 import { reveal } from "./reveal";
 import { placeholder, placeholderKey } from "./placeholder";
 import { imagePreview } from "./image-preview";
+import { taskList } from "./task-list";
 import { codeBlocks } from "./code-block";
 import type { EditorOptions, ProseEditor } from "./api";
 
@@ -64,6 +65,7 @@ export function createEditor(
       gapCursor(),
       placeholder(options.placeholder),
       imagePreview(),
+      taskList(),
       markdownPastePlugin(),
     ],
   });
@@ -180,6 +182,42 @@ const EDITOR_STYLESHEET = `
   .md-doc ul, .md-doc ol { padding-left: 1.6em; margin: 0 0 0.75em; }
   .md-doc li > p { margin-bottom: 0.25em; }
 
+  /* Task-list checkbox: the rendered stand-in for a hidden "[ ] "
+     source prefix (task-list.ts). Nudged into the gutter so the
+     text still aligns with the bullet column, and drawn in the
+     accent color. The list bullet on an item that owns a checkbox
+     reads as redundant, but it stays (Typora keeps it too) while
+     the checkbox sits inline just before the text. */
+  .md-doc .md-task-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1em;
+    height: 1em;
+    margin: 0 0.35em 0 0;
+    vertical-align: -0.12em;
+    border: 1.5px solid var(--tonk-prose-border);
+    border-radius: 3px;
+    background: var(--tonk-prose-bg);
+    cursor: pointer;
+    position: relative;
+    flex: none;
+  }
+  .md-doc .md-task-checkbox:checked {
+    background: var(--tonk-prose-accent);
+    border-color: var(--tonk-prose-accent);
+  }
+  .md-doc .md-task-checkbox:checked::after {
+    content: "";
+    position: absolute;
+    left: 0.28em;
+    top: 0.08em;
+    width: 0.22em;
+    height: 0.5em;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
   .md-doc hr {
     border: none;
     border-top: 2px solid var(--tonk-prose-border);
@@ -191,6 +229,11 @@ const EDITOR_STYLESHEET = `
     text-decoration: none;
   }
   .md-doc a:hover { text-decoration: underline; }
+
+  .md-doc del {
+    text-decoration: line-through;
+    text-decoration-color: var(--tonk-prose-fg-muted);
+  }
 
   .md-doc code {
     font-family: var(--tonk-prose-mono);
