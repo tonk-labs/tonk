@@ -199,6 +199,32 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
+/// The stylesheet's dock inset — `tonk-fab.fab-dock-* { …: 16px }` in
+/// `fab.css`. The compact-mode fit test must account for it on both sides.
+pub const DOCK_INSET_PX: f64 = 16.0;
+
+/// Whether the bar must render compact: the fully EXPANDED bar plus both
+/// dock insets no longer fits the viewport width. Keyed on the would-be
+/// expanded width (not the current rendered width), so the threshold is the
+/// same entering and leaving compact and cannot oscillate.
+pub fn is_compact(expanded_width: f64, viewport_width: f64) -> bool {
+    expanded_width + 2.0 * DOCK_INSET_PX > viewport_width
+}
+
+/// Clamp a dragged bar's top-left corner so the bar stays fully inside the
+/// viewport. The origin clamp runs LAST: a bar wider or taller than the
+/// viewport pins to the left/top edge, keeping the grab handle reachable.
+pub fn clamp_position(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    vw: f64,
+    vh: f64,
+) -> (f64, f64) {
+    (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
+}
+
 /// The telescope animation duration, in milliseconds — each tile's
 /// `max-width` transition (wireframe `--dur: .4s`).
 pub const TELESCOPE_MS: u64 = 400;
@@ -353,6 +379,65 @@ mod mirror {
     fn the_midline_mirrors_like_nearest_dock_falls_right() {
         // Consistent with `nearest_dock`, whose exact midline docks right.
         assert!(mirrored(500.0, 1000.0));
+    }
+}
+
+#[cfg(test)]
+mod compact {
+    use super::*;
+
+    #[test]
+    fn a_bar_that_fits_with_both_insets_is_not_compact() {
+        assert!(!is_compact(300.0, 400.0));
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_viewport_minus_insets_is_compact() {
+        assert!(is_compact(380.0, 400.0));
+    }
+
+    #[test]
+    fn the_exact_fit_is_not_compact() {
+        // 368 + 2*16 == 400: still fits; only strictly-greater flips it, so
+        // the threshold is identical in both directions and cannot flap.
+        assert!(!is_compact(368.0, 400.0));
+    }
+}
+
+#[cfg(test)]
+mod clamp {
+    use super::*;
+
+    #[test]
+    fn an_inside_position_is_untouched() {
+        assert_eq!(
+            clamp_position(100.0, 50.0, 300.0, 36.0, 1000.0, 800.0),
+            (100.0, 50.0)
+        );
+    }
+
+    #[test]
+    fn it_clamps_every_edge() {
+        // Past the origin pins to 0.
+        assert_eq!(
+            clamp_position(-20.0, -5.0, 300.0, 36.0, 1000.0, 800.0),
+            (0.0, 0.0)
+        );
+        // Right/bottom overflow pins to viewport minus the bar.
+        assert_eq!(
+            clamp_position(900.0, 790.0, 300.0, 36.0, 1000.0, 800.0),
+            (700.0, 764.0)
+        );
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_viewport_pins_to_the_origin() {
+        // vw - width is negative; the origin wins (max runs last) so the
+        // bar's left edge — and the circle cap on it — stays reachable.
+        assert_eq!(
+            clamp_position(50.0, 10.0, 500.0, 36.0, 400.0, 800.0),
+            (0.0, 10.0)
+        );
     }
 }
 
