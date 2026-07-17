@@ -37,7 +37,8 @@
 use crate::logic::{
     DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
     dock_claim_json, dock_from_conclusions, is_compact, mirrored, nearest_dock, pause_claim_json,
-    profile_rename_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    profile_rename_claim_json, ratchet_min_width, strip_page_target, telescope_delay_ms,
+    telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -164,6 +165,7 @@ impl CustomElement for TonkFab {
             preload_menu_widths(this);
             attach_resize(this);
             attach_strip_scroll(this);
+            observe_bar_content(this);
             update_compact_mode(this);
         }
         // Restore the persisted position and apply it to our own style.
@@ -240,7 +242,7 @@ fn attach_gestures(element: &HtmlElement) {
             // the bar itself or on a menu row.
             close_menus(&el_click);
         } else if t.closest(".fab__more").ok().flatten().is_some() {
-            toggle_more_menu(&el_click);
+            advance_strip(&el_click);
         } else if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
             // Alt/option-click toggles sync pause; a plain click folds/expands.
             // Pause is dispatched here (on the FAB, which reliably receives the
@@ -271,17 +273,9 @@ fn attach_gestures(element: &HtmlElement) {
                 let _ = seg.class_list().remove_1("is-open");
             }
         } else if let Some(seg) = t.closest(".fab__repo").ok().flatten() {
-            if compact_without_menu(&el_click) {
-                toggle_more_menu(&el_click);
-            } else {
-                toggle_menu(&el_click, &seg, ".fab__share");
-            }
+            toggle_menu(&el_click, &seg, ".fab__share");
         } else if let Some(seg) = t.closest(".fab__share").ok().flatten() {
-            if compact_without_menu(&el_click) {
-                toggle_more_menu(&el_click);
-            } else {
-                toggle_menu(&el_click, &seg, ".fab__repo");
-            }
+            toggle_menu(&el_click, &seg, ".fab__repo");
         }
     });
 
@@ -513,35 +507,24 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     }
 }
 
-/// Toggle the compact vertical menu (`fab--menu` on `.fab`): every control
-/// stacked full-width, anchored to the bar like the dropdowns. Opening it
-/// first closes any open dropdown — the vertical menu owns the whole field,
-/// and the dropdowns re-open INSIDE it as inline accordions (CSS).
-fn toggle_more_menu(element: &HtmlElement) {
-    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+/// Advance the compact pager one page, wrapping to the start at the end —
+/// the tap alternative to swiping the strip (the compact bar's only other
+/// horizontal gesture). Smooth so the slide reads as paging, not a jump;
+/// the strip's own `scroll` listener dismisses any open dropdown as the
+/// segments move out from under it.
+fn advance_strip(element: &HtmlElement) {
+    let Some(strip) = element.query_selector(".fab__strip").ok().flatten() else {
         return;
     };
-    let opening = !fab.class_list().contains("fab--menu");
-    close_menus(element);
-    fab.class_list()
-        .toggle_with_force("fab--menu", opening)
-        .ok();
-    if let Some(chevron) = element.query_selector(".fab__more").ok().flatten() {
-        let _ = chevron.set_attribute("aria-expanded", &opening.to_string());
-    }
-}
-
-/// Whether the bar is compact with the vertical menu closed — the state in
-/// which a floating dropdown must not open: the scroll strip's `overflow`
-/// clips an absolutely-positioned menu to the bar's own height, so the
-/// segment tap routes to the vertical menu instead (where the same menus
-/// render as inline accordions).
-fn compact_without_menu(element: &HtmlElement) -> bool {
-    element
-        .query_selector(".fab.fab--compact:not(.fab--menu)")
-        .ok()
-        .flatten()
-        .is_some()
+    let target = strip_page_target(
+        strip.scroll_left() as f64,
+        strip.client_width() as f64,
+        strip.scroll_width() as f64,
+    );
+    let options = web_sys::ScrollToOptions::new();
+    options.set_left(target);
+    options.set_behavior(web_sys::ScrollBehavior::Smooth);
+    strip.scroll_to_with_scroll_to_options(&options);
 }
 
 /// Measure the menu's natural (max-content) width — momentarily overriding
@@ -557,6 +540,16 @@ fn compact_without_menu(element: &HtmlElement) -> bool {
 /// layout before the target, so the 0.2s `min-width` ease has a numeric start
 /// instead of animating from the unanimatable `auto`.
 fn equalize_menu_width(seg: &Element) {
+    // Not while compact: the compact dropdown is bar-width by rule, not
+    // rung-equalized, so a stamp buys nothing there — and mid-compact the
+    // segment rect under-reports, making any ratchet taken here junk. The
+    // stamps that already exist stay (the pager CSS neutralizes them with
+    // `min-width: 0 !important`), so the wide layout — and the compact-fit
+    // measurement, which unclamps to the wide layout — is identical before
+    // and after a trip through compact.
+    if seg.closest(".fab--compact").ok().flatten().is_some() {
+        return;
+    }
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
     };
@@ -615,6 +608,11 @@ fn menu_natural_width(seg: &Element, menu: &Element) -> f64 {
 /// against fallback-font metrics before the Plex face landed. The min-width
 /// transition eases the correction, riding the font swap's own reflow.
 fn restamp_menu_width(seg: &Element) {
+    // Same compact suspension as `equalize_menu_width`, and for the same
+    // reason: inline stamps must not fight the pager's `min-width: 0`.
+    if seg.closest(".fab--compact").ok().flatten().is_some() {
+        return;
+    }
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
     };
@@ -690,22 +688,16 @@ fn apply_mirror_from_handle(el: &HtmlElement) {
     }
 }
 
-/// Dismiss all transient overlays — both dropdowns and the compact vertical
-/// menu (ratcheted widths stay). Called by any interaction that invalidates
-/// an open overlay's anchoring: a drag (which drops the `fab-dock-*` classes
-/// anchoring the menu to the bar, so an open menu would float unanchored
-/// mid-bar), mode switches, pager swipes, or click-away.
+/// Dismiss both dropdowns (the ratcheted widths stay). The single dismissal
+/// point, called by any interaction that invalidates an open menu's
+/// anchoring: a drag (which drops the `fab-dock-*` classes anchoring the
+/// menu to the bar, so an open menu would float unanchored mid-bar), mode
+/// switches, pager swipes and taps, or click-away.
 fn close_menus(el: &HtmlElement) {
     for sel in MENU_SEGMENTS {
         if let Some(seg) = el.query_selector(sel).ok().flatten() {
             seg.class_list().remove_1("is-open").ok();
         }
-    }
-    if let Some(fab) = el.query_selector(".fab").ok().flatten() {
-        fab.class_list().remove_1("fab--menu").ok();
-    }
-    if let Some(chevron) = el.query_selector(".fab__more").ok().flatten() {
-        let _ = chevron.set_attribute("aria-expanded", "false");
     }
 }
 
@@ -768,7 +760,37 @@ fn refresh_on_fonts_ready(element: &HtmlElement) {
                 restamp_menu_width(&seg);
             }
         }
+        // The face swap changes every label's metrics — the same reflow
+        // that invalidates the stamps invalidates the compact-fit call.
+        update_compact_mode(&el);
     });
+}
+
+/// Re-evaluate compact mode whenever the bar's CONTENT changes: the profile
+/// and space names arrive asynchronously from live subscriptions, so the
+/// width measured at connect is the EMPTY bar's — without this, a phone
+/// sits in wide mode until some unrelated trigger (a resize, a telescope
+/// settle) happens to re-measure. Child-list/text mutations only: the
+/// class flips `update_compact_mode` itself performs are attribute
+/// mutations and cannot re-fire the observer.
+fn observe_bar_content(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let el = element.clone();
+    let cb = Closure::<dyn FnMut(js_sys::Array, MutationObserver)>::new(
+        move |_records: js_sys::Array, _obs: MutationObserver| {
+            update_compact_mode(&el);
+        },
+    );
+    if let Ok(observer) = MutationObserver::new(cb.as_ref().unchecked_ref()) {
+        let init = MutationObserverInit::new();
+        init.set_child_list(true);
+        init.set_subtree(true);
+        init.set_character_data(true);
+        observer.observe_with_options(&fab, &init).ok();
+    }
+    cb.forget();
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
@@ -791,11 +813,18 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
     // in fab.css). Driving per-tile inline max-widths here would zero out
     // the pages the strip lays out.
     if fab.class_list().contains("fab--compact") {
-        // A collapse retracts EVERYTHING, including the vertical menu:
-        // `.fab--compact.fab--collapsed .fab__strip` out-specifies
-        // `.fab--menu .fab__strip`, so an open menu left standing here would
-        // be clipped to nothing with its scrim still armed.
+        // A collapse retracts everything: a floating dropdown left standing
+        // would hover over a bar that is shrinking to a bare circle, with
+        // its scrim still armed.
         close_menus(element);
+        // Collapsed and settled are mutually exclusive, exactly as in the
+        // wide branch below: `fab--settled`'s unclamp (`max-width: none` on
+        // every shown tile, and a higher-specificity rule than the collapse
+        // clamp) would hold the chevron's tile open while the strip
+        // retracts — the collapsed pill kept its arrow.
+        fab.class_list()
+            .toggle_with_force("fab--settled", !collapsing)
+            .ok();
         fab.class_list()
             .toggle_with_force("fab--collapsed", collapsing)
             .ok();
@@ -1698,14 +1727,6 @@ mod tests {
         clamp_style.remove();
     }
 
-    fn has_menu(host: &HtmlElement) -> bool {
-        host.query_selector(".fab")
-            .ok()
-            .flatten()
-            .map(|fab| fab.class_list().contains("fab--menu"))
-            .unwrap_or(false)
-    }
-
     fn bubbling_click() -> web_sys::MouseEvent {
         let init = web_sys::MouseEventInit::new();
         init.set_bubbles(true);
@@ -1713,67 +1734,10 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_toggles_the_vertical_menu_from_the_chevron() {
-        let document = window().expect("window").document().expect("document");
-        let host = fab_host();
-        attach_gestures(&host);
-        document
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("mount");
-
-        let chevron = host
-            .query_selector(".fab__more")
-            .ok()
-            .flatten()
-            .expect("chevron");
-        chevron.dispatch_event(&bubbling_click()).expect("dispatch");
-        assert!(has_menu(&host), "a chevron click opens the vertical menu");
-
-        chevron.dispatch_event(&bubbling_click()).expect("dispatch");
-        assert!(!has_menu(&host), "a second click closes it again");
-        host.remove();
-    }
-
-    #[wasm_bindgen_test]
-    fn it_dismisses_the_vertical_menu_from_the_curtain() {
-        let document = window().expect("window").document().expect("document");
-        let host = fab_host();
-        attach_gestures(&host);
-        document
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("mount");
-
-        host.query_selector(".fab")
-            .ok()
-            .flatten()
-            .expect("bar")
-            .class_list()
-            .add_1("fab--menu")
-            .expect("open");
-        let scrim = host
-            .query_selector(".fab__scrim")
-            .ok()
-            .flatten()
-            .expect("curtain");
-        scrim.dispatch_event(&bubbling_click()).expect("dispatch");
-        assert!(
-            !has_menu(&host),
-            "the click-away curtain closes the vertical menu"
-        );
-        host.remove();
-    }
-
-    #[wasm_bindgen_test]
-    fn it_routes_a_compact_segment_tap_to_the_vertical_menu() {
-        // In compact mode the floating dropdown would be clipped to the
-        // ~36px scroll strip (`overflow-x: auto` forces `overflow-y: auto`
-        // too), so a segment tap must open the vertical menu instead — the
-        // menus render as inline accordions there. Through the real gesture
-        // path, like the other tests here.
+    fn it_opens_the_floating_dropdown_from_a_compact_segment_tap() {
+        // Compact segment taps open the SAME dropdown as desktop — floated
+        // over the bar by CSS (position: fixed escapes the strip's clip) —
+        // not a separate mobile menu. Through the real gesture path.
         let document = window().expect("window").document().expect("document");
         let host = fab_host();
         attach_gestures(&host);
@@ -1799,22 +1763,17 @@ mod tests {
         repo.dispatch_event(&bubbling_click()).expect("dispatch");
 
         assert!(
-            has_menu(&host),
-            "a compact segment tap must open the vertical menu"
-        );
-        assert!(
-            !is_open(&host, ".fab__repo"),
-            "a compact segment tap must not open the floating dropdown"
+            is_open(&host, ".fab__repo"),
+            "a compact segment tap must open its dropdown, same as desktop"
         );
         host.remove();
     }
 
     #[wasm_bindgen_test]
-    fn it_closes_the_vertical_menu_when_the_compact_bar_collapses() {
-        // `.fab--compact.fab--collapsed .fab__strip` out-specifies
-        // `.fab--menu .fab__strip`, so collapsing while the vertical menu is
-        // open would clip it to nothing with its scrim still armed. A
-        // collapse must retract the menu first.
+    fn it_collapses_the_compact_bar_with_a_dropdown_open() {
+        // A collapse retracts everything: the strip clamps to nothing, so a
+        // floating dropdown left standing would hover over a bare circle
+        // with its scrim still armed. The cap click must dismiss it.
         let document = window().expect("window").document().expect("document");
         let host = fab_host();
         attach_gestures(&host);
@@ -1826,7 +1785,14 @@ mod tests {
 
         let fab = host.query_selector(".fab").ok().flatten().expect("bar");
         fab.class_list().add_1("fab--compact").expect("compact");
-        fab.class_list().add_1("fab--menu").expect("menu open");
+        fab.class_list().add_1("fab--settled").expect("settled");
+        host.query_selector(".fab__repo")
+            .ok()
+            .flatten()
+            .expect("repo segment")
+            .class_list()
+            .add_1("is-open")
+            .expect("open dropdown");
 
         let cap = host
             .query_selector(".fab__cap-l")
@@ -1837,8 +1803,17 @@ mod tests {
         cap.dispatch_event(&bubbling_click()).expect("dispatch");
 
         assert!(
-            !has_menu(&host),
-            "collapsing the compact bar must close the vertical menu"
+            fab.class_list().contains("fab--collapsed"),
+            "the cap click must collapse the compact bar"
+        );
+        assert!(
+            !fab.class_list().contains("fab--settled"),
+            "collapsing must drop fab--settled — its unclamp rule outranks \
+             the collapse clamp and would keep the chevron's tile open"
+        );
+        assert!(
+            !is_open(&host, ".fab__repo"),
+            "collapsing must dismiss the open dropdown"
         );
         host.remove();
     }

@@ -124,7 +124,7 @@ pub fn fab_html(space_did: &str) -> String {
   </div>
   <div class="fab__tele fab__tele--end">
     <span class="fab__seg fab__cap-r fab__end" aria-hidden="true"></span>
-    <button type="button" class="fab__seg fab__cap-r fab__more" aria-label="More controls" aria-haspopup="true" aria-expanded="false"><wa-icon name="chevron-right"></wa-icon></button>
+    <button type="button" class="fab__seg fab__cap-r fab__more" aria-label="Show more controls"><wa-icon name="chevron-right"></wa-icon></button>
   </div>
 </div>
 <wa-dialog id="fab-space-create" label="New spot" class="fab__dialog" style="--width: 40rem">

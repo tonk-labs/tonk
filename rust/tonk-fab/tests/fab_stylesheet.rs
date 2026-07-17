@@ -119,6 +119,32 @@ async fn it_hides_the_chevron_cap_outside_compact_mode() {
     fab.class_list()
         .add_1("fab--compact")
         .expect("enter compact");
+    // Collapsed-compact retracts the chevron with the strip: the end tile
+    // clamps to zero width (a transitionable clamp, not display:none). This
+    // is the "button hides when the fab is collapsed" contract.
+    // `fab--settled` comes off with the collapse — its unclamp rule
+    // (`max-width: none` on shown tiles) outranks the collapse clamp, and
+    // set_telescope enforces the exclusivity (pinned by the element test
+    // `it_collapses_the_compact_bar_with_a_dropdown_open`).
+    fab.class_list().remove_1("fab--settled").expect("unsettle");
+    fab.class_list().add_1("fab--collapsed").expect("collapse");
+    let end_tile = host
+        .query_selector(".fab__tele--end")
+        .expect("query")
+        .expect("end tile authored");
+    assert_eq!(
+        window()
+            .expect("window")
+            .get_computed_style(&end_tile)
+            .expect("computed style")
+            .expect("style declaration")
+            .get_property_value("max-width")
+            .expect("max-width value"),
+        "0px",
+        "collapsing the compact bar must clamp the chevron's tile away"
+    );
+    fab.class_list().remove_1("fab--collapsed").expect("expand");
+    fab.class_list().add_1("fab--settled").expect("resettle");
     // Not a literal `inline-flex` check: the chevron is a flex ITEM (its
     // tile is `display: flex`), so browsers blockify the computed value to
     // plain `flex`. What matters is that compact mode shows it at all.

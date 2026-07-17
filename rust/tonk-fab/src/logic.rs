@@ -225,6 +225,20 @@ pub fn clamp_position(
     (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
 }
 
+/// The scroll offset the compact pager's arrow advances the strip to: one
+/// page-width forward per tap, wrapping back to the start once the end is
+/// reached. "At the end" tolerates a small epsilon — browsers report
+/// fractional scroll positions, and a strip resting within a couple of px
+/// of its maximum must wrap rather than dead-end the arrow.
+pub fn strip_page_target(scroll_left: f64, client_width: f64, scroll_width: f64) -> f64 {
+    let max = (scroll_width - client_width).max(0.0);
+    if scroll_left >= max - 2.0 {
+        0.0
+    } else {
+        (scroll_left + client_width).min(max)
+    }
+}
+
 /// The telescope animation duration, in milliseconds — each tile's
 /// `max-width` transition (wireframe `--dur: .4s`).
 pub const TELESCOPE_MS: u64 = 400;
@@ -524,6 +538,35 @@ mod dock {
     fn an_unknown_symbol_has_no_dock() {
         assert_eq!(Dock::from_symbol("tonk:middle"), None);
         assert_eq!(Dock::from_symbol(""), None);
+    }
+}
+
+#[cfg(test)]
+mod pager {
+    use super::*;
+
+    #[test]
+    fn a_mid_strip_tap_advances_one_page_width() {
+        assert_eq!(strip_page_target(0.0, 300.0, 800.0), 300.0);
+    }
+
+    #[test]
+    fn the_last_advance_clamps_to_the_end() {
+        // 800 - 300 = 500 is the max offset; 300 + 300 = 600 overshoots it.
+        assert_eq!(strip_page_target(300.0, 300.0, 800.0), 500.0);
+    }
+
+    #[test]
+    fn a_tap_at_the_end_wraps_to_the_start() {
+        assert_eq!(strip_page_target(500.0, 300.0, 800.0), 0.0);
+        // Fractional resting positions a couple px shy of the end wrap too.
+        assert_eq!(strip_page_target(498.5, 300.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn a_strip_with_nothing_to_scroll_stays_at_the_start() {
+        assert_eq!(strip_page_target(0.0, 300.0, 300.0), 0.0);
+        assert_eq!(strip_page_target(0.0, 300.0, 250.0), 0.0);
     }
 }
 

@@ -187,6 +187,12 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
+  /* Horizontal ONLY: without pan-x, a vertical finger on the strip pans
+     the guest page instead (iOS bounces the overlay's body and the whole
+     pill rides off-screen with it); contain stops the rubber-band from
+     chaining out of the strip at either end. */
+  touch-action: pan-x;
+  overscroll-behavior: contain;
   transition: max-width 0.4s ease;
 }
 .fab--compact .fab__strip::-webkit-scrollbar { display: none; }
@@ -205,26 +211,46 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
    36px sizing — an unscoped `.fab--compact .fab__seg` outranks their
    single-class rules and breaks both caps. */
 .fab--compact .fab__page .fab__tele { flex: 1 1 auto; min-width: 0; }
-.fab--compact .fab__page .fab__seg { min-width: 0; flex: 1 1 auto; padding: 0 14px; }
+/* `!important` on min-width: the wide-mode menu/rung equalizer stamps an
+   INLINE `min-width` on the dropdown segments (element.rs ratchet), and a
+   plain declaration loses to it — freezing the segments at their wide
+   column widths so they cannot shrink into their pages. The stamps must
+   survive (wide mode reuses them on return), so they are overridden here
+   rather than cleared. */
+.fab--compact .fab__page .fab__seg { min-width: 0 !important; flex: 1 1 auto; padding: 0 14px; }
 /* Order is DOM order inside the strip (page 1 first); clear the
    wide-mode reordering. */
 .fab--compact .fab__tele--account,
 .fab--compact .fab__tele--repo,
 .fab--compact .fab__tele--share { order: 0; }
-/* The right cap swaps: nub out, chevron in. */
+/* The right cap swaps: nub out, chevron in. Sized like the nub it
+   replaces (a rounded terminator, not a full segment) so it meshes with
+   the pill instead of reading as its own button; the icon shrinks with
+   it. The tap target stays honest via the coarse-pointer hit-area
+   below. */
 .fab--compact .fab__end { display: none; }
 .fab--compact .fab__more {
   display: inline-flex;
   flex: none;
-  inline-size: 36px;
+  inline-size: 22px;
   padding: 0;
   align-items: center;
   justify-content: center;
   border: 0;
   cursor: pointer;
   font: inherit;
+  font-size: 11px;
 }
-.fab--compact .fab__more wa-icon { transition: transform 0.2s ease; }
+/* On coarse pointers the 22px chevron grows an invisible >=44px hit area,
+   mirroring the circle cap's treatment (`.fab__seg` supplies the
+   `position: relative` anchor). */
+@media (pointer: coarse) {
+  .fab__more::after {
+    content: "";
+    position: absolute;
+    inset: -11px;
+  }
+}
 /* Collapse in compact: the strip and chevron retract into the circle
    (CSS transitions, not per-tile inline styles — see set_telescope). */
 .fab--compact .fab__tele--end {
@@ -239,63 +265,27 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
 }
 /* Dragging locks the pager so paging and dragging cannot interleave. */
 .fab.dragging .fab__strip { overflow: hidden; }
-/* A floating dropdown cannot render inside the compact scroll strip —
-   its overflow clips an absolutely-positioned menu to the bar's height.
-   Compact taps route to the vertical menu instead (element.rs); this
-   guard covers any other path that sets `is-open` outside menu mode. */
-.fab--compact:not(.fab--menu) .fab__repo.is-open .fab__menu,
-.fab--compact:not(.fab--menu) .fab__share.is-open .fab__share-menu { display: none; }
-@media (prefers-reduced-motion: reduce) {
-  .fab--compact .fab__strip,
-  .fab--compact .fab__tele--end,
-  .fab--compact .fab__more wa-icon { transition: none; }
-}
-/* ── The chevron's vertical menu (compact only in practice) ───────
-   `fab--menu` pops the strip out of the bar as an absolutely-anchored
-   vertical stack — the same anchoring the dropdowns use (away from the
-   docked edge, dock-keyed), so it always unfolds into view. The bar
-   itself shrinks to its two caps while the menu is up, iOS-style. */
-.fab--menu .fab__strip {
-  position: absolute;
+/* Compact dropdowns FLOAT over the bar. The strip's overflow would clip
+   an absolutely-positioned descendant to the bar's own height, so the
+   open menu switches to `position: fixed`: the bar's drop-shadow
+   `filter` makes `.fab` the containing block for fixed descendants,
+   which lifts the menu out of the strip's clip (its containing-block
+   chain no longer passes through the scroller) while the dock-keyed
+   `top`/`bottom` offsets below still resolve against the bar's own box —
+   the same away-from-the-docked-edge anchoring as at rest. `left`/
+   `right` span the whole bar: the dropdown is bar-width on a phone, not
+   rung-width. */
+.fab--compact .fab__repo.is-open .fab__menu,
+.fab--compact .fab__share.is-open .fab__share-menu {
+  position: fixed;
   left: 0;
   right: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  max-width: none;
-  overflow: visible;
-  z-index: 100;
+  width: auto;
 }
-.fab-dock-top .fab--menu .fab__strip { top: 100%; margin-top: 7px; }
-.fab-dock-bottom .fab--menu .fab__strip { bottom: 100%; margin-bottom: 7px; }
-/* Pages dissolve; every tile is its own full-width row. Scoped to the
-   strip: the end tile (chevron cap) sits outside it and keeps its bar
-   styling while the menu is up. */
-.fab--menu .fab__page { display: contents; }
-.fab--menu .fab__strip .fab__tele {
-  max-width: none !important;
-  overflow: visible;
-  min-width: 0;
+@media (prefers-reduced-motion: reduce) {
+  .fab--compact .fab__strip,
+  .fab--compact .fab__tele--end { transition: none; }
 }
-.fab--menu .fab__strip .fab__seg {
-  width: 100%;
-  box-sizing: border-box;
-  block-size: 36px;
-  border-radius: 2px;
-  flex: none;
-}
-/* An open dropdown renders INLINE as an accordion row under its
-   segment instead of floating: the segment's tile stacks them. */
-.fab--menu .fab__tele--repo,
-.fab--menu .fab__tele--share { display: flex; flex-direction: column; gap: 7px; }
-.fab--menu .fab__repo.is-open .fab__menu,
-.fab--menu .fab__share.is-open .fab__share-menu {
-  position: static;
-  margin: 7px 0 0;
-  width: 100%;
-}
-/* The chevron flips while the menu is up. */
-.fab--menu .fab__more wa-icon { transform: rotate(90deg); }
 /* A segment: its own cream surface + ink, an inset highlight/shadow that
    reads like the wireframe's pressed-plastic pill. Middle segments are
    square; the caps below round their outer edge. */
@@ -823,8 +813,7 @@ tonk-share[data-share-state="failed"] .fab__share-trigger {
    handles the hit). It sits below the bar's own stacking context, so
    the bar and its menus stay clickable through it. */
 .fab__scrim { position: fixed; inset: 0; pointer-events: none; }
-tonk-fab:has(.is-open) .fab__scrim,
-tonk-fab:has(.fab--menu) .fab__scrim { pointer-events: auto; }
+tonk-fab:has(.is-open) .fab__scrim { pointer-events: auto; }
 /* Mirrored: the bar is row-reversed, so the share zone is the LEFT
    end — its roster flips to anchor left (the repo switcher already
    re-anchors right via `.fab-mirror .fab__menu`). Row alignment

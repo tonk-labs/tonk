@@ -25,10 +25,25 @@ pages horizontally on swipe and expands into a vertical menu showing everything.
   fit.
 - **Free drag stays** on all screen sizes, repaired for touch (not reduced to
   dock-only or removed).
-- **Overflow mechanics**: swipe to page horizontally + chevron opens a vertical
-  menu. No chevron-tap-to-page.
+- **Overflow mechanics** (revised 2026-07-17 after device testing): swipe to
+  page horizontally + chevron-tap advances one page, wrapping to the start at
+  the end. The vertical menu of the first design was cut — buggy on device
+  and it added little over the pager. The chevron is nub-sized (a rounded
+  terminator that meshes with the pill, with an invisible >=44px coarse-pointer
+  hit area) and retracts with the strip when the bar collapses.
 - **Page 1 contents**: sync circle (fixed cap) + space name/switcher. Share and
-  profile name go to page 2 and the vertical menu.
+  profile name go to page 2.
+- **Compact dropdowns float**: the switcher and roster open over the bar in
+  compact mode (`position: fixed`; the bar's drop-shadow filter makes `.fab`
+  the containing block, lifting the menu out of the scroll strip's clip),
+  spanning the full bar width. Same `is-open` mechanics as desktop.
+- **Strip is horizontal-only**: `touch-action: pan-x` + `overscroll-behavior:
+  contain`, so a vertical finger on the strip cannot pan the overlay page and
+  ride the pill off-screen.
+- **Async content re-measures the fit**: the names arrive from live
+  subscriptions after connect, so a MutationObserver on the bar (child-list +
+  text) and a `document.fonts.ready` pass re-run the compact-fit evaluation —
+  without them a phone sits in wide mode measuring the empty bar.
 - **Architecture**: scroll-snap pager + CSS restack (approach A). One DOM, no
   new child components, no markup duplication; gesture handling is native
   browser scrolling. Rejected: a Rust-driven pager (re-implements browser
@@ -67,11 +82,11 @@ Left to right:
    page boundaries. No page-indicator dots — the chevron plus a slight peek of
    the next segment's edge signal there is more. An open dropdown closes when a
    swipe starts.
-3. **Right cap — chevron.** Tapping toggles `fab--menu`: the strip restacks
-   vertically, each segment on its own full-width row, chevron rotates. The
-   space switcher and member roster — dropdowns today — render inline as
-   accordion rows via CSS repositioning of the same elements. The existing
-   `.fab__scrim` handles tap-away dismissal.
+3. **Right cap — chevron** (revised): a nub-sized paging button. Tapping
+   advances the strip one page (smooth scroll), wrapping to the start at the
+   end — `strip_page_target` in `logic.rs` owns the arithmetic. The
+   dropdowns float over the bar (see Decisions); `.fab__scrim` handles
+   tap-away dismissal as on desktop.
 
 Wide viewports see zero change.
 
@@ -106,8 +121,11 @@ ephemeral (not persisted).
 
 - Native tests for the new pure functions in `logic.rs` (`is_compact`,
   `clamp_position`), alongside the existing dock and telescope-timing tests.
-- wasm tests (safaridriver locally) for class toggling: compact activation on
-  narrow viewports, chevron toggling `fab--menu`, menus closing on mode switch.
+- wasm tests (safaridriver or chromedriver locally) for: compact activation
+  on narrow viewports, compact segment taps opening the floating dropdowns,
+  collapse dismissing dropdowns and dropping `fab--settled`, and
+  computed-style pins with the real stylesheet (chevron hidden in wide mode,
+  chevron tile clamped away when collapsed).
 - Manual pass for feel (swipe momentum, drag responsiveness) in responsive mode
   and on a phone.
 
