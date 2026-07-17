@@ -70,6 +70,8 @@ mod http;
 #[cfg(target_arch = "wasm32")]
 mod navigate;
 #[cfg(target_arch = "wasm32")]
+mod page_effect;
+#[cfg(target_arch = "wasm32")]
 pub use navigate::navigate_to;
 #[cfg(target_arch = "wasm32")]
 mod title;
