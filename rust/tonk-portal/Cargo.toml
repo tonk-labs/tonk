@@ -12,7 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 custom-elements = { workspace = true }
 indexmap = { workspace = true }
-tonk-fab = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

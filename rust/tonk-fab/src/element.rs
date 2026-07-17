@@ -5,7 +5,8 @@
 //! around the viewport. It is NOT a portal and uses no iframe — it lives in the
 //! same document as its content and moves itself directly. The FAB chrome uses
 //! it to float the profile pill over the space content, but nothing here is
-//! FAB-specific beyond the `.fab` class names the view supplies.
+//! FAB-specific beyond the `.fab` class names [`crate::markup::fab_html`]
+//! authors.
 //!
 //! - Telescope collapse/expand: the bar rests EXPANDED (all segments shown).
 //!   A plain click on the circle toggles it — the segments after the cap
@@ -27,14 +28,16 @@
 //!   only exist at rest); the visual right-anchored flips key off
 //!   `fab-mirror` instead, since that is the class still present mid-drag. A
 //!   press that never moves past a small threshold is a click.
-//! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted dock (or a default bottom-right), and applies its classes.
+//! - `inject_children` authors the bar (already wrapped for the telescope —
+//!   see `fab_html`); connect restores the persisted dock (or a default
+//!   bottom-right) and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, dock_from_conclusions, mirrored,
-    nearest_dock, pause_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, corrected_min_width, create_space_claim_json, dock_claim_json,
+    dock_from_conclusions, mirrored, nearest_dock, pause_claim_json, profile_rename_claim_json,
+    ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -61,6 +64,35 @@ extern "C" {
 /// any app stacking context.
 const FAB_Z_INDEX: &str = "2147483646";
 
+/// The id of the injected stylesheet, so injection is idempotent.
+const STYLE_ID: &str = "tonk-fab-styles";
+
+/// Inject the FAB stylesheet once per document.
+///
+/// The element has no shadow root (`shadow()` below returns `false`), so the
+/// CSS is global rather than scoped. It must be guarded: the element re-binds
+/// on every clone (`tonk-display` clones the chrome view and mounts the
+/// clone), and an unguarded injection would append a duplicate `<style>` per
+/// mount. Keyed off a stable element id rather than a JS expando, since a
+/// clone landing in a FRESH document still needs the stylesheet — an expando
+/// guard (like `__tonkFabBound` below) would follow the clone and skip it.
+fn ensure_stylesheet() {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    if document.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
+    let _ = style.set_attribute("id", STYLE_ID);
+    style.set_text_content(Some(include_str!("fab.css")));
+    if let Some(head) = document.head() {
+        let _ = head.append_child(style.as_ref());
+    }
+}
+
 /// How far (CSS px) the pointer must travel from the press origin before it
 /// counts as a drag rather than a click. Below this the press toggles the
 /// telescope; above it the FAB moves and the click is suppressed.
@@ -79,9 +111,23 @@ impl CustomElement for TonkFab {
         &[]
     }
 
-    fn inject_children(&mut self, _this: &HtmlElement) {}
+    /// Author the FAB's own DOM. The `space` attribute is stamped by the
+    /// mounting view (`<tonk-fab with="main@profile:tonk" space="{id}">`) and
+    /// is already resolved by the time `inject_children` runs — per the
+    /// `custom-elements` crate, this is deferred to (and runs before) the
+    /// first `connectedCallback`, i.e. after HTML parsing has set the
+    /// element's attributes.
+    fn inject_children(&mut self, this: &HtmlElement) {
+        let space = this.get_attribute("space").unwrap_or_default();
+        this.set_inner_html(&crate::markup::fab_html(&space));
+    }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        // Outside the `__tonkFabBound` guard below: a clone landing in a
+        // fresh document still needs the stylesheet, and this is itself
+        // idempotent (keyed off a stable element id, not the expando).
+        ensure_stylesheet();
+
         // Float the element: fixed-position, high z-index. Its left/top come
         // from the restored position below.
         let style = this.style();
@@ -105,10 +151,10 @@ impl CustomElement for TonkFab {
             .unwrap_or(false);
         if !already_bound {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
-            inject_scrim(this);
-            wrap_telescope_tiles(this);
             attach_drag(this);
             attach_gestures(this);
+            attach_create_space_form(this);
+            attach_profile_name_commit(this);
             preload_menu_widths(this);
         }
         // Restore the persisted position and apply it to our own style.
@@ -143,93 +189,19 @@ impl CustomElement for TonkFab {
     }
 }
 
-/// Inject the click-away curtain: a viewport-covering, invisible click target
-/// that dismisses both dropdowns. It is created here rather than authored in the
-/// view template for two reasons:
-///
-///  - The template renderer drops EMPTY elements, so an authored
-///    `<div class="fab__scrim"></div>` never reaches the DOM.
-///  - It has to be a SIBLING of `.fab`, not a child: `wrap_telescope_tiles`
-///    takes child[0] of `.fab` to be the circle cap, so a scrim nested inside
-///    would be mistaken for it and the real cap would be wrapped as a
-///    collapsible tile.
-///
-/// The stylesheet (profile.yaml) owns the rest: it is `pointer-events: none`
-/// at rest and only becomes a live hit area while a menu is open
-/// (`tonk-fab:has(.is-open)`), so it can never swallow a click on the page
-/// while the bar is idle. Idempotent.
-fn inject_scrim(element: &HtmlElement) {
-    if element
-        .query_selector(".fab__scrim")
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return;
-    }
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    let Ok(scrim) = document.create_element("div") else {
-        return;
-    };
-    let _ = scrim.set_attribute("class", "fab__scrim");
-    // Before `.fab`, so the bar paints over it and menu rows stay clickable.
-    let _ = element.insert_before(scrim.as_ref(), element.first_child().as_ref());
-}
-
-/// Wrap each collapsible segment (every `.fab` child after the sync-circle cap)
-/// in a `.fab__tele` div whose `max-width` the telescope animates. Adds the
-/// `fab--anim` marker (enables the transition CSS) and the initial
-/// `fab--settled` state (the bar rests EXPANDED — all segments shown). Mirrors
-/// the wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
-/// so the view template stays a plain segment list.
-///
-/// Child[0] of `.fab` is taken to be the circle cap and is left unwrapped —
-/// which is why the click-away curtain hangs off `<tonk-fab>` rather than
-/// sitting inside `.fab` (see [`inject_scrim`]).
-fn wrap_telescope_tiles(element: &HtmlElement) {
-    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
-        return;
-    };
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    // Children after the first (the `.fab__cap-l` circle) are collapsible.
-    let children = fab.children();
-    let mut tiles: Vec<Element> = Vec::new();
-    for i in 1..children.length() {
-        if let Some(child) = children.item(i) {
-            // Skip anything already wrapped (defensive against a re-run).
-            if child.class_list().contains("fab__tele") {
-                continue;
-            }
-            tiles.push(child);
-        }
-    }
-    for tile in &tiles {
-        let Ok(wrapper) = document.create_element("div") else {
-            continue;
-        };
-        let _ = wrapper.set_attribute("class", "fab__tele");
-        // Start each wrapper EXPANDED — the bar rests open (every segment shown),
-        // not as a bare circle. `max-width: none` + `margin-left: 0` is the same
-        // resting geometry `schedule_settle` leaves after an expand; the matching
-        // `fab--settled` class below makes the wrappers overflow-visible so the
-        // dropdowns can escape. `set_telescope` drives these on toggle.
-        let style = wrapper.unchecked_ref::<HtmlElement>().style();
-        let _ = style.set_property("max-width", "none");
-        let _ = style.set_property("margin-left", "0px");
-        // Insert the wrapper where the tile is, then move the tile inside it.
-        if let Some(parent) = tile.parent_node() {
-            let _ = parent.insert_before(&wrapper, Some(tile));
-            let _ = wrapper.append_child(tile);
-        }
-    }
-    // Rest EXPANDED + settled (no `fab--collapsed`), so the first circle click
-    // collapses. `fab--anim` still gates the transitions for later toggles.
-    fab.class_list().add_2("fab--anim", "fab--settled").ok();
-}
+/// The click-away curtain (`.fab__scrim`) and the `.fab__tele` telescope
+/// wrappers used to be retrofitted here at runtime — `inject_scrim` and
+/// `wrap_telescope_tiles` — because the view-rendered markup this element
+/// used to wrap had no chance to shape its own DOM: the view renderer
+/// dropped empty elements (so an authored `<div class="fab__scrim"></div>`
+/// never reached the DOM) and the scrim had to land as a runtime-inserted
+/// SIBLING of `.fab`, never a child, or the child-order inference that found
+/// the circle cap would mistake it for a collapsible tile. Now that
+/// [`crate::markup::fab_html`] authors the whole subtree directly (see
+/// `inject_children` above), both are emitted as real markup instead:
+/// `.fab__scrim` is a literal sibling of `.fab`, and every collapsible
+/// segment already comes wrapped in its own `.fab__tele` div with the
+/// resting `fab--anim fab--settled` classes stamped on `.fab` itself.
 
 /// Attach the FAB's NATIVE click gesture listener. Because only the circle is
 /// draggable (see `attach_drag`), the pointer is never captured over a
@@ -302,12 +274,12 @@ fn attach_gestures(element: &HtmlElement) {
 
 /// Toggle sync pause for the active space. Reads the target space and the
 /// command URI off the cap's `<ui-sync-status with="branch@repo" onpause=…>`
-/// (the space DID was baked into `with` at render time from
-/// `{dom.host/data-space}`), builds the `tonk:pause-sync` transient, and
-/// dispatches it through `window.tonk.transact` — routeless, so it lands on the
-/// FAB portal's own context (`main@profile:tonk`, where the command is defined
-/// and its handler reads the target space from the command). Nothing space-side
-/// is required, and this runs from the FAB's own click listener, which — unlike
+/// (`markup::fab_html` stamps `with="main@{space}"` there), builds the
+/// `tonk:pause-sync` transient, and dispatches it through
+/// `window.tonk.transact` — routeless, so it lands on the FAB portal's own
+/// context (`main@profile:tonk`, where the command is defined and its
+/// handler reads the target space from the command). Nothing space-side is
+/// required, and this runs from the FAB's own click listener, which — unlike
 /// a listener on the cloned `<ui-sync-status>` — reliably receives the click.
 fn dispatch_pause_from_cap(cap: &Element) {
     let Some(status) = cap.query_selector("ui-sync-status").ok().flatten() else {
@@ -317,9 +289,7 @@ fn dispatch_pause_from_cap(cap: &Element) {
         .get_attribute("onpause")
         .filter(|c| !c.is_empty())
         .unwrap_or_else(|| "tonk:pause-sync".to_owned());
-    // The cap's `with` is a `branch@repo` location (or a bare repo); the space
-    // is the repo half. The FAB renders `<ui-sync-status with={dom.host/data-
-    // space}>`, so this is the active space's DID with no branch prefix.
+    // The cap's `with` is a `branch@repo` location — take the repo half.
     let Some(space) = status
         .get_attribute("with")
         .filter(|w| !w.is_empty() && !w.contains('{'))
@@ -329,8 +299,15 @@ fn dispatch_pause_from_cap(cap: &Element) {
         return;
     };
 
-    let claim = pause_claim_json(&command, &space, js_sys::Date::now());
-    let json_str = match serde_json::to_string(&claim) {
+    transact(&pause_claim_json(&command, &space, js_sys::Date::now()));
+}
+
+/// Dispatch a `TransactRequest` JSON body via `window.tonk.transact(...)`,
+/// routeless. Shared by every FAB-owned command dispatch (pause, dock
+/// persistence, create-space, profile-rename) — each builds its own claim
+/// JSON via `crate::logic` and hands it here.
+fn transact(claim: &serde_json::Value) {
+    let json_str = match serde_json::to_string(claim) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -341,15 +318,145 @@ fn dispatch_pause_from_cap(cap: &Element) {
     else {
         return;
     };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
+    let Some(transact_fn) = Reflect::get(&tonk, &"transact".into())
         .ok()
         .and_then(|v| v.dyn_into::<Function>().ok())
     else {
         return;
     };
     if let Some(obj) = js_sys::JSON::parse(&json_str).ok() {
-        transact.call1(&tonk, &obj).ok();
+        transact_fn.call1(&tonk, &obj).ok();
     }
+}
+
+/// Attach the create-space wizard's `submit` handler directly to
+/// `#fab-space-create-form`.
+///
+/// This markup used to live inside a `<tonk-display model="tonk:profile/fab">`
+/// wrapper, whose own render pass rewrote `onsubmit=space/create` into
+/// `data-onsubmit` and installed a `tonk-display::events::delegate::Delegate`
+/// that resolved the concept descriptor and dispatched the claim (see
+/// `markup.rs`'s module docs). `<tonk-fab>` sets this markup via
+/// `set_inner_html` directly, so no such delegate exists — this reimplements,
+/// from Rust, the three things that delegate did for this one form:
+/// `preventDefault()` (else the browser falls through to a native GET submit
+/// and reloads the page with `?name=` — see `tonk-display/src/events/
+/// extract.rs` around line 631), reading the submitted fields, and dismissing
+/// the dialog (`maybe_dismiss_overlay` in `tonk-display/src/events/
+/// delegate.rs`).
+///
+/// The form is static markup present at connect time (unlike the profile-name
+/// chip, which may render asynchronously), so a direct listener — rather than
+/// delegation on the host — is enough.
+fn attach_create_space_form(element: &HtmlElement) {
+    let Some(form) = element
+        .query_selector("#fab-space-create-form")
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let on_submit = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Unconditional and first: the browser has already run native
+        // constraint validation by the time `submit` fires, so this only
+        // ever suppresses the reload, never a legitimate validation error.
+        event.prevent_default();
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let name = form_field(&target, "name");
+        let remote = form_field(&target, "remote");
+        let template = form_field(&target, "template");
+        transact(&create_space_claim_json(&name, &remote, &template));
+        dismiss_overlay(&target);
+    });
+    let target: &web_sys::EventTarget = form.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("submit", on_submit.as_ref().unchecked_ref());
+    on_submit.forget();
+}
+
+/// Read `form.elements[field].value` the way `dom.event.current-target.
+/// elements.<field>/value` reads it in the browser: a plain `Reflect` walk,
+/// not a typed `HtmlFormElement`/`HtmlInputElement` cast. That matters for
+/// `template`: three radios share `name="template"`, so
+/// `form.elements.template` is a `RadioNodeList`, not a single control —
+/// its own `.value` getter already resolves to the checked radio's value,
+/// exactly like a single input's. A typed cast to `HtmlInputElement` would
+/// fail on that shape; the untyped walk handles both uniformly.
+fn form_field(form: &Element, field: &str) -> String {
+    Reflect::get(form, &JsValue::from_str("elements"))
+        .and_then(|elements| Reflect::get(&elements, &JsValue::from_str(field)))
+        .and_then(|item| Reflect::get(&item, &JsValue::from_str("value")))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// Reimplements `tonk_display::events::delegate::maybe_dismiss_overlay` for
+/// FAB-owned markup, where no `Delegate` is installed to run the original.
+/// `target` is the element the effect fired on (the form, for a submit).
+///
+/// Two markers, each a no-op unless present — see the original for why:
+/// - `[data-close-dialog]` closes the nearest `<wa-dialog>` (sets `open =
+///   false`).
+/// - `[data-close-radio="<id>"]` re-checks the CSS-paging radio with that id
+///   and, when the marked element is itself a form, resets it. The FAB's own
+///   create form doesn't carry this marker (only the Hub's onboarding
+///   overlay and remove-confirm forms do), so this branch is currently a
+///   no-op here — kept for parity with the original and in case a future
+///   FAB-owned form adds one.
+fn dismiss_overlay(target: &Element) {
+    if let Some(marked) = target.closest("[data-close-dialog]").ok().flatten()
+        && let Some(dialog) = marked.closest("wa-dialog").ok().flatten()
+    {
+        let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
+    }
+    if let Some(marked) = target.closest("[data-close-radio]").ok().flatten()
+        && let Some(id) = marked.get_attribute("data-close-radio")
+        && let Some(doc) = marked.owner_document()
+        && let Some(radio) = doc.get_element_by_id(&id)
+    {
+        let _ = Reflect::set(&radio, &JsValue::from_str("checked"), &JsValue::TRUE);
+        if let Ok(reset_fn) = Reflect::get(&marked, &JsValue::from_str("reset"))
+            .and_then(|v| v.dyn_into::<Function>())
+        {
+            let _ = reset_fn.call0(&marked);
+        }
+    }
+}
+
+/// Attach a delegated `change` listener on the whole `<tonk-fab>` host for
+/// the profile-name chip's commit, mirroring `attach_gestures`'s click
+/// delegation (not `dispatch_pause_from_cap`'s direct-child lookup): the
+/// chip's `<tonk-editable data-rename="tonk:profile">` renders inside a
+/// nested `<tonk-display model="tonk:profile/name">` — asynchronously,
+/// after that display's own subscribe resolves — so a listener attached
+/// once at connect time to a `query_selector` result would silently find
+/// nothing. Delegation on the host catches the bubbling `change`
+/// (`tonk-workspace::editable` dispatches a bubbling native `Event`)
+/// whenever it eventually appears.
+///
+/// Filters on `[data-rename="tonk:profile"]` specifically: the create-space
+/// dialog's own `change`-firing radios also live under this host and must
+/// not be mistaken for a name commit.
+fn attach_profile_name_commit(element: &HtmlElement) {
+    let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let Some(editable) = target
+            .closest("[data-rename=\"tonk:profile\"]")
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let name = editable.text_content().unwrap_or_default();
+        transact(&profile_rename_claim_json(&name));
+    });
+    let target: &web_sys::EventTarget = element.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+    on_change.forget();
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -997,36 +1104,9 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
 }
 
 /// Persist `dock` by calling `window.tonk.transact(request)`. The request is the
-/// `TransactRequest` JSON produced by `dock_claim_json`, parsed back to a JS
-/// object via `JSON.parse` (the bridge accepts any structured-clonable object).
+/// `TransactRequest` JSON produced by `dock_claim_json`.
 fn persist_dock(dock: Dock) {
-    let claim = dock_claim_json(dock);
-    let json_str = match serde_json::to_string(&claim) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let Some(win) = window() else {
-        return;
-    };
-    let tonk = match Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    {
-        Some(t) => t,
-        None => return,
-    };
-    let transact_fn = match Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    {
-        Some(f) => f,
-        None => return,
-    };
-    let js_obj = match js_sys::JSON::parse(&json_str).ok() {
-        Some(v) => v,
-        None => return,
-    };
-    transact_fn.call1(&tonk, &js_obj).ok();
+    transact(&dock_claim_json(dock));
 }
 
 /// On connect, query the persisted FAB dock from `window.tonk.query(...)` and
@@ -1173,8 +1253,9 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// A `<tonk-fab>` holding the bar, the way the profile view renders it —
-    /// cap first, then the two dropdown segments.
+    /// A `<tonk-fab>` holding the bar, the way `markup::fab_html` authors it —
+    /// the scrim as a sibling of `.fab`, cap first, then the two dropdown
+    /// segments.
     fn fab_host() -> HtmlElement {
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
@@ -1182,7 +1263,8 @@ mod tests {
             .expect("create host")
             .unchecked_into();
         host.set_inner_html(
-            r#"<div class="fab">
+            r#"<div class="fab__scrim"></div>
+               <div class="fab">
                  <span class="fab__seg fab__cap-l"></span>
                  <span class="fab__seg fab__repo"></span>
                  <span class="fab__seg fab__share"></span>
@@ -1192,61 +1274,12 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_injects_the_curtain_outside_the_bar() {
-        // The curtain must be a SIBLING of `.fab`, never a child: the telescope
-        // takes child[0] of `.fab` to be the circle cap, so a curtain nested
-        // inside would be mistaken for the cap and the real cap would get
-        // wrapped as a collapsible tile.
-        let host = fab_host();
-        inject_scrim(&host);
-
-        let scrim = host
-            .query_selector(".fab__scrim")
-            .ok()
-            .flatten()
-            .expect("the curtain should be injected");
-        assert_eq!(
-            scrim.parent_element().map(|p| p.tag_name()).as_deref(),
-            Some("TONK-FAB"),
-            "the curtain must hang off <tonk-fab>, not off .fab",
-        );
-        assert!(
-            scrim.closest(".fab").ok().flatten().is_none(),
-            "the curtain must not be inside .fab — the telescope would wrap the cap",
-        );
-        // And it must precede the bar, so the bar paints over it.
-        assert_eq!(
-            host.first_element_child()
-                .map(|c| c.class_name())
-                .as_deref(),
-            Some("fab__scrim"),
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn it_injects_the_curtain_only_once() {
-        // `connected_callback` can run again on a reconnect; a second curtain
-        // would stack another hit area over the page.
-        let host = fab_host();
-        inject_scrim(&host);
-        inject_scrim(&host);
-
-        let children = host.children();
-        let scrims = (0..children.length())
-            .filter_map(|i| children.item(i))
-            .filter(|child| child.class_list().contains("fab__scrim"))
-            .count();
-        assert_eq!(scrims, 1, "a reconnect must not stack a second curtain");
-    }
-
-    #[wasm_bindgen_test]
     fn it_dismisses_the_menus_when_the_curtain_is_clicked() {
         // End-to-end through the real gesture handler: a click on the curtain
         // must reach `close_menus`. Testing `close_menus` alone would still pass
         // if the handler's curtain branch were deleted.
         let document = window().expect("window").document().expect("document");
         let host = fab_host();
-        inject_scrim(&host);
         attach_gestures(&host);
         // The handler walks up from `event.target`, so the element has to be in
         // the document for the click to dispatch and bubble.

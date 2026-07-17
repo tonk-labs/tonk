@@ -7,18 +7,39 @@
 //! iframe to fit.
 
 pub mod logic;
+pub mod markup;
+pub mod retry;
 
 #[cfg(target_arch = "wasm32")]
 mod element;
 
 #[cfg(target_arch = "wasm32")]
+mod member_roster;
+
+#[cfg(target_arch = "wasm32")]
+mod profile_name;
+
+#[cfg(target_arch = "wasm32")]
 mod share;
+
+#[cfg(target_arch = "wasm32")]
+mod space_name;
+
+#[cfg(target_arch = "wasm32")]
+mod space_switcher;
+
+#[cfg(target_arch = "wasm32")]
+mod subscribing;
 
 /// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
     element::register();
     share::register();
+    space_name::register();
+    profile_name::register();
+    member_roster::register();
+    space_switcher::register();
 }
 
 /// No-op on non-wasm targets (tests / native build checks).

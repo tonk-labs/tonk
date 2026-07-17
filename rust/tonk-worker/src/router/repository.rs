@@ -565,25 +565,64 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
     }
 }
 
+/// The FAB's routeless share claim's target-space attribute — the
+/// `xyz.tonk.invite/space` fact asserted alongside the `tonk:invite`
+/// transient. Kept in sync with
+/// [`tonk_schema::domain::command::invite::Space`]'s derived attribute.
+///
+/// NOT a matched field on [`tonk_schema::command::Invite`]: every existing
+/// space's `tonk:invite` descriptor is frozen without it, and a required
+/// field would make those transients silently fail to match (the transient
+/// commits, no handler runs) — see that type's doc and
+/// `docs/space-sync-remotes-and-launchpad.md` §3.1, which hit the identical
+/// mistake with `CreateSpace.remote`.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
+
+/// Read the target space DID from a `tonk:invite` transient's facts,
+/// opportunistically — mirrors [`remote_from_facts`]/[`template_from_facts`].
+///
+/// `Some` when the FAB's newer profile-dispatched share claim named its
+/// target explicitly (asserted as either a `Value::Entity` DID or a
+/// `Value::String`, tolerating both representations like `remote_from_facts`
+/// does). `None` for an older claim carrying no such fact — the handler
+/// falls back to the dispatch origin in that case.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == INVITE_SPACE_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(space) => Some(space.clone()),
+            Value::Entity(entity) => Some(entity.to_string()),
+            _ => None,
+        })
+        .map(|space| space.trim().to_string())
+        .filter(|space| !space.is_empty())
+}
+
 /// Post-commit handler for the [`Invite`] command.
 ///
-/// When the share form's `<form onsubmit=tonk:invite>` commits a
-/// transient [`Invite`], this handler generates a fresh membership
-/// keypair, delegates the *origin* repository's access to its DID,
-/// base58-encodes the resulting delegation chain, and asserts a durable
-/// [`Authorization`] fact keyed by that DID on the repository's content
-/// branch (`main`). It then asserts the private seed as a [`Credential`]
-/// into the reactor's session overlay (never replicated). The share view
-/// joins the two via `tonk:invitation` and assembles the final URL.
+/// When the FAB's share control (`<tonk-share>`) dispatches a transient
+/// [`Invite`], this handler generates a fresh membership keypair, delegates
+/// the *target* repository's access to its DID, base58-encodes the
+/// resulting delegation chain, and asserts a durable [`Authorization`] fact
+/// keyed by that DID on the repository's content branch (`main`). It then
+/// asserts the private seed as a [`Credential`] into the reactor's session
+/// overlay (never replicated). The share view joins the two via
+/// `tonk:invitation` and assembles the final URL.
 ///
-/// The repository is not a command field: it is read from
-/// [`CommandEnv::origin`](crate::router::CommandEnv::origin) (the branch
-/// the commit landed in), so the form needs no `data-subject` stamp.
+/// The repository is read from the command's `space` field, not
+/// [`CommandEnv::origin`](crate::router::CommandEnv::origin): `Invite` is
+/// dispatched routeless from the FAB's own profile-branch context (see
+/// `tonk-fab::logic::invite_claim_json`), where the origin repo is always
+/// empty — mirroring [`PauseSyncHandler`] and [`RenameRepositoryHandler`].
 ///
 /// A custom handler (not a plain `Provider<Invite>`) is required because
 /// it reads durable repository state the decoded command alone does not
-/// carry, writes to the reactor's session overlay, and targets the repo
-/// from the origin rather than a command field.
+/// carry and writes to the reactor's session overlay.
 ///
 /// [`Invite`]: tonk_schema::command::Invite
 /// [`Authorization`]: tonk_schema::command::Authorization
@@ -625,26 +664,27 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously (the caller still holds the lock) only to
-        // confirm this is an `Invite` command — it carries no payload the
-        // handler needs (the repo comes from the origin, the keypair is
-        // minted here).
-        let is_invite = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
-            .is_some();
+        // Read the target space off the facts opportunistically (NOT a
+        // matched `Invite` field — see `invite_space_from_facts`) so the
+        // FAB's routeless, profile-dispatched share claim can name its
+        // target. Fall back to the dispatch origin when the fact is
+        // absent — the shape every existing space's frozen `tonk:invite`
+        // descriptor still dispatches, mirroring `PauseSyncHandler`/
+        // `RenameRepositoryHandler` for the named-target case and
+        // `ProfileRenameHandler` for the origin fallback.
+        let repo_name = invite_space_from_facts(facts)
+            .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
+            .map(|did| did.repo_key().to_owned())
+            .unwrap_or_else(|| env.origin().repo.clone());
         let env = env.clone();
 
         Box::pin(async move {
-            if !is_invite {
+            if repo_name.is_empty() {
+                log!("Invite: no target space (no fact, empty origin), skipping");
                 return;
             }
-            // The repository to delegate is read from the origin — the
-            // branch the commit landed in — not from a command field.
-            let repo_name = env.origin().repo.clone();
             log!("command Invite repo={}", repo_name);
 
             if let Err(error) = run_invite(&env, &repo_name).await {
@@ -1134,6 +1174,173 @@ async fn run_profile_rename(
     drop(tonk);
     crate::router::join::notify_sync(env.client());
 
+    Ok(())
+}
+
+/// Outcome of a rename, surfaced rather than swallowed.
+///
+/// `PauseSyncHandler` logs and returns on a missing replica. Rename must not:
+/// a silently-dropped rename looks successful to the user, which is the
+/// failure class this whole design attacks.
+///
+/// Compiled for the wasm handler that uses it and for native tests (see
+/// [`rename_outcome`]) — never for a plain native build, where it would sit
+/// unused and trip the `-D warnings` dead-code lint.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RenameOutcome {
+    /// The rename committed.
+    Renamed,
+    /// The rename did not commit; the caller must not treat this as success.
+    Failed,
+}
+
+/// Map a rename result to an outcome the chip can reflect.
+///
+/// Pure and native-testable — the handler around it is wasm-gated, so this is
+/// the seam where the "do not swallow a failed rename" decision is pinned.
+/// Any error is `Failed`: `RepositoryError` carries no `NotFound` variant, so
+/// an absent replica arrives as `Internal` from the acquire, and the chip's
+/// response is the same either way — revert, do not show a phantom success.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutcome {
+    match result {
+        Ok(()) => RenameOutcome::Renamed,
+        Err(_) => RenameOutcome::Failed,
+    }
+}
+
+/// Post-commit handler for the [`RenameRepository`] command.
+///
+/// The space-side `tonk/rename-repository` rule (`core.yaml`) binds the
+/// command's `subject` to `?this` and asserts the new name directly — but
+/// that rule lives on the space's OWN branch, so it can never see a claim
+/// dispatched from the profile branch. This handler is the worker-side
+/// replacement: it reads the target `space` off the command (like
+/// [`PauseSyncHandler`]) rather than the dispatch origin, so the FAB's name
+/// chip can dispatch from the profile branch with nothing seeded per-space.
+///
+/// [`RenameRepository`]: tonk_schema::command::RenameRepository
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct RenameRepositoryHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RenameRepositoryHandler {
+    /// Cache `RenameRepository`'s trigger attributes so the registry indexes
+    /// this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::RenameRepository::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameRepositoryHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::RenameRepository::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        // Decode synchronously to read the target space off the command — the
+        // handler renames THAT repository, not the dispatch origin's, so the
+        // command can be dispatched from the profile branch.
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::RenameRepository::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = decoded else { return };
+            let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
+                log!("RenameRepository: unparseable target space, skipping");
+                return;
+            };
+            // `repo_key()` is the FULL DID, not a suffix.
+            let repo = did.repo_key().to_owned();
+            log!("command RenameRepository repo={}", repo);
+
+            let result = run_rename_repository(&env, &repo, &command.name.0).await;
+            let failure_detail = result.as_ref().err().map(ToString::to_string);
+            if rename_outcome(result) == RenameOutcome::Failed {
+                log!(
+                    "RenameRepository for repo '{}' failed: {}",
+                    repo,
+                    failure_detail.unwrap_or_default()
+                );
+            }
+        })
+    }
+}
+
+/// Assert the repository's own [`RepositoryName`] on its content branch,
+/// keyed by the subject DID — the same fact the space-side
+/// `tonk/rename-repository` rule used to write. Split out from
+/// [`RenameRepositoryHandler::run`] so the caller funnels every failure
+/// through [`rename_outcome`] rather than a bare `?`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_rename_repository(
+    env: &crate::router::CommandEnv,
+    repo: &str,
+    name: &str,
+) -> Result<(), RepositoryError> {
+    use tonk_schema::prelude::DidExt as _;
+
+    let tonk = env.state().read().await;
+
+    // The durable key: the repository's own subject DID, read straight off
+    // the branch handle rather than re-parsed from `repo` (they're the same
+    // DID either way).
+    let session = tonk
+        .reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("{repo}/{CONTENT_BRANCH} not found: {e}"))
+        })?;
+    let subject = session.handle().of().this();
+
+    log!("RenameRepository repo={} name={}", repo, name);
+
+    // Commit the new name through the reactor so subscriptions re-poll. `name`
+    // is cardinality-one, so the assert supersedes the prior value — the same
+    // fact the standard-library rule wrote.
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(RepositoryName {
+            this: subject,
+            name: tonk_schema::domain::repo::Name(name.to_string()),
+        })
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
+
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     Ok(())
 }
 
@@ -3460,6 +3667,96 @@ mod template_from_facts_tests {
     }
 }
 
+/// The opportunistic invite-target reader `InviteHandler` uses. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_space_from_facts_tests {
+    use super::invite_space_from_facts;
+    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement, Value};
+    use dialog_query::the;
+
+    const DID: &str = "did:key:zTargetSpace";
+
+    fn artifacts(changes: Changes) -> Vec<Artifact> {
+        changes
+            .into_instructions()
+            .into_iter()
+            .map(|instruction| match instruction {
+                Instruction::Assert(artifact)
+                | Instruction::Replace(artifact)
+                | Instruction::Retract(artifact) => artifact,
+            })
+            .collect()
+    }
+
+    /// Seed the always-present `time` fact (every `tonk:invite` transient
+    /// carries it, matched or not).
+    fn time_fact(changes: &mut Changes, of: &Entity) {
+        the!("dom.event/time-stamp")
+            .of(of.clone())
+            .is(1.0)
+            .assert(changes);
+    }
+
+    #[test]
+    fn it_reads_an_entity_space() {
+        // A DID deserializes as `Value::Entity` (any string with a `:`) —
+        // the FAB's routeless share claim asserts it this way.
+        let did_value: Value = serde_json::from_str(&format!("\"{DID}\"")).unwrap();
+        let did = match did_value {
+            Value::Entity(entity) => entity,
+            other => panic!("DID should deserialize as Entity, got {other:?}"),
+        };
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        the!("xyz.tonk.invite/space")
+            .of(of)
+            .is(did)
+            .assert(&mut changes);
+        assert_eq!(
+            invite_space_from_facts(&artifacts(changes)).as_deref(),
+            Some(DID),
+        );
+    }
+
+    #[test]
+    fn it_reads_a_string_space() {
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        the!("xyz.tonk.invite/space")
+            .of(of)
+            .is(DID.to_string())
+            .assert(&mut changes);
+        assert_eq!(
+            invite_space_from_facts(&artifacts(changes)).as_deref(),
+            Some(DID),
+        );
+    }
+
+    #[test]
+    fn it_returns_none_without_a_space_fact() {
+        // The shape every existing space's frozen `tonk:invite` descriptor
+        // dispatches — the handler must fall back to the dispatch origin.
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        assert!(invite_space_from_facts(&artifacts(changes)).is_none());
+    }
+
+    #[test]
+    fn it_treats_a_blank_space_as_none() {
+        let of: Entity = "did:key:zInviteCommand".parse().expect("entity");
+        let mut changes = Changes::new();
+        time_fact(&mut changes, &of);
+        the!("xyz.tonk.invite/space")
+            .of(of)
+            .is("   ".to_string())
+            .assert(&mut changes);
+        assert!(invite_space_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
 /// The pure untitled-label picker the create handler uses. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod next_untitled_label_tests {
@@ -3571,6 +3868,29 @@ mod seed_library_urls_tests {
             seed_library_urls(Some("garden")),
             vec!["/library/core.yaml"],
         );
+    }
+}
+
+/// The rename result → outcome mapping. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod rename_outcome_tests {
+    use super::{RenameOutcome, rename_outcome};
+    use crate::RepositoryError;
+
+    #[dialog_common::test]
+    fn it_maps_a_failed_rename_to_failed_rather_than_success() {
+        // `PauseSyncHandler` logs and returns on a missing replica. Rename must
+        // not: a silently-dropped rename looks successful to the user, which is
+        // the exact failure class this design attacks.
+        // `RepositoryError` has no `NotFound` variant — an absent replica
+        // surfaces as `Internal` from the acquire.
+        let outcome = rename_outcome(Err(RepositoryError::Internal("no such replica".into())));
+        assert_eq!(outcome, RenameOutcome::Failed);
+    }
+
+    #[dialog_common::test]
+    fn it_maps_a_successful_rename_to_renamed() {
+        assert_eq!(rename_outcome(Ok(())), RenameOutcome::Renamed);
     }
 }
 
