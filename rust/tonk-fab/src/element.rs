@@ -526,6 +526,9 @@ fn toggle_more_menu(element: &HtmlElement) {
     fab.class_list()
         .toggle_with_force("fab--menu", opening)
         .ok();
+    if let Some(chevron) = element.query_selector(".fab__more").ok().flatten() {
+        let _ = chevron.set_attribute("aria-expanded", &opening.to_string());
+    }
 }
 
 /// Whether the bar is compact with the vertical menu closed — the state in
@@ -700,6 +703,9 @@ fn close_menus(el: &HtmlElement) {
     }
     if let Some(fab) = el.query_selector(".fab").ok().flatten() {
         fab.class_list().remove_1("fab--menu").ok();
+    }
+    if let Some(chevron) = el.query_selector(".fab__more").ok().flatten() {
+        let _ = chevron.set_attribute("aria-expanded", "false");
     }
 }
 
@@ -882,8 +888,9 @@ fn telescope_tiles(fab: &Element) -> Vec<Element> {
     out
 }
 
-/// The wide bar's visual position of a tile — must match the CSS `order`
-/// values in `fab.css` (account 1, repo 2, share 3, end 4).
+/// The wide bar's visual position of a tile, RELATIVE to the others — must
+/// mirror the visual order the CSS `order` rules in `fab.css` establish
+/// (account, then repo, then share, then end).
 fn tile_rank(tile: &Element) -> u8 {
     let cl = tile.class_list();
     if cl.contains("fab__tele--account") {
