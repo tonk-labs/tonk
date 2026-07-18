@@ -19,32 +19,9 @@ import {
   InputRule,
   inputRules,
   textblockTypeInputRule,
-  wrappingInputRule,
 } from "prosemirror-inputrules";
 import type { NodeType, Schema } from "prosemirror-model";
 import type { Plugin } from "prosemirror-state";
-
-/** `> ` at the start of a textblock → blockquote. */
-function blockquoteRule(nodeType: NodeType): InputRule {
-  return wrappingInputRule(/^\s*>\s$/, nodeType);
-}
-
-/** `- `, `+ `, `* ` at the start of a textblock → bullet list. */
-function bulletListRule(nodeType: NodeType): InputRule {
-  return wrappingInputRule(/^\s*([-+*])\s$/, nodeType);
-}
-
-/** `1. ` at the start of a textblock → ordered list, numbering
- *  carried into the list's `order` attribute. */
-function orderedListRule(nodeType: NodeType): InputRule {
-  return wrappingInputRule(
-    /^(\d+)\.\s$/,
-    nodeType,
-    (match) => ({ order: +match[1] }),
-    (match, node) =>
-      node.childCount + (node.attrs.order as number) === +match[1],
-  );
-}
 
 /** "```lang " (trailing space) → code block. A bare "```" must NOT
  *  convert here — it would fire before a language can be typed —
@@ -69,9 +46,14 @@ function horizontalRuleRule(nodeType: NodeType): InputRule {
 export function buildInputRules(schema: Schema): Plugin {
   return inputRules({
     rules: [
-      blockquoteRule(schema.nodes.blockquote),
-      bulletListRule(schema.nodes.bullet_list),
-      orderedListRule(schema.nodes.ordered_list),
+      // No blockquote / bullet / ordered-list rules: `> `, `- `, `1. `
+      // all convert through the reparse loop like `# ` and every other
+      // block prefix, so the marker text is preserved and the whole-
+      // wrapper reparse (reparse.ts) derives the structure from it. A
+      // synchronous wrapping rule instead created a MARKERLESS list or
+      // quote, which the reparse then read as un-prefixed and lifted
+      // right back out — the structure fought the caret and vanished as
+      // soon as the next character was typed.
       codeBlockRule(schema.nodes.code_block),
       horizontalRuleRule(schema.nodes.horizontal_rule),
       // No image rule: images are expanded-image source text

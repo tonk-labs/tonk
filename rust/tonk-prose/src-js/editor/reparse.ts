@@ -32,33 +32,26 @@ import type { EditorState, Transaction } from "prosemirror-state";
 import type { Node, ResolvedPos } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
 import { schema } from "./schema";
-import { parseCleanMarkdown } from "./markdown";
-import { materializeDoc, isPlainTextblock } from "./markup";
+import { reparseBlockLines } from "./markdown";
+import { isPlainTextblock } from "./markup";
 
-/** Descend a parsed subtree through its blockquote wrappers, counting
- *  the depth, to the single textblock inside — or null if the shape
- *  isn't a straight chain of single-child blockquotes ending in one
- *  textblock (e.g. a list, or a quote holding several paragraphs). */
-function unwrapQuoted(node: Node): { depth: number; block: Node } | null {
-  let depth = 0;
-  let cur = node;
-  while (cur.type === schema.nodes.blockquote) {
-    if (cur.childCount !== 1) return null;
-    depth++;
-    cur = cur.firstChild!;
-  }
-  if (!cur.isTextblock) return null;
-  return { depth, block: cur };
+/** Collapse `_`/`__` emphasis delimiters to their `*`/`**` equivalents —
+ *  the form materialization emits — so the reparse guard compares source
+ *  and rebuilt text on equal footing (a typed `_for_` materializes to
+ *  `*for*`). Only underscores that could be delimiters matter; mapping all
+ *  of them is safe for the guard because both sides are mapped the same. */
+function normalizeEmphasis(text: string): string {
+  return text.replace(/_/g, "*");
 }
 
-/** How many blockquotes enclose the textblock at `$block` (the
- *  resolved position *inside* the block). */
-function quoteDepthAt($block: ResolvedPos): number {
-  let depth = 0;
-  for (let d = $block.depth - 1; d >= 0; d--) {
-    if ($block.node(d).type === schema.nodes.blockquote) depth++;
-  }
-  return depth;
+/** A block wrapper — a blockquote or a list — whose structure is
+ *  derived from the `>`/`-`/`1.` prefixes its textblocks carry. */
+function isWrapper(node: Node): boolean {
+  return (
+    node.type === schema.nodes.blockquote ||
+    node.type === schema.nodes.bullet_list ||
+    node.type === schema.nodes.ordered_list
+  );
 }
 
 /** How long after the last edit the reparse fires. Allusion used
@@ -99,101 +92,215 @@ function touchedBlocks(tr: Transaction): number[] {
   return [...found];
 }
 
-/** Reparse one dirty block inside `tr`; returns true when the block
- *  (or its enclosing blockquote nesting) was swapped. `pos` must
- *  point at the block in `tr.doc`. */
+/** The outermost wrapper (blockquote/list) enclosing the block at
+ *  `$block` (resolved INSIDE the block), or null when the block has no
+ *  wrapper ancestor. Returns the wrapper's depth and its doc range. */
+function outermostWrapper(
+  $block: ResolvedPos,
+): { depth: number; from: number; to: number } | null {
+  let wrapperDepth = -1;
+  for (let d = $block.depth - 1; d >= 1; d--) {
+    if (isWrapper($block.node(d))) wrapperDepth = d;
+  }
+  if (wrapperDepth < 0) return null;
+  return {
+    depth: wrapperDepth,
+    from: $block.before(wrapperDepth),
+    to: $block.after(wrapperDepth),
+  };
+}
+
+/** Every textblock's `textContent`, in document order, within `node` —
+ *  the per-line markdown source (each line carries its `>`/`-`/`1.`
+ *  prefix from materialization). Empty lines are kept: an empty list
+ *  item / quote line is a real line of source. */
+function blockSourceLines(node: Node): string[] {
+  const lines: string[] = [];
+  node.descendants((child) => {
+    if (child.isTextblock) {
+      lines.push(child.textContent);
+      return false;
+    }
+    return true;
+  });
+  return lines;
+}
+
+/** Reparse the WHOLE wrapper enclosing the dirty block: rebuild its
+ *  structure from the `>`/`-`/`1.` prefixes its lines carry, so
+ *  dropping a prefix lifts that line out (splitting the wrapper) and
+ *  adding one joins it in. Returns true when the wrapper was replaced. */
+function reparseWrapper(
+  tr: Transaction,
+  wrapper: { from: number; to: number },
+): boolean {
+  const node = tr.doc.nodeAt(wrapper.from);
+  if (!node) return false;
+  const rawLines = blockSourceLines(node);
+  if (rawLines.some((line) => !line)) return false;
+
+  // A line that no longer starts with a block prefix but still carries the
+  // LEADING space left by deleting a marker char (e.g. `- x` → ` x` after
+  // the `-` is deleted) is being lifted out. Strip that one leading space
+  // before reparsing so the line reads as a clean plain paragraph — but
+  // leave every other character (crucially TRAILING spaces the user is
+  // actively typing) untouched, so the reparse never eats them.
+  const lines = rawLines.map((line) =>
+    /^ (?![ >])/.test(line) && !/^(?:> |[-*+] |\d+[.)] |#{1,6} )/.test(line)
+      ? line.slice(1)
+      : line,
+  );
+
+  const fragment = reparseBlockLines(lines);
+  // Lossless guard: the rebuilt blocks must carry EXACTLY the same text as
+  // the (leading-space-normalized) lines we fed in. Trailing whitespace is
+  // preserved — a trailing space is the user typing before the next word,
+  // never a lift artifact — so it must survive the round-trip, or the swap
+  // would delete it mid-typing. A mismatch means the parse changed content
+  // and the swap would corrupt the wrapper, so bail.
+  const rebuilt = schema.node("doc", null, fragment);
+  if (blockSourceLines(rebuilt).join("\n") !== lines.join("\n")) return false;
+  if (
+    fragment.childCount === node.childCount &&
+    node.eq(fragment.child(0)) &&
+    fragment.childCount === 1
+  ) {
+    return false; // unchanged
+  }
+
+  const { head } = tr.selection;
+  const inWrapper = head > wrapper.from && head < wrapper.to;
+  // Caret as a text offset from the wrapper's first inner position — the
+  // join preserves text exactly, so the offset survives the rebuild.
+  const textOffset = inWrapper ? textOffsetAt(tr.doc, wrapper.from, head) : null;
+
+  const $from = tr.doc.resolve(wrapper.from);
+  const parentIndex = $from.index();
+  if (
+    !$from.parent.canReplace(
+      parentIndex,
+      parentIndex + 1,
+      fragment,
+    )
+  ) {
+    return false;
+  }
+  tr.replaceWith(wrapper.from, wrapper.to, fragment);
+
+  if (textOffset !== null) {
+    // The replaced region spans the whole fragment, which may now be
+    // several sibling blocks (a split). Search that entire span, not
+    // just the first block, or the caret clamps into the wrong sibling.
+    const target = positionAtTextOffset(
+      tr.doc,
+      wrapper.from,
+      wrapper.from + fragment.size,
+      textOffset,
+    );
+    if (target !== null) tr.setSelection(TextSelection.create(tr.doc, target));
+  }
+  return true;
+}
+
+/** Text length between doc position `from` (a node boundary) and `to`,
+ *  counting only text characters — position arithmetic that survives a
+ *  structural rebuild preserving the same text. */
+function textOffsetAt(doc: Node, from: number, to: number): number {
+  return doc.textBetween(from, to, "", "").length;
+}
+
+/** The doc position `offset` text characters into the block region
+ *  `[from, to)`, or null if it runs past the region's end. Walks
+ *  textblocks accumulating their text length; the caret lands inside the
+ *  block where the running count reaches `offset`. `to` must bound the
+ *  whole region (all sibling blocks a split produced), not just the
+ *  first — otherwise the offset clamps into the wrong sibling. */
+function positionAtTextOffset(
+  doc: Node,
+  from: number,
+  to: number,
+  offset: number,
+): number | null {
+  let remaining = offset;
+  let result: number | null = null;
+  let lastBlockEnd: number | null = null;
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (result !== null) return false;
+    if (node.isTextblock) {
+      const len = node.content.size;
+      // `remaining < len` lands strictly inside this block. `=== len`
+      // is a block boundary: prefer the START of the next textblock (a
+      // split moved the caret's line to a new block), so consume the
+      // block and fall through; only if no later block exists does the
+      // trailing end (recorded below) become the answer.
+      if (remaining < len) {
+        result = pos + 1 + remaining;
+        return false;
+      }
+      remaining -= len;
+      lastBlockEnd = pos + 1 + len;
+      return false;
+    }
+    return true;
+  });
+  // Offset landed exactly at (or past) the region's last block boundary.
+  return result ?? lastBlockEnd;
+}
+
+/** Reparse one dirty block inside `tr`. A block inside a wrapper
+ *  (blockquote/list) reparses the whole wrapper (structure follows the
+ *  prefixes); a plain textblock reparses in place (heading toggle,
+ *  inline marks). `pos` must point at the block in `tr.doc`. */
 function reparseBlock(tr: Transaction, pos: number): boolean {
   const node = tr.doc.nodeAt(pos);
   if (!node || !isPlainTextblock(node)) return false;
 
-  // The block's line already carries its `> ` blockquote prefixes as
-  // literal marker text (materializeDoc), so `textContent` is the
-  // full markdown source for this line — leading `>`s included.
+  const $block = tr.doc.resolve(pos + 1);
+  const wrapper = outermostWrapper($block);
+  if (wrapper) return reparseWrapper(tr, wrapper);
+
+  // Plain textblock (no wrapper): reparse its single line. `textContent`
+  // is the block's full markdown source, so a heading toggle, an inline
+  // mark, OR a newly-typed `> `/`- ` prefix (which parses to a wrapper)
+  // all reparse from the same text. Splice in whatever top-level blocks
+  // result — usually one textblock, but a gained prefix yields a wrapper.
   const source = node.textContent;
   if (!source) return false;
+  const fragment = reparseBlockLines([source]);
+  if (fragment.childCount === 0) return false;
 
-  const parsed = parseCleanMarkdown(source);
-  if (parsed.childCount !== 1) return false;
-
-  // The parse tells us the block's target type *and* how many
-  // blockquotes should enclose it (from leading `>`s in the source).
-  const unwrapped = unwrapQuoted(parsed.firstChild!);
-  if (!unwrapped) return false;
+  // Lossless guard: the swap must preserve the visible text. Compare the
+  // rebuilt block's `textContent` to the source with emphasis delimiters
+  // normalized the way materialization does — an `_`-delimited run becomes
+  // `*` (materializeInline only knows the `*` form), so a strict `=== source`
+  // would reject a typed `_for_` and underscore emphasis could never
+  // convert. Normalizing `_`→`*` on both sides lets it convert (rendered as
+  // italic, serialized back as `*for*`) while a parse that ate or reordered
+  // characters still mismatches and is rejected.
+  const rebuilt = schema.node("doc", null, fragment);
+  const rebuiltText = rebuilt.textBetween(0, rebuilt.content.size, "", "");
+  if (normalizeEmphasis(rebuiltText) !== normalizeEmphasis(source)) {
+    return false;
+  }
+  if (fragment.childCount === 1 && fragment.child(0).eq(node)) return false;
 
   const $pos = tr.doc.resolve(pos);
-  const actualDepth = quoteDepthAt(tr.doc.resolve(pos + 1));
-  // The reparsed line loses its list-item context (it parses as a bare
-  // paragraph), so pass whether the block lives in a list item — that's
-  // what turns a leading `[ ] ` into a checkbox marker rather than text.
-  const inListItem = $pos.parent.type === schema.nodes.list_item;
-  const materialized = materializeDoc(parsed.firstChild!, "", inListItem);
-  const block = unwrapQuoted(materialized)!.block;
-
-  if (!block.isTextblock) return false;
-  // Lossless-swap guard: the text the user sees must be preserved
-  // exactly (this rules out escape-resolution differences and any
-  // parse that ate characters).
-  if (block.textContent !== source) return false;
+  const index = $pos.index();
+  if (!$pos.parent.canReplace(index, index + 1, fragment)) return false;
 
   const { head } = tr.selection;
   const inBlock = head >= pos + 1 && head <= pos + node.nodeSize - 1;
   const offset = inBlock ? head - (pos + 1) : null;
 
-  // Same quote depth: swap the textblock in place, wrapper untouched.
-  if (unwrapped.depth === actualDepth) {
-    if (block.eq(node)) return false;
-    const index = $pos.index();
-    if (!$pos.parent.canReplaceWith(index, index + 1, block.type)) return false;
-    tr.replaceWith(pos, pos + node.nodeSize, block);
-    if (offset !== null) {
-      const target = Math.min(pos + 1 + offset, pos + block.nodeSize - 1);
-      tr.setSelection(TextSelection.create(tr.doc, target));
-    }
-    return true;
-  }
-
-  // Quote depth changed: a `>` was typed (sink) or deleted (lift).
-  // Rebuild the enclosing blockquote nesting from the fresh parse.
-  // `$block` resolves inside the textblock so ancestor walks see the
-  // blockquote chain.
-  const $block = tr.doc.resolve(pos + 1);
-
-  // The outermost single-child blockquote enclosing the block — the
-  // top of the chain we can restructure without disturbing siblings.
-  // If a multi-child blockquote sits between the block and the depth
-  // we need to reach, we can't lift/sink cleanly: bail (the inline
-  // content still reparses on the next pass).
-  let topDepth = $block.depth; // the textblock's own depth
-  for (let d = $block.depth - 1; d >= 1; d--) {
-    if ($block.node(d).type !== schema.nodes.blockquote) break;
-    if ($block.node(d).childCount !== 1) break;
-    topDepth = d;
-  }
-  const removableQuotes = $block.depth - topDepth; // single-child quotes above
-
-  // Lift needs at least `actualDepth - unwrapped.depth` removable
-  // quotes; without them a sibling would be split. Sink always works
-  // (we just wrap the block itself).
-  if (actualDepth > unwrapped.depth && removableQuotes < actualDepth - unwrapped.depth) {
-    return false;
-  }
-
-  const from = $block.before(topDepth);
-  const to = $block.after(topDepth);
-  const $from = tr.doc.resolve(from);
-  const parentDepth = topDepth - 1;
-  const index = $from.index(parentDepth);
-  if (!$from.node(parentDepth).canReplaceWith(index, index + 1, materialized.type)) {
-    return false;
-  }
-  tr.replaceWith(from, to, materialized);
-
+  tr.replaceWith(pos, pos + node.nodeSize, fragment);
   if (offset !== null) {
-    // Inner textblock content begins after `unwrapped.depth` blockquote
-    // openings plus the block's own opening token.
-    const innerStart = from + unwrapped.depth + 1;
-    const target = Math.min(innerStart + offset, innerStart + block.content.size);
-    tr.setSelection(TextSelection.create(tr.doc, target));
+    const target = positionAtTextOffset(
+      tr.doc,
+      pos,
+      pos + fragment.size,
+      offset,
+    );
+    if (target !== null) tr.setSelection(TextSelection.create(tr.doc, target));
   }
   return true;
 }
@@ -264,4 +371,19 @@ export function reparse(): Plugin<ReparseState> {
     },
   });
   return plugin;
+}
+
+/** Run the reparse flush synchronously against `state` and return the
+ *  resulting state — the same work the debounced plugin view does, made
+ *  callable for tests (headless, there is no EditorView to drive the
+ *  timer). Reparses every dirty block once, in descending position
+ *  order. */
+export function flushReparse(state: EditorState): EditorState {
+  const { dirty } = reparseKey.getState(state)!;
+  if (!dirty.length) return state;
+  const order = [...new Set(dirty)].sort((a, b) => b - a);
+  const tr = state.tr;
+  for (const pos of order) reparseBlock(tr, pos);
+  tr.setMeta(reparseKey, FLUSH);
+  return state.apply(tr);
 }

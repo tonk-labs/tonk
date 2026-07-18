@@ -163,8 +163,22 @@ class TonkCodeBlockView implements NodeView {
       this.#outer.state.doc.resolve(target),
       dir,
     );
-    // Nowhere to go (e.g. code block is the last node) — stay put.
-    if (outerSel.head === this.#outer.state.selection.head) return;
+    // Nowhere to go. When escaping DOWNWARD off a code block that is the
+    // last block, there's no paragraph to land in — so make one, so the
+    // block is never a trap. (Escaping upward past the very first block
+    // has no natural target and just stays put.)
+    if (outerSel.head === this.#outer.state.selection.head) {
+      if (dir > 0 && target === this.#outer.state.doc.content.size) {
+        event.preventDefault();
+        const tr = this.#outer.state.tr;
+        const paragraph = schema.nodes.paragraph.create();
+        tr.insert(target, paragraph);
+        tr.setSelection(TextSelection.create(tr.doc, target + 1));
+        this.#outer.dispatch(tr.scrollIntoView());
+        this.#outer.focus();
+      }
+      return;
+    }
     event.preventDefault();
     this.#outer.dispatch(
       this.#outer.state.tr.setSelection(outerSel).scrollIntoView(),

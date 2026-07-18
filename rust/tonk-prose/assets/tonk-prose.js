@@ -1,36 +1,47 @@
-var g=16n,E=(1n<<g)-1n;function y(e,t){return BigInt(e)<<g|BigInt(t)&E}function p(e){return Number(e>>g)}function l(e){return Number(e&E)}var u=class{#e=0n;#n;constructor(t=()=>Date.now()){this.#n=t}get last(){return this.#e}tick(){let t=this.#n(),o=p(this.#e),n=Math.max(o,t),s=n===o?l(this.#e)+1:0;return this.#e=y(n,s),this.#e}receive(t){let o=this.#n(),n=p(this.#e),s=p(t),i=Math.max(n,s,o),r;return i===n&&i===s?r=Math.max(l(this.#e),l(t))+1:i===n?r=l(this.#e)+1:i===s?r=l(t)+1:r=0,this.#e=y(i,r),this.#e}};function C(e){let t=e.trim();if(!/^\d+$/.test(t))return null;try{return BigInt(t)}catch{return null}}function c(e){return e.toString()}var m="Tonk-Prose-Version",w="1";function x(e){return e.slice(0,m.length+1).toLowerCase()===`${m.toLowerCase()}:`}function h(e){if(!x(e))return{hlc:null,value:e};let t=e.indexOf(`\r
+var p=16n,y=(1n<<p)-1n;function w(e,t){return BigInt(e)<<p|BigInt(t)&y}function g(e){return Number(e>>p)}function a(e){return Number(e&y)}var c=class{#e=0n;#o;constructor(t=()=>Date.now()){this.#o=t}get last(){return this.#e}tick(){let t=this.#o(),r=g(this.#e),o=Math.max(r,t),i=o===r?a(this.#e)+1:0;return this.#e=w(o,i),this.#e}receive(t){let r=this.#o(),o=g(this.#e),i=g(t),s=Math.max(o,i,r),n;return s===o&&s===i?n=Math.max(a(this.#e),a(t))+1:s===o?n=a(this.#e)+1:s===i?n=a(t)+1:n=0,this.#e=w(s,n),this.#e}};function E(e){let t=e.trim();if(!/^\d+$/.test(t))return null;try{return BigInt(t)}catch{return null}}function u(e){return e.toString()}var b="Tonk-Prose-Version",x="1";function C(e){return e.slice(0,b.length+1).toLowerCase()===`${b.toLowerCase()}:`}function h(e){if(!C(e))return{hlc:null,value:e};let t=e.indexOf(`\r
 \r
-`),o=e.indexOf(`
+`),r=e.indexOf(`
 
-`),n,s;if(t!==-1&&(o===-1||t<=o))n=t,s=t+4;else if(o!==-1)n=o,s=o+2;else return{hlc:null,value:e};let i=e.slice(s),r=e.slice(0,n).split(/\r\n|\n/),v=null;for(let d of r){let f=d.indexOf(":");if(f===-1)continue;d.slice(0,f).trim().toLowerCase()==="etag"&&(v=C(d.slice(f+1).trim().replace(/^"|"$/g,"")))}return{hlc:v,value:i}}function b(e){return e.hlc===null?e.value:`${m}: ${w}\r
-ETag: "${c(e.hlc)}"\r
+`),o,i;if(t!==-1&&(r===-1||t<=r))o=t,i=t+4;else if(r!==-1)o=r,i=r+2;else return{hlc:null,value:e};let s=e.slice(i),n=e.slice(0,o).split(/\r\n|\n/),v=null;for(let d of n){let f=d.indexOf(":");if(f===-1)continue;d.slice(0,f).trim().toLowerCase()==="etag"&&(v=E(d.slice(f+1).trim().replace(/^"|"$/g,"")))}return{hlc:v,value:s}}function m(e){return e.hlc===null?e.value:`${b}: ${x}\r
+ETag: "${u(e.hlc)}"\r
 Content-Type: text/markdown\r
 \r
-`+e.value}var M=["content","value","readonly","placeholder","auto-focus"],O=400;async function T(){let e=globalThis.__tonkProseEditor;if(typeof e=="string"&&e)return e;if(typeof e=="function"){let t=await e();if(typeof t=="string"&&t)return t}return new URL("./tonk-prose-editor.js",import.meta.url).href}var a=null;function A(){return a||(a=T().then(e=>import(e).then(t=>t)),a.catch(()=>{a=null})),a}var k=class extends HTMLElement{static get observedAttributes(){return M}#e;#n;#t=null;#u=0;#s=null;#i=null;#r=null;#c=null;#h=new u;#o=0n;#l=!1;constructor(){super(),this.#e=this.attachShadow({mode:"open",delegatesFocus:!0});let t=document.createElement("style");t.textContent=S,this.#n=document.createElement("div"),this.#n.className="mount",this.#e.append(t,this.#n)}connectedCallback(){if(this.#l=!1,this.#i||(this.#i=new MutationObserver(()=>this.#p()),this.#i.observe(this,{childList:!0,characterData:!0,subtree:!0})),this.#t)return;let t=++this.#u;this.#g(t)}#d(){return this.textContent??""}#p(){this.#a(this.#d())}async#g(t){let o;try{o=await A()}catch(r){console.warn("[tonk-prose] failed to load editor core:",r);return}if(t!==this.#u||!this.isConnected)return;let n=this.#s;if(n===null){let r=this.#d();n=r!==""?r:this.getAttribute("content")??this.getAttribute("value")}let s="";if(n!==null){let r=h(n);s=r.value,r.hlc!==null&&r.hlc>this.#o&&(this.#o=this.#h.receive(r.hlc))}let i=o.createEditor(this.#n,{doc:s,readOnly:this.hasAttribute("readonly"),placeholder:this.getAttribute("placeholder")??"",onChange:r=>{this.#m(r)}});this.#s=null,this.#t=i,this.dispatchEvent(new CustomEvent("ready",{detail:{editor:i},bubbles:!0,composed:!0})),!this.hasAttribute("readonly")&&this.hasAttribute("auto-focus")&&setTimeout(()=>{this.#t===i&&i.focus()},0)}#m(t){this.#c=t,this.#r!==null&&clearTimeout(this.#r),this.#r=setTimeout(()=>this.#f(),O)}#f(){this.#r=null;let t=this.#c;if(this.#c=null,t===null)return;let o=this.#h.tick();this.#o=o;let n=b({hlc:o,value:t});this.dispatchEvent(new CustomEvent("change",{detail:{value:t,content:n},bubbles:!0,composed:!0}))}disconnectedCallback(){this.#l||(this.#l=!0,setTimeout(()=>{this.#l&&(this.#l=!1,!this.isConnected&&(this.#r!==null&&(clearTimeout(this.#r),this.#f()),this.#i?.disconnect(),this.#i=null,this.#u++,this.#t?.destroy(),this.#t=null))},0))}attributeChangedCallback(t,o,n){switch(t){case"content":this.#a(n??"");break;case"value":(n??"")!==this.value&&this.#a(n??"");break;case"readonly":this.#t?.setReadOnly(n!==null);break;case"placeholder":this.#t?.setPlaceholder(n??"");break;case"auto-focus":break}}#a(t){let{hlc:o,value:n}=h(t);if(o!==null){if(o<=this.#o)return;this.#o=this.#h.receive(o)}if(!this.#t){this.#s=n;return}this.#t.setMarkdown(n)}get value(){if(this.#t)return this.#t.getMarkdown();if(this.#s!==null)return this.#s;let t=this.#d(),o=t!==""?t:this.getAttribute("content")??this.getAttribute("value");return o===null?"":h(o).value}set value(t){this.#a(t)}get content(){return b({hlc:this.#o,value:this.value})}set content(t){this.#a(t)}get version(){return c(this.#o)}focus(){this.#t?this.#t.focus():super.focus()}get editor(){return this.#t}},S=`
+`+e.value}var M=["content","value","readonly","placeholder","auto-focus"],O=400;async function A(){let e=globalThis.__tonkProseEditor;if(typeof e=="string"&&e)return e;if(typeof e=="function"){let t=await e();if(typeof t=="string"&&t)return t}return new URL("./tonk-prose-editor.js",import.meta.url).href}var l=null;function S(){return l||(l=A().then(e=>import(e).then(t=>t)),l.catch(()=>{l=null})),l}var k=class extends HTMLElement{static get observedAttributes(){return M}#e;#o;#t=null;#c=0;#i=null;#s=null;#n=null;#u=null;#h=new c;#r=0n;#a=!1;constructor(){super(),this.#e=this.attachShadow({mode:"open",delegatesFocus:!0});let t=document.createElement("style");t.textContent=T,this.#o=document.createElement("div"),this.#o.className="mount",this.#e.append(t,this.#o)}connectedCallback(){if(this.#a=!1,this.#s||(this.#s=new MutationObserver(()=>this.#g()),this.#s.observe(this,{childList:!0,characterData:!0,subtree:!0})),this.#t)return;let t=++this.#c;this.#p(t)}#d(){return this.textContent??""}#g(){this.#l(this.#d())}async#p(t){let r;try{r=await S()}catch(n){console.warn("[tonk-prose] failed to load editor core:",n);return}if(t!==this.#c||!this.isConnected)return;let o=this.#i;if(o===null){let n=this.#d();o=n!==""?n:this.getAttribute("content")??this.getAttribute("value")}let i="";if(o!==null){let n=h(o);i=n.value,n.hlc!==null&&n.hlc>this.#r&&(this.#r=this.#h.receive(n.hlc))}let s=r.createEditor(this.#o,{doc:i,readOnly:this.hasAttribute("readonly"),placeholder:this.getAttribute("placeholder")??"",onChange:n=>{this.#b(n)}});this.#i=null,this.#t=s,this.dispatchEvent(new CustomEvent("ready",{detail:{editor:s},bubbles:!0,composed:!0})),!this.hasAttribute("readonly")&&this.hasAttribute("auto-focus")&&setTimeout(()=>{this.#t===s&&s.focus()},0)}#b(t){this.#u=t,this.#n!==null&&clearTimeout(this.#n),this.#n=setTimeout(()=>this.#f(),O)}#f(){this.#n=null;let t=this.#u;if(this.#u=null,t===null)return;let r=this.#h.tick();this.#r=r;let o=m({hlc:r,value:t});this.dispatchEvent(new CustomEvent("change",{detail:{value:t,content:o},bubbles:!0,composed:!0}))}disconnectedCallback(){this.#a||(this.#a=!0,setTimeout(()=>{this.#a&&(this.#a=!1,!this.isConnected&&(this.#n!==null&&(clearTimeout(this.#n),this.#f()),this.#s?.disconnect(),this.#s=null,this.#c++,this.#t?.destroy(),this.#t=null))},0))}attributeChangedCallback(t,r,o){switch(t){case"content":this.#l(o??"");break;case"value":(o??"")!==this.value&&this.#l(o??"");break;case"readonly":this.#t?.setReadOnly(o!==null);break;case"placeholder":this.#t?.setPlaceholder(o??"");break;case"auto-focus":break}}#l(t){let{hlc:r,value:o}=h(t);if(r!==null){if(r<=this.#r)return;this.#r=this.#h.receive(r)}if(!this.#t){this.#i=o;return}this.#t.setMarkdown(o)}get value(){if(this.#t)return this.#t.getMarkdown();if(this.#i!==null)return this.#i;let t=this.#d(),r=t!==""?t:this.getAttribute("content")??this.getAttribute("value");return r===null?"":h(r).value}set value(t){this.#l(t)}get content(){return m({hlc:this.#r,value:this.value})}set content(t){this.#l(t)}get version(){return u(this.#r)}focus(){this.#t?this.#t.focus():super.focus()}get editor(){return this.#t}},T=`
   :host {
-    --tonk-prose-font: ui-sans-serif, -apple-system, "Segoe UI", Helvetica,
-                       Arial, sans-serif;
-    --tonk-prose-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
-                       "Liberation Mono", monospace;
-    --tonk-prose-font-size: 1rem;
-    --tonk-prose-radius: 6px;
+    --tonk-prose-font: var(--wa-font-family-body, ui-sans-serif, -apple-system,
+                       "Segoe UI", Helvetica, Arial, sans-serif);
+    --tonk-prose-mono: var(--wa-font-family-code, ui-monospace, SFMono-Regular,
+                       Menlo, Consolas, "Liberation Mono", monospace);
+    --tonk-prose-heading-font: var(--wa-font-family-heading,
+                       var(--tonk-prose-font));
+    --tonk-prose-font-size: var(--wa-font-size-m, 1rem);
+    --tonk-prose-radius: var(--wa-border-radius-m, 6px);
     --tonk-prose-padding: 1rem 1.25rem;
     --tonk-prose-max-width: none;
 
-    /* Surfaces & text \u2014 GitHub light defaults */
-    --tonk-prose-bg: #ffffff;
-    --tonk-prose-fg: #1f2328;
-    --tonk-prose-fg-muted: #59636e;
-    --tonk-prose-border: #d1d9e0;
-    --tonk-prose-accent: #0969da;
-    --tonk-prose-selection: #0969da33;
-    --tonk-prose-focus-ring: #0969da66;
+    /* Surfaces & text \u2014 inherit the page's WebAwesome tokens, GitHub
+       light values as the standalone fallback. */
+    --tonk-prose-bg: var(--wa-color-surface-default, #ffffff);
+    --tonk-prose-fg: var(--wa-color-text-normal, #1f2328);
+    --tonk-prose-fg-muted: var(--wa-color-text-quiet, #59636e);
+    --tonk-prose-border: var(--wa-color-neutral-border-quiet, #d1d9e0);
+    /* Links \u2192 the page's dedicated link color (readable on any surface);
+       accent (caret, focus ring) \u2192 the yellow-green brand. */
+    --tonk-prose-link: var(--wa-color-text-link, #0969da);
+    --tonk-prose-accent: var(--wa-color-brand-fill-loud, #0969da);
+    --tonk-prose-selection: var(--wa-color-brand-fill-quiet, #0969da33);
+    --tonk-prose-focus-ring: var(--wa-color-brand-border-normal, #0969da66);
     /* Revealed markdown syntax markers (the Typora trick). */
-    --tonk-prose-marker: #9198a1;
+    --tonk-prose-marker: var(--wa-color-text-quiet, #9198a1);
     /* Inline code + code block surfaces. */
-    --tonk-prose-code-bg: #f6f8fa;
-    --tonk-prose-code-fg: #1f2328;
-    --tonk-prose-blockquote: #59636e;
+    --tonk-prose-code-bg: var(--wa-color-neutral-fill-quiet, #f6f8fa);
+    --tonk-prose-code-fg: var(--wa-color-text-normal, #1f2328);
+    --tonk-prose-blockquote: var(--wa-color-text-quiet, #59636e);
+    /* Highlight (== marks) \u2192 the page's LOUD brand fill (bright
+       yellow-green) with its matching on-color, a readable dark-on-bright
+       pairing in both themes (the normal fill is too dark for text). */
+    --tonk-prose-highlight-bg: var(--wa-color-brand-fill-loud, #fef08a);
+    --tonk-prose-highlight-fg: var(--wa-color-brand-on-loud, #1f2328);
 
     display: block;
     position: relative;
@@ -43,19 +54,25 @@ Content-Type: text/markdown\r
     transition: border-color 120ms ease, box-shadow 120ms ease;
   }
 
+  /* Standalone dark fallback (no WebAwesome tokens present). When the page
+     provides \`--wa-*\` the rules above already track its light/dark
+     palette, so this only bites a bare page in dark mode. */
   @media (prefers-color-scheme: dark) {
     :host {
-      --tonk-prose-bg: #0d1117;
-      --tonk-prose-fg: #f0f6fc;
-      --tonk-prose-fg-muted: #9198a1;
-      --tonk-prose-border: #3d444d;
-      --tonk-prose-accent: #1f6feb;
-      --tonk-prose-selection: #1f6feb59;
-      --tonk-prose-focus-ring: #1f6feb99;
-      --tonk-prose-marker: #6e7681;
-      --tonk-prose-code-bg: #151b23;
-      --tonk-prose-code-fg: #f0f6fc;
-      --tonk-prose-blockquote: #9198a1;
+      --tonk-prose-bg: var(--wa-color-surface-default, #0d1117);
+      --tonk-prose-fg: var(--wa-color-text-normal, #f0f6fc);
+      --tonk-prose-fg-muted: var(--wa-color-text-quiet, #9198a1);
+      --tonk-prose-border: var(--wa-color-neutral-border-quiet, #3d444d);
+      --tonk-prose-link: var(--wa-color-text-link, #48b9f4);
+      --tonk-prose-accent: var(--wa-color-brand-fill-loud, #1f6feb);
+      --tonk-prose-selection: var(--wa-color-brand-fill-quiet, #1f6feb59);
+      --tonk-prose-focus-ring: var(--wa-color-brand-border-normal, #1f6feb99);
+      --tonk-prose-marker: var(--wa-color-text-quiet, #6e7681);
+      --tonk-prose-code-bg: var(--wa-color-neutral-fill-quiet, #151b23);
+      --tonk-prose-code-fg: var(--wa-color-text-normal, #f0f6fc);
+      --tonk-prose-blockquote: var(--wa-color-text-quiet, #9198a1);
+      --tonk-prose-highlight-bg: var(--wa-color-brand-fill-loud, #fef08a);
+      --tonk-prose-highlight-fg: var(--wa-color-brand-on-loud, #1f2328);
     }
   }
 

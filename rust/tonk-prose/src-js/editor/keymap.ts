@@ -23,8 +23,9 @@ import {
   sinkListItem,
 } from "prosemirror-schema-list";
 import { TextSelection } from "prosemirror-state";
-import type { Command } from "prosemirror-state";
+import type { Command, EditorState } from "prosemirror-state";
 import type { Plugin } from "prosemirror-state";
+import { liftTarget } from "prosemirror-transform";
 import { schema } from "./schema";
 
 /** Enter at the end of a textblock reading "```" or "```lang"
@@ -88,6 +89,104 @@ function wrapMarker(delim: string): Command {
   };
 }
 
+/** How deep in blockquotes the caret sits, and the `> ` prefix text a
+ *  new line at that depth needs. `depth` 0 means "not in a quote". */
+function quoteContext(state: EditorState): {
+  depth: number;
+  prefix: string;
+} {
+  const { $head } = state.selection;
+  let depth = 0;
+  for (let d = $head.depth; d >= 0; d--) {
+    if ($head.node(d).type === schema.nodes.blockquote) depth++;
+  }
+  return { depth, prefix: "> ".repeat(depth) };
+}
+
+/** A `> ` (or `> > ` …) leading block marker node for a new quote line. */
+function quoteMarker(prefix: string) {
+  return schema.text(prefix, [
+    schema.marks.markup.create({ kind: "block", of: [] }),
+  ]);
+}
+
+/** True when the caret's textblock is an EMPTY quote line — its only
+ *  content is the `> ` prefix marker(s). A second Enter here exits the
+ *  quote instead of adding another quoted line. */
+function onEmptyQuoteLine(
+  state: EditorState,
+  prefix: string,
+): boolean {
+  const { $head } = state.selection;
+  return $head.parent.isTextblock && $head.parent.textContent === prefix;
+}
+
+/** Split the current quote line and seed the new paragraph with a `> `
+ *  marker, parking the caret right after it — the "continue the quote"
+ *  action shared by Enter and Shift+Enter. */
+function continueQuote(prefix: string): Command {
+  return (state, dispatch) => {
+    const { $head } = state.selection;
+    if (dispatch) {
+      const tr = state.tr;
+      tr.split($head.pos, 1);
+      const insertAt = tr.mapping.map($head.pos);
+      const marker = quoteMarker(prefix);
+      tr.insert(insertAt, marker);
+      tr.setSelection(TextSelection.create(tr.doc, insertAt + marker.nodeSize));
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  };
+}
+
+/** Exit the blockquote from an empty quote line: remove the `> ` marker
+ *  and lift the paragraph out of the innermost blockquote. */
+const exitQuote: Command = (state, dispatch) => {
+  const { prefix } = quoteContext(state);
+  const { $head } = state.selection;
+  const start = $head.start();
+  if (dispatch) {
+    const tr = state.tr;
+    // Drop the `> ` prefix so the lifted paragraph is plain.
+    tr.delete(start, start + prefix.length);
+    const range = tr.selection.$from.blockRange();
+    if (range) {
+      const target = liftTarget(range);
+      if (target !== null) tr.lift(range, target);
+    }
+    dispatch(tr.scrollIntoView());
+  }
+  return true;
+};
+
+/** Enter inside a blockquote. Continues the quote: splits the line and
+ *  seeds the new paragraph with a `> ` marker (so it reads `> |`, and
+ *  typing lands after the marker). A second Enter on an already-empty
+ *  quote line (`> |`) EXITS the quote instead — it lifts that empty line
+ *  out to a plain paragraph, so double-Enter ends the quote like every
+ *  editor. Declines (returns false) outside a blockquote so the default
+ *  Enter runs. */
+const blockquoteEnter: Command = (state, dispatch) => {
+  const { depth, prefix } = quoteContext(state);
+  if (depth === 0) return false;
+  const { $head, empty } = state.selection;
+  if (!empty || !$head.parent.isTextblock) return false;
+  if (onEmptyQuoteLine(state, prefix)) return exitQuote(state, dispatch);
+  return continueQuote(prefix)(state, dispatch);
+};
+
+/** Shift+Enter inside a blockquote: always continue the quote (add a new
+ *  `> ` line), never exit. Outside a quote, declines so the default
+ *  (`exitCode`, the code-block soft break) runs. */
+const quoteShiftEnter: Command = (state, dispatch) => {
+  const { depth, prefix } = quoteContext(state);
+  if (depth === 0) return false;
+  const { $head, empty } = state.selection;
+  if (!empty || !$head.parent.isTextblock) return false;
+  return continueQuote(prefix)(state, dispatch);
+};
+
 export function buildKeymap(): Plugin {
   return keymap({
     "Mod-z": undo,
@@ -98,11 +197,12 @@ export function buildKeymap(): Plugin {
     Backspace: chainCommands(undoInputRule, baseKeymap.Backspace),
     Enter: chainCommands(
       codeFenceEnter,
+      blockquoteEnter,
       splitListItem(schema.nodes.list_item),
       baseKeymap.Enter,
     ),
     "Mod-Enter": exitCode,
-    "Shift-Enter": exitCode,
+    "Shift-Enter": chainCommands(quoteShiftEnter, exitCode),
     Tab: sinkListItem(schema.nodes.list_item),
     "Shift-Tab": liftListItem(schema.nodes.list_item),
     "Mod-b": wrapMarker("**"),

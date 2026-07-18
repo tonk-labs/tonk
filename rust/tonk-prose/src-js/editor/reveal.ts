@@ -24,7 +24,8 @@ import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import type { EditorState } from "prosemirror-state";
 import type { Node, ResolvedPos } from "prosemirror-model";
-import { effectiveMarks, contentMarks, isMarker } from "./markup";
+import { schema } from "./schema";
+import { effectiveMarks } from "./markup";
 
 export const revealKey = new PluginKey<DecorationSet>("tonk-prose-reveal");
 
@@ -39,51 +40,23 @@ function findEditRange($head: ResolvedPos): { from: number; to: number } | null 
   // Mark keys "at" the caret: union over the child before and after
   // it (a caret between two children belongs to both sides).
   //
-  // A *marker* touching the caret is treated asymmetrically. Its
-  // styled content sits on one side of it, so the caret is only
-  // "inside" that span when it's on the content side. When the caret
-  // has moved to the marker's *outer* edge — content past a closing
-  // `**` (marker is `before`, its content is the child before it) or
-  // before an opening `**` (marker is `after`, its content is the
-  // child after it) — the marker must NOT anchor, or the reveal
-  // clings to the marker the caret just left (`**bold|**` instead of
-  // `**bold**|`). Real content nodes anchor from either side.
+  // A marker anchors its span SYMMETRICALLY — from either side. The
+  // caret adjacent to a span (just past its closing `**`, or just
+  // before its opening `**`) reveals that span's markers, so the
+  // syntax appears as the caret approaches rather than only once
+  // inside. That is what makes the control characters read as if
+  // always visible: `text |**bold**` and `**bold**| text` both show
+  // the `**`, and because the markers are then real visible text the
+  // browser's own caret movement and typing land at the boundary with
+  // no hidden node to skip over.
   const before = parent.childBefore(offset);
   const after = parent.childAfter(offset);
   const anchor = new Set<string>();
   const addKeys = (keys: readonly string[]) => {
     for (const key of keys) anchor.add(key);
   };
-  // `before` — caret to its right. A marker here anchors only if its
-  // span continues to the right (opening marker), i.e. its outer
-  // (left) neighbor does NOT already carry its content marks.
-  if (before.node) {
-    if (isMarker(before.node)) {
-      const outer = parent.childBefore(before.offset).node;
-      const outerContent = outer ? contentMarks(outer) : [];
-      const inner = effectiveMarks(before.node).filter(
-        (key) => !outerContent.includes(key),
-      );
-      addKeys(inner);
-    } else {
-      addKeys(effectiveMarks(before.node));
-    }
-  }
-  // `after` — caret to its left. A marker here anchors only if its
-  // span continues to the left (closing marker), i.e. its outer
-  // (right) neighbor does NOT already carry its content marks.
-  if (after.node) {
-    if (isMarker(after.node)) {
-      const outer = parent.childAfter(after.offset + after.node.nodeSize).node;
-      const outerContent = outer ? contentMarks(outer) : [];
-      const inner = effectiveMarks(after.node).filter(
-        (key) => !outerContent.includes(key),
-      );
-      addKeys(inner);
-    } else {
-      addKeys(effectiveMarks(after.node));
-    }
-  }
+  if (before.node) addKeys(effectiveMarks(before.node));
+  if (after.node) addKeys(effectiveMarks(after.node));
   if (anchor.size === 0) return null;
 
   const intersects = (node: Node) =>
@@ -126,6 +99,30 @@ function computeDecorations(state: EditorState): DecorationSet {
       class: "md-active",
     }),
   );
+
+  // A blockquote reveals ALL its `> ` markers when the caret is anywhere
+  // inside it — the whole quote reads as its markdown while you edit it,
+  // not just the one line the caret sits on. Find the OUTERMOST enclosing
+  // blockquote and mark every textblock in it `md-active` (the class that
+  // reveals block markers), so all their `> ` prefixes show at once.
+  let quoteDepth = -1;
+  for (let d = $head.depth - 1; d >= 0; d--) {
+    if ($head.node(d).type === schema.nodes.blockquote) quoteDepth = d;
+  }
+  if (quoteDepth >= 0) {
+    const quote = $head.node(quoteDepth);
+    const quoteStart = $head.before(quoteDepth);
+    quote.descendants((node, offset) => {
+      if (node.isTextblock) {
+        const from = quoteStart + 1 + offset;
+        decorations.push(
+          Decoration.node(from, from + node.nodeSize, { class: "md-active" }),
+        );
+        return false;
+      }
+      return true;
+    });
+  }
 
   if (!$head.parent.type.spec.code) {
     const range = findEditRange($head);

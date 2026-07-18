@@ -27,14 +27,19 @@ import { isMarkup } from "./markup";
 
 export const taskListKey = new PluginKey<DecorationSet>("tonk-prose-task-list");
 
-/** A task-list prefix marker (`[ ] ` / `[x] `), if `node` is one.
- *  Returns the checked state and the position of the state character
- *  (the space or `x` inside the brackets) relative to the node start. */
+/** A task-list prefix marker (`[ ] ` / `[x] `), possibly preceded by the
+ *  item's `- `/`N. ` list marker — materialization coalesces the two
+ *  into one `- [ ] ` marker node. Returns the checked state and the
+ *  position of the state character (the space or `x` inside the
+ *  brackets) relative to the node start, accounting for any leading
+ *  list marker. */
 function taskPrefix(node: Node): { checked: boolean; stateOffset: number } | null {
   if (!node.isText || !isMarkup(node) || !node.text) return null;
-  const match = /^\[([ xX])\] $/.exec(node.text);
+  const match = /^([-*+] |\d+[.)] )?\[([ xX])\] $/.exec(node.text);
   if (!match) return null;
-  return { checked: match[1] !== " ", stateOffset: 1 };
+  const listLen = match[1] ? match[1].length : 0;
+  // state char sits right after the `[`, i.e. after the list marker.
+  return { checked: match[2] !== " ", stateOffset: listLen + 1 };
 }
 
 /** Build the checkbox element. `pos` is the doc position of the state

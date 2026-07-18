@@ -25,9 +25,17 @@ import { taskList } from "./task-list";
 import { codeBlocks } from "./code-block";
 import type { EditorOptions, ProseEditor } from "./api";
 
-/** Parse pasted plain text as markdown — Typora's paste behavior.
- *  Pastes into code contexts keep default (verbatim) handling. */
-function markdownPastePlugin(): Plugin {
+/** Parse pasted plain text as markdown — Typora's paste behavior —
+ *  and serialize copied/cut content back to real markdown.
+ *
+ *  Copy needs an explicit serializer: the default one flattens the
+ *  *editor* doc (materialized marker text and all), so a copied list
+ *  or blockquote loses its `- `/`> ` structure and inline markers leak
+ *  through. Routing copy through `serializeMarkdown` (demarkup → the
+ *  markdown serializer) reproduces the same clean markdown the whole
+ *  document round-trips through. Pastes into code contexts keep the
+ *  default (verbatim) handling. */
+function markdownClipboardPlugin(): Plugin {
   return new Plugin({
     props: {
       clipboardTextParser(text, $context) {
@@ -37,6 +45,13 @@ function markdownPastePlugin(): Plugin {
         // maxOpen produces the natural open depths so pasting a
         // single paragraph mid-sentence splices inline.
         return Slice.maxOpen(doc.content);
+      },
+      clipboardTextSerializer(slice) {
+        // Wrap the slice's fragment in a doc so the block serializer
+        // (list/quote/heading prefixes) runs over it, then strip the
+        // trailing newline `closeBlock` adds after the last block.
+        const doc = schema.node("doc", null, slice.content);
+        return serializeMarkdown(doc).replace(/\n$/, "");
       },
     },
   });
@@ -133,7 +148,7 @@ export function createEditor(
       placeholder(options.placeholder),
       imagePreview(),
       taskList(),
-      markdownPastePlugin(),
+      markdownClipboardPlugin(),
     ],
   });
 
@@ -267,6 +282,7 @@ const EDITOR_STYLESHEET = `
 
   .md-doc h1, .md-doc h2, .md-doc h3,
   .md-doc h4, .md-doc h5, .md-doc h6 {
+    font-family: var(--tonk-prose-heading-font);
     line-height: 1.25;
     margin: 1.1em 0 0.5em;
     font-weight: 650;
@@ -333,14 +349,23 @@ const EDITOR_STYLESHEET = `
   }
 
   .md-doc a {
-    color: var(--tonk-prose-accent);
-    text-decoration: none;
+    color: var(--tonk-prose-link);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+    cursor: pointer;
   }
-  .md-doc a:hover { text-decoration: underline; }
+  .md-doc a:hover { text-decoration-thickness: 2px; }
 
   .md-doc del {
     text-decoration: line-through;
     text-decoration-color: var(--tonk-prose-fg-muted);
+  }
+
+  .md-doc mark {
+    background: var(--tonk-prose-highlight-bg);
+    color: var(--tonk-prose-highlight-fg);
+    border-radius: 2px;
+    padding: 0 0.1em;
   }
 
   .md-doc code {
@@ -416,10 +441,36 @@ const EDITOR_STYLESHEET = `
     font-weight: 400;
     font-style: normal;
   }
+  /* Reveal a marker as real, full-size text when the caret is in its
+     block (block markers) or touches its span (inline markers, via the
+     md-edit edit range). The edit range anchors from either side, so a
+     span's markers appear as the caret approaches its boundary — and
+     because the revealed marker is real visible text, native caret
+     movement and typing stop at the boundary with nothing hidden to
+     skip over. ProseMirror may paint md-edit onto the marker span
+     itself or onto a decoration nested inside it, so both are matched. */
   .ProseMirror-focused .md-active .md-markup.md-block,
   .ProseMirror-focused .md-markup.md-edit,
   .ProseMirror-focused .md-markup:has(.md-edit) {
     display: inline;
+  }
+
+  /* ——— Block elements become their markdown while the caret is in
+     them ———
+     A list item's first paragraph carries its dash/number marker (and,
+     for a todo, the checkbox source) as md-block marker text, revealed
+     by the rule above when the item's block is md-active. To read as
+     pure markdown source in that state, the native list marker (the
+     bullet/number the browser draws) and the rendered checkbox widget
+     must step aside — otherwise the line shows both the native bullet
+     and the dash marker, plus a checkbox next to the source. Suppress
+     them for the active item only; every other item stays richly
+     rendered. */
+  .md-doc li:has(> .md-active) {
+    list-style: none;
+  }
+  .md-doc li:has(> .md-active) > .md-active .md-task-checkbox {
+    display: none;
   }
 
   /* Placeholder (empty doc): ghost text via CSS content. */

@@ -27,6 +27,15 @@ export const schema = new Schema({
       parseDOM: [{ tag: "del" }, { tag: "s" }, { tag: "strike" }],
       toDOM: () => ["del", 0],
     })
+    // Highlight (`==text==`, markdown-it-mark). Same literal-marker
+    // handling as the other inline marks: `==` is stored as `markup`
+    // text, revealed per edit range, demarkup/serialize regenerate it.
+    // Rendered as <mark>, with a CSS background.
+    .addToEnd("highlight", {
+      inclusive: false,
+      parseDOM: [{ tag: "mark" }],
+      toDOM: () => ["mark", 0],
+    })
     .addToEnd("markup", {
       attrs: {
         // "inline" markers (`**`, `` ` ``, `[`, `](url)`) reveal per
