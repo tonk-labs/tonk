@@ -4,3 +4,9 @@ node_modules/
 # minified `.js` artifacts; debuggers fall back to the bundled
 # source when no map is present.
 assets/*.map
+# Per-language entry modules + the alias map are generated from
+# @codemirror/language-data by scripts/build.mjs on every build; the
+# shipped artifacts are the `assets/*.js` chunks, so keep the generated
+# TypeScript out of git (it regenerates deterministically).
+src-js/lang/generated/
+src-js/lang/chunks.generated.ts

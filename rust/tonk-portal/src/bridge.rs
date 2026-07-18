@@ -562,14 +562,16 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       // expose a name->blob map the rewritten lookup consults instead.
       if (d.code && d.code.length) {
         try {
-          var codeBlobs=mintGraph(d.code, function(src){
-            // Runtime language-pack URL → guest blob-map lookup.
-            return src.replace(
-              "new URL(`./tonk-code-lang-${t}.js`,import.meta.url).href",
-              "window.__tonkCodeLang(t)"
-            );
-          });
-          window.__tonkCodeLang=function(id){return codeBlobs["tonk-code-lang-"+id+".js"]||"";};
+          var codeBlobs=mintGraph(d.code);
+          // Expose the minted blob map so the element's on-demand language
+          // loader reuses the SHARED chunk-*.js blobs already minted here
+          // (esp. @codemirror/state/view/language). Re-minting them for a
+          // language pack would create a second @codemirror/state identity,
+          // and CodeMirror's instanceof checks reject the pack
+          // ("Unrecognized extension value … multiple instances of
+          // @codemirror/state"). The loader fetches a language chunk via the
+          // proxied window.fetch and mints ONLY files not already in this map.
+          window.__tonkCodeChunks=codeBlobs;
           await import(codeBlobs["tonk-code.js"]);
         } catch(codeErr) {
           // The editor failing to inject must not abort the whole runtime — the
@@ -953,7 +955,11 @@ fn find_relative_imports(src: &str) -> Vec<String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_tonk_code_bundles() -> Vec<(String, String)> {
     // Entry points with stable (unhashed) names served at `/tonk-code/`.
-    fetch_bundle_graph("/tonk-code", &["tonk-code.js", "tonk-code-lang-dialog-yaml.js"]).await
+    fetch_bundle_graph(
+        "/tonk-code",
+        &["tonk-code.js", "tonk-code-lang-dialog-yaml.js"],
+    )
+    .await
 }
 
 /// Fetch ONLY the `<tonk-prose>` registration shell for the guest boot

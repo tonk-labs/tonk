@@ -1,0 +1,2 @@
+import{Ca as r,ga as o}from"./chunk-4GSI2DWM.js";var t={"+":"inserted","-":"deleted","@":"meta"},a={name:"diff",token:function(e){var n=e.string.search(/[\t ]+?$/);if(!e.sol()||n===0)return e.skipToEnd(),("error "+(t[e.string.charAt(0)]||"")).replace(/ $/,"");var i=t[e.peek()]||e.skipToEnd();return n===-1?e.skipToEnd():e.pos=n,i}};var f=e=>new o(r.define(e)),c=f(a);export{c as default};
+//# sourceMappingURL=tonk-code-lang-diff.js.map
