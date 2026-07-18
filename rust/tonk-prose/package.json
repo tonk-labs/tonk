@@ -8,10 +8,12 @@
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
     "check": "tsc --noEmit",
-    "test": "node scripts/test.mjs"
+    "test": "node scripts/test.mjs",
+    "test:browser": "node scripts/browser-test.mjs"
   },
   "devDependencies": {
     "@types/node": "26.1.1",
+    "chrome-remote-interface": "0.34.0",
     "esbuild": "^0.24.0",
     "linkedom": "0.18.13",
     "typescript": "^5.4.0"
