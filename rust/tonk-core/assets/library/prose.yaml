@@ -1,0 +1,122 @@
+# ===========================================================================
+# prose — a <tonk-prose> markdown document, edited live and persisted.
+# ===========================================================================
+# The editor fires a debounced `change` event on every idle edit; a command
+# reads the new content off the event and a rule writes it back onto the
+# document entity. Reading the versioned `content` envelope (markdown + HLC)
+# rather than the bare value lets the element recognize its own round-tripped
+# edit by version and drop it, so the store echo never disturbs the caret.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &prose/content
+  description: |
+    The document's content as the <tonk-prose> `content` envelope: a
+    versioned wrapper (Tonk-Prose-Version header + HLC ETag) around the
+    markdown body. Stored verbatim and fed back into the editor's `content`
+    attribute, so the element drops its own echo by the version.
+  the: io.gozala.prose/content
+  as: text
+
+# ---------------------------------------------------------------------------
+# Concept
+# ---------------------------------------------------------------------------
+
+concept!: &prose
+  this: tonk:prose
+  description: A prose document edited with <tonk-prose>.
+  with:
+    content:
+      description: The document content (the versioned `content` envelope).
+      the: io.gozala.prose/content
+      as: text
+
+# ---------------------------------------------------------------------------
+# Command — one per idle edit.
+# The <tonk-prose> `change` event carries the versioned envelope on
+# `event.detail.content`; `subject` carries the document's identity off the
+# element's `data-subject` so the rule knows which document to write.
+# ---------------------------------------------------------------------------
+
+command!: &prose/edit
+  description: Edit a prose document.
+  with:
+    subject:
+      description: The document entity, stamped on the editor's data-subject.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    content:
+      description: The new content envelope, read from the change event.
+      the: dom.event.detail/content
+      as: text
+
+# ---------------------------------------------------------------------------
+# Rule — persist the edit onto the document named by the command's subject.
+# Binding `subject` to `?this` writes the (cardinality-one) content in place
+# on that document entity, so each edit overwrites rather than accumulating.
+# ---------------------------------------------------------------------------
+
+rule!:
+  description: Persist a prose edit onto its document.
+  assert!: prose
+  when:
+    - assert: prose/edit
+      where:
+        subject: ?this
+        content: ?content
+
+# ---------------------------------------------------------------------------
+# View — render the document as an editor. The content is bound as the
+# element's TEXT (between the tags), the way a <textarea> carries its value:
+# the store's `content` envelope is written via set_text_content, which is
+# newline- and markup-safe (an attribute value can be normalized in transit,
+# corrupting the multi-line envelope). `data-subject={this}` carries identity
+# for the command; `onchange=prose/edit` fires the command on each idle edit.
+# ---------------------------------------------------------------------------
+
+view!:
+  this: id:prose/view
+  model: prose
+  display: |
+    <tonk-prose
+      onchange=prose/edit
+      data-subject={this}
+      placeholder="Write something…"
+      auto-focus
+      style="display: block; min-height: 12rem;"
+    >{content}</tonk-prose>
+
+# ---------------------------------------------------------------------------
+# A directory view so `tonk render prose` (list of documents) resolves. One
+# <tonk-display> per instance — the single-display directory pattern.
+# ---------------------------------------------------------------------------
+
+view/directory!:
+  this: id:prose/directory
+  model: prose
+  display: |
+    <div class="prose-directory">
+      <tonk-display entity={this} model={dom.host/model}></tonk-display>
+    </div>
+
+# ---------------------------------------------------------------------------
+# Seed one document so the model resolves on first render. The seed stores a
+# BARE markdown body (no envelope): the editor accepts a bare value as an
+# always-adopt initial document, then stamps versions on subsequent edits.
+# Re-assert this id to reset the document.
+# ---------------------------------------------------------------------------
+
+prose!:
+  this: id:prose/doc
+  content: |
+    # Hello
+
+    Start editing. Try **bold**, *italic*, ~~strike~~ and `code`.
+
+    > a quote
+
+    - [ ] a todo
+    - [x] a done item
