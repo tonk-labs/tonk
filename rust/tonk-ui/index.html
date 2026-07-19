@@ -424,7 +424,7 @@
         <link data-trunk rel="copy-file" href="./assets/hot-swap.js" />
         <link data-trunk rel="copy-dir" href="./assets/posthog" />
         <!-- The standard library (built-in concepts, views, commands,
-       rules + demo content). Served as a static asset so the service
+       rules). Served as a static asset so the service
        worker can fetch and seed it at repository creation, instead of
        embedding it at compile time. Editing core.yaml updates the
        library without rebuilding the wasm. -->
@@ -465,16 +465,6 @@
             data-trunk
             rel="copy-file"
             href="../tonk-core/assets/library/board.yaml"
-            data-target-path="library"
-        />
-        <!-- The showcase ("Trip to Pistoia" demo). Seeded ONLY into the
-       default `home` repository, on top of the core scaffold, so a
-       freshly created repo starts genuinely empty. Served the same
-       way as core.yaml. -->
-        <link
-            data-trunk
-            rel="copy-file"
-            href="../tonk-core/assets/library/demo.yaml"
             data-target-path="library"
         />
         <link data-trunk rel="copy-dir" href="./assets/fonts" />

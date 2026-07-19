@@ -113,20 +113,32 @@ impl Command for Load {
 
 /// Request to mint a repository invite.
 ///
-/// Asserted transiently when the user submits the share form (a
-/// `<form onsubmit=tonk:invite>` in the standard library). The worker
-/// handler generates a fresh membership keypair, delegates the
-/// repository's access to its DID, asserts a durable [`Authorization`]
-/// (the public delegation chain) into storage, and asserts the private
-/// seed as a [`Credential`] into the reactor's session overlay (never
-/// replicated). The share view joins the two via `tonk:invitation` and
-/// assembles the final URL.
+/// Asserted transiently when the FAB's share control is clicked
+/// (`<tonk-share>`, `tonk-fab`). The worker handler generates a fresh
+/// membership keypair, delegates the repository's access to its DID,
+/// asserts a durable [`Authorization`] (the public delegation chain) into
+/// storage, and asserts the private seed as a [`Credential`] into the
+/// reactor's session overlay (never replicated). The share view joins the
+/// two via `tonk:invitation` and assembles the final URL.
 ///
-/// The command carries only the click's `time` — no audience, no
-/// secret. The repository to delegate is read from the command's origin
-/// (`CommandEnv::origin`), the branch the commit landed in. The
-/// timestamp makes each click a distinct transient so repeated Share
-/// clicks reliably re-fire the handler and rotate the credential.
+/// Deliberately a minimal matched shape, like [`CreateSpace`]: a command
+/// concept must keep decoding against the descriptor an *older* seeded
+/// `core.yaml` carries, and every existing space's `tonk:invite` descriptor
+/// is frozen at `{this, time, marker}` (no `space` field). A required
+/// `space` field here would make those transients silently fail to match
+/// (the transient commits, no handler runs) — see `CreateSpace`'s doc and
+/// `docs/space-sync-remotes-and-launchpad.md` §3.1, which hit the identical
+/// mistake with `CreateSpace.remote`.
+///
+/// The FAB's newer profile-dispatched share affordance (routeless, so
+/// `CommandEnv::origin` is empty) still needs to name its target: it does
+/// so by asserting the `xyz.tonk.invite/space` attribute on the same
+/// transient WITHOUT it being a matched concept field — the worker's
+/// `InviteHandler` reads it opportunistically from the raw facts
+/// (`invite_space_from_facts`, mirroring `remote_from_facts`), falling back
+/// to the dispatch origin when it's absent. The timestamp makes each click
+/// a distinct transient so repeated Share clicks reliably re-fire the
+/// handler and rotate the credential.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Invite {
     /// The command entity (a fresh id per invocation).
@@ -181,6 +193,32 @@ pub struct PauseSync {
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Rename a space's repository from the FAB.
+///
+/// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot consume a
+/// claim dispatched on the profile branch, so this carries its target `space`
+/// and is executed by a worker handler instead — the `PauseSync` pattern. That
+/// is what lets the FAB's name chip depend on nothing seeded per-space.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct RenameRepository {
+    /// The command entity (a fresh id per commit).
+    pub this: Entity,
+    /// The new name, read from the editable's value on commit.
+    pub name: crate::domain::command::rename_repository::Value,
+    /// The target space DID — the repository to rename.
+    pub space: crate::domain::command::rename_repository::Space,
+    /// Per-command marker distinguishing this from `profile/rename`, which
+    /// shares the `{this, value}` shape. A DISTINCT ATTRIBUTE (not a
+    /// distinct marker value) is what keeps the shapes disjoint — see
+    /// `domain::command::rename_repository::RenameRepository`'s doc.
+    pub marker: crate::domain::command::rename_repository::RenameRepository,
+}
+
+impl Command for RenameRepository {
     type Input = Self;
     type Output = ();
 }

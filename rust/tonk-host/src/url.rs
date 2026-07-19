@@ -20,8 +20,13 @@
 //! instead of the named-repo namespace. The profile lives outside
 //! `/api/repository/{name}`, so its routes are parallel; the `space`
 //! name is irrelevant in profile mode.
+//!
+//! A branch with no space is not a route: outside profile mode the
+//! repository segment is required, and there is no default space to
+//! fill it with. `ops::route_from` rejects that pairing before it
+//! reaches these builders, so `space = None` here means the bare
+//! endpoint.
 
-const DEFAULT_SPACE: &str = "home";
 const DEFAULT_BRANCH: &str = "main";
 
 /// Build the `/query` URL — used by `tonk-query` and
@@ -61,12 +66,11 @@ fn endpoint(space: Option<&str>, branch: Option<&str>, profile: bool, route: &st
             branch.unwrap_or(DEFAULT_BRANCH),
         );
     }
-    match (space, branch) {
-        (None, None) => format!("/{route}"),
-        _ => format!(
-            "/api/repository/{}/branch/{}/{route}",
-            space.unwrap_or(DEFAULT_SPACE),
+    match space {
+        Some(space) => format!(
+            "/api/repository/{space}/branch/{}/{route}",
             branch.unwrap_or(DEFAULT_BRANCH),
         ),
+        None => format!("/{route}"),
     }
 }

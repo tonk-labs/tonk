@@ -46,6 +46,10 @@ name = "telemetry"
 path = "tests/telemetry.rs"
 
 [[test]]
+name = "update"
+path = "tests/update.rs"
+
+[[test]]
 name = "blob"
 path = "tests/blob.rs"
 
@@ -70,6 +74,11 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
+flate2 = { workspace = true }
+semver = { workspace = true }
+sha2_0_10 = { workspace = true }
+tar = { workspace = true }
 # `string` on top of the workspace default: the schema-aware data
 # verbs (`add`/`set`) build a `clap::Command` at runtime from a
 # concept's field names (owned `String`s from the branch, not
@@ -94,10 +103,9 @@ dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dirs = { workspace = true }
 futures-util = { workspace = true }
-# tonk doesn't call reqwest directly; this dep exists so Cargo feature unification
-# turns on `rustls-tls-native-roots` (see workspace Cargo.toml) for the reqwest that
-# dialog-db's transport crates build, letting tonk's remote ops trust the OS CA
-# store behind TLS-intercepting proxies. Drop once dialog-db ships native roots.
+# `tonk update` calls reqwest directly to fetch release manifests and archives.
+# The workspace enables `rustls-tls-native-roots` (see workspace Cargo.toml), so
+# those downloads trust the OS CA store and work behind TLS-intercepting proxies.
 reqwest = { workspace = true }
 ipld-core = { workspace = true }
 lsp-types = { workspace = true }

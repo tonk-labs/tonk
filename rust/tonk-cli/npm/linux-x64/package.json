@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli-linux-x64",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "linux-x64 binary for @tonk/cli.",
   "license": "MIT",
   "homepage": "https://github.com/tonk-labs/tonk#readme",

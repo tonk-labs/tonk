@@ -5,7 +5,8 @@
 //! around the viewport. It is NOT a portal and uses no iframe — it lives in the
 //! same document as its content and moves itself directly. The FAB chrome uses
 //! it to float the profile pill over the space content, but nothing here is
-//! FAB-specific beyond the `.fab` class names the view supplies.
+//! FAB-specific beyond the `.fab` class names [`crate::markup::fab_html`]
+//! authors.
 //!
 //! - Telescope collapse/expand: the bar rests EXPANDED (all segments shown).
 //!   A plain click on the circle toggles it — the segments after the cap
@@ -27,14 +28,17 @@
 //!   only exist at rest); the visual right-anchored flips key off
 //!   `fab-mirror` instead, since that is the class still present mid-drag. A
 //!   press that never moves past a small threshold is a click.
-//! - On connect it wraps each collapsible segment for the telescope, restores
-//!   the persisted dock (or a default bottom-right), and applies its classes.
+//! - `inject_children` authors the bar (already wrapped for the telescope —
+//!   see `fab_html`); connect restores the persisted dock (or a default
+//!   bottom-right) and applies its classes.
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
 use crate::logic::{
-    DOCK_CLASSES, Dock, corrected_min_width, dock_claim_json, dock_from_conclusions, mirrored,
-    nearest_dock, pause_claim_json, ratchet_min_width, telescope_delay_ms, telescope_settle_ms,
+    DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
+    dock_claim_json, dock_from_conclusions, is_compact, mirrored, nearest_dock, pause_claim_json,
+    profile_rename_claim_json, ratchet_min_width, strip_at_end, strip_page_target,
+    telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -61,10 +65,45 @@ extern "C" {
 /// any app stacking context.
 const FAB_Z_INDEX: &str = "2147483646";
 
+/// The id of the injected stylesheet, so injection is idempotent.
+const STYLE_ID: &str = "tonk-fab-styles";
+
+/// Inject the FAB stylesheet once per document.
+///
+/// The element has no shadow root (`shadow()` below returns `false`), so the
+/// CSS is global rather than scoped. It must be guarded: the element re-binds
+/// on every clone (`tonk-display` clones the chrome view and mounts the
+/// clone), and an unguarded injection would append a duplicate `<style>` per
+/// mount. Keyed off a stable element id rather than a JS expando, since a
+/// clone landing in a FRESH document still needs the stylesheet — an expando
+/// guard (like `__tonkFabBound` below) would follow the clone and skip it.
+fn ensure_stylesheet() {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    if document.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
+    let _ = style.set_attribute("id", STYLE_ID);
+    style.set_text_content(Some(include_str!("fab.css")));
+    if let Some(head) = document.head() {
+        let _ = head.append_child(style.as_ref());
+    }
+}
+
 /// How far (CSS px) the pointer must travel from the press origin before it
 /// counts as a drag rather than a click. Below this the press toggles the
-/// telescope; above it the FAB moves and the click is suppressed.
+/// telescope; above it the FAB moves and the click is suppressed. Touch pointers
+/// use `TOUCH_DRAG_THRESHOLD_PX` instead.
 const DRAG_THRESHOLD_PX: f64 = 4.0;
+
+/// The drag threshold for TOUCH pointers. Wider than the mouse threshold: a
+/// finger wobbles a few px during a plain tap, and promoting that to a drag
+/// would eat the tap-to-toggle gesture.
+const TOUCH_DRAG_THRESHOLD_PX: f64 = 8.0;
 
 /// The `<tonk-fab>` custom element.
 #[derive(Default)]
@@ -79,9 +118,23 @@ impl CustomElement for TonkFab {
         &[]
     }
 
-    fn inject_children(&mut self, _this: &HtmlElement) {}
+    /// Author the FAB's own DOM. The `space` attribute is stamped by the
+    /// mounting view (`<tonk-fab with="main@profile:tonk" space="{id}">`) and
+    /// is already resolved by the time `inject_children` runs — per the
+    /// `custom-elements` crate, this is deferred to (and runs before) the
+    /// first `connectedCallback`, i.e. after HTML parsing has set the
+    /// element's attributes.
+    fn inject_children(&mut self, this: &HtmlElement) {
+        let space = this.get_attribute("space").unwrap_or_default();
+        this.set_inner_html(&crate::markup::fab_html(&space));
+    }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        // Outside the `__tonkFabBound` guard below: a clone landing in a
+        // fresh document still needs the stylesheet, and this is itself
+        // idempotent (keyed off a stable element id, not the expando).
+        ensure_stylesheet();
+
         // Float the element: fixed-position, high z-index. Its left/top come
         // from the restored position below.
         let style = this.style();
@@ -105,11 +158,15 @@ impl CustomElement for TonkFab {
             .unwrap_or(false);
         if !already_bound {
             let _ = Reflect::set(this.as_ref(), &"__tonkFabBound".into(), &JsValue::TRUE);
-            inject_scrim(this);
-            wrap_telescope_tiles(this);
             attach_drag(this);
             attach_gestures(this);
+            attach_create_space_form(this);
+            attach_profile_name_commit(this);
             preload_menu_widths(this);
+            attach_resize(this);
+            attach_strip_scroll(this);
+            observe_bar_content(this);
+            update_compact_mode(this);
         }
         // Restore the persisted position and apply it to our own style.
         restore_position(this);
@@ -131,6 +188,7 @@ impl CustomElement for TonkFab {
         // buttons-up move.
         this.dataset().delete("fabPressing");
         this.dataset().delete("fabMoved");
+        this.dataset().delete("fabTouch");
     }
 
     fn attribute_changed_callback(
@@ -143,93 +201,19 @@ impl CustomElement for TonkFab {
     }
 }
 
-/// Inject the click-away curtain: a viewport-covering, invisible click target
-/// that dismisses both dropdowns. It is created here rather than authored in the
-/// view template for two reasons:
-///
-///  - The template renderer drops EMPTY elements, so an authored
-///    `<div class="fab__scrim"></div>` never reaches the DOM.
-///  - It has to be a SIBLING of `.fab`, not a child: `wrap_telescope_tiles`
-///    takes child[0] of `.fab` to be the circle cap, so a scrim nested inside
-///    would be mistaken for it and the real cap would be wrapped as a
-///    collapsible tile.
-///
-/// The stylesheet (profile.yaml) owns the rest: it is `pointer-events: none`
-/// at rest and only becomes a live hit area while a menu is open
-/// (`tonk-fab:has(.is-open)`), so it can never swallow a click on the page
-/// while the bar is idle. Idempotent.
-fn inject_scrim(element: &HtmlElement) {
-    if element
-        .query_selector(".fab__scrim")
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return;
-    }
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    let Ok(scrim) = document.create_element("div") else {
-        return;
-    };
-    let _ = scrim.set_attribute("class", "fab__scrim");
-    // Before `.fab`, so the bar paints over it and menu rows stay clickable.
-    let _ = element.insert_before(scrim.as_ref(), element.first_child().as_ref());
-}
-
-/// Wrap each collapsible segment (every `.fab` child after the sync-circle cap)
-/// in a `.fab__tele` div whose `max-width` the telescope animates. Adds the
-/// `fab--anim` marker (enables the transition CSS) and the initial
-/// `fab--settled` state (the bar rests EXPANDED — all segments shown). Mirrors
-/// the wireframe's programmatic `wrapTele` — done in JS, not the authored markup,
-/// so the view template stays a plain segment list.
-///
-/// Child[0] of `.fab` is taken to be the circle cap and is left unwrapped —
-/// which is why the click-away curtain hangs off `<tonk-fab>` rather than
-/// sitting inside `.fab` (see [`inject_scrim`]).
-fn wrap_telescope_tiles(element: &HtmlElement) {
-    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
-        return;
-    };
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    // Children after the first (the `.fab__cap-l` circle) are collapsible.
-    let children = fab.children();
-    let mut tiles: Vec<Element> = Vec::new();
-    for i in 1..children.length() {
-        if let Some(child) = children.item(i) {
-            // Skip anything already wrapped (defensive against a re-run).
-            if child.class_list().contains("fab__tele") {
-                continue;
-            }
-            tiles.push(child);
-        }
-    }
-    for tile in &tiles {
-        let Ok(wrapper) = document.create_element("div") else {
-            continue;
-        };
-        let _ = wrapper.set_attribute("class", "fab__tele");
-        // Start each wrapper EXPANDED — the bar rests open (every segment shown),
-        // not as a bare circle. `max-width: none` + `margin-left: 0` is the same
-        // resting geometry `schedule_settle` leaves after an expand; the matching
-        // `fab--settled` class below makes the wrappers overflow-visible so the
-        // dropdowns can escape. `set_telescope` drives these on toggle.
-        let style = wrapper.unchecked_ref::<HtmlElement>().style();
-        let _ = style.set_property("max-width", "none");
-        let _ = style.set_property("margin-left", "0px");
-        // Insert the wrapper where the tile is, then move the tile inside it.
-        if let Some(parent) = tile.parent_node() {
-            let _ = parent.insert_before(&wrapper, Some(tile));
-            let _ = wrapper.append_child(tile);
-        }
-    }
-    // Rest EXPANDED + settled (no `fab--collapsed`), so the first circle click
-    // collapses. `fab--anim` still gates the transitions for later toggles.
-    fab.class_list().add_2("fab--anim", "fab--settled").ok();
-}
+/// The click-away curtain (`.fab__scrim`) and the `.fab__tele` telescope
+/// wrappers used to be retrofitted here at runtime — `inject_scrim` and
+/// `wrap_telescope_tiles` — because the view-rendered markup this element
+/// used to wrap had no chance to shape its own DOM: the view renderer
+/// dropped empty elements (so an authored `<div class="fab__scrim"></div>`
+/// never reached the DOM) and the scrim had to land as a runtime-inserted
+/// SIBLING of `.fab`, never a child, or the child-order inference that found
+/// the circle cap would mistake it for a collapsible tile. Now that
+/// [`crate::markup::fab_html`] authors the whole subtree directly (see
+/// `inject_children` above), both are emitted as real markup instead:
+/// `.fab__scrim` is a literal sibling of `.fab`, and every collapsible
+/// segment already comes wrapped in its own `.fab__tele` div with the
+/// resting `fab--anim fab--settled` classes stamped on `.fab` itself.
 
 /// Attach the FAB's NATIVE click gesture listener. Because only the circle is
 /// draggable (see `attach_drag`), the pointer is never captured over a
@@ -257,6 +241,8 @@ fn attach_gestures(element: &HtmlElement) {
             // curtain lies behind the bar, so this never fires for a click on
             // the bar itself or on a menu row.
             close_menus(&el_click);
+        } else if t.closest(".fab__more").ok().flatten().is_some() {
+            advance_strip(&el_click);
         } else if let Some(cap) = t.closest(".fab__cap-l").ok().flatten() {
             // Alt/option-click toggles sync pause; a plain click folds/expands.
             // Pause is dispatched here (on the FAB, which reliably receives the
@@ -302,12 +288,12 @@ fn attach_gestures(element: &HtmlElement) {
 
 /// Toggle sync pause for the active space. Reads the target space and the
 /// command URI off the cap's `<ui-sync-status with="branch@repo" onpause=…>`
-/// (the space DID was baked into `with` at render time from
-/// `{dom.host/data-space}`), builds the `tonk:pause-sync` transient, and
-/// dispatches it through `window.tonk.transact` — routeless, so it lands on the
-/// FAB portal's own context (`main@profile:tonk`, where the command is defined
-/// and its handler reads the target space from the command). Nothing space-side
-/// is required, and this runs from the FAB's own click listener, which — unlike
+/// (`markup::fab_html` stamps `with="main@{space}"` there), builds the
+/// `tonk:pause-sync` transient, and dispatches it through
+/// `window.tonk.transact` — routeless, so it lands on the FAB portal's own
+/// context (`main@profile:tonk`, where the command is defined and its
+/// handler reads the target space from the command). Nothing space-side is
+/// required, and this runs from the FAB's own click listener, which — unlike
 /// a listener on the cloned `<ui-sync-status>` — reliably receives the click.
 fn dispatch_pause_from_cap(cap: &Element) {
     let Some(status) = cap.query_selector("ui-sync-status").ok().flatten() else {
@@ -317,9 +303,7 @@ fn dispatch_pause_from_cap(cap: &Element) {
         .get_attribute("onpause")
         .filter(|c| !c.is_empty())
         .unwrap_or_else(|| "tonk:pause-sync".to_owned());
-    // The cap's `with` is a `branch@repo` location (or a bare repo); the space
-    // is the repo half. The FAB renders `<ui-sync-status with={dom.host/data-
-    // space}>`, so this is the active space's DID with no branch prefix.
+    // The cap's `with` is a `branch@repo` location — take the repo half.
     let Some(space) = status
         .get_attribute("with")
         .filter(|w| !w.is_empty() && !w.contains('{'))
@@ -329,8 +313,15 @@ fn dispatch_pause_from_cap(cap: &Element) {
         return;
     };
 
-    let claim = pause_claim_json(&command, &space, js_sys::Date::now());
-    let json_str = match serde_json::to_string(&claim) {
+    transact(&pause_claim_json(&command, &space, js_sys::Date::now()));
+}
+
+/// Dispatch a `TransactRequest` JSON body via `window.tonk.transact(...)`,
+/// routeless. Shared by every FAB-owned command dispatch (pause, dock
+/// persistence, create-space, profile-rename) — each builds its own claim
+/// JSON via `crate::logic` and hands it here.
+fn transact(claim: &serde_json::Value) {
+    let json_str = match serde_json::to_string(claim) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -341,15 +332,145 @@ fn dispatch_pause_from_cap(cap: &Element) {
     else {
         return;
     };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
+    let Some(transact_fn) = Reflect::get(&tonk, &"transact".into())
         .ok()
         .and_then(|v| v.dyn_into::<Function>().ok())
     else {
         return;
     };
     if let Some(obj) = js_sys::JSON::parse(&json_str).ok() {
-        transact.call1(&tonk, &obj).ok();
+        transact_fn.call1(&tonk, &obj).ok();
     }
+}
+
+/// Attach the create-space wizard's `submit` handler directly to
+/// `#fab-space-create-form`.
+///
+/// This markup used to live inside a `<tonk-display model="tonk:profile/fab">`
+/// wrapper, whose own render pass rewrote `onsubmit=space/create` into
+/// `data-onsubmit` and installed a `tonk-display::events::delegate::Delegate`
+/// that resolved the concept descriptor and dispatched the claim (see
+/// `markup.rs`'s module docs). `<tonk-fab>` sets this markup via
+/// `set_inner_html` directly, so no such delegate exists — this reimplements,
+/// from Rust, the three things that delegate did for this one form:
+/// `preventDefault()` (else the browser falls through to a native GET submit
+/// and reloads the page with `?name=` — see `tonk-display/src/events/
+/// extract.rs` around line 631), reading the submitted fields, and dismissing
+/// the dialog (`maybe_dismiss_overlay` in `tonk-display/src/events/
+/// delegate.rs`).
+///
+/// The form is static markup present at connect time (unlike the profile-name
+/// chip, which may render asynchronously), so a direct listener — rather than
+/// delegation on the host — is enough.
+fn attach_create_space_form(element: &HtmlElement) {
+    let Some(form) = element
+        .query_selector("#fab-space-create-form")
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let on_submit = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Unconditional and first: the browser has already run native
+        // constraint validation by the time `submit` fires, so this only
+        // ever suppresses the reload, never a legitimate validation error.
+        event.prevent_default();
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let name = form_field(&target, "name");
+        let remote = form_field(&target, "remote");
+        let template = form_field(&target, "template");
+        transact(&create_space_claim_json(&name, &remote, &template));
+        dismiss_overlay(&target);
+    });
+    let target: &web_sys::EventTarget = form.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("submit", on_submit.as_ref().unchecked_ref());
+    on_submit.forget();
+}
+
+/// Read `form.elements[field].value` the way `dom.event.current-target.
+/// elements.<field>/value` reads it in the browser: a plain `Reflect` walk,
+/// not a typed `HtmlFormElement`/`HtmlInputElement` cast. That matters for
+/// `template`: three radios share `name="template"`, so
+/// `form.elements.template` is a `RadioNodeList`, not a single control —
+/// its own `.value` getter already resolves to the checked radio's value,
+/// exactly like a single input's. A typed cast to `HtmlInputElement` would
+/// fail on that shape; the untyped walk handles both uniformly.
+fn form_field(form: &Element, field: &str) -> String {
+    Reflect::get(form, &JsValue::from_str("elements"))
+        .and_then(|elements| Reflect::get(&elements, &JsValue::from_str(field)))
+        .and_then(|item| Reflect::get(&item, &JsValue::from_str("value")))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// Reimplements `tonk_display::events::delegate::maybe_dismiss_overlay` for
+/// FAB-owned markup, where no `Delegate` is installed to run the original.
+/// `target` is the element the effect fired on (the form, for a submit).
+///
+/// Two markers, each a no-op unless present — see the original for why:
+/// - `[data-close-dialog]` closes the nearest `<wa-dialog>` (sets `open =
+///   false`).
+/// - `[data-close-radio="<id>"]` re-checks the CSS-paging radio with that id
+///   and, when the marked element is itself a form, resets it. The FAB's own
+///   create form doesn't carry this marker (only the Hub's onboarding
+///   overlay and remove-confirm forms do), so this branch is currently a
+///   no-op here — kept for parity with the original and in case a future
+///   FAB-owned form adds one.
+fn dismiss_overlay(target: &Element) {
+    if let Some(marked) = target.closest("[data-close-dialog]").ok().flatten()
+        && let Some(dialog) = marked.closest("wa-dialog").ok().flatten()
+    {
+        let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::FALSE);
+    }
+    if let Some(marked) = target.closest("[data-close-radio]").ok().flatten()
+        && let Some(id) = marked.get_attribute("data-close-radio")
+        && let Some(doc) = marked.owner_document()
+        && let Some(radio) = doc.get_element_by_id(&id)
+    {
+        let _ = Reflect::set(&radio, &JsValue::from_str("checked"), &JsValue::TRUE);
+        if let Ok(reset_fn) = Reflect::get(&marked, &JsValue::from_str("reset"))
+            .and_then(|v| v.dyn_into::<Function>())
+        {
+            let _ = reset_fn.call0(&marked);
+        }
+    }
+}
+
+/// Attach a delegated `change` listener on the whole `<tonk-fab>` host for
+/// the profile-name chip's commit, mirroring `attach_gestures`'s click
+/// delegation (not `dispatch_pause_from_cap`'s direct-child lookup): the
+/// chip's `<tonk-editable data-rename="tonk:profile">` renders inside a
+/// nested `<tonk-display model="tonk:profile/name">` — asynchronously,
+/// after that display's own subscribe resolves — so a listener attached
+/// once at connect time to a `query_selector` result would silently find
+/// nothing. Delegation on the host catches the bubbling `change`
+/// (`tonk-workspace::editable` dispatches a bubbling native `Event`)
+/// whenever it eventually appears.
+///
+/// Filters on `[data-rename="tonk:profile"]` specifically: the create-space
+/// dialog's own `change`-firing radios also live under this host and must
+/// not be mistaken for a name commit.
+fn attach_profile_name_commit(element: &HtmlElement) {
+    let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let Some(editable) = target
+            .closest("[data-rename=\"tonk:profile\"]")
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let name = editable.text_content().unwrap_or_default();
+        transact(&profile_rename_claim_json(&name));
+    });
+    let target: &web_sys::EventTarget = element.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+    on_change.forget();
 }
 
 /// Open (or close) the dropdown owned by `seg` by toggling its `is-open` class,
@@ -386,6 +507,26 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
     }
 }
 
+/// Advance the compact pager one page, wrapping to the start at the end —
+/// the tap alternative to swiping the strip (the compact bar's only other
+/// horizontal gesture). Smooth so the slide reads as paging, not a jump;
+/// the strip's own `scroll` listener dismisses any open dropdown as the
+/// segments move out from under it.
+fn advance_strip(element: &HtmlElement) {
+    let Some(strip) = element.query_selector(".fab__strip").ok().flatten() else {
+        return;
+    };
+    let target = strip_page_target(
+        strip.scroll_left() as f64,
+        strip.client_width() as f64,
+        strip.scroll_width() as f64,
+    );
+    let options = web_sys::ScrollToOptions::new();
+    options.set_left(target);
+    options.set_behavior(web_sys::ScrollBehavior::Smooth);
+    strip.scroll_to_with_scroll_to_options(&options);
+}
+
 /// Measure the menu's natural (max-content) width — momentarily overriding
 /// the stylesheet's `width: 100%`, reading the box, restoring — and stamp the
 /// segment's inline `min-width` to the RATCHETED target (never below a prior
@@ -399,6 +540,16 @@ fn toggle_menu(element: &HtmlElement, seg: &Element, other_sel: &str) {
 /// layout before the target, so the 0.2s `min-width` ease has a numeric start
 /// instead of animating from the unanimatable `auto`.
 fn equalize_menu_width(seg: &Element) {
+    // Not while compact: the compact dropdown is bar-width by rule, not
+    // rung-equalized, so a stamp buys nothing there — and mid-compact the
+    // segment rect under-reports, making any ratchet taken here junk. The
+    // stamps that already exist stay (the pager CSS neutralizes them with
+    // `min-width: 0 !important`), so the wide layout — and the compact-fit
+    // measurement, which unclamps to the wide layout — is identical before
+    // and after a trip through compact.
+    if seg.closest(".fab--compact").ok().flatten().is_some() {
+        return;
+    }
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
     };
@@ -457,6 +608,11 @@ fn menu_natural_width(seg: &Element, menu: &Element) -> f64 {
 /// against fallback-font metrics before the Plex face landed. The min-width
 /// transition eases the correction, riding the font swap's own reflow.
 fn restamp_menu_width(seg: &Element) {
+    // Same compact suspension as `equalize_menu_width`, and for the same
+    // reason: inline stamps must not fight the pager's `min-width: 0`.
+    if seg.closest(".fab--compact").ok().flatten().is_some() {
+        return;
+    }
     let Some(menu) = seg.query_selector(".fab__menu").ok().flatten() else {
         return;
     };
@@ -532,12 +688,11 @@ fn apply_mirror_from_handle(el: &HtmlElement) {
     }
 }
 
-/// Close both dropdowns (the ratcheted widths stay). Two callers:
-///
-/// - A drag: it drops the `fab-dock-*` classes that give an open menu its
-///   vertical anchor, so an open menu would float mid-bar; dragging with a menu
-///   open isn't a state the chrome supports.
-/// - The click-away curtain: a click outside every menu dismisses both.
+/// Dismiss both dropdowns (the ratcheted widths stay). The single dismissal
+/// point, called by any interaction that invalidates an open menu's
+/// anchoring: a drag (which drops the `fab-dock-*` classes anchoring the
+/// menu to the bar, so an open menu would float unanchored mid-bar), mode
+/// switches, pager swipes and taps, or click-away.
 fn close_menus(el: &HtmlElement) {
     for sel in MENU_SEGMENTS {
         if let Some(seg) = el.query_selector(sel).ok().flatten() {
@@ -605,7 +760,37 @@ fn refresh_on_fonts_ready(element: &HtmlElement) {
                 restamp_menu_width(&seg);
             }
         }
+        // The face swap changes every label's metrics — the same reflow
+        // that invalidates the stamps invalidates the compact-fit call.
+        update_compact_mode(&el);
     });
+}
+
+/// Re-evaluate compact mode whenever the bar's CONTENT changes: the profile
+/// and space names arrive asynchronously from live subscriptions, so the
+/// width measured at connect is the EMPTY bar's — without this, a phone
+/// sits in wide mode until some unrelated trigger (a resize, a telescope
+/// settle) happens to re-measure. Child-list/text mutations only: the
+/// class flips `update_compact_mode` itself performs are attribute
+/// mutations and cannot re-fire the observer.
+fn observe_bar_content(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let el = element.clone();
+    let cb = Closure::<dyn FnMut(js_sys::Array, MutationObserver)>::new(
+        move |_records: js_sys::Array, _obs: MutationObserver| {
+            update_compact_mode(&el);
+        },
+    );
+    if let Ok(observer) = MutationObserver::new(cb.as_ref().unchecked_ref()) {
+        let init = MutationObserverInit::new();
+        init.set_child_list(true);
+        init.set_subtree(true);
+        init.set_character_data(true);
+        observer.observe_with_options(&fab, &init).ok();
+    }
+    cb.forget();
 }
 
 /// Toggle the telescope open/closed: flip `fab--collapsed` on `.fab` and drive
@@ -623,6 +808,29 @@ fn toggle_telescope(element: &HtmlElement) {
 /// Drive the telescope to the given state. `collapsing = true` retracts the
 /// tiles into the circle; `false` unfolds them to their measured widths.
 fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
+    // Compact collapse is CSS-driven: the strip and the chevron cap
+    // transition their own max-width (see `.fab--compact.fab--collapsed`
+    // in fab.css). Driving per-tile inline max-widths here would zero out
+    // the pages the strip lays out.
+    if fab.class_list().contains("fab--compact") {
+        // A collapse retracts everything: a floating dropdown left standing
+        // would hover over a bar that is shrinking to a bare circle, with
+        // its scrim still armed.
+        close_menus(element);
+        // Collapsed and settled are mutually exclusive, exactly as in the
+        // wide branch below: `fab--settled`'s unclamp (`max-width: none` on
+        // every shown tile, and a higher-specificity rule than the collapse
+        // clamp) would hold the chevron's tile open while the strip
+        // retracts — the collapsed pill kept its arrow.
+        fab.class_list()
+            .toggle_with_force("fab--settled", !collapsing)
+            .ok();
+        fab.class_list()
+            .toggle_with_force("fab--collapsed", collapsing)
+            .ok();
+        return;
+    }
+
     let tiles = telescope_tiles(fab);
     let count = tiles.len();
 
@@ -689,18 +897,40 @@ fn set_telescope(element: &HtmlElement, fab: &Element, collapsing: bool) {
     }
 }
 
-/// Collect the `.fab__tele` wrapper tiles in DOM order.
+/// Collect the `.fab__tele` wrapper tiles, sorted into VISUAL order. The
+/// DOM groups tiles by compact page (repo before share/account) while CSS
+/// `order` restores the wide bar's visual order — the telescope stagger
+/// must follow what the eye sees, not the DOM. A child scan no longer
+/// works: the tiles live inside `.fab__strip` > `.fab__page` wrappers.
 fn telescope_tiles(fab: &Element) -> Vec<Element> {
     let mut out = Vec::new();
-    let children = fab.children();
-    for i in 0..children.length() {
-        if let Some(child) = children.item(i)
-            && child.class_list().contains("fab__tele")
-        {
-            out.push(child);
+    if let Ok(list) = fab.query_selector_all(".fab__tele") {
+        for i in 0..list.length() {
+            if let Some(node) = list.item(i)
+                && let Ok(el) = node.dyn_into::<Element>()
+            {
+                out.push(el);
+            }
         }
     }
+    out.sort_by_key(tile_rank);
     out
+}
+
+/// The wide bar's visual position of a tile, RELATIVE to the others — must
+/// mirror the visual order the CSS `order` rules in `fab.css` establish
+/// (account, then repo, then share, then end).
+fn tile_rank(tile: &Element) -> u8 {
+    let cl = tile.class_list();
+    if cl.contains("fab__tele--account") {
+        0
+    } else if cl.contains("fab__tele--repo") {
+        1
+    } else if cl.contains("fab__tele--share") {
+        2
+    } else {
+        3
+    }
 }
 
 /// Measure each tile's natural width by momentarily unclamping it (max-width
@@ -731,6 +961,7 @@ fn measure_tile_widths(tiles: &[Element]) -> Vec<f64> {
 /// measured width. Stashes the timer id so a re-toggle (or disconnect) cancels it.
 fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     let fab_for_settle = fab.clone();
+    let el_for_settle = element.clone();
     let settle_once = Closure::<dyn Fn()>::new(move || {
         fab_for_settle.class_list().add_1("fab--settled").ok();
         // Unclamp shown tiles: drop the inline `max-width` pinned during the
@@ -747,6 +978,10 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
             let style = tile.unchecked_ref::<HtmlElement>().style();
             let _ = style.set_property("max-width", "none");
         }
+        // Content settling is the moment the bar reaches its true width —
+        // the one growth path (invite link, long rename) a resize never
+        // sees. Re-check the fit here.
+        update_compact_mode(&el_for_settle);
     });
     let settle_fn = settle_once
         .as_ref()
@@ -755,6 +990,110 @@ fn schedule_settle(element: &HtmlElement, fab: &Element, count: usize) {
     settle_once.forget();
     let id = set_timeout(&settle_fn, telescope_settle_ms(count) as i32);
     element.dataset().set("settleTimer", &id.to_string()).ok();
+}
+
+/// Re-evaluate compact mode from the WOULD-BE expanded bar width — the same
+/// input whichever mode we are in, so the threshold cannot flap. Called on
+/// connect, on guest-window resize, and when the telescope settles (content
+/// like a minted invite link can widen the bar without a resize).
+fn update_compact_mode(element: &HtmlElement) {
+    let Some(fab) = element.query_selector(".fab").ok().flatten() else {
+        return;
+    };
+    let compact = is_compact(expanded_bar_width(&fab), viewport_width());
+    if fab.class_list().contains("fab--compact") == compact {
+        return;
+    }
+    // Crossing modes resets transient UI state: menus close (their anchors
+    // change shape entirely) and the telescope re-opens expanded with no
+    // stale per-tile clamps — a wide-mode collapse leaves inline
+    // `max-width: 0` on every tile, which would zero out the compact pages.
+    close_menus(element);
+    fab.class_list().remove_1("fab--collapsed").ok();
+    fab.class_list().add_1("fab--settled").ok();
+    for tile in telescope_tiles(&fab) {
+        let style = tile.unchecked_ref::<HtmlElement>().style();
+        let _ = style.remove_property("max-width");
+        let _ = style.remove_property("margin-left");
+        let _ = style.remove_property("transition-delay");
+        tile.class_list().remove_1("fab__tele--hidden").ok();
+    }
+    fab.class_list()
+        .toggle_with_force("fab--compact", compact)
+        .ok();
+    // A fresh mode starts the pager at page 1 with a forward arrow.
+    sync_pager_arrow(element);
+}
+
+/// The bar's expanded width. Measured directly when expanded; a compact bar
+/// is momentarily unclamped within one task — no paint can happen before the
+/// classes are restored — the same trick `menu_natural_width` uses on closed
+/// menus. Known gap, accepted: a WIDE bar collapsed to its circle
+/// under-reports here (its tiles hold inline `max-width: 0` that no class
+/// removal lifts), so shrinking the viewport while collapsed-wide defers the
+/// flip to compact until the next expand's settle pass re-evaluates — and a
+/// collapsed circle always fits anyway.
+fn expanded_bar_width(fab: &Element) -> f64 {
+    let cl = fab.class_list();
+    let was_compact = cl.contains("fab--compact");
+    if was_compact {
+        cl.remove_1("fab--compact").ok();
+    }
+    let width = fab.get_bounding_client_rect().width();
+    if was_compact {
+        cl.add_1("fab--compact").ok();
+    }
+    width
+}
+
+/// Re-evaluate compact mode whenever the guest window resizes. The overlay
+/// iframe is pinned full-viewport, so its window size IS the app viewport.
+fn attach_resize(element: &HtmlElement) {
+    let el = element.clone();
+    let on_resize = Closure::<dyn FnMut()>::new(move || update_compact_mode(&el));
+    if let Some(win) = window() {
+        let target: &web_sys::EventTarget = win.unchecked_ref();
+        let _ =
+            target.add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref());
+    }
+    on_resize.forget();
+}
+
+/// A swipe on the compact strip moves the segments out from under their
+/// anchored dropdowns — dismiss them rather than drag them along.
+fn attach_strip_scroll(element: &HtmlElement) {
+    let Some(strip) = element.query_selector(".fab__strip").ok().flatten() else {
+        return;
+    };
+    let el = element.clone();
+    let on_scroll = Closure::<dyn FnMut()>::new(move || {
+        close_menus(&el);
+        sync_pager_arrow(&el);
+    });
+    let target: &web_sys::EventTarget = strip.unchecked_ref();
+    let _ = target.add_event_listener_with_callback("scroll", on_scroll.as_ref().unchecked_ref());
+    on_scroll.forget();
+}
+
+/// Point the pager arrow at what its next tap DOES: forward mid-strip,
+/// back (`fab__more--back`, a 180° glyph flip) once the strip rests at its
+/// end and the next tap wraps to the start. Driven from the strip's scroll
+/// events and from mode changes, so swipes and taps both keep it honest.
+fn sync_pager_arrow(element: &HtmlElement) {
+    let Some(strip) = element.query_selector(".fab__strip").ok().flatten() else {
+        return;
+    };
+    let Some(more) = element.query_selector(".fab__more").ok().flatten() else {
+        return;
+    };
+    let at_end = strip_at_end(
+        strip.scroll_left() as f64,
+        strip.client_width() as f64,
+        strip.scroll_width() as f64,
+    );
+    more.class_list()
+        .toggle_with_force("fab__more--back", at_end)
+        .ok();
 }
 
 /// Attach pointer event listeners for free drag-and-drop. The element moves
@@ -782,13 +1121,27 @@ fn attach_drag(element: &HtmlElement) {
         if e.button() != 0 {
             return;
         }
-        let on_circle = e
+        let Some(cap) = e
             .target()
             .and_then(|t| t.dyn_into::<Element>().ok())
             .and_then(|el| el.closest(".fab__cap-l").ok().flatten())
-            .is_some();
-        if !on_circle {
+        else {
             return;
+        };
+        // TOUCH presses capture IMMEDIATELY, and on the CAP (not the host):
+        // a fast flick outruns even the window listeners' first delivery on
+        // some mobile browsers, and deferred capture is the desktop
+        // compromise that lets a stationary mouse press click — a touch tap
+        // still clicks with capture held, because capture retargets pointer
+        // events to the cap, which is exactly where the tap's click routes
+        // anyway. Capturing on the host instead would retarget the click to
+        // the host and break tap-to-toggle (`attach_gestures` walks
+        // `closest(".fab__cap-l")` from the click target).
+        if e.pointer_type() == "touch" {
+            el_down.dataset().set("fabTouch", "1").ok();
+            cap.set_pointer_capture(e.pointer_id()).ok();
+        } else {
+            el_down.dataset().delete("fabTouch");
         }
         // DELTA-based drag: remember the pointer's start AND the element's start
         // `left`/`top`, then translate by the pointer delta. No grab-offset or
@@ -834,11 +1187,22 @@ fn attach_drag(element: &HtmlElement) {
         // Promote to a DRAG once past the dead zone; take capture only then, so a
         // stationary press stays a plain native click.
         if el_move.dataset().get("fabMoved").is_none() {
-            if dx.hypot(dy) < DRAG_THRESHOLD_PX {
+            let touch = el_move.dataset().get("fabTouch").is_some();
+            let threshold = if touch {
+                TOUCH_DRAG_THRESHOLD_PX
+            } else {
+                DRAG_THRESHOLD_PX
+            };
+            if dx.hypot(dy) < threshold {
                 return;
             }
             el_move.dataset().set("fabMoved", "1").ok();
-            el_move.set_pointer_capture(e.pointer_id()).ok();
+            // A touch press already holds capture on the cap (see
+            // `on_down`); re-capturing on the host would retarget the
+            // post-drag click mid-gesture.
+            if !touch {
+                el_move.set_pointer_capture(e.pointer_id()).ok();
+            }
             if let Some(fab) = el_move.query_selector(".fab").ok().flatten() {
                 fab.class_list().add_1("dragging").ok();
             }
@@ -917,11 +1281,22 @@ fn attach_drag(element: &HtmlElement) {
 /// guard in `pointermove`.
 fn finish_drag(el: &HtmlElement, pointer_id: i32) {
     el.dataset().delete("fabPressing");
+    let touch = el.dataset().get("fabTouch").is_some();
+    el.dataset().delete("fabTouch");
     let moved = el.dataset().get("fabMoved").is_some();
     if !moved {
         return;
     }
-    el.release_pointer_capture(pointer_id).ok();
+    if touch {
+        // Touch capture lives on the cap (see `attach_drag`). Explicit
+        // release is belt-and-braces — pointerup implicitly releases — but
+        // pointercancel paths keep it honest.
+        if let Some(cap) = el.query_selector(".fab__cap-l").ok().flatten() {
+            cap.release_pointer_capture(pointer_id).ok();
+        }
+    } else {
+        el.release_pointer_capture(pointer_id).ok();
+    }
     if let Some(fab) = el.query_selector(".fab").ok().flatten() {
         fab.class_list().remove_1("dragging").ok();
     }
@@ -961,8 +1336,21 @@ fn read_data_f64(el: &HtmlElement, key: &str) -> f64 {
 
 /// Track the FAB at `(left, top)` (viewport top-left) with plain `left`/`top`
 /// during a drag — no corner anchoring, so it follows the cursor 1:1 without
-/// jumping as it crosses the viewport midlines.
+/// jumping as it crosses the viewport midlines. Clamped so the bar can never
+/// leave the viewport, whatever the pointer does. (The mirror-flip
+/// compensation in `apply_mirror_from_handle` writes `left` directly and is
+/// not clamped — the very next pointer move re-clamps, so any excursion
+/// lasts one frame at most.)
 fn track_position(el: &HtmlElement, left: f64, top: f64) {
+    let rect = el.get_bounding_client_rect();
+    let (left, top) = clamp_position(
+        left,
+        top,
+        rect.width(),
+        rect.height(),
+        viewport_width(),
+        viewport_height(),
+    );
     let style = el.style();
     let _ = style.remove_property("right");
     let _ = style.remove_property("bottom");
@@ -997,36 +1385,9 @@ fn apply_dock(el: &HtmlElement, dock: Dock) {
 }
 
 /// Persist `dock` by calling `window.tonk.transact(request)`. The request is the
-/// `TransactRequest` JSON produced by `dock_claim_json`, parsed back to a JS
-/// object via `JSON.parse` (the bridge accepts any structured-clonable object).
+/// `TransactRequest` JSON produced by `dock_claim_json`.
 fn persist_dock(dock: Dock) {
-    let claim = dock_claim_json(dock);
-    let json_str = match serde_json::to_string(&claim) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let Some(win) = window() else {
-        return;
-    };
-    let tonk = match Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    {
-        Some(t) => t,
-        None => return,
-    };
-    let transact_fn = match Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    {
-        Some(f) => f,
-        None => return,
-    };
-    let js_obj = match js_sys::JSON::parse(&json_str).ok() {
-        Some(v) => v,
-        None => return,
-    };
-    transact_fn.call1(&tonk, &js_obj).ok();
+    transact(&dock_claim_json(dock));
 }
 
 /// On connect, query the persisted FAB dock from `window.tonk.query(...)` and
@@ -1173,8 +1534,9 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// A `<tonk-fab>` holding the bar, the way the profile view renders it —
-    /// cap first, then the two dropdown segments.
+    /// A `<tonk-fab>` holding the bar, the way `markup::fab_html` authors it —
+    /// the scrim as a sibling of `.fab`, cap first, then the two dropdown
+    /// segments.
     fn fab_host() -> HtmlElement {
         let document = window().expect("window").document().expect("document");
         let host: HtmlElement = document
@@ -1182,61 +1544,25 @@ mod tests {
             .expect("create host")
             .unchecked_into();
         host.set_inner_html(
-            r#"<div class="fab">
+            r#"<div class="fab__scrim"></div>
+               <div class="fab">
                  <span class="fab__seg fab__cap-l"></span>
-                 <span class="fab__seg fab__repo"></span>
-                 <span class="fab__seg fab__share"></span>
+                 <div class="fab__strip">
+                   <div class="fab__page fab__page--main">
+                     <div class="fab__tele fab__tele--repo"><span class="fab__seg fab__repo"></span></div>
+                   </div>
+                   <div class="fab__page fab__page--more">
+                     <div class="fab__tele fab__tele--share"><span class="fab__seg fab__share"></span></div>
+                     <div class="fab__tele fab__tele--account"><span class="fab__seg fab__account"></span></div>
+                   </div>
+                 </div>
+                 <div class="fab__tele fab__tele--end">
+                   <span class="fab__seg fab__cap-r fab__end" aria-hidden="true"></span>
+                   <button type="button" class="fab__seg fab__cap-r fab__more"></button>
+                 </div>
                </div>"#,
         );
         host
-    }
-
-    #[wasm_bindgen_test]
-    fn it_injects_the_curtain_outside_the_bar() {
-        // The curtain must be a SIBLING of `.fab`, never a child: the telescope
-        // takes child[0] of `.fab` to be the circle cap, so a curtain nested
-        // inside would be mistaken for the cap and the real cap would get
-        // wrapped as a collapsible tile.
-        let host = fab_host();
-        inject_scrim(&host);
-
-        let scrim = host
-            .query_selector(".fab__scrim")
-            .ok()
-            .flatten()
-            .expect("the curtain should be injected");
-        assert_eq!(
-            scrim.parent_element().map(|p| p.tag_name()).as_deref(),
-            Some("TONK-FAB"),
-            "the curtain must hang off <tonk-fab>, not off .fab",
-        );
-        assert!(
-            scrim.closest(".fab").ok().flatten().is_none(),
-            "the curtain must not be inside .fab — the telescope would wrap the cap",
-        );
-        // And it must precede the bar, so the bar paints over it.
-        assert_eq!(
-            host.first_element_child()
-                .map(|c| c.class_name())
-                .as_deref(),
-            Some("fab__scrim"),
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn it_injects_the_curtain_only_once() {
-        // `connected_callback` can run again on a reconnect; a second curtain
-        // would stack another hit area over the page.
-        let host = fab_host();
-        inject_scrim(&host);
-        inject_scrim(&host);
-
-        let children = host.children();
-        let scrims = (0..children.length())
-            .filter_map(|i| children.item(i))
-            .filter(|child| child.class_list().contains("fab__scrim"))
-            .count();
-        assert_eq!(scrims, 1, "a reconnect must not stack a second curtain");
     }
 
     #[wasm_bindgen_test]
@@ -1246,7 +1572,6 @@ mod tests {
         // if the handler's curtain branch were deleted.
         let document = window().expect("window").document().expect("document");
         let host = fab_host();
-        inject_scrim(&host);
         attach_gestures(&host);
         // The handler walks up from `event.target`, so the element has to be in
         // the document for the click to dispatch and bubble.
@@ -1312,5 +1637,210 @@ mod tests {
         close_menus(&fab);
         assert!(!is_open(&fab, ".fab__repo"));
         assert!(!is_open(&fab, ".fab__share"));
+    }
+
+    #[wasm_bindgen_test]
+    fn it_compacts_when_the_expanded_bar_cannot_fit() {
+        let document = window().expect("window").document().expect("document");
+        // `expanded_bar_width` only measures correctly because it removes
+        // `fab--compact` before reading the rect (then restores it) — a
+        // naive measurement while the class is still applied would read the
+        // clamped-down size instead of the bar's true would-be-expanded
+        // size. The fixture otherwise loads no stylesheet, so nothing here
+        // would catch a regression that measured before unclamping. Inject
+        // the one rule that actually exercises that: a real `.fab--compact`
+        // clamp, matching fab.css's compact-mode intent, that would corrupt
+        // a naive measurement if `expanded_bar_width` didn't remove the
+        // class first.
+        const CLAMP_STYLE_ID: &str = "it-compacts-when-the-expanded-bar-cannot-fit-clamp";
+        let clamp_style = document.create_element("style").expect("create style");
+        let _ = clamp_style.set_attribute("id", CLAMP_STYLE_ID);
+        clamp_style.set_text_content(Some(
+            ".fab--compact { max-inline-size: 50px; overflow: hidden; }",
+        ));
+        if let Some(head) = document.head() {
+            head.append_child(&clamp_style).expect("mount clamp style");
+        }
+        let host = fab_host();
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+        let fab = host
+            .query_selector(".fab")
+            .ok()
+            .flatten()
+            .expect("bar")
+            .unchecked_into::<HtmlElement>();
+        // The fixture loads no stylesheet, so every element here is plain
+        // block/inline layout. `.fab`'s own rect would otherwise just fill
+        // its container regardless of content (a block `<div>`'s `width:
+        // auto` fills its containing block; it does not shrink-to-fit or
+        // grow with an overflowing child) — insensitive to the oversized
+        // segment below and unable to exercise `expanded_bar_width` at all.
+        // Reproduce the three fab.css facts the measurement actually
+        // depends on: `.fab` itself is `inline-flex` (shrink-to-fit, so an
+        // unshrinkable child can push its rect past the viewport);
+        // `.fab__strip`/`.fab__page` are `display: contents` (they
+        // disappear from the box tree, so their `.fab__tele` descendants
+        // become direct flex items of `.fab`, exactly as fab.css flattens
+        // them); and `.fab__tele` is `flex: 0 0 auto` (no shrink, so an
+        // oversized tile isn't compressed back down by the flex algorithm).
+        let _ = fab.style().set_property("display", "inline-flex");
+        for sel in [".fab__strip", ".fab__page"] {
+            if let Ok(list) = host.query_selector_all(sel) {
+                for i in 0..list.length() {
+                    if let Some(node) = list.item(i) {
+                        let _ = node
+                            .unchecked_into::<HtmlElement>()
+                            .style()
+                            .set_property("display", "contents");
+                    }
+                }
+            }
+        }
+        if let Ok(list) = host.query_selector_all(".fab__tele") {
+            for i in 0..list.length() {
+                if let Some(node) = list.item(i) {
+                    let _ = node
+                        .unchecked_into::<HtmlElement>()
+                        .style()
+                        .set_property("flex", "0 0 auto");
+                }
+            }
+        }
+        let wide = host
+            .query_selector(".fab__repo")
+            .ok()
+            .flatten()
+            .expect("repo segment")
+            .unchecked_into::<HtmlElement>();
+        // Per-property, not a `cssText` blob: `CSSStyleDeclaration.setProperty
+        // ("cssText", …)` is a Blink/Gecko-only quirk that WebKit/Safari does
+        // not honor (confirmed empirically — the style attribute never gets
+        // created), which would silently leave this element at its default
+        // zero size under Safari's local wasm-test route.
+        let _ = wide.style().set_property("display", "inline-block");
+        let _ = wide.style().set_property("width", "9999px");
+
+        update_compact_mode(&host);
+        assert!(
+            fab.class_list().contains("fab--compact"),
+            "a bar wider than any viewport must compact"
+        );
+
+        // The bar is still oversized and now genuinely carries
+        // `fab--compact` (with the clamp rule above in effect). Re-evaluate
+        // while clamped: a correct `expanded_bar_width` removes the class
+        // before measuring, so it still sees the true oversized width and
+        // stays compact. A regression that measured before removing the
+        // class would read the clamped ~50px, decide the bar fits, and
+        // wrongly drop the class here.
+        update_compact_mode(&host);
+        assert!(
+            fab.class_list().contains("fab--compact"),
+            "re-evaluating while clamped must measure the unclamped width"
+        );
+
+        let _ = wide.style().set_property("width", "10px");
+        update_compact_mode(&host);
+        assert!(
+            !fab.class_list().contains("fab--compact"),
+            "a bar that fits again must leave compact mode"
+        );
+        host.remove();
+        clamp_style.remove();
+    }
+
+    fn bubbling_click() -> web_sys::MouseEvent {
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        web_sys::MouseEvent::new_with_mouse_event_init_dict("click", &init).expect("click event")
+    }
+
+    #[wasm_bindgen_test]
+    fn it_opens_the_floating_dropdown_from_a_compact_segment_tap() {
+        // Compact segment taps open the SAME dropdown as desktop — floated
+        // over the bar by CSS (position: fixed escapes the strip's clip) —
+        // not a separate mobile menu. Through the real gesture path.
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        attach_gestures(&host);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+
+        host.query_selector(".fab")
+            .ok()
+            .flatten()
+            .expect("bar")
+            .class_list()
+            .add_1("fab--compact")
+            .expect("compact");
+
+        let repo = host
+            .query_selector(".fab__repo")
+            .ok()
+            .flatten()
+            .expect("repo segment");
+        repo.dispatch_event(&bubbling_click()).expect("dispatch");
+
+        assert!(
+            is_open(&host, ".fab__repo"),
+            "a compact segment tap must open its dropdown, same as desktop"
+        );
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_collapses_the_compact_bar_with_a_dropdown_open() {
+        // A collapse retracts everything: the strip clamps to nothing, so a
+        // floating dropdown left standing would hover over a bare circle
+        // with its scrim still armed. The cap click must dismiss it.
+        let document = window().expect("window").document().expect("document");
+        let host = fab_host();
+        attach_gestures(&host);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+
+        let fab = host.query_selector(".fab").ok().flatten().expect("bar");
+        fab.class_list().add_1("fab--compact").expect("compact");
+        fab.class_list().add_1("fab--settled").expect("settled");
+        host.query_selector(".fab__repo")
+            .ok()
+            .flatten()
+            .expect("repo segment")
+            .class_list()
+            .add_1("is-open")
+            .expect("open dropdown");
+
+        let cap = host
+            .query_selector(".fab__cap-l")
+            .ok()
+            .flatten()
+            .expect("cap");
+        // A plain bubbling click — not the alt-click pause gesture.
+        cap.dispatch_event(&bubbling_click()).expect("dispatch");
+
+        assert!(
+            fab.class_list().contains("fab--collapsed"),
+            "the cap click must collapse the compact bar"
+        );
+        assert!(
+            !fab.class_list().contains("fab--settled"),
+            "collapsing must drop fab--settled — its unclamp rule outranks \
+             the collapse clamp and would keep the chevron's tile open"
+        );
+        assert!(
+            !is_open(&host, ".fab__repo"),
+            "collapsing must dismiss the open dropdown"
+        );
+        host.remove();
     }
 }

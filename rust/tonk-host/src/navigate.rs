@@ -93,10 +93,18 @@ fn dispatch_committed() {
 /// view — the route change propagates as a data change, not a page load. Falls
 /// back to a real `location.assign` only if history isn't available.
 ///
+/// In a guest this forwards to the parent instead (see `page_effect`): a
+/// guest's document is `about:srcdoc` at an opaque origin, where `pushState`
+/// to a real URL throws and the `location.assign` fallback below would load
+/// the whole app INSIDE the iframe.
+///
 /// Public: the portal bridge performs a guest's relayed link click through
 /// this too, so an in-guest navigation stays a client-side route change.
 pub fn navigate_to(href: &str) {
     use wasm_bindgen::JsValue;
+    if crate::page_effect::forward("navigate", href) {
+        return;
+    }
     let Some(win) = window() else {
         return;
     };
@@ -141,6 +149,9 @@ fn service_worker_container() -> Option<web_sys::ServiceWorkerContainer> {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
+    use js_sys::{Array, Function, Object, Reflect};
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -217,6 +228,72 @@ mod tests {
         assert!(
             !is_sync_message(&JsValue::from_str("not an object")),
             "a non-object payload should not be recognised as sync"
+        );
+    }
+
+    /// Install a stub `window.tonk.navigate` recording its argument. See the
+    /// note in `page_effect.rs`: `window` is shared across the whole wasm
+    /// test module, so this MUST be cleared before the test returns.
+    fn install_navigate_stub() -> Array {
+        let calls = Array::new();
+        let recorder = {
+            let calls = calls.clone();
+            Closure::wrap(Box::new(move |value: JsValue| {
+                calls.push(&value);
+            }) as Box<dyn FnMut(JsValue)>)
+        };
+        let tonk = Object::new();
+        let _ = Reflect::set(
+            &tonk,
+            &JsValue::from_str("navigate"),
+            recorder.as_ref().unchecked_ref::<Function>(),
+        );
+        recorder.forget();
+        let win = window().expect("a window in the test harness");
+        let _ = Reflect::set(&win, &JsValue::from_str("tonk"), &tonk);
+        calls
+    }
+
+    fn clear_tonk() {
+        let win = window().expect("a window in the test harness");
+        let _ = Reflect::delete_property(win.unchecked_ref::<Object>(), &JsValue::from_str("tonk"));
+    }
+
+    /// In a guest, `navigate_to` posts to the parent instead of touching this
+    /// document's history. This is the one navigation we CAN assert directly:
+    /// forwarding means nothing actually navigates, so the harness survives.
+    #[dialog_common::test]
+    async fn it_forwards_a_navigation_from_a_guest_instead_of_performing_it() {
+        let before = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        let calls = install_navigate_stub();
+
+        navigate_to("/space/forwarded");
+
+        let after = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        // Restore BEFORE asserting so a failure doesn't leak `window.tonk`
+        // into every later test in this binary — a panic unwinds past any
+        // cleanup placed after the assertions. `bridge.rs:2643` does exactly
+        // this, for exactly this reason. `calls` is an independent handle, so
+        // clearing the stub does not disturb what it already recorded.
+        clear_tonk();
+
+        assert_eq!(calls.length(), 1, "the parent should have been called once");
+        assert_eq!(
+            calls.get(0).as_string(),
+            Some("/space/forwarded".to_owned()),
+            "the href should reach the parent verbatim"
+        );
+        assert_eq!(
+            before, after,
+            "a forwarded navigation must not move this document"
         );
     }
 }

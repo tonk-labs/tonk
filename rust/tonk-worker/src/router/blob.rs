@@ -134,8 +134,8 @@ pub struct BlobUploadResponse {
     /// MIME type recorded for the blob (from the request `Content-Type`).
     #[serde(rename = "contentType")]
     pub content_type: String,
-    /// File name recorded for the blob, if the `X-Tonk-Blob-Name` header was set.
-    pub name: Option<String>,
+    /// File name recorded for the blob (header value, existing fact, or the entity string).
+    pub name: String,
     /// Size of the stored bytes.
     pub size: usize,
 }
@@ -143,9 +143,10 @@ pub struct BlobUploadResponse {
 /// Handler for `POST /api/repository/{repo}/branch/{branch}/blob`.
 ///
 /// Buffers the request body, writes it into the branch's content-addressed
-/// blob store, and asserts the blob's `xyz.tonk.blob/content-type` (and
-/// `xyz.tonk.blob/name`, when the `X-Tonk-Blob-Name` header is present)
-/// facts — so the read route (`serve`, above) and
+/// blob store, and asserts the blob's `xyz.tonk.blob/content-type` and
+/// `xyz.tonk.blob/name` facts — the name fact is always asserted, defaulting
+/// to an existing fact (on a headerless re-upload) or the entity string when
+/// the `X-Tonk-Blob-Name` header is absent — so the read route (`serve`, above) and
 /// `<tonk-display model=tonk:blob>` work immediately. Idempotent by content
 /// address: re-uploading the same bytes returns the same entity and
 /// re-asserts the same (cardinality-one) facts.
@@ -219,7 +220,44 @@ pub async fn upload(
     let ct_attr: Attribute = "xyz.tonk.blob/content-type"
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
-    let mut tx = tonk
+
+    // Effective name: an explicit header wins; otherwise an already-
+    // asserted name fact is preserved (a raw re-upload must not clobber
+    // a good name with the hash default); otherwise the entity string.
+    // The name fact must always land — the `tonk:blob` concept query
+    // matches only rows with every field present, so a nameless blob
+    // would never reach the seeded media view.
+    let name_attr: Attribute = "xyz.tonk.blob/name"
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    let name = match name {
+        Some(n) => n,
+        None => {
+            let existing = branch_handle
+                .claims()
+                .select(
+                    ArtifactSelector::new()
+                        .the(name_attr.clone())
+                        .of(entity.clone()),
+                )
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| TonkWorkerError::Internal(format!("name query: {e}")))?;
+            tokio::pin!(existing);
+            match existing.next().await {
+                Some(Ok(artifact)) => {
+                    String::try_from(artifact.is).unwrap_or_else(|_| entity.to_string())
+                }
+                Some(Err(e)) => {
+                    log!("blob: name query error: {:?}", e);
+                    entity.to_string()
+                }
+                None => entity.to_string(),
+            }
+        }
+    };
+
+    let tx = tonk
         .reactor
         .repository(&path.repo)
         .branch(&path.branch)
@@ -229,18 +267,13 @@ pub async fn upload(
             of: entity.clone(),
             is: Value::String(content_type.clone()),
             unique: true,
-        });
-    if let Some(n) = &name {
-        let name_attr: Attribute = "xyz.tonk.blob/name"
-            .parse()
-            .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
-        tx = tx.assert(RawClaim {
+        })
+        .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
-            is: Value::String(n.clone()),
+            is: Value::String(name.clone()),
             unique: true,
         });
-    }
     tx.commit()
         .perform(&tonk.operator)
         .await
@@ -430,6 +463,10 @@ mod tests {
             json2["entity"], entity,
             "content-addressed: re-upload yields same entity"
         );
+        assert_eq!(
+            json2["name"], "shot.png",
+            "re-upload preserves the name fact"
+        );
 
         // Empty body → 400.
         let empty = app
@@ -444,6 +481,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The blob route accepts bodies past axum's 2 MiB extractor default —
+    /// real image files routinely exceed it — up to the route's own
+    /// [`crate::router::BLOB_UPLOAD_LIMIT`] ceiling.
+    #[dialog_common::test]
+    async fn it_accepts_an_upload_larger_than_the_axum_default_limit() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-large").await;
+
+        let payload = vec![0xabu8; 3 * 1024 * 1024];
+        let up = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/blob"))
+                    .method("POST")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(payload.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            up.status(),
+            StatusCode::OK,
+            "a 3 MiB upload lands (the 2 MiB axum default would 413 it)",
+        );
+        let body = axum::body::to_bytes(up.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["size"], payload.len());
+    }
+
+    #[dialog_common::test]
+    async fn it_defaults_the_name_fact_to_the_entity_when_no_header_is_sent() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-name-default").await;
+
+        // Upload with no X-Tonk-Blob-Name header.
+        let up = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/blob"))
+                    .method("POST")
+                    .header("content-type", "application/pdf")
+                    .body(Body::from(b"%PDF-1.4 nameless".to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(up.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(up.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entity = json["entity"].as_str().unwrap().to_string();
+        assert_eq!(
+            json["name"], entity,
+            "no header: the name fact defaults to the content-addressed entity string",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_preserves_an_existing_name_on_a_headerless_reupload() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-name-keep").await;
+        let payload = b"%PDF-1.4 named".to_vec();
+
+        // First upload names the blob.
+        let up = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/blob"))
+                    .method("POST")
+                    .header("content-type", "application/pdf")
+                    .header("x-tonk-blob-name", "report.pdf")
+                    .body(Body::from(payload.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(up.status(), StatusCode::OK);
+
+        // A headerless re-upload of the same bytes keeps the asserted name
+        // rather than clobbering it with the hash default.
+        let up2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/blob"))
+                    .method("POST")
+                    .header("content-type", "application/pdf")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body2 = axum::body::to_bytes(up2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+        assert_eq!(
+            json2["name"], "report.pdf",
+            "headerless re-upload preserves the existing name fact",
+        );
     }
 
     #[dialog_common::test]

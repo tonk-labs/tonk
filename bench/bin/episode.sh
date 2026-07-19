@@ -105,6 +105,14 @@ fi
 # PATH — the minimal sandbox PATH doesn't contain them.
 TIMEOUT_BIN="$(command -v timeout)"
 
+# run.sh opts the harness process itself out of tonk's release check,
+# but that export doesn't reach here: the agent's own `tonk` calls run
+# under EPISODE_HOME (a fresh HOME each episode), so without this the
+# check would fire on every episode's first `tonk` command — live
+# network traffic in an otherwise-hermetic harness, plus a nag on
+# stderr that metrics.sh greps as agent friction. Set explicitly in
+# both run_claude and run_codex below rather than relying on inheritance.
+
 run_claude() {
   local CLAUDE_BIN
   CLAUDE_BIN="$(command -v claude)"
@@ -118,6 +126,7 @@ run_claude() {
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
+    TONK_NO_UPDATE_CHECK=1 \
     "$TIMEOUT_BIN" -k 30 "$EPISODE_TIMEOUT" "$CLAUDE_BIN" -p "$(cat "$PROMPT_FILE")" \
       --output-format stream-json --verbose \
       --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
@@ -143,6 +152,7 @@ run_codex() {
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
+    TONK_NO_UPDATE_CHECK=1 \
     "$TIMEOUT_BIN" -k 30 "$EPISODE_TIMEOUT" "$CODEX_BIN" exec --json \
       -m "${CODEX_MODEL:-gpt-5.5}" \
       --skip-git-repo-check --ephemeral \

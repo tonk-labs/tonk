@@ -199,6 +199,55 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
+/// The stylesheet's dock inset — `tonk-fab.fab-dock-* { …: 16px }` in
+/// `fab.css`. The compact-mode fit test must account for it on both sides.
+pub const DOCK_INSET_PX: f64 = 16.0;
+
+/// Whether the bar must render compact: the fully EXPANDED bar plus both
+/// dock insets no longer fits the viewport width. Keyed on the would-be
+/// expanded width (not the current rendered width), so the threshold is the
+/// same entering and leaving compact and cannot oscillate.
+pub fn is_compact(expanded_width: f64, viewport_width: f64) -> bool {
+    expanded_width + 2.0 * DOCK_INSET_PX > viewport_width
+}
+
+/// Clamp a dragged bar's top-left corner so the bar stays fully inside the
+/// viewport. The origin clamp runs LAST: a bar wider or taller than the
+/// viewport pins to the left/top edge, keeping the grab handle reachable.
+pub fn clamp_position(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    vw: f64,
+    vh: f64,
+) -> (f64, f64) {
+    (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
+}
+
+/// Whether the compact pager's strip rests at its scroll end — the state in
+/// which the arrow's next tap wraps to the start, and the glyph flips to
+/// point back so the wrap is announced rather than silent. Tolerates a small
+/// epsilon (browsers report fractional scroll positions), and a strip with
+/// nothing to scroll is NOT "at the end": its arrow keeps pointing forward
+/// and its tap is a harmless no-op.
+pub fn strip_at_end(scroll_left: f64, client_width: f64, scroll_width: f64) -> bool {
+    let max = scroll_width - client_width;
+    max > 0.0 && scroll_left >= max - 2.0
+}
+
+/// The scroll offset the compact pager's arrow advances the strip to: one
+/// page-width forward per tap, wrapping back to the start from the end
+/// ([`strip_at_end`]).
+pub fn strip_page_target(scroll_left: f64, client_width: f64, scroll_width: f64) -> f64 {
+    let max = (scroll_width - client_width).max(0.0);
+    if strip_at_end(scroll_left, client_width, scroll_width) {
+        0.0
+    } else {
+        (scroll_left + client_width).min(max)
+    }
+}
+
 /// The telescope animation duration, in milliseconds — each tile's
 /// `max-width` transition (wireframe `--dur: .4s`).
 pub const TELESCOPE_MS: u64 = 400;
@@ -357,6 +406,65 @@ mod mirror {
 }
 
 #[cfg(test)]
+mod compact {
+    use super::*;
+
+    #[test]
+    fn a_bar_that_fits_with_both_insets_is_not_compact() {
+        assert!(!is_compact(300.0, 400.0));
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_viewport_minus_insets_is_compact() {
+        assert!(is_compact(380.0, 400.0));
+    }
+
+    #[test]
+    fn the_exact_fit_is_not_compact() {
+        // 368 + 2*16 == 400: still fits; only strictly-greater flips it, so
+        // the threshold is identical in both directions and cannot flap.
+        assert!(!is_compact(368.0, 400.0));
+    }
+}
+
+#[cfg(test)]
+mod clamp {
+    use super::*;
+
+    #[test]
+    fn an_inside_position_is_untouched() {
+        assert_eq!(
+            clamp_position(100.0, 50.0, 300.0, 36.0, 1000.0, 800.0),
+            (100.0, 50.0)
+        );
+    }
+
+    #[test]
+    fn it_clamps_every_edge() {
+        // Past the origin pins to 0.
+        assert_eq!(
+            clamp_position(-20.0, -5.0, 300.0, 36.0, 1000.0, 800.0),
+            (0.0, 0.0)
+        );
+        // Right/bottom overflow pins to viewport minus the bar.
+        assert_eq!(
+            clamp_position(900.0, 790.0, 300.0, 36.0, 1000.0, 800.0),
+            (700.0, 764.0)
+        );
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_viewport_pins_to_the_origin() {
+        // vw - width is negative; the origin wins (max runs last) so the
+        // bar's left edge — and the circle cap on it — stays reachable.
+        assert_eq!(
+            clamp_position(50.0, 10.0, 500.0, 36.0, 400.0, 800.0),
+            (0.0, 10.0)
+        );
+    }
+}
+
+#[cfg(test)]
 mod corrected {
     use super::*;
 
@@ -439,6 +547,52 @@ mod dock {
     fn an_unknown_symbol_has_no_dock() {
         assert_eq!(Dock::from_symbol("tonk:middle"), None);
         assert_eq!(Dock::from_symbol(""), None);
+    }
+}
+
+#[cfg(test)]
+mod pager {
+    use super::*;
+
+    #[test]
+    fn a_mid_strip_tap_advances_one_page_width() {
+        assert_eq!(strip_page_target(0.0, 300.0, 800.0), 300.0);
+    }
+
+    #[test]
+    fn the_last_advance_clamps_to_the_end() {
+        // 800 - 300 = 500 is the max offset; 300 + 300 = 600 overshoots it.
+        assert_eq!(strip_page_target(300.0, 300.0, 800.0), 500.0);
+    }
+
+    #[test]
+    fn a_tap_at_the_end_wraps_to_the_start() {
+        assert_eq!(strip_page_target(500.0, 300.0, 800.0), 0.0);
+        // Fractional resting positions a couple px shy of the end wrap too.
+        assert_eq!(strip_page_target(498.5, 300.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn a_strip_with_nothing_to_scroll_stays_at_the_start() {
+        assert_eq!(strip_page_target(0.0, 300.0, 300.0), 0.0);
+        assert_eq!(strip_page_target(0.0, 300.0, 250.0), 0.0);
+    }
+
+    #[test]
+    fn the_end_state_drives_the_arrow_flip() {
+        assert!(!strip_at_end(0.0, 300.0, 800.0));
+        assert!(!strip_at_end(300.0, 300.0, 800.0));
+        assert!(strip_at_end(500.0, 300.0, 800.0));
+        // Fractionally shy of the end still counts as the end.
+        assert!(strip_at_end(498.5, 300.0, 800.0));
+    }
+
+    #[test]
+    fn a_strip_with_nothing_to_scroll_is_not_at_the_end() {
+        // The arrow must keep pointing forward when there is nothing to
+        // page — a back-arrow on a strip that never moved reads as broken.
+        assert!(!strip_at_end(0.0, 300.0, 300.0));
+        assert!(!strip_at_end(0.0, 300.0, 250.0));
     }
 }
 
@@ -795,5 +949,581 @@ mod share {
         assert!(ShareState::Failed.is_transient());
         assert!(!ShareState::Idle.is_transient());
         assert!(!ShareState::Copying.is_transient());
+    }
+}
+
+/// The `with` attribute for a space's content branch: `main@{did}`.
+///
+/// Each `ui-` child carries its own `with` and subscribes through it —
+/// `resolve_with` reads the element's OWN attribute and never walks
+/// ancestors, so this must be stamped per element, not inherited.
+pub fn space_with(space_did: &str) -> String {
+    format!("main@{space_did}")
+}
+
+/// The subscribe body for a repository's name.
+///
+/// An INLINE predicate over the raw `xyz.tonk.repo/name` attribute — it names
+/// no concept, so nothing need be seeded on the space's branch and an old
+/// `core.yaml` cannot break it. Mirrors `<ui-sync-status>`'s
+/// `status_query_body`. `this` is bound to the repo subject by the caller.
+pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("repo_name_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": { "name": {
+            "the": "xyz.tonk.repo/name", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": subject, "name": { "?": { "name": "name" } } }
+    })
+    .to_string())
+}
+
+#[cfg(test)]
+mod space_name {
+    use super::*;
+
+    #[test]
+    fn it_builds_a_with_string_for_a_space_did() {
+        assert_eq!(space_with("did:key:z6Mk"), "main@did:key:z6Mk");
+    }
+
+    #[test]
+    fn it_queries_the_repo_name_by_raw_attribute() {
+        let body = repo_name_query_body("did:key:z6Mk").expect("query body builds");
+        // The raw attribute URI — NOT a concept name. Nothing seeded is needed,
+        // so an old core.yaml cannot break this read.
+        assert!(body.contains("xyz.tonk.repo/name"));
+        assert!(body.contains("did:key:z6Mk"));
+        assert!(!body.contains("tonk:repository"));
+    }
+
+    #[test]
+    fn it_rejects_an_empty_subject() {
+        assert!(repo_name_query_body("").is_err());
+    }
+}
+
+/// The subscribe body for a space's member roster.
+///
+/// ONE inline predicate carrying all three fields on the same entity, in
+/// directory mode (`this` unbound), so each member returns as a row. Three
+/// separate subscriptions would need client-side row-joining that no existing
+/// element does.
+///
+/// All three are required fields: a member missing a synced name or role is
+/// invisible. That matches the seeded view's behaviour, but it is now this
+/// element's choice.
+pub fn member_roster_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
+            "role":   { "the": "xyz.tonk.membership/role",   "as": "Entity", "cardinality": "one" },
+            "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":   { "?": { "name": "this" } },
+            "member": { "?": { "name": "member" } },
+            "role":   { "?": { "name": "role" } },
+            "name":   { "?": { "name": "name" } }
+        }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod member_roster {
+    use super::*;
+
+    #[test]
+    fn it_queries_all_member_fields_in_one_directory_predicate() {
+        let body = member_roster_query_body();
+        assert!(body.contains("xyz.tonk.membership/name"));
+        assert!(body.contains("xyz.tonk.membership/member"));
+        assert!(body.contains("xyz.tonk.membership/role"));
+        // Directory mode: `this` is an unbound variable, so every member row
+        // comes back. A bound `this` would return one. `serde_json::Value`'s
+        // `Display` is the COMPACT formatter (no spaces around `:`/`,`), so
+        // the substring below has none either — a pretty-printed literal
+        // (with spaces) never matches the actual body.
+        assert!(body.contains("\"this\":{\"?\""));
+        // No concept named — nothing seeded is consulted.
+        assert!(!body.contains("tonk:member"));
+    }
+}
+
+/// The subscribe body for the profile's space list.
+///
+/// Reads the PROFILE branch's replica records by raw attribute. `name` is
+/// deliberately absent: each row renders the space's OWN repo name via
+/// `<ui-space-name>`, since the profile-side replica name goes stale.
+/// Directory mode (`this` unbound), so every replica record returns as a row.
+pub fn space_list_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "subject": { "the": "xyz.tonk.replica/subject", "as": "Entity", "cardinality": "one" },
+            "kind":    { "the": "xyz.tonk.replica/kind",    "as": "Entity", "cardinality": "one" },
+            "status":  { "the": "xyz.tonk.replica/status",  "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this":    { "?": { "name": "this" } },
+            "subject": { "?": { "name": "subject" } },
+            "kind":    { "?": { "name": "kind" } },
+            "status":  { "?": { "name": "status" } }
+        }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod space_list {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_profile_space_list_by_raw_attribute() {
+        let body = space_list_query_body();
+        assert!(body.contains("xyz.tonk.replica/subject"));
+        assert!(body.contains("xyz.tonk.replica/kind"));
+        assert!(body.contains("xyz.tonk.replica/status"));
+        // Directory mode over every replica record.
+        assert!(body.contains("\"this\":{\"?\""));
+        // No concept named — nothing seeded is consulted.
+        assert!(!body.contains("tonk:space"));
+    }
+}
+
+/// The subscribe body for the signed-in member's profile display name.
+///
+/// An INLINE predicate over the raw `xyz.tonk.profile/display-name`
+/// attribute — not the deleted `tonk:profile/name-view`, which was a
+/// per-space-seeded template. Directory mode (`this` unbound): the profile
+/// branch carries at most one such row (the member's own override), so no
+/// subject needs binding, unlike [`repo_name_query_body`]'s repo-scoped
+/// read. Absent until the user renames (the worker's `petname` fallback is
+/// computed, not persisted), so an empty result is expected, not an error.
+pub fn profile_name_query_body() -> String {
+    json!({
+        "predicate": { "with": { "name": {
+            "the": "xyz.tonk.profile/display-name", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": { "?": { "name": "this" } }, "name": { "?": { "name": "name" } } }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod profile_name {
+    use super::*;
+
+    #[test]
+    fn it_queries_the_profile_display_name_by_raw_attribute() {
+        let body = profile_name_query_body();
+        // The raw attribute URI — NOT the deleted `tonk:profile/name-view`.
+        // Nothing seeded is needed, so an old core.yaml cannot break this.
+        assert!(body.contains("xyz.tonk.profile/display-name"));
+        assert!(!body.contains("tonk:profile/name"));
+        // Directory mode: `this` is unbound (see `member_roster_query_body`'s
+        // test for why the compact-JSON substring below has no spaces).
+        assert!(body.contains("\"this\":{\"?\""));
+    }
+}
+
+/// Build a `TransactRequest` body for `tonk/rename-repository`.
+///
+/// A transient carrying the target `space` and the new `value`. Dispatched
+/// routeless via `window.tonk.transact`, so it lands on the FAB's own
+/// `main@profile:tonk`; the worker's handler reads `space` to rename that
+/// repository — nothing space-side is required. `this` is omitted so the
+/// worker mints it from `(descriptor, parameters)`.
+///
+/// An empty `name` is omitted entirely: the extractor drops empty fields, so
+/// a blank would store no fact and the command would never fire.
+pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
+    let mut parameters = json!({
+        "space": space,
+        "rename-repository": "tonk:repository"
+    });
+    if !name.is_empty() {
+        parameters["value"] = json!(name);
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Rename a space's repository from the FAB.",
+                        "with": {
+                            "value":            { "the": "dom.event.current-target/value", "as": "Text" },
+                            "space":            { "the": "xyz.tonk.rename-repository/space", "as": "Entity" },
+                            "rename-repository": { "the": "dom.event.current-target.dataset/rename-repository", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod rename_repo {
+    use super::*;
+
+    #[test]
+    fn it_inlines_the_rename_descriptor_and_names_its_target_space() {
+        let claim = rename_repo_claim_json("did:key:z6Mk", "Renamed");
+        let text = claim.to_string();
+        // The descriptor rides WITH the claim — nothing seeded is consulted.
+        assert!(text.contains("xyz.tonk.rename-repository/space"));
+        assert!(text.contains("dom.event.current-target/value"));
+        assert!(text.contains("did:key:z6Mk"));
+        assert!(text.contains("Renamed"));
+    }
+
+    #[test]
+    fn it_omits_an_empty_name_rather_than_sending_a_blank() {
+        // The extractor drops empty fields; a blank would store no fact and the
+        // handler would never fire. The descriptor's `with.value` mapping is
+        // schema metadata and stays present regardless — what must be absent
+        // is the `value` PARAMETER, the thing that actually becomes a fact.
+        let claim = rename_repo_claim_json("did:key:z6Mk", "");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("value")
+                .is_none()
+        );
+    }
+}
+
+/// Build a `TransactRequest` JSON body for the `space/create` command.
+///
+/// Inlines the descriptor `profile.yaml` declares for `command!: &space/create`
+/// — the same shape, verbatim attribute URIs (`dom.event.current-target.
+/// elements.<field>/value`, matching what a real form submit's read-path would
+/// have produced) — so nothing seeded on the profile branch is consulted.
+/// `this` is omitted so the worker mints it from `(descriptor, parameters)`.
+///
+/// `name` is always sent (the wizard's hidden input always carries the
+/// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
+/// alone — an absent `name` fact means the command never fires at all).
+/// `remote` and `template` are read directly off the transient's facts by
+/// the handler (not decoded as typed `CreateSpace` fields), so an empty
+/// value is omitted rather than sent as `""` — an omitted fact and a
+/// filtered-empty fact land the same way handler-side, but omitting mirrors
+/// what the browser's own event extractor would have done, and keeps this
+/// consistent with [`rename_repo_claim_json`].
+pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
+    let mut parameters = json!({ "name": name });
+    if !remote.is_empty() {
+        parameters["remote"] = json!(remote);
+    }
+    if !template.is_empty() {
+        parameters["template"] = json!(template);
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "A request to create a new space from the wizard form.",
+                        "with": {
+                            "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
+                            "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
+                            "template": { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod create_space {
+    use super::*;
+
+    #[test]
+    fn it_uses_the_declared_form_attribute_uris_for_create_space() {
+        let claim = create_space_claim_json("Untitled", "https://x", "wiki");
+        let text = claim.to_string();
+        // Verbatim, kebab-cased as declared — the handler matches on these.
+        assert!(text.contains("dom.event.current-target.elements.name/value"));
+        assert!(text.contains("dom.event.current-target.elements.remote/value"));
+        assert!(text.contains("dom.event.current-target.elements.template/value"));
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(params["name"], "Untitled");
+        assert_eq!(params["remote"], "https://x");
+        assert_eq!(params["template"], "wiki");
+    }
+
+    #[test]
+    fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
+        let claim = create_space_claim_json("Untitled", "", "blank");
+        // The descriptor's `with.remote` mapping is always present (it is
+        // schema metadata) — what must be absent is the `remote` PARAMETER,
+        // the thing that actually becomes a fact. Asserting on a bare
+        // substring of the whole claim would also match the `with.remote`
+        // key and pass even if the parameter were still being sent.
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("remote")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
+        let claim = create_space_claim_json("Untitled", "https://x", "");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("template")
+                .is_none()
+        );
+    }
+}
+
+/// Build a `TransactRequest` JSON body for the `profile/rename` command.
+///
+/// Inlines the descriptor `profile.yaml` declares for `command!:
+/// &profile/rename` — so renaming the signed-in member depends on nothing
+/// seeded on the profile branch. `this` is omitted so the worker mints it
+/// from `(descriptor, parameters)`.
+///
+/// An empty `name` is omitted entirely, mirroring [`rename_repo_claim_json`]:
+/// the extractor drops empty fields, and `ProfileRename`'s `name` field is
+/// required, so an absent fact means the command doesn't decode at all — the
+/// same "commit a blank, nothing changes" behaviour `ProfileRenameHandler`
+/// itself would otherwise have to special-case.
+pub fn profile_rename_claim_json(name: &str) -> Value {
+    let mut parameters = json!({ "marker": "tonk:profile" });
+    if !name.is_empty() {
+        parameters["name"] = json!(name);
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Rename the signed-in member (set their display name).",
+                        "with": {
+                            "name":   { "the": "dom.event.current-target/value", "as": "Text" },
+                            "marker": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod profile_rename {
+    use super::*;
+
+    #[test]
+    fn it_inlines_the_rename_descriptor_and_marks_the_profile() {
+        let claim = profile_rename_claim_json("Ada");
+        let with = &claim["claims"][0]["application"]["predicate"]["concept"]["with"];
+        // Assert the EXACT attribute, not a substring: `contains` on
+        // "…dataset/rename" also matches "…dataset/rename-repository", so a
+        // marker silently pointed at the repo-rename attribute would still
+        // pass. That collision is not hypothetical — both commands once
+        // derived `dataset/rename` and every spot rename also renamed the
+        // profile, because decoding matches on which attributes are present
+        // and never on their values. `dialog-reactor`'s
+        // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
+        // invariant; this pins the claim this crate actually builds.
+        assert_eq!(with["name"]["the"], "dom.event.current-target/value");
+        assert_eq!(
+            with["marker"]["the"],
+            "dom.event.current-target.dataset/rename"
+        );
+        let params = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(params["name"], "Ada");
+        assert_eq!(params["marker"], "tonk:profile");
+    }
+
+    #[test]
+    fn it_omits_an_empty_name_rather_than_sending_a_blank() {
+        let claim = profile_rename_claim_json("");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("name")
+                .is_none()
+        );
+    }
+}
+
+/// Build a `TransactRequest` JSON body for the `tonk:invite` command.
+///
+/// Inlines the descriptor (mirroring `core.yaml`'s `command!: &tonk/invite`)
+/// plus a `space` field — mirroring [`pause_claim_json`]'s `space` — so the
+/// handler mints for the named repository instead of reading the dispatch
+/// origin, which is empty when `<tonk-share>` dispatches routeless from the
+/// FAB's own profile-branch context. `this` is omitted so the worker mints
+/// it from `(descriptor, parameters)`; `time` makes each click a distinct
+/// transient so repeated Share clicks reliably re-fire the handler and
+/// rotate the credential.
+pub fn invite_claim_json(space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Mint a repo invite — generates a membership keypair and delegation.",
+                        "with": {
+                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
+                            "space":  { "the": "xyz.tonk.invite/space", "as": "Entity" },
+                            "marker": { "the": "dom.event.current-target.dataset/invite", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "space": space,
+                    "marker": "tonk:invite"
+                }
+            }
+        }]
+    })
+}
+
+#[cfg(test)]
+mod invite {
+    use super::*;
+
+    #[test]
+    fn it_names_the_target_space_on_the_invite() {
+        let claim = invite_claim_json("did:key:z6Mk", 1.0);
+        assert!(claim.to_string().contains("xyz.tonk.invite/space"));
+        assert!(claim.to_string().contains("did:key:z6Mk"));
+        let app = &claim["claims"][0]["application"];
+        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
+        assert_eq!(app["parameters"]["marker"], "tonk:invite");
+        assert_eq!(app["parameters"]["time"], 1.0);
+        assert!(app["parameters"].get("this").is_none());
+    }
+}
+
+/// The subscribe body for the FAB's minted invite link.
+///
+/// An INLINE predicate over the raw `xyz.tonk.credential/link` attribute —
+/// not the rule-derived `tonk:agent-invite` view the seeded FAB used to
+/// read: rules, like views, are frozen at whatever `core.yaml` seeded a
+/// space with, so reading the raw attribute instead depends on nothing
+/// seeded. `this` is bound to the space's own subject DID (the same entity
+/// `InviteHandler` keys the credential by), mirroring
+/// [`repo_name_query_body`].
+pub fn invite_link_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("invite_link_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": { "link": {
+            "the": "xyz.tonk.credential/link", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": subject, "link": { "?": { "name": "link" } } }
+    })
+    .to_string())
+}
+
+#[cfg(test)]
+mod invite_link {
+    use super::*;
+
+    #[test]
+    fn it_reads_the_invite_link_not_the_rule_derived_agent_invite() {
+        let body = invite_link_query_body("did:key:z6Mk").expect("query body builds");
+        // `tonk:agent-invite` is rule-derived; rules are frozen like views.
+        assert!(body.contains("xyz.tonk.credential/link"));
+        assert!(!body.contains("agent-invite"));
+        assert!(body.contains("did:key:z6Mk"));
+    }
+
+    #[test]
+    fn it_rejects_an_empty_subject() {
+        assert!(invite_link_query_body("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod stylesheet {
+    #[test]
+    fn it_ships_the_stylesheet_with_the_crate() {
+        let css = include_str!("fab.css");
+        // A representative selector from each zone, so a truncated or
+        // partial copy fails rather than passing silently.
+        assert!(css.contains(".fab__cap-l"));
+        assert!(css.contains(".fab__menu-item"));
+        assert!(css.contains(".fab__share-label"));
+        assert!(css.contains(".wizard__card"));
+        assert!(css.contains(".fab__strip"));
+    }
+}
+
+/// The `as` type variants the worker's query and transact bodies accept.
+///
+/// `String` is NOT one of them: the wire enum is dialog's, not Rust's, and
+/// a body carrying `"as": "String"` is rejected outright — queries with
+/// `invalid query body: data did not match any variant of untagged enum
+/// Predicate`, claims with `unknown variant `String``. That failure is
+/// total and silent from the UI's side: the subscription never delivers and
+/// the command never fires, so a chip renders its fallback and a button
+/// spins forever, exactly as if the data were merely absent.
+///
+/// Asserting a body *contains* an attribute URI does not catch this — the
+/// body is well-formed JSON either way. Only the variant name matters.
+#[cfg(test)]
+const WIRE_TYPES: [&str; 6] = ["Text", "Entity", "Float", "Integer", "Bytes", "Boolean"];
+
+#[cfg(test)]
+mod wire_types {
+    use super::*;
+
+    /// Every `as` in every body this module builds must name a variant the
+    /// worker accepts. Regression: all nine originally said `String`, which
+    /// killed every FAB read and every FAB command at once.
+    #[test]
+    fn it_only_names_type_variants_the_worker_accepts() {
+        let bodies: Vec<String> = vec![
+            repo_name_query_body("did:key:zX").expect("repo name"),
+            member_roster_query_body(),
+            space_list_query_body(),
+            profile_name_query_body(),
+            invite_link_query_body("did:key:zX").expect("invite link"),
+            rename_repo_claim_json("did:key:zX", "N").to_string(),
+            create_space_claim_json("N", "https://r", "wiki").to_string(),
+            profile_rename_claim_json("N").to_string(),
+            invite_claim_json("did:key:zX", 1.0).to_string(),
+            pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),
+            dock_claim_json(crate::logic::Dock::BottomRight).to_string(),
+        ];
+
+        for body in &bodies {
+            for found in body.split("\"as\":").skip(1) {
+                let variant = found
+                    .trim_start()
+                    .trim_start_matches('"')
+                    .split('"')
+                    .next()
+                    .unwrap_or("");
+                assert!(
+                    WIRE_TYPES.contains(&variant),
+                    "`as: {variant}` is not a wire type the worker accepts \
+                     (expected one of {WIRE_TYPES:?}) in body: {body}"
+                );
+            }
+        }
     }
 }

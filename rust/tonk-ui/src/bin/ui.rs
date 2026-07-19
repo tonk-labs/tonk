@@ -6,8 +6,6 @@
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use wasm_bindgen_futures::spawn_local;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
@@ -39,17 +37,6 @@ async fn main() {
     inject_hot_swap();
 
     mount_root();
-
-    // Ensure the profile has at least one space, off the critical path.
-    // `init` awaits SW readiness then a `GET /api/profile` (a ~1.6s
-    // first-touch main-branch transact) and, on a fresh profile, a space
-    // create — none of which the first paint needs. The Hub renders its
-    // space directory through a LIVE `<tonk-display>` subscription, so a
-    // space created here populates it reactively with no reload. The
-    // returned client id is unused, so the result is discarded.
-    spawn_local(async {
-        let _ = tonk_ui::api::init().await;
-    });
 }
 
 /// Mount the single `<tonk-site>` root into `<body>` — the top-level router.

@@ -269,6 +269,23 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.dataset")]
         pub struct Invite(pub Entity);
+
+        /// The target space DID — the repository to mint the invite for.
+        /// Lets `tonk:invite` be dispatched from the profile branch: the
+        /// FAB's routeless share claim asserts this attribute so the
+        /// worker's `InviteHandler` can read the target from the raw facts
+        /// (`invite_space_from_facts`) instead of the dispatch origin
+        /// (`CommandEnv::origin`, empty for a routeless profile-branch
+        /// dispatch).
+        ///
+        /// NOT a field on [`crate::command::Invite`]: every existing space's
+        /// `tonk:invite` descriptor is frozen without it (see that type's
+        /// doc), so it stays a fact the handler reads opportunistically,
+        /// mirroring `pause_sync::Space`'s intent without being a matched
+        /// concept field. The derived attribute is `xyz.tonk.invite/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite")]
+        pub struct Space(pub Entity);
     }
 
     /// Attributes the `tonk:pause-sync` command carries.
@@ -294,6 +311,46 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.pause-sync")]
         pub struct Space(pub Entity);
+    }
+
+    /// Attributes the `tonk/rename-repository` command carries when the FAB
+    /// dispatches it from the PROFILE branch.
+    pub mod rename_repository {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The new repository name, read from the chip's `<tonk-editable>` on
+        /// commit. The derived attribute is
+        /// `dom.event.current-target/value`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target")]
+        pub struct Value(pub String);
+
+        /// The target space DID — the repository to rename. Read by the handler
+        /// in place of the dispatch origin, so the command can be defined and
+        /// dispatched on the PROFILE branch and the FAB depends on nothing
+        /// seeded per-space. Mirrors `pause_sync::Space`. The derived attribute
+        /// is `xyz.tonk.rename-repository/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.rename-repository")]
+        pub struct Space(pub Entity);
+
+        /// Per-command marker. Decoding matches on which ATTRIBUTES are
+        /// present, never on their values — so a same-named `Rename` marker
+        /// here and in `command::rename` would both derive
+        /// `dom.event.current-target.dataset/rename`, making this command's
+        /// attribute set a strict subset of `profile/rename`'s and letting a
+        /// repo-rename transient decode as BOTH commands (the bug this type
+        /// name fixes: renaming a space's repository was also renaming the
+        /// user's profile). What keeps the two shapes disjoint is a
+        /// DISTINCT ATTRIBUTE, not a distinct marker VALUE — same precedent
+        /// as `command::remove::Remove` (`space/remove`'s `data-remove`,
+        /// deliberately not `data-subject`, so it can't also decode every
+        /// rename). The derived attribute is
+        /// `dom.event.current-target.dataset/rename-repository`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct RenameRepository(pub Entity);
     }
 
     /// Attributes the `profile/rename` command reads from the identity
