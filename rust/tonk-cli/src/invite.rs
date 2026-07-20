@@ -27,7 +27,7 @@ use url::Url;
 
 use crate::ExitCode;
 use crate::remote::{self, DEFAULT_REMOTE, META_BRANCH};
-use crate::site::{self, SITE_DIRNAME, SiteConfig, TonkSite};
+use crate::site::{self, SiteConfig, TonkSite};
 use crate::sync;
 
 /// Default base URL for minted invites. Mirrors
@@ -86,11 +86,11 @@ pub enum InviteError {
     /// chain was malformed.
     #[error("invalid invite: {0}")]
     InvalidInvite(String),
-    /// `claim` was asked to bootstrap a `.tonk/` directory in a
-    /// parent that already has one. Tonk is single-site per
-    /// directory; the user must remove or relocate the existing
-    /// site first.
-    #[error("a .tonk/ site already exists at {0}; remove or rename it before joining")]
+    /// `claim` was asked to bootstrap a site directory that
+    /// already exists. The join must never clobber existing site
+    /// storage; the user removes it (or picks another spot name)
+    /// first.
+    #[error("a site already exists at {0}; remove it or pick another spot name")]
     SiteAlreadyExists(PathBuf),
     /// Anything else — key generation, delegation building,
     /// storage I/O. Surfaced verbatim.
@@ -196,18 +196,20 @@ pub async fn mint(
     })
 }
 
-/// Claim an invite, bootstrapping a fresh `.tonk/` under
-/// `parent` whose repository targets the invited subject DID.
+/// Claim an invite, bootstrapping a fresh site at `root` (the
+/// site directory itself — the caller picks it, typically the
+/// canonical `spots/<name>/` dir) whose repository targets the
+/// invited subject DID.
 ///
 /// Steps:
 ///
-/// 1. Refuse if `.tonk/` already exists at `parent` — tonk is
-///    single-site per directory and the join would clobber an
-///    existing site.
+/// 1. Refuse if `root` already exists — the join must never
+///    clobber existing site storage.
 /// 2. Parse the URL via [`Invite::parse_url`]; reject malformed
 ///    invites before touching disk.
-/// 3. Stand up the on-disk `.tonk/` and build a tonk operator
-///    rooted there, opening (or creating) the local profile.
+/// 3. Stand up the on-disk site directory and build a tonk
+///    operator rooted there, opening (or creating) the local
+///    profile.
 /// 4. Claim the invite to the profile's DID and persist the
 ///    resulting chain so the operator can present it on
 ///    subsequent push/pull operations.
@@ -222,16 +224,12 @@ pub async fn mint(
 ///    starts from the upstream's state rather than an empty branch
 ///    that would diverge on the first local write.
 pub async fn claim(
-    parent: &Path,
+    root: &Path,
     invite_url: &str,
     config: SiteConfig,
 ) -> Result<ClaimOutcome, InviteError> {
-    let parent = parent.canonicalize().map_err(|e| {
-        InviteError::Io(format!("could not canonicalize {}: {e}", parent.display()))
-    })?;
-    let root = parent.join(SITE_DIRNAME);
     if root.exists() {
-        return Err(InviteError::SiteAlreadyExists(root));
+        return Err(InviteError::SiteAlreadyExists(root.to_path_buf()));
     }
 
     // Short links (`/@/{hash}#seed`) resolve to the long form first —
@@ -251,8 +249,11 @@ pub async fn claim(
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
 
-    std::fs::create_dir_all(&root)
+    std::fs::create_dir_all(root)
         .map_err(|e| InviteError::Io(format!("failed to create {}: {e}", root.display())))?;
+    let root = root
+        .canonicalize()
+        .map_err(|e| InviteError::Io(format!("could not canonicalize {}: {e}", root.display())))?;
 
     let (profile, operator) = site::build_profile_and_operator(&root, &config)
         .await

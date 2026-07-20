@@ -242,15 +242,15 @@ enum Command {
         remote: Option<String>,
     },
 
-    /// Claim an invite URL into a fresh .tonk/ here
-    ///
-    /// Refuses if a site already exists under the current directory.
-    #[command(after_help = "Examples:\n  tonk join 'https://...#invite'")]
+    /// Join a shared repo from an invite URL into a new spot
+    #[command(after_help = "Examples:\n  tonk join 'https://...#invite' --name garden")]
     Join {
-        /// Invite URL produced by `tonk invite` or
-        /// tonk-ui's invite flow.
+        /// The invite URL (quote it - the #fragment matters).
         #[arg(value_name = "URL")]
         url: String,
+        /// Spot name to register the joined repo under.
+        #[arg(long, value_name = "NAME")]
+        name: String,
     },
 
     /// Push local main to its upstream
@@ -850,7 +850,7 @@ async fn main() {
         Command::Invite { base_url, remote } => {
             mint_invite(base_url, remote, spot.as_deref()).await
         }
-        Command::Join { url } => claim_invite(url).await,
+        Command::Join { url, name } => claim_invite(url, name).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
         Command::Share { command } => share_op(command, spot.as_deref()).await,
@@ -1585,16 +1585,45 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
     eprintln!("audience: {} (ephemeral)", outcome.audience);
 }
 
-async fn claim_invite(url: String) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+/// `tonk join` — claim an invite into a fresh canonical spot:
+/// site at `spots/<name>/`, registered and selected on success.
+/// Registration happens only after the claim succeeds, so a
+/// failed join never leaves a dangling registry entry (a partial
+/// site dir may remain; re-running with the same name reports it).
+async fn claim_invite(url: String, name: String) -> ExitCode {
+    if let Err(err) = tonk_cli::spot::validate_name(&name) {
+        return print_error(err.to_string());
+    }
+    let store = match tonk_cli::spot::SpotStore::open() {
+        Ok(store) => store,
+        Err(err) => return print_error(err.to_string()),
     };
-    // Use the same default site config tonk init writes against,
-    // so the joined site picks up the user's normal profile.
-    match invite::claim(&cwd, &url, site::default_config()).await {
+    let mut registry = match store.load() {
+        Ok(registry) => registry,
+        Err(err) => return print_error(err.to_string()),
+    };
+    if registry.spots.contains_key(&name) {
+        return print_error(tonk_cli::spot::SpotError::Exists(name).to_string());
+    }
+    let root = store.canonical_site(&name);
+
+    // Same default site config `tonk spot new` writes against, so
+    // the joined site picks up the user's normal profile.
+    match invite::claim(&root, &url, site::default_config()).await {
         Ok(outcome) => {
-            print_claim_outcome(&cwd, &outcome);
+            registry.spots.insert(
+                name.clone(),
+                tonk_cli::spot::SpotEntry { site: root.clone() },
+            );
+            registry.current = Some(name.clone());
+            if let Err(err) = store.save(&registry) {
+                return print_error(format!(
+                    "joined, but registering spot '{name}' failed: {err}\n\
+                     re-register with `tonk spot new {name} --site {root}`",
+                    root = root.display(),
+                ));
+            }
+            print_claim_outcome(&name, &root, &outcome);
             ExitCode::Success
         }
         Err(err) => {
@@ -1604,19 +1633,20 @@ async fn claim_invite(url: String) -> ExitCode {
     }
 }
 
-fn print_claim_outcome(parent: &std::path::Path, outcome: &ClaimOutcome) {
-    println!("Joined .tonk in {}", parent.display());
+fn print_claim_outcome(name: &str, root: &std::path::Path, outcome: &ClaimOutcome) {
+    println!("Joined spot '{name}' ({})", root.display());
     println!("subject: {}", outcome.subject);
-    if let Some(name) = &outcome.auto_configured_remote
+    if let Some(remote) = &outcome.auto_configured_remote
         && let Some(url) = &outcome.remote_url
     {
-        println!("remote:  {name} -> {url}");
+        println!("remote:  {remote} -> {url}");
         if outcome.synced {
-            println!("synced:  pulled current state from {name}");
+            println!("synced:  pulled current state from {remote}");
         } else {
             println!("synced:  no (run `tonk pull` before making changes)");
         }
     }
+    println!("current spot: {name}");
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
@@ -1638,6 +1668,10 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
                 outcome.destination.display()
             );
             println!("DID: {}", outcome.repo_did);
+            println!(
+                "register it as a spot: `tonk spot new <name> --site {}`",
+                outcome.destination.display()
+            );
             println!(
                 "note: any sync remotes from carry's meta branch are preserved on disk; \
                  tonk doesn't read them yet."

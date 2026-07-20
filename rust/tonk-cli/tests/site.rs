@@ -158,8 +158,9 @@ mod when_shortening_an_invite {
 
         let claimer_tmp = tempfile::tempdir()?;
         let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
         let claimer_config = common::isolated_config(&claimer_parent)?;
-        let claim_outcome = invite::claim(&claimer_parent, &short, claimer_config).await?;
+        let claim_outcome = invite::claim(&claimer_root, &short, claimer_config).await?;
         assert_eq!(claim_outcome.subject, inviter.site.repository.did());
         assert!(claim_outcome.remote_url.is_some());
         Ok(())
@@ -170,7 +171,7 @@ mod when_claiming_an_invite_with_a_remote {
     use anyhow::Result;
     use tonk_cli::invite;
     use tonk_cli::remote;
-    use tonk_cli::site::{SITE_DIRNAME, TonkSite};
+    use tonk_cli::site::TonkSite;
 
     use crate::common;
 
@@ -188,9 +189,10 @@ mod when_claiming_an_invite_with_a_remote {
         // Claimer joins into a fresh tempdir.
         let claimer_tmp = tempfile::tempdir()?;
         let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
         let claimer_config = common::isolated_config(&claimer_parent)?;
         let claim_outcome =
-            invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
+            invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
 
         // Claim returned the embedded URL and surfaced the
         // auto-configured remote name.
@@ -202,8 +204,7 @@ mod when_claiming_an_invite_with_a_remote {
 
         // Open the joined site and assert the remote landed in
         // its meta branch and main's upstream is wired.
-        let joined =
-            TonkSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+        let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
         let listed = remote::list(&joined).await?;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "origin");
@@ -224,13 +225,13 @@ mod when_claiming_an_invite_with_a_remote {
 
         let claimer_tmp = tempfile::tempdir()?;
         let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
         let claimer_config = common::isolated_config(&claimer_parent)?;
         let claim_outcome =
-            invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
+            invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
 
         assert!(claim_outcome.auto_configured_remote.is_none());
-        let joined =
-            TonkSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+        let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
         let listed = remote::list(&joined).await?;
         assert!(listed.is_empty());
         Ok(())
@@ -241,7 +242,7 @@ mod when_recording_roster_facts {
     use anyhow::Result;
     use dialog_query::{Output as _, Query, Term};
     use tonk_cli::invite;
-    use tonk_cli::site::{SITE_DIRNAME, TonkSite};
+    use tonk_cli::site::TonkSite;
     use tonk_invite::Invite;
     use tonk_schema::prelude::DidExt as _;
     use tonk_schema::{Invitation, InvitedVia, Membership};
@@ -285,10 +286,10 @@ mod when_recording_roster_facts {
         // Claim into a fresh site.
         let claimer_tmp = tempfile::tempdir()?;
         let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
         let claimer_config = common::isolated_config(&claimer_parent)?;
-        invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
-        let joined =
-            TonkSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+        invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
+        let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
 
         // Claimer side: membership + stamp referencing the same
         // invitation entity.
@@ -331,7 +332,7 @@ mod when_recording_roster_facts {
 mod when_minting_and_claiming_an_invite {
     use anyhow::Result;
     use tonk_cli::invite::{self, InviteError};
-    use tonk_cli::site::{self, SITE_DIRNAME, TonkSite};
+    use tonk_cli::site::{self, TonkSite};
 
     use crate::common;
 
@@ -354,9 +355,10 @@ mod when_minting_and_claiming_an_invite {
         // so we don't pre-init the site.
         let claimer_tmp = tempfile::tempdir()?;
         let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
         let claimer_config = common::isolated_config(&claimer_parent)?;
         let claim_outcome =
-            invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
+            invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
         // The claimer's site now targets the inviter's subject.
         assert_eq!(claim_outcome.subject, inviter.site.repository.did());
         // No remote was attached at mint, so the outcome
@@ -364,8 +366,7 @@ mod when_minting_and_claiming_an_invite {
         assert!(claim_outcome.remote_url.is_none());
 
         // Re-opening the joined site lands the same subject.
-        let joined =
-            TonkSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+        let joined = TonkSite::open_with(&claimer_root, claimer_config).await?;
         assert_eq!(joined.repository.did(), inviter.site.repository.did());
         Ok(())
     }
@@ -375,14 +376,21 @@ mod when_minting_and_claiming_an_invite {
         let inviter = common::TestSite::new().await?;
         let invite_outcome = invite::mint(&inviter.site, None, None).await?;
 
-        // Stand up a claimer site, then try to join into the
-        // same parent — the existing `.tonk/` should block.
-        let claimer = common::TestSite::new().await?;
-        let result =
-            invite::claim(&claimer.parent, &invite_outcome.url, claimer.config.clone()).await;
+        // Claim once into a fresh root, then try to claim again
+        // against the same root — the existing site should block.
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
+        let claimer_config = common::isolated_config(&claimer_parent)?;
+        invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone()).await?;
+
+        let result = invite::claim(&claimer_root, &invite_outcome.url, claimer_config).await;
         match result {
-            Err(InviteError::SiteAlreadyExists(path)) => {
-                assert_eq!(path, claimer.parent.join(SITE_DIRNAME));
+            Err(err @ InviteError::SiteAlreadyExists(_)) => {
+                assert!(
+                    err.to_string().contains("a site already exists"),
+                    "unexpected message: {err}"
+                );
             }
             other => panic!("expected SiteAlreadyExists, got: {other:?}"),
         }
@@ -393,14 +401,15 @@ mod when_minting_and_claiming_an_invite {
     async fn it_rejects_a_malformed_invite_url() -> Result<()> {
         let claimer_tmp = tempfile::tempdir()?;
         let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
         let claimer_config = common::isolated_config(&claimer_parent)?;
-        let result = invite::claim(&claimer_parent, "not-a-url", claimer_config).await;
+        let result = invite::claim(&claimer_root, "not-a-url", claimer_config).await;
         match result {
             Err(InviteError::InvalidInvite(_)) => {}
             other => panic!("expected InvalidInvite, got: {other:?}"),
         }
-        // No `.tonk/` should have been created on a parse-failure path.
-        assert!(!claimer_parent.join(SITE_DIRNAME).exists());
+        // No site directory should have been created on a parse-failure path.
+        assert!(!claimer_root.exists());
         Ok(())
     }
 
