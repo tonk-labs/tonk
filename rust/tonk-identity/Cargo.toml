@@ -15,6 +15,34 @@ hkdf = { workspace = true }
 sha2_0_10 = { workspace = true }
 zeroize = { workspace = true }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_0_3 = { workspace = true }
+js-sys = { workspace = true }
+rand = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "AuthenticationExtensionsClientInputs",
+    "AuthenticationExtensionsClientOutputs",
+    "AuthenticationExtensionsPrfInputs",
+    "AuthenticationExtensionsPrfOutputs",
+    "AuthenticationExtensionsPrfValues",
+    "AuthenticatorSelectionCriteria",
+    "CredentialCreationOptions",
+    "CredentialRequestOptions",
+    "CredentialsContainer",
+    "Navigator",
+    "PublicKeyCredential",
+    "PublicKeyCredentialCreationOptions",
+    "PublicKeyCredentialParameters",
+    "PublicKeyCredentialRequestOptions",
+    "PublicKeyCredentialRpEntity",
+    "PublicKeyCredentialType",
+    "PublicKeyCredentialUserEntity",
+    "UserVerificationRequirement",
+    "Window",
+] }
+
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
 hex = { workspace = true }

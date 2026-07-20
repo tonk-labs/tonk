@@ -8,3 +8,5 @@
 
 pub mod delegation;
 pub mod derive;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod passkey;

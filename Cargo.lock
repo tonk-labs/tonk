@@ -4457,11 +4457,17 @@ dependencies = [
  "dialog-credentials",
  "dialog-ucan-core",
  "dialog-varsig",
+ "getrandom 0.3.4",
  "hex",
  "hkdf",
+ "js-sys",
+ "rand 0.9.5",
  "sha2 0.10.9",
  "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
  "zeroize",
 ]
 
