@@ -1,10 +1,19 @@
-//! The `window.tonk.identity` ceremony hook.
+//! The `window.tonkIdentity` ceremony hook.
 //!
 //! WebAuthn only exists on the window, so the ceremony surface installs
 //! from the page main thread; the service worker never sees key
 //! material. Installed as JS functions (rather than Rust-only API) so
 //! WebDriver-driven tests and future non-wasm callers (the CLI linking
 //! handoff page) can invoke ceremonies directly.
+//!
+//! This installs as its own global, `window.tonkIdentity`, and
+//! deliberately never touches `window.tonk`. The top page must not carry
+//! a `window.tonk` object: tonk-host's page-effect forwarding treats the
+//! bare presence of `window.tonk` as the signal that the current document
+//! is a portal guest with a bridge to its parent, rather than the page
+//! itself. Creating `window.tonk` here would make the top page look like
+//! a guest to that check, and every page effect (navigate, set title,
+//! open) would silently stop working.
 
 use js_sys::{Object, Promise, Reflect};
 use wasm_bindgen::JsValue;
@@ -44,19 +53,11 @@ async fn derive_root_did() -> Result<JsValue, JsValue> {
     Ok(JsValue::from_str(&signer.did().to_string()))
 }
 
-/// Install `window.tonk.identity` on the page. Idempotent; a no-op
+/// Install `window.tonkIdentity` on the page. Idempotent; a no-op
 /// outside a window context.
 pub fn install() {
     let Some(window) = web_sys::window() else {
         return;
-    };
-    let tonk = match Reflect::get(&window, &"tonk".into()) {
-        Ok(value) if value.is_object() => value,
-        _ => {
-            let fresh: JsValue = Object::new().into();
-            let _ = Reflect::set(&window, &"tonk".into(), &fresh);
-            fresh
-        }
     };
     let identity = Object::new();
 
@@ -78,7 +79,7 @@ pub fn install() {
     );
     derive.forget();
 
-    let _ = Reflect::set(&tonk, &"identity".into(), &identity.into());
+    let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -89,11 +90,10 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[dialog_common::test]
-    fn it_installs_ceremony_functions_on_window_tonk() {
+    fn it_installs_ceremony_functions_on_window_tonk_identity() {
         install();
         let window = web_sys::window().unwrap();
-        let tonk = Reflect::get(&window, &"tonk".into()).unwrap();
-        let identity = Reflect::get(&tonk, &"identity".into()).unwrap();
+        let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
         for name in ["createPasskey", "deriveRootDid"] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

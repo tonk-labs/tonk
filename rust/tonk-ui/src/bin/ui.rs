@@ -33,7 +33,11 @@ async fn main() {
 
     // Passkey ceremonies live on the window: `navigator.credentials`
     // does not exist in the service worker, and each ceremony needs a
-    // user gesture. The worker never sees root-key material.
+    // user gesture. The worker never sees root-key material. The hook
+    // installs as `window.tonkIdentity`, deliberately outside
+    // `window.tonk` — tonk-host's page-effect forwarding uses the bare
+    // presence of `window.tonk` to detect a portal guest, and the top
+    // page must never look like one.
     tonk_identity::install();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`

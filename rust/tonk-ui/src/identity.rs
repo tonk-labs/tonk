@@ -47,7 +47,7 @@ mod tests {
                 r#"
                 const done = arguments[arguments.length - 1];
                 const wait = () =>
-                    window.tonk && window.tonk.identity ? done(true) : setTimeout(wait, 50);
+                    window.tonkIdentity ? done(true) : setTimeout(wait, 50);
                 wait();
                 "#,
                 vec![],
@@ -58,7 +58,7 @@ mod tests {
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                window.tonk.identity.createPasskey("tester")
+                window.tonkIdentity.createPasskey("tester")
                     .then((result) => done({ ok: result }))
                     .catch((error) => done({ error: String(error) }));
                 "#,
@@ -77,7 +77,7 @@ mod tests {
                 .execute_async(
                     r#"
                     const done = arguments[arguments.length - 1];
-                    window.tonk.identity.deriveRootDid()
+                    window.tonkIdentity.deriveRootDid()
                         .then((did) => done({ did }))
                         .catch((error) => done({ error: String(error) }));
                     "#,
