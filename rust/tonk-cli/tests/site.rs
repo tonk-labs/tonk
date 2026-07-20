@@ -13,8 +13,8 @@ mod when_initializing_a_site {
     async fn it_creates_a_dialog_repository_with_a_stable_did() -> Result<()> {
         let test = common::TestSite::new().await?;
         // The repo's DID is a real ed25519 key, not the empty
-        // string — running `tonk init` produced a usable repo
-        // backed by the on-disk `.tonk/` directory.
+        // string — site init produced a usable repo backed by
+        // the on-disk `.tonk/` directory.
         let did = test.site.repository.did().to_string();
         assert!(did.starts_with("did:key:"));
         Ok(())

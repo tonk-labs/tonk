@@ -302,13 +302,13 @@ pub fn default_config() -> SiteConfig {
 }
 
 /// Open (or create) the shared profile and build a tonk
-/// operator rooted at `.tonk/` for repository data. Identity
-/// lives at `config.profile_directory`; only the dialog-repo
-/// blocks live under `.tonk/`.
+/// operator rooted at the site directory for repository data.
+/// Identity lives at `config.profile_directory`; only the
+/// dialog-repo blocks live under the site directory.
 ///
 /// Exposed as `pub(crate)` so the [`crate::invite`] module can
 /// reuse the same wiring when claiming an invite into a fresh
-/// `.tonk/` (the join path provisions the space from a verifier
+/// site (the join path provisions the space from a verifier
 /// credential rather than via `profile.repository(...).open()`,
 /// but the profile + operator setup is the same).
 pub(crate) async fn build_profile_and_operator(

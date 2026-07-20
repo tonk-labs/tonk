@@ -109,7 +109,10 @@ pub enum SpotError {
     NoSelection,
     /// The registry has zero spots — selection is moot; the fix is
     /// creating one.
-    #[error("no spots registered; create one with `tonk spot new <name>`")]
+    #[error(
+        "no spots registered; create one with `tonk spot new <name>` \
+         (add --site <path> to adopt an existing .tonk directory)"
+    )]
     NothingRegistered,
     /// A name that isn't in the registry.
     #[error("unknown spot '{name}'{}", unknown_hint(.available))]

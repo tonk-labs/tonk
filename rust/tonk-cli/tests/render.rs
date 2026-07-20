@@ -11,7 +11,7 @@ use tonk_cli::render::{self, RenderRoute};
 
 use crate::common::TestSite;
 
-// `tonk init` seeds the standard library (`tonk:view`,
+// Site init seeds the standard library (`tonk:view`,
 // `tonk:view/directory`, etc.), so these tests rely on the built-in
 // view concepts being present rather than seeding them by hand.
 
@@ -46,7 +46,7 @@ async fn seeded() -> Result<TestSite> {
 #[dialog_common::test]
 async fn it_seeds_the_standard_library_on_init() -> Result<()> {
     // A fresh site has the built-in `view` concept without any manual
-    // seeding — proof that `tonk init` lowered core.yaml.
+    // seeding — proof that site init lowered core.yaml.
     let test = TestSite::new().await?;
     let concepts = tonk_cli::schema::list_concepts(&test.site).await?;
     assert!(

@@ -65,6 +65,10 @@ path = "tests/authoring.rs"
 name = "spot"
 path = "tests/spot.rs"
 
+[[test]]
+name = "cli_spot"
+path = "tests/cli_spot.rs"
+
 [features]
 integration-tests = []
 

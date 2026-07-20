@@ -1068,7 +1068,7 @@ fn print_guide(topic: Option<&str>) -> ExitCode {
 }
 
 /// Selector for the [`sync_op`] handler. Both `tonk push` and
-/// `tonk pull` follow the same site-discovery + dispatch path;
+/// `tonk pull` follow the same spot-resolution + dispatch path;
 /// the only thing that differs is which dialog primitive they
 /// call and the verb they print on success.
 #[derive(Debug, Clone, Copy)]
@@ -1587,9 +1587,15 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 
 /// `tonk join` — claim an invite into a fresh canonical spot:
 /// site at `spots/<name>/`, registered and selected on success.
-/// Registration happens only after the claim succeeds, so a
-/// failed join never leaves a dangling registry entry (a partial
-/// site dir may remain; re-running with the same name reports it).
+/// The early registry load below is only a cheap fail-fast
+/// duplicate-name check; the invite claim is a network operation
+/// that can take seconds, so registration itself happens only
+/// after the claim succeeds, against a registry freshly reloaded
+/// at that point — a concurrent `tonk spot new`/`use`/`rm` while
+/// the claim is in flight is re-checked, never silently reverted.
+/// A failed join never leaves a dangling registry entry (a
+/// partial site dir may remain; re-running with the same name
+/// reports it).
 async fn claim_invite(url: String, name: String) -> ExitCode {
     if let Err(err) = tonk_cli::spot::validate_name(&name) {
         return print_error(err.to_string());
@@ -1598,7 +1604,7 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
     };
-    let mut registry = match store.load() {
+    let registry = match store.load() {
         Ok(registry) => registry,
         Err(err) => return print_error(err.to_string()),
     };
@@ -1611,6 +1617,31 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
     // the joined site picks up the user's normal profile.
     match invite::claim(&root, &url, site::default_config()).await {
         Ok(outcome) => {
+            // Match `spot new`'s canonicalized form, so registered
+            // paths compare equal regardless of how they were added.
+            let root = match root.canonicalize() {
+                Ok(root) => root,
+                Err(err) => {
+                    return print_error(format!(
+                        "joined, but could not canonicalize {}: {err}",
+                        root.display()
+                    ));
+                }
+            };
+
+            let mut registry = match store.load() {
+                Ok(registry) => registry,
+                Err(err) => return print_error(err.to_string()),
+            };
+            if registry.spots.contains_key(&name) {
+                return print_error(format!(
+                    "{err}\nthe site was claimed at {root}; register it with \
+                     `tonk spot new <other-name> --site {root}`",
+                    err = tonk_cli::spot::SpotError::Exists(name.clone()),
+                    root = root.display(),
+                ));
+            }
+
             registry.spots.insert(
                 name.clone(),
                 tonk_cli::spot::SpotEntry { site: root.clone() },
