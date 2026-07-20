@@ -23,7 +23,7 @@
 //! hard error naming the file — never silently recreated.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -285,6 +285,156 @@ pub fn validate_name(name: &str) -> Result<(), SpotError> {
     } else {
         Err(SpotError::InvalidName(name.to_owned()))
     }
+}
+
+/// Outcome of [`create`]: the registered spot and the DID of the
+/// repository backing it.
+#[derive(Debug, Clone)]
+pub struct CreateOutcome {
+    /// Registry name.
+    pub name: String,
+    /// Absolute site directory.
+    pub site: PathBuf,
+    /// The site repository's DID.
+    pub did: String,
+}
+
+/// Outcome of [`remove`].
+#[derive(Debug, Clone)]
+pub struct RemoveOutcome {
+    /// The removed registry name.
+    pub name: String,
+    /// Where the site lived (still lives, unless `deleted`).
+    pub site: PathBuf,
+    /// Whether the site directory was deleted from disk.
+    pub deleted: bool,
+}
+
+/// Rows for `tonk spot list` plus the resolved current selection
+/// (None when nothing resolves — empty registry or dangling name).
+#[derive(Debug, Clone)]
+pub struct Listing {
+    /// `(name, site)` per registered spot, in name order.
+    pub rows: Vec<(String, PathBuf)>,
+    /// The spot a bare command would hit right now, with source.
+    pub current: Option<Resolved>,
+}
+
+/// Create (or adopt) a spot: initialize the site, register the
+/// name, and select it. The site lands in the store's canonical
+/// `spots/<name>/` unless `site_override` names another directory;
+/// because [`crate::site::TonkSite::init_at_with`] is idempotent,
+/// an override pointing at existing site storage adopts it — the
+/// migration path for pre-registry `.tonk/` dirs.
+pub async fn create(
+    store: &SpotStore,
+    name: &str,
+    site_override: Option<&Path>,
+    config: crate::site::SiteConfig,
+) -> Result<CreateOutcome, SpotError> {
+    validate_name(name)?;
+    let mut registry = store.load()?;
+    if registry.spots.contains_key(name) {
+        return Err(SpotError::Exists(name.to_owned()));
+    }
+
+    let target = site_override
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| store.canonical_site(name));
+    let site = crate::site::TonkSite::init_at_with(&target, config)
+        .await
+        .map_err(|e| SpotError::Init(format!("{e:#}")))?;
+
+    let outcome = CreateOutcome {
+        name: name.to_owned(),
+        site: site.root.clone(),
+        did: site.repository.did().to_string(),
+    };
+    registry.spots.insert(
+        name.to_owned(),
+        SpotEntry {
+            site: outcome.site.clone(),
+        },
+    );
+    registry.current = Some(name.to_owned());
+    store.save(&registry)?;
+    Ok(outcome)
+}
+
+/// Set the registry's `current` to `name`. This is the human
+/// selection path (`tonk use`); automation pins spots per-process
+/// via [`SPOT_ENV`] / `--spot` instead.
+pub fn select(store: &SpotStore, name: &str) -> Result<Resolved, SpotError> {
+    let mut registry = store.load()?;
+    let Some(entry) = registry.spots.get(name) else {
+        return Err(SpotError::Unknown {
+            name: name.to_owned(),
+            available: registry.spots.keys().cloned().collect(),
+        });
+    };
+    let resolved = Resolved {
+        name: name.to_owned(),
+        site: entry.site.clone(),
+        source: Source::Global,
+    };
+    registry.current = Some(name.to_owned());
+    store.save(&registry)?;
+    Ok(resolved)
+}
+
+/// Everything `tonk spot list` needs in one read: the rows plus
+/// what a bare command would currently resolve to (honouring the
+/// same `flag`/`env` precedence, so `tonk --spot x spot list`
+/// marks `x`).
+pub fn listing(
+    store: &SpotStore,
+    flag: Option<&str>,
+    env: Option<&str>,
+) -> Result<Listing, SpotError> {
+    let registry = store.load()?;
+    let rows = registry
+        .spots
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.site.clone()))
+        .collect();
+    Ok(Listing {
+        rows,
+        current: store.resolve(flag, env).ok(),
+    })
+}
+
+/// Remove `name` from the registry, clearing `current` if it
+/// pointed there. Site data stays on disk unless `delete` — the
+/// registry is the authority on names, not a lifecycle manager
+/// for storage it didn't necessarily create.
+pub fn remove(store: &SpotStore, name: &str, delete: bool) -> Result<RemoveOutcome, SpotError> {
+    let mut registry = store.load()?;
+    let Some(entry) = registry.spots.remove(name) else {
+        return Err(SpotError::Unknown {
+            name: name.to_owned(),
+            available: registry.spots.keys().cloned().collect(),
+        });
+    };
+    if registry.current.as_deref() == Some(name) {
+        registry.current = None;
+    }
+    store.save(&registry)?;
+    let deleted = if delete {
+        std::fs::remove_dir_all(&entry.site).map_err(|e| {
+            SpotError::Io(format!(
+                "entry removed, but deleting {} failed: {e}",
+                entry.site.display()
+            ))
+        })?;
+        true
+    } else {
+        false
+    };
+    Ok(RemoveOutcome {
+        name: name.to_owned(),
+        site: entry.site,
+        deleted,
+    })
 }
 
 #[cfg(test)]

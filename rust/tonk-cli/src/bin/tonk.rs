@@ -268,6 +268,24 @@ enum Command {
     },
 
     // -- setup --------------------------------------------------------
+    /// Select the current spot (used by every command from anywhere)
+    ///
+    /// The selection is global to this machine. Concurrent sessions
+    /// (agents, CI) should pin their spot per-process with --spot or
+    /// TONK_SPOT instead of relying on it.
+    #[command(after_help = "Examples:\n  tonk use garden")]
+    Use {
+        /// A registered spot name (see `tonk spot list`).
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
+    /// Manage spots: named, centrally registered fact stores
+    Spot {
+        #[command(subcommand)]
+        command: SpotCommand,
+    },
+
     /// Show (or reset) the local profile DID
     ///
     /// With `--reset`, deletes the on-disk profile and creates a
@@ -498,6 +516,44 @@ enum RemoteCommand {
 }
 
 #[derive(Subcommand, Debug)]
+enum SpotCommand {
+    /// Create (or adopt) a spot, register it, and select it
+    ///
+    /// The site lands in the canonical store
+    /// (`~/Library/Application Support/tonk/spots/<name>` on macOS)
+    /// unless --site points elsewhere. --site aimed at an existing
+    /// site directory adopts it instead of creating fresh — the
+    /// migration path for pre-registry `.tonk/` dirs.
+    #[command(
+        after_help = "Examples:\n  tonk spot new garden\n  tonk spot new work --site ~/work/site\n  tonk spot new proj --site ~/proj/.tonk"
+    )]
+    New {
+        /// Spot name ([a-z0-9][a-z0-9-_]*).
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Store the site at this directory instead of the
+        /// canonical location.
+        #[arg(long, value_name = "PATH")]
+        site: Option<PathBuf>,
+    },
+
+    /// List registered spots and the current selection
+    #[command(after_help = "Examples:\n  tonk spot list")]
+    List,
+
+    /// Remove a spot from the registry (data stays unless --delete)
+    #[command(after_help = "Examples:\n  tonk spot rm garden\n  tonk spot rm garden --delete")]
+    Rm {
+        /// Spot name to unregister.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Also delete the site directory from disk.
+        #[arg(long)]
+        delete: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum BlobCommand {
     /// Ingest a file and print its blob:<hash> reference
     ///
@@ -662,6 +718,15 @@ enum TelemetryAction {
 /// (never argument values) are ever reported.
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
+        Command::Use { .. } => ("use", None),
+        Command::Spot { command } => (
+            "spot",
+            Some(match command {
+                SpotCommand::New { .. } => "new",
+                SpotCommand::List => "list",
+                SpotCommand::Rm { .. } => "rm",
+            }),
+        ),
         Command::Identity { .. } => ("identity", None),
         Command::Eval(_) => ("eval", None),
         Command::Guide { .. } => ("guide", None),
@@ -755,6 +820,8 @@ async fn main() {
     let is_update = matches!(cli.command, Command::Update { .. });
     let spot = cli.spot;
     let exit = match cli.command {
+        Command::Use { name } => use_op(name).await,
+        Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic } => print_guide(topic.as_deref()),
@@ -834,6 +901,92 @@ async fn identity(reset: bool) -> ExitCode {
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
+    }
+}
+
+/// `tonk use` — set the global current spot.
+async fn use_op(name: String) -> ExitCode {
+    let store = match tonk_cli::spot::SpotStore::open() {
+        Ok(store) => store,
+        Err(err) => return print_error(err.to_string()),
+    };
+    match tonk_cli::spot::select(&store, &name) {
+        Ok(resolved) => {
+            println!(
+                "current spot: {name} ({site})",
+                name = resolved.name,
+                site = resolved.site.display(),
+            );
+            ExitCode::Success
+        }
+        Err(err) => print_error(err.to_string()),
+    }
+}
+
+/// `tonk spot new|list|rm` — registry management.
+async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
+    let store = match tonk_cli::spot::SpotStore::open() {
+        Ok(store) => store,
+        Err(err) => return print_error(err.to_string()),
+    };
+    match command {
+        SpotCommand::New { name, site } => {
+            match tonk_cli::spot::create(&store, &name, site.as_deref(), site::default_config())
+                .await
+            {
+                Ok(outcome) => {
+                    println!("Registered spot '{}'", outcome.name);
+                    println!("site: {}", outcome.site.display());
+                    println!("DID: {}", outcome.did);
+                    println!("current spot: {}", outcome.name);
+                    ExitCode::Success
+                }
+                Err(err) => print_error(err.to_string()),
+            }
+        }
+        SpotCommand::List => {
+            let env = std::env::var(tonk_cli::spot::SPOT_ENV)
+                .ok()
+                .filter(|value| !value.is_empty());
+            match tonk_cli::spot::listing(&store, flag, env.as_deref()) {
+                Ok(listing) => {
+                    if listing.rows.is_empty() {
+                        println!("(no spots registered; create one with `tonk spot new <name>`)");
+                        return ExitCode::Success;
+                    }
+                    let current = listing.current.as_ref().map(|c| c.name.as_str());
+                    for (name, site) in &listing.rows {
+                        let marker = if Some(name.as_str()) == current {
+                            '*'
+                        } else {
+                            ' '
+                        };
+                        println!("{marker} {name}\t{site}", site = site.display());
+                    }
+                    if let Some(resolved) = &listing.current {
+                        println!(
+                            "current: {name} ({source})",
+                            name = resolved.name,
+                            source = resolved.source,
+                        );
+                    }
+                    ExitCode::Success
+                }
+                Err(err) => print_error(err.to_string()),
+            }
+        }
+        SpotCommand::Rm { name, delete } => match tonk_cli::spot::remove(&store, &name, delete) {
+            Ok(outcome) => {
+                println!("Removed spot '{}' from the registry", outcome.name);
+                if outcome.deleted {
+                    println!("site deleted: {}", outcome.site.display());
+                } else {
+                    println!("site kept at {}", outcome.site.display());
+                }
+                ExitCode::Success
+            }
+            Err(err) => print_error(err.to_string()),
+        },
     }
 }
 

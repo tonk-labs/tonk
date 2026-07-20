@@ -61,6 +61,10 @@ path = "tests/data_verbs.rs"
 name = "authoring"
 path = "tests/authoring.rs"
 
+[[test]]
+name = "spot"
+path = "tests/spot.rs"
+
 [features]
 integration-tests = []
 
