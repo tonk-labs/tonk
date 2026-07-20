@@ -1924,6 +1924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac 0.12.1",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4437,6 +4446,23 @@ dependencies = [
  "wasm-bindgen-test",
  "wasm-streams 0.6.0",
  "web-sys",
+]
+
+[[package]]
+name = "tonk-identity"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "dialog-common",
+ "dialog-credentials",
+ "dialog-ucan-core",
+ "dialog-varsig",
+ "hex",
+ "hkdf",
+ "sha2 0.10.9",
+ "tokio",
+ "wasm-bindgen-test",
+ "zeroize",
 ]
 
 [[package]]
