@@ -1,7 +1,7 @@
 # tonk CLI — Agent Reference
 
-tonk is a headless CLI for reading and writing data and views in a local
-`.tonk/` site (a dialog repository). Data lives as claims: you **assert**
+tonk is a headless CLI for reading and writing data and views in a spot
+(a named local dialog repository). Data lives as claims: you **assert**
 claims and **retract** them — a retraction is itself an assertion that
 invalidates an old claim, not a deletion.
 
