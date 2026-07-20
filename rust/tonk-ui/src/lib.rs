@@ -18,3 +18,7 @@ pub mod error;
 /// Test helpers for integration testing.
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;
+
+/// Real-browser passkey ceremony tests.
+#[cfg(test)]
+mod identity;
