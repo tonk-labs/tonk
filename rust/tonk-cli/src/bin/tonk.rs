@@ -3,9 +3,9 @@
 //!
 //! The mutating verb is `eval`: it consumes a notation document
 //! and runs the analyze → query → plan → commit pipeline against
-//! the local `.tonk/` site. The other subcommands (`init`,
-//! `identity`, `guide`, `schema`, `migrate`) are read-only or
-//! one-shot setup helpers.
+//! the selected spot's site. The other subcommands (`identity`,
+//! `guide`, `schema`, `migrate`) are read-only or one-shot setup
+//! helpers.
 
 use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
@@ -33,9 +33,14 @@ use tonk_cli::{ExitCode, guide, identity, schema, site};
     about = "Headless CLI for a datalog-flavoured, syncable fact store: define concepts, assert facts, query them, render views",
     version,
     propagate_version = true,
-    after_help = "The loop: orient, define concepts, assert facts, give them a view, share.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   share · invite · join · push · pull · remote\n  setup    init · blob · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
+    after_help = "The loop: orient, define concepts, assert facts, give them a view, share.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   share · invite · join · push · pull · remote\n  setup    spot · use · blob · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
 )]
 struct Cli {
+    /// Operate on this spot instead of the selected one.
+    /// Precedence: --spot > TONK_SPOT > `tonk use` selection.
+    #[arg(long, global = true, value_name = "NAME")]
+    spot: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -263,17 +268,6 @@ enum Command {
     },
 
     // -- setup --------------------------------------------------------
-    /// Create a new .tonk/ repo in the current directory
-    #[command(after_help = "Examples:\n  tonk init\n  tonk init my-repo")]
-    Init {
-        /// Optional label for the repository.
-        ///
-        /// Reserved for a future `dialog.meta/name` claim;
-        /// accepted but not yet persisted.
-        #[arg(value_name = "LABEL")]
-        label: Option<String>,
-    },
-
     /// Show (or reset) the local profile DID
     ///
     /// With `--reset`, deletes the on-disk profile and creates a
@@ -668,7 +662,6 @@ enum TelemetryAction {
 /// (never argument values) are ever reported.
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
-        Command::Init { .. } => ("init", None),
         Command::Identity { .. } => ("identity", None),
         Command::Eval(_) => ("eval", None),
         Command::Guide { .. } => ("guide", None),
@@ -760,41 +753,43 @@ async fn main() {
     let started = std::time::Instant::now();
     // `cli.command` is moved by the dispatch below, so ask now.
     let is_update = matches!(cli.command, Command::Update { .. });
+    let spot = cli.spot;
     let exit = match cli.command {
-        Command::Init { label } => init(label).await,
         Command::Identity { reset } => identity(reset).await,
-        Command::Eval(args) => eval(args).await,
+        Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic } => print_guide(topic.as_deref()),
-        Command::Schema { concept } => print_schema(concept).await,
+        Command::Schema { concept } => print_schema(concept, spot.as_deref()).await,
         Command::Query {
             concept,
             entity,
             json,
         } => match entity {
-            Some(entity) => get_op(concept, entity, json).await,
-            None => query_op(concept, json).await,
+            Some(entity) => get_op(concept, entity, json, spot.as_deref()).await,
+            None => query_op(concept, json, spot.as_deref()).await,
         },
-        Command::Assert { concept, rest } => assert_cmd(concept, rest).await,
+        Command::Assert { concept, rest } => assert_cmd(concept, rest, spot.as_deref()).await,
         Command::Retract {
             concept,
             entity,
             field,
-        } => retract_op(concept, entity, field).await,
+        } => retract_op(concept, entity, field, spot.as_deref()).await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
-        Command::Export { out } => export_op(out).await,
-        Command::Render { route, out } => render_op(route, out).await,
-        Command::Import { file } => import_op(file).await,
-        Command::Push => sync_op(SyncOp::Push).await,
-        Command::Pull => sync_op(SyncOp::Pull).await,
-        Command::Status => status_op().await,
-        Command::Invite { base_url, remote } => mint_invite(base_url, remote).await,
+        Command::Export { out } => export_op(out, spot.as_deref()).await,
+        Command::Render { route, out } => render_op(route, out, spot.as_deref()).await,
+        Command::Import { file } => import_op(file, spot.as_deref()).await,
+        Command::Push => sync_op(SyncOp::Push, spot.as_deref()).await,
+        Command::Pull => sync_op(SyncOp::Pull, spot.as_deref()).await,
+        Command::Status => status_op(spot.as_deref()).await,
+        Command::Invite { base_url, remote } => {
+            mint_invite(base_url, remote, spot.as_deref()).await
+        }
         Command::Join { url } => claim_invite(url).await,
-        Command::Remote { command } => remote_op(command).await,
-        Command::Blob { command } => blob_op(command).await,
-        Command::Share { command } => share_op(command).await,
-        Command::Concept { command } => concept_op(command).await,
-        Command::View { command } => view_op(command).await,
-        Command::Home { models } => home_op(models).await,
+        Command::Remote { command } => remote_op(command, spot.as_deref()).await,
+        Command::Blob { command } => blob_op(command, spot.as_deref()).await,
+        Command::Share { command } => share_op(command, spot.as_deref()).await,
+        Command::Concept { command } => concept_op(command, spot.as_deref()).await,
+        Command::View { command } => view_op(command, spot.as_deref()).await,
+        Command::Home { models } => home_op(models, spot.as_deref()).await,
         Command::Telemetry { action } => telemetry_op(action),
         Command::Update {
             disable_check,
@@ -827,27 +822,6 @@ async fn main() {
     std::process::exit(exit.into_raw());
 }
 
-async fn init(label: Option<String>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-
-    match site::TonkSite::init(&cwd).await {
-        Ok(site) => {
-            println!("Initialized .tonk in {}", cwd.display());
-            println!("DID: {}", site.repository.did());
-            if let Some(label) = label {
-                eprintln!(
-                    "note: label '{label}' accepted but not yet persisted (reserved for a future dialog.meta/name claim)"
-                );
-            }
-            ExitCode::Success
-        }
-        Err(err) => print_error(err.to_string()),
-    }
-}
-
 async fn identity(reset: bool) -> ExitCode {
     let result = if reset {
         identity::reset().await
@@ -863,15 +837,10 @@ async fn identity(reset: bool) -> ExitCode {
     }
 }
 
-async fn eval(args: EvalArgs) -> ExitCode {
+async fn eval(args: EvalArgs, spot: Option<&str>) -> ExitCode {
     let source = match resolve_source(&args) {
         Ok(s) => s,
         Err(message) => return print_error(message),
-    };
-
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
     };
 
     let options = eval::Options {
@@ -880,9 +849,9 @@ async fn eval(args: EvalArgs) -> ExitCode {
         dry_run: args.dry_run,
     };
 
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     // A dry run never commits, so there's nothing to push; force
@@ -955,14 +924,10 @@ enum SyncOp {
     Pull,
 }
 
-async fn sync_op(op: SyncOp) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     let result = match op {
@@ -982,14 +947,10 @@ async fn sync_op(op: SyncOp) -> ExitCode {
     }
 }
 
-async fn export_op(out: Option<PathBuf>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     let destination = match &out {
@@ -1014,18 +975,14 @@ async fn export_op(out: Option<PathBuf>) -> ExitCode {
     }
 }
 
-async fn render_op(route: String, out: Option<PathBuf>) -> ExitCode {
+async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
     let parsed = match RenderRoute::parse(&route) {
         Ok(r) => r,
         Err(err) => return print_error(err.to_string()),
     };
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match render::render(&site, &parsed).await {
@@ -1046,14 +1003,10 @@ async fn render_op(route: String, out: Option<PathBuf>) -> ExitCode {
     }
 }
 
-async fn import_op(file: PathBuf) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn import_op(file: PathBuf, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match transfer::import(&site, &file).await {
@@ -1091,15 +1044,16 @@ fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
     }
 }
 
-async fn status_op() -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+async fn status_op(spot: Option<&str>) -> ExitCode {
+    let (resolved, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
-    };
+    println!(
+        "spot: {name} ({source})",
+        name = resolved.name,
+        source = resolved.source,
+    );
 
     match sync::status(&site).await {
         Ok(state) => {
@@ -1133,14 +1087,10 @@ fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
     }
 }
 
-async fn remote_op(command: RemoteCommand) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match command {
@@ -1237,14 +1187,10 @@ fn print_remote_list(records: &[RemoteRecord]) {
     }
 }
 
-async fn blob_op(command: BlobCommand) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn blob_op(command: BlobCommand, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match command {
@@ -1302,14 +1248,10 @@ fn print_blob_add_outcome(outcome: &BlobAddOutcome) {
     );
 }
 
-async fn share_op(command: ShareCommand) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn share_op(command: ShareCommand, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match command {
@@ -1439,14 +1381,14 @@ fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
     );
 }
 
-async fn mint_invite(base_url: String, remote_name: Option<String>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn mint_invite(
+    base_url: String,
+    remote_name: Option<String>,
+    spot: Option<&str>,
+) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     // Resolve `--remote <name>` to its endpoint URL by reading
@@ -1572,14 +1514,10 @@ async fn list_concepts_op(site: &site::TonkSite) -> ExitCode {
 
 /// Query every instance of `concept` as rendered by
 /// [`data_ops::query`].
-async fn query_op(concept: String, json: bool) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn query_op(concept: String, json: bool, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match data_ops::query(&site, &concept, json).await {
@@ -1599,14 +1537,10 @@ async fn query_op(concept: String, json: bool) -> ExitCode {
 
 /// Print a single instance of `concept` as rendered by
 /// [`data_ops::get`].
-async fn get_op(concept: String, entity: String, json: bool) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn get_op(concept: String, entity: String, json: bool, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match data_ops::get(&site, &concept, &entity, json).await {
@@ -1630,18 +1564,14 @@ async fn get_op(concept: String, entity: String, json: bool) -> ExitCode {
 /// never starts with `-`, and flag values always follow their
 /// flag, so the first token is either a flag or the entity. Same
 /// dynamic-flag / `--help` handling as the old `add`/`set`.
-async fn assert_cmd(concept: String, rest: Vec<String>) -> ExitCode {
+async fn assert_cmd(concept: String, rest: Vec<String>, spot: Option<&str>) -> ExitCode {
     let (entity, argv) = match rest.split_first() {
         Some((first, tail)) if !first.starts_with('-') => (Some(first.clone()), tail.to_vec()),
         _ => (None, rest),
     };
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match data_ops::assert_op(&site, &concept, entity.as_deref(), &argv).await {
@@ -1661,14 +1591,15 @@ async fn assert_cmd(concept: String, rest: Vec<String>) -> ExitCode {
 
 /// Retract a single field, or a whole instance, as rendered by
 /// [`data_ops::retract`].
-async fn retract_op(concept: String, entity: String, field: Option<String>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn retract_op(
+    concept: String,
+    entity: String,
+    field: Option<String>,
+    spot: Option<&str>,
+) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match data_ops::retract(&site, &concept, &entity, field.as_deref()).await {
@@ -1687,14 +1618,10 @@ async fn retract_op(concept: String, entity: String, field: Option<String>) -> E
 }
 
 /// Author a new concept, as rendered by [`data_ops::concept_add`].
-async fn concept_op(command: ConceptCommand) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn concept_op(command: ConceptCommand, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match command {
@@ -1724,14 +1651,10 @@ async fn concept_op(command: ConceptCommand) -> ExitCode {
 /// missing or empty template surfaces as
 /// [`tonk_cli::authoring::AuthoringError::EmptyTemplate`] via
 /// `data_ops::view_add`'s own check.
-async fn view_op(command: ViewCommand) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn view_op(command: ViewCommand, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match command {
@@ -1778,14 +1701,10 @@ async fn view_op(command: ViewCommand) -> ExitCode {
 
 /// Put one or more concepts' directories on the space home, as
 /// rendered by [`data_ops::home`].
-async fn home_op(models: Vec<String>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn home_op(models: Vec<String>, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
 
     match data_ops::home(&site, &models).await {
@@ -1825,14 +1744,10 @@ fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::
     writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
 }
 
-async fn print_schema(concept: Option<String>) -> ExitCode {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => return print_error(format!("could not determine current directory: {e}")),
-    };
-    let site = match site::TonkSite::discover_and_open(&cwd).await {
-        Ok(s) => s,
-        Err(err) => return print_error(err.to_string()),
+async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
     };
     let rendered = match &concept {
         Some(name) => match data_ops::schema_subset(&site, name).await {
@@ -1910,6 +1825,35 @@ async fn update(disable_check: bool, enable_check: bool) -> ExitCode {
 fn print_error(message: impl Into<String>) -> ExitCode {
     eprintln!("error: {}", message.into());
     ExitCode::IoError
+}
+
+/// Resolve the selected spot (--spot > TONK_SPOT > `tonk use`) and
+/// open its site. Every failure path names the spot and the
+/// selection source so a wrong-spot mistake is visible in the
+/// error itself. The cwd is never consulted.
+async fn open_selected(
+    flag: Option<&str>,
+) -> Result<(tonk_cli::spot::Resolved, site::TonkSite), ExitCode> {
+    let store = match tonk_cli::spot::SpotStore::open() {
+        Ok(store) => store,
+        Err(err) => return Err(print_error(err.to_string())),
+    };
+    let env = std::env::var(tonk_cli::spot::SPOT_ENV)
+        .ok()
+        .filter(|value| !value.is_empty());
+    let resolved = match store.resolve(flag, env.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return Err(print_error(err.to_string())),
+    };
+    match site::TonkSite::open(&resolved.site).await {
+        Ok(site) => Ok((resolved, site)),
+        Err(err) => Err(print_error(format!(
+            "spot '{name}' (via {source}, site {site}): {err:#}",
+            name = resolved.name,
+            source = resolved.source,
+            site = resolved.site.display(),
+        ))),
+    }
 }
 
 /// Specialized [`print_error`] for parse-error mapping. Kept

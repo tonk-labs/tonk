@@ -1,13 +1,15 @@
-//! `.tonk/` site discovery, init, and open.
+//! Site open and init.
 //!
-//! A *site* is a working directory that contains a `.tonk/`
-//! sub-directory, in which a single dialog repository named
-//! `main` lives. Tonk only reads and writes that one
+//! A *site* is a directory that contains a single dialog
+//! repository named `main`. Tonk only reads and writes that one
 //! repository on the `main` branch — multi-branch / multi-repo
-//! UX is intentionally not exposed.
+//! UX is intentionally not exposed. A site's directory is never
+//! located by walking the current directory: the caller resolves
+//! it through the spot registry (see [`crate::spot`]) and passes
+//! the path in directly.
 //!
 //! [`TonkSite`] is the assembled context every command works
-//! against: profile, operator (rooted at `.tonk/`), the
+//! against: profile, operator (rooted at the site directory), the
 //! repository, and the opened `main` branch.
 
 use std::path::{Path, PathBuf};
@@ -75,28 +77,11 @@ pub struct TonkSite {
 }
 
 impl TonkSite {
-    /// Walk up from `start` looking for a `.tonk/` directory and
-    /// open the site rooted there. Returns an error if no
-    /// `.tonk/` is found between `start` and the filesystem root.
-    pub async fn discover_and_open(start: &Path) -> Result<Self> {
-        let root = find_site_root(start)
-            .with_context(|| format!("no .tonk/ found above {}", start.display()))?;
-        Self::open(&root).await
-    }
-
-    /// Open an already-existing site at the given `.tonk/`
-    /// directory. Errors if the directory exists but the dialog
-    /// repository inside it is missing or unreadable.
+    /// Open an already-existing site at the given directory.
+    /// Errors if the directory exists but the dialog repository
+    /// inside it is missing or unreadable.
     pub async fn open(root: &Path) -> Result<Self> {
         Self::open_with(root, default_config()).await
-    }
-
-    /// Initialize a new site under `parent` — creates the
-    /// `.tonk/` directory if missing, bootstraps the dialog
-    /// repository, and opens the `main` branch. Idempotent: if
-    /// the site already exists, returns it without changes.
-    pub async fn init(parent: &Path) -> Result<Self> {
-        Self::init_with(parent, default_config()).await
     }
 
     /// [`Self::open`] with caller-supplied [`SiteConfig`] —
@@ -313,25 +298,6 @@ pub fn default_config() -> SiteConfig {
     SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
-    }
-}
-
-/// Walk up the directory tree from `start` looking for a sibling
-/// `.tonk/` directory. Returns the absolute path to that
-/// directory if found.
-fn find_site_root(start: &Path) -> Option<PathBuf> {
-    let mut current: PathBuf = start
-        .canonicalize()
-        .ok()
-        .or_else(|| start.is_absolute().then(|| start.to_path_buf()))?;
-    loop {
-        let candidate = current.join(SITE_DIRNAME);
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-        if !current.pop() {
-            return None;
-        }
     }
 }
 

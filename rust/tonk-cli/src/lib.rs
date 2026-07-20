@@ -7,7 +7,7 @@
 //! the binary) and a future SDK consumer can drive the same code
 //! paths the CLI does.
 //!
-//! - [`site`] — `.tonk/` discovery, repo+branch open/init.
+//! - [`site`] — repo+branch open/init; resolved via the spot registry.
 //! - [`spot`] — spot registry: named spots, canonical storage, selection.
 //! - [`identity`] — local profile management.
 //! - [`authoring`] — pure notation builders (concept, view, and the
