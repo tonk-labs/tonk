@@ -8,6 +8,7 @@
 //! paths the CLI does.
 //!
 //! - [`site`] — `.tonk/` discovery, repo+branch open/init.
+//! - [`spot`] — spot registry: named spots, canonical storage, selection.
 //! - [`identity`] — local profile management.
 //! - [`authoring`] — pure notation builders (concept, view, and the
 //!   space-home recipe) consumed by the noun-first authoring verbs.
@@ -43,6 +44,7 @@ pub mod render;
 pub mod schema;
 pub mod share;
 pub mod site;
+pub mod spot;
 pub mod sync;
 pub mod telemetry;
 pub mod transfer;
