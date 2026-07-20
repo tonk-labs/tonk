@@ -18,7 +18,9 @@ fn js_error(error: anyhow::Error) -> JsValue {
 
 async fn create(name: JsValue) -> Result<JsValue, JsValue> {
     let name = name.as_string().unwrap_or_else(|| "tonk".to_owned());
-    let created = crate::passkey::create_passkey(&name).await.map_err(js_error)?;
+    let created = crate::passkey::create_passkey(&name)
+        .await
+        .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(
         &result,
@@ -36,7 +38,9 @@ async fn create(name: JsValue) -> Result<JsValue, JsValue> {
 async fn derive_root_did() -> Result<JsValue, JsValue> {
     use dialog_varsig::Principal;
     let prf = crate::passkey::prf_output().await.map_err(js_error)?;
-    let signer = crate::derive::derive_root_signer(&prf).await.map_err(js_error)?;
+    let signer = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
     Ok(JsValue::from_str(&signer.did().to_string()))
 }
 
@@ -56,10 +60,9 @@ pub fn install() {
     };
     let identity = Object::new();
 
-    let create_passkey =
-        Closure::<dyn FnMut(JsValue) -> Promise>::new(|name: JsValue| {
-            future_to_promise(create(name))
-        });
+    let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|name: JsValue| {
+        future_to_promise(create(name))
+    });
     let _ = Reflect::set(
         &identity,
         &"createPasskey".into(),
@@ -67,10 +70,12 @@ pub fn install() {
     );
     create_passkey.forget();
 
-    let derive = Closure::<dyn FnMut() -> Promise>::new(|| {
-        future_to_promise(derive_root_did())
-    });
-    let _ = Reflect::set(&identity, &"deriveRootDid".into(), derive.as_ref().unchecked_ref());
+    let derive = Closure::<dyn FnMut() -> Promise>::new(|| future_to_promise(derive_root_did()));
+    let _ = Reflect::set(
+        &identity,
+        &"deriveRootDid".into(),
+        derive.as_ref().unchecked_ref(),
+    );
     derive.forget();
 
     let _ = Reflect::set(&tonk, &"identity".into(), &identity.into());
