@@ -119,7 +119,7 @@ pub async fn mint(
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
-    // `tonk init` committed before any upstream existed. Mirrors
+    // `tonk spot new` committed before any upstream existed. Mirrors
     // `share`'s push-before-mint. No-op when the branch has no upstream
     // (a local-only invite). Pull-before-push reconciles a possibly
     // advanced upstream, best-effort; the push error is authoritative.
@@ -215,8 +215,8 @@ pub async fn mint(
 ///    subsequent push/pull operations.
 /// 5. Mint a verifier-only credential keyed to the invited
 ///    subject DID and create a local space at `name == "main"`,
-///    matching the layout `tonk init` produces (so all the
-///    later read paths work uniformly across init- and
+///    matching the layout `tonk spot new` produces (so all the
+///    later read paths work uniformly across spot-new- and
 ///    join-bootstrapped sites).
 /// 6. If the invite carried a `remote=` URL, register it, set it
 ///    as the local `main`'s upstream, and pull once — a clean
@@ -293,7 +293,7 @@ pub async fn claim(
         .map_err(|e| InviteError::Io(format!("failed to provision local space: {e}")))?;
 
     // Open the main branch via the standard load path so the
-    // joined site's structure matches `tonk init`'s output.
+    // joined site's structure matches `tonk spot new`'s output.
     // Errors here would mean the create succeeded but the open
     // failed — surfaced as Io so the user sees the underlying
     // dialog message.

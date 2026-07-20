@@ -27,6 +27,15 @@ any field mints a NEW entity unless you bind the old one with `this:`),
 and bare lowercase tokens are symbols resolved through the name table —
 quote every string literal (`name: "alice"`, not `name: alice`).
 
+## Spots
+
+Commands run against the selected *spot* (a named fact store), not
+the cwd. Resolution order: `--spot <name>` > `TONK_SPOT` env >
+`tonk use <name>` selection. In automation, always pin the spot
+per-process (`TONK_SPOT=x tonk ...` or `--spot x`) — never rely on
+`tonk use`, which is shared global state another session can change.
+`tonk spot list` shows what's registered and what is current.
+
 ## The loop
 
 1. Discover what's already on the branch — don't guess or memorize:
