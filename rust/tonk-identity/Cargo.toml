@@ -17,6 +17,7 @@ zeroize = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom_0_3 = { workspace = true }
+hex = { workspace = true }
 js-sys = { workspace = true }
 rand = { workspace = true }
 wasm-bindgen = { workspace = true }

@@ -4715,6 +4715,7 @@ dependencies = [
  "tonk-analytics",
  "tonk-common",
  "tonk-host",
+ "tonk-identity",
  "tonk-portal",
  "tonk-worker",
  "tonk-worker-api",
