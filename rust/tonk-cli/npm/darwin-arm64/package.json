@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli-darwin-arm64",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "darwin-arm64 binary for @tonk/cli.",
   "license": "MIT",
   "homepage": "https://github.com/tonk-labs/tonk#readme",
