@@ -133,13 +133,30 @@ impl TonkSite {
     }
 
     /// [`Self::init`] with caller-supplied [`SiteConfig`].
+    ///
+    /// Historical parent-relative form: the site lands at
+    /// `parent/.tonk/`. Kept for the test fixtures that model the
+    /// pre-registry layout; new callers go through
+    /// [`Self::init_at_with`].
     pub async fn init_with(parent: &Path, config: SiteConfig) -> Result<Self> {
         let parent = parent
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", parent.display()))?;
-        let root = parent.join(SITE_DIRNAME);
-        std::fs::create_dir_all(&root)
+        Self::init_at_with(&parent.join(SITE_DIRNAME), config).await
+    }
+
+    /// Initialize (or adopt) a site whose directory is exactly
+    /// `root` — no `.tonk/` nesting. This is what canonical spot
+    /// storage uses: the registry maps a spot name to this
+    /// directory. Idempotent: an existing repository at `root` is
+    /// loaded, not clobbered, which is also how `tonk spot new
+    /// --site <path>` adopts pre-existing storage.
+    pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("could not canonicalize {}", root.display()))?;
 
         let (profile, operator) = build_profile_and_operator(&root, &config).await?;
 

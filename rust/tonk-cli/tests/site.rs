@@ -1537,3 +1537,35 @@ mod when_migrating_from_carry {
         Ok(())
     }
 }
+
+mod when_initializing_at_an_explicit_root {
+    use anyhow::Result;
+    use tonk_cli::site::TonkSite;
+
+    use crate::common;
+
+    /// Canonical spots put repo blocks directly in the registered
+    /// site directory — no `.tonk/` nesting. `init_at_with` must
+    /// root the site at exactly the path it is given.
+    #[dialog_common::test]
+    async fn it_roots_the_site_at_the_given_directory() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let parent = tmp.path().canonicalize()?;
+        let config = common::isolated_config(&parent)?;
+        let root = parent.join("spots").join("garden");
+
+        let site = TonkSite::init_at_with(&root, config.clone()).await?;
+        assert_eq!(site.root, root.canonicalize()?);
+        assert!(!root.join(".tonk").exists(), "no nested .tonk");
+
+        // Idempotent: a second init at the same root adopts the
+        // existing repo instead of erroring or re-seeding.
+        let reopened = TonkSite::init_at_with(&root, config.clone()).await?;
+        assert_eq!(reopened.repository.did(), site.repository.did());
+
+        // And a plain open works against it.
+        let opened = TonkSite::open_with(&root, config).await?;
+        assert_eq!(opened.repository.did(), site.repository.did());
+        Ok(())
+    }
+}
