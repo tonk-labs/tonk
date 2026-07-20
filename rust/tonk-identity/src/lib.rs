@@ -6,4 +6,5 @@
 //! it. Devices act through a subject-open `root → device` UCAN
 //! delegation; day-to-day operation never touches the root key.
 
+pub mod delegation;
 pub mod derive;
