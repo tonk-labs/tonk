@@ -10,6 +10,8 @@
 
 use worker::*;
 
+pub mod core;
+pub mod email;
 pub mod error;
 mod handlers;
 pub mod store;
