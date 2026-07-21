@@ -35,7 +35,7 @@ async fn it_exports_seeded_artifacts_as_csv() -> Result<()> {
 #[tokio::test]
 async fn it_round_trips_export_then_import() -> Result<()> {
     // Seed a site with extra attributes on top of the standard-library
-    // baseline `tonk init` provides, and export the whole branch.
+    // baseline site init provides, and export the whole branch.
     let source = TestSite::new().await?;
     source.eval_inline(ATTRIBUTE_DECL).await?;
     let source_csv = export_to_string(&source).await?;

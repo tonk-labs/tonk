@@ -1,11 +1,14 @@
 # tonk CLI — Agent Reference
 
-tonk is a headless CLI for reading and writing data and views in a local
-`.tonk/` site (a dialog repository). Data lives as claims: you **assert**
+tonk is a headless CLI for reading and writing data and views in a spot
+(a named local dialog repository). Data lives as claims: you **assert**
 claims and **retract** them — a retraction is itself an assertion that
 invalidates an old claim, not a deletion.
 
-Run commands from a directory at or below the one containing `.tonk/`.
+Commands run from anywhere, against whichever spot is selected —
+resolution is `--spot` > `TONK_SPOT` > `tonk use`. Automation (agents,
+CI) should set `TONK_SPOT` or pass `--spot` rather than relying on the
+global `tonk use` selection.
 
 ## Orientation
 
@@ -80,7 +83,7 @@ tonk push | tonk pull                       # sync main with its upstream
 tonk remote add <name> <url>                # register a remote; the first one becomes main's upstream
 tonk remote set-upstream <name>             # re-point which remote main tracks
 tonk invite [--remote <name>]               # mint a paste-able invite URL (pushes first)
-tonk join '<invite-url>'                    # claim an invite into a fresh .tonk/
+tonk join '<invite-url>' --name <spot>      # claim an invite into a fresh spot
 tonk share concept <name>                   # launcher URL onto a live concept view
 tonk share display <subject> --view <name>  # launcher URL onto a <tonk-display> render
 tonk render <route>                         # headless HTML render (e.g. alice@person!card)
@@ -89,7 +92,10 @@ tonk render <route>                         # headless HTML render (e.g. alice@p
 ## Setup
 
 ```bash
-tonk init            # create .tonk/ in the current directory
-tonk identity        # show the local profile DID
-tonk migrate         # convert a .carry/ site to .tonk/
+tonk spot new <name>              # create a spot (site) and select it
+tonk spot new <name> --site <path>  # adopt an existing .tonk directory as a spot
+tonk spot list                    # registered spots, with the resolved current
+tonk use <name>                   # set the global current spot
+tonk identity                     # show the local profile DID
+tonk migrate                      # convert a .carry/ site to .tonk/
 ```

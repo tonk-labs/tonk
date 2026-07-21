@@ -1,6 +1,6 @@
 {
   "name": "@tonk/cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "The Tonk stack command line utility.",
   "license": "MIT",
   "homepage": "https://github.com/tonk-labs/tonk#readme",
@@ -30,7 +30,7 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@tonk/cli-darwin-arm64": "0.5.0",
-    "@tonk/cli-linux-x64": "0.5.0"
+    "@tonk/cli-darwin-arm64": "0.6.0",
+    "@tonk/cli-linux-x64": "0.6.0"
   }
 }

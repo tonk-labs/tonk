@@ -1,13 +1,15 @@
-//! `.tonk/` site discovery, init, and open.
+//! Site open and init.
 //!
-//! A *site* is a working directory that contains a `.tonk/`
-//! sub-directory, in which a single dialog repository named
-//! `main` lives. Tonk only reads and writes that one
+//! A *site* is a directory that contains a single dialog
+//! repository named `main`. Tonk only reads and writes that one
 //! repository on the `main` branch — multi-branch / multi-repo
-//! UX is intentionally not exposed.
+//! UX is intentionally not exposed. A site's directory is never
+//! located by walking the current directory: the caller resolves
+//! it through the spot registry (see [`crate::spot`]) and passes
+//! the path in directly.
 //!
 //! [`TonkSite`] is the assembled context every command works
-//! against: profile, operator (rooted at `.tonk/`), the
+//! against: profile, operator (rooted at the site directory), the
 //! repository, and the opened `main` branch.
 
 use std::path::{Path, PathBuf};
@@ -75,28 +77,11 @@ pub struct TonkSite {
 }
 
 impl TonkSite {
-    /// Walk up from `start` looking for a `.tonk/` directory and
-    /// open the site rooted there. Returns an error if no
-    /// `.tonk/` is found between `start` and the filesystem root.
-    pub async fn discover_and_open(start: &Path) -> Result<Self> {
-        let root = find_site_root(start)
-            .with_context(|| format!("no .tonk/ found above {}", start.display()))?;
-        Self::open(&root).await
-    }
-
-    /// Open an already-existing site at the given `.tonk/`
-    /// directory. Errors if the directory exists but the dialog
-    /// repository inside it is missing or unreadable.
+    /// Open an already-existing site at the given directory.
+    /// Errors if the directory exists but the dialog repository
+    /// inside it is missing or unreadable.
     pub async fn open(root: &Path) -> Result<Self> {
         Self::open_with(root, default_config()).await
-    }
-
-    /// Initialize a new site under `parent` — creates the
-    /// `.tonk/` directory if missing, bootstraps the dialog
-    /// repository, and opens the `main` branch. Idempotent: if
-    /// the site already exists, returns it without changes.
-    pub async fn init(parent: &Path) -> Result<Self> {
-        Self::init_with(parent, default_config()).await
     }
 
     /// [`Self::open`] with caller-supplied [`SiteConfig`] —
@@ -133,13 +118,30 @@ impl TonkSite {
     }
 
     /// [`Self::init`] with caller-supplied [`SiteConfig`].
+    ///
+    /// Historical parent-relative form: the site lands at
+    /// `parent/.tonk/`. Kept for the test fixtures that model the
+    /// pre-registry layout; new callers go through
+    /// [`Self::init_at_with`].
     pub async fn init_with(parent: &Path, config: SiteConfig) -> Result<Self> {
         let parent = parent
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", parent.display()))?;
-        let root = parent.join(SITE_DIRNAME);
-        std::fs::create_dir_all(&root)
+        Self::init_at_with(&parent.join(SITE_DIRNAME), config).await
+    }
+
+    /// Initialize (or adopt) a site whose directory is exactly
+    /// `root` — no `.tonk/` nesting. This is what canonical spot
+    /// storage uses: the registry maps a spot name to this
+    /// directory. Idempotent: an existing repository at `root` is
+    /// loaded, not clobbered, which is also how `tonk spot new
+    /// --site <path>` adopts pre-existing storage.
+    pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("could not canonicalize {}", root.display()))?;
 
         let (profile, operator) = build_profile_and_operator(&root, &config).await?;
 
@@ -299,33 +301,14 @@ pub fn default_config() -> SiteConfig {
     }
 }
 
-/// Walk up the directory tree from `start` looking for a sibling
-/// `.tonk/` directory. Returns the absolute path to that
-/// directory if found.
-fn find_site_root(start: &Path) -> Option<PathBuf> {
-    let mut current: PathBuf = start
-        .canonicalize()
-        .ok()
-        .or_else(|| start.is_absolute().then(|| start.to_path_buf()))?;
-    loop {
-        let candidate = current.join(SITE_DIRNAME);
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
 /// Open (or create) the shared profile and build a tonk
-/// operator rooted at `.tonk/` for repository data. Identity
-/// lives at `config.profile_directory`; only the dialog-repo
-/// blocks live under `.tonk/`.
+/// operator rooted at the site directory for repository data.
+/// Identity lives at `config.profile_directory`; only the
+/// dialog-repo blocks live under the site directory.
 ///
 /// Exposed as `pub(crate)` so the [`crate::invite`] module can
 /// reuse the same wiring when claiming an invite into a fresh
-/// `.tonk/` (the join path provisions the space from a verifier
+/// site (the join path provisions the space from a verifier
 /// credential rather than via `profile.repository(...).open()`,
 /// but the profile + operator setup is the same).
 pub(crate) async fn build_profile_and_operator(

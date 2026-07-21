@@ -2,19 +2,22 @@
 
 A local-only CLI for reading and writing tonk facts via asserted-notation.
 
-`tonk` is the headless companion to tonk-ui: it operates on a `.tonk/` site
-(a single dialog repository named `main`, working on the `main` branch) without
-a browser. The mutating verb is `eval`, which runs a notation document through
-the analyze → query → plan → commit pipeline. The other subcommands are
-read-only introspection, one-shot setup, sync, and sharing helpers. The crate
-also exposes a small library surface (`tonk::eval`, `tonk::site`, …) so
-integration tests and SDK consumers can drive the same code paths as the binary.
+`tonk` is the headless companion to tonk-ui, without a browser: it operates on
+the selected **spot** — a named fact store resolved through a central
+registry, so the CLI works from any directory. The mutating verb is `eval`,
+which runs a notation document through the analyze → query → plan → commit
+pipeline. The other subcommands are read-only introspection, one-shot setup,
+sync, and sharing helpers. The crate also exposes a small library surface
+(`tonk::eval`, `tonk::site`, …) so integration tests and SDK consumers can
+drive the same code paths as the binary.
 
 ## Usage
 
 ```sh
-# Initialize a .tonk/ repo in the current directory.
-tonk init
+# Create a spot (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
+tonk spot new garden
+# Later, from anywhere:
+tonk use garden
 
 # Evaluate a notation document: inline, from a file, or piped.
 tonk eval -c 'person:'
@@ -74,16 +77,23 @@ nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 
 ## How it works
 
-### The `.tonk/` site
+### Spots and sites
 
-A site is a working directory containing a `.tonk/` sub-directory that holds one
-dialog repository (`main`), opened on the `main` branch. Multi-branch and
-multi-repo workflows are intentionally not exposed. Most commands call
-`TonkSite::discover_and_open`, which walks up from the current directory to find
-`.tonk/` and assembles the working context: the user's profile, an operator
-rooted at `.tonk/`, the repository handle, and the opened branch. The local
-identity is a shared profile (`tonk identity` prints its DID; `--reset` mints a
-fresh one).
+A **spot** is a named entry in `spots.json`, a registry kept under the
+platform data dir (`~/Library/Application Support/tonk/` on macOS). Each
+entry points at a **site**: the working directory holding the actual dialog
+repository (`main`, opened on the `main` branch — multi-branch and multi-repo
+workflows are intentionally not exposed). Sites live canonically under
+`spots/<name>/`, or anywhere you like via `tonk spot new --site <path>`.
+Commands resolve which spot to use as `--spot` > `TONK_SPOT` > the `tonk use`
+selection, then open its site. `spots.json` is plain JSON, so any application
+can read the registry without going through the CLI.
+
+To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
+somewhere you keep data outside the canonical store) as a spot, point
+`--site` at it: `tonk spot new proj --site ~/proj/.tonk`. The local identity
+is a shared profile (`tonk identity` prints its DID; `--reset` mints a fresh
+one).
 
 ### The eval pipeline
 
@@ -109,11 +119,12 @@ with errors that name the upstream-not-configured and non-fast-forward cases.
 Remotes are UCAN-S3 access services registered on the repository's meta branch.
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
-embedded ephemeral key); `tonk join` claims one into a fresh `.tonk/`. The
-`share` subcommands push to the upstream, mint an invite that embeds the
-upstream URL, and append a launcher URL that lands the recipient on a live view
-of the data: an auto-rendered concept route (`share concept`), the iframe HTML
-viewer (`share view`), or a `<tonk-display>` declarative view (`share display`).
+embedded ephemeral key); `tonk join` claims one into a fresh spot
+(`tonk join <url> --name <spot>`). The `share` subcommands push to the
+upstream, mint an invite that embeds the upstream URL, and append a launcher
+URL that lands the recipient on a live view of the data: an auto-rendered
+concept route (`share concept`), the iframe HTML viewer (`share view`), or a
+`<tonk-display>` declarative view (`share display`).
 
 ## Built on
 
