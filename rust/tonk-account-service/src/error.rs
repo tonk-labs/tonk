@@ -7,12 +7,19 @@ use worker::Response;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
+    /// Invalid or malformed request argument (HTTP 400).
     InvalidArgument,
+    /// Request lacks valid authentication credentials (HTTP 401).
     Unauthorized,
+    /// Authentication succeeded but insufficient permissions (HTTP 403).
     Forbidden,
+    /// Requested resource not found (HTTP 404).
     NotFound,
+    /// Request conflicts with existing state (HTTP 409).
     Conflict,
+    /// Request rate limit exceeded (HTTP 429).
     RateLimited,
+    /// Internal server error (HTTP 500).
     InternalError,
 }
 
@@ -34,7 +41,9 @@ impl ErrorCode {
 /// Structured error carried through handlers and serialized to the body.
 #[derive(Debug, Serialize)]
 pub struct ServiceError {
+    /// The error code classifying the failure.
     pub code: ErrorCode,
+    /// Human-readable error message.
     pub message: String,
 }
 
