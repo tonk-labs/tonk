@@ -98,7 +98,14 @@ First deploy, in order:
 5. Add the DKIM records Resend requires for sending from `tonk.spot` in the
    Cloudflare dashboard (DNS for the zone), so `accounts@tonk.spot` mail is
    authenticated.
-6. `wrangler deploy -c wrangler.account.toml`.
+6. Add a WAF rate limiting rule for the code endpoint (zone `tonk.spot`,
+   Security > WAF > Rate limiting rules): expression
+   `(http.host eq "accounts.tonk.spot" and http.request.uri.path eq "/codes"
+   and http.request.method eq "POST")`, counting by IP, 3 requests per
+   10 seconds, action Block. The service enforces a per-email cooldown but
+   nothing per-IP, so without this rule an unauthenticated caller can fan
+   out sends to arbitrary distinct addresses.
+7. `wrangler deploy -c wrangler.account.toml`.
 
 There is no staging env stanza yet: staging's apex is moving behind
 Tailscale, and its env should be added to `wrangler.account.toml` once that
