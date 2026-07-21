@@ -42,13 +42,19 @@ dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
 tonk-identity = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [features]
 default = []
 # Native test/dev backends (rusqlite store, in-memory chains, captured email)
 helpers = ["dep:rusqlite"]
 
 [lints.rust]
+# The dialog_common::test macro uses cfg conditions that originate from
+# the macro crate; check-cfg needs to be told to expect these values.
 unexpected_cfgs = { level = "warn", check-cfg = [
   "cfg(dialog_test_native_integration)",
   "cfg(dialog_test_wasm_integration)",
+  'cfg(feature, values("web-integration-tests"))',
 ] }

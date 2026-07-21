@@ -4271,6 +4271,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tonk-identity",
  "worker",
  "worker-macros",

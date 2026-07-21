@@ -12,6 +12,7 @@ use worker::*;
 
 pub mod error;
 mod handlers;
+pub mod store;
 
 /// Worker entrypoint
 #[event(fetch)]
