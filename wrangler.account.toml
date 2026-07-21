@@ -1,0 +1,21 @@
+name = "tonk-account-service"
+main = "./result/tonk-account-service/worker/shim.mjs"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+routes = [{ pattern = "accounts.tonk.spot", custom_domain = true }]
+
+[build]
+command = "nix build .#tonk-cloudflare-artifacts"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tonk-accounts"
+database_id = "" # filled at first deploy: wrangler d1 create tonk-accounts
+
+[[r2_buckets]]
+binding = "CHAINS"
+bucket_name = "tonk-account-chains"
+
+[vars]
+EMAIL_FROM = "tonk <accounts@tonk.spot>"
