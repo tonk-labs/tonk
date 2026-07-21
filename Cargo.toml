@@ -15,6 +15,7 @@ members = [
     "rust/tonk-guest",
     "rust/tonk-host",
     "rust/tonk-invite",
+    "rust/tonk-identity",
     "rust/tonk-inspector",
     "rust/tonk-language-server",
     "rust/tonk-macros",
@@ -56,6 +57,7 @@ tonk-evaluator = { path = "./rust/tonk-evaluator" }
 tonk-host = { path = "./rust/tonk-host" }
 tonk-inspector = { path = "./rust/tonk-inspector" }
 tonk-invite = { path = "./rust/tonk-invite" }
+tonk-identity = { path = "./rust/tonk-identity" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
@@ -161,6 +163,7 @@ webbrowser = "1.0"
 worker = "0.8.5"
 worker-macros = "0.8.5"
 serial_test = "3"
+zeroize = "1"
 
 # Bindgen
 wasm-bindgen = "=0.2.126"
