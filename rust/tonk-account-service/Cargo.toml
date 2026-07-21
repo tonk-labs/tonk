@@ -9,6 +9,11 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "tonk-account-local"
+path = "src/bin/local.rs"
+required-features = ["helpers"]
+
 [dependencies]
 worker = { workspace = true, features = ["d1"] }
 worker-macros = { workspace = true }
@@ -28,8 +33,22 @@ getrandom = { workspace = true }
 getrandom_0_2 = { workspace = true }
 thiserror = { workspace = true }
 
+# Native helpers server (optional, "helpers" feature)
+anyhow = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, optional = true, features = ["tokio"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { workspace = true, optional = true }
+tokio = { workspace = true, features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+], optional = true }
 
 # rand's getrandom 0.3 backend needs its wasm_js feature explicitly turned
 # on to build for the Workers wasm32 target; mirrors tonk-identity.
@@ -40,6 +59,7 @@ getrandom_0_3 = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
+reqwest = { workspace = true }
 tonk-identity = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
@@ -47,8 +67,18 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = []
-# Native test/dev backends (rusqlite store, in-memory chains, captured email)
-helpers = ["dep:rusqlite"]
+# Native test/dev backends (rusqlite store, in-memory chains, captured
+# email) plus a native hyper server routing the same HTTP surface as
+# the Cloudflare Worker.
+helpers = [
+  "dep:anyhow",
+  "dep:bytes",
+  "dep:http-body-util",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:rusqlite",
+  "dep:tokio",
+]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from

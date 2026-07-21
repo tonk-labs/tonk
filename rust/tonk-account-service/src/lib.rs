@@ -16,6 +16,8 @@ pub mod core;
 pub mod email;
 pub mod error;
 mod handlers;
+#[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
+pub mod helpers;
 pub mod store;
 
 /// Worker entrypoint: the full HTTP surface, backed by D1, R2, and

@@ -29,7 +29,14 @@ pub fn with_cors_headers(response: worker::Response) -> worker::Response {
 /// through as-is — including any library error text embedded by the
 /// `Invalid`/`Unauthorized` variants. Sanitizing that text is a
 /// deliberate follow-up, not done here.
-#[cfg(target_arch = "wasm32")]
+///
+/// Shared by the wasm handlers and the native helpers server
+/// ([`crate::helpers::server`]) so the two backends can't drift apart
+/// on error mapping.
+#[cfg(any(
+    target_arch = "wasm32",
+    all(feature = "helpers", not(target_arch = "wasm32"))
+))]
 pub fn ceremony_error(err: crate::core::CeremonyError) -> crate::error::ServiceError {
     use crate::core::CeremonyError;
     let message = match &err {
