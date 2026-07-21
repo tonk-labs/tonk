@@ -6,7 +6,7 @@
 
 use crate::derive::ROOT_KEY_CONTEXT;
 use anyhow::{Context, Result, anyhow};
-use js_sys::{Array, Uint8Array};
+use js_sys::{Array, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -57,11 +57,39 @@ fn prf_extensions() -> AuthenticationExtensionsClientInputs {
     extensions
 }
 
+/// The apex that owns tonk passkeys. The RP ID is the root-key custody
+/// boundary — every current and future origin under it can silently
+/// derive a visiting user's root key with one discoverable-credential
+/// assertion — so two invariants hold: nothing untrusted is ever served
+/// from `*.tonk.spot`, and staging deploys live off-apex so they mint
+/// disjoint credentials. Widening later is possible via Related Origin
+/// Requests; narrowing never is.
+const RP_APEX: &str = "tonk.spot";
+
+/// The pinned RP ID for hosts under the apex; `None` (WebAuthn's
+/// per-host default) everywhere else, which keeps localhost tests and
+/// off-apex staging working with their own credentials.
+fn apex_rp_id(host: &str) -> Option<&'static str> {
+    (host == RP_APEX || host.ends_with(".tonk.spot")).then_some(RP_APEX)
+}
+
+/// The RP ID for the current browsing context, if the host is on-apex.
+fn current_rp_id() -> Option<&'static str> {
+    let window = web_sys::window()?;
+    let location = Reflect::get(&window.into(), &"location".into()).ok()?;
+    let hostname = Reflect::get(&location, &"hostname".into()).ok()?;
+    let host = hostname.as_string()?;
+    apex_rp_id(&host)
+}
+
 /// Registration options: a discoverable, user-verified credential on
 /// this origin, with PRF requested up front.
 fn creation_options(user_name: &str) -> Result<PublicKeyCredentialCreationOptions> {
     let mut challenge = rand::random::<[u8; 32]>();
     let rp = PublicKeyCredentialRpEntity::new("tonk");
+    if let Some(id) = current_rp_id() {
+        rp.set_id(id);
+    }
     let mut user_id = rand::random::<[u8; 16]>();
     let user = PublicKeyCredentialUserEntity::new_with_u8_slice(user_name, user_name, &mut user_id);
     let params = Array::new();
@@ -125,6 +153,9 @@ pub async fn prf_output() -> Result<Zeroizing<[u8; 32]>> {
     let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
     options.set_user_verification(UserVerificationRequirement::Required);
     options.set_extensions(&prf_extensions());
+    if let Some(id) = current_rp_id() {
+        options.set_rp_id(id);
+    }
     let request = CredentialRequestOptions::new();
     request.set_public_key(&options);
     let promise = credentials()?
@@ -165,5 +196,28 @@ mod tests {
         assert_eq!(resident.as_string().as_deref(), Some("required"));
         let verification = Reflect::get(&selection, &"userVerification".into()).unwrap();
         assert_eq!(verification.as_string().as_deref(), Some("required"));
+    }
+
+    #[dialog_common::test]
+    fn it_pins_the_rp_id_to_the_apex_only_for_spot_hosts() {
+        assert_eq!(apex_rp_id("tonk.spot"), Some("tonk.spot"));
+        assert_eq!(apex_rp_id("hub.tonk.spot"), Some("tonk.spot"));
+        assert_eq!(apex_rp_id("a.b.tonk.spot"), Some("tonk.spot"));
+        assert_eq!(apex_rp_id("staging.tonk.xyz"), None);
+        assert_eq!(apex_rp_id("localhost"), None);
+        // A suffix match must not treat a sibling registrable domain as ours.
+        assert_eq!(apex_rp_id("evil-tonk.spot"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_leaves_the_rp_id_unset_off_apex() {
+        // wasm tests run on a localhost origin, which is off-apex, so the
+        // creation options must carry no id and requests no rpId.
+        let options = creation_options("tester").unwrap();
+        let rp = Reflect::get(&options, &"rp".into()).unwrap();
+        assert!(
+            Reflect::get(&rp, &"id".into()).unwrap().is_undefined(),
+            "rp.id must stay unset off the tonk.spot apex"
+        );
     }
 }
