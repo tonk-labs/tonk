@@ -6,7 +6,11 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::{Account, CodeRow, Device, DeviceStatus, Store, StoreError};
+use super::{
+    Account, BUMP_ATTEMPTS, CodeRow, DELETE_CODE, Device, DeviceStatus, INSERT_ACCOUNT,
+    INSERT_DEVICE, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    SELECT_DEVICES_BY_ACCOUNT, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+};
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
 ///
@@ -62,20 +66,15 @@ fn device_from_row(row: DeviceRow) -> Result<Device, StoreError> {
 impl Store for SqliteStore {
     async fn code(&self, email: &str) -> Result<Option<CodeRow>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        conn.query_row(
-            "SELECT email, code_hash, created_at, expires_at, attempts \
-             FROM email_codes WHERE email = ?1",
-            params![email],
-            |row| {
-                Ok(CodeRow {
-                    email: row.get(0)?,
-                    code_hash: row.get(1)?,
-                    created_at: row.get::<_, i64>(2)? as u64,
-                    expires_at: row.get::<_, i64>(3)? as u64,
-                    attempts: row.get::<_, i64>(4)? as u32,
-                })
-            },
-        )
+        conn.query_row(SELECT_CODE, params![email], |row| {
+            Ok(CodeRow {
+                email: row.get(0)?,
+                code_hash: row.get(1)?,
+                created_at: row.get::<_, i64>(2)? as u64,
+                expires_at: row.get::<_, i64>(3)? as u64,
+                attempts: row.get::<_, i64>(4)? as u32,
+            })
+        })
         .optional()
         .map_err(map_err)
     }
@@ -83,13 +82,7 @@ impl Store for SqliteStore {
     async fn put_code(&self, row: &CodeRow) -> Result<(), StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.execute(
-            "INSERT INTO email_codes (email, code_hash, created_at, expires_at, attempts) \
-             VALUES (?1, ?2, ?3, ?4, 0) \
-             ON CONFLICT(email) DO UPDATE SET \
-                code_hash = excluded.code_hash, \
-                created_at = excluded.created_at, \
-                expires_at = excluded.expires_at, \
-                attempts = 0",
+            UPSERT_CODE,
             params![
                 row.email,
                 row.code_hash,
@@ -103,18 +96,14 @@ impl Store for SqliteStore {
 
     async fn bump_attempts(&self, email: &str) -> Result<(), StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        conn.execute(
-            "UPDATE email_codes SET attempts = attempts + 1 WHERE email = ?1",
-            params![email],
-        )
-        .map_err(map_err)?;
+        conn.execute(BUMP_ATTEMPTS, params![email])
+            .map_err(map_err)?;
         Ok(())
     }
 
     async fn delete_code(&self, email: &str) -> Result<(), StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        conn.execute("DELETE FROM email_codes WHERE email = ?1", params![email])
-            .map_err(map_err)?;
+        conn.execute(DELETE_CODE, params![email]).map_err(map_err)?;
         Ok(())
     }
 
@@ -127,8 +116,7 @@ impl Store for SqliteStore {
     ) -> Result<i64, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.execute(
-            "INSERT INTO accounts (email, root_did, credential_id, created_at) \
-             VALUES (?1, ?2, ?3, ?4)",
+            INSERT_ACCOUNT,
             params![email, root_did, credential_id, created_at as i64],
         )
         .map_err(map_err)?;
@@ -137,20 +125,15 @@ impl Store for SqliteStore {
 
     async fn account_by_root(&self, root_did: &str) -> Result<Option<Account>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        conn.query_row(
-            "SELECT id, email, root_did, credential_id, created_at \
-             FROM accounts WHERE root_did = ?1",
-            params![root_did],
-            |row| {
-                Ok(Account {
-                    id: row.get(0)?,
-                    email: row.get(1)?,
-                    root_did: row.get(2)?,
-                    credential_id: row.get(3)?,
-                    created_at: row.get::<_, i64>(4)? as u64,
-                })
-            },
-        )
+        conn.query_row(SELECT_ACCOUNT_BY_ROOT, params![root_did], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                root_did: row.get(2)?,
+                credential_id: row.get(3)?,
+                created_at: row.get::<_, i64>(4)? as u64,
+            })
+        })
         .optional()
         .map_err(map_err)
     }
@@ -158,8 +141,7 @@ impl Store for SqliteStore {
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.execute(
-            "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            INSERT_DEVICE,
             params![
                 device.account_id,
                 device.device_did,
@@ -175,12 +157,7 @@ impl Store for SqliteStore {
 
     async fn devices(&self, account_id: i64) -> Result<Vec<Device>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT account_id, device_did, delegation_cid, name, status, created_at \
-                 FROM devices WHERE account_id = ?1",
-            )
-            .map_err(map_err)?;
+        let mut stmt = conn.prepare(SELECT_DEVICES_BY_ACCOUNT).map_err(map_err)?;
         let rows: Vec<DeviceRow> = stmt
             .query_map(params![account_id], |row| {
                 Ok((
@@ -201,21 +178,16 @@ impl Store for SqliteStore {
     async fn device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let row: Option<DeviceRow> = conn
-            .query_row(
-                "SELECT account_id, device_did, delegation_cid, name, status, created_at \
-                 FROM devices WHERE device_did = ?1",
-                params![device_did],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )
+            .query_row(SELECT_DEVICE_BY_DID, params![device_did], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
             .optional()
             .map_err(map_err)?;
         row.map(device_from_row).transpose()
@@ -224,10 +196,7 @@ impl Store for SqliteStore {
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
-            .execute(
-                "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2",
-                params![account_id, device_did],
-            )
+            .execute(UPDATE_DEVICE_REVOKE, params![account_id, device_did])
             .map_err(map_err)?;
         Ok(changed > 0)
     }

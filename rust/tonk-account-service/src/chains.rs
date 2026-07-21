@@ -76,3 +76,6 @@ mod memory {
 
 #[cfg(any(test, feature = "helpers"))]
 pub use memory::MemoryChainStore;
+
+#[cfg(target_arch = "wasm32")]
+pub mod r2;

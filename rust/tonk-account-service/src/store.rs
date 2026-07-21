@@ -142,5 +142,52 @@ pub trait Store {
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError>;
 }
 
+/// SQL: look up the pending code row for an email.
+pub const SELECT_CODE: &str =
+    "SELECT email, code_hash, created_at, expires_at, attempts FROM email_codes WHERE email = ?1";
+
+/// SQL: insert a fresh code for an email, or replace an existing one and
+/// reset its attempt counter.
+pub const UPSERT_CODE: &str = "INSERT INTO email_codes (email, code_hash, created_at, expires_at, attempts) \
+     VALUES (?1, ?2, ?3, ?4, 0) \
+     ON CONFLICT(email) DO UPDATE SET \
+        code_hash = excluded.code_hash, \
+        created_at = excluded.created_at, \
+        expires_at = excluded.expires_at, \
+        attempts = 0";
+
+/// SQL: increment the attempt counter for an email's pending code.
+pub const BUMP_ATTEMPTS: &str = "UPDATE email_codes SET attempts = attempts + 1 WHERE email = ?1";
+
+/// SQL: remove the pending code for an email.
+pub const DELETE_CODE: &str = "DELETE FROM email_codes WHERE email = ?1";
+
+/// SQL: insert a new account.
+pub const INSERT_ACCOUNT: &str =
+    "INSERT INTO accounts (email, root_did, credential_id, created_at) VALUES (?1, ?2, ?3, ?4)";
+
+/// SQL: look up an account by root DID.
+pub const SELECT_ACCOUNT_BY_ROOT: &str =
+    "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE root_did = ?1";
+
+/// SQL: register a device under an account.
+pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+/// SQL: list the devices registered under an account.
+pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \
+     FROM devices WHERE account_id = ?1";
+
+/// SQL: look up a device by its DID.
+pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \
+     FROM devices WHERE device_did = ?1";
+
+/// SQL: mark a device as revoked.
+pub const UPDATE_DEVICE_REVOKE: &str =
+    "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2";
+
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;
+
+#[cfg(target_arch = "wasm32")]
+pub mod d1;
