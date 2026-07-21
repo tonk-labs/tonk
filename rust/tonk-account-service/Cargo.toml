@@ -1,0 +1,54 @@
+[package]
+name = "tonk-account-service"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Account registry: email verification, device registry, chain backup"
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { workspace = true, features = ["d1"] }
+worker-macros = { workspace = true }
+
+dialog-credentials = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+
+blake3 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+getrandom = { workspace = true }
+getrandom_0_2 = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { workspace = true, optional = true }
+
+# rand's getrandom 0.3 backend needs its wasm_js feature explicitly turned
+# on to build for the Workers wasm32 target; mirrors tonk-identity.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_0_3 = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+dialog-credentials = { workspace = true }
+tonk-identity = { workspace = true }
+
+[features]
+default = []
+# Native test/dev backends (rusqlite store, in-memory chains, captured email)
+helpers = ["dep:rusqlite"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(dialog_test_native_integration)",
+  "cfg(dialog_test_wasm_integration)",
+] }
