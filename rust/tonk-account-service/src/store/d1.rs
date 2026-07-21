@@ -14,8 +14,9 @@ use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
     Account, BUMP_ATTEMPTS, CodeRow, DELETE_CODE, Device, DeviceStatus, INSERT_ACCOUNT,
-    INSERT_DEVICE, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE,
+    SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT, Store, StoreError, UPDATE_DEVICE_REVOKE,
+    UPSERT_CODE,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -185,6 +186,51 @@ impl Store for D1Store {
         result
             .meta()
             .map_err(map_err)?
+            .and_then(|meta| meta.last_row_id)
+            .ok_or_else(|| StoreError::Internal("insert did not return a row id".to_string()))
+    }
+
+    async fn create_account_with_device(
+        &self,
+        email: &str,
+        root_did: &str,
+        credential_id: &str,
+        device: &NewDevice,
+        created_at: u64,
+    ) -> Result<i64, StoreError> {
+        // D1 batches run as a single transaction: either every statement
+        // commits or none does. The device insert reaches back for the
+        // account id it needs via SQLite's `last_insert_rowid()` rather
+        // than a value threaded in from Rust, since the account id isn't
+        // known until the first statement in this same batch executes.
+        let insert_account = self
+            .0
+            .prepare(INSERT_ACCOUNT)
+            .bind(&[
+                JsValue::from(email),
+                JsValue::from(root_did),
+                JsValue::from(credential_id),
+                JsValue::from_f64(created_at as f64),
+            ])
+            .map_err(map_err)?;
+        let insert_device = self
+            .0
+            .prepare(INSERT_DEVICE_FOR_NEW_ACCOUNT)
+            .bind(&[
+                JsValue::from(device.device_did.as_str()),
+                JsValue::from(device.delegation_cid.as_str()),
+                JsValue::from(device.name.as_str()),
+                JsValue::from_f64(created_at as f64),
+            ])
+            .map_err(map_err)?;
+        let results = self
+            .0
+            .batch(vec![insert_account, insert_device])
+            .await
+            .map_err(map_err)?;
+        results
+            .first()
+            .and_then(|result| result.meta().ok().flatten())
             .and_then(|meta| meta.last_row_id)
             .ok_or_else(|| StoreError::Internal("insert did not return a row id".to_string()))
     }

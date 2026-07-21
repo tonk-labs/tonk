@@ -5,7 +5,7 @@
 use crate::core::CeremonyError;
 use crate::core::codes::verify_code;
 use crate::core::delegation::check_device_delegation;
-use crate::store::{Device, DeviceStatus, Store};
+use crate::store::{NewDevice, Store};
 
 /// A request to create a new account and register its first device.
 pub struct CreateAccount {
@@ -29,7 +29,12 @@ pub struct CreateAccount {
 ///
 /// Verifies `request.code` first, consuming it, then checks the
 /// presented delegation before touching the account registry. The
-/// email address is lowercased before being stored.
+/// email address is lowercased before being stored. The account and its
+/// first device are created atomically: a conflict on the device DID
+/// (for example, an attacker who has pre-registered a delegation to the
+/// victim's device DID under a different account) rolls back the
+/// account row too, rather than stranding a zero-device account that
+/// has permanently burned the email and root DID.
 pub async fn create_account<S: Store>(
     store: &S,
     request: &CreateAccount,
@@ -44,22 +49,17 @@ pub async fn create_account<S: Store>(
     .await?;
 
     let account_id = store
-        .create_account(
+        .create_account_with_device(
             &request.email.to_lowercase(),
             &request.root_did,
             &request.credential_id,
+            &NewDevice {
+                device_did: request.device_did.clone(),
+                delegation_cid,
+                name: request.device_name.clone(),
+            },
             now,
         )
-        .await?;
-    store
-        .insert_device(&Device {
-            account_id,
-            device_did: request.device_did.clone(),
-            delegation_cid,
-            name: request.device_name.clone(),
-            status: DeviceStatus::Active,
-            created_at: now,
-        })
         .await?;
 
     Ok(account_id)
@@ -71,6 +71,7 @@ mod tests {
     use crate::core::codes::request_code;
     use crate::email::CapturedEmail;
     use crate::store::sqlite::SqliteStore;
+    use crate::store::{Device, DeviceStatus};
 
     const ROOT_PRF: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [8u8; 32];
@@ -230,5 +231,51 @@ mod tests {
             create_account(&store, &second, 500).await,
             Err(CeremonyError::Conflict(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_strand_an_account_when_the_device_insert_conflicts() {
+        let store = SqliteStore::in_memory().unwrap();
+        let sender = CapturedEmail::default();
+        request_code(&store, &sender, "a@x.com", "123456", 100)
+            .await
+            .unwrap();
+        let (root_did, device_did, delegation_hex) = fixture().await;
+
+        // Pre-register the fixture's device DID under a different
+        // account, as an attacker front-running the victim's device DID
+        // would. Without atomicity, the account insert below would
+        // still succeed and the device insert would fail, permanently
+        // burning the email and root DID with zero devices registered.
+        let other_id = store
+            .create_account("other@x.com", "did:key:zOther", "cred-other", 1)
+            .await
+            .unwrap();
+        store
+            .insert_device(&Device {
+                account_id: other_id,
+                device_did: device_did.clone(),
+                delegation_cid: "bafyStolen".into(),
+                name: "attacker".into(),
+                status: DeviceStatus::Active,
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+
+        let request = CreateAccount {
+            email: "a@x.com".into(),
+            code: "123456".into(),
+            root_did: root_did.clone(),
+            credential_id: "cred".into(),
+            device_did,
+            device_name: "laptop".into(),
+            delegation_hex,
+        };
+        assert!(matches!(
+            create_account(&store, &request, 200).await,
+            Err(CeremonyError::Conflict(_))
+        ));
+        assert!(store.account_by_root(&root_did).await.unwrap().is_none());
     }
 }

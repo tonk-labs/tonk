@@ -39,6 +39,20 @@ pub struct Device {
     pub created_at: u64,
 }
 
+/// A device to register as part of atomically creating an account, before
+/// the owning account's row id is known. Used by
+/// [`Store::create_account_with_device`]; the device is always registered
+/// [`DeviceStatus::Active`].
+#[derive(Debug, Clone)]
+pub struct NewDevice {
+    /// The device's DID.
+    pub device_did: String,
+    /// CID of the root → device delegation.
+    pub delegation_cid: String,
+    /// Human-readable device name.
+    pub name: String,
+}
+
 /// Lifecycle state of a [`Device`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceStatus {
@@ -127,6 +141,22 @@ pub trait Store {
     /// Look up an account by root DID.
     async fn account_by_root(&self, root_did: &str) -> Result<Option<Account>, StoreError>;
 
+    /// Atomically create a new account and register its first device.
+    ///
+    /// Either both rows are created or neither is: a conflict on the
+    /// email, root DID, *or* the device DID rolls back the whole
+    /// operation, so a device-registration failure can never strand an
+    /// account with zero devices. Returns `StoreError::Conflict` in that
+    /// case.
+    async fn create_account_with_device(
+        &self,
+        email: &str,
+        root_did: &str,
+        credential_id: &str,
+        device: &NewDevice,
+        created_at: u64,
+    ) -> Result<i64, StoreError>;
+
     /// Register a device under an account. Returns `StoreError::Conflict`
     /// if the device DID is already registered.
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError>;
@@ -173,6 +203,15 @@ pub const SELECT_ACCOUNT_BY_ROOT: &str =
 /// SQL: register a device under an account.
 pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
      VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+/// SQL: register a device under the account just created by a preceding
+/// `INSERT_ACCOUNT` statement in the same batch/transaction on this
+/// connection, via SQLite's `last_insert_rowid()`. Used by
+/// [`Store::create_account_with_device`]'s D1 batch, where the new
+/// account's id is not otherwise known until the batch commits. Always
+/// registers the device as `active`.
+pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
+     VALUES (last_insert_rowid(), ?1, ?2, ?3, 'active', ?4)";
 
 /// SQL: list the devices registered under an account.
 pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \

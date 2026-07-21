@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     Account, BUMP_ATTEMPTS, CodeRow, DELETE_CODE, Device, DeviceStatus, INSERT_ACCOUNT,
-    INSERT_DEVICE, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    INSERT_DEVICE, NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
     SELECT_DEVICES_BY_ACCOUNT, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
 };
 
@@ -121,6 +121,38 @@ impl Store for SqliteStore {
         )
         .map_err(map_err)?;
         Ok(conn.last_insert_rowid())
+    }
+
+    async fn create_account_with_device(
+        &self,
+        email: &str,
+        root_did: &str,
+        credential_id: &str,
+        device: &NewDevice,
+        created_at: u64,
+    ) -> Result<i64, StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        tx.execute(
+            INSERT_ACCOUNT,
+            params![email, root_did, credential_id, created_at as i64],
+        )
+        .map_err(map_err)?;
+        let account_id = tx.last_insert_rowid();
+        tx.execute(
+            INSERT_DEVICE,
+            params![
+                account_id,
+                device.device_did,
+                device.delegation_cid,
+                device.name,
+                DeviceStatus::Active.as_str(),
+                created_at as i64,
+            ],
+        )
+        .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        Ok(account_id)
     }
 
     async fn account_by_root(&self, root_did: &str) -> Result<Option<Account>, StoreError> {
