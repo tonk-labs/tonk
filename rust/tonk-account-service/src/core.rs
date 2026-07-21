@@ -11,6 +11,7 @@ use crate::store::StoreError;
 pub mod accounts;
 pub mod codes;
 pub mod delegation;
+pub mod devices;
 
 /// Errors shared by every ceremony in this crate.
 #[derive(Debug)]
