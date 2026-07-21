@@ -11,6 +11,7 @@
 use worker::*;
 
 pub mod auth;
+pub mod chains;
 pub mod core;
 pub mod email;
 pub mod error;

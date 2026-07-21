@@ -5,10 +5,12 @@
 //! against the production D1/real-mail backends and the in-memory/captured
 //! test doubles.
 
+use crate::chains::ChainError;
 use crate::error::ErrorCode;
 use crate::store::StoreError;
 
 pub mod accounts;
+pub mod backup;
 pub mod codes;
 pub mod delegation;
 pub mod devices;
@@ -37,6 +39,14 @@ impl From<StoreError> for CeremonyError {
         match err {
             StoreError::Conflict(msg) => CeremonyError::Conflict(msg),
             StoreError::Internal(msg) => CeremonyError::Internal(msg),
+        }
+    }
+}
+
+impl From<ChainError> for CeremonyError {
+    fn from(err: ChainError) -> Self {
+        match err {
+            ChainError::Internal(msg) => CeremonyError::Internal(msg),
         }
     }
 }
