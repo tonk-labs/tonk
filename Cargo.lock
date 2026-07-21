@@ -1924,6 +1924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac 0.12.1",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4440,6 +4449,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-identity"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "dialog-common",
+ "dialog-credentials",
+ "dialog-ucan-core",
+ "dialog-varsig",
+ "getrandom 0.3.4",
+ "hex",
+ "hkdf",
+ "js-sys",
+ "rand 0.9.5",
+ "sha2 0.10.9",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+ "zeroize",
+]
+
+[[package]]
 name = "tonk-inspector"
 version = "0.5.0"
 dependencies = [
@@ -4683,6 +4715,7 @@ dependencies = [
  "tonk-analytics",
  "tonk-common",
  "tonk-host",
+ "tonk-identity",
  "tonk-portal",
  "tonk-worker",
  "tonk-worker-api",

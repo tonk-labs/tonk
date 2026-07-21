@@ -1,0 +1,58 @@
+[package]
+name = "tonk-identity"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Root identity derived from a passkey: PRF-derived root key and the root-to-device delegation."
+
+[dependencies]
+anyhow = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+hkdf = { workspace = true }
+sha2_0_10 = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_0_3 = { workspace = true }
+hex = { workspace = true }
+js-sys = { workspace = true }
+rand = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "AuthenticationExtensionsClientInputs",
+    "AuthenticationExtensionsClientOutputs",
+    "AuthenticationExtensionsPrfInputs",
+    "AuthenticationExtensionsPrfOutputs",
+    "AuthenticationExtensionsPrfValues",
+    "AuthenticatorSelectionCriteria",
+    "CredentialCreationOptions",
+    "CredentialRequestOptions",
+    "CredentialsContainer",
+    "Navigator",
+    "PublicKeyCredential",
+    "PublicKeyCredentialCreationOptions",
+    "PublicKeyCredentialParameters",
+    "PublicKeyCredentialRequestOptions",
+    "PublicKeyCredentialRpEntity",
+    "PublicKeyCredentialType",
+    "PublicKeyCredentialUserEntity",
+    "UserVerificationRequirement",
+    "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+hex = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
