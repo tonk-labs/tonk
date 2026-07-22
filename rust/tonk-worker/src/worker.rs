@@ -695,6 +695,45 @@ mod route_for_tests {
             "the same ticket now drains at the active cadence"
         );
     }
+
+    /// The self-scheduled loop ticks every [`SYNC_LOOP_MS`] and every tick is
+    /// refused for the whole hold — so the "should this refusal log" decision
+    /// must fire once per hold period, not once per tick, or a single hidden
+    /// tab floods the console for as long as it stays backgrounded.
+    #[dialog_common::test]
+    fn it_logs_a_drain_hold_once_per_quiet_period() {
+        let s = SyncScheduler::default();
+        s.begin_drain();
+        s.end_drain(0.0);
+
+        // First refusal after the drain completes: logs.
+        assert!(
+            s.should_log_hold(),
+            "the first refusal after a drain must log"
+        );
+        // Repeated refusals measured from that same drain completion: silent.
+        assert!(
+            !s.should_log_hold(),
+            "a second refusal in the same hold period must not re-log"
+        );
+        assert!(
+            !s.should_log_hold(),
+            "a third refusal in the same hold period must still not re-log"
+        );
+
+        // A new completed drain changes `last_drain_end`, re-arming the log
+        // with no separate reset.
+        s.begin_drain();
+        s.end_drain(60_000.0);
+        assert!(
+            s.should_log_hold(),
+            "a new drain completion must re-arm the log"
+        );
+        assert!(
+            !s.should_log_hold(),
+            "and the next refusal after that must again stay silent"
+        );
+    }
 }
 
 /// Trailing-edge debounce coordinator for the background sync drain, with a
@@ -748,6 +787,14 @@ struct SyncScheduler {
     /// `None` until the first drain completes: with no previous drain there is
     /// nothing to cool down from, so the first one runs immediately.
     last_drain_end: std::rc::Rc<std::cell::Cell<Option<f64>>>,
+    /// The `last_drain_end` value a hold-off refusal has already been logged
+    /// for. The self-scheduled loop ticks every [`SYNC_LOOP_MS`] and refuses
+    /// for the whole hold, so logging every refusal floods the console; this
+    /// lets [`Self::should_log_hold`] log only the first refusal after each
+    /// drain completion. `None` until the first logged refusal. A new drain
+    /// changes `last_drain_end`, which differs from whatever is stored here,
+    /// so the very next refusal re-arms the log with no separate reset.
+    logged_hold_at: std::rc::Rc<std::cell::Cell<Option<f64>>>,
     /// Set once the worker is being replaced. A dying worker must not start
     /// new sync work: the SW spec keeps it alive until every `waitUntil`
     /// settles and every fetch completes, so a drain scheduled (or a loop
@@ -774,6 +821,7 @@ impl Default for SyncScheduler {
             pending_since: Default::default(),
             cause: Default::default(),
             last_drain_end: Default::default(),
+            logged_hold_at: Default::default(),
             stopped: Default::default(),
             visible: std::rc::Rc::new(std::cell::Cell::new(true)),
         }
@@ -896,13 +944,33 @@ impl SyncScheduler {
         // visible on every browser because the `WindowClient` downcast fails),
         // it never prints, and the only other symptom is "the request count
         // didn't move".
-        if !allowed && quiet > SYNC_COOLDOWN_MS as f64 {
+        //
+        // Logged once per hold period, not once per refusal: the self-scheduled
+        // loop ticks every [`SYNC_LOOP_MS`] and every tick is refused for the
+        // whole hold, so logging each one is ~1800 lines/hour for a single
+        // hidden tab. See [`Self::should_log_hold`].
+        if !allowed && quiet > SYNC_COOLDOWN_MS as f64 && self.should_log_hold() {
             log!(
                 "sync drain held off: quiet={quiet}ms visible={} dirty={dirty}",
                 self.visible.get()
             );
         }
         allowed
+    }
+
+    /// Whether a hold-off refusal should be logged: true only for the first
+    /// refusal since the last drain completion, false for every later one in
+    /// the same hold period. Compares against `last_drain_end` rather than
+    /// counting refusals or timing a window, so a new drain re-arms it for
+    /// free — the value recorded here is exactly what the next completed
+    /// drain's `last_drain_end` will differ from.
+    fn should_log_hold(&self) -> bool {
+        let current = self.last_drain_end.get();
+        if self.logged_hold_at.get() == current {
+            return false;
+        }
+        self.logged_hold_at.set(current);
+        true
     }
 
     /// Mark a drain as started: take the `in_flight` guard and clear the burst
