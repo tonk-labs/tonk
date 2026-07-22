@@ -50,7 +50,8 @@ async fn derive_root_did() -> Result<JsValue, JsValue> {
     let signer = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    Ok(JsValue::from_str(&signer.did().to_string()))
+    let did = signer.did();
+    Ok(JsValue::from_str(did.as_ref()))
 }
 
 fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
