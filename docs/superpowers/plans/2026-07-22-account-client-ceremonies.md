@@ -123,7 +123,7 @@ Work:
 - Register a top-document `<tonk-account>` custom element and route `/account` to it without placing WebAuthn inside a sealed guest.
 - States: unlinked choice, email/code account creation, passkey self-link, working, success, and actionable failure.
 - Fetch the local device DID from `/api/identify`; never accept it from editable DOM state.
-- Account service base defaults to `https://accounts.tonk.spot` and is injectable in tests/off-apex staging.
+- Account service base defaults to `https://accounts.tonk.xyz` and is injectable in tests/off-apex staging.
 - Persist locally only after the remote mutation succeeds; if local persistence fails, retry it without repeating the root ceremony.
 - Add a Hub/FAB account entry that navigates to `/account`.
 - Browser test with a PRF-enabled CDP authenticator and native account-service helper: request captured code, create account, verify local persistence, start a fresh profile/browser context, self-link, and list both devices.

@@ -12,7 +12,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 /// Production account API used unless explicitly overridden.
-pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.spot";
+pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production top-document ceremony route.
 pub const DEFAULT_ACCOUNT_URL: &str = "https://tonk.spot/account/link";
 /// Credential-store key shared with the browser worker.

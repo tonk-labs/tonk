@@ -3,7 +3,7 @@ main = "./result/tonk-account-service/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-routes = [{ pattern = "accounts.tonk.spot", custom_domain = true }]
+routes = [{ pattern = "accounts.tonk.xyz", custom_domain = true }]
 
 [build]
 command = "nix build .#tonk-cloudflare-artifacts"

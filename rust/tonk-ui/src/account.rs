@@ -10,7 +10,7 @@ use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
 use tonk_worker_api::AccountStatus;
 
-const DEFAULT_ACCOUNT_SERVICE: &str = "https://accounts.tonk.spot";
+const DEFAULT_ACCOUNT_SERVICE: &str = "https://accounts.tonk.xyz";
 const STYLE_ID: &str = "tonk-account-styles";
 const PENDING_LINK: &str = "__tonkPendingAccountLink";
 const HANDOFF: &str = "__tonkCliHandoff";

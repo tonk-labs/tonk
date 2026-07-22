@@ -41,7 +41,7 @@ to `wrangler.account.toml`, its route must not live under `tonk.spot`.
 
 ## Endpoints
 
-The Worker (`src/lib.rs`) routes, all under `accounts.tonk.spot`. Every
+The Worker (`src/lib.rs`) routes, all under `accounts.tonk.xyz`. Every
 `POST` route also has a matching `OPTIONS` route for CORS preflight (204,
 permissive CORS headers).
 
@@ -117,9 +117,9 @@ First deploy, in order:
 5. Add the DKIM records Resend requires for sending from `tonk.spot` in the
    Cloudflare dashboard (DNS for the zone), so `accounts@tonk.spot` mail is
    authenticated.
-6. Add a WAF rate limiting rule for unauthenticated request creation (zone `tonk.spot`,
+6. Add a WAF rate limiting rule for unauthenticated request creation (zone `tonk.xyz`,
    Security > WAF > Rate limiting rules): expression
-   `(http.host eq "accounts.tonk.spot" and http.request.method eq "POST" and
+   `(http.host eq "accounts.tonk.xyz" and http.request.method eq "POST" and
    (http.request.uri.path eq "/codes" or http.request.uri.path eq "/links"))`,
    counting by IP, 3 requests per 10 seconds, action Block. The service
    enforces a per-email cooldown but nothing per-IP, so without this rule an
