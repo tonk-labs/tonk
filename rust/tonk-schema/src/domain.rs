@@ -317,6 +317,10 @@ pub mod command {
         pub struct EnableSync(pub Entity);
 
         /// The spot to attach the remote to.
+        ///
+        /// An `Entity` for the same reason as [`EnableSync`]: the value is a
+        /// `did:key:…`, and the worker's untagged `Value` decode reads any
+        /// `:`-bearing string as an `Entity`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.enable-sync")]
         pub struct Space(pub Entity);
@@ -334,6 +338,9 @@ pub mod command {
 
         /// Present when the caller wants an invite minted once the remote is
         /// attached. Absent means attach only.
+        ///
+        /// An `Entity` for the same reason as [`EnableSync`]: the sentinel
+        /// value (`tonk:share`) carries a `:`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.enable-sync")]
         pub struct Share(pub Entity);

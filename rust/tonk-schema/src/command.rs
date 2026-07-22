@@ -485,5 +485,11 @@ mod enable_sync {
             enable_sync::Share::the().to_string(),
             "xyz.tonk.enable-sync/share"
         );
+        // Shared verbatim with every other command's timestamp, so it must
+        // stay on the `dom.event` domain rather than this command's own.
+        assert_eq!(
+            enable_sync::TimeStamp::the().to_string(),
+            "dom.event/time-stamp"
+        );
     }
 }
