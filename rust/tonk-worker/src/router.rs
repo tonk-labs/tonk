@@ -357,12 +357,18 @@ pub mod tests {
     /// The state has a profile and operator but *no* repository —
     /// tests that need one call [`put_repo`] with a display label and
     /// use the minted routing key it returns. Every create mints a
-    /// fresh identity, so repeated runs never collide even when they
-    /// share a label.
+    /// fresh identity for the repos it makes, but the profile itself
+    /// is durable IndexedDB state keyed by name: each call mints its
+    /// own unique profile name so tests that rename or restamp the
+    /// profile never bleed into one another.
     pub async fn test_state() -> TonkState {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let profile_name = format!("test-tonk-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open("test-tonk")
+        let profile = Profile::open(&profile_name)
             .perform(&storage)
             .await
             .expect("Failed to create test profile");
@@ -378,7 +384,7 @@ pub mod tests {
         TonkState {
             profile,
             operator,
-            profile_name: "test-tonk".to_string(),
+            profile_name,
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
