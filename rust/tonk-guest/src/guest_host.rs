@@ -182,11 +182,19 @@ fn scroll_to_fragment(fragment: &str) -> bool {
 
 /// Decide what a click means.
 ///
-/// Anything that isn't a plain in-app navigation is handed to `open`, INCLUDING
-/// schemes we expect the host to refuse. Filtering them here would be security
-/// theatre: a component can call `window.tonk.open` directly, so the guest is
-/// never the control — and relaying gets a console warning out of the host
-/// instead of a silently dead click, which is the bug this change exists to fix.
+/// The guest sets a `<base href="https://{label}.tonk.spot/">` to its
+/// per-space SYNTHETIC origin, so the BROWSER resolves `anchor.href` for us —
+/// a real URL, not the opaque `null/…` it would be with no base. So we
+/// classify by ORIGIN, the way a normal page does:
+///
+/// - same origin as the synthetic base → an in-app route change (`Navigate`);
+/// - a different origin → external, handed to the host (`Open`) which decides
+///   whether to warn/refuse or open a tab (policy is the host's, never ours);
+/// - a link that only changes the fragment → scrolled HERE (`Fragment`), since
+///   the guest is the only frame that owns its own document.
+///
+/// The raw `href` attribute is still read for the empty/pure-fragment cases,
+/// which resolution alone can't distinguish from a same-page navigation.
 fn classify_click(event: &Event) -> Intent {
     let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() else {
         return Intent::Ignore;
@@ -199,33 +207,34 @@ fn classify_click(event: &Event) -> Intent {
     let Some(anchor) = event.target().and_then(closest_anchor) else {
         return Intent::Ignore;
     };
-    let Some(href) = anchor.get_attribute("href") else {
+    let Some(href_attr) = anchor.get_attribute("href") else {
         return Intent::Ignore;
     };
-    // A FRAGMENT IS NOT SAME-DOCUMENT HERE, and leaving it native is the worst
-    // outcome available. This guest's document URL is `about:srcdoc`, but its
-    // BASE URL is inherited from the parent — so `#foo` resolves against
-    // `https://origin/space/{id}`, which differs from `about:srcdoc` by far
-    // more than a fragment. The browser therefore treats it as a full
-    // navigation and loads the ENTIRE Tonk app inside the spot's own iframe,
-    // at an opaque origin, recursively. Measured in Chrome under production's
-    // exact sandbox: `#foo` → `http://localhost:8731/index.html#foo`, and the
-    // guest unloads.
-    //
-    // Relaying it would be wrong for the mirror reason: the host would resolve
-    // `#foo` against ITS url (`/space/{id}`) and open a duplicate spot scrolled
-    // nowhere. The fragment addresses the guest's own document, so the guest is
-    // the only frame that can honour it — cancel, and scroll here.
-    if let Some(fragment) = href.strip_prefix('#') {
-        return Intent::Fragment(fragment.to_owned());
-    }
-    // `href=""` is the same whole-app load one hop shorter: it resolves to the
-    // bare inherited base URL. It reaches users through a view template whose
-    // field has not resolved (`<a href="{url}">` renders blank), so it is a
-    // live path and not a curiosity.
-    if href.is_empty() {
+    // `href=""` resolves to the bare base — a whole-app reload. It reaches
+    // users through a view template whose field hasn't resolved
+    // (`<a href="{url}">` renders blank), so it's a live path, not a curiosity.
+    if href_attr.is_empty() {
         return Intent::Empty;
     }
+    // A pure fragment (`#foo`) addresses THIS document; the guest is the only
+    // frame that can honour it. Detect it off the raw attribute (a bare `#…`),
+    // before resolution turns it into a full same-path URL.
+    if let Some(fragment) = href_attr.strip_prefix('#') {
+        return Intent::Fragment(fragment.to_owned());
+    }
+
+    // Everything else: let the browser resolve against the synthetic `<base>`.
+    // The resolved property is a real URL now (the base is a concrete origin,
+    // not `about:srcdoc`).
+    let Some(resolved) = anchor
+        .dyn_ref::<web_sys::HtmlAnchorElement>()
+        .map(|a| a.href())
+    else {
+        return Intent::Ignore;
+    };
+    let Ok(url) = web_sys::Url::new(&resolved) else {
+        return Intent::Ignore;
+    };
 
     let wants_new_tab = mouse.meta_key()
         || mouse.ctrl_key()
@@ -234,20 +243,37 @@ fn classify_click(event: &Event) -> Intent {
         || anchor
             .get_attribute("target")
             .is_some_and(|target| target == "_blank");
-    let in_app = href.starts_with('/') && !href.starts_with("//");
+
+    // Same origin as our synthetic base → in-app; different → external.
+    let in_app = base_origin().is_some_and(|origin| url.origin() == origin);
 
     if in_app && !wants_new_tab {
-        Intent::Navigate(href)
+        // Relay the guest-world path (the host re-maps it to the real route).
+        let mut path = url.pathname();
+        path.push_str(&url.search());
+        path.push_str(&url.hash());
+        Intent::Navigate(path)
     } else {
-        Intent::Open(href)
+        Intent::Open(resolved)
     }
 }
 
+/// The origin of the guest's synthetic per-space base
+/// (`https://{label}.tonk.spot`), read from the bridge context, or `None`
+/// when there is none (profile/Hub) — where every link is external to any
+/// space and falls through to the host.
+fn base_origin() -> Option<String> {
+    let win: JsValue = window()?.into();
+    let tonk = Reflect::get(&win, &JsValue::from_str("tonk")).ok()?;
+    let context = Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
+    let base = Reflect::get(&context, &JsValue::from_str("base"))
+        .ok()?
+        .as_string()
+        .filter(|b| !b.is_empty())?;
+    web_sys::Url::new(&base).ok().map(|u| u.origin())
+}
+
 /// Walk up from an event target to the nearest `<a href>`.
-///
-/// The raw `href` ATTRIBUTE is what callers read, never the resolved `.href`
-/// property, which an opaque origin mangles to `null/…`. Resolution is the
-/// host's job — it is the only frame with a real base URL.
 fn closest_anchor(target: web_sys::EventTarget) -> Option<Element> {
     target
         .dyn_into::<Element>()
@@ -337,6 +363,45 @@ mod tests {
 
     fn document() -> Document {
         window().expect("a window").document().expect("a document")
+    }
+
+    /// The test document's own origin — the synthetic per-space base the
+    /// classifier resolves against in these tests. Detached anchors resolve
+    /// their `.href` against this document's base, so pinning
+    /// `window.tonk.context.base` to the same origin makes an in-space path
+    /// (`/space/abc`) classify as same-origin `Navigate`, exactly as a real
+    /// guest whose `<base>` is its per-space origin.
+    fn test_origin() -> String {
+        window().unwrap().location().origin().unwrap()
+    }
+
+    /// Install `window.tonk.context.base = <origin>/` so [`base_origin`] has a
+    /// synthetic base to compare against. Idempotent; every classify test that
+    /// depends on origin comparison calls it first.
+    fn set_test_base() {
+        let win: JsValue = window().unwrap().into();
+        let tonk = match Reflect::get(&win, &JsValue::from_str("tonk")) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                let o = Object::new();
+                let _ = Reflect::set(&win, &JsValue::from_str("tonk"), &o);
+                o.into()
+            }
+        };
+        let context = match Reflect::get(&tonk, &JsValue::from_str("context")) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                let o = Object::new();
+                let _ = Reflect::set(&tonk, &JsValue::from_str("context"), &o);
+                o.into()
+            }
+        };
+        let base = format!("{}/", test_origin());
+        let _ = Reflect::set(
+            &context,
+            &JsValue::from_str("base"),
+            &JsValue::from_str(&base),
+        );
     }
 
     /// A detached `<a>` carrying the given attributes.
@@ -439,12 +504,20 @@ mod tests {
     }
 
     fn classify(target: &EventTarget, click: &Click) -> Intent {
+        set_test_base();
         dispatch(target, click.kind, &mouse_event(click))
     }
 
     /// Classify a click on an `<a href=…>` with no other attributes.
     fn classify_href(href: &str, click: &Click) -> Intent {
         classify(anchor(&[("href", href)]).unchecked_ref(), click)
+    }
+
+    /// The absolute URL a detached anchor's `href="…"` resolves to, against
+    /// the test document's base — what the classifier reports for an `Open`.
+    fn resolved(href: &str) -> String {
+        let a = anchor(&[("href", href)]);
+        a.unchecked_ref::<web_sys::HtmlAnchorElement>().href()
     }
 
     /// What the production listener did with a click: the bridge call it
@@ -463,6 +536,7 @@ mod tests {
     /// no classifier test can see it. Driving the production closure and
     /// recording the method NAME is the only assertion that can.
     fn relay(target: &EventTarget, click: &Click) -> Relayed {
+        set_test_base();
         let calls = Rc::new(RefCell::new(None));
         let sink = Rc::clone(&calls);
         let listener = make_nav_listener(move |method: &str, arg: &str| {
@@ -598,7 +672,7 @@ mod tests {
         for (name, click) in &modified {
             assert_eq!(
                 classify_href("/space/abc", click),
-                Intent::Open("/space/abc".to_owned()),
+                Intent::Open(resolved("/space/abc")),
                 "a {name} click should open rather than navigate in place"
             );
         }
@@ -607,12 +681,13 @@ mod tests {
     /// `target="_blank"` asks for a new tab without any modifier.
     #[dialog_common::test]
     async fn it_opens_a_target_blank_link() {
+        set_test_base();
         assert_eq!(
             classify(
                 anchor(&[("href", "/space/abc"), ("target", "_blank")]).unchecked_ref(),
                 &Click::plain(),
             ),
-            Intent::Open("/space/abc".to_owned()),
+            Intent::Open(resolved("/space/abc")),
             "target=_blank should open a new tab"
         );
         assert_eq!(
@@ -727,14 +802,17 @@ mod tests {
         );
     }
 
-    /// Anything that is not an in-app path goes to the host to open.
+    /// Anything that resolves to a DIFFERENT origin than the guest's synthetic
+    /// base goes to the host to open. The relayed href is the browser-resolved
+    /// absolute URL (a protocol-relative `//host` becomes `https://host`).
     #[dialog_common::test]
     async fn it_opens_an_off_origin_link() {
+        set_test_base();
         for href in ["https://example.com/x", "//example.com/x"] {
             assert_eq!(
                 classify_href(href, &Click::plain()),
-                Intent::Open(href.to_owned()),
-                "{href} is not an in-app path and should be opened by the host"
+                Intent::Open(resolved(href)),
+                "{href} resolves off-origin and should be opened by the host"
             );
         }
     }
@@ -746,10 +824,11 @@ mod tests {
     /// dead click.
     #[dialog_common::test]
     async fn it_relays_schemes_the_host_is_expected_to_refuse() {
+        set_test_base();
         for href in ["mailto:a@example.com", "tel:+1234", "javascript:alert(1)"] {
             assert_eq!(
                 classify_href(href, &Click::plain()),
-                Intent::Open(href.to_owned()),
+                Intent::Open(resolved(href)),
                 "{href} should reach the host, which is the one that decides"
             );
         }

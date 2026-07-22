@@ -127,6 +127,15 @@ impl PortalState {
         self.allow = allow;
     }
 
+    /// This portal's target space (a `did:key` string), or `None` when it
+    /// targets the profile/Hub. Drives the guest's synthetic `<base>` origin.
+    pub(crate) fn route_space(&self) -> Option<String> {
+        self.with
+            .as_ref()
+            .and_then(|w| w.space())
+            .map(str::to_owned)
+    }
+
     /// Whether this portal's routing context and reach match exactly.
     /// `<tonk-site>` uses this to re-route a pure path change in place —
     /// same reach, live iframe — instead of rebuilding the guest.
@@ -427,14 +436,23 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       return relayRequest(url,input,init);
     }
     // Absolute URL pointing at the HOST origin: some consumers resolve a path
-    // against `document.baseURI` (which the host sets to its real origin), so a
-    // host API call can arrive fully-qualified (`http://host/api/…`). At the
-    // guest's opaque origin that would be a cross-origin fetch (CORS-blocked,
-    // origin `null`), so strip the host-origin prefix and relay the path. The
-    // host origin comes from the bridge context.
-    var origin=(window.tonk&&window.tonk.context&&window.tonk.context.origin)||"";
+    // against `document.baseURI`, so a host API call can arrive fully-qualified
+    // (`http://host/api/…`). At the guest's opaque origin that would be a
+    // cross-origin fetch (CORS-blocked, origin `null`), so strip the origin
+    // prefix and relay the path. TWO origins qualify: the REAL host origin
+    // (`context.origin`), and the guest's SYNTHETIC per-space base origin
+    // (`context.base`, e.g. `https://{label}.tonk.spot`) — with a `<base>` set
+    // to the latter, a relative `/api/…` resolves against it, so a `Request`
+    // built from it is fake-origin-absolute and must be stripped the same way.
+    var ctx=(window.tonk&&window.tonk.context)||{};
+    var origin=ctx.origin||"";
     if(origin&&url.indexOf(origin+"/")===0){
       return relayRequest(url.slice(origin.length),input,init);
+    }
+    // `context.base` carries a trailing slash; drop it to get the bare origin.
+    var baseOrigin=(ctx.base||"").replace(/\/$/,"");
+    if(baseOrigin&&url.indexOf(baseOrigin+"/")===0){
+      return relayRequest(url.slice(baseOrigin.length),input,init);
     }
     return nativeFetch(input,init);
   };
@@ -653,17 +671,37 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
 })();"#;
 
+/// A `<base href>` element pinning the guest's document base to the
+/// per-space synthetic origin, so the BROWSER resolves every relative URL
+/// (links, forms, `new URL`, `<tonk-page>` location reads) under it. Empty
+/// when there is no space origin (the profile/Hub), leaving the guest's
+/// inherited base untouched. Prepended before everything so it applies from
+/// the first parsed node.
+fn base_tag(base: &str) -> String {
+    if base.is_empty() {
+        String::new()
+    } else {
+        // `base` is a same-origin literal we built (`https://{label}.tonk.spot/`),
+        // so there is nothing to escape, but keep it minimal and attribute-safe.
+        format!("<base href=\"{base}\">")
+    }
+}
+
 /// Prepend the bootstrap script that wires `window.tonk` to this
-/// portal's bridge over a `MessagePort`.
-pub(crate) fn bootstrap_srcdoc(content: &str) -> String {
-    format!("<script>{BOOTSTRAP_JS}</script>{content}")
+/// portal's bridge over a `MessagePort`. `base` is the per-space synthetic
+/// origin the guest should resolve URLs against (empty = leave inherited).
+pub(crate) fn bootstrap_srcdoc(content: &str, base: &str) -> String {
+    format!("{}<script>{BOOTSTRAP_JS}</script>{content}", base_tag(base))
 }
 
 /// Like [`bootstrap_srcdoc`], plus the runtime-injection bootstrap: the
 /// guest will ask the parent (`runtime-ready`) for the element runtime and
 /// bring it up before `content`'s custom elements upgrade.
-pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str) -> String {
-    format!("<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}")
+pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str) -> String {
+    format!(
+        "{}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}",
+        base_tag(base)
+    )
 }
 
 /// Fetch the element runtime + app CSS (the parent is trusted + networked)
@@ -1345,9 +1383,9 @@ fn make_dispatcher(
             "evaluate" => handle_evaluate(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
-            "navigate" => handle_navigate(&data),
+            "navigate" => handle_navigate(&state, &data),
             "title" => handle_title(&data),
-            "open" => handle_open(&data),
+            "open" => handle_open(&state, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             _ => {}
         }
@@ -1588,11 +1626,39 @@ fn handle_unsubscribe(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
 /// (`pushState` + `popstate`), never a reload: the top `<tonk-site>` re-routes
 /// its path in place and the running guest re-renders via its `tonk:site`
 /// subscription.
-fn handle_navigate(data: &JsValue) {
+fn handle_navigate(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     let Some(href) = get_str(data, "href").filter(|h| !h.is_empty()) else {
         return;
     };
-    tonk_host::navigate_to(&href);
+    tonk_host::navigate_to(&real_href(state, &href));
+}
+
+/// Translate a guest-world href into the REAL route the host navigates to.
+///
+/// The guest resolves links against its synthetic per-space origin
+/// (`https://{label}.tonk.spot/`), so an in-space link arrives as a bare
+/// absolute path (`/activity`). The document is really served at
+/// `/space/{did}/...`, so prefix the space segment. A guest with no space
+/// context (profile/Hub), or an already-`/space/...` path, is left as-is.
+fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
+    let Some(space) = state.borrow().route_space() else {
+        return href.to_owned();
+    };
+    // Root of the space ("/") maps to the space's own route.
+    if href == "/" {
+        return format!("/space/{space}");
+    }
+    // A leading-slash in-space path; anything else (already absolute host
+    // path, or a fragment/query) is passed through untouched.
+    if let Some(rest) = href.strip_prefix('/') {
+        if rest.starts_with("space/") {
+            href.to_owned()
+        } else {
+            format!("/space/{space}/{rest}")
+        }
+    } else {
+        href.to_owned()
+    }
 }
 
 /// Set the host page's tab title on the guest's behalf. The guest's
@@ -1620,11 +1686,15 @@ fn title_text(data: &JsValue) -> Option<String> {
 /// and no `allow-top-navigation`, so it cannot open anything itself; it posts
 /// the raw href and `tonk_host::open_external` — running on the page, which is
 /// the only place that can both resolve and open it — decides what happens.
-fn handle_open(data: &JsValue) {
+fn handle_open(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     let Some(href) = open_href(data) else {
         return;
     };
-    tonk_host::open_external(&href);
+    // `open` is for hrefs that escaped the guest's synthetic origin, so the
+    // href is normally a full external URL and passes through. Defensively map
+    // a bare in-space path too (`real_href` no-ops on external URLs, which
+    // don't start with a single `/`).
+    tonk_host::open_external(&real_href(state, &href));
 }
 
 /// Read `href` out of an `{ type: "open", href }` message, or `None` when the
@@ -2194,6 +2264,15 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
+    // The per-space SYNTHETIC origin this guest believes it lives at
+    // (`https://{label}.tonk.spot/`), so in-guest navigation resolves like an
+    // ordinary page: in-space routes are plain absolute paths under it, and an
+    // href that escapes it is external. Distinct from `origin` (the REAL host
+    // origin, which propagates down nesting and keys the `/api` relay strip).
+    // Absent for the profile/Hub (no space) — those links are genuinely
+    // top-level and want the real origin.
+    let base = tonk_host::space_origin::space_origin_for(&repo).unwrap_or_default();
+    let _ = Reflect::set(&context, &"base".into(), &JsValue::from_str(&base));
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
     let _ = Reflect::set(&context, &"search".into(), &JsValue::from_str(&search));
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
