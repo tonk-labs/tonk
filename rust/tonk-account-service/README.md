@@ -141,12 +141,18 @@ with its own database and bucket. Deploy it the same way, in order:
 2. `wrangler d1 migrations apply tonk-accounts-staging --remote -c wrangler.account.toml --env staging`.
 3. `wrangler r2 bucket create tonk-account-chains-staging`.
 4. `wrangler secret put RESEND_API_KEY -c wrangler.account.toml --env staging`.
-   Secrets are per-environment; the production secret is not inherited.
-5. Add the `accounts-staging.tonk.xyz` DNS record in the `tonk.xyz` zone.
-6. Add the WAF rate limiting rule for `accounts-staging.tonk.xyz`, matching
+   Secrets are per-environment, so this has to be set explicitly — with the
+   same value as production's key, since staging sends from the same verified
+   domain.
+5. Add the WAF rate limiting rule for `accounts-staging.tonk.xyz`, matching
    the production rule above. Staging shares the production Resend key, so it
    shares the email fan-out vector.
-7. `wrangler deploy -c wrangler.account.toml --env staging`.
+6. `wrangler deploy -c wrangler.account.toml --env staging`.
+
+There is no DNS step: the route is a Custom Domain (`custom_domain = true`),
+so wrangler provisions the record and certificate itself on deploy. Creating
+`accounts-staging.tonk.xyz` by hand beforehand conflicts with that and blocks
+the deploy.
 
 Exercise the flow against staging by creating an account on
 `https://staging.tonk.xyz/account` — `tonk-ui` picks the staging service from
