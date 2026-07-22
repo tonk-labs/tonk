@@ -9,10 +9,7 @@
 //! anything that satisfies that selector is a candidate view
 //! and should surface here.
 //!
-//! Used by `tonk views` (the listing command) and by
-//! `tonk share view` (which calls back into it to confirm the
-//! resolved entity actually has a `text/html` claim before
-//! minting a launcher URL).
+//! Used by `tonk view ls`, the only caller.
 
 use std::collections::HashMap;
 
@@ -73,8 +70,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
 }
 
 /// Check whether `entity` carries at least one `text/html`
-/// claim. Used by `tonk share view` to refuse minting a
-/// launcher URL for an entity the host route would 404 on.
+/// claim — the host route 404s on anything that doesn't.
 pub async fn entity_has_text_html(site: &TonkSite, entity: &Entity) -> Result<bool> {
     let the = text_html_attribute()?;
     let the_term: attribute::The = the.into();
@@ -196,9 +192,8 @@ fn name_from_id_entity(entity: &Entity) -> Option<String> {
 }
 
 /// Look up the entity bound to a `dialog.meta/name` bookmark on
-/// the local branch. `Ok(None)` when nothing matches. Used by
-/// `tonk share view` to resolve a positional name argument
-/// into an entity URI for the launcher path. Delegates to
+/// the local branch. `Ok(None)` when nothing matches. Resolves a
+/// positional name argument into an entity URI. Delegates to
 /// `tonk_schema::concept::lookup_named_entity`, the canonical
 /// name→entity helper.
 pub async fn entity_for_name(site: &TonkSite, name: &str) -> Result<Option<Entity>> {

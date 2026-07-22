@@ -119,10 +119,10 @@ pub async fn mint(
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
-    // `tonk spot new` committed before any upstream existed. Mirrors
-    // `share`'s push-before-mint. No-op when the branch has no upstream
-    // (a local-only invite). Pull-before-push reconciles a possibly
-    // advanced upstream, best-effort; the push error is authoritative.
+    // `tonk spot new` committed before any upstream existed. No-op
+    // when the branch has no upstream (a local-only invite).
+    // Pull-before-push reconciles a possibly advanced upstream,
+    // best-effort; the push error is authoritative.
     let has_upstream = {
         let session = site
             .branch()

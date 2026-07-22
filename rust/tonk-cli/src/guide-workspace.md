@@ -79,5 +79,5 @@ workspace!:
 ```
 
 Open it in the shell: push, then
-`tonk share display <workspace-entity>` (carousel of its sheets) or
-`tonk share display alice --view person-card` for one sheet.
+`tonk invite` — the recipient joins the space and opens the workspace
+there.

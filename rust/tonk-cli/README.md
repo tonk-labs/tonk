@@ -59,12 +59,10 @@ tonk push
 tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
-# Delegate access and share live views.
+# Delegate access to the space.
 tonk invite --remote prod
 tonk join 'https://...#invite'
-tonk share concept person
-tonk share view my-page
-tonk share display alice --view person-card
+tonk invite
 ```
 
 ## Telemetry
@@ -120,11 +118,7 @@ Remotes are UCAN-S3 access services registered on the repository's meta branch.
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
 embedded ephemeral key); `tonk join` claims one into a fresh spot
-(`tonk join <url> --name <spot>`). The `share` subcommands push to the
-upstream, mint an invite that embeds the upstream URL, and append a launcher
-URL that lands the recipient on a live view of the data: an auto-rendered
-concept route (`share concept`), the iframe HTML viewer (`share view`), or a
-`<tonk-display>` declarative view (`share display`).
+(`tonk join <url> --name <spot>`).
 
 ## Built on
 
