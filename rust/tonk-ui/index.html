@@ -381,6 +381,19 @@
             // `serviceWorkerActivates` above (before the first data-plane call).
             self.addEventListener("online", () => sendConnectivity().catch(() => {}));
             self.addEventListener("offline", () => sendConnectivity().catch(() => {}));
+
+            const sendVisibility = async () => {
+                const reg = await navigator.serviceWorker.ready;
+                reg.active?.postMessage({ type: "visibility" });
+            };
+
+            // Tell the worker when this page becomes visible so sync
+            // drops its hidden interval without waiting for the next
+            // keepalive to age past it.
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState !== "visible") return;
+                sendVisibility().catch(() => {});
+            });
         </script>
         <!-- The following are load-bearing configuration for the Trunk build tool
          (https://trunkrs.dev/assets/); if you need to add build steps or copy
