@@ -57,20 +57,20 @@ fn prf_extensions() -> AuthenticationExtensionsClientInputs {
     extensions
 }
 
-/// The apex that owns tonk passkeys. The RP ID is the root-key custody
-/// boundary — every current and future origin under it can silently
-/// derive a visiting user's root key with one discoverable-credential
-/// assertion — so two invariants hold: nothing untrusted is ever served
-/// from `*.tonk.spot`, and staging deploys live off-apex so they mint
-/// disjoint credentials. Widening later is possible via Related Origin
-/// Requests; narrowing never is.
+/// The origin that owns tonk passkeys. The RP ID is the root-key custody
+/// boundary — any origin allowed to use it can silently derive a visiting
+/// user's root key with one discoverable-credential assertion — so it is
+/// pinned to this exact origin and nothing else. Every other host under
+/// `tonk.spot`, including staging and any wildcard hostname, is its own
+/// relying party with its own disjoint credentials. Widening later is
+/// possible via Related Origin Requests; narrowing never is.
 const RP_APEX: &str = "tonk.spot";
 
-/// The pinned RP ID for hosts under the apex; `None` (WebAuthn's
-/// per-host default) everywhere else, which keeps localhost tests and
-/// off-apex staging working with their own credentials.
+/// The pinned RP ID on the apex origin itself; `None` (WebAuthn's
+/// per-host default) everywhere else, which gives localhost tests,
+/// off-apex staging, and every other host their own credentials.
 fn apex_rp_id(host: &str) -> Option<&'static str> {
-    (host == RP_APEX || host.ends_with(".tonk.spot")).then_some(RP_APEX)
+    (host == RP_APEX).then_some(RP_APEX)
 }
 
 /// The RP ID for the current browsing context, if the host is on-apex.
@@ -199,10 +199,14 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_pins_the_rp_id_to_the_apex_only_for_spot_hosts() {
+    fn it_pins_the_rp_id_to_the_apex_origin_only() {
         assert_eq!(apex_rp_id("tonk.spot"), Some("tonk.spot"));
-        assert_eq!(apex_rp_id("hub.tonk.spot"), Some("tonk.spot"));
-        assert_eq!(apex_rp_id("a.b.tonk.spot"), Some("tonk.spot"));
+        // Every other host under the apex is its own relying party, so it
+        // cannot derive an apex root key from a visiting user's passkey.
+        assert_eq!(apex_rp_id("www.tonk.spot"), None);
+        assert_eq!(apex_rp_id("hub.tonk.spot"), None);
+        assert_eq!(apex_rp_id("staging.tonk.spot"), None);
+        assert_eq!(apex_rp_id("a.b.tonk.spot"), None);
         assert_eq!(apex_rp_id("staging.tonk.xyz"), None);
         assert_eq!(apex_rp_id("localhost"), None);
         // A suffix match must not treat a sibling registrable domain as ours.
