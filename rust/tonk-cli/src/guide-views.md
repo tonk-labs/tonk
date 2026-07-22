@@ -58,8 +58,15 @@ Omit `view` to fall back to the built-in detail view for the model. A
 view** — every instance of the model — using the model's
 `view/directory`, or a default carousel.
 
-Hand the repo to someone: `tonk invite` (they land on the space and
-navigate to the view themselves).
+Three routes reach a view in the shell, and `tonk render` (next
+section) takes the same three:
+
+- `/space/<space>/<model>` — the model's directory.
+- `/space/<space>/<entity>@<model>` — one entity, model's own view.
+- `/space/<space>/<entity>@<model>!<view>` — one entity through a
+  named view concept.
+
+Handing the repo to someone else is a separate act: `tonk invite`.
 
 ## Render to HTML headlessly: `tonk render`
 
@@ -200,10 +207,14 @@ page!: &about
     <h1>About</h1>
 ```
 
-`tonk view ls` lists every entity carrying a `text/html` claim; the
-viewer serves each one at `/space/<space-name>/view/<entity>`. Hand
-the repo to someone with `tonk invite` and they can navigate to it
-themselves.
+`tonk view ls` lists every entity carrying a `text/html` claim. It is
+claim-driven, so a plain concept like this `page` shows up next to
+real views — but no route serves a bare claim. The page reaches a
+browser through `<tonk-portal>`, the sandboxed iframe the display
+stack mounts for a view whose projected `type` is `text/html`; the
+worker serves the body behind it. So you reach it the way you reach
+any view: `/space/<space>/<entity>@<model>!<view>`, or
+`tonk render <entity>@<model>!<view>` headlessly.
 
 ---
 
