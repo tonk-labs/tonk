@@ -1481,13 +1481,10 @@ pub mod tests {
 
         // No branch has an upstream, so the worker-side sweep selects
         // nothing and runs the `/sync` route zero times — a clean
-        // resolve, not a rejection. `changed` must be `false`: this is
-        // the "no branch selected" half of the changed-signal contract
-        // `record_drain_outcome` relies on.
-        let changed = super::sync_repository(&app_state, repo)
+        // resolve, not a rejection.
+        super::sync_repository(&app_state, repo)
             .await
             .expect("a no-upstream repo should sweep cleanly");
-        assert!(!changed, "nothing selected to sync must report no change");
     }
 
     #[dialog_common::test]
@@ -1499,11 +1496,10 @@ pub mod tests {
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
 
         // Nothing to retry for a repo that does not exist, so the
-        // sweep resolves rather than rejecting, and reports no change.
-        let changed = super::sync_repository(&app_state, "no-such-repo")
+        // sweep resolves rather than rejecting.
+        super::sync_repository(&app_state, "no-such-repo")
             .await
             .expect("an unknown repo should resolve as a no-op");
-        assert!(!changed, "an unknown repo must report no change");
     }
 
     #[dialog_common::test]
@@ -1707,25 +1703,15 @@ pub mod tests {
         );
     }
 
-    /// The failure half of the changed-through-`Err` fix: when a repo's
-    /// only upstreamed branch fails to reconcile, the sweep still
-    /// resolves as `Err`, and `changed` correctly comes back `false`
-    /// since nothing landed before the failure.
+    /// A repo whose only upstreamed branch cannot reach its remote must
+    /// resolve as `Err`, naming the repo — that is what re-marks it dirty
+    /// in `drain_sync` so the next heartbeat retries it. A silent `Ok`
+    /// here would drop the repo out of the work queue on first failure.
     ///
     /// This is a real, deterministic failure — a loopback connection
     /// refused, no external network or DNS involved — not a faked one.
-    /// It stops short of the full accumulation scenario Fix 1 targets
-    /// (a genuine landed change on a *second* branch surviving
-    /// alongside this failure): reaching that would need a second
-    /// branch tracking a remote that actually completes a pull, which
-    /// needs a real dialog-remote-ucan-s3-compatible server this
-    /// harness has no stand-in for (attaching a remote is a pure config
-    /// write with no network involved — see
-    /// `it_embeds_the_remote_in_a_command_minted_invite` above — but
-    /// completing a pull against it is not). See the task report for
-    /// how this gap is reasoned about instead.
     #[dialog_common::test]
-    async fn it_reports_no_change_alongside_a_genuine_reconcile_failure() {
+    async fn it_reports_a_reconcile_failure_for_an_unreachable_upstream() {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
@@ -1770,21 +1756,13 @@ pub mod tests {
             "remote attach should succeed (it never touches the network)"
         );
 
-        match super::sync_repository(&app_state, &repo).await {
-            Err((changed, message)) => {
-                assert!(
-                    !changed,
-                    "a branch that only ever fails must not report a change"
-                );
-                assert!(
-                    message.contains(&repo),
-                    "the error should name the repo that failed to reconcile: {message}"
-                );
-            }
-            Ok(changed) => panic!(
-                "an unreachable upstream must not resolve as a clean sweep (changed={changed})"
-            ),
-        }
+        let message = super::sync_repository(&app_state, &repo)
+            .await
+            .expect_err("an unreachable upstream must not resolve as a clean sweep");
+        assert!(
+            message.contains(&repo),
+            "the error should name the repo that failed to reconcile: {message}"
+        );
     }
 
     #[dialog_common::test]

@@ -143,16 +143,6 @@ fn is_shared_asset(path: &str) -> bool {
     matches!(path, "/__tonk/bridge.js")
 }
 
-/// Whether `path` is the sync keepalive/poke endpoint, which must NOT count
-/// as real page traffic for backoff purposes: `POST /api/sync` exists to
-/// keep the SW alive (and to ride the drain scheduling), not as evidence
-/// anyone is doing anything — counting it would defeat the idle backoff,
-/// since it fires every 10s forever.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn is_keepalive_path(path: &str) -> bool {
-    path == "/api/sync"
-}
-
 /// Route the request through the axum router, apply response
 /// headers (CORS, client-id echo), and convert back to a browser
 /// `Response`.
@@ -436,21 +426,6 @@ mod route_for_tests {
         );
     }
 
-    #[dialog_common::test]
-    fn it_treats_the_sync_keepalive_path_as_not_real_traffic() {
-        assert!(
-            is_keepalive_path("/api/sync"),
-            "the keepalive/poke endpoint must be recognized",
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_treats_other_api_paths_as_real_traffic() {
-        assert!(!is_keepalive_path("/api/repository/r/branch/main/query"));
-        assert!(!is_keepalive_path("/"));
-        assert!(!is_keepalive_path("/api/syncing"));
-    }
-
     // The scheduler's clock is passed in (not `Date::now()`), so these drive it
     // with fixed timestamps — no real time, fully deterministic.
 
@@ -652,49 +627,6 @@ mod route_for_tests {
     }
 
     #[dialog_common::test]
-    fn it_backs_off_after_consecutive_noop_drains() {
-        let s = SyncScheduler::default();
-        let t = s.next(0.0);
-        assert!(s.should_drain(t, SYNC_DEBOUNCE_MS as f64));
-        s.begin_drain();
-        s.end_drain(1_000.0);
-        s.record_drain_outcome(false);
-        // One no-op: quiet interval is 4s (2s * 2^1), so 2s after the
-        // drain end is refused, 4s is allowed.
-        let t = s.next(2_000.0);
-        assert!(
-            !s.should_drain(t, 3_000.0),
-            "backed-off gate must refuse early drains"
-        );
-        assert!(
-            s.should_drain(t, 5_000.0),
-            "gate must allow once the interval passes"
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_caps_the_backoff_interval() {
-        let s = SyncScheduler::default();
-        for _ in 0..10 {
-            s.record_drain_outcome(false);
-        }
-        assert_eq!(s.quiet_interval(), SYNC_BACKOFF_CAP_MS as f64);
-    }
-
-    #[dialog_common::test]
-    fn it_resets_backoff_when_a_drain_finds_changes() {
-        let s = SyncScheduler::default();
-        s.record_drain_outcome(false);
-        s.record_drain_outcome(false);
-        s.record_drain_outcome(true);
-        assert_eq!(
-            s.quiet_interval(),
-            0.0,
-            "a changed drain restores the active cadence"
-        );
-    }
-
-    #[dialog_common::test]
     fn it_holds_drains_to_the_hidden_interval_while_hidden() {
         let s = SyncScheduler::default();
         s.set_visible(false);
@@ -708,17 +640,31 @@ mod route_for_tests {
         assert!(s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 + 1.0));
     }
 
+    /// A visible page always polls at the active cadence, however long it
+    /// has sat idle: the only thing that widens the gap is going hidden,
+    /// and coming back drops it again on the very next gate check. A
+    /// visible-but-idle reader must never lag a collaborator.
     #[dialog_common::test]
     fn it_resumes_the_active_cadence_on_becoming_visible() {
         let s = SyncScheduler::default();
         s.set_visible(false);
-        s.record_drain_outcome(false);
-        s.record_drain_outcome(false);
+        s.begin_drain();
+        s.end_drain(0.0);
+        let t = s.next(10_000.0);
+        assert!(
+            !s.should_drain(t, 10_000.0),
+            "a hidden page holds to the hidden interval"
+        );
+
         s.set_visible(true);
         assert_eq!(
             s.quiet_interval(),
             0.0,
-            "regaining visibility must clear both the hidden hold and the streak"
+            "regaining visibility must clear the hidden hold"
+        );
+        assert!(
+            s.should_drain(t, 10_000.0),
+            "the same ticket now drains at the active cadence"
         );
     }
 }
@@ -780,16 +726,12 @@ struct SyncScheduler {
     /// tick fired) after `updatefound` pins the outgoing worker in `waiting`
     /// — which is why it "won't go away".
     stopped: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Consecutive drains that pulled no upstream change. Grows the
-    /// quiet interval so an idle replica stops paying the active
-    /// cadence; any real page traffic or a drain that lands changes
-    /// resets it.
-    noop_streak: std::rc::Rc<std::cell::Cell<u32>>,
     /// Whether any window client was visible at the last check. Hidden
     /// pages hold drains to [`SYNC_HIDDEN_INTERVAL_MS`] — a
     /// backgrounded tab keeps its SSE subscriptions (and the keepalive)
     /// alive, so subscription liveness alone can't tell "watching"
-    /// from "abandoned overnight".
+    /// from "abandoned overnight". The only thing that widens the gap:
+    /// a visible tab always polls at the active cadence.
     visible: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
@@ -805,7 +747,6 @@ impl Default for SyncScheduler {
             cause: Default::default(),
             last_drain_end: Default::default(),
             stopped: Default::default(),
-            noop_streak: Default::default(),
             visible: std::rc::Rc::new(std::cell::Cell::new(true)),
         }
     }
@@ -889,11 +830,11 @@ impl SyncScheduler {
         // the loop interval (easy on a slow link) is followed immediately by
         // the next, and sync runs continuously.
         //
-        // The floor is SYNC_COOLDOWN_MS; visibility and the no-op streak can
-        // raise it (see quiet_interval) so idle and hidden replicas stop
-        // paying the active cadence. Every drain entrypoint passes through
-        // here — including the drains the page's keepalive fetches
-        // schedule — so the quiet interval binds them all.
+        // The floor is SYNC_COOLDOWN_MS; a hidden page raises it (see
+        // quiet_interval) so a backgrounded tab stops paying the active
+        // cadence. Every drain entrypoint passes through here — including
+        // the drains the page's keepalive fetches schedule — so the quiet
+        // interval binds them all.
         let quiet = (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval());
         self.last_drain_end
             .get()
@@ -950,43 +891,20 @@ impl SyncScheduler {
         self.cause.borrow_mut().take()
     }
 
-    /// The enforced gap between drain completions, from visibility and
-    /// the no-op streak. Zero while a page is visible and recent drains
-    /// found changes — [`SYNC_COOLDOWN_MS`] stays the floor, so the
-    /// active cadence is unchanged.
+    /// The enforced gap between drain completions, from visibility alone.
+    /// Zero while a page is visible — [`SYNC_COOLDOWN_MS`] stays the floor,
+    /// so a visible tab always polls at the active cadence, however idle it
+    /// looks. A visible-but-idle reader must never lag a collaborator.
     fn quiet_interval(&self) -> f64 {
         if !self.visible.get() {
             return SYNC_HIDDEN_INTERVAL_MS as f64;
         }
-        let streak = self.noop_streak.get();
-        if streak == 0 {
-            return 0.0;
-        }
-        let scaled = (SYNC_LOOP_MS as f64) * f64::from(1u32 << streak.min(4));
-        scaled.min(SYNC_BACKOFF_CAP_MS as f64)
+        0.0
     }
 
-    /// Record whether the drain that just finished moved any branch.
-    fn record_drain_outcome(&self, changed: bool) {
-        if changed {
-            self.noop_streak.set(0);
-        } else {
-            self.noop_streak
-                .set(self.noop_streak.get().saturating_add(1));
-        }
-    }
-
-    /// Real page activity: restore the active cadence.
-    fn reset_backoff(&self) {
-        self.noop_streak.set(0);
-    }
-
-    /// Update the visibility reading. Regaining visibility also clears
-    /// the streak so the first foreground drain runs promptly.
+    /// Update the visibility reading — the sole input to
+    /// [`quiet_interval`](Self::quiet_interval).
     fn set_visible(&self, visible: bool) {
-        if visible && !self.visible.get() {
-            self.reset_backoff();
-        }
         self.visible.set(visible);
     }
 }
@@ -1048,13 +966,6 @@ const SYNC_COOLDOWN_MS: i32 = 500;
 /// the active cadence all night for changes nobody is watching.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_HIDDEN_INTERVAL_MS: i32 = 60_000;
-
-/// Ceiling on the no-op backoff for visible pages: idle viewing decays
-/// from the 2s cadence toward this, and any activity or landed change
-/// snaps it back. Bounds the worst-case latency for seeing another
-/// device's change on an idle-but-visible page.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const SYNC_BACKOFF_CAP_MS: i32 = 30_000;
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -1285,12 +1196,6 @@ impl TonkServiceWorker {
         // generation ticket — only the last request still matches and drains.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         schedule_sync_drain(&event, &self.sync_scheduler, &self.state);
-        // Real page traffic restores the active sync cadence — see
-        // `is_keepalive_path` for why `POST /api/sync` doesn't count.
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        if !is_keepalive_path(&path) {
-            self.sync_scheduler.reset_backoff();
-        }
         // Any traffic (re)starts the SW-owned sync loop — the page no
         // longer polls, so this is what keeps an idle-but-subscribed tab
         // pulling upstream changes.
@@ -1391,15 +1296,13 @@ impl TonkServiceWorker {
                     return Ok(JsValue::UNDEFINED);
                 }
                 scheduler.begin_drain();
-                let changed = crate::router::drain_sync(&state).await;
+                crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
-                scheduler.record_drain_outcome(changed);
             }
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             {
-                // No scheduler on this build target — nothing to record
-                // against.
-                let _ = crate::router::drain_sync(&state).await;
+                // No scheduler on this build target.
+                crate::router::drain_sync(&state).await;
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -1430,16 +1333,15 @@ impl TonkServiceWorker {
                 crate::router::mark_offline(&state).await;
             } else if scheduler.may_drain(js_sys::Date::now()) {
                 scheduler.begin_drain();
-                let changed = crate::router::drain_sync(&state).await;
+                crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
-                scheduler.record_drain_outcome(changed);
             }
             Ok(JsValue::UNDEFINED)
         })
     }
 
     /// A page became visible: restore the active cadence and reconcile
-    /// immediately, instead of waiting out a hidden/backoff interval.
+    /// immediately, instead of waiting out the hidden interval.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen(js_name = "onvisibility")]
     pub fn on_visibility(&self) -> Promise {
@@ -1450,9 +1352,8 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             if !offline() && scheduler.may_drain(js_sys::Date::now()) {
                 scheduler.begin_drain();
-                let changed = crate::router::drain_sync(&state).await;
+                crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
-                scheduler.record_drain_outcome(changed);
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -1513,9 +1414,8 @@ impl TonkServiceWorker {
                     continue;
                 }
                 scheduler.begin_drain();
-                let changed = crate::router::drain_sync(&state).await;
+                crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
-                scheduler.record_drain_outcome(changed);
             }
             running.set(false);
         });
@@ -1537,9 +1437,9 @@ impl TonkServiceWorker {
 /// (~40ms locally), so ticking this often would be cheap relative to the
 /// latency it buys — but `may_drain`'s quiet-interval gate (see
 /// [`SyncScheduler::quiet_interval`]) widens the real gap well past this tick
-/// rate once the page is hidden or a run of ticks finds nothing to sync, so a
-/// backgrounded tab settles onto a far coarser cadence than this constant
-/// alone implies.
+/// rate once the page is hidden, so a backgrounded tab settles onto a far
+/// coarser cadence than this constant alone implies. A visible tab always
+/// gets this cadence.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_LOOP_MS: u64 = 2_000;
 
@@ -1665,9 +1565,8 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         if let Some(cause) = scheduler.take_cause() {
             log!("sync drain, caused by: {cause}");
         }
-        let changed = crate::router::drain_sync(&state).await;
+        crate::router::drain_sync(&state).await;
         scheduler.end_drain(js_sys::Date::now());
-        scheduler.record_drain_outcome(changed);
         Ok(JsValue::UNDEFINED)
     });
 
