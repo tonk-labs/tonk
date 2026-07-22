@@ -4,43 +4,48 @@
     <span class="account__badge">account</span>
   </a>
 
-  <h1>Your Tonk identity</h1>
-  <p class="account__lede">One passkey links your browsers and devices without giving Tonk your root key.</p>
+  <h1>Your Tonk account</h1>
 
   <section id="account-choice" class="account__panel" hidden>
+    <p class="account__lede">Create an account to keep your spots and access them on any device.</p>
     <div class="account__actions">
-      <button id="account-choose-create" class="account__button" type="button">Create an account</button>
-      <button id="account-choose-link" class="account__button account__button--secondary" type="button">Link an existing passkey</button>
+      <button id="account-choose-create" class="account__button" type="button">Create account</button>
+      <button id="account-choose-link" class="account__button account__button--secondary" type="button">Log in</button>
     </div>
-    <p class="account__hint">Create is for your first browser. Link uses the same synced passkey on another browser profile.</p>
   </section>
 
   <section id="account-create" class="account__panel" hidden>
+    <h2>Create your account</h2>
     <form class="account__form">
       <label>Email
         <input id="account-email" name="Email" type="email" autocomplete="email" required>
       </label>
-      <button id="account-send-code" class="account__button account__button--secondary" type="button">Send verification code</button>
-      <label>Verification code
-        <input id="account-code" name="Verification code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-      </label>
-      <label>Device name
-        <input id="account-create-device-name" name="Device name" type="text" autocomplete="off" value="This browser" required>
-      </label>
-      <button id="account-create-submit" class="account__button" type="submit">Create with passkey</button>
+      <button id="account-send-code" class="account__button" type="button">Continue</button>
       <button id="account-create-back" class="account__button account__button--quiet" type="button">Back</button>
     </form>
   </section>
 
-  <section id="account-link" class="account__panel" hidden>
+  <section id="account-verify" class="account__panel" hidden>
+    <h2>Check your email</h2>
+    <p class="account__message">We sent a six-digit code to <strong id="account-code-email"></strong>.</p>
     <form class="account__form">
-      <label>Device name
-        <input id="account-link-device-name" name="Device name" type="text" autocomplete="off" value="This browser" required>
+      <label>Verification code
+        <input id="account-code" name="Verification code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
       </label>
-      <button id="account-link-submit" class="account__button" type="submit">Link with passkey</button>
+      <input id="account-create-device-name" name="Device name" type="hidden" value="This browser">
+      <button id="account-create-submit" class="account__button" type="submit">Create account</button>
+      <button id="account-verify-back" class="account__button account__button--quiet" type="button">Use a different email</button>
+    </form>
+  </section>
+
+  <section id="account-link" class="account__panel" hidden>
+    <h2>Log in</h2>
+    <form class="account__form">
+      <input id="account-link-device-name" name="Device name" type="hidden" value="This browser">
+      <button id="account-link-submit" class="account__button" type="submit">Log in</button>
       <button id="account-link-back" class="account__button account__button--quiet" type="button">Back</button>
     </form>
-    <p class="account__hint">Your passkey provider may ask you to choose the Tonk passkey before confirming.</p>
+    <p class="account__hint">Your browser or password manager will ask you to confirm.</p>
   </section>
 
   <section id="account-handoff" class="account__panel" hidden>
@@ -55,12 +60,10 @@
   </section>
 
   <section id="account-success" class="account__panel" hidden>
-    <p id="account-success-message" class="account__status">This browser is linked.</p>
-    <p id="account-root-did" class="account__did"></p>
+    <p id="account-success-message" class="account__status">You're logged in.</p>
     <a class="account__button account__button--secondary" href="/">Back to Tonk</a>
   </section>
 
   <p id="account-working" class="account__hint" role="status" aria-live="polite">Checking this browser…</p>
   <p id="account-error" class="account__error" role="alert" hidden></p>
-  <button id="account-retry-local" class="account__button account__button--secondary" type="button" hidden>Retry local save</button>
 </main>
