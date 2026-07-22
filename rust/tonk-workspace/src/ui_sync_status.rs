@@ -56,6 +56,44 @@ pub(crate) struct UiSyncStatus {
     error: Rc<RefCell<Option<ResetClosure>>>,
 }
 
+impl UiSyncStatus {
+    /// Open the status subscription against the element's current `with`
+    /// routing context. A no-op if already subscribed. Shared by
+    /// `connected_callback` and `attribute_changed_callback` (a `with` that
+    /// resolved after mount).
+    ///
+    /// Subscribes on a microtask, NOT synchronously: when a render pass runs
+    /// inside an outer custom-element reaction, the reaction queue delivers
+    /// this only after that reaction finishes — by which time the diff may have
+    /// detached this element, and a dispatch from a detached tree never reaches
+    /// the document listeners. By microtask time the DOM has settled; skip if
+    /// no longer connected.
+    fn subscribe_now(&self, this: &HtmlElement) {
+        let subscription = self.subscription.clone();
+        let host = this.clone();
+        spawn_local(async move {
+            if !host.is_connected() || subscription.borrow().is_some() {
+                return;
+            }
+            let consumer: Element = host.into();
+            match status_query_body() {
+                Ok(body) => {
+                    let tag = JsValue::from_str(SUB_TAG);
+                    match consumer::subscribe(&consumer, &body, Some(&tag)) {
+                        Ok(sub) => *subscription.borrow_mut() = Some(sub),
+                        Err(err) => {
+                            // Dispatch failure: leave the pending disc;
+                            // nothing to subscribe to.
+                            tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+                        }
+                    }
+                }
+                Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
+            }
+        });
+    }
+}
+
 impl CustomElement for UiSyncStatus {
     fn shadow() -> bool {
         // Light DOM: the disc's CSS lives in the app stylesheet, and the
@@ -64,7 +102,12 @@ impl CustomElement for UiSyncStatus {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        // Observe `with` so a late-resolving routing context — the FAB stamps
+        // `with="main@{space}"` and rewrites it once the space DID lands — drives
+        // a (re)subscribe. Without this the chip subscribes once against the
+        // still-unresolved `main@` (a malformed location the host rejects) and
+        // stays stuck "offline".
+        &["with"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -110,35 +153,25 @@ impl CustomElement for UiSyncStatus {
         let _ = Reflect::set(this, &"__tonkError".into(), error.as_ref());
         *self.error.borrow_mut() = Some(error);
 
-        // Subscribe on a microtask, NOT synchronously: when a render pass
-        // runs inside an outer custom-element reaction, the reaction queue
-        // delivers this callback only after that reaction finishes — by
-        // which time the diff may have detached this element again, and a
-        // dispatch from a detached tree never reaches the document
-        // listeners. By microtask time the DOM has settled; skip if no
-        // longer connected (a real re-connection re-runs this callback).
-        let subscription = self.subscription.clone();
-        let host = this.clone();
-        spawn_local(async move {
-            if !host.is_connected() || subscription.borrow().is_some() {
-                return;
-            }
-            let consumer: Element = host.into();
-            match status_query_body() {
-                Ok(body) => {
-                    let tag = JsValue::from_str(SUB_TAG);
-                    match consumer::subscribe(&consumer, &body, Some(&tag)) {
-                        Ok(sub) => *subscription.borrow_mut() = Some(sub),
-                        Err(err) => {
-                            // Dispatch failure: leave the pending disc;
-                            // nothing to subscribe to.
-                            tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
-                        }
-                    }
-                }
-                Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
-            }
-        });
+        self.subscribe_now(this);
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        // The FAB rewrites `with="main@{space}"` to the resolved location once
+        // the space DID lands. Re-subscribe against the new routing context.
+        if name != "with" || old == new || !this.is_connected() {
+            return;
+        }
+        // Drop the prior (failed-or-stale) subscription so `subscribe_now`
+        // re-establishes it against the new `with`.
+        self.subscription.borrow_mut().take();
+        self.subscribe_now(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {

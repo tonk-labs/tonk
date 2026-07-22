@@ -917,6 +917,30 @@ fn render_binding(
     render_segments_with_shadow(segments, &member.this, &member.fields, shadow)
 }
 
+/// Whether any `{field}` segment of `binding` references a field missing
+/// from both `shadow` and `row_fields` (i.e. genuinely absent, not
+/// present-but-empty). `{this}` and `{text}` segments never count as absent.
+/// Used to hold off writing a partially-resolved multi-segment attribute
+/// binding (`with="main@{id}"`) until its field lands — see
+/// [`apply_attribute_binding`].
+fn binding_has_absent_field(
+    binding: &Binding,
+    row_fields: &BTreeMap<String, Ipld>,
+    shadow: &BTreeMap<String, Ipld>,
+) -> bool {
+    use crate::template::Segment;
+    let segments = match &binding.kind {
+        BindingKind::Text { segments } => segments,
+        BindingKind::Attribute { segments, .. } => segments,
+    };
+    segments.iter().any(|seg| match seg {
+        Segment::Field(name) => {
+            name != "this" && shadow.get(name).is_none() && row_fields.get(name).is_none()
+        }
+        Segment::Text(_) => false,
+    })
+}
+
 /// Write a binding's rendered value to the target DOM node.
 fn write_binding(
     scope_root: &Node,
@@ -944,7 +968,14 @@ fn write_binding(
                 )));
             }
             let value = single_field_value(binding, &member.this, &member.fields, shadow);
-            apply_attribute_binding(scope_root, binding, rendered, value.as_ref());
+            let has_absent_field = binding_has_absent_field(binding, &member.fields, shadow);
+            apply_attribute_binding(
+                scope_root,
+                binding,
+                rendered,
+                value.as_ref(),
+                has_absent_field,
+            );
         }
     }
 }

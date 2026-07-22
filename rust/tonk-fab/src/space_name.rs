@@ -88,6 +88,36 @@ impl subscribing::Subscribing for SpaceNameBehaviour {
     }
 }
 
+impl UiSpaceNameElement {
+    /// Wire the `<tonk-editable>` commit listener and open the repo-name
+    /// subscription against the element's current (resolved) `space`. Shared
+    /// by `connected_callback` (mount with a resolved space) and
+    /// `attribute_changed_callback` (a `space` that resolved after mount).
+    fn start(&mut self, this: &HtmlElement) {
+        // Attach the commit listener to the `<tonk-editable>` child. There is
+        // no `tonk-display` event delegation here (this markup is Rust-owned,
+        // not a resolved template), so the `change` binding is wired directly.
+        if self.change.borrow().is_none()
+            && let Some(editable) = this.query_selector("tonk-editable").ok().flatten()
+        {
+            let claim_target = editable.clone();
+            let current_name = self.current_name.clone();
+            let host = this.clone();
+            let on_change: ChangeClosure = Closure::wrap(Box::new(move |event: Event| {
+                handle_commit(&event, &claim_target, &current_name, &host);
+            }));
+            let _ = editable
+                .add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+            *self.change.borrow_mut() = Some(on_change);
+        }
+
+        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(SpaceNameBehaviour {
+            current_name: self.current_name.clone(),
+        });
+        self.scaffold.connect(this, behaviour);
+    }
+}
+
 impl CustomElement for UiSpaceNameElement {
     fn inject_children(&mut self, this: &HtmlElement) {
         *self.current_name.borrow_mut() = UNTITLED.to_owned();
@@ -113,33 +143,37 @@ impl CustomElement for UiSpaceNameElement {
     fn connected_callback(&mut self, this: &HtmlElement) {
         if this
             .get_attribute("space")
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty() && !s.contains('{'))
             .is_none()
         {
-            // No space yet (an unsubstituted `{id}` placeholder, say) — the
-            // attribute callback re-runs this when it lands.
+            // No space yet (an unsubstituted `{id}` placeholder, say) —
+            // `attribute_changed_callback` runs `start` when it lands.
             return;
         }
+        self.start(this);
+    }
 
-        // Attach the commit listener to the `<tonk-editable>` child. There is
-        // no `tonk-display` event delegation here (this markup is Rust-owned,
-        // not a resolved template), so the `change` binding is wired directly.
-        if let Some(editable) = this.query_selector("tonk-editable").ok().flatten() {
-            let claim_target = editable.clone();
-            let current_name = self.current_name.clone();
-            let host = this.clone();
-            let on_change: ChangeClosure = Closure::wrap(Box::new(move |event: Event| {
-                handle_commit(&event, &claim_target, &current_name, &host);
-            }));
-            let _ = editable
-                .add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
-            *self.change.borrow_mut() = Some(on_change);
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        // The mounting FAB stamps `space="{id}"` and rewrites it to the space
+        // DID once the site's `id` resolves (see `tonk-fab`'s `propagate_space`).
+        // `connected_callback` bails when `space` is still a placeholder, so
+        // this callback drives the (re)subscribe once the real value lands.
+        if name != "space" || old == new || !this.is_connected() {
+            return;
         }
-
-        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(SpaceNameBehaviour {
-            current_name: self.current_name.clone(),
-        });
-        self.scaffold.connect(this, behaviour);
+        // Tear down any prior subscription (a placeholder connect installed the
+        // change listener but no subscription) and re-run against the new space.
+        self.scaffold.disconnect();
+        self.change.borrow_mut().take();
+        if new.filter(|s| !s.is_empty() && !s.contains('{')).is_some() {
+            self.start(this);
+        }
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {

@@ -115,18 +115,25 @@ impl CustomElement for TonkFab {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        // Observe `space` so a LATE-resolving `space="{id}"` binding — the
+        // mounting view stamps the placeholder before the site's `id` field
+        // lands, then rewrites the attribute once it does — re-authors the bar
+        // with the real DID. Without this the bar renders once with the
+        // unresolved `{id}` (or an empty value) and the space-name chip stays
+        // "Untitled", the sync chip never subscribes, and the share/rename
+        // caps target nothing.
+        &["space"]
     }
 
-    /// Author the FAB's own DOM. The `space` attribute is stamped by the
-    /// mounting view (`<tonk-fab with="main@profile:tonk" space="{id}">`) and
-    /// is already resolved by the time `inject_children` runs — per the
-    /// `custom-elements` crate, this is deferred to (and runs before) the
-    /// first `connectedCallback`, i.e. after HTML parsing has set the
-    /// element's attributes.
+    /// Author the FAB's own DOM against the current `space` attribute. The
+    /// mounting view stamps `space="{id}"`; that `{id}` resolves to the space
+    /// DID only once the site's `id` field lands, so `space` can still be the
+    /// unresolved placeholder (or empty) when `inject_children` first runs.
+    /// [`observed_attributes`] lists `space`, so
+    /// [`attribute_changed_callback`] re-authors the bar when the real value
+    /// arrives — see the `render_bar` helper both share.
     fn inject_children(&mut self, this: &HtmlElement) {
-        let space = this.get_attribute("space").unwrap_or_default();
-        this.set_inner_html(&crate::markup::fab_html(&space));
+        render_bar(this);
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
@@ -193,11 +200,56 @@ impl CustomElement for TonkFab {
 
     fn attribute_changed_callback(
         &mut self,
-        _this: &HtmlElement,
-        _name: String,
-        _old: Option<String>,
-        _new: Option<String>,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
     ) {
+        // The mounting view stamps `space="{id}"` and rewrites it to the real
+        // space DID once the site's `id` field resolves. Propagate that change
+        // to the bar's space-scoped children so their own subscriptions re-run
+        // against the resolved space. Skip the no-op initial set (`old == new`,
+        // fired once when the attribute is first observed) and any still-
+        // unresolved placeholder value.
+        if name != "space" || old == new {
+            return;
+        }
+        let Some(space) = new.filter(|s| !s.is_empty() && !s.contains('{')) else {
+            return;
+        };
+        propagate_space(this, &space);
+    }
+}
+
+/// Author the FAB bar against `this`'s current `space` attribute. Shared by
+/// `inject_children` (first mount) and — through `propagate_space` — the
+/// `space` observer.
+fn render_bar(this: &HtmlElement) {
+    let space = this.get_attribute("space").unwrap_or_default();
+    this.set_inner_html(&crate::markup::fab_html(&space));
+}
+
+/// Propagate a resolved `space` DID to the bar's space-scoped children,
+/// updating their routing attributes in place so their live subscriptions
+/// re-run. Patches attributes rather than re-authoring the whole bar so the
+/// host- and child-level listeners `connected_callback` attached survive.
+fn propagate_space(this: &HtmlElement, space: &str) {
+    // `<ui-space-name space="{space}">` — the rename chip. Its own
+    // `observed_attributes` includes `space`, so setting it re-subscribes.
+    if let Ok(Some(name_chip)) = this.query_selector("ui-space-name") {
+        let _ = name_chip.set_attribute("space", space);
+    }
+    // `<ui-sync-status with="main@{space}">` — the sync/pause chip. Its
+    // routing contract is a full `branch@repo` location, not a bare DID.
+    if let Ok(Some(sync_chip)) = this.query_selector("ui-sync-status") {
+        let _ = sync_chip.set_attribute("with", &crate::logic::space_with(space));
+    }
+    // `<ui-dropdown exclude="{space}">` / `<ui-space-switcher exclude="{space}">`
+    // — hide the active space from the switcher list.
+    for sel in ["ui-dropdown[exclude]", "ui-space-switcher[exclude]"] {
+        if let Ok(Some(el)) = this.query_selector(sel) {
+            let _ = el.set_attribute("exclude", space);
+        }
     }
 }
 
