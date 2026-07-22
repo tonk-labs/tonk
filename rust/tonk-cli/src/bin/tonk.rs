@@ -221,18 +221,34 @@ enum Command {
     /// Mints a UCAN delegation chain over the local repo. The
     /// default form is audience-open: anyone holding the URL can
     /// claim by redelegating from the embedded ephemeral key.
-    #[command(after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod")]
+    ///
+    /// The link is built on the remote's own origin, so the
+    /// recipient lands on the deployment that actually serves the
+    /// repo — and that origin's shortcut service can shorten it.
+    #[command(
+        after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod\n  tonk invite --no-remote"
+    )]
     Invite {
         /// Override the URL prefix the invite is built against.
-        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
-        base_url: String,
+        /// Defaults to `/join` on the resolved remote's origin, or
+        /// to the canonical base when the repo has no remote.
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
 
         /// Embed a registered remote's URL in the invite so
         /// the claimer auto-configures the same access service
         /// after redeeming. Argument is the remote's local
         /// name (as registered with `tonk remote add`).
-        #[arg(long, value_name = "NAME")]
+        /// Defaults to the only registered remote when there
+        /// is exactly one.
+        #[arg(long, value_name = "NAME", conflicts_with = "no_remote")]
         remote: Option<String>,
+
+        /// Mint a local-only invite carrying no `remote=`, even
+        /// when remotes are registered. The recipient joins with
+        /// no upstream and wires one by hand.
+        #[arg(long)]
+        no_remote: bool,
     },
 
     /// Join a shared repo from an invite URL into a new spot
@@ -734,9 +750,11 @@ async fn main() {
         Command::Push => sync_op(SyncOp::Push, spot.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, spot.as_deref()).await,
         Command::Status => status_op(spot.as_deref()).await,
-        Command::Invite { base_url, remote } => {
-            mint_invite(base_url, remote, spot.as_deref()).await
-        }
+        Command::Invite {
+            base_url,
+            remote,
+            no_remote,
+        } => mint_invite(base_url, remote, no_remote, spot.as_deref()).await,
         Command::Join { url, name } => claim_invite(url, name).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
@@ -1297,8 +1315,9 @@ fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
 }
 
 async fn mint_invite(
-    base_url: String,
+    base_url: Option<String>,
     remote_name: Option<String>,
+    no_remote: bool,
     spot: Option<&str>,
 ) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
@@ -1306,21 +1325,31 @@ async fn mint_invite(
         Err(code) => return code,
     };
 
-    // Resolve `--remote <name>` to its endpoint URL by reading
-    // the meta branch. An unknown name surfaces as a friendly
-    // error before any keys are generated.
-    let remote_url = match remote_name.as_deref() {
-        Some(name) => match remote::find(&site, name).await {
-            Ok(Some(record)) => Some(record.endpoint),
-            Ok(None) => {
-                return print_error(format!(
-                    "no remote registered as '{name}'; run `tonk remote list` to see what's there"
-                ));
-            }
+    // Resolve the remote first: it decides both what gets embedded as
+    // `remote=` and, unless `--base-url` overrides, which origin the
+    // link points at. Those two have to stay in step — a link on one
+    // deployment carrying a remote on another can't be shortened (the
+    // shortcut service is same-origin) and drops the recipient on a
+    // deployment that isn't serving the repo.
+    let remote_record = if no_remote {
+        None
+    } else {
+        match remote::resolve(&site, remote_name.as_deref()).await {
+            Ok(resolved) => resolved,
+            Err(err) => return print_error(err.to_string()),
+        }
+    };
+
+    let base_url = match (base_url, &remote_record) {
+        (Some(explicit), _) => explicit,
+        (None, Some(record)) => match invite::base_url_for_remote(&record.endpoint) {
+            Ok(derived) => derived,
             Err(err) => return print_error(err.to_string()),
         },
-        None => None,
+        (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
+
+    let remote_url = remote_record.map(|record| record.endpoint);
 
     match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
         Ok(mut outcome) => {
