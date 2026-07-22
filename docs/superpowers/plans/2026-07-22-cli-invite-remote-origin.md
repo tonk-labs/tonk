@@ -180,6 +180,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 The `guide-*.md` files ship to agents through `tonk guide`, so a dangling `tonk share` there is a live footgun, not just stale prose.
 
 **Files:**
+- Modify: `rust/tonk-cli/src/bin/tonk.rs:33` (the `Cli` `after_help` banner)
 - Modify: `rust/tonk-cli/README.md:65-67`
 - Modify: `rust/tonk-cli/src/guide-index.md:65`
 - Modify: `rust/tonk-cli/src/guide-views.md:61,204-206`
@@ -196,7 +197,21 @@ The `guide-*.md` files ship to agents through `tonk guide`, so a dangling `tonk 
 
 Every replacement below points the reader at `tonk invite`, which now carries the remote (PR 2) and is the only way to hand someone a link.
 
-- [ ] **Step 1: README**
+- [ ] **Step 1: The `--help` banner**
+
+Task 1 deleted the subcommand but left the top-level help text advertising it. In `rust/tonk-cli/src/bin/tonk.rs`, the `Cli` struct's `after_help` string (line 33) names `share` twice:
+
+```
+The loop: orient, define concepts, assert facts, give them a view, share.
+...
+  collab   share · invite · join · push · pull · remote
+```
+
+Change the `collab` row to `invite · join · push · pull · remote`, and rewrite the opening sentence so its last beat is a verb the CLI still has. `tonk invite` is what a human reaches for now.
+
+This is a string literal inside `#[command(...)]`, all on one line with `\n` escapes — edit it in place, keep it a single line, and keep the two-space column alignment of the rows around it.
+
+- [ ] **Step 2: README**
 
 In `rust/tonk-cli/README.md`, delete lines 65-67:
 
@@ -214,7 +229,7 @@ tonk invite
 
 Adjust the surrounding prose so it reads as "mint an invite to the repo" rather than "share one view". Read the enclosing section first — do not leave a heading describing three flavours above a single command.
 
-- [ ] **Step 2: guide-index.md**
+- [ ] **Step 3: guide-index.md**
 
 Line 65 currently reads:
 
@@ -228,7 +243,7 @@ Replace with:
 6. Hand the repo to someone: `tonk invite`.
 ```
 
-- [ ] **Step 3: guide-views.md**
+- [ ] **Step 4: guide-views.md**
 
 Line 61:
 
@@ -245,7 +260,7 @@ navigate to the view themselves)
 
 Lines 204-206 describe `tonk share view` versus `tonk share display`. Delete the whole paragraph — the distinction it draws no longer exists in the CLI. Read the surrounding section and make sure the remaining prose still flows.
 
-- [ ] **Step 4: guide-events.md**
+- [ ] **Step 5: guide-events.md**
 
 Lines 422-468 contain the largest block: an intro at 422, a fenced example at 425, a second example at 446, and a three-bullet comparison at 460-468. Replace the whole span with:
 
@@ -257,7 +272,7 @@ fire in the live shell, not in a standalone page.
 
 Read lines 400-480 before editing so the replacement lands in the right narrative position.
 
-- [ ] **Step 5: guide-workspace.md**
+- [ ] **Step 6: guide-workspace.md**
 
 Lines 82-83:
 
@@ -273,7 +288,7 @@ Replace with:
 there.
 ```
 
-- [ ] **Step 6: Source doc comments**
+- [ ] **Step 7: Source doc comments**
 
 `rust/tonk-cli/src/schema.rs:50` — change `for `tonk concepts` to print and for `tonk share concept`` so it names only `tonk concepts`.
 
@@ -284,7 +299,7 @@ there.
 
 Read each doc comment in full before rewriting. Do not leave a sentence whose subject was the deleted command.
 
-- [ ] **Step 7: `.claude/commands/tonk.md`**
+- [ ] **Step 8: `.claude/commands/tonk.md`**
 
 Lines 87-88:
 
@@ -301,7 +316,7 @@ tonk invite                                 # invite link to this repo
 
 If `tonk invite` is already listed elsewhere in that file, delete these two lines instead of replacing them.
 
-- [ ] **Step 8: Verify nothing under `rust/` references the command**
+- [ ] **Step 9: Verify nothing under `rust/` references the command**
 
 ```bash
 cd /Users/jackdouglas/tonk/tonk-invite
@@ -310,7 +325,7 @@ grep -rn "tonk share" --include="*.md" --include="*.rs" --include="*.toml" --inc
 
 Expected: no output. `bench/` still references it — Task 3 owns that, because bench genuinely executes the command and needs a working replacement, not a reworded sentence.
 
-- [ ] **Step 9: Run the full native suite**
+- [ ] **Step 10: Run the full native suite**
 
 ```bash
 nix develop -c test:native:debug 2>&1 | tail -30
@@ -318,7 +333,7 @@ nix develop -c test:native:debug 2>&1 | tail -30
 
 Expected: PASS.
 
-- [ ] **Step 10: Lint gate**
+- [ ] **Step 11: Lint gate**
 
 ```bash
 nix flake check 2>&1 | tail -30
@@ -326,7 +341,7 @@ nix flake check 2>&1 | tail -30
 
 Expected: clean.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add -A rust/ .claude/
