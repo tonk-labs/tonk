@@ -942,10 +942,12 @@ async fn publish_share_blocked(
 /// shortcut service answers.
 ///
 /// The long form is `{origin}/join?access={proof}{remote}#{seed}`, where
-/// `remote` is already a ready-to-append `&remote=…` suffix (empty for a
-/// local-only repo). This is the shape the share view used to concatenate
-/// from three overlay fields; building it here gives it one definition and
-/// lets it be shortened.
+/// `remote` is already a ready-to-append `&remote=…` suffix. It is never
+/// empty: a repo with no shareable remote is refused before any of this
+/// runs, because an invite that carries no remote strands its recipient in
+/// a spot that can never fill. This is the shape the share view used to
+/// concatenate from three overlay fields; building it here gives it one
+/// definition and lets it be shortened.
 ///
 /// Shortening is best-effort: a failed `PUT /@` (offline, no service
 /// deployed, a non-2xx) logs and yields the long URL, which is fully
