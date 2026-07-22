@@ -1600,7 +1600,12 @@ async fn any_client_visible() -> bool {
     clients.iter().any(|c| {
         c.dyn_into::<web_sys::WindowClient>()
             .map(|w| w.visibility_state() == web_sys::VisibilityState::Visible)
-            .unwrap_or(false)
+            // A client that fails to downcast to `WindowClient` reads as
+            // visible too, per the same "never stall sync on an API
+            // surprise" rule as the outer `match_all` failure above. In
+            // practice this never fires: matchAll() with no options
+            // defaults to window clients.
+            .unwrap_or(true)
     })
 }
 
