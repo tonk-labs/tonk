@@ -162,6 +162,38 @@ impl Command for Invite {
     type Output = ();
 }
 
+/// Attach a sync remote to an existing spot, and optionally mint an invite
+/// once it is attached.
+///
+/// Dispatched routelessly by the share control when a user accepts the offer
+/// to turn sync on. `space`, `remote` and the `share` marker ride on the
+/// transient as raw facts the handler reads directly — `remote` because a URL
+/// cannot be a `String`-typed field (see
+/// [`crate::domain::command::enable_sync::Remote`]), the other two for
+/// symmetry with it.
+///
+/// This is deliberately NOT the `space/enable-sync` command seeded in
+/// `core.yaml`: that one shares `CreateSpace`'s trigger attribute, so a
+/// handler registered against it would fire alongside `CreateSpaceHandler`
+/// and mint a new spot instead of attaching to the existing one.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct EnableSync {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The acceptance timestamp — distinguishes one click from the next.
+    pub time: crate::domain::command::enable_sync::TimeStamp,
+    /// Per-command marker that keeps this command's shape distinct from
+    /// every other transient's.
+    pub marker: crate::domain::command::enable_sync::EnableSync,
+}
+
+/// `EnableSync` is a [`dialog_capability::Command`]; its handler lives in
+/// `tonk-worker` (attaches the remote, then mints when asked).
+impl Command for EnableSync {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Toggle background sync for a space's replica.
 ///
 /// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
@@ -422,6 +454,36 @@ mod share_blocked {
         assert_eq!(
             crate::domain::share::Time::the().to_string(),
             "xyz.tonk.share/time"
+        );
+    }
+}
+
+#[cfg(test)]
+mod enable_sync {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_carries_a_marker_no_other_command_carries() {
+        use crate::domain::command::enable_sync;
+
+        assert_eq!(
+            enable_sync::EnableSync::the().to_string(),
+            "dom.event.current-target.dataset/enable-sync"
+        );
+        assert_eq!(
+            enable_sync::Space::the().to_string(),
+            "xyz.tonk.enable-sync/space"
+        );
+        assert_eq!(
+            enable_sync::Remote::the().to_string(),
+            "xyz.tonk.enable-sync/remote"
+        );
+        assert_eq!(
+            enable_sync::Share::the().to_string(),
+            "xyz.tonk.enable-sync/share"
         );
     }
 }
