@@ -984,6 +984,115 @@ pub mod tests {
         panic!("invitation for subject {subject} never appeared after dispatch");
     }
 
+    /// The FAB dispatches enable-sync through the profile branch even though
+    /// its result is written to the named spot. A standing spot subscription
+    /// must receive that link when dispatch drains the command's writes;
+    /// otherwise the share control has nothing to settle its clipboard promise
+    /// with and times out.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_broadcasts_the_invite_minted_by_profile_routed_enable_sync() {
+        use futures_util::FutureExt as _;
+        use http_body_util::BodyExt as _;
+
+        let state = test_state().await;
+        let (app, state, _lsp) = super::api_router_with_state(state);
+        let (repo, subject) = put_repo_info(&app, "enable-sync-share-broadcast").await;
+        let query = serde_json::json!({
+            "predicate": { "with": { "link": {
+                "the": "xyz.tonk.credential/link", "as": "Text", "cardinality": "one"
+            } } },
+            "terms": { "this": subject, "link": { "?": { "name": "link" } } }
+        });
+        let mut body = open_subscription_with_query(&app, &repo, "main", query).await;
+        let snapshot = read_sse_frame(&mut body).await;
+        assert_eq!(
+            snapshot["conclusions"].as_array().map(Vec::len),
+            Some(0),
+            "local-only spot starts without a credential link",
+        );
+
+        let command = serde_json::json!({
+            "claims": [{
+                "op": "assert",
+                "application": {
+                    "parameters": {
+                        "space": subject,
+                        "remote": "https://sync.example.test/ucan/",
+                        "share": "tonk:share",
+                        "time": 1,
+                        "marker": "tonk:enable-sync"
+                    },
+                    "predicate": { "kind": "transient", "concept": {
+                        "description": "Attach a remote and mint an invite.",
+                        "with": {
+                            "time": { "the": "dom.event/time-stamp", "as": "Float" },
+                            "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" },
+                            "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
+                            "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
+                            "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" }
+                        }
+                    } }
+                }
+            }]
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile/branch/main/transact")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(command.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // `/transact` detaches command dispatch after committing the transient.
+        // Wait until its durable invitation lands, then inspect the already-open
+        // stream. Absence after minting completed is the regression.
+        for _ in 0..50 {
+            if !content_invitations(&state, &repo).await.is_empty() {
+                break;
+            }
+            wasm_yield().await;
+        }
+        assert_eq!(
+            content_invitations(&state, &repo).await.len(),
+            1,
+            "enable-sync should finish minting the invitation",
+        );
+        let mut frame = None;
+        for _ in 0..10 {
+            if let Some(ready) = body.frame().now_or_never().flatten() {
+                frame = Some(ready.expect("SSE frame should be readable"));
+                break;
+            }
+            wasm_yield().await;
+        }
+        let frame = frame.expect("enable-sync mint should broadcast its link");
+        let bytes = frame.into_data().expect("data frame");
+        let text = std::str::from_utf8(&bytes).expect("utf8");
+        let delta: serde_json::Value = serde_json::from_str(
+            text.strip_prefix("data: ")
+                .and_then(|text| text.strip_suffix("\n\n"))
+                .expect("SSE-framed body"),
+        )
+        .expect("delta is JSON");
+        // Refreshing the branch handle deliberately rebinds its subscription
+        // engine, so this is a replacement snapshot; an ordinary mint on an
+        // unchanged handle is an incremental `asserted` delta. The FAB accepts
+        // both frame kinds.
+        let rows = delta["conclusions"]
+            .as_array()
+            .or_else(|| delta["asserted"].as_array())
+            .expect("broadcast carries conclusion rows");
+        let link = rows[0]["fields"]["link"].as_str().unwrap_or_default();
+        assert!(!link.is_empty(), "broadcast carries the minted invite link");
+    }
+
     /// The `tonk:invite` command handler asserts a queryable
     /// `tonk:invitation` join. (`mint_invite_via_command` panics if it
     /// doesn't.)
@@ -3114,6 +3223,16 @@ employee:
     /// Open an SSE subscription and return the open body so the
     /// caller can read frames as they arrive.
     async fn open_subscription(app: &Router, repo: &str, branch: &str) -> Body {
+        open_subscription_with_query(app, repo, branch, named_concept_wire_query()).await
+    }
+
+    /// Open an SSE subscription for an explicit inline query.
+    async fn open_subscription_with_query(
+        app: &Router,
+        repo: &str,
+        branch: &str,
+        query: serde_json::Value,
+    ) -> Body {
         let response = app
             .clone()
             .oneshot(
@@ -3122,7 +3241,7 @@ employee:
                     .method("POST")
                     .header("content-type", "application/json")
                     .header("accept", "text/event-stream")
-                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .body(Body::from(query.to_string()))
                     .unwrap(),
             )
             .await
