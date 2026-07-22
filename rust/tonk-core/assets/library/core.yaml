@@ -136,6 +136,12 @@ view!:
           gap: var(--wa-space-xs);
           align-items: flex-start;
         }
+        /* `tonk-display` is light DOM and projects lifecycle slots by
+           toggling `hidden`. Its custom-element display rule outranks the UA
+           default, so enforce the inactive state here. */
+        .blank-canvas__deeplink tonk-display > [slot][hidden] {
+          display: none !important;
+        }
         .blank-canvas__instr {
           display: flex;
           flex-direction: column;
@@ -151,7 +157,6 @@ view!:
       <span class="blank-canvas__label">no template &middot; empty view</span>
       <h1 class="blank-canvas__title">your starting layout is in place</h1>
       <section class="blank-canvas__deeplink">
-        <div class="blank-canvas__label">agent link &middot; paste into your agent</div>
         <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
         <tonk-origin>
           <tonk-display
@@ -159,7 +164,12 @@ view!:
             bind:base="data-base"
             model=tonk:agent-invite
             data-page="this repo">
-            <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
+            <tonk-display
+              slot="no-entity"
+              entity={subject}
+              model=tonk:share/blocked>
+              <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
+            </tonk-display>
           </tonk-display>
         </tonk-origin>
       </section>
@@ -392,6 +402,61 @@ concept!: &tonk/agent-invite
       the: xyz.tonk.credential/seed
       cardinality: one
       as: text
+
+# A refused invite mint, asserted into the session overlay by the worker.
+# The empty-canvas and empty-sheet agent-link panels use it as the fallback
+# behind `tonk:agent-invite`: while neither exists they show a short pending
+# label; if minting is refused they replace that label with the reason and the
+# action that makes a link possible.
+concept!: &share/blocked
+  this: tonk:share/blocked
+  description: Why the latest invite request could not produce a shareable link.
+  with:
+    blocked:
+      description: Stable refusal class.
+      the: xyz.tonk.share/blocked
+      cardinality: one
+      as: text
+    detail:
+      description: Human-readable refusal reason.
+      the: xyz.tonk.share/detail
+      cardinality: one
+      as: text
+    time:
+      description: Timestamp of the invite request this refusal answers.
+      the: xyz.tonk.share/time
+      cardinality: one
+      as: float
+
+view!:
+  this: id:tonk:share/blocked/view
+  model: tonk:share/blocked
+  display: |
+    <div class="local-invite-notice">
+      <style>
+        .local-invite-notice {
+          display: flex;
+          flex-direction: column;
+          gap: var(--wa-space-2xs);
+          color: var(--wa-color-text-quiet);
+        }
+        .local-invite-notice__label {
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-xs);
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+        }
+        .local-invite-notice p {
+          margin: 0;
+          font-family: var(--wa-font-family-body);
+          font-size: var(--wa-font-size-s);
+          line-height: var(--wa-line-height-normal);
+          text-wrap: pretty;
+        }
+      </style>
+      <span class="local-invite-notice__label">local spot &middot; no sync remote</span>
+      <p>{detail} Use Share to turn on sync and create an agent link.</p>
+    </div>
 
 # Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name
 # and its live `tonk:invitation` on the same subject (`?this`). `?this`

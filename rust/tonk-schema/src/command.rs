@@ -162,6 +162,38 @@ impl Command for Invite {
     type Output = ();
 }
 
+/// Attach a sync remote to an existing spot, and optionally mint an invite
+/// once it is attached.
+///
+/// Dispatched routelessly by the share control when a user accepts the offer
+/// to turn sync on. `space`, `remote` and the `share` marker ride on the
+/// transient as raw facts the handler reads directly — `remote` because a URL
+/// cannot be a `String`-typed field (see
+/// [`crate::domain::command::enable_sync::Remote`]), the other two for
+/// symmetry with it.
+///
+/// This is deliberately NOT the `space/enable-sync` command seeded in
+/// `core.yaml`: that one shares `CreateSpace`'s trigger attribute, so a
+/// handler registered against it would fire alongside `CreateSpaceHandler`
+/// and mint a new spot instead of attaching to the existing one.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct EnableSync {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The acceptance timestamp — distinguishes one click from the next.
+    pub time: crate::domain::command::enable_sync::TimeStamp,
+    /// Per-command marker that keeps this command's shape distinct from
+    /// every other transient's.
+    pub marker: crate::domain::command::enable_sync::EnableSync,
+}
+
+/// `EnableSync` is a [`dialog_capability::Command`]; its handler lives in
+/// `tonk-worker` (attaches the remote, then mints when asked).
+impl Command for EnableSync {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Toggle background sync for a space's replica.
 ///
 /// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
@@ -292,7 +324,9 @@ pub struct Authorization {
     pub this: Entity,
     /// The base58 delegation chain (`?access=`).
     pub proof: crate::domain::authorization::Proof,
-    /// The sync remote endpoint (`&remote=`), empty when local-only.
+    /// The sync remote endpoint (`&remote=`). Never empty — `run_invite` is
+    /// the only handler that asserts an `Authorization`, and it refuses to
+    /// mint one at all for a repository with no shareable remote.
     pub remote: crate::domain::authorization::Remote,
 }
 
@@ -312,6 +346,28 @@ pub struct Credential {
     /// The complete invite URL, shortened when the shortcut service
     /// answered. Carries the seed in its fragment, hence overlay-only.
     pub link: crate::domain::credential::Link,
+}
+
+/// The overlay-only fact a refused `tonk:invite` asserts: why the mint did
+/// not happen, keyed by the spot's **subject** DID (`this`) — the same
+/// entity [`Credential`] is keyed by, so one subject carries both the
+/// success and the refusal.
+///
+/// All three fields are asserted together. A concept resolves only when
+/// every declared field is present, so a partial assert would never resolve
+/// (the same all-fields-required gotcha `JoinStatus`/`JoinFailure` are split
+/// to avoid).
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ShareBlocked {
+    /// The spot's subject DID.
+    pub this: Entity,
+    /// Refusal class: `not-synced` | `unshareable-remote` | `attach-failed`.
+    pub blocked: crate::domain::share::Blocked,
+    /// The sentence shown to the user.
+    pub detail: crate::domain::share::Detail,
+    /// The refused command's timestamp, echoed so the share control can tell
+    /// this refusal from a replay of an older one.
+    pub time: crate::domain::share::Time,
 }
 
 /// Request to redeem an invite URL and join its space.
@@ -378,4 +434,64 @@ pub struct JoinFailure {
     pub reason: crate::domain::join::Reason,
     /// Failure class: `malformed` | `audience-mismatch` | `claim-failed`.
     pub kind: crate::domain::join::Kind,
+}
+
+#[cfg(test)]
+mod share_blocked {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_derives_the_share_attribute_names() {
+        assert_eq!(
+            crate::domain::share::Blocked::the().to_string(),
+            "xyz.tonk.share/blocked"
+        );
+        assert_eq!(
+            crate::domain::share::Detail::the().to_string(),
+            "xyz.tonk.share/detail"
+        );
+        assert_eq!(
+            crate::domain::share::Time::the().to_string(),
+            "xyz.tonk.share/time"
+        );
+    }
+}
+
+#[cfg(test)]
+mod enable_sync {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_carries_a_marker_no_other_command_carries() {
+        use crate::domain::command::enable_sync;
+
+        assert_eq!(
+            enable_sync::EnableSync::the().to_string(),
+            "dom.event.current-target.dataset/enable-sync"
+        );
+        assert_eq!(
+            enable_sync::Space::the().to_string(),
+            "xyz.tonk.enable-sync/space"
+        );
+        assert_eq!(
+            enable_sync::Remote::the().to_string(),
+            "xyz.tonk.enable-sync/remote"
+        );
+        assert_eq!(
+            enable_sync::Share::the().to_string(),
+            "xyz.tonk.enable-sync/share"
+        );
+        // Shared verbatim with every other command's timestamp, so it must
+        // stay on the `dom.event` domain rather than this command's own.
+        assert_eq!(
+            enable_sync::TimeStamp::the().to_string(),
+            "dom.event/time-stamp"
+        );
+    }
 }
