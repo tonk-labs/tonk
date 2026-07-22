@@ -226,7 +226,7 @@ enum Command {
     /// recipient lands on the deployment that actually serves the
     /// repo — and that origin's shortcut service can shorten it.
     #[command(
-        after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod\n  tonk invite --no-remote"
+        after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod\n  tonk invite --no-remote\n  tonk invite --no-shorten"
     )]
     Invite {
         /// Override the URL prefix the invite is built against.
@@ -253,6 +253,15 @@ enum Command {
         /// repo to its own upstream if it has one.
         #[arg(long)]
         no_remote: bool,
+
+        /// Print the long invite URL instead of shortening it.
+        /// Shortening is a live PUT to the link's own origin, so
+        /// this is the way to mint offline, against a deployment
+        /// with no shortcut service, or without touching the
+        /// canonical base when no remote resolves. Also settable
+        /// as TONK_NO_SHORTEN.
+        #[arg(long)]
+        no_shorten: bool,
     },
 
     /// Join a shared repo from an invite URL into a new spot
@@ -758,7 +767,8 @@ async fn main() {
             base_url,
             remote,
             no_remote,
-        } => mint_invite(base_url, remote, no_remote, spot.as_deref()).await,
+            no_shorten,
+        } => mint_invite(base_url, remote, no_remote, no_shorten, spot.as_deref()).await,
         Command::Join { url, name } => claim_invite(url, name).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
@@ -1322,6 +1332,7 @@ async fn mint_invite(
     base_url: Option<String>,
     remote_name: Option<String>,
     no_remote: bool,
+    no_shorten: bool,
     spot: Option<&str>,
 ) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
@@ -1401,10 +1412,14 @@ async fn mint_invite(
         Ok(mut outcome) => {
             // Shorten against the link's own origin; the long URL is
             // fully functional, so an unreachable shortcut service
-            // (offline, dev base) degrades with a warning.
-            match invite::shorten(&outcome.url).await {
-                Ok(short) => outcome.url = short,
-                Err(err) => eprintln!("warning: could not shorten the invite URL: {err}"),
+            // (offline, dev base) degrades with a warning. Skipping
+            // is the only way to mint without a live PUT to that
+            // origin — which, with no remote resolved, is production.
+            if invite::shorten_enabled(no_shorten) {
+                match invite::shorten(&outcome.url).await {
+                    Ok(short) => outcome.url = short,
+                    Err(err) => eprintln!("warning: could not shorten the invite URL: {err}"),
+                }
             }
             print_invite_outcome(&outcome);
             ExitCode::Success
