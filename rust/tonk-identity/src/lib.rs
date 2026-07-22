@@ -6,6 +6,7 @@
 //! it. Devices act through a subject-open `root → device` UCAN
 //! delegation; day-to-day operation never touches the root key.
 
+pub mod ceremony;
 pub mod delegation;
 pub mod derive;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
