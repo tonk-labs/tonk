@@ -309,7 +309,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<RemoteRecord>, RemoteError> {
 }
 
 /// Look up one remote by name. Convenience wrapper around
-/// [`list`] for the invite-mint path.
+/// [`list`], used by [`resolve`] and [`set_upstream`].
 pub async fn find(site: &TonkSite, name: &str) -> Result<Option<RemoteRecord>, RemoteError> {
     let mut remotes: HashMap<String, RemoteRecord> = list(site)
         .await?
@@ -321,9 +321,10 @@ pub async fn find(site: &TonkSite, name: &str) -> Result<Option<RemoteRecord>, R
 
 /// Pick the remote a command should act on.
 ///
-/// `explicit` names one outright. Otherwise this follows `tonk push`'s
-/// implicit-when-unambiguous rule: a lone registered remote is the
-/// obvious choice, no remotes at all means there is nothing to act on
+/// `explicit` names one outright. Otherwise a lone registered remote is
+/// the obvious choice — the same implicit-when-unambiguous reading
+/// `tonk remote add` applies when it wires a first remote as the
+/// upstream. No remotes at all means there is nothing to act on
 /// (`None`, not an error — a local-only repo is a legitimate thing to
 /// invite someone to), and several is a question only the caller can
 /// answer.

@@ -231,7 +231,7 @@ enum Command {
     Invite {
         /// Override the URL prefix the invite is built against.
         /// Defaults to `/join` on the resolved remote's origin, or
-        /// to the canonical base when the repo has no remote.
+        /// to the canonical base when no single remote resolves.
         #[arg(long, value_name = "URL")]
         base_url: Option<String>,
 
@@ -246,8 +246,11 @@ enum Command {
 
         /// Mint an invite carrying no `remote=`, even when remotes
         /// are registered. The recipient joins with no upstream and
-        /// wires one by hand. The mint still syncs this repo to its
-        /// own upstream if it has one.
+        /// wires one by hand. The link still sits on the resolved
+        /// remote's origin — only the embedded endpoint is dropped.
+        /// Also the way past the several-remotes error, which falls
+        /// back to the canonical base. The mint still syncs this
+        /// repo to its own upstream if it has one.
         #[arg(long)]
         no_remote: bool,
     },
@@ -1332,20 +1335,45 @@ async fn mint_invite(
     // deployment carrying a remote on another can't be shortened (the
     // shortcut service is same-origin) and drops the recipient on a
     // deployment that isn't serving the repo.
-    let remote_record = if no_remote {
-        None
-    } else {
-        match remote::resolve(&site, remote_name.as_deref()).await {
-            Ok(resolved) => resolved,
-            Err(err) => return print_error(err.to_string()),
+    //
+    // `--no-remote` suppresses only the embedded endpoint. The link
+    // still belongs on the remote's origin: moving it to the canonical
+    // base is the same split this resolution exists to prevent.
+    let resolved = match remote::resolve(&site, remote_name.as_deref()).await {
+        Ok(record) => record,
+        // `--no-remote` is the documented way out of the ambiguity
+        // error, so it cannot be blocked by one. Nothing picks an
+        // origin here, so the canonical base is the honest answer —
+        // said out loud, because it may not be the right one.
+        Err(remote::RemoteError::AmbiguousRemote(names)) if no_remote => {
+            eprintln!(
+                "warning: several remotes are registered ({names}); building the link on \
+                 {base}\n         name an origin with `--base-url <URL>` if that is wrong",
+                base = invite::DEFAULT_BASE_URL,
+            );
+            None
+        }
+        Err(err) => {
+            // The shared error names `--remote`; `--no-remote` is the
+            // other way out, and only the invite path has it.
+            let hint = match err {
+                remote::RemoteError::AmbiguousRemote(_) => {
+                    "\n       or pass `--no-remote` to mint a link that embeds none"
+                }
+                _ => "",
+            };
+            return print_error(format!("{err}{hint}"));
         }
     };
+
+    // `--no-remote` keeps the origin and drops the endpoint.
+    let embedded = if no_remote { None } else { resolved.clone() };
 
     // The mint pushes to whatever `main` tracks, which need not be the
     // remote the link embeds. Say so rather than re-route: a deliberate
     // split setup is legitimate, and a silent one is not. No upstream
     // means no push at all, so nothing to diverge from.
-    if let Some(record) = &remote_record {
+    if let Some(record) = &embedded {
         match remote::upstream_remote(&site).await {
             Ok(Some(upstream)) if upstream != record.name => eprintln!(
                 "warning: the invite embeds remote '{embedded}' but the repo pushes to \
@@ -1358,7 +1386,7 @@ async fn mint_invite(
         }
     }
 
-    let base_url = match (base_url, &remote_record) {
+    let base_url = match (base_url, &resolved) {
         (Some(explicit), _) => explicit,
         (None, Some(record)) => match invite::base_url_for_remote(&record.endpoint) {
             Ok(derived) => derived,
@@ -1367,7 +1395,7 @@ async fn mint_invite(
         (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
 
-    let remote_url = remote_record.map(|record| record.endpoint);
+    let remote_url = embedded.map(|record| record.endpoint);
 
     match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
         Ok(mut outcome) => {

@@ -263,6 +263,52 @@ mod when_inviting_without_a_remote {
         let stderr = stderr_of(&output);
         assert!(!stderr.contains("the invite embeds remote"), "{stderr}");
     }
+
+    /// `--no-remote` is the way past the several-remotes error, so it
+    /// can never be blocked by one. Nothing resolves an origin here, so
+    /// the base falls back — out loud, not silently.
+    #[dialog_common::test]
+    fn it_warns_and_falls_back_when_several_remotes_are_registered() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(
+            state.path(),
+            &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
+        );
+
+        let output = run(state.path(), &["invite", "--no-remote"], &[]);
+        let stderr = stderr_of(&output);
+        assert!(
+            stderr.contains("warning: several remotes are registered"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("--base-url"), "{stderr}");
+        assert!(
+            !stderr.contains("error: several remotes are registered"),
+            "{stderr}"
+        );
+    }
+}
+
+/// A bare `tonk invite` cannot pick between remotes, so it stops. The
+/// error has to name both ways forward — `--remote` to choose one and
+/// `--no-remote` to embed none.
+mod when_several_remotes_are_registered {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_both_ways_out_of_the_ambiguity() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(
+            state.path(),
+            &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
+        );
+
+        let output = run(state.path(), &["invite"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("--remote <NAME>"), "{stderr}");
+        assert!(stderr.contains("--no-remote"), "{stderr}");
+    }
 }
 
 /// End-to-end mints against the in-process access service the rest of
@@ -315,6 +361,60 @@ mod when_minting_against_a_live_remote {
             "short link sits on the remote's origin: {url}"
         );
         assert!(!url.contains("tonk.spot"), "not the default base: {url}");
+        Ok(())
+    }
+
+    /// Resolve a `{origin}/@/{hash}` link back to what it stands for.
+    /// The shortcut service answers with a relative `Location`, so the
+    /// header carries the path and query the mint actually produced —
+    /// the only way to inspect a link once it has been shortened.
+    async fn shortcut_target(short_url: &str) -> Result<String> {
+        let without_fragment = short_url.split('#').next().unwrap_or(short_url);
+        let response = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?
+            .get(without_fragment)
+            .send()
+            .await?;
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .expect("shortcut answers with a Location")
+            .to_str()?
+            .to_owned();
+        Ok(location)
+    }
+
+    /// `--no-remote` drops the embedded endpoint and nothing else. The
+    /// link stays on the remote's origin — rerouting it to the
+    /// canonical base would strand the recipient on a deployment that
+    /// has never seen this repo, the split this path exists to avoid.
+    #[dialog_common::test]
+    async fn it_keeps_the_lone_remotes_origin_and_embeds_no_remote(
+        env: AccessServiceAddress,
+    ) -> Result<()> {
+        let state = tempfile::tempdir()?;
+        let origin = env.access_service_url.trim_end_matches('/').to_owned();
+
+        let output = mint_against(
+            state.path().to_path_buf(),
+            origin.clone(),
+            &["invite", "--no-remote"],
+        )
+        .await;
+        assert!(output.status.success(), "{}", stderr_of(&output));
+
+        let stdout = stdout_of(&output);
+        let url = stdout.trim();
+        assert!(
+            url.starts_with(&format!("{origin}/@/")),
+            "short link sits on the remote's origin: {url}"
+        );
+        assert!(!url.contains("tonk.spot"), "not the default base: {url}");
+
+        let target = shortcut_target(url).await?;
+        assert!(target.contains("access="), "still a real invite: {target}");
+        assert!(!target.contains("remote="), "no remote embedded: {target}");
         Ok(())
     }
 
