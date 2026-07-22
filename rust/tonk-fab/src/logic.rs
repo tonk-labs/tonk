@@ -1563,6 +1563,20 @@ mod enable_sync_claim {
         assert_eq!(app["parameters"]["share"], "tonk:share");
         assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
+
+        // The `with` declaration is what the worker actually matches on: a
+        // typo here compiles and passes every assertion on `parameters`
+        // above, then silently no-ops at runtime because the transient
+        // commits and matches no handler. Pin every declared attribute name.
+        let with = &app["predicate"]["concept"]["with"];
+        assert_eq!(with["time"]["the"], "dom.event/time-stamp");
+        assert_eq!(with["space"]["the"], "xyz.tonk.enable-sync/space");
+        assert_eq!(with["remote"]["the"], "xyz.tonk.enable-sync/remote");
+        assert_eq!(
+            with["marker"]["the"],
+            "dom.event.current-target.dataset/enable-sync"
+        );
+        assert_eq!(with["share"]["the"], "xyz.tonk.enable-sync/share");
     }
 
     #[test]
@@ -1604,6 +1618,14 @@ mod default_remote {
     fn it_appends_the_access_service_path() {
         assert_eq!(
             default_remote_url("https://tonk.spot"),
+            "https://tonk.spot/ucan/"
+        );
+    }
+
+    #[test]
+    fn it_does_not_double_slash_an_origin_that_already_has_one() {
+        assert_eq!(
+            default_remote_url("https://tonk.spot/"),
             "https://tonk.spot/ucan/"
         );
     }
