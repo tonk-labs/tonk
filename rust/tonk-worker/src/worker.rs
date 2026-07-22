@@ -885,9 +885,24 @@ impl SyncScheduler {
         } else {
             (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval())
         };
-        self.last_drain_end
+        let allowed = self
+            .last_drain_end
             .get()
-            .is_none_or(|end| now - end >= quiet)
+            .is_none_or(|end| now - end >= quiet);
+        // Log only refusals the QUIET INTERVAL caused — not the plain-cooldown
+        // ones, which happen constantly on an active page and would flood the
+        // console. This is the one line that makes the live check conclusive:
+        // if the hidden-tab path is a no-op (say `any_client_visible` reads
+        // visible on every browser because the `WindowClient` downcast fails),
+        // it never prints, and the only other symptom is "the request count
+        // didn't move".
+        if !allowed && quiet > SYNC_COOLDOWN_MS as f64 {
+            log!(
+                "sync drain held off: quiet={quiet}ms visible={} dirty={dirty}",
+                self.visible.get()
+            );
+        }
+        allowed
     }
 
     /// Mark a drain as started: take the `in_flight` guard and clear the burst
@@ -1549,8 +1564,18 @@ async fn has_pending_local_work(state: &AppState) -> bool {
 }
 
 /// Whether any window client of this SW is currently visible.
-/// `clients.matchAll()` defaults to window clients. Errors read as
-/// visible so a Clients API hiccup can never silently stall sync.
+/// `clients.matchAll()` defaults to window clients. A failed call reads
+/// as visible so a Clients API hiccup can never silently stall sync.
+///
+/// An EMPTY client list is deliberately the opposite: it reads as hidden,
+/// because that is what it means in the steady state (every tab closed).
+/// `matchAll()` also defaults to `includeUncontrolled: false`, so during
+/// the claim window — this worker activated in a previous session and the
+/// current document is not yet controlled — it returns `[]` for a page
+/// that plainly is visible. That misread self-heals within one loop tick,
+/// once `clients.claim()` lands, and until then the page's own traffic is
+/// driving drains anyway. Widening the query to uncontrolled clients would
+/// count windows this worker does not serve, which is worse.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn any_client_visible() -> bool {
     use wasm_bindgen::JsCast;
@@ -1561,14 +1586,21 @@ async fn any_client_visible() -> bool {
     };
     let clients: js_sys::Array = clients.unchecked_into();
     clients.iter().any(|c| {
-        c.dyn_into::<web_sys::WindowClient>()
-            .map(|w| w.visibility_state() == web_sys::VisibilityState::Visible)
-            // A client that fails to downcast to `WindowClient` reads as
-            // visible too, per the same "never stall sync on an API
-            // surprise" rule as the outer `match_all` failure above. In
-            // practice this never fires: matchAll() with no options
-            // defaults to window clients.
-            .unwrap_or(true)
+        // A client that fails to downcast to `WindowClient` reads as
+        // visible too, per the same "never stall sync on an API
+        // surprise" rule as the outer `match_all` failure above. In
+        // practice this never fires: matchAll() with no options
+        // defaults to window clients. Logged because if it DOES fire
+        // systematically — a browser whose client objects don't satisfy
+        // the downcast — every page reads visible and the hidden-tab
+        // cadence is a silent no-op with no other symptom.
+        match c.dyn_into::<web_sys::WindowClient>() {
+            Ok(w) => w.visibility_state() == web_sys::VisibilityState::Visible,
+            Err(_) => {
+                log!("any_client_visible: client is not a WindowClient, reading as visible");
+                true
+            }
+        }
     })
 }
 
