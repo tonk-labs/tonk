@@ -1,4 +1,4 @@
-//! `tonk views` — enumerate every entity holding a `text/html`
+//! `tonk view ls` — enumerate every entity holding a `text/html`
 //! claim on the local branch.
 //!
 //! Claim-driven, not concept-driven: we don't care whether an

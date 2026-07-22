@@ -59,7 +59,7 @@ view** — every instance of the model — using the model's
 `view/directory`, or a default carousel.
 
 Hand the repo to someone: `tonk invite` (they land on the space and
-navigate to the view themselves)
+navigate to the view themselves).
 
 ## Render to HTML headlessly: `tonk render`
 
@@ -200,7 +200,10 @@ page!: &about
     <h1>About</h1>
 ```
 
-`tonk view ls` lists every entity carrying a `text/html` claim.
+`tonk view ls` lists every entity carrying a `text/html` claim; the
+viewer serves each one at `/space/<space-name>/view/<entity>`. Hand
+the repo to someone with `tonk invite` and they can navigate to it
+themselves.
 
 ---
 

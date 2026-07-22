@@ -60,9 +60,9 @@ tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
 # Delegate access to the space.
-tonk invite --remote prod
+tonk invite                    # audience-open: anyone holding it can claim
+tonk invite --remote prod      # also embeds a registered remote for auto-config
 tonk join 'https://...#invite'
-tonk invite
 ```
 
 ## Telemetry
