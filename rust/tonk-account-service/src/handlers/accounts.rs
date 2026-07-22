@@ -1,38 +1,11 @@
 //! `POST /accounts`: create a new account and register its first device.
 
-use serde::Deserialize;
 use worker::*;
 
+use crate::auth::{authorize_root, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::error::{ErrorCode, ServiceError};
-use crate::handlers::{build_store, ceremony_error, with_cors_headers};
-
-/// The `POST /accounts` request body.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateAccountRequest {
-    email: String,
-    code: String,
-    root_did: String,
-    credential_id: String,
-    device_did: String,
-    device_name: String,
-    delegation_hex: String,
-}
-
-impl From<CreateAccountRequest> for CreateAccount {
-    fn from(req: CreateAccountRequest) -> Self {
-        CreateAccount {
-            email: req.email,
-            code: req.code,
-            root_did: req.root_did,
-            credential_id: req.credential_id,
-            device_did: req.device_did,
-            device_name: req.device_name,
-            delegation_hex: req.delegation_hex,
-        }
-    }
-}
+use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
 
 /// `OPTIONS /accounts` → CORS preflight.
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
@@ -52,16 +25,23 @@ async fn handle_inner(
     req: &mut Request,
     ctx: &RouteContext<()>,
 ) -> std::result::Result<Response, ServiceError> {
-    let body: CreateAccountRequest = req.json().await.map_err(|err| {
-        ServiceError::new(
-            ErrorCode::InvalidArgument,
-            format!("failed to parse request body: {err}"),
-        )
-    })?;
-
+    let body = read_body(req).await?;
+    let caller = authorize_root(&body, &["account", "create"])
+        .await
+        .map_err(ceremony_error)?;
+    let request = CreateAccount {
+        email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
+        code: required_string(&caller.arguments, "code").map_err(ceremony_error)?,
+        credential_id: required_string(&caller.arguments, "credentialId")
+            .map_err(ceremony_error)?,
+        device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
+        device_name: required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
+        delegation_hex: required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
+        root_did: caller.root_did,
+    };
     let store = build_store(ctx)?;
     let now = Date::now().as_millis() / 1000;
-    let account_id = create_account(&store, &body.into(), now)
+    let account_id = create_account(&store, &request, now)
         .await
         .map_err(ceremony_error)?;
 

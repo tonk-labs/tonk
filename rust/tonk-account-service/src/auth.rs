@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use dialog_credentials::Ed25519KeyResolver;
 use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::time::timestamp::Timestamp;
+use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 
 use crate::core::CeremonyError;
 use crate::store::{Account, Device, DeviceStatus, Store};
@@ -27,15 +29,18 @@ pub struct Caller {
     pub arguments: BTreeMap<String, Promised>,
 }
 
-/// Parse + cryptographically verify an invocation container, require the
-/// exact command, then bind it to a registered account and an active
-/// device. The invocation subject is the root DID; the invocation issuer
-/// must be a non-revoked device of that account.
-pub async fn authorize<S: Store>(
-    store: &S,
+/// A request signed directly by the account root during a passkey ceremony.
+pub struct RootCaller {
+    /// The root DID that signed and subjects the invocation.
+    pub root_did: String,
+    /// The invocation's signed arguments.
+    pub arguments: BTreeMap<String, Promised>,
+}
+
+async fn verified_chain(
     body: &[u8],
     expected_command: &[&str],
-) -> Result<Caller, CeremonyError> {
+) -> Result<InvocationChain<Ed25519Signature>, CeremonyError> {
     let chain = InvocationChain::try_from(body)
         .map_err(|err| CeremonyError::Invalid(format!("bad invocation container: {err}")))?;
 
@@ -49,6 +54,20 @@ pub async fn authorize<S: Store>(
             "expected command {expected_command:?}, got {command_segments:?}"
         )));
     }
+
+    Ok(chain)
+}
+
+/// Parse + cryptographically verify an invocation container, require the
+/// exact command, then bind it to a registered account and an active
+/// device. The invocation subject is the root DID; the invocation issuer
+/// must be a non-revoked device of that account.
+pub async fn authorize<S: Store>(
+    store: &S,
+    body: &[u8],
+    expected_command: &[&str],
+) -> Result<Caller, CeremonyError> {
+    let chain = verified_chain(body, expected_command).await?;
 
     let account = store
         .account_by_root(chain.subject().as_ref())
@@ -70,14 +89,59 @@ pub async fn authorize<S: Store>(
     })
 }
 
-/// Extract a required string argument.
-pub fn string_argument(caller: &Caller, name: &str) -> Result<String, CeremonyError> {
-    match caller.arguments.get(name) {
+/// Verify a passkey ceremony invocation signed directly by its root DID.
+///
+/// Root bootstrap invocations carry no delegation proof: the issuer must equal
+/// the subject, so successful signature verification proves control of the
+/// claimed account root. Account lookup, when required, happens only after
+/// this function returns.
+pub async fn authorize_root(
+    body: &[u8],
+    expected_command: &[&str],
+) -> Result<RootCaller, CeremonyError> {
+    let chain = verified_chain(body, expected_command).await?;
+    if chain.issuer() != chain.subject() {
+        return Err(CeremonyError::Unauthorized(
+            "root invocation issuer must equal its subject".to_string(),
+        ));
+    }
+    let expiration = chain.invocation.expiration().ok_or_else(|| {
+        CeremonyError::Unauthorized("root invocation must carry an expiration".to_string())
+    })?;
+    let now = Timestamp::now();
+    if expiration < now {
+        return Err(CeremonyError::Unauthorized(
+            "root invocation has expired".to_string(),
+        ));
+    }
+    if expiration > Timestamp::five_minutes_from_now() {
+        return Err(CeremonyError::Unauthorized(
+            "root invocation expiration exceeds the five-minute ceremony window".to_string(),
+        ));
+    }
+
+    Ok(RootCaller {
+        root_did: chain.subject().to_string(),
+        arguments: chain.arguments().clone(),
+    })
+}
+
+/// Extract a required string from an invocation argument map.
+pub fn required_string(
+    arguments: &BTreeMap<String, Promised>,
+    name: &str,
+) -> Result<String, CeremonyError> {
+    match arguments.get(name) {
         Some(Promised::String(value)) => Ok(value.clone()),
         _ => Err(CeremonyError::Invalid(format!(
             "missing or invalid argument: {name}"
         ))),
     }
+}
+
+/// Extract a required string argument.
+pub fn string_argument(caller: &Caller, name: &str) -> Result<String, CeremonyError> {
+    required_string(&caller.arguments, name)
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
@@ -270,6 +334,75 @@ mod tests {
 
         assert!(matches!(
             authorize(&store, &bytes, &["account", "device", "list"]).await,
+            Err(CeremonyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_authorizes_a_request_signed_directly_by_the_root() {
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let expected_root = root.did().to_string();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let ceremony = tonk_identity::ceremony::link_device(root, device.did(), "phone".into())
+            .await
+            .unwrap();
+        let bytes = hex::decode(ceremony.invocation_hex).unwrap();
+
+        let caller = authorize_root(&bytes, &["account", "device", "link"])
+            .await
+            .unwrap();
+        assert_eq!(caller.root_did, expected_root);
+        assert_eq!(
+            required_string(&caller.arguments, "deviceName").unwrap(),
+            "phone"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_root_command_mismatch() {
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let ceremony = tonk_identity::ceremony::link_device(root, device.did(), "phone".into())
+            .await
+            .unwrap();
+        let bytes = hex::decode(ceremony.invocation_hex).unwrap();
+
+        assert!(matches!(
+            authorize_root(&bytes, &["account", "create"]).await,
+            Err(CeremonyError::Forbidden(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_an_expired_root_invocation() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let expiration = Timestamp::new(UNIX_EPOCH + Duration::from_secs(1)).unwrap();
+        let invocation = InvocationBuilder::new()
+            .issuer(root)
+            .audience(&root_did)
+            .subject(&root_did)
+            .command(vec!["account".into(), "device".into(), "link".into()])
+            .arguments(BTreeMap::new())
+            .proofs(vec![])
+            .expiration(expiration)
+            .try_build()
+            .await
+            .unwrap();
+        let bytes = InvocationChain::new(invocation, std::collections::HashMap::new())
+            .to_bytes()
+            .unwrap();
+
+        assert!(matches!(
+            authorize_root(&bytes, &["account", "device", "link"]).await,
             Err(CeremonyError::Unauthorized(_))
         ));
     }

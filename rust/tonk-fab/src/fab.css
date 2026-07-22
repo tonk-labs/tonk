@@ -513,6 +513,21 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
    `mr_oats`). A clickable segment (opens nothing itself; the name inside
    is an editable). */
 .fab__account { cursor: default; }
+.fab__account-link {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  min-height: 40px;
+  margin-right: -8px;
+  color: var(--fab-ink);
+  text-decoration: none;
+  opacity: .62;
+  transition-property: opacity, scale;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.fab__account-link:hover { opacity: 1; }
+.fab__account-link:active { scale: .96; }
 /* The spot segment owns the switcher dropdown, opened on click
    (`.fab__repo.is-open`). It is a positioned flex `.fab__seg`, so the
    absolutely positioned `.fab__menu` anchors under it. */

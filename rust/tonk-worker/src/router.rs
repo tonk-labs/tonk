@@ -16,6 +16,8 @@ use crate::worker::TonkState;
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
+mod account;
+
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 
@@ -134,6 +136,8 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        .route("/api/account", get(account::get))
+        .route("/api/account/link", post(account::link))
         .route("/api/profile", get(profile::get_profile))
         // Profile-as-repository routes. The profile is its own
         // repository but lives outside the named-repo namespace

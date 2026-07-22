@@ -118,6 +118,7 @@ pub fn fab_html(space_did: &str) -> String {
       <div class="fab__tele fab__tele--account">
         <span class="fab__seg fab__account">
           <span class="fab__name"><ui-profile-name></ui-profile-name></span>
+          <a class="fab__account-link" href="/account" aria-label="Open account settings"><wa-icon name="user"></wa-icon></a>
         </span>
       </div>
     </div>
@@ -270,6 +271,12 @@ mod tests {
             more < share && share < account,
             "page 2 is share, then account"
         );
+    }
+
+    #[test]
+    fn it_links_the_account_control_to_the_top_document_route() {
+        let html = fab_html("did:key:z6Mk");
+        assert!(html.contains(r#"class="fab__account-link" href="/account""#));
     }
 
     #[test]

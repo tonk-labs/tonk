@@ -186,6 +186,8 @@ body {
     padding: 0;
     margin: 0;
     overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 body {

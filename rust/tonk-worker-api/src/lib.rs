@@ -12,6 +12,7 @@
 //! module paths it used to define them, so its handler code is
 //! unchanged.
 
+mod account;
 mod claim;
 mod conclusion;
 mod evaluate;
@@ -22,6 +23,7 @@ mod query;
 mod repository;
 mod sync;
 
+pub use account::{AccountLinkRequest, AccountStatus};
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
