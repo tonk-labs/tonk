@@ -143,6 +143,16 @@ fn is_shared_asset(path: &str) -> bool {
     matches!(path, "/__tonk/bridge.js")
 }
 
+/// Whether `path` is the sync keepalive/poke endpoint, which must NOT count
+/// as real page traffic for backoff purposes: `POST /api/sync` exists to
+/// keep the SW alive (and to ride the drain scheduling), not as evidence
+/// anyone is doing anything — counting it would defeat the idle backoff,
+/// since it fires every 10s forever.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn is_keepalive_path(path: &str) -> bool {
+    path == "/api/sync"
+}
+
 /// Route the request through the axum router, apply response
 /// headers (CORS, client-id echo), and convert back to a browser
 /// `Response`.
@@ -424,6 +434,21 @@ mod route_for_tests {
             matches!(r, Route::Passthrough),
             "bridge module must bypass the rewrite, got {r:?}",
         );
+    }
+
+    #[dialog_common::test]
+    fn it_treats_the_sync_keepalive_path_as_not_real_traffic() {
+        assert!(
+            is_keepalive_path("/api/sync"),
+            "the keepalive/poke endpoint must be recognized",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_treats_other_api_paths_as_real_traffic() {
+        assert!(!is_keepalive_path("/api/repository/r/branch/main/query"));
+        assert!(!is_keepalive_path("/"));
+        assert!(!is_keepalive_path("/api/syncing"));
     }
 
     // The scheduler's clock is passed in (not `Date::now()`), so these drive it
@@ -1260,6 +1285,12 @@ impl TonkServiceWorker {
         // generation ticket — only the last request still matches and drains.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         schedule_sync_drain(&event, &self.sync_scheduler, &self.state);
+        // Real page traffic restores the active sync cadence — see
+        // `is_keepalive_path` for why `POST /api/sync` doesn't count.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if !is_keepalive_path(&path) {
+            self.sync_scheduler.reset_backoff();
+        }
         // Any traffic (re)starts the SW-owned sync loop — the page no
         // longer polls, so this is what keeps an idle-but-subscribed tab
         // pulling upstream changes.
@@ -1407,6 +1438,26 @@ impl TonkServiceWorker {
         })
     }
 
+    /// A page became visible: restore the active cadence and reconcile
+    /// immediately, instead of waiting out a hidden/backoff interval.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "onvisibility")]
+    pub fn on_visibility(&self) -> Promise {
+        self.sync_scheduler.set_visible(true);
+        self.ensure_sync_loop();
+        let state = self.state.clone();
+        let scheduler = self.sync_scheduler.clone();
+        future_to_promise(async move {
+            if !offline() && scheduler.may_drain(js_sys::Date::now()) {
+                scheduler.begin_drain();
+                let changed = crate::router::drain_sync(&state).await;
+                scheduler.end_drain(js_sys::Date::now());
+                scheduler.record_drain_outcome(changed);
+            }
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
     /// Start the self-scheduled sync loop if it isn't running. The SW owns
     /// the sync cadence: while any cached branch holds a live subscriber
     /// (an open SSE keeps the SW alive, so the timer chain survives), the
@@ -1457,6 +1508,7 @@ impl TonkServiceWorker {
                 // for the single SW thread and the branch locks. The gate also
                 // enforces the cooldown, so a drain that outlasts this interval
                 // is not immediately followed by another.
+                scheduler.set_visible(any_client_visible().await);
                 if !scheduler.may_drain(js_sys::Date::now()) {
                     continue;
                 }
@@ -1482,8 +1534,12 @@ impl TonkServiceWorker {
 /// another), which is why this can sit at the same value without sync running
 /// continuously: a tick that arrives inside the cooldown is refused, and the
 /// next one picks it up. A no-op pull costs one round-trip per open repo
-/// (~40ms locally), so ticking this often is cheap relative to the latency it
-/// buys.
+/// (~40ms locally), so ticking this often would be cheap relative to the
+/// latency it buys — but `may_drain`'s quiet-interval gate (see
+/// [`SyncScheduler::quiet_interval`]) widens the real gap well past this tick
+/// rate once the page is hidden or a run of ticks finds nothing to sync, so a
+/// backgrounded tab settles onto a far coarser cadence than this constant
+/// alone implies.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_LOOP_MS: u64 = 2_000;
 
@@ -1529,6 +1585,25 @@ async fn has_live_subscribers(state: &AppState) -> bool {
     false
 }
 
+/// Whether any window client of this SW is currently visible.
+/// `clients.matchAll()` defaults to window clients. Errors read as
+/// visible so a Clients API hiccup can never silently stall sync.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn any_client_visible() -> bool {
+    use wasm_bindgen::JsCast;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global().unchecked_into();
+    let Ok(clients) = wasm_bindgen_futures::JsFuture::from(global.clients().match_all()).await
+    else {
+        return true;
+    };
+    let clients: js_sys::Array = clients.unchecked_into();
+    clients.iter().any(|c| {
+        c.dyn_into::<web_sys::WindowClient>()
+            .map(|w| w.visibility_state() == web_sys::VisibilityState::Visible)
+            .unwrap_or(false)
+    })
+}
+
 /// Schedule a debounced background sync drain on `event`'s lifetime.
 ///
 /// Bumps the scheduler's generation, captures the ticket, and hands
@@ -1563,6 +1638,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         // Quiet window: a burst of requests collapses into one drain.
         let _ = crate::sleep(web_time::Duration::from_millis(SYNC_DEBOUNCE_MS as u64)).await;
 
+        scheduler.set_visible(any_client_visible().await);
         if !scheduler.should_drain(ticket, js_sys::Date::now()) {
             // A newer request superseded us (and the max-wait cap hasn't
             // elapsed), or a drain is already running.

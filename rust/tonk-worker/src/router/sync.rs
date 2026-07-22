@@ -952,12 +952,16 @@ impl SyncQueue {
 /// per-repo [`sync_repository`] sweep, which pulls+pushes each upstream branch
 /// and honors the durable pause preference.
 ///
-/// Two callers reach this: the per-fetch `schedule_sync_drain` (debounced,
+/// Five callers reach this: the per-fetch `schedule_sync_drain` (debounced,
 /// generation-ticketed — the path the `<tonk-host>` idle poll to `POST
-/// /api/sync` rides on, since `on_fetch` schedules it) and the SW's own
-/// Background-Sync `onsync` (a discrete OS event with no fetch to hook, so it
-/// drains directly). Branches are synced per-repo; repos run sequentially here
-/// (the reactor serializes branch state anyway), priority-ordered by activity.
+/// /api/sync` rides on, since `on_fetch` schedules it), the SW's
+/// self-scheduled loop tick, `onconnectivity` (immediate reconcile on
+/// regaining connectivity), `onvisibility` (immediate reconcile on a page
+/// becoming visible), and the SW's own Background-Sync `onsync` (a discrete
+/// OS event with no fetch to hook, so it drains directly). Every one of these
+/// passes through the same `may_drain` gate first, so they never overlap.
+/// Branches are synced per-repo; repos run sequentially here (the reactor
+/// serializes branch state anyway), priority-ordered by activity.
 ///
 /// Returns whether any repo's local revision moved — the union of every
 /// [`sync_repository`] outcome, including the `changed` half of an `Err`

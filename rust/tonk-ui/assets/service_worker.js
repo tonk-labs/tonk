@@ -344,6 +344,21 @@ self.onmessage = event => {
         );
         return;
     }
+    // A page became visible again — wake the worker so sync resumes the
+    // active cadence immediately instead of waiting out a hidden interval.
+    if (event.data && event.data.type === "visibility") {
+        event.waitUntil?.(
+            (async () => {
+                try {
+                    const worker = await activateWorker();
+                    await worker.onvisibility?.();
+                } catch (err) {
+                    log("visibility dispatch failed:", err);
+                }
+            })(),
+        );
+        return;
+    }
     event.waitUntil?.(
         (async () => {
             try {
