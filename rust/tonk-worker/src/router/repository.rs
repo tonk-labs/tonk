@@ -296,22 +296,22 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 }
 
 /// The `tonk:enable-sync` transient's target spot, read from the raw facts.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 
 /// The `tonk:enable-sync` transient's endpoint, read from the raw facts.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_REMOTE_ATTR: &str = "xyz.tonk.enable-sync/remote";
 
 /// Marker asking the handler to mint once the remote is attached.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SHARE_ATTR: &str = "xyz.tonk.enable-sync/share";
 
 /// Read a fact's value as a string, tolerating both the `String` and
 /// `Entity` representations — a URL or a DID round-trips through JSON as an
 /// `Entity` (any `:`-bearing string does), so a single-representation read
 /// would silently miss them. Mirrors [`remote_from_facts`].
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn text_fact(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
     use dialog_artifacts::Value;
 
