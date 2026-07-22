@@ -5049,6 +5049,15 @@ mod tests {
 
         dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
 
+        // Assert the handler RAN before asserting what it declined to do.
+        // Without this, deleting the handler outright would leave the
+        // transient matching nothing, and the emptiness check below would
+        // still pass -- proving only that no invitation appeared from thin
+        // air.
+        assert!(
+            has_remote_upstream(&state, &key).await,
+            "the handler ran and attached the remote"
+        );
         assert!(
             content_invitations(&state, &key).await.is_empty(),
             "attach-only records no invitation"
