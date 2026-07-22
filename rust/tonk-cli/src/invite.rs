@@ -211,7 +211,9 @@ pub async fn mint(
 /// hang `/join` off (a `data:` or `mailto:` URL, say).
 pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
     let parsed = Url::parse(endpoint).map_err(|e| {
-        InviteError::Io(format!("remote endpoint '{endpoint}' is not a valid URL: {e}"))
+        InviteError::Io(format!(
+            "remote endpoint '{endpoint}' is not a valid URL: {e}"
+        ))
     })?;
     parsed.join("/join").map(String::from).map_err(|e| {
         InviteError::Io(format!(
