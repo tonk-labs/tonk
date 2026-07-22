@@ -41,6 +41,7 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
+hex = { workspace = true }
 http-body-util = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
@@ -61,6 +62,7 @@ tonk-language-server = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-router = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-worker-api = { workspace = true }
 tower-service = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }
@@ -112,7 +114,7 @@ dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 tonk-fab = { path = "../tonk-fab" }
-tonk-worker-api = { workspace = true }
+tonk-identity = { workspace = true }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 

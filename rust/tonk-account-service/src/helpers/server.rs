@@ -22,7 +22,7 @@ use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
-use crate::auth::{authorize, string_argument};
+use crate::auth::{authorize, authorize_root, required_string, string_argument};
 use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::backup::{get_chain, list_chains, put_chain};
@@ -31,6 +31,7 @@ use crate::core::devices::{DeviceView, list_devices, register_device, revoke_dev
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
+use crate::store::Store;
 use crate::store::sqlite::SqliteStore;
 
 /// The backends a running [`AccountServer`] routes requests onto.
@@ -129,6 +130,7 @@ async fn handle_request(
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
+        (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
         (Method::POST, "/chains/put") => chains_put_route(req, &backends).await,
         (Method::POST, "/chains/list") => chains_list_route(req, &backends).await,
@@ -163,34 +165,6 @@ fn health_response() -> Response<Full<Bytes>> {
         .status(StatusCode::OK)
         .body(Full::new(Bytes::from("OK")))
         .expect("static response is well-formed")
-}
-
-/// The `POST /accounts` request body, matching the worker handler's
-/// wire shape exactly.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateAccountRequest {
-    email: String,
-    code: String,
-    root_did: String,
-    credential_id: String,
-    device_did: String,
-    device_name: String,
-    delegation_hex: String,
-}
-
-impl From<CreateAccountRequest> for CreateAccount {
-    fn from(req: CreateAccountRequest) -> Self {
-        CreateAccount {
-            email: req.email,
-            code: req.code,
-            root_did: req.root_did,
-            credential_id: req.credential_id,
-            device_did: req.device_did,
-            device_name: req.device_name,
-            delegation_hex: req.delegation_hex,
-        }
-    }
 }
 
 /// A device row as serialized to API callers, matching the worker
@@ -247,8 +221,21 @@ async fn accounts_route(
     req: Request<Incoming>,
     backends: &Backends,
 ) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body: CreateAccountRequest = parse_json(req).await?;
-    let account_id = create_account(&backends.store, &body.into(), unix_now())
+    let body = body_bytes(req).await?;
+    let caller = authorize_root(&body, &["account", "create"])
+        .await
+        .map_err(ceremony_error)?;
+    let request = CreateAccount {
+        email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
+        code: required_string(&caller.arguments, "code").map_err(ceremony_error)?,
+        credential_id: required_string(&caller.arguments, "credentialId")
+            .map_err(ceremony_error)?,
+        device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
+        device_name: required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
+        delegation_hex: required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
+        root_did: caller.root_did,
+    };
+    let account_id = create_account(&backends.store, &request, unix_now())
         .await
         .map_err(ceremony_error)?;
 
@@ -256,6 +243,44 @@ async fn accounts_route(
         StatusCode::CREATED,
         &serde_json::json!({ "accountId": account_id }),
     ))
+}
+
+/// `POST /devices/link` → register a device from a root-key ceremony.
+async fn devices_link_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize_root(&body, &["account", "device", "link"])
+        .await
+        .map_err(ceremony_error)?;
+    let account = backends
+        .store
+        .account_by_root(&caller.root_did)
+        .await
+        .map_err(|err| ceremony_error(err.into()))?
+        .ok_or_else(|| {
+            ceremony_error(crate::core::CeremonyError::Unauthorized(
+                "unknown account".to_string(),
+            ))
+        })?;
+    let device_did = required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?;
+    let device_name = required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?;
+    let delegation_hex =
+        required_string(&caller.arguments, "delegation").map_err(ceremony_error)?;
+
+    register_device(
+        &backends.store,
+        &account,
+        &device_did,
+        &device_name,
+        &delegation_hex,
+        unix_now(),
+    )
+    .await
+    .map_err(ceremony_error)?;
+
+    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
 }
 
 /// `POST /devices/list` → list the devices registered under an account.

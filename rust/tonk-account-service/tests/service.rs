@@ -70,36 +70,50 @@ async fn it_drives_the_full_ceremony_over_http() {
             .expect("a code was sent to person@example.com")
     };
 
-    // POST /accounts -> create the account and its first device from a
-    // fixture root -> device delegation.
+    // POST /accounts -> create the account from a root-signed ceremony.
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
-    let root_did = root.did().to_string();
     let device_did = device.did().to_string();
-    let delegation_chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
-        .await
-        .unwrap();
-    let delegation_hex = hex::encode(delegation_chain.to_bytes().unwrap());
+    let ceremony = tonk_identity::ceremony::create_account(
+        root,
+        "person@example.com".into(),
+        code,
+        "cred-1".into(),
+        device.did(),
+        "laptop".into(),
+    )
+    .await
+    .unwrap();
 
     let response = client
         .post(format!("{base}/accounts"))
-        .json(&serde_json::json!({
-            "email": "person@example.com",
-            "code": code,
-            "rootDid": root_did,
-            "credentialId": "cred-1",
-            "deviceDid": device_did,
-            "deviceName": "laptop",
-            "delegationHex": delegation_hex,
-        }))
+        .body(hex::decode(ceremony.invocation_hex).unwrap())
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 201);
     let created: serde_json::Value = response.json().await.unwrap();
     assert!(created["accountId"].is_i64());
+
+    // A fresh browser profile can self-link directly from the root
+    // ceremony; it does not need an already registered device to sign.
+    let second = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
+    let second_did = second.did().to_string();
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let ceremony = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
+        .await
+        .unwrap();
+    let response = client
+        .post(format!("{base}/devices/link"))
+        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
 
     // POST /devices/list -> the newly registered device shows up.
     let body = container(
@@ -116,10 +130,12 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 200);
     let devices: serde_json::Value = response.json().await.unwrap();
     let devices = devices.as_array().unwrap();
-    assert_eq!(devices.len(), 1);
+    assert_eq!(devices.len(), 2);
     assert_eq!(devices[0]["did"], device_did);
     assert_eq!(devices[0]["name"], "laptop");
     assert_eq!(devices[0]["status"], "active");
+    assert_eq!(devices[1]["did"], second_did);
+    assert_eq!(devices[1]["name"], "phone");
 
     // POST /chains/put then POST /chains/get -> round-trip chain bytes.
     let chain_bytes = b"a delegation chain, backed up".to_vec();

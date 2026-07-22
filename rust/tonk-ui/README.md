@@ -10,6 +10,16 @@ The shell mounts into the page, the service worker (`tonk-worker`) installs and
 claims the page, and once the worker is controlling, the UI's `/api/*` fetches
 route through it.
 
+## Account route
+
+`/account` is mounted directly in the top document rather than inside a sealed
+`<tonk-site>` guest. WebAuthn must run on the `tonk.spot` RP-ID origin, so
+`<tonk-account>` owns account creation and passkey self-link there. It reads the
+local profile DID from `/api/identify`, sends root-signed ceremony bytes to
+`https://accounts.tonk.spot`, then persists the accepted delegation through
+`/api/account/link`. The account-service base can be overridden with a `service`
+attribute for local tests and off-apex staging.
+
 ## Binaries
 
 The crate produces two Wasm bin targets, both referenced from `index.html` by a
