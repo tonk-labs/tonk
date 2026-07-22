@@ -1013,8 +1013,17 @@ pub async fn drain_sync(state: &AppState) {
 /// leaving the drain to `on_fetch`.
 ///
 /// The steady cadence is SW-owned (the self-scheduled sync loop in
-/// `worker.rs`); this route remains for explicit pokes (debug tooling, a
-/// page transition that wants an immediate reconcile). Always `200`.
+/// `worker.rs`); this route remains for debug tooling and for the page's
+/// keepalive, which rides it to keep the worker alive.
+///
+/// It is NOT a reliable way to force an immediate reconcile. The drain it
+/// schedules goes through `may_drain` like every other, so on a hidden page
+/// with nothing to push it can be refused for up to the hidden interval —
+/// a poke asks; it does not compel. A caller that genuinely needs a prompt
+/// pull should make the page visible (`onvisibility` drains directly) or
+/// land a local commit, which bypasses the quiet interval. Always `200`
+/// either way: the poke is fire-and-forget and the response says nothing
+/// about whether a drain ran.
 #[wasm_compat]
 pub async fn drain() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))

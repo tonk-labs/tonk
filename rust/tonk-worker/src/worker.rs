@@ -1356,6 +1356,19 @@ impl TonkServiceWorker {
             log!("Background sync triggered ({tag:?})");
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
+                // A refusal here resolves `Ok`, which tells the user agent
+                // the durable retry was CONSUMED — it will not refire, and
+                // the work waits for the next fetch or loop tick instead.
+                // For a `sync` event that is the wrong answer: rejecting is
+                // what asks for the UA's own backoff retry. Left alone
+                // because nothing registers a sync event today
+                // (`tonkRegisterSync` in `rust/tonk-ui/index.html` has no
+                // caller anywhere in the repo), so the path is unreachable
+                // and rejecting would be an untested change to an
+                // unexercised branch. Whoever reintroduces registration must
+                // fix this first: with the hidden quiet interval in place, a
+                // tab-closed sync event is refused for up to a minute after
+                // the last drain, which is exactly when this fires.
                 if !scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await) {
                     return Ok(JsValue::UNDEFINED);
                 }

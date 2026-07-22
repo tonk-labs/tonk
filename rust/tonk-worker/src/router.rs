@@ -361,10 +361,31 @@ pub mod tests {
     /// is durable IndexedDB state keyed by name: each call mints its
     /// own unique profile name so tests that rename or restamp the
     /// profile never bleed into one another.
+    ///
+    /// The sequence number alone is unique only *within* a run —
+    /// `test-tonk-3` is whichever test happened to run third — so a
+    /// runner that reuses a browser profile (safaridriver, a persistent
+    /// Chrome user-data-dir) would hand run N's leftover IndexedDB to
+    /// run N+1's third test, reviving the order dependence in cross-run
+    /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
+    /// that today; the per-session nonce makes it unconditional.
+    /// A random id minted once per test *process*, mixed into every profile
+    /// name so two runs never collide on storage a shared browser profile
+    /// kept between them.
+    fn session_nonce() -> u32 {
+        use std::sync::OnceLock;
+        static NONCE: OnceLock<u32> = OnceLock::new();
+        *NONCE.get_or_init(rand::random::<u32>)
+    }
+
     pub async fn test_state() -> TonkState {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let profile_name = format!("test-tonk-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+        let profile_name = format!(
+            "test-tonk-{}-{}",
+            session_nonce(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
 
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
