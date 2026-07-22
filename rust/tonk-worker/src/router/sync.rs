@@ -903,6 +903,21 @@ impl SyncQueue {
         }
     }
 
+    /// Whether any repo has un-pushed local commits waiting.
+    ///
+    /// Read by the drain gate: pending local work bypasses the quiet
+    /// interval, so a tab the user just switched away from still pushes
+    /// its last edit at the active cadence instead of sitting on it for a
+    /// minute. Cheap on the idle path: an empty dirty set never reaches here, and
+    /// a drain with nothing to push short-circuits before the network.
+    ///
+    /// Wasm-gated for the same reason as [`forget`](Self::forget): every
+    /// caller is service-worker scoped, so a native build never reaches it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn has_dirty(&self) -> bool {
+        self.dirty.lock().is_ok_and(|dirty| !dirty.is_empty())
+    }
+
     /// The dirty repos, most-recently-active first.
     fn drain_dirty(&self) -> Vec<String> {
         let Ok(mut dirty) = self.dirty.lock() else {

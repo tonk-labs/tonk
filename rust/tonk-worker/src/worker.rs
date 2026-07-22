@@ -439,14 +439,14 @@ mod route_for_tests {
         let t3 = s.next(0.0);
         let wake = SYNC_DEBOUNCE_MS as f64;
         assert!(
-            !s.should_drain(t1, wake),
+            !s.should_drain(t1, wake, false),
             "superseded ticket must not drain"
         );
         assert!(
-            !s.should_drain(t2, wake),
+            !s.should_drain(t2, wake, false),
             "superseded ticket must not drain"
         );
-        assert!(s.should_drain(t3, wake), "latest ticket drains");
+        assert!(s.should_drain(t3, wake, false), "latest ticket drains");
     }
 
     #[dialog_common::test]
@@ -463,12 +463,12 @@ mod route_for_tests {
         // `first` woke long ago and is not the latest — but the burst began at
         // t=0 and we're now past the cap, so it drains.
         assert!(
-            s.should_drain(first, SYNC_MAX_WAIT_MS as f64),
+            s.should_drain(first, SYNC_MAX_WAIT_MS as f64, false),
             "max-wait cap must force a drain under continuous traffic",
         );
         // Just before the cap, the same non-latest ticket must NOT drain.
         assert!(
-            !s.should_drain(first, SYNC_MAX_WAIT_MS as f64 - 1.0),
+            !s.should_drain(first, SYNC_MAX_WAIT_MS as f64 - 1.0, false),
             "before the cap, a superseded ticket still defers",
         );
     }
@@ -478,7 +478,7 @@ mod route_for_tests {
         let s = SyncScheduler::default();
         let t1 = s.next(0.0);
         // Drain at the trailing edge, which clears the burst clock.
-        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false));
         s.begin_drain();
         s.end_drain(SYNC_DEBOUNCE_MS as f64);
         // A fresh burst after the drain starts a NEW cap clock at t=10_000. Use a
@@ -489,11 +489,11 @@ mod route_for_tests {
         let t2 = s.next(10_000.0);
         let _t3 = s.next(10_050.0);
         assert!(
-            !s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64 - 1.0),
+            !s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64 - 1.0, false),
             "cap must measure from the post-drain burst start, not wall-clock zero",
         );
         assert!(
-            s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64),
+            s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64, false),
             "once the new burst passes the cap, a superseded ticket drains",
         );
     }
@@ -505,7 +505,7 @@ mod route_for_tests {
         s.begin_drain();
         // While a drain is in flight, even a past-the-cap ticket must wait.
         assert!(
-            !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0),
+            !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0, false),
             "in_flight guard must block a second concurrent drain",
         );
         s.end_drain(SYNC_MAX_WAIT_MS as f64 * 10.0);
@@ -519,7 +519,7 @@ mod route_for_tests {
         // ticket at its debounce edge must NOT drain — sync yields the thread.
         let _guard = s.enter_loading(0.0);
         assert!(
-            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false),
             "an in-flight data-plane request defers the drain",
         );
     }
@@ -530,11 +530,11 @@ mod route_for_tests {
         let t1 = s.next(0.0);
         {
             let _guard = s.enter_loading(0.0);
-            assert!(!s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+            assert!(!s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false));
         }
         // Guard dropped — the request completed, so the drain proceeds.
         assert!(
-            s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false),
             "the drain runs once the in-flight request completes",
         );
     }
@@ -566,8 +566,11 @@ mod route_for_tests {
         let s = SyncScheduler::default();
         let t = s.next(0.0);
         s.stop();
-        assert!(!s.may_drain(0.0), "a stopped worker starts no sync work");
-        assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64));
+        assert!(
+            !s.may_drain(0.0, false),
+            "a stopped worker starts no sync work"
+        );
+        assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64, false));
     }
 
     /// ...but `stop()` must not be a ONE-WAY latch. `updatefound` fires on the
@@ -579,17 +582,17 @@ mod route_for_tests {
     fn it_resumes_when_it_turns_out_to_be_the_serving_worker() {
         let s = SyncScheduler::default();
         s.stop();
-        assert!(!s.may_drain(0.0));
+        assert!(!s.may_drain(0.0, false));
 
         // Activating: we are the worker now serving, so we are not retiring.
         s.resume();
 
         assert!(
-            s.may_drain(0.0),
+            s.may_drain(0.0, false),
             "an activated worker must sync, even if it previously stopped itself",
         );
         let t = s.next(0.0);
-        assert!(s.should_drain(t, SYNC_DEBOUNCE_MS as f64));
+        assert!(s.should_drain(t, SYNC_DEBOUNCE_MS as f64, false));
     }
 
     #[dialog_common::test]
@@ -600,11 +603,11 @@ mod route_for_tests {
         // forever: past SYNC_LOAD_DEFER_MS from its start, the drain proceeds.
         let _guard = s.enter_loading(0.0);
         assert!(
-            !s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64 - 1.0),
+            !s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64 - 1.0, false),
             "within the cap, an in-flight request still defers",
         );
         assert!(
-            s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64),
+            s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64, false),
             "past the cap, a stuck request no longer defers the drain",
         );
     }
@@ -619,11 +622,11 @@ mod route_for_tests {
         // One of two concurrent requests finished; the other still defers
         // (e.g. a second tab still booting).
         assert!(
-            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64),
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false),
             "a drain waits while any data-plane request is still in flight",
         );
         drop(g2);
-        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64));
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false));
     }
 
     #[dialog_common::test]
@@ -634,10 +637,35 @@ mod route_for_tests {
         s.end_drain(0.0);
         let t = s.next(10_000.0);
         assert!(
-            !s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 - 1.0),
+            !s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 - 1.0, false),
             "hidden pages must not drain at the active cadence"
         );
-        assert!(s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 + 1.0));
+        assert!(s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 + 1.0, false));
+    }
+
+    /// The user edits, then switches tabs. Their un-pushed commit must not
+    /// wait out the hidden interval — that is a minute during which
+    /// collaborators see nothing, and the page may never come back.
+    #[dialog_common::test]
+    fn it_drains_pending_local_work_at_the_active_cadence_while_hidden() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.begin_drain();
+        s.end_drain(0.0);
+        let t = s.next(1_000.0);
+
+        assert!(
+            !s.should_drain(t, SYNC_COOLDOWN_MS as f64 + 1.0, false),
+            "with nothing to push, a hidden page still holds to the hidden interval"
+        );
+        assert!(
+            s.should_drain(t, SYNC_COOLDOWN_MS as f64 + 1.0, true),
+            "a non-empty dirty set bypasses the hidden interval"
+        );
+        assert!(
+            !s.should_drain(t, SYNC_COOLDOWN_MS as f64 - 1.0, true),
+            "the bypass drops to the cooldown floor, it does not remove the floor"
+        );
     }
 
     /// A visible page always polls at the active cadence, however long it
@@ -652,7 +680,7 @@ mod route_for_tests {
         s.end_drain(0.0);
         let t = s.next(10_000.0);
         assert!(
-            !s.should_drain(t, 10_000.0),
+            !s.should_drain(t, 10_000.0, false),
             "a hidden page holds to the hidden interval"
         );
 
@@ -663,7 +691,7 @@ mod route_for_tests {
             "regaining visibility must clear the hidden hold"
         );
         assert!(
-            s.should_drain(t, 10_000.0),
+            s.should_drain(t, 10_000.0, false),
             "the same ticket now drains at the active cadence"
         );
     }
@@ -791,8 +819,11 @@ impl SyncScheduler {
     /// the latest (normal trailing edge) or the current burst has been pending
     /// past [`SYNC_MAX_WAIT_MS`] (the cap, so continuous traffic can't starve
     /// the drain).
-    fn should_drain(&self, ticket: u64, now: f64) -> bool {
-        if !self.may_drain(now) {
+    ///
+    /// `dirty` is the sync queue's pending-local-work reading — see
+    /// [`may_drain`](Self::may_drain).
+    fn should_drain(&self, ticket: u64, now: f64, dirty: bool) -> bool {
+        if !self.may_drain(now, dirty) {
             return false;
         }
         let is_latest = self.generation.get() == ticket;
@@ -813,7 +844,14 @@ impl SyncScheduler {
     /// no new work — see `stopped`), a drain is already running, a page is
     /// actively loading, or the previous drain finished less than the quiet
     /// interval ago (see [`Self::quiet_interval`]).
-    fn may_drain(&self, now: f64) -> bool {
+    ///
+    /// `dirty` says whether the sync queue holds un-pushed local commits.
+    /// It is passed in rather than read here because the queue lives on
+    /// `AppState`, which the scheduler has no handle to — and taking it as
+    /// an argument makes the compiler force EVERY drain entrypoint to supply
+    /// it, so no path can quietly skip the bypass. It also keeps the gate a
+    /// pure function of its inputs, so the unit tests below need no app state.
+    fn may_drain(&self, now: f64, dirty: bool) -> bool {
         if self.stopped.get() {
             return false;
         }
@@ -835,7 +873,18 @@ impl SyncScheduler {
         // cadence. Every drain entrypoint passes through here — including
         // the drains the page's keepalive fetches schedule — so the quiet
         // interval binds them all.
-        let quiet = (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval());
+        //
+        // Un-pushed local commits bypass the quiet interval entirely and get
+        // the active cadence: the user edits, then switches tabs, and without
+        // this their last edit sits unpushed for a minute while collaborators
+        // see nothing. Durable locally, so it is latency, not loss — but it
+        // is a minute of it. The bypass costs nothing when idle, since the
+        // dirty set is empty then.
+        let quiet = if dirty {
+            SYNC_COOLDOWN_MS as f64
+        } else {
+            (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval())
+        };
         self.last_drain_end
             .get()
             .is_none_or(|end| now - end >= quiet)
@@ -1292,7 +1341,7 @@ impl TonkServiceWorker {
             log!("Background sync triggered ({tag:?})");
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
-                if !scheduler.may_drain(js_sys::Date::now()) {
+                if !scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await) {
                     return Ok(JsValue::UNDEFINED);
                 }
                 scheduler.begin_drain();
@@ -1331,7 +1380,8 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else if scheduler.may_drain(js_sys::Date::now()) {
+            } else if scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await)
+            {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
@@ -1350,7 +1400,9 @@ impl TonkServiceWorker {
         let state = self.state.clone();
         let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
-            if !offline() && scheduler.may_drain(js_sys::Date::now()) {
+            if !offline()
+                && scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await)
+            {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
@@ -1410,7 +1462,7 @@ impl TonkServiceWorker {
                 // enforces the cooldown, so a drain that outlasts this interval
                 // is not immediately followed by another.
                 scheduler.set_visible(any_client_visible().await);
-                if !scheduler.may_drain(js_sys::Date::now()) {
+                if !scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await) {
                     continue;
                 }
                 scheduler.begin_drain();
@@ -1485,6 +1537,17 @@ async fn has_live_subscribers(state: &AppState) -> bool {
     false
 }
 
+/// Whether the sync queue holds un-pushed local commits.
+///
+/// The bypass input to [`SyncScheduler::may_drain`]: pending local work
+/// always gets the active cadence, even on a hidden page. Every drain
+/// entrypoint reads it through this one helper, so there is a single
+/// definition of "pending" for the gate to honor.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn has_pending_local_work(state: &AppState) -> bool {
+    state.read().await.sync_queue.has_dirty()
+}
+
 /// Whether any window client of this SW is currently visible.
 /// `clients.matchAll()` defaults to window clients. Errors read as
 /// visible so a Clients API hiccup can never silently stall sync.
@@ -1544,7 +1607,11 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         let _ = crate::sleep(web_time::Duration::from_millis(SYNC_DEBOUNCE_MS as u64)).await;
 
         scheduler.set_visible(any_client_visible().await);
-        if !scheduler.should_drain(ticket, js_sys::Date::now()) {
+        if !scheduler.should_drain(
+            ticket,
+            js_sys::Date::now(),
+            has_pending_local_work(&state).await,
+        ) {
             // A newer request superseded us (and the max-wait cap hasn't
             // elapsed), or a drain is already running.
             return Ok(JsValue::UNDEFINED);
