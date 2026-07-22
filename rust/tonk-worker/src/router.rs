@@ -352,6 +352,15 @@ pub mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    /// A random id minted once per test *process*, mixed into every profile
+    /// name so two runs never collide on storage a shared browser profile
+    /// kept between them.
+    fn session_nonce() -> u32 {
+        use std::sync::OnceLock;
+        static NONCE: OnceLock<u32> = OnceLock::new();
+        *NONCE.get_or_init(rand::random::<u32>)
+    }
+
     /// Creates a test state with the default storage backend.
     ///
     /// The state has a profile and operator but *no* repository —
@@ -368,16 +377,7 @@ pub mod tests {
     /// Chrome user-data-dir) would hand run N's leftover IndexedDB to
     /// run N+1's third test, reviving the order dependence in cross-run
     /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
-    /// that today; the per-session nonce makes it unconditional.
-    /// A random id minted once per test *process*, mixed into every profile
-    /// name so two runs never collide on storage a shared browser profile
-    /// kept between them.
-    fn session_nonce() -> u32 {
-        use std::sync::OnceLock;
-        static NONCE: OnceLock<u32> = OnceLock::new();
-        *NONCE.get_or_init(rand::random::<u32>)
-    }
-
+    /// that today; the [`session_nonce`] makes it unconditional.
     pub async fn test_state() -> TonkState {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);

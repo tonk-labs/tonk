@@ -1795,8 +1795,10 @@ async fn pending_local_work(state: &AppState) -> usize {
 /// the claim window — this worker activated in a previous session and the
 /// current document is not yet controlled — it returns `[]` for a page
 /// that plainly is visible. That misread self-heals within one loop tick,
-/// once `clients.claim()` lands, and until then the page's own traffic is
-/// driving drains anyway. Widening the query to uncontrolled clients would
+/// once `clients.claim()` lands, and until then it costs the page nothing:
+/// a fetch only reaches `onfetch` from a client this worker already
+/// controls, so an uncontrolled document generates no drains for the
+/// misread to hold off. Widening the query to uncontrolled clients would
 /// count windows this worker does not serve, which is worse.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn any_client_visible() -> bool {

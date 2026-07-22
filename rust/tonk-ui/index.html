@@ -387,8 +387,8 @@
             };
 
             // Tell the worker when this page becomes visible so sync
-            // drops its hidden/backoff interval without waiting for the
-            // next keepalive to age past it.
+            // drops its hidden interval without waiting for the next
+            // keepalive to age past it.
             document.addEventListener("visibilitychange", () => {
                 if (document.visibilityState !== "visible") return;
                 sendVisibility().catch(() => {});
