@@ -80,6 +80,7 @@ axum = { version = "0.8", default-features = false }
 axum-wasm-macros = "0.1"
 base58 = "0.2"
 base64 = "0.22"
+multibase = "0.9"
 blake3 = "1.5"
 bs58 = "0.5"
 ciborium = "0.2"

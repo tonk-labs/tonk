@@ -90,10 +90,11 @@ pub(crate) fn connect_portal(
     // injected element runtime + CSS before `content` upgrades.
     let runtime = host.has_attribute("runtime");
     let _ = host.append_child(&iframe);
+    let base = space_base(&state.borrow());
     let srcdoc = if runtime {
-        bridge::bootstrap_srcdoc_with_runtime(&content)
+        bridge::bootstrap_srcdoc_with_runtime(&content, &base)
     } else {
-        bridge::bootstrap_srcdoc(&content)
+        bridge::bootstrap_srcdoc(&content, &base)
     };
     let _ = iframe.set_attribute("srcdoc", &srcdoc);
 
@@ -111,13 +112,24 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     s.clear_subs();
     if let Some(iframe) = s.iframe.as_ref() {
         let content = host.get_attribute("content").unwrap_or_default();
+        let base = space_base(&s);
         let srcdoc = if host.has_attribute("runtime") {
-            bridge::bootstrap_srcdoc_with_runtime(&content)
+            bridge::bootstrap_srcdoc_with_runtime(&content, &base)
         } else {
-            bridge::bootstrap_srcdoc(&content)
+            bridge::bootstrap_srcdoc(&content, &base)
         };
         let _ = iframe.set_attribute("srcdoc", &srcdoc);
     }
+}
+
+/// The per-space synthetic origin (`https://{label}.tonk.spot/`) for this
+/// portal's routing context, or empty when the portal targets no space (the
+/// profile/Hub) — where in-guest links are genuinely top-level.
+fn space_base(state: &bridge::PortalState) -> String {
+    state
+        .route_space()
+        .and_then(|space| tonk_host::space_origin::space_origin_for(&space))
+        .unwrap_or_default()
 }
 
 /// Install `reset` / `update` / `error` on the named element's prototype,

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bytes = { workspace = true }
 custom-elements = { workspace = true }
+multibase = { workspace = true }
 futures = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
