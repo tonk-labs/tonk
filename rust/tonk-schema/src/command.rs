@@ -324,7 +324,9 @@ pub struct Authorization {
     pub this: Entity,
     /// The base58 delegation chain (`?access=`).
     pub proof: crate::domain::authorization::Proof,
-    /// The sync remote endpoint (`&remote=`), empty when local-only.
+    /// The sync remote endpoint (`&remote=`). Never empty — `run_invite` is
+    /// the only handler that asserts an `Authorization`, and it refuses to
+    /// mint one at all for a repository with no shareable remote.
     pub remote: crate::domain::authorization::Remote,
 }
 

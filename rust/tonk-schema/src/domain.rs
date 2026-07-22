@@ -553,9 +553,11 @@ pub mod authorization {
     #[domain("xyz.tonk.authorization")]
     pub struct Proof(pub String);
 
-    /// The UCAN access-service endpoint for sync, when the repository
-    /// advertises a remote — the optional `&remote=` parameter suffix.
-    /// Empty when the repository is local-only.
+    /// The UCAN access-service endpoint for sync — the `&remote=` parameter
+    /// suffix. Never empty: `run_invite` refuses to mint an invite (and so
+    /// never asserts this) for a repository with no shareable remote, since
+    /// one that carried no remote would strand its recipient in a spot that
+    /// can never fill.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.authorization")]
     pub struct Remote(pub String);

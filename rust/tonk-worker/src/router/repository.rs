@@ -1127,10 +1127,11 @@ fn worker_origin() -> Option<String> {
 /// against either), so it falls back to the same base the HTTP mint path
 /// defaults to — still a well-formed, redeemable invite.
 ///
-/// `remote` is already a ready-to-append `&remote=…` suffix, empty for a
-/// local-only repo. The seed is the fragment and never the query: it must
-/// not reach a server, and the shortcut service is handed only the path +
-/// query.
+/// `remote` is already a ready-to-append `&remote=…` suffix. It is never
+/// empty: `run_invite` refuses to mint at all when the repository has no
+/// shareable remote (see `RemoteRefusal`), so by the time this runs the
+/// repo has one. The seed is the fragment and never the query: it must not
+/// reach a server, and the shortcut service is handed only the path + query.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn long_invite_url(origin: Option<&str>, proof: &str, remote: &str, seed: &str) -> String {
     match origin {
