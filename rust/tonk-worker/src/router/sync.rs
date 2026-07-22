@@ -339,12 +339,14 @@ pub async fn mark_offline(state: &AppState) {
 /// once it has parsed the repo out of its tag; it makes the same
 /// branch selection ([`branches_to_sync`]) as the in-page sweep.
 ///
-/// `Ok(())` means every selected branch reconciled, or there was
-/// nothing to do. `Err` means at least one branch did not land — the
-/// caller surfaces that as a rejected `sync` so the user agent retries
-/// with backoff. An unknown repo is not an error: there is nothing to
-/// retry, so it resolves as a no-op.
-pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String> {
+/// `Ok(true)` means at least one branch's local revision moved (a pull
+/// landed changes). `Ok(false)` means every selected branch reconciled
+/// with no local movement, or there was nothing to do. `Err` means at
+/// least one branch did not land — the caller surfaces that as a
+/// rejected `sync` so the user agent retries with backoff. An unknown
+/// repo is not an error: there is nothing to retry, so it resolves as
+/// a no-op (`Ok(false)`).
+pub async fn sync_repository(state: &AppState, repo: &str) -> Result<bool, String> {
     // Honor the durable pause preference: a paused replica skips the whole
     // sweep (no pull, no push) until resumed. This is the gate localStorage
     // couldn't provide — the SW can read this branch fact. Keyed on the
@@ -364,7 +366,7 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
             // reads `state:here` on the content branch (`main`);
             // `publish_paused_status` asserts the overlay and drains the poll.
             publish_paused_status(&tonk, repo, "main").await;
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -374,11 +376,12 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         Ok(Json(info)) => info,
         Err(e) => {
             log!("background sync: could not load '{repo}': {e}");
-            return Ok(());
+            return Ok(false);
         }
     };
 
     let mut failed = false;
+    let mut changed = false;
     for branch in branches_to_sync(&info.branch) {
         let params = SyncPath {
             repo: repo.to_string(),
@@ -396,7 +399,9 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
                 log!("background sync of {repo}/{branch} did not complete: {detail}");
                 failed = true;
             }
-            Ok(_) => {}
+            Ok(Json(response)) => {
+                changed |= response.before != response.after;
+            }
             Err(e) => {
                 log!("background sync of {repo}/{branch} failed: {e}");
                 failed = true;
@@ -409,7 +414,7 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
             "background sync of '{repo}' did not fully reconcile"
         ))
     } else {
-        Ok(())
+        Ok(changed)
     }
 }
 
@@ -949,7 +954,12 @@ impl SyncQueue {
 /// Background-Sync `onsync` (a discrete OS event with no fetch to hook, so it
 /// drains directly). Branches are synced per-repo; repos run sequentially here
 /// (the reactor serializes branch state anyway), priority-ordered by activity.
-pub async fn drain_sync(state: &AppState) {
+///
+/// Returns whether any repo's local revision moved — the union of every
+/// [`sync_repository`] outcome. Callers feed this into the scheduler's
+/// `record_drain_outcome` so a run of no-op drains widens the quiet
+/// interval.
+pub async fn drain_sync(state: &AppState) -> bool {
     // Dirty repos first (push priority), then every other open repo (pull).
     let now = current_millis();
     let dirty = {
@@ -973,14 +983,19 @@ pub async fn drain_sync(state: &AppState) {
         .filter(|repo| seen.insert(repo.clone()))
         .collect();
 
+    let mut changed = false;
     for repo in order {
-        if let Err(e) = sync_repository(state, &repo).await {
-            // Push didn't fully land — re-mark so the next heartbeat retries.
-            log!("drain_sync: {repo} did not fully reconcile: {e}");
-            let tonk = state.read().await;
-            tonk.sync_queue.requeue(&repo, now);
+        match sync_repository(state, &repo).await {
+            Ok(moved) => changed |= moved,
+            Err(e) => {
+                // Push didn't fully land — re-mark so the next heartbeat retries.
+                log!("drain_sync: {repo} did not fully reconcile: {e}");
+                let tonk = state.read().await;
+                tonk.sync_queue.requeue(&repo, now);
+            }
         }
     }
+    changed
 }
 
 /// `POST /api/sync` — an external sync poke.

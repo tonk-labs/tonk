@@ -1360,11 +1360,16 @@ impl TonkServiceWorker {
                     return Ok(JsValue::UNDEFINED);
                 }
                 scheduler.begin_drain();
-                crate::router::drain_sync(&state).await;
+                let changed = crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
+                scheduler.record_drain_outcome(changed);
             }
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-            crate::router::drain_sync(&state).await;
+            {
+                // No scheduler on this build target — nothing to record
+                // against.
+                let _ = crate::router::drain_sync(&state).await;
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -1394,8 +1399,9 @@ impl TonkServiceWorker {
                 crate::router::mark_offline(&state).await;
             } else if scheduler.may_drain(js_sys::Date::now()) {
                 scheduler.begin_drain();
-                crate::router::drain_sync(&state).await;
+                let changed = crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
+                scheduler.record_drain_outcome(changed);
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -1455,8 +1461,9 @@ impl TonkServiceWorker {
                     continue;
                 }
                 scheduler.begin_drain();
-                crate::router::drain_sync(&state).await;
+                let changed = crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
+                scheduler.record_drain_outcome(changed);
             }
             running.set(false);
         });
@@ -1577,8 +1584,9 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         if let Some(cause) = scheduler.take_cause() {
             log!("sync drain, caused by: {cause}");
         }
-        crate::router::drain_sync(&state).await;
+        let changed = crate::router::drain_sync(&state).await;
         scheduler.end_drain(js_sys::Date::now());
+        scheduler.record_drain_outcome(changed);
         Ok(JsValue::UNDEFINED)
     });
 
