@@ -179,11 +179,17 @@ pub async fn create_invite(
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
 
     let remote_url = match resolve_remote_url(&tonk, &repository).await? {
-        RemoteRequirement::Ready(url) => Some(url),
-        RemoteRequirement::Refused(_) => None,
+        RemoteRequirement::Ready(url) => url,
+        RemoteRequirement::Refused(reason) => {
+            return Err(TonkWorkerError::Conflict(format!(
+                "cannot mint an invite for '{repo_name}': {} ({})",
+                reason.detail(),
+                reason.code()
+            )));
+        }
     };
 
-    let invite = Invite::new(delegation.into_chain(), audience, remote_url)
+    let invite = Invite::new(delegation.into_chain(), audience, Some(remote_url))
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
@@ -462,7 +468,7 @@ mod tests {
     use tonk_schema::Invitation;
     use tonk_schema::prelude::DidExt as _;
 
-    use crate::router::tests::{content_invitations, put_repo, test_state};
+    use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
     use crate::router::{CreateInviteResponse, api_router_with_state};
 
     /// Minting an invite records an `Invitation` on the repo's content
@@ -472,8 +478,10 @@ mod tests {
     async fn it_records_the_invitation_on_mint() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
 
-        // Create the repo; address it by the minted routing key.
+        // Create the repo; address it by the minted routing key. The
+        // route now refuses a local-only repo, so give it a remote first.
         let key = put_repo(&app, "test-mint-invitation").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
 
         // Mint an open invite.
         let response = app
@@ -553,5 +561,27 @@ mod tests {
             RemoteRefusal::UnshareableRemote.detail(),
             "This spot's sync server can't be shared."
         );
+    }
+
+    /// The HTTP mint route refuses a local-only repository rather than
+    /// answering with an invite that can never sync.
+    #[dialog_common::test]
+    async fn it_rejects_a_mint_for_a_local_only_repository() {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-http-local-only").await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/invite"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 }

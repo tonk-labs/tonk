@@ -747,9 +747,12 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-invite-route";
 
-        // Create the repo first so the invite handler can load it.
+        // Create the repo first so the invite handler can load it. The
+        // route refuses a local-only repo, so give it a remote too —
+        // this test is only proving the route is reachable.
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
+        attach_remote(&app, repo, "https://sync.example.test/ucan/").await;
 
         let response = app
             .oneshot(
@@ -824,7 +827,7 @@ pub mod tests {
     /// repo whose `main` has no upstream (see
     /// `repository::tests::it_refuses_to_mint_without_a_remote`).
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn attach_remote(app: &Router, repo: &str, endpoint: &str) {
+    pub(crate) async fn attach_remote(app: &Router, repo: &str, endpoint: &str) {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
