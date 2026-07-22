@@ -384,7 +384,7 @@ Understand the whole file before editing. Note in particular: what `resolve_disp
 ```bash
 cd /Users/jackdouglas/tonk/tonk-invite
 cargo build --release -p tonk-cli 2>&1 | tail -3
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=bench-probe
 ./target/release/tonk spot new bench-probe 2>&1 | tail -2
 ./target/release/tonk eval --no-sync --format json -c 'view:' | head -40
@@ -916,7 +916,7 @@ Expected: success. `remote` and `invite` are already imported in `bin/tonk.rs`; 
 - [ ] **Step 5: Verify by hand against a scratch spot with no remote**
 
 ```bash
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=probe-noremote
 cargo run -q -p tonk-cli --bin tonk -- spot new probe-noremote 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- invite 2>&1 | tail -4
@@ -927,7 +927,7 @@ Expected: the link starts with `https://tonk.spot/join?access=` after Task 7 (be
 - [ ] **Step 6: Verify by hand against a scratch spot with a staging remote**
 
 ```bash
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=probe-staging
 cargo run -q -p tonk-cli --bin tonk -- spot new probe-staging 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- remote add origin https://staging.tonk.spot/ucan/ 2>&1 | tail -2
@@ -1176,6 +1176,141 @@ gh pr create --base refactor/drop-cli-share \
   --title "fix(cli): build invite links on the remote's origin" \
   --body-file /tmp/pr2-body.md
 ````
+
+---
+
+### Task 9: Make the invite surface honest about where the data goes
+
+Task 6's review found that `invite::mint` pushes to the branch's **upstream**, not to the remote the caller resolved (`rust/tonk-cli/src/invite.rs:126-140`). Reproduced:
+
+```
+$ tonk invite --remote backup          # backup = http://127.0.0.1:9/other/
+error: push before invite failed: ... url (http://127.0.0.1:9/ucan/)
+```
+
+The user asked for `backup`; the push went to `origin`, because `origin` is what `main` tracks. So the link is built on backup's origin and embeds backup's endpoint, while the repo state ships somewhere else — the recipient lands on a deployment that never received the data. That is this plan's own bug class, one leg over.
+
+It is inherited: push-before-mint predates Task 6, and in the single-remote case the resolved remote *is* the upstream, so they coincide. But implicit resolution makes multi-remote `--remote` a more plausible path than it was.
+
+The decision is to **warn, not re-route**. Pushing to the resolved remote would be correct by construction, but `sync::push` is upstream-bound and a push-to-named-remote path does not exist yet — too large for this branch. A warning that names both is honest and cannot make anything worse.
+
+This task also cleans up the invite surface's prose, which Task 6 left stale.
+
+**Files:**
+- Modify: `rust/tonk-cli/src/bin/tonk.rs` (`mint_invite`, and the `--no-remote` help text on the `Invite` variant)
+- Modify: `rust/tonk-cli/README.md:63-64`
+- Modify: `rust/tonk-cli/SYNC.md:59`
+- Modify: `.claude/commands/tonk.md:85`
+- Test: `rust/tonk-cli/tests/site.rs`
+
+**Interfaces:**
+- Consumes: `remote::resolve` and `RemoteRecord` (Task 5), `remote::list`, `site.branch()` → `session.handle().upstream()`, the existing `mint_invite` in `bin/tonk.rs`.
+- Produces: nothing later tasks consume. This is the last code task.
+
+- [ ] **Step 1: Find out what the upstream can tell you**
+
+Before writing anything, establish how to decide "the resolved remote is not the upstream". Read `rust/tonk-cli/src/sync.rs` (`push`, and how it reaches the upstream), `rust/tonk-cli/src/remote.rs` (`set_upstream`, `upstream_configured`, `list`), and `rust/tonk-schema/src/tracking_branch.rs`.
+
+The question to answer: given a `TonkSite`, can you recover the *name* (or the endpoint) of the remote its `main` branch tracks? `session.handle().upstream()` returns the upstream branch handle — see what identifies it.
+
+Three outcomes, in order of preference:
+
+1. The upstream's remote name or endpoint is reachable. Compare it against the resolved `RemoteRecord` directly. Best — it is exact.
+2. Only the upstream's subject DID or branch identity is reachable. Match it against `remote::list()` rows to recover the name. Still exact.
+3. Nothing usable is reachable. Fall back to a coarser condition: warn whenever the user passed `--remote` explicitly *and* more than one remote is registered, since that is precisely when the two can diverge. Weaker, but never wrong about the risk.
+
+Write down which one you took and why. Do not add a new public function to `remote.rs` unless option 1 or 2 needs it; if it does, give it a doc comment in the style of its neighbours.
+
+- [ ] **Step 2: Write the failing test**
+
+In `rust/tonk-cli/tests/site.rs`, add a module after `mod when_resolving_a_remote` (which closes around line 174 — read to confirm).
+
+The test registers two remotes, sets the upstream to the first, and asserts that whatever you built in Step 1 reports a mismatch when asked about the second and no mismatch when asked about the first. Shape it to whatever you actually built — a helper returning `Option<String>`, a bool, whatever fits. Use `#[dialog_common::test]`, name the module `mod when_the_invite_remote_is_not_the_upstream`, and name the tests `it_does_x`.
+
+The existing `mod when_managing_remotes` shows how to register a remote (`remote::add(&test.site, "origin", ENDPOINT, None)`) and set an upstream (`remote::set_upstream(&test.site, "origin")`) against `common::TestSite`.
+
+If Step 1 landed on outcome 3, the condition is pure argument inspection with no site state, so test it as a unit test in `bin/tonk.rs`'s crate instead — say so and put it where it can actually run.
+
+- [ ] **Step 3: Run it and watch it fail**
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+cargo test -p tonk-cli --features integration-tests --test site when_the_invite_remote_is_not_the_upstream -- --test-threads=1 2>&1 | tail -20
+```
+
+Expected: FAIL to compile, naming whatever you have not written yet.
+
+- [ ] **Step 4: Implement the warning**
+
+In `mint_invite` in `rust/tonk-cli/src/bin/tonk.rs`, after the remote is resolved and before `invite::mint` is called, emit a warning to stderr when the resolved remote is not the branch's upstream. Name both, and say what actually happens — the wording matters more than the mechanism:
+
+```
+warning: the invite embeds remote 'backup' but the repo pushes to 'origin';
+         the recipient may join a deployment that has not received this data
+```
+
+Match the file's existing warning style (`eprintln!("warning: ...")` — see the shorten degradation a few lines below). Keep it a warning: minting must still succeed. A user with a deliberate split setup should not be blocked.
+
+Do not warn when there is no upstream at all — `invite::mint` skips the push entirely in that case, so there is nothing to diverge from.
+
+- [ ] **Step 5: Run the test and the suite**
+
+```bash
+cargo test -p tonk-cli --features integration-tests --test site when_the_invite_remote_is_not_the_upstream -- --test-threads=1 2>&1 | tail -20
+cargo test -p tonk-cli --features integration-tests --test site -- --test-threads=1 2>&1 | tail -5
+```
+
+Expected: the new tests pass; the suite is at its prior count plus yours.
+
+- [ ] **Step 6: Verify the warning by hand**
+
+```bash
+export TONK_SPOTS_STATE="$(mktemp -d)"
+export TONK_SPOT=probe-mismatch
+cargo run -q -p tonk-cli --bin tonk -- spot new probe-mismatch 2>&1 | tail -2
+cargo run -q -p tonk-cli --bin tonk -- remote add origin http://127.0.0.1:9/ucan/ 2>&1 | tail -2
+cargo run -q -p tonk-cli --bin tonk -- remote add backup http://127.0.0.1:9/other/ 2>&1 | tail -2
+cargo run -q -p tonk-cli --bin tonk -- invite --remote backup 2>&1 | tail -6
+```
+
+Both remotes point at a dead port on purpose: the push fails either way, and what you are checking is that the mismatch warning appears *before* the push error. Confirm `--remote origin` produces no such warning.
+
+- [ ] **Step 7: Fix the `--no-remote` help text**
+
+Its current help says "Mint a local-only invite carrying no `remote=`". The *invite* is local-only; the mint still pulls and pushes to the upstream when one is configured. Reword so a reader does not take "local-only" to mean "no network".
+
+- [ ] **Step 8: Update the invite docs**
+
+Three files describe `tonk invite` as it behaved before Task 6, and none mention `--no-remote`:
+
+- `rust/tonk-cli/README.md:63-64` — frames `--remote prod` as "also embeds a registered remote", when embedding is now the default and the flag is the disambiguator.
+- `rust/tonk-cli/SYNC.md:59`
+- `.claude/commands/tonk.md:85`
+
+Read each in context. State the behaviour as it now is: a bare `tonk invite` resolves the repo's remote, builds the link on that remote's origin, and embeds it; `--remote <NAME>` picks one when several are registered; `--no-remote` mints without one. House style — lead with the answer, plain words, vary sentence length, no filler, match the surrounding voice.
+
+- [ ] **Step 9: Lint gate**
+
+```bash
+cargo fmt --check 2>&1 | tail -5
+cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tail -10
+```
+
+Both must be clean. `nix flake check` cannot run on this machine (macOS 27 beta libffi breakage); these are the equivalent direct invocations, with args matching the flake's own check derivation.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add rust/tonk-cli/ .claude/commands/tonk.md
+git commit -m "fix(cli): warn when the invite remote is not the upstream
+
+invite::mint pushes to the branch's upstream, not to the remote the
+link embeds. With several remotes registered, --remote could build a
+link on one deployment while the data shipped to another, leaving the
+recipient on a deployment that never received it. Name both and say so.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
 
 ---
 

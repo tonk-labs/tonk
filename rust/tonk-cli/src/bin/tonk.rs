@@ -225,18 +225,38 @@ enum Command {
     /// Mints a UCAN delegation chain over the local repo. The
     /// default form is audience-open: anyone holding the URL can
     /// claim by redelegating from the embedded ephemeral key.
-    #[command(after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod")]
+    ///
+    /// The link is built on the remote's own origin, so the
+    /// recipient lands on the deployment that actually serves the
+    /// repo — and that origin's shortcut service can shorten it.
+    #[command(
+        after_help = "Examples:\n  tonk invite\n  tonk invite --remote prod\n  tonk invite --no-remote"
+    )]
     Invite {
         /// Override the URL prefix the invite is built against.
-        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
-        base_url: String,
+        /// Defaults to `/join` on the resolved remote's origin, or
+        /// to the canonical base when no single remote resolves.
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
 
         /// Embed a registered remote's URL in the invite so
         /// the claimer auto-configures the same access service
         /// after redeeming. Argument is the remote's local
         /// name (as registered with `tonk remote add`).
-        #[arg(long, value_name = "NAME")]
+        /// Defaults to the only registered remote when there
+        /// is exactly one.
+        #[arg(long, value_name = "NAME", conflicts_with = "no_remote")]
         remote: Option<String>,
+
+        /// Mint an invite carrying no `remote=`, even when remotes
+        /// are registered. The recipient joins with no upstream and
+        /// wires one by hand. The link still sits on the resolved
+        /// remote's origin — only the embedded endpoint is dropped.
+        /// Also the way past the several-remotes error, which falls
+        /// back to the canonical base. The mint still syncs this
+        /// repo to its own upstream if it has one.
+        #[arg(long)]
+        no_remote: bool,
     },
 
     /// Join a shared repo from an invite URL into a new spot
@@ -738,9 +758,11 @@ async fn main() {
         Command::Push => sync_op(SyncOp::Push, spot.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, spot.as_deref()).await,
         Command::Status => status_op(spot.as_deref()).await,
-        Command::Invite { base_url, remote } => {
-            mint_invite(base_url, remote, spot.as_deref()).await
-        }
+        Command::Invite {
+            base_url,
+            remote,
+            no_remote,
+        } => mint_invite(base_url, remote, no_remote, spot.as_deref()).await,
         Command::Join { url, name } => claim_invite(url, name).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
@@ -1301,8 +1323,9 @@ fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
 }
 
 async fn mint_invite(
-    base_url: String,
+    base_url: Option<String>,
     remote_name: Option<String>,
+    no_remote: bool,
     spot: Option<&str>,
 ) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
@@ -1310,21 +1333,73 @@ async fn mint_invite(
         Err(code) => return code,
     };
 
-    // Resolve `--remote <name>` to its endpoint URL by reading
-    // the meta branch. An unknown name surfaces as a friendly
-    // error before any keys are generated.
-    let remote_url = match remote_name.as_deref() {
-        Some(name) => match remote::find(&site, name).await {
-            Ok(Some(record)) => Some(record.endpoint),
-            Ok(None) => {
-                return print_error(format!(
-                    "no remote registered as '{name}'; run `tonk remote list` to see what's there"
-                ));
-            }
+    // Resolve the remote first: it decides both what gets embedded as
+    // `remote=` and, unless `--base-url` overrides, which origin the
+    // link points at. Those two have to stay in step — a link on one
+    // deployment carrying a remote on another can't be shortened (the
+    // shortcut service is same-origin) and drops the recipient on a
+    // deployment that isn't serving the repo.
+    //
+    // `--no-remote` suppresses only the embedded endpoint. The link
+    // still belongs on the remote's origin: moving it to the canonical
+    // base is the same split this resolution exists to prevent.
+    let resolved = match remote::resolve(&site, remote_name.as_deref()).await {
+        Ok(record) => record,
+        // `--no-remote` is the documented way out of the ambiguity
+        // error, so it cannot be blocked by one. Nothing picks an
+        // origin here, so the canonical base is the honest answer —
+        // said out loud, because it may not be the right one.
+        Err(remote::RemoteError::AmbiguousRemote(names)) if no_remote => {
+            eprintln!(
+                "warning: several remotes are registered ({names}); building the link on \
+                 {base}\n         name an origin with `--base-url <URL>` if that is wrong",
+                base = invite::DEFAULT_BASE_URL,
+            );
+            None
+        }
+        Err(err) => {
+            // The shared error names `--remote`; `--no-remote` is the
+            // other way out, and only the invite path has it.
+            let hint = match err {
+                remote::RemoteError::AmbiguousRemote(_) => {
+                    "\n       or pass `--no-remote` to mint a link that embeds none"
+                }
+                _ => "",
+            };
+            return print_error(format!("{err}{hint}"));
+        }
+    };
+
+    // `--no-remote` keeps the origin and drops the endpoint.
+    let embedded = if no_remote { None } else { resolved.clone() };
+
+    // The mint pushes to whatever `main` tracks, which need not be the
+    // remote the link embeds. Say so rather than re-route: a deliberate
+    // split setup is legitimate, and a silent one is not. No upstream
+    // means no push at all, so nothing to diverge from.
+    if let Some(record) = &embedded {
+        match remote::upstream_remote(&site).await {
+            Ok(Some(upstream)) if upstream != record.name => eprintln!(
+                "warning: the invite embeds remote '{embedded}' but the repo pushes to \
+                 '{upstream}';\n         the recipient may join a deployment that has not \
+                 received this data",
+                embedded = record.name,
+            ),
+            Ok(_) => {}
+            Err(err) => eprintln!("warning: could not check the branch's upstream: {err}"),
+        }
+    }
+
+    let base_url = match (base_url, &resolved) {
+        (Some(explicit), _) => explicit,
+        (None, Some(record)) => match invite::base_url_for_remote(&record.endpoint) {
+            Ok(derived) => derived,
             Err(err) => return print_error(err.to_string()),
         },
-        None => None,
+        (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
+
+    let remote_url = embedded.map(|record| record.endpoint);
 
     match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
         Ok(mut outcome) => {

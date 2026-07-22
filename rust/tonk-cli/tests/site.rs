@@ -114,6 +114,128 @@ mod when_managing_remotes {
     }
 }
 
+mod when_resolving_a_remote {
+    use anyhow::Result;
+    use tonk_cli::remote::{self, RemoteError};
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+    const OTHER: &str = "https://other.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_resolves_nothing_when_no_remote_is_registered() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        assert!(remote::resolve(&test.site, None).await?.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_the_only_registered_remote() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        let resolved = remote::resolve(&test.site, None).await?;
+        assert_eq!(resolved.expect("a lone remote resolves").endpoint, ENDPOINT);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_the_named_remote_when_several_exist() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+
+        let resolved = remote::resolve(&test.site, Some("backup")).await?;
+        assert_eq!(resolved.expect("named remote resolves").endpoint, OTHER);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_guess_between_several_remotes() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+
+        match remote::resolve(&test.site, None).await {
+            Err(RemoteError::AmbiguousRemote(names)) => {
+                assert!(names.contains("origin"), "names both: {names}");
+                assert!(names.contains("backup"), "names both: {names}");
+            }
+            other => panic!("expected AmbiguousRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_on_a_name_that_is_not_registered() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        match remote::resolve(&test.site, Some("missing")).await {
+            Err(RemoteError::UnknownRemote(name)) => assert_eq!(name, "missing"),
+            other => panic!("expected UnknownRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+}
+
+mod when_the_invite_remote_is_not_the_upstream {
+    use anyhow::Result;
+    use tonk_cli::remote;
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+    const OTHER: &str = "https://other.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_reports_no_upstream_remote_on_a_freshly_added_remote() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        // `remote::add` only registers; it never touches the upstream,
+        // so there is nothing to diverge from and nothing to warn
+        // about. (`tonk remote add`, the command, layers a default
+        // set-upstream on top when no upstream is configured yet.)
+        assert!(remote::upstream_remote(&test.site).await?.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_names_the_remote_the_branch_tracks() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+        remote::set_upstream(&test.site, "origin").await?;
+
+        let upstream = remote::upstream_remote(&test.site).await?;
+        assert_eq!(upstream.as_deref(), Some("origin"));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_differs_from_a_remote_the_branch_does_not_track() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+        remote::set_upstream(&test.site, "origin").await?;
+
+        let upstream = remote::upstream_remote(&test.site).await?;
+
+        let backup = remote::resolve(&test.site, Some("backup"))
+            .await?
+            .expect("named remote resolves");
+        assert_ne!(upstream.as_deref(), Some(backup.name.as_str()));
+
+        let origin = remote::resolve(&test.site, Some("origin"))
+            .await?
+            .expect("named remote resolves");
+        assert_eq!(upstream.as_deref(), Some(origin.name.as_str()));
+        Ok(())
+    }
+}
+
 mod when_shortening_an_invite {
     #[cfg(feature = "integration-tests")]
     use anyhow::Result;
@@ -163,6 +285,33 @@ mod when_shortening_an_invite {
         let claim_outcome = invite::claim(&claimer_root, &short, claimer_config).await?;
         assert_eq!(claim_outcome.subject, inviter.site.repository.did());
         assert!(claim_outcome.remote_url.is_some());
+        Ok(())
+    }
+
+    /// The regression: with no explicit base, the link must land on
+    /// the remote's own origin — the only origin whose same-origin
+    /// shortcut service can answer, and the deployment actually
+    /// serving the repo.
+    #[dialog_common::test]
+    async fn it_derives_the_base_from_the_remote_and_shortens(
+        env: AccessServiceAddress,
+    ) -> Result<()> {
+        let endpoint = env.access_service_url.as_str();
+        let inviter = common::TestSite::new().await?;
+        remote::add(&inviter.site, "origin", endpoint, None).await?;
+
+        let resolved = remote::resolve(&inviter.site, None)
+            .await?
+            .expect("the lone remote resolves");
+        let base = invite::base_url_for_remote(&resolved.endpoint)?;
+        assert_eq!(base, format!("{endpoint}/join"));
+
+        let outcome = invite::mint(&inviter.site, Some(&base), Some(&resolved.endpoint)).await?;
+        let short = invite::shorten(&outcome.url).await?;
+        assert!(
+            short.starts_with(&format!("{endpoint}/@/")),
+            "short link sits on the remote's origin: {short}"
+        );
         Ok(())
     }
 }

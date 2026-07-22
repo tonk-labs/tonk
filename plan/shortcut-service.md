@@ -8,7 +8,7 @@ the **shortcut service** shortens any same-origin URL: the long URL's
 path + query is stored under its blake3 hash, and the short link is
 
 ```
-https://hub.tonk.xyz/@/{blake3-hash}#{seed}
+https://tonk.spot/@/{blake3-hash}#{seed}
 ```
 
 `GET /@/{hash}` answers with a permanent redirect whose `Location` is

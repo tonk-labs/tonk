@@ -78,6 +78,7 @@ workspace!:
   sheet: sheet-bob
 ```
 
-Open it in the shell: push, then
-`tonk invite` — the recipient joins the space and opens the workspace
-there.
+Open it in the shell at `/space/<space>/<entity>@workspace` —
+`lab@workspace` for the one above. `tonk render lab@workspace` prints
+the same HTML headlessly. To put someone else in it, hand them the
+repo with `tonk invite`.

@@ -37,11 +37,14 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as U
 use dialog_varsig::{Did, Principal};
 use url::Url;
 
-/// Canonical base URL for tonk invite links. Callers serializing an
-/// [`Invite`] can pass this to [`Invite::to_url`] to mint a link rooted at
-/// hub.tonk.xyz. Changing this value is a breaking change for any outstanding
-/// invite URLs that embed it.
-pub const DEFAULT_BASE_URL: &str = "https://hub.tonk.xyz/join";
+/// Canonical base URL for tonk invite links, and the fallback for a repo
+/// with no remote to take an origin from. Callers serializing an [`Invite`]
+/// pass this to [`Invite::to_url`] to mint a link rooted at tonk.spot.
+///
+/// Changing it does not invalidate outstanding invites: the base is not a
+/// lookup key, so a link already minted against another host keeps
+/// redeeming for as long as that host stays up.
+pub const DEFAULT_BASE_URL: &str = "https://tonk.spot/join";
 
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
