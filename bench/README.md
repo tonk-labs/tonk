@@ -139,8 +139,27 @@ task.md/rubric.md are frozen.
   log on startup.
 - Caddy: serves `rust/tonk-ui/dist` (trunk-built) with `/ucan/*` proxied to
   the access service — same-origin layout as production.
-- Tonk vault: `$RUN_DIR/site`, fresh per run. Remote `origin` points at
+- Tonk spot: registered by `site.sh setup` as `tonk spot new "$TONK_SPOT"
+  --site "$RUN_DIR/site"`, fresh per run. Remote `origin` points at
   `$BENCH_URL/ucan/`.
+
+**Spot pinning** — the CLI resolves a spot by `--spot`, then `TONK_SPOT`, then
+the `tonk use` selection, and *never* consults the cwd. So `cd`-ing into the
+site directory does nothing, and an unpinned `tonk` call succeeds against
+whatever spot the developer happens to have selected globally — silently, and
+against the wrong repo. `run.sh` therefore exports both:
+
+- `TONK_SPOTS_STATE="$RUN_DIR/spots-state"` — the registry and its canonical
+  `spots/` root, so runs never see each other or the developer's own spots.
+- `TONK_SPOT=bench` — the spot every harness and scenario `tonk` call resolves.
+
+`episode.sh` passes both into the agent's environment too, overridable per
+scenario as `EPISODE_SPOT` / `EPISODE_SPOTS_STATE`. A scenario where the agent
+registers its own spot (cold-onboard joins from an invite) sets both — an empty
+spot, which the CLI reads as unset, and a separate empty registry, so a
+pre-join `tonk` reports no spots rather than silently resolving the origin site
+the agent is supposed to be joining. `tonk join` selects the spot it registers,
+so the agent's own governs from there.
 
 **Episode** — headless `claude -p`, given only the scenario task and a
 workspace pointing at the local stack. Bounded by `EPISODE_TIMEOUT` (default
@@ -209,8 +228,8 @@ indicate a regression or a real improvement — look at the shots side by side.
 **tonk-created concepts have no Name claim** — `<tonk-display>`'s bare
 `{model}/` directory route resolves names via the Name concept
 (`dialog.name/referent`); concepts asserted through tonk only carry
-`dialog.meta/name`, so name-addressed directory URLs report "no concept
-matched". Checkpoints work around it with the `{model}!tonk:view` bang form.
+`dialog.meta/name`, so name-addressed directory URLs may report "no concept
+matched".
 
 **`view` concept not seeded on fresh branches** (top item as of 2026-06-10,
 from-scratch score 3/10): a fresh tonk branch has no built-in `view` concept,
@@ -219,16 +238,23 @@ greps prior runs for a definition, and the copied definition may not register
 correctly. Fix: seed `tonk:view` on fresh branches, or document its canonical
 definition in `tonk guide views` so the guide's examples work out of the box.
 
-**Route shapes**: the chromed routes are only `/space/:space/view/:entity` and
-`/space/:space/board/:board` (the dedicated `concept`/`layout` routes were
-removed upstream). Everything else falls to the `/space/:space/*subject`
-wildcard rendered by `<tonk-display>`. Checkpoint lines use the bang form
-`{model}!tonk:view` (e.g. `note!tonk:view`) — directory mode over the model
-with the default view. The bare `{model}/` form resolves the name through the
-Name concept (`dialog.name/referent`), which tonk-created concepts don't
-currently get, so it reports "no concept matched" (known friction, below). The
-wildcard is defined after the chromed parent route so it doesn't shadow
-`view`/`board` — Leptos 0.8 matches in definition order.
+**Route shapes**: routing is data, not Leptos code — the service worker builds
+a matchit router from the branch's seeded `route!` table
+(`rust/tonk-core/assets/library/core.yaml`), which has four patterns:
+
+```
+/
+/{*entity}@{*model}!{*view}
+/{*entity}@{*model}
+/{*model}
+```
+
+Checkpoint lines therefore use the directory form (`/{*model}`), which
+`shots.sh` builds by resolving `display:<view-name>` to the view's model
+concept. `!` only means something after an `@entity` segment, so the old bang
+form (`note!tonk:view`) falls through to `/{*model}` with the whole literal
+string as the model name and matches no concept — it renders a red "Model not
+found" box. It was removed from every scenario's `checkpoints` file.
 
 **Sync mechanism** — 20 s background tick in `sync_controller.rs`
 (`TICK_INTERVAL_MS`). `bridge.sh` fires an explicit
@@ -253,7 +279,7 @@ flag. Episodes are bounded by `EPISODE_TIMEOUT` via `timeout(1)` from coreutils.
 repository's subject DID (`did:key:…`), which the auto-join flow returns as
 `repository.name` and the route parser reconstructs from the URL segment
 (`did:key` is a droppable label; the id is re-prefixed). `site.sh setup`
-captures the DID from `tonk init` into `$RUN_DIR/space.did`, and `run.sh`
+captures the DID from `tonk spot new` into `$RUN_DIR/space.did`, and `run.sh`
 exports it as `SPACE_NAME` for both the bridge pull
 (`/api/repository/<DID>/…`) and the checkpoint shot URLs
 (`/space/<DID>/…`). A hardcoded name like `bench` resolves to
