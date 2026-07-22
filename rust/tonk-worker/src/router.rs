@@ -783,7 +783,7 @@ pub mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     struct MintedInvite {
         access: String,
-        /// The stored `&remote=<url>` suffix (empty for a local-only repo).
+        /// The stored `&remote=<url>` suffix.
         remote: String,
         /// The base58 membership seed the worker minted, read back from the
         /// session overlay via the `tonk:invitation` join.
@@ -818,11 +818,54 @@ pub mod tests {
         (info.name, info.subject.as_str().to_owned())
     }
 
-    /// Drive the `tonk:invite` command end to end on a fresh repo and
-    /// return the minted invite.
+    /// Attach a sync remote to `repo`'s `main` branch via `POST /remote` —
+    /// the same path the topbar "Enable sync" form drives. Tests that mint
+    /// an invite need this first: `run_invite` refuses to mint against a
+    /// repo whose `main` has no upstream (see
+    /// `repository::tests::it_refuses_to_mint_without_a_remote`).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn attach_remote(app: &Router, repo: &str, endpoint: &str) {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_repository::SiteAddress;
+
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attach = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            attach.status(),
+            StatusCode::OK,
+            "remote attach should succeed"
+        );
+    }
+
+    /// Drive the `tonk:invite` command end to end on a fresh, synced repo
+    /// and return the minted invite. Attaches a remote before minting —
+    /// a local-only repo now refuses to mint at all.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     async fn mint_invite_via_command(app: &Router, label: &str) -> MintedInvite {
         let (repo, subject) = put_repo_info(app, label).await;
+        attach_remote(app, &repo, "https://sync.example.test/ucan/").await;
         mint_invite_for(app, &repo, &subject).await
     }
 
@@ -961,6 +1004,7 @@ pub mod tests {
         let (app, app_state, _lsp) = super::api_router_with_state(state);
 
         let (repo, subject) = put_repo_info(&app, "invite-no-leak").await;
+        attach_remote(&app, &repo, "https://sync.example.test/ucan/").await;
         let minted = mint_invite_for(&app, &repo, &subject).await;
         assert!(!minted.access.is_empty(), "authorization must mint");
 
@@ -1128,16 +1172,11 @@ pub mod tests {
     /// A command-minted invite for a *synced* repo must embed the sync
     /// endpoint as a `&remote=` query parameter, so a recipient on another
     /// device knows where to pull the shared content from. (A local-only
-    /// repo correctly omits it — covered by the join test above, whose repo
-    /// has no upstream.)
+    /// repo has nothing to embed — it refuses to mint at all, covered by
+    /// `repository::tests::it_refuses_to_mint_without_a_remote` and
+    /// `create_invite::tests::it_refuses_a_repository_with_no_upstream`.)
     #[dialog_common::test]
     async fn it_embeds_the_remote_in_a_command_minted_invite() {
-        use super::repository::{
-            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
-        };
-        use dialog_remote_ucan_s3::UcanAddress;
-        use dialog_repository::SiteAddress;
-
         let state = test_state().await;
         let (app, _state, _lsp) = super::api_router_with_state(state);
 
@@ -1145,32 +1184,7 @@ pub mod tests {
         // route (the same path the topbar "Enable sync" form drives).
         let (repo, subject) = put_repo_info(&app, "invite-remote").await;
         let endpoint = "https://sync.example.test/ucan/";
-        let config = RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint))),
-            )
-            .branch(
-                "main",
-                BranchConfiguration::default().upstream("origin", "main"),
-            );
-        let attach = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            attach.status(),
-            StatusCode::OK,
-            "remote attach should succeed"
-        );
+        attach_remote(&app, &repo, endpoint).await;
 
         // Mint the invite through the command. `mint_invite_via_command`
         // creates its *own* fresh repo, so mint against THIS repo directly:
