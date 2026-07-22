@@ -15,15 +15,14 @@ routes are wasm-only adapters (see `src/store/d1.rs`, `src/chains/r2.rs`,
 
 ## Auth model
 
-Every endpoint outside the two bootstrap ceremonies is invoked as a signed
-UCAN invocation container: the invocation subject is the account's root DID,
-and the invocation issuer is a device that has been delegated under that
-root and is not revoked. The service verifies the container cryptographically,
-checks the command matches the endpoint being called, then resolves the
-subject and issuer to a registered account and one of its active devices
-before running the ceremony. The two bootstrap ceremonies — requesting a code
-and creating the account — use email verification codes instead, because at
-that point no delegation exists yet to authenticate against.
+Every registry endpoint is invoked as a signed UCAN invocation container. Most
+requests are signed by an active device delegated under the account root. The
+service verifies the container and command before resolving its subject and
+issuer to an account and device. Account creation and browser self-link are
+instead signed directly by the passkey-derived root: successful verification,
+with issuer equal to subject, proves root-key control before the service writes
+the first account or another device. Account creation additionally consumes an
+email verification code. Only `POST /codes` is unauthenticated.
 
 ## RP ID invariants
 
@@ -48,8 +47,15 @@ permissive CORS headers).
 - `GET /health`: liveness check (`OK`).
 - `POST /codes`: request an email verification code. Body: `{ "email": string }`.
 - `POST /accounts`: create an account and register its first device, consuming
-  a verification code. Body: `{ "email": string, "code": string, "rootDid": string, "credentialId": string, "deviceDid": string, "deviceName": string, "delegationHex": string }`.
+  a verification code. Body: a root-signed UCAN invocation container with
+  command `["account", "create"]` and arguments `email`, `code`,
+  `credentialId`, `deviceDid`, `deviceName`, and `delegation` (the hex-encoded
+  `root → device` delegation).
   Returns `201` with `{ "accountId": number }`.
+- `POST /devices/link`: register a device through a passkey self-link ceremony.
+  Body: a root-signed UCAN invocation container with command
+  `["account", "device", "link"]` and arguments `deviceDid`, `deviceName`,
+  and `delegation`.
 - `POST /devices/list`: list the devices registered under the caller's
   account. Body: a UCAN invocation container (CBOR bytes) with command
   `["account", "device", "list"]`. Returns an array of device rows (`did`,
