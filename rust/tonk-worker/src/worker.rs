@@ -712,6 +712,56 @@ mod route_for_tests {
         );
     }
 
+    /// The hot paths bail on [`SyncScheduler::blocked`] before awaiting the
+    /// visibility read and the queue's dirty count. Sound only if a blocked
+    /// scheduler refuses whatever those awaits would have returned — including
+    /// the reading that bypasses the quiet interval.
+    #[dialog_common::test]
+    fn it_refuses_a_blocked_drain_whatever_the_dirty_count() {
+        let s = SyncScheduler::default();
+        let t = s.next(0.0);
+
+        s.begin_drain();
+        assert!(s.blocked(0.0), "a running drain blocks");
+        assert!(
+            !s.may_drain(0.0, DIRTY),
+            "pending work never overlaps drains"
+        );
+        assert!(!s.should_drain(t, 0.0, DIRTY));
+        s.end_drain(0.0);
+
+        s.stop();
+        assert!(s.blocked(10_000.0), "a retiring worker blocks");
+        assert!(!s.may_drain(10_000.0, DIRTY));
+        s.resume();
+
+        let _guard = s.enter_loading(10_000.0);
+        assert!(s.blocked(10_000.0), "an actively loading page blocks");
+        assert!(!s.may_drain(10_000.0, DIRTY));
+    }
+
+    /// The per-fetch path bails on `superseded` before its awaits, so that
+    /// half of the decision must match what the full gate would have said.
+    #[dialog_common::test]
+    fn it_refuses_a_superseded_ticket_before_the_gate() {
+        let s = SyncScheduler::default();
+        let t1 = s.next(0.0);
+        let _t2 = s.next(0.0);
+        let wake = SYNC_DEBOUNCE_MS as f64;
+
+        assert!(s.superseded(t1, wake), "a newer ticket exists");
+        assert!(
+            !s.should_drain(t1, wake, DIRTY),
+            "a superseded ticket refuses even with work pending",
+        );
+
+        // Past the max-wait cap the same ticket is no longer superseded, and
+        // the gate lets it through — the cap is not lost to the early bail.
+        let capped = SYNC_MAX_WAIT_MS as f64;
+        assert!(!s.superseded(t1, capped));
+        assert!(s.should_drain(t1, capped, CLEAN));
+    }
+
     /// A visible page always polls at the active cadence, however long it
     /// has sat idle: the only thing that widens the gap is going hidden,
     /// and coming back drops it again on the very next gate check. A
@@ -915,15 +965,20 @@ impl SyncScheduler {
     /// `dirty` is the sync queue's pending-local-work reading — see
     /// [`may_drain`](Self::may_drain).
     fn should_drain(&self, ticket: u64, now: f64, dirty: usize) -> bool {
-        if !self.may_drain(now, dirty) {
-            return false;
-        }
+        !self.superseded(ticket, now) && self.may_drain(now, dirty)
+    }
+
+    /// Whether `ticket` has been overtaken by a newer request and the max-wait
+    /// cap has not yet elapsed — the debounce half of
+    /// [`should_drain`](Self::should_drain), split out because it is free to
+    /// evaluate and settles most woken tickets on a busy page.
+    fn superseded(&self, ticket: u64, now: f64) -> bool {
         let is_latest = self.generation.get() == ticket;
         let capped = self
             .pending_since
             .get()
             .is_some_and(|since| now - since >= SYNC_MAX_WAIT_MS as f64);
-        is_latest || capped
+        !(is_latest || capped)
     }
 
     /// The gate EVERY drain entrypoint passes through — the debounced
@@ -947,15 +1002,7 @@ impl SyncScheduler {
     /// state it records is one bit of logging bookkeeping (see
     /// [`should_log_hold`](Self::should_log_hold)).
     fn may_drain(&self, now: f64, dirty: usize) -> bool {
-        if self.stopped.get() {
-            return false;
-        }
-        if self.in_flight.get() {
-            return false;
-        }
-        // Yield to an actively-loading page — a boot burst (this tab or another)
-        // finishes before sync competes for the SW thread and branch locks.
-        if self.is_loading(now) {
+        if self.blocked(now) {
             return false;
         }
         // Quiet period measured from the LAST DRAIN'S COMPLETION, not from the
@@ -1023,6 +1070,18 @@ impl SyncScheduler {
             }
         }
         allowed
+    }
+
+    /// Whether a drain is refused before the clock is even consulted: the
+    /// worker is being replaced (a dying worker must start no new work — see
+    /// `stopped`), a drain is already running, or a page is actively loading.
+    ///
+    /// Split out so the hot paths can check it BEFORE the awaits that feed
+    /// [`may_drain`](Self::may_drain) — reading visibility is a JS round-trip
+    /// and the dirty count takes the `AppState` read lock, and neither result
+    /// can change the answer once this is true.
+    fn blocked(&self, now: f64) -> bool {
+        self.stopped.get() || self.in_flight.get() || self.is_loading(now)
     }
 
     /// Whether a hold-off refusal should be logged: true only for the first
@@ -1623,6 +1682,19 @@ impl TonkServiceWorker {
                 // for the single SW thread and the branch locks. The gate also
                 // enforces the cooldown, so a drain that outlasts this interval
                 // is not immediately followed by another.
+                //
+                // The gate's own free refusals first: a tick that lands while a
+                // drain is running (the common case on a slow link, where a
+                // drain outlives the interval) would otherwise pay a
+                // `clients.matchAll()` round-trip and an `AppState` read lock —
+                // which queues behind any pending writer — only to be refused
+                // on state it could have read synchronously. Skipping the
+                // visibility read costs nothing: the reading is only ever
+                // consumed by a gate check, and every path that reaches one
+                // refreshes it first.
+                if scheduler.blocked(js_sys::Date::now()) {
+                    continue;
+                }
                 scheduler.set_visible(any_client_visible().await);
                 if !scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                     continue;
@@ -1705,6 +1777,9 @@ async fn has_live_subscribers(state: &AppState) -> bool {
 /// always gets the active cadence, even on a hidden page. Every drain
 /// entrypoint reads it through this one helper, so there is a single
 /// definition of "pending" for the gate to honor.
+///
+/// Takes the `AppState` read lock, so callers check the free synchronous
+/// refusals ([`SyncScheduler::blocked`]) before reaching for it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn pending_local_work(state: &AppState) -> usize {
     state.read().await.sync_queue.dirty_count()
@@ -1785,14 +1860,27 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         // Quiet window: a burst of requests collapses into one drain.
         let _ = crate::sleep(web_time::Duration::from_millis(SYNC_DEBOUNCE_MS as u64)).await;
 
+        // The free half of the gate first. This runs for EVERY request the SW
+        // serves, static assets included, and on a page boot most tickets are
+        // superseded — paying a `clients.matchAll()` round-trip and an
+        // `AppState` read lock (which queues behind any pending writer, landing
+        // exactly in the window the `loading` guard exists to keep clear) to
+        // discover that is work whose result is thrown away. Nothing awaited
+        // below can turn a refusal here into a drain: `blocked` is a refusal on
+        // its own, and a superseded ticket only becomes drainable via the cap,
+        // which the ticket that superseded it will hit in its own turn.
+        let now = js_sys::Date::now();
+        if scheduler.blocked(now) || scheduler.superseded(ticket, now) {
+            return Ok(JsValue::UNDEFINED);
+        }
         scheduler.set_visible(any_client_visible().await);
         if !scheduler.should_drain(
             ticket,
             js_sys::Date::now(),
             pending_local_work(&state).await,
         ) {
-            // A newer request superseded us (and the max-wait cap hasn't
-            // elapsed), or a drain is already running.
+            // The quiet interval hasn't elapsed, or the ticket was superseded
+            // (or a drain started) while the checks above were awaiting.
             return Ok(JsValue::UNDEFINED);
         }
         // No upstream while offline: skip the network sweep, but stamp
