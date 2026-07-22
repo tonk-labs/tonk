@@ -10,7 +10,8 @@ use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
 use tonk_worker_api::AccountStatus;
 
-const DEFAULT_ACCOUNT_SERVICE: &str = "https://accounts.tonk.xyz";
+const PROD: &str = "https://accounts.tonk.xyz";
+const STAGING: &str = "https://accounts-staging.tonk.xyz";
 const STYLE_ID: &str = "tonk-account-styles";
 const HANDOFF: &str = "__tonkCliHandoff";
 
@@ -105,10 +106,38 @@ fn ensure_stylesheet() {
     }
 }
 
-fn service(host: &HtmlElement) -> String {
-    host.get_attribute("service")
+/// The account service for a page host, or `None` if account ceremonies
+/// must not run there.
+///
+/// Refuse-by-default, not production-by-default. Ceremonies run only where
+/// the host is the pinned apex or is its own relying party by design (see
+/// `tonk_identity::passkey`), so that one user has exactly one root key per
+/// environment. Widening `_` re-opens that: `hub.tonk.xyz` serves the same
+/// production build but is a different relying party, so a ceremony there
+/// would write a second, disjoint identity into the production registry.
+fn default_service(host: &str) -> Option<&'static str> {
+    match host {
+        "tonk.spot" => Some(PROD),
+        "staging.tonk.xyz" => Some(STAGING),
+        _ => None,
+    }
+}
+
+fn service(host: &HtmlElement) -> Result<String, String> {
+    if let Some(attribute) = host
+        .get_attribute("service")
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_ACCOUNT_SERVICE.to_string())
+    {
+        return Ok(attribute);
+    }
+    let hostname = window()
+        .and_then(|window| window.location().hostname().ok())
+        .ok_or_else(|| "window is unavailable".to_string())?;
+    default_service(&hostname)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!("Accounts are not available on {hostname}. Go to https://tonk.spot/account.")
+        })
 }
 
 fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
@@ -200,6 +229,10 @@ fn show_handoff_success(host: &HtmlElement) {
 }
 
 fn load_status(host: HtmlElement) {
+    if let Err(error) = service(&host) {
+        set_mode(&host, "blocked");
+        return show_error(&host, error);
+    }
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
         .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
@@ -247,9 +280,16 @@ fn load_handoff(host: HtmlElement) {
             .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
     }
 
+    let service_url = match service(&host) {
+        Ok(service_url) => service_url,
+        Err(error) => {
+            set_mode(&host, "handoff");
+            return show_error(&host, error);
+        }
+    };
     set_busy(&host, true, "Checking the command-line request…");
     spawn_local(async move {
-        match crate::api::resolve_account_link(&service(&host), &secret).await {
+        match crate::api::resolve_account_link(&service_url, &secret).await {
             Ok(link) => {
                 let handoff = HandoffInput {
                     token_hash: link.token_hash,
@@ -309,7 +349,7 @@ async fn complete_remote(
     path: &str,
     ceremony: CeremonyOutput,
 ) -> Result<(), String> {
-    crate::api::submit_account_ceremony(&service(host), path, &ceremony.invocation_hex)
+    crate::api::submit_account_ceremony(&service(host)?, path, &ceremony.invocation_hex)
         .await
         .map_err(|error| error.to_string())?;
     if let Err(error) = persist(&ceremony).await {
@@ -368,9 +408,13 @@ fn bind(host: &HtmlElement) {
             Ok(value) => value,
             Err(error) => return show_error(&host, error),
         };
+        let service_url = match service(&host) {
+            Ok(service_url) => service_url,
+            Err(error) => return show_error(&host, error),
+        };
         set_busy(&host, true, "Sending verification code…");
         spawn_local(async move {
-            match crate::api::request_account_code(&service(&host), &email).await {
+            match crate::api::request_account_code(&service_url, &email).await {
                 Ok(()) => {
                     set_busy(&host, false, "");
                     if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
@@ -482,7 +526,7 @@ fn bind(host: &HtmlElement) {
                 let ceremony = identity_call("completeLink", &handoff).await?;
                 set_busy(&host, true, "Linking the command-line profile…");
                 crate::api::submit_account_ceremony(
-                    &service(&host),
+                    &service(&host)?,
                     "/links/complete",
                     &ceremony.invocation_hex,
                 )
@@ -582,5 +626,39 @@ mod tests {
                 .is_none(),
             "email and verification fields should be on separate screens"
         );
+    }
+
+    #[dialog_common::test]
+    fn it_maps_each_environment_host_to_its_own_service() {
+        assert_eq!(default_service("tonk.spot"), Some(PROD));
+        assert_eq!(default_service("staging.tonk.xyz"), Some(STAGING));
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_ceremonies_on_unmapped_hosts() {
+        // Off-apex, so it is its own relying party: a ceremony here would
+        // derive a different root key and write a second identity for the
+        // same person into the production registry.
+        assert_eq!(default_service("hub.tonk.xyz"), None);
+        // Inside the apex but not the apex origin, so also its own RP.
+        assert_eq!(default_service("staging.tonk.spot"), None);
+        assert_eq!(default_service("www.tonk.spot"), None);
+        assert_eq!(default_service("random123.tonk.spot"), None);
+        assert_eq!(default_service("localhost"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_prefers_an_explicit_service_attribute_over_the_host() {
+        let host = host();
+        host.set_attribute("service", "http://127.0.0.1:8787")
+            .unwrap();
+        assert_eq!(service(&host).unwrap(), "http://127.0.0.1:8787");
+    }
+
+    #[dialog_common::test]
+    fn it_errors_when_the_host_has_no_mapping_and_no_attribute() {
+        // wasm tests run on a localhost origin, which is unmapped.
+        let host = host();
+        assert!(service(&host).is_err());
     }
 }
