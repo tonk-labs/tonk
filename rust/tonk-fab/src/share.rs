@@ -55,6 +55,13 @@
 //! so a new clipboard write opens there and the attach-then-mint the worker
 //! runs settles it — one click, from refusal to link on the clipboard.
 //!
+//! The other two classes (`unshareable-remote`, and `attach-failed` — an
+//! attach the user already approved that failed anyway) have no action the
+//! dialog could offer, but `detail` still has to reach the user: the button's
+//! "failed" label is a static string. `handle_blocked` re-opens the same
+//! dialog for these with the confirm button disabled, rather than routing the
+//! sentence to a clipboard-rejection message nothing ever reads.
+//!
 //! Anything else that goes wrong still has no explicit error signal (the
 //! deleted `<tonk-display>`'s error slot is gone with it): a subscription
 //! simply never yields a new link. [`arm_timeout`] is the backstop there. It
@@ -135,6 +142,11 @@ const BLOCKED_TAG: &str = "tonk-share-blocked";
 /// and its reason slot. Authored in `markup.rs`; every lookup here is
 /// `Option`-guarded, so the element still shares (and still refuses) in a host
 /// that renders no dialog at all.
+///
+/// The dialog is not only for `not-synced`: [`handle_blocked`] re-opens it on
+/// every refusal so `detail` always lands somewhere visible, disabling the
+/// confirm button (see `open_enable_sync_dialog`) on the two classes it
+/// cannot repair.
 const DIALOG_ID: &str = "fab-enable-sync";
 const DIALOG_CONFIRM: &str = "[data-enable-sync-confirm]";
 const DIALOG_DETAIL: &str = "[data-enable-sync-detail]";
@@ -448,10 +460,19 @@ impl TonkShare {
             let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
                 return;
             };
-            if target.closest(DIALOG_CONFIRM).ok().flatten().is_none() {
+            let Some(confirm) = target.closest(DIALOG_CONFIRM).ok().flatten() else {
+                return;
+            };
+            event.prevent_default();
+            // `open_enable_sync_dialog` disables this button on an
+            // unrepairable refusal (there is no attach to retry) but leaves
+            // the dialog itself open so the detail sentence stays visible.
+            // Nothing native backs "disabled" on a custom-element button, so
+            // this has to be checked explicitly rather than relied on to
+            // block the event.
+            if confirm.has_attribute("disabled") {
                 return;
             }
-            event.prevent_default();
             // A second confirm while the first attach is still running would
             // orphan the clipboard write this one opened — the browser would
             // hold it open forever, with nothing left able to settle it.
@@ -758,6 +779,14 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         // spinning until the timeout. Through `fail_copy`, not bare `settle`,
         // because there may be no write open to consume.
         fail_copy(host, state, &blocked.detail);
+        // The button's static "failed" label carries no reason — it's the
+        // same static string every time. The detail sentence has to reach the
+        // user somewhere, so re-open the dialog to show it. There is no
+        // action it could offer (the remote is unshareable, or the attach the
+        // user just approved already failed), so the confirm button is
+        // disabled rather than absent — visible, but not a second attempt at
+        // something that cannot help.
+        open_enable_sync_dialog(&blocked.detail, false);
         return;
     }
 
@@ -766,7 +795,7 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
     // control would quietly flip back to "share" underneath the dialog.
     abandon(state, &blocked.detail);
     set_state(host, ShareState::Blocked);
-    open_enable_sync_dialog(&blocked.detail);
+    open_enable_sync_dialog(&blocked.detail, true);
 }
 
 /// Drop a pending clipboard write without moving the control's state. The
@@ -786,12 +815,29 @@ fn abandon(state: &Rc<RefCell<ShareStateCell>>, reason: &str) {
 /// Show the enable-sync prompt, filling in the reason. A no-op when the
 /// dialog is absent, so the element still works in a host that does not
 /// render it.
-fn open_enable_sync_dialog(detail: &str) {
+///
+/// `offer_confirm` distinguishes the one refusal the dialog can act on
+/// (`not-synced`) from the two it can only report (`unshareable-remote`,
+/// `attach-failed`): `false` disables the confirm button — there is no
+/// attach to retry — while leaving the dialog open so `detail` stays
+/// visible. The button is reused across refusals rather than replaced, so a
+/// later repairable refusal must re-enable it: `true` clears both attributes
+/// back off.
+fn open_enable_sync_dialog(detail: &str, offer_confirm: bool) {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
     if let Ok(Some(slot)) = dialog.query_selector(DIALOG_DETAIL) {
         slot.set_text_content(Some(detail));
+    }
+    if let Ok(Some(confirm)) = dialog.query_selector(DIALOG_CONFIRM) {
+        if offer_confirm {
+            let _ = confirm.remove_attribute("hidden");
+            let _ = confirm.remove_attribute("disabled");
+        } else {
+            let _ = confirm.set_attribute("hidden", "");
+            let _ = confirm.set_attribute("disabled", "");
+        }
     }
     let _ = Reflect::set(&dialog, &JsValue::from_str("open"), &JsValue::TRUE);
 }
@@ -976,6 +1022,44 @@ mod tests {
         let rows = js_sys::Array::new();
         rows.push(&blocked_row(code, time));
         rows.into()
+    }
+
+    /// An `update` delta payload carrying one refusal — the shape production
+    /// actually delivers a refusal in (see `share.rs`'s module doc: a
+    /// refusal always arrives after the subscription is already open).
+    fn blocked_update_payload(code: &str, time: f64) -> JsValue {
+        let asserted = js_sys::Array::new();
+        asserted.push(&blocked_row(code, time));
+        let payload = Object::new();
+        Reflect::set(&payload, &"asserted".into(), &asserted).expect("set asserted");
+        payload.into()
+    }
+
+    /// A stand-in for `markup.rs`'s `#fab-enable-sync` dialog: just enough
+    /// structure (the id, the detail slot, the confirm button) for
+    /// `open_enable_sync_dialog`'s lookups to find something. Attached to
+    /// `document.body` — `enable_sync_dialog` reads through
+    /// `document.get_element_by_id`, not a passed-in root.
+    fn dialog_stub() -> (Element, Element, Element) {
+        let document = window().expect("window").document().expect("document");
+        let dialog = document.create_element("div").expect("create dialog");
+        dialog.set_id(DIALOG_ID);
+        let detail = document.create_element("p").expect("create detail");
+        detail
+            .set_attribute("data-enable-sync-detail", "")
+            .expect("mark detail");
+        let confirm = document.create_element("button").expect("create confirm");
+        confirm
+            .set_attribute("data-enable-sync-confirm", "")
+            .expect("mark confirm");
+        dialog.append_child(&detail).expect("attach detail");
+        dialog.append_child(&confirm).expect("attach confirm");
+        document
+            .body()
+            .expect("body")
+            .append_child(&dialog)
+            .expect("attach dialog");
+        (dialog, detail, confirm)
     }
 
     #[wasm_bindgen_test]
@@ -1226,7 +1310,9 @@ mod tests {
         );
     }
 
-    /// An unrepairable refusal fails outright rather than offering a prompt.
+    /// An unrepairable refusal fails outright rather than offering a working
+    /// prompt — the dialog it also opens (see the pair of tests below) has
+    /// nothing the user can click through.
     #[dialog_common::test]
     fn it_fails_without_prompting_on_an_unshareable_remote() {
         let host = fresh_host();
@@ -1275,6 +1361,137 @@ mod tests {
             "the button must not spin on after the repair itself failed",
         );
         assert!(state.borrow().pending.is_none());
+    }
+
+    /// The whole point of `xyz.tonk.share/detail`: on a refusal the prompt
+    /// cannot repair, the sentence still has to land somewhere a user can
+    /// read it — the button's "failed" label is a static string, not this
+    /// text. `handle_blocked` re-opens the enable-sync dialog to show it, and
+    /// must leave the confirm button unusable: there is no attach to retry.
+    #[dialog_common::test]
+    fn it_shows_the_detail_and_disables_confirm_on_an_unrepairable_refusal() {
+        let (dialog, detail, confirm) = dialog_stub();
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        state.borrow_mut().pending_time = Some(7.0);
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+
+        handle_blocked(
+            &host,
+            &state,
+            Blocked {
+                code: "attach-failed".to_owned(),
+                detail: "Could not turn on sync: offline".to_owned(),
+                time: 7.0,
+            },
+        );
+
+        assert_eq!(
+            detail.text_content().as_deref(),
+            Some("Could not turn on sync: offline"),
+            "the sentence must reach the DOM, not just the rejected clipboard promise",
+        );
+        assert!(
+            confirm.has_attribute("disabled"),
+            "there is no recovery action to offer",
+        );
+
+        dialog.remove();
+    }
+
+    /// The same, for the other unrepairable class — an invite that could
+    /// never have worked, distinct from an attach that was tried and failed.
+    #[dialog_common::test]
+    fn it_shows_the_detail_on_an_unshareable_remote_too() {
+        let (dialog, detail, confirm) = dialog_stub();
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        state.borrow_mut().pending_time = Some(42.0);
+        set_state(&host, ShareState::Copying);
+
+        handle_blocked(
+            &host,
+            &state,
+            Blocked {
+                code: "unshareable-remote".to_owned(),
+                detail: "This spot's sync server can't be shared.".to_owned(),
+                time: 42.0,
+            },
+        );
+
+        assert_eq!(
+            detail.text_content().as_deref(),
+            Some("This spot's sync server can't be shared.")
+        );
+        assert!(confirm.has_attribute("disabled"));
+
+        dialog.remove();
+    }
+
+    /// A confirm button left disabled by an earlier unrepairable refusal must
+    /// not accept a click if one somehow lands on it anyway — the guard in
+    /// `install_confirm_listener` is the actual backstop, since nothing native
+    /// makes a custom-element button's `disabled` attribute block dispatch.
+    #[dialog_common::test]
+    fn it_ignores_a_click_on_a_disabled_confirm_button() {
+        let (dialog, _detail, confirm) = dialog_stub();
+        let host = fresh_host();
+        host.set_attribute("space", "did:key:z6Mk").expect("space");
+        confirm
+            .set_attribute("disabled", "")
+            .expect("disable confirm");
+
+        let mut element = TonkShare::default();
+        let state = Rc::clone(&element.state);
+        element.install_confirm_listener(&host);
+
+        confirm.unchecked_ref::<HtmlElement>().click();
+
+        assert!(
+            state.borrow().pending_time.is_none(),
+            "a disabled confirm button must not start a fresh attach",
+        );
+        assert_eq!(read_state(&host), ShareState::Idle);
+
+        element.disconnected_callback(&host);
+        dialog.remove();
+    }
+
+    /// A repairable refusal must leave (or restore) a USABLE confirm button —
+    /// including after an earlier unrepairable refusal disabled it, since the
+    /// same static dialog is reused across every refusal this element sees.
+    #[dialog_common::test]
+    fn it_re_enables_confirm_on_a_repairable_refusal_after_an_earlier_disable() {
+        let (dialog, detail, confirm) = dialog_stub();
+        confirm.set_attribute("disabled", "").expect("pre-disable");
+        confirm.set_attribute("hidden", "").expect("pre-hide");
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        state.borrow_mut().pending_time = Some(1.0);
+        set_state(&host, ShareState::Copying);
+
+        handle_blocked(
+            &host,
+            &state,
+            Blocked {
+                code: "not-synced".to_owned(),
+                detail: "This spot only exists on this device.".to_owned(),
+                time: 1.0,
+            },
+        );
+
+        assert_eq!(
+            detail.text_content().as_deref(),
+            Some("This spot only exists on this device.")
+        );
+        assert!(
+            !confirm.has_attribute("disabled"),
+            "a repairable refusal must offer a working confirm button",
+        );
+        assert!(!confirm.has_attribute("hidden"));
+
+        dialog.remove();
     }
 
     /// A copy nothing ever answered gives the button back, whether or not a
@@ -1418,6 +1635,29 @@ mod tests {
         };
 
         behaviour.render_reset(&host, &blocked_reset_payload("not-synced", 42.0));
+
+        assert_eq!(read_state(&host), ShareState::Blocked);
+    }
+
+    /// The path production actually takes: a refusal always arrives after the
+    /// blocked subscription is already open (the click that provokes it can
+    /// only happen once the button exists), so it lands as an `update` delta,
+    /// never a `reset` snapshot. `render_reset` being correct proves nothing
+    /// about `render_update`; the link subscription's delta reader has its own
+    /// covering test (`it_reads_a_reset_snapshot_and_an_update_delta`) for the
+    /// same reason.
+    #[dialog_common::test]
+    fn it_acts_on_a_refusal_delivered_as_an_update_delta() {
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        state.borrow_mut().pending_time = Some(42.0);
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+        let behaviour = ShareBlockedBehaviour {
+            state: Rc::clone(&state),
+        };
+
+        behaviour.render_update(&host, &blocked_update_payload("not-synced", 42.0));
 
         assert_eq!(read_state(&host), ShareState::Blocked);
     }
