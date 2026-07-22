@@ -18,6 +18,20 @@
 - No emojis in code, comments, or commit messages.
 - Commit messages: Conventional Commits, `type(scope): subject`, imperative, lowercase, no trailing period.
 - Never reference "Phase N" or "per the spec" in code or comments. Code stands on its own.
+- Wasm tests: `nix develop -c test:web:debug` is BROKEN on this machine (exit 134 —
+  the macOS 27 libffi break kills every crane derivation). Use the crane-free
+  substitute instead: `nix develop -c ./.superpowers/sdd/wasm-test.sh -p CRATE`,
+  which is `cargo test --target wasm32-unknown-unknown` with a nix chromedriver.
+- `tonk-worker` test glue: `test_state()` returns a `TonkState`, which is NOT
+  `Clone` and has no `.read()`. The value with `.read()` is the `AppState` that
+  `api_router_with_state` returns as its second tuple element. Always write
+  `let (app, state, _lsp) = api_router_with_state(test_state().await);`.
+- Attribute-name assertions use the derive-generated inherent `the()`:
+  `Struct::the().to_string()`. There is no `Attribute::attribute()` in the pinned
+  dialog-query.
+- One test in the `tonk-worker` wasm suite fails before this branch and is not
+  yours to fix: `router::profile::tests::it_reports_a_display_name_on_the_profile`.
+  So is the `constant SHEETS is never used` warning at repository.rs:3920.
 - The lint gate is `nix develop -c cargo clippy --workspace --all-targets --all-features` plus `cargo fmt --check`. `--all-features` compiles integration tests, so a per-crate clippy can pass while the gate fails.
 - User-facing copy, exact:
   - dialog title: `Turn on sync?`
@@ -206,8 +220,7 @@ Add to the existing `mod tests` at the bottom of `rust/tonk-worker/src/router/cr
 async fn it_refuses_a_repository_with_no_upstream() {
     use crate::router::create_invite::{RemoteRefusal, RemoteRequirement, resolve_remote_url};
 
-    let state = test_state().await;
-    let (app, _state, _lsp) = api_router_with_state(state.clone());
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
     let key = put_repo(&app, "test-no-upstream").await;
 
     let tonk = state.read().await;
@@ -453,8 +466,7 @@ Add to `rust/tonk-worker/src/router/repository.rs`'s existing wasm test mod:
 /// refusal on the overlay instead.
 #[dialog_common::test]
 async fn it_refuses_to_mint_without_a_remote() {
-    let state = test_state().await;
-    let (app, _state, _lsp) = api_router_with_state(state.clone());
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
     let key = put_repo(&app, "test-refuse-mint").await;
 
     run_invite_with_time(&state, &key, 1234.0).await;
@@ -950,8 +962,7 @@ In `repository.rs`'s wasm test mod:
 /// attribute and so mints a new spot instead; this guards against that.
 #[dialog_common::test]
 async fn it_attaches_the_remote_to_the_existing_spot() {
-    let state = test_state().await;
-    let (app, _state, _lsp) = api_router_with_state(state.clone());
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
     let (key, subject) = put_repo_info(&app, "test-enable-sync").await;
     let before = existing_space_labels(&state).await.len();
 
@@ -971,8 +982,7 @@ async fn it_attaches_the_remote_to_the_existing_spot() {
 /// Without the `share` marker the handler attaches and stops.
 #[dialog_common::test]
 async fn it_mints_only_when_asked_to_share() {
-    let state = test_state().await;
-    let (app, _state, _lsp) = api_router_with_state(state.clone());
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
     let (key, subject) = put_repo_info(&app, "test-enable-sync-no-share").await;
 
     dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
@@ -986,8 +996,7 @@ async fn it_mints_only_when_asked_to_share() {
 /// With the marker, the attach is followed by a mint — the single-click path.
 #[dialog_common::test]
 async fn it_mints_after_attaching_when_asked_to_share() {
-    let state = test_state().await;
-    let (app, _state, _lsp) = api_router_with_state(state.clone());
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
     let (key, subject) = put_repo_info(&app, "test-enable-sync-share").await;
 
     dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", true, 1.0).await;
