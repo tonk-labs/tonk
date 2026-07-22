@@ -114,6 +114,72 @@ mod when_managing_remotes {
     }
 }
 
+mod when_resolving_a_remote {
+    use anyhow::Result;
+    use tonk_cli::remote::{self, RemoteError};
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+    const OTHER: &str = "https://other.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_resolves_nothing_when_no_remote_is_registered() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        assert!(remote::resolve(&test.site, None).await?.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_the_only_registered_remote() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        let resolved = remote::resolve(&test.site, None).await?;
+        assert_eq!(resolved.expect("a lone remote resolves").endpoint, ENDPOINT);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_the_named_remote_when_several_exist() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+
+        let resolved = remote::resolve(&test.site, Some("backup")).await?;
+        assert_eq!(resolved.expect("named remote resolves").endpoint, OTHER);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_guess_between_several_remotes() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+
+        match remote::resolve(&test.site, None).await {
+            Err(RemoteError::AmbiguousRemote(names)) => {
+                assert!(names.contains("origin"), "names both: {names}");
+                assert!(names.contains("backup"), "names both: {names}");
+            }
+            other => panic!("expected AmbiguousRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_on_a_name_that_is_not_registered() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        match remote::resolve(&test.site, Some("missing")).await {
+            Err(RemoteError::UnknownRemote(name)) => assert_eq!(name, "missing"),
+            other => panic!("expected UnknownRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+}
+
 mod when_shortening_an_invite {
     #[cfg(feature = "integration-tests")]
     use anyhow::Result;

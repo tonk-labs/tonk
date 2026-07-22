@@ -80,6 +80,10 @@ pub enum RemoteError {
     /// meta branch.
     #[error("remote '{0}' is not registered; add it with `tonk remote add` first")]
     UnknownRemote(String),
+    /// Several remotes are registered and the caller named none, so
+    /// there is no unambiguous choice to make on their behalf.
+    #[error("several remotes are registered ({0}); name one with `--remote <NAME>`")]
+    AmbiguousRemote(String),
     /// Anything else — dialog I/O, decoding, query failure.
     #[error("{0}")]
     Io(String),
@@ -292,6 +296,39 @@ pub async fn find(site: &TonkSite, name: &str) -> Result<Option<RemoteRecord>, R
         .map(|r| (r.name.clone(), r))
         .collect();
     Ok(remotes.remove(name))
+}
+
+/// Pick the remote a command should act on.
+///
+/// `explicit` names one outright. Otherwise this follows `tonk push`'s
+/// implicit-when-unambiguous rule: a lone registered remote is the
+/// obvious choice, no remotes at all means there is nothing to act on
+/// (`None`, not an error — a local-only repo is a legitimate thing to
+/// invite someone to), and several is a question only the caller can
+/// answer.
+pub async fn resolve(
+    site: &TonkSite,
+    explicit: Option<&str>,
+) -> Result<Option<RemoteRecord>, RemoteError> {
+    if let Some(name) = explicit {
+        let record = find(site, name)
+            .await?
+            .ok_or_else(|| RemoteError::UnknownRemote(name.to_owned()))?;
+        return Ok(Some(record));
+    }
+
+    let mut remotes = list(site).await?;
+    match remotes.len() {
+        0 => Ok(None),
+        1 => Ok(Some(remotes.remove(0))),
+        _ => Err(RemoteError::AmbiguousRemote(
+            remotes
+                .iter()
+                .map(|record| record.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------- //
