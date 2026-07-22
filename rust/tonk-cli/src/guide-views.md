@@ -124,10 +124,34 @@ the referenced concept, and `view` the view concept you want
 (`tonk:view/label` for just a name, `tonk:view` for the full detail
 card).
 
+## Built-in view elements
+
+Ready-made custom elements a view can drop in, no script needed. Each
+has a full page: **`tonk guide views <element>`**.
+
+| Element | What it is | Bind by |
+|---------|-----------|---------|
+| `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. | `model` + `entity` attrs |
+| `<tonk-prose>` | Typora-style markdown editor. | text content; `onchange` |
+| `<tonk-code>` | CodeMirror code editor with per-language highlighting. | `value`/`language` attrs; `onchange` |
+| `<tonk-table>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. | text (CSV) or `subject` + `<tonk-display>` rows |
+
+```
+tonk guide views tonk-table     # full docs for one element
+tonk guide views tonk-prose
+```
+
+The editors persist the same way: bind the store's value in (as element
+text or an attribute), fire a command on the element's `change` event
+(read `dom.event.detail/…`), and a rule writes it back — the loop in
+`tonk guide events`. `<tonk-table>` also offers a store-native *claims*
+mode (one claim per cell). Your own components (below) are peers of
+these.
+
 ## Web components
 
 Views can freely use any custom element already registered in the
-rendering realm — the built-in `<tonk-*>` elements and the Web
+rendering realm — the built-in `<tonk-*>` elements above and the Web
 Awesome `<wa-*>` set (`<wa-icon>`, `<wa-carousel>`, …) — with no
 script. A `<script>` written directly in a `display:` template never
 executes (templates render through inert fragments), so behaviour the
