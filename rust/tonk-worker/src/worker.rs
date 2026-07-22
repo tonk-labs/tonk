@@ -429,6 +429,12 @@ mod route_for_tests {
     // The scheduler's clock is passed in (not `Date::now()`), so these drive it
     // with fixed timestamps — no real time, fully deterministic.
 
+    /// No repo holds un-pushed local commits: the ordinary reading, and the
+    /// one under which the quiet interval applies.
+    const CLEAN: usize = 0;
+    /// One repo holds un-pushed local commits: the quiet-interval bypass.
+    const DIRTY: usize = 1;
+
     #[dialog_common::test]
     fn it_coalesces_a_burst_into_the_last_ticket() {
         let s = SyncScheduler::default();
@@ -439,14 +445,14 @@ mod route_for_tests {
         let t3 = s.next(0.0);
         let wake = SYNC_DEBOUNCE_MS as f64;
         assert!(
-            !s.should_drain(t1, wake, false),
+            !s.should_drain(t1, wake, CLEAN),
             "superseded ticket must not drain"
         );
         assert!(
-            !s.should_drain(t2, wake, false),
+            !s.should_drain(t2, wake, CLEAN),
             "superseded ticket must not drain"
         );
-        assert!(s.should_drain(t3, wake, false), "latest ticket drains");
+        assert!(s.should_drain(t3, wake, CLEAN), "latest ticket drains");
     }
 
     #[dialog_common::test]
@@ -463,12 +469,12 @@ mod route_for_tests {
         // `first` woke long ago and is not the latest — but the burst began at
         // t=0 and we're now past the cap, so it drains.
         assert!(
-            s.should_drain(first, SYNC_MAX_WAIT_MS as f64, false),
+            s.should_drain(first, SYNC_MAX_WAIT_MS as f64, CLEAN),
             "max-wait cap must force a drain under continuous traffic",
         );
         // Just before the cap, the same non-latest ticket must NOT drain.
         assert!(
-            !s.should_drain(first, SYNC_MAX_WAIT_MS as f64 - 1.0, false),
+            !s.should_drain(first, SYNC_MAX_WAIT_MS as f64 - 1.0, CLEAN),
             "before the cap, a superseded ticket still defers",
         );
     }
@@ -478,7 +484,7 @@ mod route_for_tests {
         let s = SyncScheduler::default();
         let t1 = s.next(0.0);
         // Drain at the trailing edge, which clears the burst clock.
-        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false));
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, CLEAN));
         s.begin_drain();
         s.end_drain(SYNC_DEBOUNCE_MS as f64);
         // A fresh burst after the drain starts a NEW cap clock at t=10_000. Use a
@@ -489,11 +495,11 @@ mod route_for_tests {
         let t2 = s.next(10_000.0);
         let _t3 = s.next(10_050.0);
         assert!(
-            !s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64 - 1.0, false),
+            !s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64 - 1.0, CLEAN),
             "cap must measure from the post-drain burst start, not wall-clock zero",
         );
         assert!(
-            s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64, false),
+            s.should_drain(t2, 10_000.0 + SYNC_MAX_WAIT_MS as f64, CLEAN),
             "once the new burst passes the cap, a superseded ticket drains",
         );
     }
@@ -505,7 +511,7 @@ mod route_for_tests {
         s.begin_drain();
         // While a drain is in flight, even a past-the-cap ticket must wait.
         assert!(
-            !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0, false),
+            !s.should_drain(t1, SYNC_MAX_WAIT_MS as f64 * 10.0, CLEAN),
             "in_flight guard must block a second concurrent drain",
         );
         s.end_drain(SYNC_MAX_WAIT_MS as f64 * 10.0);
@@ -519,7 +525,7 @@ mod route_for_tests {
         // ticket at its debounce edge must NOT drain — sync yields the thread.
         let _guard = s.enter_loading(0.0);
         assert!(
-            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false),
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, CLEAN),
             "an in-flight data-plane request defers the drain",
         );
     }
@@ -530,11 +536,11 @@ mod route_for_tests {
         let t1 = s.next(0.0);
         {
             let _guard = s.enter_loading(0.0);
-            assert!(!s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false));
+            assert!(!s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, CLEAN));
         }
         // Guard dropped — the request completed, so the drain proceeds.
         assert!(
-            s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false),
+            s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, CLEAN),
             "the drain runs once the in-flight request completes",
         );
     }
@@ -567,10 +573,10 @@ mod route_for_tests {
         let t = s.next(0.0);
         s.stop();
         assert!(
-            !s.may_drain(0.0, false),
+            !s.may_drain(0.0, CLEAN),
             "a stopped worker starts no sync work"
         );
-        assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64, false));
+        assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64, CLEAN));
     }
 
     /// ...but `stop()` must not be a ONE-WAY latch. `updatefound` fires on the
@@ -582,17 +588,17 @@ mod route_for_tests {
     fn it_resumes_when_it_turns_out_to_be_the_serving_worker() {
         let s = SyncScheduler::default();
         s.stop();
-        assert!(!s.may_drain(0.0, false));
+        assert!(!s.may_drain(0.0, CLEAN));
 
         // Activating: we are the worker now serving, so we are not retiring.
         s.resume();
 
         assert!(
-            s.may_drain(0.0, false),
+            s.may_drain(0.0, CLEAN),
             "an activated worker must sync, even if it previously stopped itself",
         );
         let t = s.next(0.0);
-        assert!(s.should_drain(t, SYNC_DEBOUNCE_MS as f64, false));
+        assert!(s.should_drain(t, SYNC_DEBOUNCE_MS as f64, CLEAN));
     }
 
     #[dialog_common::test]
@@ -603,11 +609,11 @@ mod route_for_tests {
         // forever: past SYNC_LOAD_DEFER_MS from its start, the drain proceeds.
         let _guard = s.enter_loading(0.0);
         assert!(
-            !s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64 - 1.0, false),
+            !s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64 - 1.0, CLEAN),
             "within the cap, an in-flight request still defers",
         );
         assert!(
-            s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64, false),
+            s.should_drain(t1, SYNC_LOAD_DEFER_MS as f64, CLEAN),
             "past the cap, a stuck request no longer defers the drain",
         );
     }
@@ -622,11 +628,11 @@ mod route_for_tests {
         // One of two concurrent requests finished; the other still defers
         // (e.g. a second tab still booting).
         assert!(
-            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false),
+            !s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, CLEAN),
             "a drain waits while any data-plane request is still in flight",
         );
         drop(g2);
-        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, false));
+        assert!(s.should_drain(t1, SYNC_DEBOUNCE_MS as f64, CLEAN));
     }
 
     #[dialog_common::test]
@@ -637,10 +643,10 @@ mod route_for_tests {
         s.end_drain(0.0);
         let t = s.next(10_000.0);
         assert!(
-            !s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 - 1.0, false),
+            !s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 - 1.0, CLEAN),
             "hidden pages must not drain at the active cadence"
         );
-        assert!(s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 + 1.0, false));
+        assert!(s.should_drain(t, SYNC_HIDDEN_INTERVAL_MS as f64 + 1.0, CLEAN));
     }
 
     /// The user edits, then switches tabs. Their un-pushed commit must not
@@ -655,16 +661,54 @@ mod route_for_tests {
         let t = s.next(1_000.0);
 
         assert!(
-            !s.should_drain(t, SYNC_COOLDOWN_MS as f64 + 1.0, false),
+            !s.should_drain(t, SYNC_COOLDOWN_MS as f64 + 1.0, CLEAN),
             "with nothing to push, a hidden page still holds to the hidden interval"
         );
         assert!(
-            s.should_drain(t, SYNC_COOLDOWN_MS as f64 + 1.0, true),
+            s.should_drain(t, SYNC_COOLDOWN_MS as f64 + 1.0, DIRTY),
             "a non-empty dirty set bypasses the hidden interval"
         );
         assert!(
-            !s.should_drain(t, SYNC_COOLDOWN_MS as f64 - 1.0, true),
+            !s.should_drain(t, SYNC_COOLDOWN_MS as f64 - 1.0, DIRTY),
             "the bypass drops to the cooldown floor, it does not remove the floor"
+        );
+    }
+
+    /// A bypassed hold is otherwise invisible: the bypass drops the effective
+    /// quiet interval to the cooldown floor, so the hold-off line can't fire
+    /// and "the hidden path engaged and was overridden" reads exactly like
+    /// "the hidden path never engaged". The bypass line is what separates
+    /// them, and it shares the once-per-hold token so it can't flood.
+    #[dialog_common::test]
+    fn it_logs_a_bypassed_quiet_interval_once_per_hold() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.begin_drain();
+        s.end_drain(0.0);
+
+        // Hidden, dirty, past the cooldown but far inside the hidden interval:
+        // the bypass is the only reason this is allowed, so it logs.
+        assert!(s.may_drain(SYNC_COOLDOWN_MS as f64 + 1.0, DIRTY));
+        assert!(
+            !s.should_log_hold(),
+            "the bypass line must have spent this hold period's log token",
+        );
+    }
+
+    /// ...but a refusal the plain cooldown caused says nothing about the
+    /// quiet interval, so it must not spend the token on its way past and
+    /// silence the line that would have followed.
+    #[dialog_common::test]
+    fn it_keeps_the_hold_log_armed_through_a_cooldown_refusal() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.begin_drain();
+        s.end_drain(0.0);
+
+        assert!(!s.may_drain(SYNC_COOLDOWN_MS as f64 - 1.0, DIRTY));
+        assert!(
+            s.should_log_hold(),
+            "a cooldown refusal must leave the hold log armed",
         );
     }
 
@@ -680,7 +724,7 @@ mod route_for_tests {
         s.end_drain(0.0);
         let t = s.next(10_000.0);
         assert!(
-            !s.should_drain(t, 10_000.0, false),
+            !s.should_drain(t, 10_000.0, CLEAN),
             "a hidden page holds to the hidden interval"
         );
 
@@ -691,7 +735,7 @@ mod route_for_tests {
             "regaining visibility must clear the hidden hold"
         );
         assert!(
-            s.should_drain(t, 10_000.0, false),
+            s.should_drain(t, 10_000.0, CLEAN),
             "the same ticket now drains at the active cadence"
         );
     }
@@ -870,7 +914,7 @@ impl SyncScheduler {
     ///
     /// `dirty` is the sync queue's pending-local-work reading — see
     /// [`may_drain`](Self::may_drain).
-    fn should_drain(&self, ticket: u64, now: f64, dirty: bool) -> bool {
+    fn should_drain(&self, ticket: u64, now: f64, dirty: usize) -> bool {
         if !self.may_drain(now, dirty) {
             return false;
         }
@@ -893,13 +937,16 @@ impl SyncScheduler {
     /// actively loading, or the previous drain finished less than the quiet
     /// interval ago (see [`Self::quiet_interval`]).
     ///
-    /// `dirty` says whether the sync queue holds un-pushed local commits.
-    /// It is passed in rather than read here because the queue lives on
-    /// `AppState`, which the scheduler has no handle to — and taking it as
-    /// an argument makes the compiler force EVERY drain entrypoint to supply
-    /// it, so no path can quietly skip the bypass. It also keeps the gate a
-    /// pure function of its inputs, so the unit tests below need no app state.
-    fn may_drain(&self, now: f64, dirty: bool) -> bool {
+    /// `dirty` is how many repos hold un-pushed local commits (zero means
+    /// none — the count is what the bypass log reports). It is passed in
+    /// rather than read here because the queue lives on `AppState`, which the
+    /// scheduler has no handle to — and taking it as an argument makes the
+    /// compiler force EVERY drain entrypoint to supply it, so no path can
+    /// quietly skip the bypass. Its allow/refuse decision is a pure function
+    /// of its inputs, so the unit tests below need no app state; the only
+    /// state it records is one bit of logging bookkeeping (see
+    /// [`should_log_hold`](Self::should_log_hold)).
+    fn may_drain(&self, now: f64, dirty: usize) -> bool {
         if self.stopped.get() {
             return false;
         }
@@ -927,33 +974,53 @@ impl SyncScheduler {
         // this their last edit sits unpushed for a minute while collaborators
         // see nothing. Durable locally, so it is latency, not loss — but it
         // is a minute of it. The bypass costs nothing when idle, since the
-        // dirty set is empty then.
-        let quiet = if dirty {
+        // dirty set is empty then. Only genuinely un-pushed work counts: a
+        // repo whose last sweep failed sits in the queue's retry set, which
+        // does NOT feed this — see `SyncQueue::requeue`.
+        let full = (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval());
+        let quiet = if dirty > 0 {
             SYNC_COOLDOWN_MS as f64
         } else {
-            (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval())
+            full
         };
-        let allowed = self
-            .last_drain_end
-            .get()
-            .is_none_or(|end| now - end >= quiet);
-        // Log only refusals the QUIET INTERVAL caused — not the plain-cooldown
-        // ones, which happen constantly on an active page and would flood the
-        // console. This is the one line that makes the live check conclusive:
-        // if the hidden-tab path is a no-op (say `any_client_visible` reads
-        // visible on every browser because the `WindowClient` downcast fails),
-        // it never prints, and the only other symptom is "the request count
-        // didn't move".
+        let elapsed = |gap: f64| self.last_drain_end.get().is_none_or(|end| now - end >= gap);
+        let allowed = elapsed(quiet);
+        // Two lines, both about the QUIET INTERVAL only — never the plain
+        // cooldown, which is refused constantly on an active page and would
+        // flood the console. Together they are what makes the live check
+        // conclusive: if the hidden-tab path is a no-op (say
+        // `any_client_visible` reads visible on every browser because the
+        // `WindowClient` downcast fails) neither ever prints, and the only
+        // other symptom is "the request count didn't move". The pair also
+        // separates "the interval held a drain" from "the interval was in
+        // force but pending work overrode it" — without the second line, a
+        // bypassed hold is indistinguishable from a path that never engaged,
+        // since the bypass drops `quiet` to the cooldown floor.
         //
-        // Logged once per hold period, not once per refusal: the self-scheduled
-        // loop ticks every [`SYNC_LOOP_MS`] and every tick is refused for the
-        // whole hold, so logging each one is ~1800 lines/hour for a single
-        // hidden tab. See [`Self::should_log_hold`].
-        if !allowed && quiet > SYNC_COOLDOWN_MS as f64 && self.should_log_hold() {
-            log!(
-                "sync drain held off: quiet={quiet}ms visible={} dirty={dirty}",
-                self.visible.get()
-            );
+        // Logged once per hold period, not once per gate check: the
+        // self-scheduled loop ticks every [`SYNC_LOOP_MS`] for the whole hold,
+        // so logging each one is ~1800 lines/hour for a single hidden tab. See
+        // [`Self::should_log_hold`], which both lines share — the first of
+        // them after a drain completion wins.
+        //
+        // A refusal the plain cooldown caused is not either of them, so it
+        // must not consume the once-per-hold token on its way past: `allowed`
+        // inside the window can only mean the bypass fired, and a refusal is
+        // only the interval's doing when nothing was dirty.
+        let would_hold = full > SYNC_COOLDOWN_MS as f64 && !elapsed(full);
+        if would_hold && (allowed || dirty == 0) && self.should_log_hold() {
+            if allowed {
+                log!(
+                    "sync drain bypassing the quiet interval: quiet={full}ms \
+                     visible={} dirty={dirty} repo(s)",
+                    self.visible.get()
+                );
+            } else {
+                log!(
+                    "sync drain held off: quiet={full}ms visible={}",
+                    self.visible.get()
+                );
+            }
         }
         allowed
     }
@@ -1437,7 +1504,7 @@ impl TonkServiceWorker {
                 // fix this first: with the hidden quiet interval in place, a
                 // tab-closed sync event is refused for up to a minute after
                 // the last drain, which is exactly when this fires.
-                if !scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await) {
+                if !scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                     return Ok(JsValue::UNDEFINED);
                 }
                 scheduler.begin_drain();
@@ -1476,8 +1543,7 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else if scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await)
-            {
+            } else if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
@@ -1497,7 +1563,7 @@ impl TonkServiceWorker {
         let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
             if !offline()
-                && scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await)
+                && scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await)
             {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
@@ -1558,7 +1624,7 @@ impl TonkServiceWorker {
                 // enforces the cooldown, so a drain that outlasts this interval
                 // is not immediately followed by another.
                 scheduler.set_visible(any_client_visible().await);
-                if !scheduler.may_drain(js_sys::Date::now(), has_pending_local_work(&state).await) {
+                if !scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                     continue;
                 }
                 scheduler.begin_drain();
@@ -1633,15 +1699,15 @@ async fn has_live_subscribers(state: &AppState) -> bool {
     false
 }
 
-/// Whether the sync queue holds un-pushed local commits.
+/// How many repos hold un-pushed local commits.
 ///
 /// The bypass input to [`SyncScheduler::may_drain`]: pending local work
 /// always gets the active cadence, even on a hidden page. Every drain
 /// entrypoint reads it through this one helper, so there is a single
 /// definition of "pending" for the gate to honor.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn has_pending_local_work(state: &AppState) -> bool {
-    state.read().await.sync_queue.has_dirty()
+async fn pending_local_work(state: &AppState) -> usize {
+    state.read().await.sync_queue.dirty_count()
 }
 
 /// Whether any window client of this SW is currently visible.
@@ -1723,7 +1789,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         if !scheduler.should_drain(
             ticket,
             js_sys::Date::now(),
-            has_pending_local_work(&state).await,
+            pending_local_work(&state).await,
         ) {
             // A newer request superseded us (and the max-wait cap hasn't
             // elapsed), or a drain is already running.

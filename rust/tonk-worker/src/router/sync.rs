@@ -876,14 +876,19 @@ pub async fn sync(
     }
 }
 
-/// The set of repositories that have local commits not yet pushed.
+/// The repositories owed a sync sweep, in two sets.
 ///
 /// The service worker owns *what* needs syncing; the page only polls *when*
-/// (`POST /api/sync`). A commit enqueues its repo here (from the transact
-/// handler, where the route is known); a successful drain clears it. The pull
-/// side is not tracked — [`drain`] pulls every currently-open repository so a
-/// read-only viewer receives upstream edits without ever committing, so the
-/// dirty set is purely a push-priority hint.
+/// (`POST /api/sync`). A commit enqueues its repo in `dirty` (from the transact
+/// handler, where the route is known); a successful drain clears it. A failed
+/// sweep moves it to `retrying`. The pull side is not tracked — [`drain`] pulls
+/// every currently-open repository so a read-only viewer receives upstream
+/// edits without ever committing, so both sets are purely push-priority hints.
+///
+/// The split exists because the drain gate reads `dirty` (and only `dirty`) to
+/// decide whether to bypass its quiet interval, and "this failed, try again"
+/// must never be mistaken for "the user has un-pushed work". See
+/// [`requeue`](Self::requeue).
 ///
 /// Interior-mutable behind its own lock so enqueuing on commit doesn't contend
 /// with the outer `TonkState` lock.
@@ -891,6 +896,9 @@ pub async fn sync(
 pub struct SyncQueue {
     /// Repo name → most recent commit instant (for activity priority).
     dirty: std::sync::Mutex<HashMap<String, f64>>,
+    /// Repo name → instant its last sweep failed. Held apart from `dirty` on
+    /// purpose: see [`requeue`](Self::requeue).
+    retrying: std::sync::Mutex<HashMap<String, f64>>,
 }
 
 impl SyncQueue {
@@ -903,40 +911,62 @@ impl SyncQueue {
         }
     }
 
-    /// Whether any repo has un-pushed local commits waiting.
+    /// How many repos have un-pushed local commits waiting.
     ///
     /// Read by the drain gate: pending local work bypasses the quiet
     /// interval, so a tab the user just switched away from still pushes
     /// its last edit at the active cadence instead of sitting on it for a
-    /// minute. Cheap on the idle path: an empty dirty set never reaches here, and
-    /// a drain with nothing to push short-circuits before the network.
+    /// minute. The count (rather than a bare flag) is what the bypass log
+    /// reports. Cheap on the idle path: an empty dirty set is a lock and a
+    /// `len`, and a drain with nothing to push short-circuits before the
+    /// network.
     ///
-    /// Wasm-gated for the same reason as [`forget`](Self::forget): every
-    /// caller is service-worker scoped, so a native build never reaches it.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn has_dirty(&self) -> bool {
-        self.dirty.lock().is_ok_and(|dirty| !dirty.is_empty())
+    /// Counts `dirty` only — a repo awaiting retry is NOT pending local work
+    /// for this purpose. See [`requeue`](Self::requeue).
+    pub fn dirty_count(&self) -> usize {
+        self.dirty.lock().map(|dirty| dirty.len()).unwrap_or(0)
     }
 
-    /// The dirty repos, most-recently-active first.
-    fn drain_dirty(&self) -> Vec<String> {
-        let Ok(mut dirty) = self.dirty.lock() else {
-            return Vec::new();
-        };
-        let mut repos: Vec<(String, f64)> = dirty.drain().collect();
-        // Descending by timestamp: an active editor's repo syncs before idle
-        // background repos.
-        repos.sort_by(|a, b| b.1.total_cmp(&a.1));
-        repos.into_iter().map(|(repo, _)| repo).collect()
+    /// Every repo owed a sweep — dirty first (most-recently-active first),
+    /// then the retry set. Both are cleared: a repo that fails again is put
+    /// back by [`requeue`](Self::requeue).
+    fn drain_pending(&self) -> Vec<String> {
+        fn take(slot: &std::sync::Mutex<HashMap<String, f64>>) -> Vec<String> {
+            let Ok(mut map) = slot.lock() else {
+                return Vec::new();
+            };
+            let mut repos: Vec<(String, f64)> = map.drain().collect();
+            // Descending by timestamp: an active editor's repo syncs before
+            // idle background repos.
+            repos.sort_by(|a, b| b.1.total_cmp(&a.1));
+            repos.into_iter().map(|(repo, _)| repo).collect()
+        }
+        let mut repos = take(&self.dirty);
+        repos.extend(take(&self.retrying));
+        repos
     }
 
-    /// Re-mark `repo` dirty after a failed drain so the next pass retries it.
+    /// Queue `repo` for a retry after a failed sweep.
+    ///
+    /// Deliberately NOT `mark_dirty`. `sync_repository` returns `Err` for any
+    /// branch whose pull or push reported failure — an unreachable relay, an
+    /// expired permit, a 5xx, a non-fast-forward push — none of which mean the
+    /// repo has un-pushed local work. Folding those back into `dirty` latched
+    /// the quiet-interval bypass on permanently: one repo failing against an
+    /// erroring remote re-marked itself on every pass, so a hidden tab polled
+    /// at the active cadence forever, burning request quota on calls that were
+    /// already failing. The retry set keeps the repo in the sweep order
+    /// without feeding [`dirty_count`](Self::dirty_count), so a repo that only
+    /// ever fails backs off to the hidden interval, while a genuinely new
+    /// local commit (which calls `mark_dirty`) re-earns the bypass.
     fn requeue(&self, repo: &str, now: f64) {
-        self.mark_dirty(repo, now);
+        if let Ok(mut retrying) = self.retrying.lock() {
+            retrying.insert(repo.to_owned(), now);
+        }
     }
 
-    /// Drop `repo` from the dirty set without touching any other entry.
-    /// Called when a space is removed: a dirty stamp left behind would
+    /// Drop `repo` from the queue without touching any other entry.
+    /// Called when a space is removed: a stamp left behind would
     /// survive the reactor's [`evict`](crate::Reactor::evict) and, on the
     /// next [`drain_sync`], get folded into the union that `sync_repository`
     /// reconciles — re-acquiring (resurrecting) the just-removed repo.
@@ -948,6 +978,9 @@ impl SyncQueue {
     pub(crate) fn forget(&self, repo: &str) {
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.remove(repo);
+        }
+        if let Ok(mut retrying) = self.retrying.lock() {
+            retrying.remove(repo);
         }
     }
 }
@@ -969,11 +1002,12 @@ impl SyncQueue {
 /// Branches are synced per-repo; repos run sequentially here (the reactor
 /// serializes branch state anyway), priority-ordered by activity.
 pub async fn drain_sync(state: &AppState) {
-    // Dirty repos first (push priority), then every other open repo (pull).
+    // Dirty repos first (push priority), then repos owed a retry, then every
+    // other open repo (pull).
     let now = current_millis();
-    let dirty = {
+    let pending = {
         let tonk = state.read().await;
-        tonk.sync_queue.drain_dirty()
+        tonk.sync_queue.drain_pending()
     };
 
     // Every currently-open repository — the pull population. Read the reactor's
@@ -984,9 +1018,9 @@ pub async fn drain_sync(state: &AppState) {
         tonk.reactor.repos().read().keys().cloned().collect()
     };
 
-    // Union, dirty-first, de-duplicated while preserving order.
+    // Union, pending-first, de-duplicated while preserving order.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let order: Vec<String> = dirty
+    let order: Vec<String> = pending
         .into_iter()
         .chain(open)
         .filter(|repo| seen.insert(repo.clone()))
@@ -1096,6 +1130,107 @@ mod tests {
     fn it_returns_empty_when_no_branch_has_an_upstream() {
         let branches = HashMap::from([("main".to_string(), without_upstream())]);
         assert!(branches_to_sync(&branches).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_counts_a_repo_as_dirty_until_the_drain_takes_it() {
+        let queue = SyncQueue::default();
+        assert_eq!(queue.dirty_count(), 0, "a fresh queue holds nothing");
+
+        queue.mark_dirty("notes", 1_000.0);
+        assert_eq!(queue.dirty_count(), 1, "a commit marks its repo dirty");
+
+        assert_eq!(queue.drain_pending(), vec!["notes".to_string()]);
+        assert_eq!(
+            queue.dirty_count(),
+            0,
+            "the drain takes the repo, so nothing is pending after it",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_orders_dirty_repos_by_most_recent_commit() {
+        let queue = SyncQueue::default();
+        queue.mark_dirty("stale", 1_000.0);
+        queue.mark_dirty("active", 9_000.0);
+        assert_eq!(
+            queue.drain_pending(),
+            vec!["active".to_string(), "stale".to_string()],
+            "the repo the user is editing syncs first",
+        );
+    }
+
+    /// The latch this split exists to prevent: `sync_repository` returns `Err`
+    /// for any relay failure — unreachable host, expired permit, 5xx,
+    /// non-fast-forward push — none of which mean un-pushed local work. When
+    /// a failure re-marked the repo dirty, one repo failing against a broken
+    /// remote held the quiet-interval bypass open forever, so a hidden tab
+    /// polled at the active cadence indefinitely against a remote that was
+    /// already erroring.
+    #[dialog_common::test]
+    fn it_stops_counting_a_repo_that_only_ever_fails() {
+        let queue = SyncQueue::default();
+        queue.mark_dirty("notes", 1_000.0);
+
+        // Ten drains, each one failing and requeueing the repo.
+        for pass in 0..10 {
+            let now = 2_000.0 + f64::from(pass) * 2_000.0;
+            assert_eq!(
+                queue.drain_pending(),
+                vec!["notes".to_string()],
+                "a failing repo must keep being retried",
+            );
+            queue.requeue("notes", now);
+            assert_eq!(
+                queue.dirty_count(),
+                0,
+                "a repo awaiting retry is not pending local work",
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_lets_a_new_commit_re_earn_the_bypass_after_a_failure() {
+        let queue = SyncQueue::default();
+        queue.mark_dirty("notes", 1_000.0);
+        queue.drain_pending();
+        queue.requeue("notes", 2_000.0);
+        assert_eq!(queue.dirty_count(), 0);
+
+        // The user edits again: genuinely un-pushed new work, bypass earned.
+        queue.mark_dirty("notes", 3_000.0);
+        assert_eq!(
+            queue.dirty_count(),
+            1,
+            "a new local commit still bypasses the quiet interval",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_sweeps_dirty_repos_before_retries() {
+        let queue = SyncQueue::default();
+        queue.requeue("failing", 9_000.0);
+        queue.mark_dirty("edited", 1_000.0);
+        assert_eq!(
+            queue.drain_pending(),
+            vec!["edited".to_string(), "failing".to_string()],
+            "un-pushed local work has push priority over a retry",
+        );
+    }
+
+    // `forget` is service-worker scoped (wasm-gated), so this one is too.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    fn it_forgets_a_removed_repo_from_both_sets() {
+        let queue = SyncQueue::default();
+        queue.mark_dirty("gone", 1_000.0);
+        queue.requeue("gone", 1_000.0);
+        queue.forget("gone");
+        assert_eq!(queue.dirty_count(), 0);
+        assert!(
+            queue.drain_pending().is_empty(),
+            "a removed space must not be resurrected by a leftover stamp",
+        );
     }
 }
 
