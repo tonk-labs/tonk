@@ -81,6 +81,43 @@ tonk-account {
     gap: 12px;
 }
 
+.account__eyebrow {
+    margin: 0 0 18px;
+    color: var(--account-muted);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.account__device {
+    display: grid;
+    gap: 1px;
+    margin: 0 0 16px;
+    background: color-mix(in oklab, var(--account-ink) 10%, transparent);
+}
+
+.account__device div {
+    display: grid;
+    gap: 6px;
+    padding: 13px 14px;
+    background: var(--account-field);
+}
+
+.account__device dt {
+    color: var(--account-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.account__device dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .account__form label {
     display: grid;
     gap: 7px;

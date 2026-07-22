@@ -7,9 +7,10 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    Account, BUMP_ATTEMPTS, CodeRow, DELETE_CODE, Device, DeviceStatus, INSERT_ACCOUNT,
-    INSERT_DEVICE, NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
+    DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest,
+    NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -26,6 +27,8 @@ impl SqliteStore {
     pub fn in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .map_err(map_err)?;
+        conn.execute_batch(include_str!("../../migrations/0002_link_requests.sql"))
             .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
@@ -231,6 +234,87 @@ impl Store for SqliteStore {
             .execute(UPDATE_DEVICE_REVOKE, params![account_id, device_did])
             .map_err(map_err)?;
         Ok(changed > 0)
+    }
+
+    async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.execute(
+            INSERT_LINK,
+            params![
+                link.token_hash,
+                link.device_did,
+                link.device_name,
+                link.created_at as i64,
+                link.expires_at as i64,
+            ],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn link(&self, token_hash: &str) -> Result<Option<LinkRequest>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.query_row(SELECT_LINK, params![token_hash], |row| {
+            Ok(LinkRequest {
+                token_hash: row.get(0)?,
+                device_did: row.get(1)?,
+                device_name: row.get(2)?,
+                delegation_hex: row.get(3)?,
+                created_at: row.get::<_, i64>(4)? as u64,
+                expires_at: row.get::<_, i64>(5)? as u64,
+                consumed_at: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+            })
+        })
+        .optional()
+        .map_err(map_err)
+    }
+
+    async fn complete_link(
+        &self,
+        token_hash: &str,
+        device: &Device,
+        delegation_hex: &str,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        let inserted = tx
+            .execute(
+                INSERT_DEVICE_FOR_LINK,
+                params![
+                    device.account_id,
+                    device.device_did,
+                    device.delegation_cid,
+                    device.name,
+                    device.status.as_str(),
+                    device.created_at as i64,
+                    token_hash,
+                    now as i64,
+                ],
+            )
+            .map_err(map_err)?;
+        let completed = tx
+            .execute(
+                COMPLETE_LINK,
+                params![delegation_hex, token_hash, now as i64],
+            )
+            .map_err(map_err)?;
+        if inserted != 1 || completed != 1 {
+            return Ok(false);
+        }
+        tx.commit().map_err(map_err)?;
+        Ok(true)
+    }
+
+    async fn consume_link(&self, token_hash: &str, now: u64) -> Result<Option<String>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.query_row(
+            CONSUME_LINK,
+            params![now as i64, token_hash, now as i64],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)
     }
 }
 

@@ -43,8 +43,19 @@
     <p class="account__hint">Your passkey provider may ask you to choose the Tonk passkey before confirming.</p>
   </section>
 
+  <section id="account-handoff" class="account__panel" hidden>
+    <p class="account__eyebrow">Link a command-line profile</p>
+    <dl class="account__device">
+      <div><dt>Device</dt><dd id="account-handoff-name"></dd></div>
+      <div><dt>Profile DID</dt><dd id="account-handoff-did"></dd></div>
+    </dl>
+    <p class="account__hint">Only continue if you started this link from your own terminal.</p>
+    <button id="account-handoff-submit" class="account__button" type="button">Approve with passkey</button>
+    <a class="account__button account__button--quiet" href="/account">Cancel</a>
+  </section>
+
   <section id="account-success" class="account__panel" hidden>
-    <p class="account__status">This browser is linked.</p>
+    <p id="account-success-message" class="account__status">This browser is linked.</p>
     <p id="account-root-did" class="account__did"></p>
     <a class="account__button account__button--secondary" href="/">Back to Tonk</a>
   </section>

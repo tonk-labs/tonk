@@ -114,6 +114,7 @@ mod tests {
     ) -> Result<()> {
         use dialog_credentials::Ed25519Signer;
         use dialog_ucan_core::principal::Principal;
+        use dialog_ucan_core::promise::Promised;
         use dialog_ucan_core::{DelegationChain, InvocationChain};
 
         let driver = driver_with_prf(env).await?;
@@ -154,6 +155,47 @@ mod tests {
         let delegation = DelegationChain::try_from(delegation.as_slice())?;
         assert_eq!(delegation.audience().to_string(), device_did);
         assert_eq!(delegation.issuer(), invocation.subject());
+
+        let cli = Ed25519Signer::import(&[9u8; 32]).await?;
+        let cli_did = cli.did().to_string();
+        let output = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                window.tonkIdentity.completeLink({
+                    tokenHash: "handoff-hash",
+                    deviceDid: arguments[0],
+                    deviceName: "test terminal",
+                })
+                    .then((result) => done({ ok: result }))
+                    .catch((error) => done({ error: String(error) }));
+                "#,
+                vec![serde_json::Value::String(cli_did.clone())],
+            )
+            .await?;
+        let output = output.json().clone();
+        assert!(output.get("error").is_none(), "handoff failed: {output:?}");
+        let ceremony = &output["ok"];
+        let invocation = hex::decode(ceremony["invocationHex"].as_str().unwrap())?;
+        let invocation = InvocationChain::try_from(invocation.as_slice())?;
+        invocation
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await?;
+        assert_eq!(
+            invocation.command().0,
+            vec![
+                "account".to_string(),
+                "link".to_string(),
+                "complete".to_string()
+            ]
+        );
+        assert_eq!(
+            invocation.arguments().get("tokenHash"),
+            Some(&Promised::String("handoff-hash".into()))
+        );
+        let delegation = hex::decode(ceremony["delegationHex"].as_str().unwrap())?;
+        let delegation = DelegationChain::try_from(delegation.as_slice())?;
+        assert_eq!(delegation.audience().to_string(), cli_did);
 
         driver.quit().await?;
         Ok(())

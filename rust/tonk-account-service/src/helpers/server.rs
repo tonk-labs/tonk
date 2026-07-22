@@ -28,6 +28,7 @@ use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::backup::{get_chain, list_chains, put_chain};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
+use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -132,6 +133,10 @@ async fn handle_request(
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
+        (Method::POST, "/links") => links_create_route(req, &backends).await,
+        (Method::POST, "/links/resolve") => links_resolve_route(req, &backends).await,
+        (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
+        (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
         (Method::POST, "/chains/put") => chains_put_route(req, &backends).await,
         (Method::POST, "/chains/list") => chains_list_route(req, &backends).await,
         (Method::POST, "/chains/get") => chains_get_route(req, &backends).await,
@@ -347,6 +352,89 @@ async fn devices_revoke_route(
         .map_err(ceremony_error)?;
 
     Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkCreateRequest {
+    token_hash: String,
+    device_did: String,
+    device_name: String,
+}
+
+#[derive(Deserialize)]
+struct LinkSecretRequest {
+    secret: String,
+}
+
+async fn links_create_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body: LinkCreateRequest = parse_json(req).await?;
+    create_link(
+        &backends.store,
+        &body.token_hash,
+        &body.device_did,
+        &body.device_name,
+        unix_now(),
+    )
+    .await
+    .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::CREATED, &serde_json::json!({})))
+}
+
+async fn links_resolve_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body: LinkSecretRequest = parse_json(req).await?;
+    let link = resolve_link(&backends.store, &body.secret, unix_now())
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &link))
+}
+
+async fn links_complete_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize_root(&body, &["account", "link", "complete"])
+        .await
+        .map_err(ceremony_error)?;
+    complete_link(
+        &backends.store,
+        &caller.root_did,
+        &required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?,
+        &required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
+        &required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
+        &required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
+        unix_now(),
+    )
+    .await
+    .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+}
+
+async fn links_consume_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body: LinkSecretRequest = parse_json(req).await?;
+    match consume_link(&backends.store, &body.secret, unix_now())
+        .await
+        .map_err(ceremony_error)?
+    {
+        Some(delegation_hex) => Ok(json_response(
+            StatusCode::OK,
+            &serde_json::json!({ "delegationHex": delegation_hex }),
+        )),
+        None => Ok(json_response(
+            StatusCode::ACCEPTED,
+            &serde_json::json!({ "pending": true }),
+        )),
+    }
 }
 
 /// `POST /chains/put` → back up a delegation chain, returning its

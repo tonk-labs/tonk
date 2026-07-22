@@ -7,6 +7,18 @@ use tonk_worker_api::{
 
 use crate::error::TonkUiError;
 
+/// Pending native device metadata resolved through a handoff secret.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAccountLink {
+    /// Hash the root ceremony binds into its signed completion.
+    pub token_hash: String,
+    /// Native profile DID that will receive the delegation.
+    pub device_did: String,
+    /// Native device name shown for confirmation.
+    pub device_name: String,
+}
+
 /// Mirrors the worker's error envelope so we can decode
 /// structured rejections (analyzer code + range) instead of
 /// stringifying the response body.
@@ -505,6 +517,28 @@ pub async fn submit_account_ceremony(
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "POST {path} returned {status}: {text}"
+        )))
+    }
+}
+
+/// Resolve a pending CLI handoff using its raw fragment secret.
+pub async fn resolve_account_link(
+    service: &str,
+    secret: &str,
+) -> Result<PendingAccountLink, TonkUiError> {
+    let response = reqwest::Client::new()
+        .post(format!("{}/links/resolve", service.trim_end_matches('/')))
+        .json(&serde_json::json!({ "secret": secret }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /links/resolve returned {status}: {text}"
         )))
     }
 }

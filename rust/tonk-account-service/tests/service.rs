@@ -137,6 +137,69 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(devices[1]["did"], second_did);
     assert_eq!(devices[1]["name"], "phone");
 
+    // A native profile creates a bearer-secret handoff. The browser
+    // resolves its metadata, completes it with the passkey root, and
+    // the native caller consumes the resulting delegation exactly once.
+    let secret = "1111111111111111111111111111111111111111111111111111111111111111";
+    let token_hash = blake3::hash(&hex::decode(secret).unwrap())
+        .to_hex()
+        .to_string();
+    let cli = Ed25519Signer::import(&[10u8; 32]).await.unwrap();
+    let cli_did = cli.did().to_string();
+    let response = client
+        .post(format!("{base}/links"))
+        .json(&serde_json::json!({
+            "tokenHash": token_hash,
+            "deviceDid": cli_did,
+            "deviceName": "terminal"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let response = client
+        .post(format!("{base}/links/resolve"))
+        .json(&serde_json::json!({ "secret": secret }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let pending: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(pending["deviceDid"], cli_did);
+    assert_eq!(pending["deviceName"], "terminal");
+
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let ceremony =
+        tonk_identity::ceremony::complete_link(root, token_hash, cli.did(), "terminal".into())
+            .await
+            .unwrap();
+    let expected_delegation = ceremony.delegation_hex.clone();
+    let response = client
+        .post(format!("{base}/links/complete"))
+        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let response = client
+        .post(format!("{base}/links/consume"))
+        .json(&serde_json::json!({ "secret": secret }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let consumed: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(consumed["delegationHex"], expected_delegation);
+    let response = client
+        .post(format!("{base}/links/consume"))
+        .json(&serde_json::json!({ "secret": secret }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+
     // POST /chains/put then POST /chains/get -> round-trip chain bytes.
     let chain_bytes = b"a delegation chain, backed up".to_vec();
     let mut put_args = BTreeMap::new();

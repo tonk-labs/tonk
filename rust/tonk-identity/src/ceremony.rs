@@ -131,6 +131,35 @@ pub async fn link_device(
     .await
 }
 
+/// Build the root-signed completion for a CLI browser handoff.
+pub async fn complete_link(
+    root: Ed25519Signer,
+    token_hash: String,
+    device_did: dialog_varsig::Did,
+    device_name: String,
+) -> Result<AccountCeremony> {
+    let device_did_string = device_did.to_string();
+    let delegation = mint_device_delegation(root.clone(), &device_did).await?;
+    let delegation_hex = hex::encode(
+        delegation
+            .to_bytes()
+            .context("failed to serialize root to device delegation")?,
+    );
+    build(
+        root,
+        vec!["account".into(), "link".into(), "complete".into()],
+        strings([
+            ("tokenHash", token_hash),
+            ("deviceDid", device_did.to_string()),
+            ("deviceName", device_name),
+            ("delegation", delegation_hex.clone()),
+        ]),
+        device_did_string,
+        delegation_hex,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +231,36 @@ mod tests {
                 "device".to_string(),
                 "link".to_string()
             ]
+        );
+        assert_eq!(
+            chain.arguments().get("deviceDid"),
+            Some(&Promised::String(device.to_string()))
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_binds_a_cli_handoff_to_its_token_and_device() {
+        let (root, device) = fixture().await;
+        let output = complete_link(root, "hash".into(), device.clone(), "terminal".into())
+            .await
+            .unwrap();
+        let bytes = hex::decode(output.invocation_hex).unwrap();
+        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
+        chain
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await
+            .unwrap();
+        assert_eq!(
+            chain.command().0,
+            vec![
+                "account".to_string(),
+                "link".to_string(),
+                "complete".to_string()
+            ]
+        );
+        assert_eq!(
+            chain.arguments().get("tokenHash"),
+            Some(&Promised::String("hash".into()))
         );
         assert_eq!(
             chain.arguments().get("deviceDid"),

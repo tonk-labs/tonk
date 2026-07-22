@@ -13,6 +13,7 @@ use tonk_worker_api::AccountStatus;
 const DEFAULT_ACCOUNT_SERVICE: &str = "https://accounts.tonk.spot";
 const STYLE_ID: &str = "tonk-account-styles";
 const PENDING_LINK: &str = "__tonkPendingAccountLink";
+const HANDOFF: &str = "__tonkCliHandoff";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +27,14 @@ struct CreateInput {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LinkInput {
+    device_did: String,
+    device_name: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffInput {
+    token_hash: String,
     device_did: String,
     device_name: String,
 }
@@ -124,6 +133,7 @@ fn set_mode(host: &HtmlElement, mode: &str) {
         ("choice", "#account-choice"),
         ("create", "#account-create"),
         ("link", "#account-link"),
+        ("handoff", "#account-handoff"),
         ("success", "#account-success"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
@@ -141,6 +151,7 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-send-code",
         "#account-create-submit",
         "#account-link-submit",
+        "#account-handoff-submit",
         "#account-retry-local",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
@@ -180,7 +191,21 @@ fn show_success(host: &HtmlElement, root_did: &str) {
     set_mode(host, "success");
 }
 
+fn show_handoff_success(host: &HtmlElement, root_did: &str) {
+    if let Ok(Some(message)) = host.query_selector("#account-success-message") {
+        message.set_text_content(Some("The command-line profile is linked."));
+    }
+    show_success(host, root_did);
+}
+
 fn load_status(host: HtmlElement) {
+    let handoff_route = window()
+        .and_then(|window| window.location().pathname().ok())
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
+    if handoff_route {
+        load_handoff(host);
+        return;
+    }
     set_busy(&host, true, "Checking this browser…");
     spawn_local(async move {
         match crate::api::account_status().await {
@@ -192,6 +217,59 @@ fn load_status(host: HtmlElement) {
             Err(error) => {
                 set_busy(&host, false, "");
                 set_mode(&host, "choice");
+                show_error(&host, error.to_string());
+            }
+        }
+    });
+}
+
+fn load_handoff(host: HtmlElement) {
+    let Some(window) = window() else {
+        return show_error(&host, "window is unavailable");
+    };
+    let secret = window
+        .location()
+        .hash()
+        .ok()
+        .and_then(|hash| hash.strip_prefix('#').map(str::to_owned))
+        .filter(|secret| !secret.is_empty());
+    let Some(secret) = secret else {
+        set_mode(&host, "handoff");
+        return show_error(
+            &host,
+            "This link is missing its handoff secret. Start again from the terminal.",
+        );
+    };
+    if let Ok(path) = window.location().pathname() {
+        let _ = window
+            .history()
+            .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
+    }
+
+    set_busy(&host, true, "Checking the command-line request…");
+    spawn_local(async move {
+        match crate::api::resolve_account_link(&service(&host), &secret).await {
+            Ok(link) => {
+                let handoff = HandoffInput {
+                    token_hash: link.token_hash,
+                    device_did: link.device_did,
+                    device_name: link.device_name,
+                };
+                if let Ok(value) = serde_wasm_bindgen::to_value(&handoff) {
+                    let _ = Reflect::set(host.as_ref(), &HANDOFF.into(), &value);
+                }
+                if let Ok(Some(name)) = host.query_selector("#account-handoff-name") {
+                    name.set_text_content(Some(&handoff.device_name));
+                }
+                if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
+                    did.set_text_content(Some(&handoff.device_did));
+                }
+                set_busy(&host, false, "");
+                set_mode(&host, "handoff");
+            }
+            Err(error) => {
+                set_busy(&host, false, "");
+                set_mode(&host, "handoff");
                 show_error(&host, error.to_string());
             }
         }
@@ -377,6 +455,40 @@ fn bind(host: &HtmlElement) {
         });
     });
 
+    on_click(host, "#account-handoff-submit", |host| {
+        clear_error(&host);
+        let handoff = Reflect::get(host.as_ref(), &HANDOFF.into())
+            .ok()
+            .and_then(|value| serde_wasm_bindgen::from_value::<HandoffInput>(value).ok());
+        let Some(handoff) = handoff else {
+            return show_error(
+                &host,
+                "This handoff is no longer available. Start again from the terminal.",
+            );
+        };
+        set_busy(&host, true, "Waiting for your passkey…");
+        spawn_local(async move {
+            let result = async {
+                let ceremony = identity_call("completeLink", &handoff).await?;
+                set_busy(&host, true, "Linking the command-line profile…");
+                crate::api::submit_account_ceremony(
+                    &service(&host),
+                    "/links/complete",
+                    &ceremony.invocation_hex,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                show_handoff_success(&host, &ceremony.root_did);
+                Ok::<(), String>(())
+            }
+            .await;
+            if let Err(error) = result {
+                set_busy(&host, false, "");
+                show_error(&host, error);
+            }
+        });
+    });
+
     on_click(host, "#account-retry-local", |host| {
         clear_error(&host);
         set_busy(&host, true, "Saving the link locally…");
@@ -432,6 +544,7 @@ mod tests {
             "#account-send-code",
             "#account-create-submit",
             "#account-link-submit",
+            "#account-handoff-submit",
             "#account-retry-local",
         ] {
             assert!(

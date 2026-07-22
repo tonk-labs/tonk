@@ -82,8 +82,11 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
 semver = { workspace = true }
 sha2_0_10 = { workspace = true }
 tar = { workspace = true }
@@ -121,7 +124,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util", "signal", "time"] }
 tokio-util = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-evaluator = { workspace = true }
@@ -130,6 +133,7 @@ tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
 tonk-schema = { workspace = true }
 url = { workspace = true }
+webbrowser = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

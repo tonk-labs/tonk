@@ -24,7 +24,7 @@ use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views::{self, ViewSummary};
-use tonk_cli::{ExitCode, guide, identity, schema, site};
+use tonk_cli::{ExitCode, account, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -319,6 +319,12 @@ enum Command {
         reset: bool,
     },
 
+    /// Link this machine's profile to a Tonk account
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
+
     /// Store and inspect content-addressed blobs (images, files)
     Blob {
         #[command(subcommand)]
@@ -395,6 +401,41 @@ enum Command {
         /// Resume checking for new releases in the background.
         #[arg(long)]
         enable_check: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AccountCommand {
+    /// Show whether this native profile is linked to an account
+    Status,
+
+    /// Approve this native profile with a synced passkey in the browser
+    #[command(
+        after_help = "Examples:\n  tonk account link\n  tonk account link --name workstation"
+    )]
+    Link {
+        /// Device name shown on the browser confirmation screen.
+        #[arg(long, value_name = "NAME", default_value = "Tonk CLI")]
+        name: String,
+        /// Account service base URL (for staging or local development).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_SERVICE_URL,
+            hide = true
+        )]
+        service_url: String,
+        /// Browser ceremony route (for staging or local development).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_ACCOUNT_URL,
+            hide = true
+        )]
+        account_url: String,
+        /// Print the approval URL without asking the OS to open it.
+        #[arg(long)]
+        no_open: bool,
     },
 }
 
@@ -647,6 +688,13 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             }),
         ),
         Command::Identity { .. } => ("identity", None),
+        Command::Account { command } => (
+            "account",
+            Some(match command {
+                AccountCommand::Status => "status",
+                AccountCommand::Link { .. } => "link",
+            }),
+        ),
         Command::Eval(_) => ("eval", None),
         Command::Guide { .. } => ("guide", None),
         Command::Schema { .. } => ("schema", None),
@@ -734,6 +782,7 @@ async fn main() {
         Command::Use { name } => use_op(name).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
+        Command::Account { command } => account_op(command).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
         Command::Schema { concept } => print_schema(concept, spot.as_deref()).await,
@@ -813,6 +862,54 @@ async fn identity(reset: bool) -> ExitCode {
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
+    }
+}
+
+async fn account_op(command: AccountCommand) -> ExitCode {
+    let profile = match identity::open().await {
+        Ok(profile) => profile,
+        Err(error) => return print_error(error.to_string()),
+    };
+    match command {
+        AccountCommand::Status => match account::status(&profile).await {
+            Ok(account::AccountStatus::Unlinked { device_did }) => {
+                println!("unlinked\ndevice: {device_did}");
+                ExitCode::Success
+            }
+            Ok(account::AccountStatus::Linked {
+                root_did,
+                device_did,
+            }) => {
+                println!("linked\nroot: {root_did}\ndevice: {device_did}");
+                ExitCode::Success
+            }
+            Err(error) => print_error(error.to_string()),
+        },
+        AccountCommand::Link {
+            name,
+            service_url,
+            account_url,
+            no_open,
+        } => match account::link(
+            &profile,
+            &account::LinkOptions {
+                service_url,
+                account_url,
+                device_name: name,
+                open_browser: !no_open,
+            },
+        )
+        .await
+        {
+            Ok(outcome) => {
+                println!(
+                    "linked\nroot: {}\ndevice: {}",
+                    outcome.root_did, outcome.device_did
+                );
+                ExitCode::Success
+            }
+            Err(error) => print_error(error.to_string()),
+        },
     }
 }
 
