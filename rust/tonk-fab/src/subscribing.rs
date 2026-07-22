@@ -187,6 +187,10 @@ impl Scaffold {
 /// With exactly one behaviour, an absent or unrecognised tag still routes to
 /// it: single-subscription elements predate tagged routing and must keep
 /// working whether or not the host echoes a tag.
+///
+/// A frame that matches nothing (only possible with more than one behaviour)
+/// is dropped, not misdelivered to an arbitrary one — logged so a future
+/// host/element protocol mismatch is debuggable rather than silently inert.
 fn route<'a>(
     behaviours: &'a [Rc<dyn Subscribing>],
     opts: &JsValue,
@@ -194,13 +198,20 @@ fn route<'a>(
     let tag = Reflect::get(opts, &"tag".into())
         .ok()
         .and_then(|value| value.as_string());
-    match tag {
+    let routed = match &tag {
         Some(tag) => behaviours
             .iter()
             .find(|behaviour| behaviour.tag() == tag)
             .or_else(|| (behaviours.len() == 1).then(|| &behaviours[0])),
         None => (behaviours.len() == 1).then(|| &behaviours[0]),
+    };
+    if routed.is_none() {
+        tonk_common::log!(
+            "frame dropped: tag {tag:?} matched none of {} behaviour(s)",
+            behaviours.len()
+        );
     }
+    routed
 }
 
 fn subscribe(
@@ -343,5 +354,78 @@ mod tests {
 
         assert!(first.borrow().is_empty(), "untagged behaviour untouched");
         assert_eq!(second.borrow().as_slice(), ["payload"]);
+    }
+
+    /// A single-behaviour scaffold still delivers a frame whose `opts` carry
+    /// no `tag` key at all — the fallback that keeps `<ui-space-name>`,
+    /// `<ui-member-roster>`, and `<ui-space-switcher>` alive if the host ever
+    /// stops echoing a tag.
+    #[dialog_common::test]
+    fn it_falls_back_to_the_sole_behaviour_when_a_frame_carries_no_tag() {
+        let document = window().unwrap().document().unwrap();
+        let host: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
+        host.set_attribute("space", "did:key:z6Mk").unwrap();
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let scaffold = Scaffold::default();
+        scaffold.connect_all(
+            &host,
+            vec![Rc::new(Recorder {
+                tag: "only",
+                seen: Rc::clone(&seen),
+            })],
+        );
+
+        // No `tag` key at all on `opts` — not even an empty string.
+        let opts = js_sys::Object::new();
+        let reset = Reflect::get(&host, &"__tonkReset".into())
+            .unwrap()
+            .dyn_into::<Function>()
+            .unwrap();
+        reset
+            .call2(&JsValue::NULL, &JsValue::from_str("payload"), &opts)
+            .unwrap();
+
+        assert_eq!(seen.borrow().as_slice(), ["payload"]);
+    }
+
+    /// A multi-behaviour scaffold drops a frame carrying a tag that matches
+    /// none of its behaviours — a frame addressed to nobody must not be
+    /// misdelivered to an arbitrary behaviour.
+    #[dialog_common::test]
+    fn it_drops_a_frame_whose_tag_matches_no_behaviour() {
+        let document = window().unwrap().document().unwrap();
+        let host: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
+        host.set_attribute("space", "did:key:z6Mk").unwrap();
+
+        let first = Rc::new(RefCell::new(Vec::new()));
+        let second = Rc::new(RefCell::new(Vec::new()));
+        let scaffold = Scaffold::default();
+        scaffold.connect_all(
+            &host,
+            vec![
+                Rc::new(Recorder {
+                    tag: "one",
+                    seen: Rc::clone(&first),
+                }),
+                Rc::new(Recorder {
+                    tag: "two",
+                    seen: Rc::clone(&second),
+                }),
+            ],
+        );
+
+        let opts = js_sys::Object::new();
+        Reflect::set(&opts, &"tag".into(), &"unrecognised".into()).unwrap();
+        let reset = Reflect::get(&host, &"__tonkReset".into())
+            .unwrap()
+            .dyn_into::<Function>()
+            .unwrap();
+        reset
+            .call2(&JsValue::NULL, &JsValue::from_str("payload"), &opts)
+            .unwrap();
+
+        assert!(first.borrow().is_empty(), "not delivered to \"one\"");
+        assert!(second.borrow().is_empty(), "not delivered to \"two\"");
     }
 }
