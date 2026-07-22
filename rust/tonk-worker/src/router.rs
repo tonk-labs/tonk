@@ -800,7 +800,7 @@ pub mod tests {
 
     /// PUT a fresh repo and return both its routing key and subject DID.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn put_repo_info(app: &Router, label: &str) -> (String, String) {
+    pub(crate) async fn put_repo_info(app: &Router, label: &str) -> (String, String) {
         let response = app
             .clone()
             .oneshot(
