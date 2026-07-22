@@ -4527,6 +4527,7 @@ dependencies = [
  "futures",
  "ipld-core",
  "js-sys",
+ "multibase",
  "serde",
  "serde-wasm-bindgen",
  "serde_ipld_dagjson",
