@@ -76,6 +76,15 @@
 .wizard__card p { margin: 0; font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
 .wizard__template { display: none; }
 
+.fab__prompt {
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
+}
+
+.fab__prompt:last-of-type {
+  margin-bottom: 0;
+}
+
 :host, tonk-fab { display: block; }
 
 /* ── Docking ──────────────────────────────────────────────────────
