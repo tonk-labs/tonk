@@ -805,23 +805,22 @@ mod enable_sync {
 
     #[dialog_common::test]
     fn it_carries_a_marker_no_other_command_carries() {
-        use dialog_query::Attribute as _;
         use crate::domain::command::enable_sync;
 
         assert_eq!(
-            enable_sync::EnableSync::attribute().to_string(),
+            enable_sync::EnableSync::the().to_string(),
             "dom.event.current-target.dataset/enable-sync"
         );
         assert_eq!(
-            enable_sync::Space::attribute().to_string(),
+            enable_sync::Space::the().to_string(),
             "xyz.tonk.enable-sync/space"
         );
         assert_eq!(
-            enable_sync::Remote::attribute().to_string(),
+            enable_sync::Remote::the().to_string(),
             "xyz.tonk.enable-sync/remote"
         );
         assert_eq!(
-            enable_sync::Share::attribute().to_string(),
+            enable_sync::Share::the().to_string(),
             "xyz.tonk.enable-sync/share"
         );
     }
