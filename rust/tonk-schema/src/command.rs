@@ -314,6 +314,28 @@ pub struct Credential {
     pub link: crate::domain::credential::Link,
 }
 
+/// The overlay-only fact a refused `tonk:invite` asserts: why the mint did
+/// not happen, keyed by the spot's **subject** DID (`this`) — the same
+/// entity [`Credential`] is keyed by, so one subject carries both the
+/// success and the refusal.
+///
+/// All three fields are asserted together. A concept resolves only when
+/// every declared field is present, so a partial assert would never resolve
+/// (the same all-fields-required gotcha `JoinStatus`/`JoinFailure` are split
+/// to avoid).
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ShareBlocked {
+    /// The spot's subject DID.
+    pub this: Entity,
+    /// Refusal class: `not-synced` | `unshareable-remote` | `attach-failed`.
+    pub blocked: crate::domain::share::Blocked,
+    /// The sentence shown to the user.
+    pub detail: crate::domain::share::Detail,
+    /// The refused command's timestamp, echoed so the share control can tell
+    /// this refusal from a replay of an older one.
+    pub time: crate::domain::share::Time,
+}
+
 /// Request to redeem an invite URL and join its space.
 ///
 /// Asserted transiently when `<tonk-page>` fires its `mount` event on the
@@ -378,4 +400,28 @@ pub struct JoinFailure {
     pub reason: crate::domain::join::Reason,
     /// Failure class: `malformed` | `audience-mismatch` | `claim-failed`.
     pub kind: crate::domain::join::Kind,
+}
+
+#[cfg(test)]
+mod share_blocked {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_derives_the_share_attribute_names() {
+        assert_eq!(
+            crate::domain::share::Blocked::the().to_string(),
+            "xyz.tonk.share/blocked"
+        );
+        assert_eq!(
+            crate::domain::share::Detail::the().to_string(),
+            "xyz.tonk.share/detail"
+        );
+        assert_eq!(
+            crate::domain::share::Time::the().to_string(),
+            "xyz.tonk.share/time"
+        );
+    }
 }

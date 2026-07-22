@@ -531,6 +531,45 @@ pub mod credential {
     pub struct Link(pub String);
 }
 
+/// Attributes on the overlay-only `tonk:share/blocked` fact — why a share
+/// click could not mint an invite. Keyed on the spot's subject entity, the
+/// same entity [`crate::command::Credential`] is keyed by, so the share
+/// control reads both off one subject.
+///
+/// Overlay-only, so it is session-scoped and never replicated: a refusal is
+/// this device's answer to this click, not a property of the spot.
+pub mod share {
+    use super::Attribute;
+
+    /// The refusal class: `not-synced` | `unshareable-remote` |
+    /// `attach-failed`. Only `not-synced` is repairable by attaching a
+    /// remote, so it is the only one that offers the prompt.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.share")]
+    #[cardinality(one)]
+    pub struct Blocked(pub String);
+
+    /// The sentence shown to the user.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.share")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
+
+    /// The timestamp of the command this refusal answers, echoed back from
+    /// the transient that triggered it.
+    ///
+    /// Load-bearing. The fact is cardinality-one on the subject, so it
+    /// lingers in the overlay and replays on every resubscribe; the share
+    /// control acts only on a refusal whose timestamp matches the click it
+    /// is currently holding a clipboard write for, and ignores every other
+    /// frame. That is what makes the fact safe to leave in place instead of
+    /// retracting it on the next success.
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.share")]
+    #[cardinality(one)]
+    pub struct Time(pub f64);
+}
+
 /// Attributes on the overlay-only `tonk:join/status` concept — the state
 /// of an in-flight join attempt at the fixed `tonk:join/status` entity.
 /// On success the whole fact is retracted and the durable space record is
