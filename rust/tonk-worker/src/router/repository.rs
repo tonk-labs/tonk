@@ -4573,6 +4573,35 @@ mod tests {
             1,
             "blank scaffold resolves the blank model to the repo subject",
         );
+        assert_eq!(
+            count(&state, repo, "share/blocked:\n").await,
+            0,
+            "local-only fallback model is seeded before a refusal exists",
+        );
+    }
+
+    /// Both empty-state canvases keep the pending label only while the invite
+    /// request is unanswered. A refusal resolves the nested model and renders
+    /// the explicit local-only notice instead of spinning forever.
+    #[dialog_common::test]
+    fn it_routes_refused_agent_links_to_the_local_only_notice() {
+        for document in [CORE, SHEETS] {
+            assert!(
+                document.contains("slot=\"no-entity\"")
+                    && document.contains("model=tonk:share/blocked"),
+                "agent-link fallback should query the share refusal",
+            );
+            assert!(
+                !document.contains("agent link &middot; paste into your agent"),
+                "the rendered state should provide its own single label",
+            );
+            assert!(
+                document.contains("tonk-display > [slot][hidden]"),
+                "inactive pending and refusal slots should not survive a ready result",
+            );
+        }
+        assert!(CORE.contains("local spot &middot; no sync remote"));
+        assert!(CORE.contains("Use Share to turn on sync and create an agent link."));
     }
 
     /// A `RepositoryConfiguration` that attaches an `origin` remote at
