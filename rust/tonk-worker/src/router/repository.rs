@@ -776,12 +776,12 @@ async fn run_invite(
     // can't conditionally include a parameter, and `Invite::parse_url`
     // rejects an empty `remote=`, so "no remote" must append *nothing*.
     let remote = match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
-        Some(url) => {
+        super::create_invite::RemoteRequirement::Ready(url) => {
             let encoded: String =
                 url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
             format!("&remote={encoded}")
         }
-        None => String::new(),
+        super::create_invite::RemoteRequirement::Refused(_) => String::new(),
     };
 
     // Assemble the invite URL the recipient opens. Built here rather than

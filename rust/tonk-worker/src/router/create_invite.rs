@@ -178,7 +178,10 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
 
-    let remote_url = resolve_remote_url(&tonk, &repository).await?;
+    let remote_url = match resolve_remote_url(&tonk, &repository).await? {
+        RemoteRequirement::Ready(url) => Some(url),
+        RemoteRequirement::Refused(_) => None,
+    };
 
     let invite = Invite::new(delegation.into_chain(), audience, remote_url)
         .await
@@ -326,25 +329,66 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e}")))
 }
 
+/// Why a spot cannot produce a shareable invite.
+///
+/// Both variants mean the same thing to the recipient — an invite that can
+/// never sync, so they land in a spot that stays permanently empty — but
+/// only [`Self::NotSynced`] is repairable by attaching a remote, so only it
+/// offers the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteRefusal {
+    /// `main` has no upstream at all. Repairable.
+    NotSynced,
+    /// `main` tracks something that is not a remote, or a remote whose site
+    /// address is not a UCAN endpoint. An invite URL has no way to express
+    /// either, so there is nothing to offer.
+    UnshareableRemote,
+}
+
+impl RemoteRefusal {
+    /// The stable class string carried on `xyz.tonk.share/blocked`.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::NotSynced => "not-synced",
+            Self::UnshareableRemote => "unshareable-remote",
+        }
+    }
+
+    /// The sentence shown to the user.
+    pub(crate) fn detail(self) -> &'static str {
+        match self {
+            Self::NotSynced => "This spot only exists on this device.",
+            Self::UnshareableRemote => "This spot's sync server can't be shared.",
+        }
+    }
+}
+
+/// The outcome of probing a repository for a shareable sync endpoint.
+#[derive(Debug, Clone)]
+pub(crate) enum RemoteRequirement {
+    /// A UCAN endpoint an invite can advertise.
+    Ready(Url),
+    /// No such endpoint. See [`RemoteRefusal`].
+    Refused(RemoteRefusal),
+}
+
 /// Probe `main`'s upstream and, when it points at a remote, pull the
 /// UCAN access-service URL off the remote's site address.
 ///
-/// - `Ok(None)` — legitimate "this repo has no remote to advertise"
-///   (branch has no upstream, non-remote upstream, or non-UCAN site).
-///   The claim side tolerates invites without a remote.
+/// - `Ok(Ready(url))` — the endpoint an invite advertises as `&remote=`.
+/// - `Ok(Refused(reason))` — no such endpoint. Callers refuse to mint:
+///   an invite with no remote lands its recipient in a spot that can never
+///   fill, so it has no use, and returning one silently would mask exactly
+///   the config drift the inviter cannot see.
 /// - `Err(...)` — branch/remote load failed or the stored UCAN endpoint
-///   won't parse. Failing the whole mint is the right move: silently
-///   demoting to local-only would mask config drift the inviter can't
-///   see (redeemers would hit a downstream sync error with no link to
-///   the root cause).
+///   won't parse. Failing loudly is right for the same reason.
 ///
-/// `main` is hardcoded; see `project_main_branch_implicit_creation`
-/// memory note on why `.open()` is used here despite not being
-/// strictly read-only.
+/// `main` is hardcoded; see `project_main_branch_implicit_creation` memory
+/// note on why `.open()` is used here despite not being strictly read-only.
 pub(crate) async fn resolve_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,
-) -> Result<Option<Url>, TonkWorkerError>
+) -> Result<RemoteRequirement, TonkWorkerError>
 where
     R: Principal + Clone,
 {
@@ -357,7 +401,7 @@ where
 pub(crate) async fn resolve_remote_url_with<R>(
     repository: &dialog_repository::Repository<R>,
     operator: &crate::worker::DefaultOperator,
-) -> Result<Option<Url>, TonkWorkerError>
+) -> Result<RemoteRequirement, TonkWorkerError>
 where
     R: Principal + Clone,
 {
@@ -374,7 +418,10 @@ where
 
     let remote_name = match main.upstream() {
         Some(Upstream::Remote { remote, .. }) => remote,
-        Some(_) | None => return Ok(None),
+        None => return Ok(RemoteRequirement::Refused(RemoteRefusal::NotSynced)),
+        Some(_) => {
+            return Ok(RemoteRequirement::Refused(RemoteRefusal::UnshareableRemote));
+        }
     };
 
     let remote = repository
@@ -389,13 +436,15 @@ where
         })?;
 
     match remote.address().site() {
-        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).map(Some).map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
-                ucan.endpoint()
-            ))
-        }),
-        _ => Ok(None),
+        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint())
+            .map(RemoteRequirement::Ready)
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!(
+                    "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
+                    ucan.endpoint()
+                ))
+            }),
+        _ => Ok(RemoteRequirement::Refused(RemoteRefusal::UnshareableRemote)),
     }
 }
 
@@ -406,6 +455,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use dialog_repository::RepositoryExt as _;
     use tower::ServiceExt;
 
     use tonk_invite::Invite;
@@ -457,5 +507,51 @@ mod tests {
             guard.profile.did().this()
         };
         assert_eq!(invitations[0].inviter.0, profile_entity);
+    }
+
+    /// A spot created without a remote refuses, and says which case it was.
+    #[dialog_common::test]
+    async fn it_refuses_a_repository_with_no_upstream() {
+        use crate::router::create_invite::{RemoteRefusal, RemoteRequirement, resolve_remote_url};
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-no-upstream").await;
+
+        let tonk = state.read().await;
+        let repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repository loads");
+
+        let requirement = resolve_remote_url(&tonk, &repository)
+            .await
+            .expect("probe succeeds");
+
+        assert!(matches!(
+            requirement,
+            RemoteRequirement::Refused(RemoteRefusal::NotSynced)
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_names_the_refusal_classes() {
+        use crate::router::create_invite::RemoteRefusal;
+
+        assert_eq!(RemoteRefusal::NotSynced.code(), "not-synced");
+        assert_eq!(
+            RemoteRefusal::UnshareableRemote.code(),
+            "unshareable-remote"
+        );
+        assert_eq!(
+            RemoteRefusal::NotSynced.detail(),
+            "This spot only exists on this device."
+        );
+        assert_eq!(
+            RemoteRefusal::UnshareableRemote.detail(),
+            "This spot's sync server can't be shared."
+        );
     }
 }
