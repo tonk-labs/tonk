@@ -295,6 +295,38 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+/// The `tonk:enable-sync` transient's target spot, read from the raw facts.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
+
+/// The `tonk:enable-sync` transient's endpoint, read from the raw facts.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ENABLE_SYNC_REMOTE_ATTR: &str = "xyz.tonk.enable-sync/remote";
+
+/// Marker asking the handler to mint once the remote is attached.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ENABLE_SYNC_SHARE_ATTR: &str = "xyz.tonk.enable-sync/share";
+
+/// Read a fact's value as a string, tolerating both the `String` and
+/// `Entity` representations — a URL or a DID round-trips through JSON as an
+/// `Entity` (any `:`-bearing string does), so a single-representation read
+/// would silently miss them. Mirrors [`remote_from_facts`].
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn text_fact(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == attribute)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(text) => Some(text.clone()),
+            Value::Entity(entity) => Some(entity.to_string()),
+            _ => None,
+        })
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
 /// The create form's template field — which library template the repo
 /// should seed. Read directly from the facts (like the remote), so the
 /// command keeps decoding against an older profile descriptor that lacks
@@ -664,6 +696,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
         // Read the target space off the facts opportunistically (NOT a
@@ -678,6 +711,16 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
             .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
             .map(|did| did.repo_key().to_owned())
             .unwrap_or_else(|| env.origin().repo.clone());
+
+        // The triggering click's timestamp, echoed onto a refusal so a
+        // later resubscribe can tell this refusal from a replay of an
+        // older one — see `publish_share_blocked`.
+        let time = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
+            .map(|command| command.time.0)
+            .unwrap_or_default();
         let env = env.clone();
 
         Box::pin(async move {
@@ -687,8 +730,109 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
             }
             log!("command Invite repo={}", repo_name);
 
-            if let Err(error) = run_invite(&env, &repo_name).await {
+            if let Err(error) = run_invite(&env, &repo_name, time).await {
                 log!("Invite for repo '{}' failed: {}", repo_name, error);
+            }
+        })
+    }
+}
+
+/// Attach a sync remote to an existing spot, then mint an invite when the
+/// transient asks for one.
+///
+/// The share control dispatches this when a user accepts the offer to turn
+/// sync on after a refused share. Minting from inside the handler is what
+/// makes that a single click: the control needs no completion signal for the
+/// attach, because success reaches it as a new invite link on the
+/// subscription it already holds — the same path an ordinary mint takes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct EnableSyncHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl EnableSyncHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::EnableSync::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::EnableSync::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        let time = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::EnableSync::decode(entity, facts))
+            .map(|command| command.time.0)
+            .unwrap_or_default();
+        let space = text_fact(facts, ENABLE_SYNC_SPACE_ATTR);
+        let remote = text_fact(facts, ENABLE_SYNC_REMOTE_ATTR);
+        let share = text_fact(facts, ENABLE_SYNC_SHARE_ATTR).is_some();
+        let env = env.clone();
+
+        Box::pin(async move {
+            use dialog_artifacts::Entity;
+
+            let (Some(space), Some(remote)) = (space, remote) else {
+                log!("EnableSync: missing space or remote, skipping");
+                return;
+            };
+            let Ok(did) = space.parse::<dialog_varsig::Did>() else {
+                log!("EnableSync: '{}' is not a DID", space);
+                return;
+            };
+            let key = did.repo_key().to_owned();
+            log!("command EnableSync repo={} share={}", key, share);
+
+            if let Err(error) = enable_sync_inner(env.state(), &key, &remote).await {
+                log!("EnableSync '{}' failed: {}", key, error);
+                if share {
+                    let subject = match space.parse::<Entity>() {
+                        Ok(entity) => entity,
+                        Err(e) => {
+                            log!("EnableSync: '{}' is not an entity: {}", space, e);
+                            return;
+                        }
+                    };
+                    publish_share_blocked(
+                        env.state(),
+                        &key,
+                        subject,
+                        "attach-failed",
+                        &format!("Could not turn on sync: {error}"),
+                        time,
+                    )
+                    .await;
+                }
+                return;
+            }
+
+            if share && let Err(error) = run_invite(&env, &key, time).await {
+                log!("EnableSync '{}': mint after attach failed: {}", key, error);
             }
         })
     }
@@ -699,12 +843,17 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
 /// the private seed as a [`Credential`] into the reactor's session
 /// overlay (so it stays out of replicated storage).
 ///
+/// `time` is the triggering `tonk:invite` transient's timestamp — unused
+/// on the mint path, but threaded through so a refusal (see
+/// [`publish_share_blocked`]) can echo the click it answers.
+///
 /// Split out from [`InviteHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there — the command future itself returns `()`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_invite(
     env: &crate::router::CommandEnv,
     repo_name: &str,
+    time: f64,
 ) -> Result<(), TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
@@ -712,13 +861,6 @@ async fn run_invite(
     use tonk_schema::command::{Authorization, Credential};
     use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
     use tonk_schema::domain::credential::{Link, Seed};
-
-    // Mint a fresh membership keypair. Its private seed becomes the
-    // invite URL's `#` fragment; its public DID is the audience the repo
-    // access is delegated to. The browser never sees this DID.
-    let (signer, seed_bytes) = super::create_invite::generate_ephemeral().await?;
-    let membership_did = signer.did();
-    let seed = bs58::encode(seed_bytes).into_string();
 
     let tonk = env.state().read().await;
 
@@ -734,8 +876,7 @@ async fn run_invite(
 
     // Both facts are keyed by the repository's *subject* DID — the entity
     // the share view already addresses (`entity={subject}`) — not the
-    // membership DID. So the membership DID is only the delegation
-    // audience; the subject is the join key for authorization + credential.
+    // membership DID.
     let subject_entity = repository
         .did()
         .to_string()
@@ -743,6 +884,41 @@ async fn run_invite(
         .map_err(|e| {
             TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
         })?;
+
+    // Resolve the sync endpoint BEFORE minting anything. An invite with no
+    // remote lands its recipient in a spot that can never fill, so there is
+    // nothing worth generating key material for. Refusing here also means a
+    // refusal costs no delegation and rotates no credential.
+    let remote_url = match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
+        super::create_invite::RemoteRequirement::Ready(url) => url,
+        super::create_invite::RemoteRequirement::Refused(reason) => {
+            log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
+            drop(tonk);
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                reason.code(),
+                reason.detail(),
+                time,
+            )
+            .await;
+            return Ok(());
+        }
+    };
+
+    // A ready-to-append URL query suffix (`&remote=<percent-encoded-url>`).
+    // The share view appends it verbatim between `?access=…` and the `#seed`.
+    let encoded: String =
+        url::form_urlencoded::byte_serialize(remote_url.as_str().as_bytes()).collect();
+    let remote = format!("&remote={encoded}");
+
+    // Mint a fresh membership keypair. Its private seed becomes the invite
+    // URL's `#` fragment; its public DID is the audience the repo access is
+    // delegated to. The browser never sees this DID.
+    let (signer, seed_bytes) = super::create_invite::generate_ephemeral().await?;
+    let membership_did = signer.did();
+    let seed = bs58::encode(seed_bytes).into_string();
 
     let delegation: dialog_ucan::UcanDelegation = tonk
         .profile
@@ -767,22 +943,6 @@ async fn run_invite(
         TonkWorkerError::Internal(format!("failed to serialize delegation chain: {e}"))
     })?;
     let proof = bs58::encode(&chain_bytes).into_string();
-
-    // Optional sync remote endpoint, stored as a ready-to-append URL query
-    // suffix (`&remote=<percent-encoded-url>`) — or empty when the repo is
-    // local-only. The share view appends it verbatim between `?access=…`
-    // and the `#seed`, so a recipient on another device knows where to
-    // pull from. It is a suffix (not a bare URL) because the view template
-    // can't conditionally include a parameter, and `Invite::parse_url`
-    // rejects an empty `remote=`, so "no remote" must append *nothing*.
-    let remote = match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
-        Some(url) => {
-            let encoded: String =
-                url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
-            format!("&remote={encoded}")
-        }
-        None => String::new(),
-    };
 
     // Assemble the invite URL the recipient opens. Built here rather than
     // concatenated in the view template so there is exactly one definition
@@ -845,17 +1005,17 @@ async fn run_invite(
             TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
         })?;
 
-    // Record the invitation on the repo's meta branch — the durable roster
-    // half of the invite (the URL with its secret fragment is never stored).
-    // Mirrors the HTTP `create_invite` route so both mint paths leave the
-    // same roster fact for the claim side to match against.
-    let meta = repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to open meta branch: {e}")))?;
-    meta.transaction()
+    // Record the invitation on the repo's content branch — the durable
+    // roster half of the invite (the URL with its secret fragment is never
+    // stored). Mirrors the HTTP `create_invite` route so both mint paths
+    // leave the same roster fact for the claim side to match against, and
+    // routes through the *reactor's* cached handle for the same reason the
+    // `Authorization` commit above does: a commit on a separately-opened
+    // handle would leave the cached one pinned at a stale head.
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
         .assert(invitation)
         .commit()
         .perform(&tonk.operator)
@@ -866,14 +1026,61 @@ async fn run_invite(
     Ok(())
 }
 
+/// Record why a share click could not mint, on the spot's content-branch
+/// session overlay, keyed by the subject.
+///
+/// Overlay-only, exactly like the `Credential` a successful mint writes: a
+/// refusal is this device's answer to this click, not a property of the spot,
+/// and it must never replicate. The write schedules a poll, so the dispatcher's
+/// drain fans it out to the share control's subscription in the same pass as a
+/// successful mint would have been.
+///
+/// `time` echoes the refused command's timestamp. The fact is cardinality-one
+/// on the subject, so it lingers and replays on every resubscribe; the echo is
+/// what lets the control tell this refusal from a replay of an older one, which
+/// is why the fact never needs retracting.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_share_blocked(
+    state: &AppState,
+    repo_name: &str,
+    subject: dialog_artifacts::Entity,
+    code: &str,
+    detail: &str,
+    time: f64,
+) {
+    use tonk_schema::command::ShareBlocked;
+    use tonk_schema::domain::share;
+
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(ShareBlocked {
+            this: subject,
+            blocked: share::Blocked(code.to_owned()),
+            detail: share::Detail(detail.to_owned()),
+            time: share::Time(time),
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("failed to publish share refusal for '{repo_name}': {error}");
+    }
+}
+
 /// Assemble the invite URL a recipient opens, shortened when the
 /// shortcut service answers.
 ///
 /// The long form is `{origin}/join?access={proof}{remote}#{seed}`, where
-/// `remote` is already a ready-to-append `&remote=…` suffix (empty for a
-/// local-only repo). This is the shape the share view used to concatenate
-/// from three overlay fields; building it here gives it one definition and
-/// lets it be shortened.
+/// `remote` is already a ready-to-append `&remote=…` suffix. It is never
+/// empty: a repo with no shareable remote is refused before any of this
+/// runs, because an invite that carries no remote strands its recipient in
+/// a spot that can never fill. This is the shape the share view used to
+/// concatenate from three overlay fields; building it here gives it one
+/// definition and lets it be shortened.
 ///
 /// Shortening is best-effort: a failed `PUT /@` (offline, no service
 /// deployed, a non-2xx) logs and yields the long URL, which is fully
@@ -920,10 +1127,11 @@ fn worker_origin() -> Option<String> {
 /// against either), so it falls back to the same base the HTTP mint path
 /// defaults to — still a well-formed, redeemable invite.
 ///
-/// `remote` is already a ready-to-append `&remote=…` suffix, empty for a
-/// local-only repo. The seed is the fragment and never the query: it must
-/// not reach a server, and the shortcut service is handed only the path +
-/// query.
+/// `remote` is already a ready-to-append `&remote=…` suffix. It is never
+/// empty: `run_invite` refuses to mint at all when the repository has no
+/// shareable remote (see `RemoteRefusal`), so by the time this runs the
+/// repo has one. The seed is the fragment and never the query: it must not
+/// reach a server, and the shortcut service is handed only the path + query.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn long_invite_url(origin: Option<&str>, proof: &str, remote: &str, seed: &str) -> String {
     match origin {
@@ -3911,8 +4119,10 @@ mod tests {
 
     use super::{
         BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+        existing_space_labels,
     };
     use crate::router::evaluate::evaluate_body;
+    use crate::router::tests::{content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
 
     /// The scaffold notation, embedded at compile time.
@@ -4363,6 +4573,35 @@ mod tests {
             1,
             "blank scaffold resolves the blank model to the repo subject",
         );
+        assert_eq!(
+            count(&state, repo, "share/blocked:\n").await,
+            0,
+            "local-only fallback model is seeded before a refusal exists",
+        );
+    }
+
+    /// Both empty-state canvases keep the pending label only while the invite
+    /// request is unanswered. A refusal resolves the nested model and renders
+    /// the explicit local-only notice instead of spinning forever.
+    #[dialog_common::test]
+    fn it_routes_refused_agent_links_to_the_local_only_notice() {
+        for document in [CORE, SHEETS] {
+            assert!(
+                document.contains("slot=\"no-entity\"")
+                    && document.contains("model=tonk:share/blocked"),
+                "agent-link fallback should query the share refusal",
+            );
+            assert!(
+                !document.contains("agent link &middot; paste into your agent"),
+                "the rendered state should provide its own single label",
+            );
+            assert!(
+                document.contains("tonk-display > [slot][hidden]"),
+                "inactive pending and refusal slots should not survive a ready result",
+            );
+        }
+        assert!(CORE.contains("local spot &middot; no sync remote"));
+        assert!(CORE.contains("Use Share to turn on sync and create an agent link."));
     }
 
     /// A `RepositoryConfiguration` that attaches an `origin` remote at
@@ -4661,7 +4900,39 @@ mod tests {
     async fn it_restamps_state_self_after_invite_clears_the_overlay() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (_app, state, key) = fresh_repo("test-invite-restamps-self").await;
+        let (app, state, key) = fresh_repo("test-invite-restamps-self").await;
+
+        // Attach a remote first — `run_invite` refuses to mint (and never
+        // reaches the credential overlay write this test exercises) against
+        // a repo whose `main` has no upstream.
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(
+                    "https://sync.example.test/ucan/",
+                ))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attach = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            attach.status(),
+            StatusCode::OK,
+            "remote attach should succeed"
+        );
 
         // Prime state:self so we have something to lose.
         {
@@ -4714,6 +4985,196 @@ mod tests {
             1,
             "state:self must be re-stamped after invite clears the overlay",
         );
+    }
+
+    /// A share click on a spot with no upstream mints nothing and leaves a
+    /// refusal on the overlay instead.
+    #[dialog_common::test]
+    async fn it_refuses_to_mint_without_a_remote() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-refuse-mint").await;
+
+        run_invite_with_time(&state, &key, 1234.0).await;
+
+        let blocked = share_blocked_rows(&state, &key).await;
+        assert_eq!(blocked.len(), 1, "one refusal recorded");
+        assert_eq!(blocked[0].0, "not-synced");
+        assert_eq!(blocked[0].1, "This spot only exists on this device.");
+        assert_eq!(blocked[0].2, 1234.0, "echoes the command's timestamp");
+
+        let invitations = content_invitations(&state, &key).await;
+        assert!(
+            invitations.is_empty(),
+            "a refused mint records no invitation"
+        );
+    }
+
+    /// Drive `run_invite` with a fixed timestamp, the way a `tonk:invite`
+    /// transient would.
+    async fn run_invite_with_time(state: &AppState, repo: &str, time: f64) {
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        let _ = super::run_invite(&env, repo, time).await;
+    }
+
+    /// Read back every `ShareBlocked` row on the repo's content branch overlay
+    /// as `(blocked, detail, time)`.
+    async fn share_blocked_rows(state: &AppState, repo: &str) -> Vec<(String, String, f64)> {
+        use dialog_query::{Output as _, Term};
+        use tonk_schema::command::ShareBlocked;
+
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(super::CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        let rows: Vec<ShareBlocked> = branch
+            .handle()
+            .query()
+            .select(dialog_query::Query::<ShareBlocked> {
+                this: Term::var("this"),
+                blocked: Term::var("blocked"),
+                detail: Term::var("detail"),
+                time: Term::var("time"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("share-blocked query");
+        rows.into_iter()
+            .map(|row| (row.blocked.0, row.detail.0, row.time.0))
+            .collect()
+    }
+
+    /// Attaching a remote through the command targets the EXISTING spot. The
+    /// `space/enable-sync` command in `core.yaml` shares `CreateSpace`'s trigger
+    /// attribute and so mints a new spot instead; this guards against that.
+    #[dialog_common::test]
+    async fn it_attaches_the_remote_to_the_existing_spot() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (key, subject) = put_repo_info(&app, "test-enable-sync").await;
+        let before = existing_space_labels(&state).await.len();
+
+        dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
+
+        assert_eq!(
+            existing_space_labels(&state).await.len(),
+            before,
+            "no new spot was created"
+        );
+        assert!(
+            has_remote_upstream(&state, &key).await,
+            "the existing spot now tracks origin/main"
+        );
+    }
+
+    /// Without the `share` marker the handler attaches and stops.
+    #[dialog_common::test]
+    async fn it_mints_only_when_asked_to_share() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (key, subject) = put_repo_info(&app, "test-enable-sync-no-share").await;
+
+        dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
+
+        // Assert the handler RAN before asserting what it declined to do.
+        // Without this, deleting the handler outright would leave the
+        // transient matching nothing, and the emptiness check below would
+        // still pass -- proving only that no invitation appeared from thin
+        // air.
+        assert!(
+            has_remote_upstream(&state, &key).await,
+            "the handler ran and attached the remote"
+        );
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "attach-only records no invitation"
+        );
+    }
+
+    /// With the marker, the attach is followed by a mint — the single-click path.
+    #[dialog_common::test]
+    async fn it_mints_after_attaching_when_asked_to_share() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (key, subject) = put_repo_info(&app, "test-enable-sync-share").await;
+
+        dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", true, 1.0).await;
+
+        assert_eq!(
+            content_invitations(&state, &key).await.len(),
+            1,
+            "the attach is followed by exactly one mint"
+        );
+    }
+
+    /// Build the `tonk:enable-sync` transient the FAB dispatches and run it
+    /// through `dispatch`, the way `/transact` does after a commit. Going through
+    /// `dispatch` (not the handler directly) means this also covers registration
+    /// and trigger matching.
+    async fn dispatch_enable_sync(
+        state: &AppState,
+        subject: &str,
+        remote: &str,
+        share: bool,
+        time: f64,
+    ) {
+        use dialog_artifacts::{Changes, Statement};
+        use dialog_query::{Entity, the};
+
+        let of: Entity = "tonk:enable-sync-test".parse().expect("entity URI");
+        let mut changes = Changes::new();
+        the!("dom.event/time-stamp")
+            .of(of.clone())
+            .is(time)
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/enable-sync")
+            .of(of.clone())
+            .is("tonk:enable-sync".parse::<Entity>().expect("marker entity"))
+            .assert(&mut changes);
+        the!("xyz.tonk.enable-sync/space")
+            .of(of.clone())
+            .is(subject.parse::<Entity>().expect("subject entity"))
+            .assert(&mut changes);
+        the!("xyz.tonk.enable-sync/remote")
+            .of(of.clone())
+            .is(remote.to_string())
+            .assert(&mut changes);
+        if share {
+            the!("xyz.tonk.enable-sync/share")
+                .of(of)
+                .is("tonk:share".parse::<Entity>().expect("share entity"))
+                .assert(&mut changes);
+        }
+
+        crate::router::dispatch(state, crate::router::CommandOrigin::default(), changes).await;
+    }
+
+    /// Whether the repo's `main` tracks a remote upstream — the exact condition
+    /// `resolve_remote_url_with` probes.
+    async fn has_remote_upstream(state: &AppState, repo: &str) -> bool {
+        use dialog_repository::{RepositoryExt as _, Upstream};
+
+        let tonk = state.read().await;
+        let Ok(repository) = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+        else {
+            return false;
+        };
+        let Ok(main) = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+        else {
+            return false;
+        };
+        matches!(main.upstream(), Some(Upstream::Remote { .. }))
     }
 
     /// Build a one-entity transient `RemoveSpace{this, subject}` batch —

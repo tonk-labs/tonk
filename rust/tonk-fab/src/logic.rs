@@ -887,6 +887,10 @@ pub enum ShareState {
     /// A mint is in flight. The clipboard write is already pending on a
     /// promise this state is waiting to resolve.
     Copying,
+    /// The mint was refused because the spot has no shareable sync remote.
+    /// The prompt offering to attach one is up; unlike `Copied`/`Failed` this
+    /// does not revert on a timer, because the user is being asked a question.
+    Blocked,
     /// The link is on the clipboard. Reverts to `Idle` after
     /// [`COPIED_LINGER_MS`].
     Copied,
@@ -903,6 +907,7 @@ impl ShareState {
         match self {
             Self::Idle => "idle",
             Self::Copying => "copying",
+            Self::Blocked => "blocked",
             Self::Copied => "copied",
             Self::Failed => "failed",
         }
@@ -1399,6 +1404,47 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
     })
 }
 
+/// The `tonk:enable-sync` claim the share control dispatches when a user
+/// accepts the offer to turn sync on.
+///
+/// `share` adds the marker asking the worker to mint an invite once the
+/// remote is attached. When false the marker is omitted from BOTH the
+/// declared concept and the parameters — a declared field with no value makes
+/// the assert incomplete, so the transient would commit and match nothing.
+pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
+    let mut with = json!({
+        "time":   { "the": "dom.event/time-stamp", "as": "Float" },
+        "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
+        "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
+        "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" }
+    });
+    let mut parameters = json!({
+        "time": time,
+        "space": space,
+        "remote": remote,
+        "marker": "tonk:enable-sync"
+    });
+    if share {
+        with["share"] = json!({ "the": "xyz.tonk.enable-sync/share", "as": "Entity" });
+        parameters["share"] = json!("tonk:share");
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Attach a sync remote to a spot, and share it.",
+                        "with": with
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
 #[cfg(test)]
 mod invite {
     use super::*;
@@ -1454,6 +1500,148 @@ mod invite_link {
     #[test]
     fn it_rejects_an_empty_subject() {
         assert!(invite_link_query_body("").is_err());
+    }
+}
+
+/// The subscribe body for a refused share.
+///
+/// An INLINE predicate over the raw `xyz.tonk.share/*` attributes, for the
+/// same reason [`invite_link_query_body`] is inline: rules and views are
+/// frozen at whatever `core.yaml` seeded a spot with, so reading raw
+/// attributes depends on nothing seeded and works on spots that predate this
+/// feature. `this` binds to the spot's subject DID, the entity the worker
+/// keys the refusal by.
+pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("share_blocked_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": {
+            "blocked": { "the": "xyz.tonk.share/blocked", "as": "Text", "cardinality": "one" },
+            "detail":  { "the": "xyz.tonk.share/detail",  "as": "Text", "cardinality": "one" },
+            "time":    { "the": "xyz.tonk.share/time",    "as": "Float", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": subject,
+            "blocked": { "?": { "name": "blocked" } },
+            "detail":  { "?": { "name": "detail" } },
+            "time":    { "?": { "name": "time" } }
+        }
+    })
+    .to_string())
+}
+
+/// This page's default UCAN access-service endpoint: `origin + /ucan/`.
+///
+/// The same URL `<tonk-default-remote auto>` fills the create wizard's hidden
+/// input with. Kept pure (origin in, URL out) so it is testable off-browser;
+/// the caller supplies the origin.
+pub fn default_remote_url(origin: &str) -> String {
+    format!("{}{}", origin.trim_end_matches('/'), "/ucan/")
+}
+
+/// How long a share click waits for a result before giving up.
+///
+/// Without this the control has no failure path at all for anything other
+/// than an explicit refusal: a mint that never lands leaves the clipboard
+/// write open and the button pinned on `copying`, which
+/// [`ShareState::accepts_click`] refuses, so the button is dead for the rest
+/// of the session. Generous, because the enable-sync path holds the write
+/// across a network round-trip.
+pub const SHARE_TIMEOUT_MS: i32 = 15_000;
+
+#[cfg(test)]
+mod enable_sync_claim {
+    use super::*;
+
+    #[test]
+    fn it_names_the_space_remote_and_share_marker() {
+        let claim = enable_sync_claim_json("did:key:z6Mk", "https://tonk.spot/ucan/", true, 7.0);
+        let app = &claim["claims"][0]["application"];
+        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
+        assert_eq!(app["parameters"]["remote"], "https://tonk.spot/ucan/");
+        assert_eq!(app["parameters"]["share"], "tonk:share");
+        assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
+        assert_eq!(app["parameters"]["time"], 7.0);
+
+        // The `with` declaration is what the worker actually matches on: a
+        // typo here compiles and passes every assertion on `parameters`
+        // above, then silently no-ops at runtime because the transient
+        // commits and matches no handler. Pin every declared attribute name.
+        let with = &app["predicate"]["concept"]["with"];
+        assert_eq!(with["time"]["the"], "dom.event/time-stamp");
+        assert_eq!(with["space"]["the"], "xyz.tonk.enable-sync/space");
+        assert_eq!(with["remote"]["the"], "xyz.tonk.enable-sync/remote");
+        assert_eq!(
+            with["marker"]["the"],
+            "dom.event.current-target.dataset/enable-sync"
+        );
+        assert_eq!(with["share"]["the"], "xyz.tonk.enable-sync/share");
+    }
+
+    #[test]
+    fn it_omits_the_share_marker_when_not_sharing() {
+        let claim = enable_sync_claim_json("did:key:z6Mk", "https://x.test/ucan/", false, 1.0);
+        let app = &claim["claims"][0]["application"];
+        assert!(app["parameters"].get("share").is_none());
+        assert!(
+            app["predicate"]["concept"]["with"].get("share").is_none(),
+            "an omitted parameter must not be declared, or the assert is incomplete"
+        );
+    }
+}
+
+#[cfg(test)]
+mod share_blocked_query {
+    use super::*;
+
+    #[test]
+    fn it_reads_the_raw_share_attributes() {
+        let body = share_blocked_query_body("did:key:z6Mk").expect("query body builds");
+        assert!(body.contains("xyz.tonk.share/blocked"));
+        assert!(body.contains("xyz.tonk.share/detail"));
+        assert!(body.contains("xyz.tonk.share/time"));
+        assert!(body.contains("did:key:z6Mk"));
+    }
+
+    #[test]
+    fn it_rejects_an_empty_subject() {
+        assert!(share_blocked_query_body("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod default_remote {
+    use super::*;
+
+    #[test]
+    fn it_appends_the_access_service_path() {
+        assert_eq!(
+            default_remote_url("https://tonk.spot"),
+            "https://tonk.spot/ucan/"
+        );
+    }
+
+    #[test]
+    fn it_does_not_double_slash_an_origin_that_already_has_one() {
+        assert_eq!(
+            default_remote_url("https://tonk.spot/"),
+            "https://tonk.spot/ucan/"
+        );
+    }
+}
+
+#[cfg(test)]
+mod share_state_blocked {
+    use super::*;
+
+    #[test]
+    fn it_accepts_a_click_and_does_not_time_out() {
+        assert_eq!(ShareState::Blocked.as_str(), "blocked");
+        // A refused share must be retryable straight away.
+        assert!(ShareState::Blocked.accepts_click());
+        // The dialog is up; nothing should quietly revert it.
+        assert!(!ShareState::Blocked.is_transient());
     }
 }
 

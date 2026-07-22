@@ -244,6 +244,12 @@ view!:
           gap: var(--wa-space-xs);
           align-items: flex-start;
         }
+        /* `tonk-display` is light DOM and projects lifecycle slots by
+           toggling `hidden`. Its custom-element display rule outranks the UA
+           default, so enforce the inactive state here. */
+        .empty-artifact__deeplink tonk-display > [slot][hidden] {
+          display: none !important;
+        }
         .empty-artifact__deeplink-label {
           font-family: var(--wa-font-family-code);
           font-size: var(--wa-font-size-xs);
@@ -270,7 +276,6 @@ view!:
         {title}
       </h1>
       <section class="empty-artifact__deeplink">
-        <div class="empty-artifact__deeplink-label">agent link &middot; paste into your agent</div>
         <!-- Mint a repo invite on mount via the same `tonk:invite` command
              the repo-share dialog uses. `<tonk-origin>` supplies the real
              host origin (`data-base`) and the repo subject DID (`entity`,
@@ -286,7 +291,12 @@ view!:
             bind:base="data-base"
             model=tonk:agent-invite
             data-page="{title}">
-            <div slot="no-entity" class="empty-artifact__deeplink-label">Generating link…</div>
+            <tonk-display
+              slot="no-entity"
+              bind:subject="entity"
+              model=tonk:share/blocked>
+              <div slot="no-entity" class="empty-artifact__deeplink-label">Generating link…</div>
+            </tonk-display>
           </tonk-display>
         </tonk-origin>
       </section>

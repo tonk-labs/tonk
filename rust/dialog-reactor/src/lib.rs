@@ -197,8 +197,10 @@ impl Reactor {
     /// cache — sees no upstream and fails with `BranchHasNoUpstream`.
     /// Re-opening re-resolves the upstream from durable storage, so the
     /// fresh handle reflects the change; we swap it into the cache and
-    /// carry the existing subscriptions over so live SSE streams keep
-    /// updating.
+    /// rebind the existing subscriptions to it so live SSE streams keep
+    /// updating. Rebinding sends a fresh snapshot on the next poll because
+    /// the discarded engine's retained result cannot be used as a delta base
+    /// for the new branch handle.
     ///
     /// No-op when the repo or branch isn't cached: the next `acquire`
     /// opens a fresh handle that already reflects durable state.

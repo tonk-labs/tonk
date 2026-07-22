@@ -755,8 +755,8 @@ mod tests {
     use crate::router::api_router_with_state;
     use crate::router::repository::build_repository_info;
     use crate::router::tests::{
-        content_invitations, content_invited_via, content_member_roles, content_memberships,
-        put_repo, test_state,
+        attach_remote, content_invitations, content_invited_via, content_member_roles,
+        content_memberships, put_repo, test_state,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -984,7 +984,9 @@ mod tests {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
 
         // Create own repo (addressed by its routing key), mint own invite.
+        // The mint route refuses a local-only repo, so attach a remote first.
         let key = put_repo(&app, "test-self-claim").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
         let minted_resp = app
             .clone()
             .oneshot(
