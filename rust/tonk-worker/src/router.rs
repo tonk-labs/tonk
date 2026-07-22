@@ -1475,10 +1475,13 @@ pub mod tests {
 
         // No branch has an upstream, so the worker-side sweep selects
         // nothing and runs the `/sync` route zero times — a clean
-        // resolve, not a rejection.
-        super::sync_repository(&app_state, repo)
+        // resolve, not a rejection. `changed` must be `false`: this is
+        // the "no branch selected" half of the changed-signal contract
+        // `record_drain_outcome` relies on.
+        let changed = super::sync_repository(&app_state, repo)
             .await
             .expect("a no-upstream repo should sweep cleanly");
+        assert!(!changed, "nothing selected to sync must report no change");
     }
 
     #[dialog_common::test]
@@ -1490,10 +1493,11 @@ pub mod tests {
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
 
         // Nothing to retry for a repo that does not exist, so the
-        // sweep resolves rather than rejecting.
-        super::sync_repository(&app_state, "no-such-repo")
+        // sweep resolves rather than rejecting, and reports no change.
+        let changed = super::sync_repository(&app_state, "no-such-repo")
             .await
             .expect("an unknown repo should resolve as a no-op");
+        assert!(!changed, "an unknown repo must report no change");
     }
 
     #[dialog_common::test]
@@ -1695,6 +1699,86 @@ pub mod tests {
             status.remote.is_some(),
             "remote head present — the shared base the upstream still points at"
         );
+    }
+
+    /// The failure half of the changed-through-`Err` fix: when a repo's
+    /// only upstreamed branch fails to reconcile, the sweep still
+    /// resolves as `Err`, and `changed` correctly comes back `false`
+    /// since nothing landed before the failure.
+    ///
+    /// This is a real, deterministic failure — a loopback connection
+    /// refused, no external network or DNS involved — not a faked one.
+    /// It stops short of the full accumulation scenario Fix 1 targets
+    /// (a genuine landed change on a *second* branch surviving
+    /// alongside this failure): reaching that would need a second
+    /// branch tracking a remote that actually completes a pull, which
+    /// needs a real dialog-remote-ucan-s3-compatible server this
+    /// harness has no stand-in for (attaching a remote is a pure config
+    /// write with no network involved — see
+    /// `it_embeds_the_remote_in_a_command_minted_invite` above — but
+    /// completing a pull against it is not). See the task report for
+    /// how this gap is reasoned about instead.
+    #[dialog_common::test]
+    async fn it_reports_no_change_alongside_a_genuine_reconcile_failure() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_repository::SiteAddress;
+
+        let state = test_state().await;
+        let (app, app_state, _lsp) = super::api_router_with_state(state);
+
+        let (repo, _subject) = put_repo_info(&app, "sync-repo-unreachable").await;
+
+        // A real remote address on loopback with nothing listening: the
+        // connection is refused immediately (no external network, no
+        // DNS lookup, nothing to time out), so the sweep's pull fails
+        // deterministically.
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(
+                    "http://127.0.0.1:1/ucan/",
+                ))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attach = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            attach.status(),
+            StatusCode::OK,
+            "remote attach should succeed (it never touches the network)"
+        );
+
+        match super::sync_repository(&app_state, &repo).await {
+            Err((changed, message)) => {
+                assert!(
+                    !changed,
+                    "a branch that only ever fails must not report a change"
+                );
+                assert!(
+                    message.contains(&repo),
+                    "the error should name the repo that failed to reconcile: {message}"
+                );
+            }
+            Ok(changed) => panic!(
+                "an unreachable upstream must not resolve as a clean sweep (changed={changed})"
+            ),
+        }
     }
 
     #[dialog_common::test]

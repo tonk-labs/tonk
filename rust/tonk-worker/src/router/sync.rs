@@ -341,12 +341,15 @@ pub async fn mark_offline(state: &AppState) {
 ///
 /// `Ok(true)` means at least one branch's local revision moved (a pull
 /// landed changes). `Ok(false)` means every selected branch reconciled
-/// with no local movement, or there was nothing to do. `Err` means at
-/// least one branch did not land — the caller surfaces that as a
-/// rejected `sync` so the user agent retries with backoff. An unknown
-/// repo is not an error: there is nothing to retry, so it resolves as
-/// a no-op (`Ok(false)`).
-pub async fn sync_repository(state: &AppState, repo: &str) -> Result<bool, String> {
+/// with no local movement, or there was nothing to do. `Err((changed,
+/// message))` means at least one branch did not land — the caller
+/// surfaces that as a rejected `sync` so the user agent retries with
+/// backoff — but `changed` still reports whether some *other* branch
+/// of this same repo landed a real change before the failure, so a
+/// partial failure never masquerades as a no-op. An unknown repo is
+/// not an error: there is nothing to retry, so it resolves as a no-op
+/// (`Ok(false)`).
+pub async fn sync_repository(state: &AppState, repo: &str) -> Result<bool, (bool, String)> {
     // Honor the durable pause preference: a paused replica skips the whole
     // sweep (no pull, no push) until resumed. This is the gate localStorage
     // couldn't provide — the SW can read this branch fact. Keyed on the
@@ -410,8 +413,9 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<bool, Strin
     }
 
     if failed {
-        Err(format!(
-            "background sync of '{repo}' did not fully reconcile"
+        Err((
+            changed,
+            format!("background sync of '{repo}' did not fully reconcile"),
         ))
     } else {
         Ok(changed)
@@ -956,9 +960,11 @@ impl SyncQueue {
 /// (the reactor serializes branch state anyway), priority-ordered by activity.
 ///
 /// Returns whether any repo's local revision moved — the union of every
-/// [`sync_repository`] outcome. Callers feed this into the scheduler's
-/// `record_drain_outcome` so a run of no-op drains widens the quiet
-/// interval.
+/// [`sync_repository`] outcome, including the `changed` half of an `Err`
+/// (a branch that failed to reconcile doesn't erase a real change another
+/// branch of the same repo landed first). Callers feed this into the
+/// scheduler's `record_drain_outcome` so a run of no-op drains widens the
+/// quiet interval.
 pub async fn drain_sync(state: &AppState) -> bool {
     // Dirty repos first (push priority), then every other open repo (pull).
     let now = current_millis();
@@ -987,7 +993,10 @@ pub async fn drain_sync(state: &AppState) -> bool {
     for repo in order {
         match sync_repository(state, &repo).await {
             Ok(moved) => changed |= moved,
-            Err(e) => {
+            Err((moved, e)) => {
+                // A real change on another branch of this repo still counts,
+                // even though this repo also needs a retry.
+                changed |= moved;
                 // Push didn't fully land — re-mark so the next heartbeat retries.
                 log!("drain_sync: {repo} did not fully reconcile: {e}");
                 let tonk = state.read().await;
