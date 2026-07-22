@@ -189,7 +189,6 @@ The `guide-*.md` files ship to agents through `tonk guide`, so a dangling `tonk 
 - Modify: `rust/tonk-cli/src/schema.rs:50`
 - Modify: `rust/tonk-cli/src/views.rs:13,76,200`
 - Modify: `.claude/commands/tonk.md:87-88`
-- Modify: `bench/README.md:159`
 
 **Interfaces:**
 - Consumes: nothing.
