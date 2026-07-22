@@ -21,6 +21,8 @@ use crate::delegation::mint_device_delegation;
 pub struct AccountCeremony {
     /// The passkey-derived root DID that signed the request.
     pub root_did: String,
+    /// The device DID receiving the delegation.
+    pub device_did: String,
     /// Hex-encoded `root → device` delegation chain.
     pub delegation_hex: String,
     /// Hex-encoded root-signed invocation container for the account service.
@@ -38,6 +40,7 @@ async fn build(
     root: Ed25519Signer,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
+    device_did: String,
     delegation_hex: String,
 ) -> Result<AccountCeremony> {
     let root_did = root.did();
@@ -62,6 +65,7 @@ async fn build(
 
     Ok(AccountCeremony {
         root_did: root_did.to_string(),
+        device_did,
         delegation_hex,
         invocation_hex,
     })
@@ -76,6 +80,7 @@ pub async fn create_account(
     device_did: dialog_varsig::Did,
     device_name: String,
 ) -> Result<AccountCeremony> {
+    let device_did_string = device_did.to_string();
     let delegation = mint_device_delegation(root.clone(), &device_did).await?;
     let delegation_hex = hex::encode(
         delegation
@@ -93,6 +98,7 @@ pub async fn create_account(
             ("deviceName", device_name),
             ("delegation", delegation_hex.clone()),
         ]),
+        device_did_string,
         delegation_hex,
     )
     .await
@@ -104,6 +110,7 @@ pub async fn link_device(
     device_did: dialog_varsig::Did,
     device_name: String,
 ) -> Result<AccountCeremony> {
+    let device_did_string = device_did.to_string();
     let delegation = mint_device_delegation(root.clone(), &device_did).await?;
     let delegation_hex = hex::encode(
         delegation
@@ -118,6 +125,7 @@ pub async fn link_device(
             ("deviceName", device_name),
             ("delegation", delegation_hex.clone()),
         ]),
+        device_did_string,
         delegation_hex,
     )
     .await
