@@ -91,78 +91,122 @@ pub trait Subscribing {
 
 /// The shared subscribe/retry/teardown state a subscribing element's
 /// `CustomElement` struct embeds alongside its own fields.
+///
+/// An element may hold SEVERAL subscriptions. The host delivers every frame
+/// to the same `reset`/`update` methods, so they are told apart by the `tag`
+/// in the frame's options — the same tag each behaviour supplied when it
+/// subscribed. `<tonk-share>` needs this: its invite link and its refusal
+/// signal are separate inline predicates over different raw attributes, and a
+/// single predicate over both would resolve only when BOTH are present, which
+/// is never.
 #[derive(Default)]
 pub struct Scaffold {
-    subscription: Rc<RefCell<Option<Subscription>>>,
-    retry: Rc<RefCell<RetryPolicy>>,
+    /// Live subscriptions, paired with the tag they were opened under.
+    subscriptions: Rc<RefCell<Vec<(String, Subscription)>>>,
     reset: Rc<RefCell<Option<FrameClosure>>>,
     update: Rc<RefCell<Option<FrameClosure>>>,
 }
 
 impl Scaffold {
+    /// Run from `connected_callback` with a single behaviour. See
+    /// [`Self::connect_all`].
+    pub fn connect(&self, this: &HtmlElement, behaviour: Rc<dyn Subscribing>) {
+        self.connect_all(this, vec![behaviour]);
+    }
+
     /// Run from `connected_callback`: stamp `with`, install the `reset`/
     /// `update` frame delegates (forwarded from the prototype shims
-    /// [`install_frame_shims`] installs), and subscribe.
+    /// [`install_frame_shims`] installs), and subscribe each behaviour under
+    /// its own tag.
     ///
-    /// A no-op when [`Subscribing::resolve_with`] returns `None` (routing
-    /// context not ready yet — an unsubstituted `{id}` placeholder, say) —
-    /// the attribute-changed callback re-runs this once it lands.
-    pub fn connect(&self, this: &HtmlElement, behaviour: Rc<dyn Subscribing>) {
-        let Some(with) = behaviour.resolve_with(this) else {
+    /// The routing context comes from the FIRST behaviour — every behaviour on
+    /// one element shares that element's `with`. A no-op when it returns
+    /// `None` (context not ready yet); the attribute-changed callback re-runs
+    /// this once it lands.
+    pub fn connect_all(&self, this: &HtmlElement, behaviours: Vec<Rc<dyn Subscribing>>) {
+        let Some(first) = behaviours.first() else {
             return;
         };
-        // Stamp our own routing context: `resolve_with` reads THIS element's
-        // own attributes and never walks ancestors.
+        let Some(with) = first.resolve_with(this) else {
+            return;
+        };
         let _ = this.set_attribute("with", &with);
 
-        // Install the per-instance `reset` delegate: the host calls
-        // `element.reset(conclusions, { tag })` for the first (and any
-        // reconnect) frame, and the prototype shim installed by
-        // `install_frame_shims` forwards it here.
-        let render = behaviour.clone();
+        let routed = behaviours.clone();
         let host = this.clone();
         let reset: FrameClosure =
-            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
-                render.render_reset(&host, &payload);
+            Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                if let Some(behaviour) = route(&routed, &opts) {
+                    behaviour.render_reset(&host, &payload);
+                }
             }));
         let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
         *self.reset.borrow_mut() = Some(reset);
 
-        // Install the per-instance `update` delegate: subsequent changes
-        // arrive as an incremental delta, not another snapshot.
-        let render = behaviour.clone();
+        let routed = behaviours.clone();
         let host = this.clone();
         let update: FrameClosure =
-            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
-                render.render_update(&host, &payload);
+            Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                if let Some(behaviour) = route(&routed, &opts) {
+                    behaviour.render_update(&host, &payload);
+                }
             }));
         let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
         *self.update.borrow_mut() = Some(update);
 
-        let subscription = self.subscription.clone();
-        let retry = self.retry.clone();
-        let host = this.clone();
-        spawn_local(async move {
-            if !host.is_connected() || subscription.borrow().is_some() {
-                return;
-            }
-            subscribe(&host, behaviour.as_ref(), subscription, retry);
-        });
+        for behaviour in behaviours {
+            let subscriptions = self.subscriptions.clone();
+            let host = this.clone();
+            // Each behaviour gets its own retry budget: one query failing to
+            // build must not spend the other's attempts.
+            let retry = Rc::new(RefCell::new(RetryPolicy::default()));
+            spawn_local(async move {
+                let tag = behaviour.tag().to_owned();
+                if !host.is_connected()
+                    || subscriptions.borrow().iter().any(|(open, _)| *open == tag)
+                {
+                    return;
+                }
+                subscribe(&host, behaviour.as_ref(), subscriptions, retry);
+            });
+        }
     }
 
-    /// Run from `disconnected_callback`: drop the subscription and frame
+    /// Run from `disconnected_callback`: drop every subscription and the frame
     /// delegates.
     pub fn disconnect(&self) {
-        self.subscription.borrow_mut().take();
+        self.subscriptions.borrow_mut().clear();
         self.reset.borrow_mut().take();
         self.update.borrow_mut().take();
+    }
+}
+
+/// Pick the behaviour a frame belongs to by the `tag` in its options — the
+/// tag that behaviour supplied when it subscribed.
+///
+/// With exactly one behaviour, an absent or unrecognised tag still routes to
+/// it: single-subscription elements predate tagged routing and must keep
+/// working whether or not the host echoes a tag.
+fn route<'a>(
+    behaviours: &'a [Rc<dyn Subscribing>],
+    opts: &JsValue,
+) -> Option<&'a Rc<dyn Subscribing>> {
+    let tag = Reflect::get(opts, &"tag".into())
+        .ok()
+        .and_then(|value| value.as_string());
+    match tag {
+        Some(tag) => behaviours
+            .iter()
+            .find(|behaviour| behaviour.tag() == tag)
+            .or_else(|| (behaviours.len() == 1).then(|| &behaviours[0])),
+        None => (behaviours.len() == 1).then(|| &behaviours[0]),
     }
 }
 
 fn subscribe(
     host: &HtmlElement,
     behaviour: &dyn Subscribing,
-    subscription: Rc<RefCell<Option<Subscription>>>,
+    subscriptions: Rc<RefCell<Vec<(String, Subscription)>>>,
     retry: Rc<RefCell<RetryPolicy>>,
 ) {
     let tag = behaviour.tag();
@@ -182,7 +226,7 @@ fn subscribe(
     match consumer::subscribe(&consumer_el, &parsed, Some(&tag_val)) {
         Ok(sub) => {
             retry.borrow_mut().reset();
-            *subscription.borrow_mut() = Some(sub);
+            subscriptions.borrow_mut().push((tag.to_owned(), sub));
         }
         Err(err) => {
             // Bounded, unlike the host's default resubscribe loop.
@@ -230,4 +274,74 @@ pub fn install_frame_shims(tag: &str) {
         "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
     );
     let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A behaviour that records which payloads it was handed.
+    struct Recorder {
+        tag: &'static str,
+        seen: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Subscribing for Recorder {
+        fn query_body(&self, _this: &HtmlElement) -> Result<String, String> {
+            Ok("{}".to_owned())
+        }
+        fn render_reset(&self, _host: &HtmlElement, payload: &JsValue) {
+            self.seen
+                .borrow_mut()
+                .push(payload.as_string().unwrap_or_default());
+        }
+        fn render_update(&self, _host: &HtmlElement, _payload: &JsValue) {}
+        fn tag(&self) -> &'static str {
+            self.tag
+        }
+    }
+
+    /// A frame tagged for one behaviour reaches only that behaviour.
+    #[dialog_common::test]
+    fn it_routes_frames_by_tag() {
+        let document = window().unwrap().document().unwrap();
+        let host: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
+        host.set_attribute("space", "did:key:z6Mk").unwrap();
+
+        let first = Rc::new(RefCell::new(Vec::new()));
+        let second = Rc::new(RefCell::new(Vec::new()));
+        let scaffold = Scaffold::default();
+        scaffold.connect_all(
+            &host,
+            vec![
+                Rc::new(Recorder {
+                    tag: "one",
+                    seen: Rc::clone(&first),
+                }),
+                Rc::new(Recorder {
+                    tag: "two",
+                    seen: Rc::clone(&second),
+                }),
+            ],
+        );
+
+        // Deliver a frame the way the host does: element.__tonkReset(payload, {tag}).
+        let opts = js_sys::Object::new();
+        Reflect::set(&opts, &"tag".into(), &"two".into()).unwrap();
+        let reset = Reflect::get(&host, &"__tonkReset".into())
+            .unwrap()
+            .dyn_into::<Function>()
+            .unwrap();
+        reset
+            .call2(&JsValue::NULL, &JsValue::from_str("payload"), &opts)
+            .unwrap();
+
+        assert!(first.borrow().is_empty(), "untagged behaviour untouched");
+        assert_eq!(second.borrow().as_slice(), ["payload"]);
+    }
 }
