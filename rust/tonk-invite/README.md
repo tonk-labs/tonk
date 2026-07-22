@@ -32,7 +32,7 @@ audience-scoped ([`InviteAudience::Scoped`]): only the chain's recorded
 audience DID can claim. The *subject* axis (which repo) is always scoped and is
 orthogonal to this.
 
-[`DEFAULT_BASE_URL`] (`https://hub.tonk.xyz/join`) is the canonical base for
+[`DEFAULT_BASE_URL`] (`https://tonk.spot/join`) is the canonical base for
 minted links.
 
 ## Mint and claim

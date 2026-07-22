@@ -196,6 +196,32 @@ pub async fn mint(
     })
 }
 
+/// Derive the invite base URL from a remote's endpoint.
+///
+/// The invite has to live on the remote's own origin. That origin is
+/// the deployment actually serving the repo, and — because the
+/// shortcut service is same-origin by construction — the only one
+/// whose `PUT /@` can answer. This is the CLI's stand-in for the
+/// worker's `location.origin`, which the browser mint path reads
+/// straight off its own scope.
+///
+/// # Errors
+///
+/// Returns an error if `endpoint` doesn't parse, or has no origin to
+/// hang `/join` off (a `data:` or `mailto:` URL, say).
+pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
+    let parsed = Url::parse(endpoint).map_err(|e| {
+        InviteError::Io(format!(
+            "remote endpoint '{endpoint}' is not a valid URL: {e}"
+        ))
+    })?;
+    parsed.join("/join").map(String::from).map_err(|e| {
+        InviteError::Io(format!(
+            "remote endpoint '{endpoint}' has no usable origin: {e}"
+        ))
+    })
+}
+
 /// Claim an invite, bootstrapping a fresh site at `root` (the
 /// site directory itself — the caller picks it, typically the
 /// canonical `spots/<name>/` dir) whose repository targets the
@@ -486,4 +512,41 @@ async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), InviteError> 
     };
 
     Ok((signer, seed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    mod when_deriving_a_base_url_from_a_remote {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_replaces_the_access_service_path_with_join() {
+            let base = base_url_for_remote("https://staging.tonk.xyz/ucan/").unwrap();
+            assert_eq!(base, "https://staging.tonk.xyz/join");
+        }
+
+        #[dialog_common::test]
+        fn it_handles_an_endpoint_with_no_path() {
+            let base = base_url_for_remote("https://staging.tonk.xyz").unwrap();
+            assert_eq!(base, "https://staging.tonk.xyz/join");
+        }
+
+        #[dialog_common::test]
+        fn it_keeps_the_port_so_local_services_resolve() {
+            let base = base_url_for_remote("http://127.0.0.1:8787/ucan/").unwrap();
+            assert_eq!(base, "http://127.0.0.1:8787/join");
+        }
+
+        #[dialog_common::test]
+        fn it_rejects_an_endpoint_that_is_not_a_url() {
+            assert!(base_url_for_remote("not a url").is_err());
+        }
+    }
 }

@@ -27,8 +27,8 @@ tonk eval -c 'person:' --format json --quiet
 
 # Inspect the branch.
 tonk schema       # every named attribute + concept as re-submittable notation
-tonk concepts     # user-defined concepts: name<TAB>description
-tonk views        # entities with a text/html claim: name<TAB>entity<TAB>bytes
+tonk concept ls   # user-defined concepts: name<TAB>description
+tonk view ls      # entities with a text/html claim: name<TAB>entity<TAB>bytes
 tonk guide        # baked-in asserted-notation reference (also: guide notation|views|all)
 
 # Argument-based data verbs — a constrained front-end over `eval`.
@@ -61,7 +61,8 @@ tonk status       # synced | ahead | behind | diverged | no-upstream
 
 # Delegate access to the space.
 tonk invite                    # audience-open: anyone holding it can claim
-tonk invite --remote prod      # also embeds a registered remote for auto-config
+tonk invite --remote prod      # pick the remote when several are registered
+tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
 tonk join 'https://...#invite'
 ```
 
@@ -119,6 +120,11 @@ Remotes are UCAN-S3 access services registered on the repository's meta branch.
 audience-open invite URL (anyone holding it can claim by redelegating from the
 embedded ephemeral key); `tonk join` claims one into a fresh spot
 (`tonk join <url> --name <spot>`).
+
+A bare `tonk invite` resolves the repo's remote, builds the link on that
+remote's origin, and embeds it so the claimer auto-configures the same access
+service. `--remote <NAME>` picks one when several are registered; `--no-remote`
+mints without one.
 
 ## Built on
 

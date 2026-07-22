@@ -19,7 +19,7 @@ use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
 use crate::site::TonkSite;
 
-/// One row of `tonk views`.
+/// One row of `tonk view ls`.
 #[derive(Debug, Clone)]
 pub struct ViewSummary {
     /// `dialog.meta/name` claim on the entity, when one is
@@ -27,7 +27,7 @@ pub struct ViewSummary {
     /// branch's history; we surface the current binding only.
     pub name: Option<String>,
     /// Entity URI carrying the `text/html` claim — what the
-    /// host route's `view/{entity}` segment takes.
+    /// host route's trailing `{entity}` segment takes.
     pub entity: Entity,
     /// Byte length of the body claim. Lets the listing show a
     /// rough "is this empty / huge?" without dumping the HTML.

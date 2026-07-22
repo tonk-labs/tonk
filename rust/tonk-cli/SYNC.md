@@ -56,7 +56,9 @@ only talk to one).
 ## Surface
 
 ```
-tonk invite [--remote <name>]                # mint an invite URL for the local repo
+tonk invite                                  # link on the resolved remote's own origin, that remote embedded
+tonk invite --remote <name>                  # pick the remote when several are registered
+tonk invite --no-remote                      # mint without a remote; the claimer wires one by hand
 tonk join <invite-url>                       # claim an invite into the local site
 
 tonk remote add <name> <url> [--subject <did>]

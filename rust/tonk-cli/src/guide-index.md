@@ -62,7 +62,10 @@ per-process (`TONK_SPOT=x tonk ...` or `--spot x`) — never rely on
    or `<doc> | tonk eval -`. A committing eval auto-syncs unless
    `--no-sync`; `--dry-run` previews without committing (queries run,
    transaction dropped, branch untouched).
-6. Hand the repo to someone: `tonk invite`.
+6. Look at it. In the shell: `/space/<space>/<model>` (directory),
+   `/space/<space>/<entity>@<model>!<view>` (one entity, named view).
+   Headlessly: `tonk render` on the same routes.
+7. Hand the repo to someone else: `tonk invite`.
 
 ## Reference topics
 

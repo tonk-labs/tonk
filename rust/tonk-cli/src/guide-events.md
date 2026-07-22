@@ -418,9 +418,15 @@ cases 2 and 3 are exactly that false positive.
 
 ### Opening the view in tonk-ui
 
-Once the view works locally, hand the repo to a collaborator with
-`tonk invite`. They join the space and open the view there — events
-fire in the live shell, not in a standalone page.
+Events fire in the live shell, not in a standalone page, so open the
+view in the space: `/space/<space>/<model>` for the model's directory,
+`/space/<space>/<entity>@<model>!<view>` for one entity through a
+named view. `tonk render` is no substitute here — it prints the HTML
+with nothing behind it, so a click reaches no command. Use it to check
+the markup, the shell to check the wiring.
+
+To put a collaborator in front of the same view, hand them the repo
+with `tonk invite`.
 
 ### When the declarative path doesn't fit
 

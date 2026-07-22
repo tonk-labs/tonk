@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Branch, SiteAddress};
+use dialog_repository::{Branch, SiteAddress, Upstream};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -80,6 +80,10 @@ pub enum RemoteError {
     /// meta branch.
     #[error("remote '{0}' is not registered; add it with `tonk remote add` first")]
     UnknownRemote(String),
+    /// Several remotes are registered and the caller named none, so
+    /// there is no unambiguous choice to make on their behalf.
+    #[error("several remotes are registered ({0}); name one with `--remote <NAME>`")]
+    AmbiguousRemote(String),
     /// Anything else — dialog I/O, decoding, query failure.
     #[error("{0}")]
     Io(String),
@@ -158,6 +162,27 @@ pub async fn upstream_configured(site: &TonkSite) -> Result<bool, RemoteError> {
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
     Ok(session.handle().upstream().is_some())
+}
+
+/// Local name of the remote the site's `main` branch tracks, or
+/// `None` when no upstream is wired.
+///
+/// The upstream cell records the remote under the same local name
+/// it was registered with, so the answer compares straight against
+/// a [`RemoteRecord`]'s `name`. `tonk invite` uses that comparison
+/// to tell whether the remote it is about to embed in a link is the
+/// one the repo actually pushes to. An upstream pointing at another
+/// local branch names no remote and reads as `None` — tonk never
+/// wires one, and there is no remote to compare against if it did.
+pub async fn upstream_remote(site: &TonkSite) -> Result<Option<String>, RemoteError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
+    Ok(match session.handle().upstream() {
+        Some(Upstream::Remote { remote, .. }) => Some(remote),
+        Some(Upstream::Local { .. }) | None => None,
+    })
 }
 
 /// Set the local `main` branch's upstream to `<remote>/main`,
@@ -284,7 +309,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<RemoteRecord>, RemoteError> {
 }
 
 /// Look up one remote by name. Convenience wrapper around
-/// [`list`] for the invite-mint path.
+/// [`list`], used by [`resolve`] and [`set_upstream`].
 pub async fn find(site: &TonkSite, name: &str) -> Result<Option<RemoteRecord>, RemoteError> {
     let mut remotes: HashMap<String, RemoteRecord> = list(site)
         .await?
@@ -292,6 +317,40 @@ pub async fn find(site: &TonkSite, name: &str) -> Result<Option<RemoteRecord>, R
         .map(|r| (r.name.clone(), r))
         .collect();
     Ok(remotes.remove(name))
+}
+
+/// Pick the remote a command should act on.
+///
+/// `explicit` names one outright. Otherwise a lone registered remote is
+/// the obvious choice — the same implicit-when-unambiguous reading
+/// `tonk remote add` applies when it wires a first remote as the
+/// upstream. No remotes at all means there is nothing to act on
+/// (`None`, not an error — a local-only repo is a legitimate thing to
+/// invite someone to), and several is a question only the caller can
+/// answer.
+pub async fn resolve(
+    site: &TonkSite,
+    explicit: Option<&str>,
+) -> Result<Option<RemoteRecord>, RemoteError> {
+    if let Some(name) = explicit {
+        let record = find(site, name)
+            .await?
+            .ok_or_else(|| RemoteError::UnknownRemote(name.to_owned()))?;
+        return Ok(Some(record));
+    }
+
+    let mut remotes = list(site).await?;
+    match remotes.len() {
+        0 => Ok(None),
+        1 => Ok(Some(remotes.remove(0))),
+        _ => Err(RemoteError::AmbiguousRemote(
+            remotes
+                .iter()
+                .map(|record| record.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------- //
