@@ -28,16 +28,21 @@ requires its 256-bit bearer secret.
 
 ## RP ID invariants
 
-The passkey RP ID is the root-key custody boundary: every origin under it can
-derive any visiting user's root key from the PRF output. This service relies
-on `rp.id` being pinned to the apex, `tonk.spot`, for every production host
-under it (see `tonk-identity`'s `apex_rp_id`). That pin only holds if nothing
-untrusted is ever served from the apex or a subdomain of it — a hostile page
-on `*.tonk.spot` could otherwise derive root keys for the same credentials.
-Staging is not yet on this apex; it is moving behind Tailscale precisely so
-it can stay off-apex and mint disjoint, staging-only credentials rather than
-sharing the production custody boundary. Once staging's env stanza is added
-to `wrangler.account.toml`, its route must not live under `tonk.spot`.
+The passkey RP ID is the root-key custody boundary: any origin allowed to use
+it can derive any visiting user's root key from the PRF output. This service
+relies on `rp.id` being pinned to exactly one origin, `tonk.spot` (see
+`tonk-identity`'s `apex_rp_id`). Every other host — `www.tonk.spot`, staging,
+and any wildcard hostname under the apex — is its own relying party with its
+own disjoint credentials, so none of them can derive an apex root key.
+
+Two things follow. Production account ceremonies run only on `tonk.spot`;
+`hub.tonk.xyz` serves the same build but is a different relying party, so
+`tonk-ui` refuses ceremonies there rather than writing a second, disjoint
+identity for the same person into this registry. And staging runs off-apex on
+`staging.tonk.xyz` against its own registry, minting staging-only credentials.
+
+Widening the RP ID later is possible via Related Origin Requests. Narrowing it
+is not: it orphans every credential minted under the wider boundary.
 
 ## Endpoints
 
@@ -126,7 +131,29 @@ First deploy, in order:
    unauthenticated caller can fan out email sends or pending D1 rows.
 7. `wrangler deploy -c wrangler.account.toml`.
 
-There is no staging env stanza yet: staging's apex is moving behind
-Tailscale, and its env should be added to `wrangler.account.toml` once that
-lands (see RP ID invariants above for why staging needs its own, off-apex
-host rather than reusing production's).
+### Staging
+
+Staging is a wrangler environment in the same config, on `accounts-staging.tonk.xyz`
+with its own database and bucket. Deploy it the same way, in order:
+
+1. `wrangler d1 create tonk-accounts-staging` and paste the returned id into
+   `database_id` under `[[env.staging.d1_databases]]`.
+2. `wrangler d1 migrations apply tonk-accounts-staging --remote -c wrangler.account.toml --env staging`.
+3. `wrangler r2 bucket create tonk-account-chains-staging`.
+4. `wrangler secret put RESEND_API_KEY -c wrangler.account.toml --env staging`.
+   Secrets are per-environment; the production secret is not inherited.
+5. Add the `accounts-staging.tonk.xyz` DNS record in the `tonk.xyz` zone.
+6. Add the WAF rate limiting rule for `accounts-staging.tonk.xyz`, matching
+   the production rule above. Staging shares the production Resend key, so it
+   shares the email fan-out vector.
+7. `wrangler deploy -c wrangler.account.toml --env staging`.
+
+Exercise the flow against staging by creating an account on
+`https://staging.tonk.xyz/account` — `tonk-ui` picks the staging service from
+the page host — then linking the CLI:
+
+```
+tonk account link \
+  --service-url https://accounts-staging.tonk.xyz \
+  --account-url https://staging.tonk.xyz/account/link
+```
