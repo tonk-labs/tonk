@@ -37,7 +37,8 @@ no_autoreload = true
 # only re-copies when trunk's watcher fires. Without this entry, a fresh
 # `npm run build` in tonk-code wouldn't reach the served dist (stale JS). The same
 # applies to `../tonk-prose/assets` (the `<tonk-prose>` markdown editor bundle)
-# and the guest Web Awesome bundle under `./assets/guest` (covered by `./`).
+# and `../tonk-table/assets` (the `<tonk-table>` IronCalc spreadsheet bundle),
+# plus the guest Web Awesome bundle under `./assets/guest` (covered by `./`).
 watch = [
     "./",
     "../tonk-common",
@@ -59,6 +60,7 @@ watch = [
     "../tonk-sigil/src",
     "../tonk-code/assets",
     "../tonk-prose/assets",
+    "../tonk-table/assets",
     "../tonk-tree/src",
 ]
 

@@ -4749,6 +4749,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-table"
+version = "0.6.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-template"
 version = "0.6.0"
 dependencies = [

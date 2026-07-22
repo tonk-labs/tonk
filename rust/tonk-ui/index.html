@@ -526,6 +526,21 @@
             data-target-path="tonk-prose"
         />
 
+        <!-- `<tonk-table>` IronCalc spreadsheet bundle, same layout
+       contract as tonk-prose above: the shell (`tonk-table.js`)
+       registers the element and lazily imports the grid core
+       (`tonk-table-grid.js`) from a sibling URL on first connect; the
+       grid in turn pulls `tonk-table-engine.js` (the base64-embedded
+       IronCalc engine wasm) the same way, so all three files must sit
+       in the same directory. Load it with the crate's
+       `install("/tonk-table/tonk-table.js")` or a module script. -->
+        <link
+            data-trunk
+            rel="copy-dir"
+            href="../tonk-table/assets"
+            data-target-path="tonk-table"
+        />
+
         <!-- Async like the webawesome sheet above (trunk forwards the
          extra attributes to the emitted link, entity-escaped but decoded
          by the HTML parser). First paint therefore needs no external CSS

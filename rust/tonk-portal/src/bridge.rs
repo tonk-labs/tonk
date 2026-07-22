@@ -646,6 +646,56 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
           parent.postMessage({__tonkRuntime:"warn",error:"tonk-prose inject: "+String(proseErr)+(proseErr&&proseErr.stack?"\n"+proseErr.stack:"")},"*");
         }
       }
+      // The <tonk-table> spreadsheet. LAZY end-to-end like <tonk-prose>
+      // above: the boot payload carries only the registration shell; the
+      // grid core AND the multi-megabyte engine-bytes leaf cross the
+      // boundary only when the first <tonk-table> actually connects. The
+      // shell consults window.__tonkTableGrid — ours asks the trusted
+      // parent for the grid graph (`need-table`), mints blobs from the
+      // `inject-table` reply (the grid's relative import of the engine
+      // leaf rewrites to its blob in dependency order), and resolves the
+      // grid's blob URL. The engine then instantiates from the leaf's
+      // embedded bytes — no fetch, which is why it works at this opaque
+      // origin at all.
+      if (d.table && d.table.length) {
+        try {
+          var tableBlobs=mintGraph(d.table);
+          var tableGrid=null;
+          window.__tonkTableGrid=function(){
+            if (!tableGrid) {
+              tableGrid=new Promise(function(resolve,reject){
+                var timer=setTimeout(function(){
+                  window.removeEventListener("message",onTable);
+                  reject(new Error("tonk-table: no inject-table reply from parent"));
+                },15000);
+                var onTable=function(e){
+                  var m=e.data; if(!m||m.__tonkRuntime!=="inject-table") return;
+                  clearTimeout(timer);
+                  window.removeEventListener("message",onTable);
+                  try {
+                    var blobs=mintGraph(m.table||[]);
+                    var url=blobs["tonk-table-grid.js"];
+                    if (url) resolve(url);
+                    else reject(new Error("tonk-table: grid core missing from inject-table"));
+                  } catch(err) { reject(err); }
+                };
+                window.addEventListener("message",onTable);
+                parent.postMessage({__tonkRuntime:"need-table"},"*");
+              });
+              // A failed request must not poison the cache — the shell also
+              // clears its module promise on failure, so the next element
+              // connect retries the whole handshake.
+              tableGrid.catch(function(){ tableGrid=null; });
+            }
+            return tableGrid;
+          };
+          await import(tableBlobs["tonk-table.js"]);
+        } catch(tableErr) {
+          // Same containment as tonk-prose: a missing spreadsheet must not
+          // abort the rest of the guest runtime.
+          parent.postMessage({__tonkRuntime:"warn",error:"tonk-table inject: "+String(tableErr)+(tableErr&&tableErr.stack?"\n"+tableErr.stack:"")},"*");
+        }
+      }
     } catch(err) {
       parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
     }
@@ -782,12 +832,19 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // injected above.
     let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
 
+    // The `<tonk-table>` spreadsheet SHELL only: same lazy contract as
+    // tonk-prose above — the grid core and the multi-megabyte IronCalc
+    // engine bytes stay out of the boot payload; the guest requests them
+    // over `need-table` the first time an element actually connects.
+    let table = bundle_graph_entries(fetch_tonk_table_shell().await);
+
     let payload = Object::new();
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
     let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
     let _ = Reflect::set(&payload, &"code".into(), &code);
     let _ = Reflect::set(&payload, &"prose".into(), &prose);
+    let _ = Reflect::set(&payload, &"table".into(), &table);
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
     let _ = Reflect::set(&payload, &"wa".into(), &wa);
@@ -1025,6 +1082,85 @@ fn inject_prose_core(iframe: &HtmlIFrameElement) {
     });
 }
 
+/// Fetch ONLY the `<tonk-table>` registration shell for the guest boot
+/// payload. Deliberately not `fetch_bundle_graph`: the shell's source
+/// mentions `"./tonk-table-grid.js"` (its default-resolution fallback),
+/// and the graph walk would follow it — eagerly shipping the grid and
+/// the multi-megabyte engine-bytes leaf to every guest, which is
+/// exactly what the lazy split avoids.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_tonk_table_shell() -> Vec<(String, String)> {
+    match fetch_text("/tonk-table/tonk-table.js").await {
+        Ok(src) => vec![("tonk-table.js".to_owned(), src)],
+        Err(e) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "/tonk-table inject: skipping tonk-table.js: {e}"
+            )));
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch the `<tonk-table>` grid core for the on-demand `need-table`
+/// reply: the grid chunk plus the engine-bytes leaf, BY NAME rather
+/// than via `fetch_bundle_graph`. The grid chunk embeds the wasm
+/// IMPORT-OBJECT key `"./wasm_bg.js"` — a string the engine wasm names
+/// its import module by, not a real file — and the graph walk would
+/// chase it into the SPA's HTML fallback, after which the guest-side
+/// blob rewrite would corrupt the key and `WebAssembly.instantiate`
+/// would reject the engine. The build pins the file set (three fixed
+/// entries, no code splitting), so the explicit list is an invariant,
+/// not a guess.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_tonk_table_core() -> Vec<(String, String)> {
+    fetch_bundle_files(
+        "/tonk-table",
+        &["tonk-table-grid.js", "tonk-table-engine.js"],
+    )
+    .await
+}
+
+/// Fetch an explicit list of bundle files (no graph walk) from `base`
+/// for guest injection. Best-effort like `fetch_bundle_graph` — a
+/// missing file is skipped, so the feature degrades rather than
+/// failing the whole inject.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_bundle_files(base: &str, names: &[&str]) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = Vec::new();
+    for name in names {
+        match fetch_text(&format!("{base}/{name}")).await {
+            Ok(src) => files.push(((*name).to_owned(), src)),
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "{base} inject: skipping {name}: {e}"
+                )));
+            }
+        }
+    }
+    files
+}
+
+/// Reply to a guest's `need-table` request: fetch the grid core (the
+/// parent is trusted + networked; the sealed guest can't fetch) and
+/// post it back as an `inject-table` envelope on the guest's window.
+/// Called from the page-level message listener when the first
+/// `<tonk-table>` in that guest connects. Best-effort like the boot
+/// inject — an empty graph makes the guest's promise reject and the
+/// element render empty rather than wedging the runtime.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn inject_table_core(iframe: &HtmlIFrameElement) {
+    let Some(content_window) = iframe.content_window() else {
+        return;
+    };
+    spawn_local(async move {
+        let table = bundle_graph_entries(fetch_tonk_table_core().await);
+        let payload = Object::new();
+        let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject-table".into());
+        let _ = Reflect::set(&payload, &"table".into(), &table);
+        let _ = content_window.post_message(&payload, "*");
+    });
+}
+
 /// Fetch a code-split editor bundle graph (`entries` + every `./…` chunk they
 /// transitively import) from `base` for guest injection. Returns
 /// `(name, src)` pairs the guest blobs + import-rewrites. Best-effort — a
@@ -1240,6 +1376,18 @@ pub(crate) fn install_message_listener() {
                         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                         if let Some(iframe) = matched {
                             inject_prose_core(&iframe);
+                        }
+                    }
+                    // Lazy `<tonk-table>` grid core (grid + engine bytes):
+                    // same contract as `need-prose` above.
+                    "need-table" => {
+                        let matched = registry.borrow().iter().find_map(|entry| {
+                            let cw: JsValue = entry.iframe.content_window()?.into();
+                            (cw == source).then(|| entry.iframe.clone())
+                        });
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        if let Some(iframe) = matched {
+                            inject_table_core(&iframe);
                         }
                     }
                     "error" => {
