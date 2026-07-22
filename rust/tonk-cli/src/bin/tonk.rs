@@ -21,7 +21,6 @@ use tonk_cli::migrate::{self, Mode as MigrateMode};
 use tonk_cli::output::Format;
 use tonk_cli::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
 use tonk_cli::render::{self, RenderRoute};
-use tonk_cli::share::{self, ShareDisplayOutcome, ShareOptions, ShareOutcome, ShareViewOutcome};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views::{self, ViewSummary};
@@ -217,12 +216,6 @@ enum Command {
     },
 
     // -- collab -------------------------------------------------------
-    /// Push, then mint a launcher URL onto a live view
-    Share {
-        #[command(subcommand)]
-        command: ShareCommand,
-    },
-
     /// Mint an invite URL granting access to this repo
     ///
     /// Mints a UCAN delegation chain over the local repo. The
@@ -378,104 +371,6 @@ enum Command {
         /// Resume checking for new releases in the background.
         #[arg(long)]
         enable_check: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum ShareCommand {
-    /// Share a concept's auto-rendered listing
-    ///
-    /// The recipient lands on the auto-rendered concept view at
-    /// `/space/<space-name>/branch/main/concept/<name>`.
-    #[command(
-        after_help = "Examples:\n  tonk share concept person\n  tonk share concept person --space-name demo"
-    )]
-    Concept {
-        /// Local name of the concept to share.
-        #[arg(value_name = "NAME")]
-        name: String,
-        /// Override the URL prefix the launcher is built against.
-        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
-        ui_base: String,
-        /// Suggested local name for the recipient's space —
-        /// pre-fills the join form's "Local name" input. The
-        /// recipient can rename before joining.
-        #[arg(long, value_name = "NAME")]
-        space_name: Option<String>,
-        /// Embed an explicit remote's endpoint as the invite's
-        /// `remote=` parameter. Defaults to the only registered
-        /// remote when there's exactly one.
-        #[arg(long, value_name = "NAME")]
-        remote: Option<String>,
-    },
-
-    /// Share a raw HTML page through the iframe viewer
-    ///
-    /// The recipient lands on the iframe viewer at
-    /// `/space/<space-name>/branch/main/view/<entity>` with the body
-    /// served from the entity's `text/html` claim. Events don't fire
-    /// there — for interactive, data-bound views use `share display`.
-    /// Hidden from the command list for exactly that reason: it's a
-    /// trap next to `share display`, which is what you almost always
-    /// want.
-    #[command(hide = true, after_help = "Examples:\n  tonk share view my-page")]
-    View {
-        /// Bookmark name or `did:key:…` entity URI for the view.
-        /// `tonk view ls` lists what's available.
-        #[arg(value_name = "NAME_OR_ENTITY")]
-        target: String,
-        /// Override the URL prefix the launcher is built against.
-        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
-        ui_base: String,
-        /// Suggested local name for the recipient's space.
-        #[arg(long, value_name = "NAME")]
-        space_name: Option<String>,
-        /// Embed an explicit remote's endpoint.
-        #[arg(long, value_name = "NAME")]
-        remote: Option<String>,
-    },
-
-    /// Share an entity rendered live through <tonk-display>
-    ///
-    /// The recipient lands on
-    /// `/space/<space-name>/branch/main/display/<subject>` with
-    /// the supplied `--view` carried across as a query parameter.
-    /// Use this for declarative views built against the `view`
-    /// concept (`{model, display}`), identified by their anchor
-    /// name — `share view` is for the iframe viewer.
-    #[command(
-        after_help = "Examples:\n  tonk share display alice --view person-card\n  tonk share display alice --model person"
-    )]
-    Display {
-        /// Bookmark name or `did:key:…` entity URI for the
-        /// entity to render. Names survive entity-URI changes
-        /// (re-asserting a view body) so they're usually the
-        /// better choice.
-        #[arg(value_name = "NAME_OR_ENTITY")]
-        subject: String,
-        /// The view's anchor name (the `&name` on its `view!:`),
-        /// forwarded as `?view=`. `<tonk-display>` resolves it to
-        /// the view entity the name points at and reads that
-        /// view's own `model`. Omit it for carousel mode (every
-        /// view published for `--model`). Mutually exclusive with
-        /// `--model`: a named view declares its own model.
-        #[arg(long, value_name = "NAME", conflicts_with = "model")]
-        view: Option<String>,
-        /// Concept name (validated locally) or URI for carousel
-        /// mode, forwarded as `?model=`. Not needed with `--view`
-        /// (the view declares its own model); required when
-        /// `--view` is omitted.
-        #[arg(long, value_name = "CONCEPT", required_unless_present = "view")]
-        model: Option<String>,
-        /// Override the URL prefix the launcher is built against.
-        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
-        ui_base: String,
-        /// Suggested local name for the recipient's space.
-        #[arg(long, value_name = "NAME")]
-        space_name: Option<String>,
-        /// Embed an explicit remote's endpoint.
-        #[arg(long, value_name = "NAME")]
-        remote: Option<String>,
     },
 }
 
@@ -751,14 +646,6 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 RemoteCommand::SetUpstream { .. } => "set-upstream",
             }),
         ),
-        Command::Share { command } => (
-            "share",
-            Some(match command {
-                ShareCommand::Concept { .. } => "concept",
-                ShareCommand::View { .. } => "view",
-                ShareCommand::Display { .. } => "display",
-            }),
-        ),
         Command::Concept { command } => (
             "concept",
             Some(match command {
@@ -853,7 +740,6 @@ async fn main() {
         Command::Join { url, name } => claim_invite(url, name).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
-        Command::Share { command } => share_op(command, spot.as_deref()).await,
         Command::Concept { command } => concept_op(command, spot.as_deref()).await,
         Command::View { command } => view_op(command, spot.as_deref()).await,
         Command::Home { models } => home_op(models, spot.as_deref()).await,
@@ -1398,130 +1284,6 @@ fn print_blob_add_outcome(outcome: &BlobAddOutcome) {
     eprintln!(
         "  content-type: {}, size: {} bytes",
         outcome.content_type, outcome.size
-    );
-}
-
-async fn share_op(command: ShareCommand, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
-        Ok(opened) => opened,
-        Err(code) => return code,
-    };
-
-    match command {
-        ShareCommand::Concept {
-            name,
-            ui_base,
-            space_name,
-            remote,
-        } => {
-            let options = ShareOptions {
-                ui_base: Some(ui_base),
-                remote,
-                space_name,
-            };
-            match share::share_concept(&site, &name, options).await {
-                Ok(outcome) => {
-                    print_share_outcome(&outcome);
-                    ExitCode::Success
-                }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
-            }
-        }
-        ShareCommand::View {
-            target,
-            ui_base,
-            space_name,
-            remote,
-        } => {
-            let options = ShareOptions {
-                ui_base: Some(ui_base),
-                remote,
-                space_name,
-            };
-            match share::share_view(&site, &target, options).await {
-                Ok(outcome) => {
-                    print_share_view_outcome(&outcome);
-                    ExitCode::Success
-                }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
-            }
-        }
-        ShareCommand::Display {
-            subject,
-            view,
-            model,
-            ui_base,
-            space_name,
-            remote,
-        } => {
-            let options = ShareOptions {
-                ui_base: Some(ui_base),
-                remote,
-                space_name,
-            };
-            match share::share_display(&site, &subject, view.as_deref(), model.as_deref(), options)
-                .await
-            {
-                Ok(outcome) => {
-                    print_share_display_outcome(&outcome);
-                    ExitCode::Success
-                }
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    err.exit_code()
-                }
-            }
-        }
-    }
-}
-
-fn print_share_outcome(outcome: &ShareOutcome) {
-    println!("{}", outcome.url);
-    eprintln!("concept: {}", outcome.concept_name);
-    eprintln!("space:   {}", outcome.space_name);
-    eprintln!(
-        "remote:  {} -> {}",
-        outcome.remote_name, outcome.remote_endpoint,
-    );
-}
-
-fn print_share_view_outcome(outcome: &ShareViewOutcome) {
-    println!("{}", outcome.url);
-    if let Some(name) = &outcome.view_name {
-        eprintln!("view:    {} ({})", name, outcome.entity);
-    } else {
-        eprintln!("view:    {}", outcome.entity);
-    }
-    eprintln!("space:   {}", outcome.space_name);
-    eprintln!(
-        "remote:  {} -> {}",
-        outcome.remote_name, outcome.remote_endpoint,
-    );
-}
-
-fn print_share_display_outcome(outcome: &ShareDisplayOutcome) {
-    println!("{}", outcome.url);
-    if let Some(name) = &outcome.subject_name {
-        eprintln!("subject: {} ({})", name, outcome.subject_entity);
-    } else {
-        eprintln!("subject: {}", outcome.subject_entity);
-    }
-    if let Some(view) = &outcome.view_name {
-        eprintln!("view:    {}", view);
-    }
-    if let Some(model) = &outcome.model {
-        eprintln!("model:   {}", model);
-    }
-    eprintln!("space:   {}", outcome.space_name);
-    eprintln!(
-        "remote:  {} -> {}",
-        outcome.remote_name, outcome.remote_endpoint,
     );
 }
 
