@@ -94,6 +94,8 @@ web-sys = { workspace = true, features = [
     "ServiceWorker",
     "ServiceWorkerGlobalScope",
     "ServiceWorkerRegistration",
+    "VisibilityState",
+    "WindowClient",
     "WorkerGlobalScope",
     "WorkerLocation",
     "WorkerNavigator",

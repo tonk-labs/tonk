@@ -84,8 +84,6 @@ tonk remote add <name> <url>                # register a remote; the first one b
 tonk remote set-upstream <name>             # re-point which remote main tracks
 tonk invite [--remote <name>]               # mint a paste-able invite URL (pushes first)
 tonk join '<invite-url>' --name <spot>      # claim an invite into a fresh spot
-tonk share concept <name>                   # launcher URL onto a live concept view
-tonk share display <subject> --view <name>  # launcher URL onto a <tonk-display> render
 tonk render <route>                         # headless HTML render (e.g. alice@person!card)
 ```
 

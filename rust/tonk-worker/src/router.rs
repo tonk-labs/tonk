@@ -356,17 +356,44 @@ pub mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    /// A random id minted once per test *process*, mixed into every profile
+    /// name so two runs never collide on storage a shared browser profile
+    /// kept between them.
+    fn session_nonce() -> u32 {
+        use std::sync::OnceLock;
+        static NONCE: OnceLock<u32> = OnceLock::new();
+        *NONCE.get_or_init(rand::random::<u32>)
+    }
+
     /// Creates a test state with the default storage backend.
     ///
     /// The state has a profile and operator but *no* repository —
     /// tests that need one call [`put_repo`] with a display label and
     /// use the minted routing key it returns. Every create mints a
-    /// fresh identity, so repeated runs never collide even when they
-    /// share a label.
+    /// fresh identity for the repos it makes, but the profile itself
+    /// is durable IndexedDB state keyed by name: each call mints its
+    /// own unique profile name so tests that rename or restamp the
+    /// profile never bleed into one another.
+    ///
+    /// The sequence number alone is unique only *within* a run —
+    /// `test-tonk-3` is whichever test happened to run third — so a
+    /// runner that reuses a browser profile (safaridriver, a persistent
+    /// Chrome user-data-dir) would hand run N's leftover IndexedDB to
+    /// run N+1's third test, reviving the order dependence in cross-run
+    /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
+    /// that today; the [`session_nonce`] makes it unconditional.
     pub async fn test_state() -> TonkState {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let profile_name = format!(
+            "test-tonk-{}-{}",
+            session_nonce(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open("test-tonk")
+        let profile = Profile::open(&profile_name)
             .perform(&storage)
             .await
             .expect("Failed to create test profile");
@@ -382,7 +409,7 @@ pub mod tests {
         TonkState {
             profile,
             operator,
-            profile_name: "test-tonk".to_string(),
+            profile_name,
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
@@ -1824,6 +1851,68 @@ pub mod tests {
         assert!(
             status.remote.is_some(),
             "remote head present — the shared base the upstream still points at"
+        );
+    }
+
+    /// A repo whose only upstreamed branch cannot reach its remote must
+    /// resolve as `Err`, naming the repo — that is what re-marks it dirty
+    /// in `drain_sync` so the next heartbeat retries it. A silent `Ok`
+    /// here would drop the repo out of the work queue on first failure.
+    ///
+    /// This is a real, deterministic failure — a loopback connection
+    /// refused, no external network or DNS involved — not a faked one.
+    #[dialog_common::test]
+    async fn it_reports_a_reconcile_failure_for_an_unreachable_upstream() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_repository::SiteAddress;
+
+        let state = test_state().await;
+        let (app, app_state, _lsp) = super::api_router_with_state(state);
+
+        let (repo, _subject) = put_repo_info(&app, "sync-repo-unreachable").await;
+
+        // A real remote address on loopback with nothing listening: the
+        // connection is refused immediately (no external network, no
+        // DNS lookup, nothing to time out), so the sweep's pull fails
+        // deterministically.
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(
+                    "http://127.0.0.1:1/ucan/",
+                ))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attach = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            attach.status(),
+            StatusCode::OK,
+            "remote attach should succeed (it never touches the network)"
+        );
+
+        let message = super::sync_repository(&app_state, &repo)
+            .await
+            .expect_err("an unreachable upstream must not resolve as a clean sweep");
+        assert!(
+            message.contains(&repo),
+            "the error should name the repo that failed to reconcile: {message}"
         );
     }
 
