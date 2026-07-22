@@ -373,6 +373,21 @@
             '';
           };
 
+          tonk-account-service = buildWasmCrate {
+            pname = "tonk-account-service";
+
+            buildPhase = ''
+              cd rust/tonk-account-service
+              worker-build --release
+              echo "fin"
+            '';
+
+            installPhase = ''
+              mkdir -p $out
+              cp -r ./build/* $out/
+            '';
+          };
+
           # The user guide (mdBook), built to static HTML. Served under
           # /guide/ on the deployed site, so `site-url` in book.toml must
           # match that prefix.
@@ -400,6 +415,7 @@
             buildPhase = ''
               mkdir -p ./build
               cp -r ${tonk-access-service} ./build/tonk-access-service
+              cp -r ${tonk-account-service} ./build/tonk-account-service
               cp -r ${tonk-ui} ./build/tonk-ui
               # Files copied from the read-only nix store keep their
               # read-only perms, so make the tonk-ui tree writable before

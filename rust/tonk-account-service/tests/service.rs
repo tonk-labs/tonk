@@ -1,0 +1,166 @@
+//! Integration test for the native `AccountServer`: drives the full
+//! happy path over real HTTP with `reqwest`, exercising the same route
+//! surface, JSON shapes, and status codes as the Cloudflare Worker.
+#![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use dialog_credentials::Ed25519Signer;
+use dialog_ucan_core::InvocationBuilder;
+use dialog_ucan_core::promise::Promised;
+use dialog_varsig::Principal;
+use tonk_account_service::helpers::AccountServer;
+
+const ROOT_PRF: [u8; 32] = [7u8; 32];
+const DEVICE_SEED: [u8; 32] = [8u8; 32];
+
+/// Build a signed UCAN invocation container for the account's first
+/// device, crediting the same `root -> device` delegation minted for
+/// account creation.
+async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Vec<u8> {
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let root_did = root.did();
+    let chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+        .await
+        .unwrap();
+    let delegation = chain.proofs().last().unwrap().clone();
+    let cid = delegation.to_cid();
+    let invocation = InvocationBuilder::new()
+        .issuer(device.clone())
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(command)
+        .arguments(args)
+        .proofs(vec![cid])
+        .try_build()
+        .await
+        .unwrap();
+    let mut proofs = std::collections::HashMap::new();
+    proofs.insert(cid, Arc::new(delegation));
+    dialog_ucan_core::InvocationChain::new(invocation, proofs)
+        .to_bytes()
+        .unwrap()
+}
+
+#[dialog_common::test]
+async fn it_drives_the_full_ceremony_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+
+    // POST /codes -> request a verification code, then read it back out
+    // of the captured emails instead of receiving mail.
+    let response = client
+        .post(format!("{base}/codes"))
+        .json(&serde_json::json!({ "email": "person@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let code = {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .find(|(email, _)| email == "person@example.com")
+            .map(|(_, code): &(String, String)| code.clone())
+            .expect("a code was sent to person@example.com")
+    };
+
+    // POST /accounts -> create the account and its first device from a
+    // fixture root -> device delegation.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let root_did = root.did().to_string();
+    let device_did = device.did().to_string();
+    let delegation_chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+        .await
+        .unwrap();
+    let delegation_hex = hex::encode(delegation_chain.to_bytes().unwrap());
+
+    let response = client
+        .post(format!("{base}/accounts"))
+        .json(&serde_json::json!({
+            "email": "person@example.com",
+            "code": code,
+            "rootDid": root_did,
+            "credentialId": "cred-1",
+            "deviceDid": device_did,
+            "deviceName": "laptop",
+            "delegationHex": delegation_hex,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let created: serde_json::Value = response.json().await.unwrap();
+    assert!(created["accountId"].is_i64());
+
+    // POST /devices/list -> the newly registered device shows up.
+    let body = container(
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/devices/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let devices: serde_json::Value = response.json().await.unwrap();
+    let devices = devices.as_array().unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0]["did"], device_did);
+    assert_eq!(devices[0]["name"], "laptop");
+    assert_eq!(devices[0]["status"], "active");
+
+    // POST /chains/put then POST /chains/get -> round-trip chain bytes.
+    let chain_bytes = b"a delegation chain, backed up".to_vec();
+    let mut put_args = BTreeMap::new();
+    put_args.insert(
+        "chain".to_string(),
+        Promised::String(hex::encode(&chain_bytes)),
+    );
+    let body = container(
+        vec!["account".into(), "chain".into(), "put".into()],
+        put_args,
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/chains/put"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let put_result: serde_json::Value = response.json().await.unwrap();
+    let key = put_result["key"].as_str().unwrap().to_string();
+
+    let mut get_args = BTreeMap::new();
+    get_args.insert("key".to_string(), Promised::String(key));
+    let body = container(
+        vec!["account".into(), "chain".into(), "get".into()],
+        get_args,
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/chains/get"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/octet-stream"
+    );
+    let round_tripped = response.bytes().await.unwrap();
+    assert_eq!(round_tripped.as_ref(), chain_bytes.as_slice());
+}
