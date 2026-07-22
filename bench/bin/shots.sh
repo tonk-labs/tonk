@@ -7,7 +7,12 @@
 # Blank lines and #-comments are skipped. A failed screenshot is
 # recorded as missing, not fatal — the judge sees what there is.
 #
-# Env: ROOT, RUN_DIR, BENCH_URL, SPACE_NAME, SCENARIO (scenario dir)
+# Every `tonk` call here resolves through TONK_SPOT (exported by
+# run.sh). The CLI never consults the cwd, so there is nothing to
+# `cd` into.
+#
+# Env: ROOT, RUN_DIR, BENCH_URL, SPACE_NAME, SCENARIO (scenario dir),
+#      TONK_SPOT
 set -euo pipefail
 
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; BENCH_URL="${BENCH_URL:?}"
@@ -29,12 +34,11 @@ mkdir -p "$RUN_DIR/shots"
 # a separate referent fact. Matching a hardcoded `id:<view-name>` would
 # see only the first shape.
 view_model() {
-  local site="$1"
-  local view_name="$2"
+  local view_name="$1"
   command -v jq >/dev/null 2>&1 || return 0
 
   local view_json
-  view_json="$(cd "$site" && "$TONK" query view "$view_name" --json 2>/dev/null)" || return 0
+  view_json="$("$TONK" query view "$view_name" --json 2>/dev/null)" || return 0
 
   local model_uri
   model_uri="$(printf '%s' "$view_json" \
@@ -43,7 +47,7 @@ view_model() {
 
   # The model field holds a concept URI; the concept's own row carries
   # the name the display route wants.
-  cd "$site" && "$TONK" eval --no-sync --format json -c 'concept:' 2>/dev/null \
+  "$TONK" eval --no-sync --format json -c 'concept:' 2>/dev/null \
     | jq -r --arg u "$model_uri" \
         '.matches_before[0].results[] | select(.this == $u) | .fields.name // empty' \
       2>/dev/null || return 0
@@ -64,7 +68,9 @@ view_model() {
 resolve_display() {
   local view_name="$1"
   local site="$RUN_DIR/site"
-  if [ ! -d "$site/.tonk" ]; then
+  # Canonical spot storage puts the repository directly under the site
+  # directory — there is no `.tonk` level to look for.
+  if [ ! -d "$site" ]; then
     echo "shots: no site at $site — skipping display:$view_name" >&2
     return 1
   fi
@@ -72,7 +78,7 @@ resolve_display() {
   # Step 1: push, so the browser side sees the current branch.
   local push_stderr
   push_stderr="$(mktemp)"
-  cd "$site" && "$TONK" push >/dev/null 2>"$push_stderr" || {
+  "$TONK" push >/dev/null 2>"$push_stderr" || {
     echo "shots: tonk push failed: $(cat "$push_stderr")" >&2
     rm -f "$push_stderr"
     return 1
@@ -81,7 +87,7 @@ resolve_display() {
 
   # Step 2: resolve the model concept name from the view's name.
   local model_name
-  model_name="$(view_model "$site" "$view_name")"
+  model_name="$(view_model "$view_name")"
   if [ -n "$model_name" ]; then
     echo "shots: display:$view_name → model concept '$model_name'" >&2
   else
