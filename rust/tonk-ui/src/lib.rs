@@ -3,6 +3,10 @@
 //!
 //! This crate provides the web-based user interface for Tonk.
 
+/// Top-document account creation and self-link element.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod account;
+
 /// API client for interacting with the Tonk service worker.
 pub mod api;
 

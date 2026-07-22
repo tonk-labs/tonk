@@ -11,15 +11,12 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     use thirtyfour::prelude::*;
 
-    #[dialog_common::test]
-    async fn it_creates_a_passkey_and_derives_a_stable_root_did(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    async fn driver_with_prf(env: TestEnvironment) -> Result<WebDriver> {
         let driver = env.driver().await?;
-
-        // A CTAP2.1 platform authenticator with PRF (hmac-secret), user
-        // verification, and automatic presence — the shape of a real
-        // passkey provider.
         let devtools = ChromeDevTools::new(driver.handle.clone());
         devtools.execute_cdp("WebAuthn.enable").await?;
         devtools
@@ -39,9 +36,6 @@ mod tests {
                 }),
             )
             .await?;
-
-        // Wait for the ceremony hook: it installs as soon as the UI
-        // wasm main runs, independent of service-worker readiness.
         driver
             .execute_async(
                 r#"
@@ -53,6 +47,14 @@ mod tests {
                 vec![],
             )
             .await?;
+        Ok(driver)
+    }
+
+    #[dialog_common::test]
+    async fn it_creates_a_passkey_and_derives_a_stable_root_did(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(env).await?;
 
         let created = driver
             .execute_async(
@@ -101,6 +103,57 @@ mod tests {
             dids[0], dids[1],
             "the root did must be stable across derivations"
         );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_a_root_signed_account_creation_in_one_browser_ceremony(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_ucan_core::principal::Principal;
+        use dialog_ucan_core::{DelegationChain, InvocationChain};
+
+        let driver = driver_with_prf(env).await?;
+        let device = Ed25519Signer::import(&[8u8; 32]).await?;
+        let device_did = device.did().to_string();
+        let output = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                window.tonkIdentity.createAccount({
+                    email: "person@example.com",
+                    code: "123456",
+                    deviceDid: arguments[0],
+                    deviceName: "test browser",
+                })
+                    .then((result) => done({ ok: result }))
+                    .catch((error) => done({ error: String(error) }));
+                "#,
+                vec![serde_json::Value::String(device_did.clone())],
+            )
+            .await?;
+        let output = output.json().clone();
+        assert!(output.get("error").is_none(), "ceremony failed: {output:?}");
+        let ceremony = &output["ok"];
+        assert_eq!(ceremony["deviceDid"], device_did);
+
+        let invocation = hex::decode(ceremony["invocationHex"].as_str().unwrap())?;
+        let invocation = InvocationChain::try_from(invocation.as_slice())?;
+        invocation
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await?;
+        assert_eq!(
+            invocation.command().0,
+            vec!["account".to_string(), "create".to_string()]
+        );
+
+        let delegation = hex::decode(ceremony["delegationHex"].as_str().unwrap())?;
+        let delegation = DelegationChain::try_from(delegation.as_slice())?;
+        assert_eq!(delegation.audience().to_string(), device_did);
+        assert_eq!(delegation.issuer(), invocation.subject());
 
         driver.quit().await?;
         Ok(())

@@ -1,0 +1,216 @@
+tonk-account {
+    --account-ink: var(--wa-color-text-normal, light-dark(#1d1d20, #f2f2f3));
+    --account-muted: var(--wa-color-text-quiet, light-dark(#62646b, #a4a5aa));
+    --account-surface: var(--wa-color-surface-raised, light-dark(#ffffff, #191a1d));
+    --account-field: var(--wa-color-surface-default, light-dark(#f5f5f6, #101113));
+    display: grid;
+    min-height: 100dvh;
+    place-items: center;
+    padding: 32px 20px;
+    box-sizing: border-box;
+    background: var(--wa-color-surface-default, light-dark(#ffffff, #101113));
+    color: var(--account-ink);
+    font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+}
+
+.account {
+    width: min(100%, 620px);
+    padding: 34px;
+    box-sizing: border-box;
+    background: var(--account-surface);
+    box-shadow:
+        0 0 0 1px rgb(0 0 0 / 6%),
+        0 1px 2px -1px rgb(0 0 0 / 6%),
+        0 12px 32px rgb(0 0 0 / 7%);
+}
+
+.account__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    color: inherit;
+    text-decoration: none;
+    min-height: 44px;
+}
+
+.account__wordmark {
+    font-family: "GestalteName", "Gestalte", sans-serif;
+    font-size: 34px;
+    font-weight: 500;
+    line-height: 1;
+}
+
+.account__badge {
+    padding: 2px 8px;
+    background: #deff1a;
+    color: #2a3005;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.account h1 {
+    margin: 42px 0 10px;
+    font-family: "Gestalte", Georgia, serif;
+    font-size: clamp(34px, 7vw, 52px);
+    line-height: 0.98;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+}
+
+.account__lede,
+.account__hint,
+.account__error {
+    text-wrap: pretty;
+}
+
+.account__lede {
+    max-width: 48ch;
+    margin: 0 0 30px;
+    color: var(--account-muted);
+    font-size: 16px;
+    line-height: 1.55;
+}
+
+.account__panel[hidden] {
+    display: none;
+}
+
+.account__actions,
+.account__form {
+    display: grid;
+    gap: 12px;
+}
+
+.account__form label {
+    display: grid;
+    gap: 7px;
+    color: var(--account-muted);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.account__form input {
+    width: 100%;
+    min-height: 46px;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in oklab, var(--account-ink) 22%, transparent);
+    border-radius: 0;
+    outline: 0;
+    background: var(--account-field);
+    color: var(--account-ink);
+    font: inherit;
+    transition-property: border-color, box-shadow;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+}
+
+.account__form input:focus {
+    border-color: var(--account-ink);
+    box-shadow: 0 0 0 3px color-mix(in oklab, #deff1a 45%, transparent);
+}
+
+.account__button {
+    display: grid;
+    place-items: center;
+    min-height: 46px;
+    padding: 11px 16px;
+    border: 0;
+    border-radius: 0;
+    background: var(--account-ink);
+    color: var(--account-surface);
+    font: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 8%);
+    transition-property: scale, opacity, box-shadow;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+}
+
+.account__button:hover:not(:disabled) {
+    box-shadow:
+        0 0 0 1px rgb(0 0 0 / 10%),
+        0 4px 12px rgb(0 0 0 / 10%);
+}
+
+.account__button:active:not(:disabled) {
+    scale: 0.96;
+}
+
+.account__button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
+.account__button--secondary {
+    background: var(--account-field);
+    color: var(--account-ink);
+}
+
+.account__button--quiet {
+    justify-self: start;
+    min-height: 44px;
+    padding-inline: 0;
+    background: transparent;
+    color: var(--account-muted);
+    box-shadow: none;
+}
+
+.account__hint {
+    margin: 14px 0 0;
+    color: var(--account-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.account__error {
+    margin: 20px 0 0;
+    padding: 12px 14px;
+    background: color-mix(in oklab, var(--wa-color-danger-fill-loud, #d9363e) 12%, transparent);
+    color: var(--wa-color-danger-on-quiet, #8f1720);
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.account__status {
+    margin: 0 0 18px;
+    color: var(--account-muted);
+}
+
+.account__did {
+    margin: 0 0 24px;
+    padding: 13px 14px;
+    overflow-wrap: anywhere;
+    background: var(--account-field);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+    .account {
+        box-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
+    }
+}
+
+@media (max-width: 520px) {
+    tonk-account {
+        place-items: stretch;
+        padding: 0;
+    }
+
+    .account {
+        min-height: 100dvh;
+        padding: 26px 22px;
+        box-shadow: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .account__button,
+    .account__form input {
+        transition-duration: 0s;
+    }
+}

@@ -111,9 +111,17 @@ impl CommandEnv {
 /// (`space/remove`): replica retraction, reactor eviction, storage
 /// cleanup.
 ///
+/// [`EnableSyncHandler`] is deliberately its own command
+/// ([`tonk_schema::command::EnableSync`]), not a second handler on
+/// `space/enable-sync`: that trigger attribute belongs to `CreateSpace`, and
+/// `CreateSpaceHandler` always mints a fresh identity first, so anything
+/// registered against it would attach the remote to a brand-new spot rather
+/// than the existing one the FAB names.
+///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
 /// [`RemoveSpaceHandler`]: super::repository::RemoveSpaceHandler
 /// [`RenameRepositoryHandler`]: super::repository::RenameRepositoryHandler
+/// [`EnableSyncHandler`]: super::repository::EnableSyncHandler
 pub fn command_registry() -> CommandRegistry<CommandEnv> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
@@ -121,6 +129,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
         registry.register(Box::new(super::repository::RemoveSpaceHandler::new()));
         registry.register(Box::new(super::repository::InviteHandler::new()));
+        registry.register(Box::new(super::repository::EnableSyncHandler::new()));
         registry.register(Box::new(super::repository::PauseSyncHandler::new()));
         registry.register(Box::new(super::repository::ProfileRenameHandler::new()));
         registry.register(Box::new(super::repository::RenameRepositoryHandler::new()));

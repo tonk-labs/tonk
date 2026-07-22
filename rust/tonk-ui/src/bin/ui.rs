@@ -39,6 +39,7 @@ async fn main() {
     // presence of `window.tonk` to detect a portal guest, and the top
     // page must never look like one.
     tonk_identity::install();
+    tonk_ui::account::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
     // (debug profile) and off for release, so this never loads in production.
@@ -48,7 +49,8 @@ async fn main() {
     mount_root();
 }
 
-/// Mount the single `<tonk-site>` root into `<body>` — the top-level router.
+/// Mount the top-document shell. Account routes bypass sealed guests because
+/// WebAuthn ceremonies must run in the RP ID's top-level origin.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn mount_root() {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
@@ -57,46 +59,66 @@ fn mount_root() {
     let Some(body) = document.body() else {
         return;
     };
-    // `<tonk-site with="main@profile:tonk" allow="*">`: `with` routes the site's
-    // `tonk:load` claim and its guest's queries at the profile's main branch —
-    // the profile's route! table picks what to render. `allow="*"` makes this
-    // the privileged site: its guest (the trusted profile chrome) may reach
-    // into any space (hub cards, sync chips, the FAB space list).
+    let Ok(shell) = document.create_element("div") else {
+        return;
+    };
+    let _ = shell.set_attribute("id", "tonk-root");
+    render_root(&shell);
+    attach_navigation(&shell);
+    let _ = body.append_child(&shell);
+}
+
+/// Render or update the correct top-document root for the current path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn render_root(shell: &web_sys::Element) {
+    let path = web_sys::window()
+        .and_then(|w| w.location().pathname().ok())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/".to_owned());
+    let account_route = path == "/account" || path.starts_with("/account/");
+    let current = shell.first_element_child();
+
+    if account_route {
+        if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACCOUNT") {
+            shell.set_inner_html("");
+            if let Some(document) = shell.owner_document()
+                && let Ok(account) = document.create_element("tonk-account")
+            {
+                let _ = shell.append_child(&account);
+            }
+        }
+        return;
+    }
+
+    if let Some(site) = current.filter(|element| element.tag_name() == "TONK-SITE") {
+        let _ = site.set_attribute("path", &path);
+        return;
+    }
+
+    shell.set_inner_html("");
+    let Some(document) = shell.owner_document() else {
+        return;
+    };
     let Ok(site) = document.create_element("tonk-site") else {
         return;
     };
     let _ = site.set_attribute("with", "main@profile:tonk");
     let _ = site.set_attribute("allow", "*");
-    // `<tonk-site>` never reads `window.location`; the page owns the document
-    // path. Set it as `path` and keep it current on navigation (popstate /
-    // pushState-driven), so the site re-routes via `attribute_changed_callback`.
-    sync_site_path(&site);
-    attach_navigation(&site);
-    let _ = body.append_child(&site);
-}
-
-/// Set the top-level `<tonk-site>`'s `path` attribute to the document path.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn sync_site_path(site: &web_sys::Element) {
-    let path = web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "/".to_owned());
     let _ = site.set_attribute("path", &path);
+    let _ = shell.append_child(&site);
 }
 
-/// Keep the top-level site's `path` in sync with the URL: re-set it on
-/// `popstate` (back/forward and the `navigate` command's pushState + popstate).
+/// Keep the top-document root in sync with client-side navigation.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn attach_navigation(site: &web_sys::Element) {
+fn attach_navigation(shell: &web_sys::Element) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
     let Some(win) = web_sys::window() else {
         return;
     };
-    let site = site.clone();
+    let shell = shell.clone();
     let on_popstate = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
-        sync_site_path(&site);
+        render_root(&shell);
     });
     let _ = win.add_event_listener_with_callback("popstate", on_popstate.as_ref().unchecked_ref());
     on_popstate.forget();

@@ -118,6 +118,7 @@ pub fn fab_html(space_did: &str) -> String {
       <div class="fab__tele fab__tele--account">
         <span class="fab__seg fab__account">
           <span class="fab__name"><ui-profile-name></ui-profile-name></span>
+          <a class="fab__account-link" href="/account" aria-label="Open account settings"><wa-icon name="user"></wa-icon></a>
         </span>
       </div>
     </div>
@@ -185,6 +186,12 @@ pub fn fab_html(space_did: &str) -> String {
     </div>
   </form>
   <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+</wa-dialog>
+<wa-dialog id="fab-enable-sync" label="Turn on sync?" class="fab__dialog" style="--width: 28rem">
+  <p class="fab__prompt" data-enable-sync-detail>This spot only exists on this device.</p>
+  <p class="fab__prompt">Turn on sync so the people you share with can open it.</p>
+  <wa-button slot="footer" variant="primary" data-enable-sync-confirm>Turn on sync &amp; copy link</wa-button>
+  <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
 </wa-dialog>"#,
         space = space_did
     )
@@ -273,6 +280,12 @@ mod tests {
     }
 
     #[test]
+    fn it_links_the_account_control_to_the_top_document_route() {
+        let html = fab_html("did:key:z6Mk");
+        assert!(html.contains(r#"class="fab__account-link" href="/account""#));
+    }
+
+    #[test]
     fn it_authors_the_chevron_beside_the_end_nub() {
         let html = fab_html("did:key:z6Mk");
         // Both live in the end tile, OUTSIDE the strip: the chevron is a
@@ -299,5 +312,15 @@ mod tests {
         // `<tonk-share>` must carry its own `space` so it can subscribe to
         // this space's minted invite link and dispatch the mint itself.
         assert!(html.contains(r#"<tonk-share space="did:key:z6Mk">"#));
+    }
+
+    #[test]
+    fn it_renders_the_enable_sync_prompt() {
+        let html = fab_html("did:key:z6Mk");
+        assert!(html.contains(r#"id="fab-enable-sync""#));
+        assert!(html.contains("data-enable-sync-detail"));
+        assert!(html.contains("data-enable-sync-confirm"));
+        assert!(html.contains("Turn on sync &amp; copy link"));
+        assert!(html.contains("Not now"));
     }
 }

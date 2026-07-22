@@ -1,8 +1,8 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
-    EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse, QueryResponse, RepositoryInfo,
-    SyncResponse, SyncStatusResponse,
+    AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse, JoinRequest,
+    JoinResponse, QueryResponse, RepositoryInfo, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -421,4 +421,90 @@ pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
         .map_err(into_api_error)?;
 
     response.json().await.map_err(into_api_error)
+}
+
+/// Return the current profile's persisted account-link state.
+pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/account", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    response.json().await.map_err(into_api_error)
+}
+
+/// Persist a verified account-root delegation in the local profile.
+pub async fn save_account_link(
+    root_did: String,
+    delegation_hex: String,
+) -> Result<AccountStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/link", origin()))
+        .json(&AccountLinkRequest {
+            root_did,
+            delegation_hex,
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/link returned {status}: {text}"
+        )))
+    }
+}
+
+/// Ask the account service to email a verification code.
+pub async fn request_account_code(service: &str, email: &str) -> Result<(), TonkUiError> {
+    let response = reqwest::Client::new()
+        .post(format!("{}/codes", service.trim_end_matches('/')))
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /codes returned {status}: {text}"
+        )))
+    }
+}
+
+/// Submit a signed ceremony container to the account service.
+pub async fn submit_account_ceremony(
+    service: &str,
+    path: &str,
+    invocation_hex: &str,
+) -> Result<(), TonkUiError> {
+    let body = hex::decode(invocation_hex)
+        .map_err(|error| TonkUiError::ApiError(format!("invalid invocation bytes: {error}")))?;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/{}",
+            service.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+        .body(body)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST {path} returned {status}: {text}"
+        )))
+    }
 }

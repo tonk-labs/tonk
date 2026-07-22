@@ -50,7 +50,87 @@ async fn derive_root_did() -> Result<JsValue, JsValue> {
     let signer = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    Ok(JsValue::from_str(&signer.did().to_string()))
+    let did = signer.did();
+    Ok(JsValue::from_str(did.as_ref()))
+}
+
+fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
+    Reflect::get(input, &name.into())?
+        .as_string()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
+}
+
+fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue, JsValue> {
+    let result = Object::new();
+    Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
+    Reflect::set(&result, &"deviceDid".into(), &ceremony.device_did.into())?;
+    Reflect::set(
+        &result,
+        &"delegationHex".into(),
+        &ceremony.delegation_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"invocationHex".into(),
+        &ceremony.invocation_hex.into(),
+    )?;
+    Ok(result.into())
+}
+
+async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
+    let email = string_property(&input, "email")?;
+    let code = string_property(&input, "code")?;
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let device_name = string_property(&input, "deviceName")?;
+    let user_name = Reflect::get(&input, &"userName".into())?
+        .as_string()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| email.clone());
+
+    let created = crate::passkey::create_passkey(&user_name)
+        .await
+        .map_err(js_error)?;
+    let credential_id = hex::encode(&created.id);
+    let prf_at_create = created.prf_output.is_some();
+    let prf = match created.prf_output {
+        Some(output) => output,
+        None => crate::passkey::prf_output().await.map_err(js_error)?,
+    };
+    let root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+    let ceremony = crate::ceremony::create_account(
+        root,
+        email,
+        code,
+        credential_id.clone(),
+        device_did,
+        device_name,
+    )
+    .await
+    .map_err(js_error)?;
+    let result = ceremony_result(ceremony)?;
+    Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
+    Reflect::set(&result, &"prfAtCreate".into(), &prf_at_create.into())?;
+    Ok(result)
+}
+
+async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let device_name = string_property(&input, "deviceName")?;
+    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+    let ceremony = crate::ceremony::link_device(root, device_did, device_name)
+        .await
+        .map_err(js_error)?;
+    ceremony_result(ceremony)
 }
 
 /// Install `window.tonkIdentity` on the page. Idempotent; a no-op
@@ -79,6 +159,26 @@ pub fn install() {
     );
     derive.forget();
 
+    let create_account = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_account(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createAccount".into(),
+        create_account.as_ref().unchecked_ref(),
+    );
+    create_account.forget();
+
+    let link_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(link_device(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"linkDevice".into(),
+        link_device.as_ref().unchecked_ref(),
+    );
+    link_device.forget();
+
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
@@ -94,7 +194,12 @@ mod tests {
         install();
         let window = web_sys::window().unwrap();
         let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
-        for name in ["createPasskey", "deriveRootDid"] {
+        for name in [
+            "createPasskey",
+            "deriveRootDid",
+            "createAccount",
+            "linkDevice",
+        ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");
         }

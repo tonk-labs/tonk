@@ -36,6 +36,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/devices/list", handlers::devices::handle_options)
         .post_async("/devices/register", handlers::devices::handle_register)
         .options_async("/devices/register", handlers::devices::handle_options)
+        .post_async("/devices/link", handlers::devices::handle_link)
+        .options_async("/devices/link", handlers::devices::handle_options)
         .post_async("/devices/revoke", handlers::devices::handle_revoke)
         .options_async("/devices/revoke", handlers::devices::handle_options)
         .post_async("/chains/put", handlers::chains::handle_put)

@@ -4,10 +4,11 @@
 use serde::Serialize;
 use worker::*;
 
-use crate::auth::{authorize, string_argument};
+use crate::auth::{authorize, authorize_root, required_string, string_argument};
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
+use crate::store::Store;
 
 /// A device row as serialized to API callers.
 #[derive(Serialize)]
@@ -73,6 +74,55 @@ pub async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<
         Err(err) => err.to_response()?,
     };
     Ok(with_cors_headers(response))
+}
+
+/// `POST /devices/link` → register this device from a root-key ceremony.
+pub async fn handle_link(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match handle_link_inner(&mut req, &ctx).await {
+        Ok(response) => response,
+        Err(err) => err.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+async fn handle_link_inner(
+    req: &mut Request,
+    ctx: &RouteContext<()>,
+) -> std::result::Result<Response, ServiceError> {
+    let body = read_body(req).await?;
+    let caller = authorize_root(&body, &["account", "device", "link"])
+        .await
+        .map_err(ceremony_error)?;
+    let store = build_store(ctx)?;
+    let account = store
+        .account_by_root(&caller.root_did)
+        .await
+        .map_err(|err| ceremony_error(err.into()))?
+        .ok_or_else(|| {
+            ceremony_error(crate::core::CeremonyError::Unauthorized(
+                "unknown account".to_string(),
+            ))
+        })?;
+    let device_did = required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?;
+    let device_name = required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?;
+    let delegation_hex =
+        required_string(&caller.arguments, "delegation").map_err(ceremony_error)?;
+    let now = Date::now().as_millis() / 1000;
+
+    register_device(
+        &store,
+        &account,
+        &device_did,
+        &device_name,
+        &delegation_hex,
+        now,
+    )
+    .await
+    .map_err(ceremony_error)?;
+
+    Response::from_json(&serde_json::json!({})).map_err(|err| {
+        ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
+    })
 }
 
 async fn handle_register_inner(
