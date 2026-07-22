@@ -2,6 +2,7 @@
 
 members = [
     "rust/tonk-access-service",
+    "rust/tonk-account-service",
     "rust/tonk-analytics",
     "rust/tonk-analyzer",
     "rust/tonk-board",
@@ -117,6 +118,7 @@ port_check = "0.3"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }
 rand_core = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }
 # Pinned to 0.12 to match dialog-db's transport crates (dialog-remote-ucan-s3 /
 # dialog-remote-s3) so Cargo unifies features into the same reqwest. `rustls-tls`
 # keeps the embedded webpki roots; `rustls-tls-native-roots` additionally trusts
