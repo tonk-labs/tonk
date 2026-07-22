@@ -6,7 +6,7 @@
 //! invocation later, so nothing has to finish in time for anything to
 //! be correct.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -60,10 +60,7 @@ pub fn load() -> State {
     let Some(path) = path() else {
         return State::default();
     };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    load_from(&path)
 }
 
 /// Persist state, creating the parent directory if needed.
@@ -71,6 +68,22 @@ pub fn store(state: &State) -> std::io::Result<()> {
     let Some(path) = path() else {
         return Ok(());
     };
+    store_at(&path, state)
+}
+
+/// [`load`] against an explicit file, with no environment lookup.
+/// Tests drive this directly — a test that pointed the environment at
+/// a temp dir would mutate process-global state that every other test
+/// in the binary reads concurrently.
+fn load_from(path: &Path) -> State {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// [`store`] against an explicit file, with no environment lookup.
+fn store_at(path: &Path, state: &State) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -219,24 +232,27 @@ mod tests {
     #[dialog_common::test]
     fn it_round_trips_through_the_state_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: tests in this mod run on one thread per process
-        // invocation; nothing else reads this var concurrently.
-        unsafe { std::env::set_var(crate::update::STATE_ENV, dir.path()) };
+        let path = dir.path().join("update.json");
         let state = State {
             check_enabled: false,
             latest_version: Some("0.5.0".to_owned()),
             ..State::default()
         };
-        store(&state).expect("store");
-        assert_eq!(load(), state);
-        unsafe { std::env::remove_var(crate::update::STATE_ENV) };
+        store_at(&path, &state).expect("store");
+        assert_eq!(load_from(&path), state);
     }
 
     #[dialog_common::test]
     fn it_defaults_to_enabled_when_state_is_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var(crate::update::STATE_ENV, dir.path()) };
-        assert!(load().check_enabled);
-        unsafe { std::env::remove_var(crate::update::STATE_ENV) };
+        assert!(load_from(&dir.path().join("update.json")).check_enabled);
+    }
+
+    #[dialog_common::test]
+    fn it_defaults_to_enabled_when_state_is_corrupt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("update.json");
+        std::fs::write(&path, "{ not json").expect("write");
+        assert!(load_from(&path).check_enabled);
     }
 }

@@ -7,7 +7,7 @@
 //! which channel to check, and lets `tonk update` answer "already
 //! current" without downloading an archive to find out.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +37,7 @@ pub fn path() -> Option<PathBuf> {
 
 /// Load the receipt; missing or corrupt means `None`.
 pub fn load() -> Option<Receipt> {
-    let text = std::fs::read_to_string(path()?).ok()?;
-    serde_json::from_str(&text).ok()
+    load_from(&path()?)
 }
 
 /// Persist the receipt, creating the parent directory if needed.
@@ -46,6 +45,20 @@ pub fn store(receipt: &Receipt) -> std::io::Result<()> {
     let Some(path) = path() else {
         return Ok(());
     };
+    store_at(&path, receipt)
+}
+
+/// [`load`] against an explicit file, with no environment lookup.
+/// Tests drive this directly — a test that pointed the environment at
+/// a temp dir would mutate process-global state that every other test
+/// in the binary reads concurrently.
+fn load_from(path: &Path) -> Option<Receipt> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// [`store`] against an explicit file, with no environment lookup.
+fn store_at(path: &Path, receipt: &Receipt) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -72,28 +85,30 @@ mod tests {
     #[dialog_common::test]
     fn it_round_trips_through_the_state_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: tests in this mod run on one thread per process
-        // invocation; nothing else reads this var concurrently.
-        unsafe { std::env::set_var(crate::update::STATE_ENV, dir.path()) };
-        store(&sample()).expect("store");
-        assert_eq!(load(), Some(sample()));
-        unsafe { std::env::remove_var(crate::update::STATE_ENV) };
+        let path = dir.path().join("install.json");
+        store_at(&path, &sample()).expect("store");
+        assert_eq!(load_from(&path), Some(sample()));
     }
 
     #[dialog_common::test]
     fn it_loads_none_when_the_receipt_is_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var(crate::update::STATE_ENV, dir.path()) };
-        assert_eq!(load(), None);
-        unsafe { std::env::remove_var(crate::update::STATE_ENV) };
+        assert_eq!(load_from(&dir.path().join("install.json")), None);
     }
 
     #[dialog_common::test]
     fn it_loads_none_when_the_receipt_is_corrupt() {
         let dir = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var(crate::update::STATE_ENV, dir.path()) };
-        std::fs::write(dir.path().join("install.json"), "{ not json").expect("write");
-        assert_eq!(load(), None);
-        unsafe { std::env::remove_var(crate::update::STATE_ENV) };
+        let path = dir.path().join("install.json");
+        std::fs::write(&path, "{ not json").expect("write");
+        assert_eq!(load_from(&path), None);
+    }
+
+    #[dialog_common::test]
+    fn it_creates_the_parent_directory_on_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("install.json");
+        store_at(&path, &sample()).expect("store");
+        assert_eq!(load_from(&path), Some(sample()));
     }
 }

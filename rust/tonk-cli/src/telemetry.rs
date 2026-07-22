@@ -6,7 +6,7 @@
 //! `TONK_TELEMETRY=0`, or `DO_NOT_TRACK=1`. Without a build-time or
 //! runtime `TONK_POSTHOG_KEY` the whole module is a no-op.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -53,10 +53,7 @@ pub fn load() -> Settings {
     let Some(path) = state_path() else {
         return Settings::default();
     };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    load_from(&path)
 }
 
 /// Persist settings, creating the parent directory if needed.
@@ -64,6 +61,22 @@ pub fn store(settings: &Settings) -> std::io::Result<()> {
     let Some(path) = state_path() else {
         return Ok(());
     };
+    store_at(&path, settings)
+}
+
+/// [`load`] against an explicit file, with no environment lookup.
+/// Tests drive this directly — a test that pointed the environment at
+/// a temp dir would mutate process-global state that every other test
+/// in the binary reads concurrently.
+fn load_from(path: &Path) -> Settings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// [`store`] against an explicit file, with no environment lookup.
+fn store_at(path: &Path, settings: &Settings) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -166,17 +179,25 @@ mod tests {
     #[dialog_common::test]
     fn settings_round_trip_through_state_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: tests in this mod run on one thread per process
-        // invocation; nothing else reads this var concurrently.
-        unsafe { std::env::set_var("TONK_TELEMETRY_STATE", dir.path()) };
-        let settings = Settings {
-            enabled: false,
-            notice_shown: true,
-        };
-        store(&settings).expect("store");
-        let loaded = load();
+        let path = dir.path().join("telemetry.json");
+        store_at(
+            &path,
+            &Settings {
+                enabled: false,
+                notice_shown: true,
+            },
+        )
+        .expect("store");
+        let loaded = load_from(&path);
         assert!(!loaded.enabled);
         assert!(loaded.notice_shown);
-        unsafe { std::env::remove_var("TONK_TELEMETRY_STATE") };
+    }
+
+    #[dialog_common::test]
+    fn settings_default_to_enabled_when_state_is_corrupt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("telemetry.json");
+        std::fs::write(&path, "{ not json").expect("write");
+        assert!(load_from(&path).enabled);
     }
 }
