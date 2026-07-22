@@ -780,7 +780,7 @@ mod route_for_tests {
 
         s.set_visible(true);
         assert_eq!(
-            s.quiet_interval(),
+            s.quiet_interval(10_000.0),
             0.0,
             "regaining visibility must clear the hidden hold"
         );
@@ -826,6 +826,149 @@ mod route_for_tests {
         assert!(
             !s.should_log_hold(),
             "and the next refusal after that must again stay silent"
+        );
+    }
+
+    // The hidden ramp: the longer every tab has stayed continuously hidden,
+    // the wider the quiet interval, doubling from SYNC_HIDDEN_INTERVAL_MS and
+    // capped at SYNC_HIDDEN_MAX_MS. `quiet_interval` is exercised directly —
+    // it is a pure function of `now` and the recorded transition, so the
+    // boundaries are pinned at exact millisecond values.
+    //
+    // `hidden_since` is stamped lazily by the FIRST `quiet_interval` call
+    // after going hidden (see its doc comment), so every test below opens
+    // with an anchor call at `now = 0.0` to establish that origin before
+    // probing later timestamps against it.
+
+    #[dialog_common::test]
+    fn it_holds_the_ramp_at_the_base_just_before_the_first_doubling() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        assert_eq!(
+            s.quiet_interval(SYNC_HIDDEN_INTERVAL_MS as f64 - 1.0),
+            SYNC_HIDDEN_INTERVAL_MS as f64,
+            "just under a minute hidden, the interval is still the base",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_doubles_the_ramp_once_the_first_step_fully_elapses() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        assert_eq!(
+            s.quiet_interval(SYNC_HIDDEN_INTERVAL_MS as f64),
+            (SYNC_HIDDEN_INTERVAL_MS * 2) as f64,
+            "a full minute hidden doubles the interval to 120s",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_continues_doubling_at_a_later_step() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        // 7 minutes: the schedule's boundaries fall at BASE*(2^k - 1), i.e.
+        // 0, 1, 3, 7, 15, ... minutes — 7 minutes is the boundary into the
+        // 480s step (60s, 120s, 240s, 480s having each fully elapsed once).
+        let seven_minutes = 7.0 * 60_000.0;
+        assert_eq!(
+            s.quiet_interval(seven_minutes - 1.0),
+            240_000.0,
+            "just under 7 minutes hidden, still the 240s step",
+        );
+        assert_eq!(
+            s.quiet_interval(seven_minutes),
+            480_000.0,
+            "at 7 minutes hidden, the ramp has stepped to 480s",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_caps_the_ramp_after_many_hours_hidden() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        let one_day = 24.0 * 60.0 * 60_000.0;
+        assert_eq!(
+            s.quiet_interval(one_day),
+            SYNC_HIDDEN_MAX_MS as f64,
+            "a day hidden lands exactly on the cap",
+        );
+        // Absurdly long — years hidden — must still land exactly on the cap,
+        // not overflow or wrap the doubling shift.
+        let many_years = 365.0 * 10.0 * 24.0 * 60.0 * 60_000.0;
+        assert_eq!(
+            s.quiet_interval(many_years),
+            SYNC_HIDDEN_MAX_MS as f64,
+            "a decade hidden must not overflow past the cap",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_resets_the_ramp_on_refocus() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        // Ramp all the way up to the cap.
+        let one_day = 24.0 * 60.0 * 60_000.0;
+        assert_eq!(s.quiet_interval(one_day), SYNC_HIDDEN_MAX_MS as f64);
+
+        // Refocus, then go hidden again — a fresh hidden stretch with no
+        // origin recorded yet.
+        s.set_visible(true);
+        s.set_visible(false);
+
+        assert_eq!(
+            s.quiet_interval(one_day),
+            SYNC_HIDDEN_INTERVAL_MS as f64,
+            "immediately after refocus, the ramp restarts at the base \
+             instead of resuming the old (capped) reading",
+        );
+        // A further stretch from THAT new origin ramps again, proving the
+        // origin really moved rather than the base reading above being a
+        // one-off coincidence of the lazy stamp.
+        assert_eq!(
+            s.quiet_interval(one_day + SYNC_HIDDEN_INTERVAL_MS as f64),
+            (SYNC_HIDDEN_INTERVAL_MS * 2) as f64,
+            "the ramp climbs again from the new origin, confirming the \
+             reset stuck",
+        );
+    }
+
+    /// Even with the ramp sitting at the cap, un-pushed local commits must
+    /// still bypass the quiet interval and drain at the active cadence — the
+    /// bypass does not care how long the ramp has climbed.
+    #[dialog_common::test]
+    fn it_drains_dirty_work_at_the_active_cadence_with_the_ramp_at_the_cap() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        // Hidden continuously since t=0, so by one_day the ramp has long
+        // since capped. The last drain completes AT one_day, so `may_drain`'s
+        // completion-relative gate starts measuring from there.
+        let one_day = 24.0 * 60.0 * 60_000.0;
+        assert_eq!(
+            s.quiet_interval(one_day),
+            SYNC_HIDDEN_MAX_MS as f64,
+            "sanity: the ramp really is at the cap by this point",
+        );
+        s.begin_drain();
+        s.end_drain(one_day);
+
+        assert!(
+            !s.may_drain(one_day + SYNC_HIDDEN_MAX_MS as f64 - 1.0, CLEAN),
+            "sanity: with nothing dirty, a page is held to the capped ramp",
+        );
+        assert!(
+            !s.may_drain(one_day + SYNC_COOLDOWN_MS as f64 - 1.0, DIRTY),
+            "the bypass drops to the cooldown floor, it does not remove it",
+        );
+        assert!(
+            s.may_drain(one_day + SYNC_COOLDOWN_MS as f64 + 1.0, DIRTY),
+            "a dirty hidden page drains at the active cadence however far \
+             the ramp has climbed",
         );
     }
 }
@@ -896,12 +1039,24 @@ struct SyncScheduler {
     /// — which is why it "won't go away".
     stopped: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether any window client was visible at the last check. Hidden
-    /// pages hold drains to [`SYNC_HIDDEN_INTERVAL_MS`] — a
-    /// backgrounded tab keeps its SSE subscriptions (and the keepalive)
-    /// alive, so subscription liveness alone can't tell "watching"
-    /// from "abandoned overnight". The only thing that widens the gap:
-    /// a visible tab always polls at the active cadence.
+    /// pages hold drains to a ramp starting at [`SYNC_HIDDEN_INTERVAL_MS`]
+    /// (see [`Self::quiet_interval`]) — a backgrounded tab keeps its SSE
+    /// subscriptions (and the keepalive) alive, so subscription liveness
+    /// alone can't tell "watching" from "abandoned overnight". The only
+    /// thing that widens the gap: a visible tab always polls at the active
+    /// cadence.
     visible: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Wall-clock ms marking the start of the ramp's reference point for the
+    /// current continuous hidden period, or `None` while visible. Stamped
+    /// lazily by [`Self::quiet_interval`] — the FIRST call it receives after
+    /// going hidden records that call's `now` here and every later call in
+    /// the same hidden stretch reuses it, so the ramp climbs from a fixed
+    /// origin instead of one that recedes on every check (which — since
+    /// [`Self::quiet_interval`] is consulted on every self-scheduled loop
+    /// tick — would pin the ramp at the base interval forever). Cleared back
+    /// to `None` by [`Self::set_visible`] the moment any client is visible
+    /// again, so refocusing resets the ramp for the next hidden stretch.
+    hidden_since: std::rc::Rc<std::cell::Cell<Option<f64>>>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -918,6 +1073,7 @@ impl Default for SyncScheduler {
             logged_hold_at: Default::default(),
             stopped: Default::default(),
             visible: std::rc::Rc::new(std::cell::Cell::new(true)),
+            hidden_since: Default::default(),
         }
     }
 }
@@ -1011,9 +1167,12 @@ impl SyncScheduler {
         // the next, and sync runs continuously.
         //
         // The floor is SYNC_COOLDOWN_MS; a hidden page raises it (see
-        // quiet_interval) so a backgrounded tab stops paying the active
-        // cadence. Every drain entrypoint passes through here — including
-        // the drains the page's keepalive fetches schedule — so the quiet
+        // quiet_interval), and the longer every tab stays continuously
+        // hidden the further it climbs, up to SYNC_HIDDEN_MAX_MS — so a
+        // backgrounded tab stops paying the active cadence, and a tab left
+        // hidden all day doesn't keep paying even the first hidden step.
+        // Every drain entrypoint passes through here — including the
+        // drains the page's keepalive fetches schedule — so the quiet
         // interval binds them all.
         //
         // Un-pushed local commits bypass the quiet interval entirely and get
@@ -1024,7 +1183,7 @@ impl SyncScheduler {
         // dirty set is empty then. Only genuinely un-pushed work counts: a
         // repo whose last sweep failed sits in the queue's retry set, which
         // does NOT feed this — see `SyncQueue::requeue`.
-        let full = (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval());
+        let full = (SYNC_COOLDOWN_MS as f64).max(self.quiet_interval(now));
         let quiet = if dirty > 0 {
             SYNC_COOLDOWN_MS as f64
         } else {
@@ -1153,18 +1312,78 @@ impl SyncScheduler {
     /// Zero while a page is visible — [`SYNC_COOLDOWN_MS`] stays the floor,
     /// so a visible tab always polls at the active cadence, however idle it
     /// looks. A visible-but-idle reader must never lag a collaborator.
-    fn quiet_interval(&self) -> f64 {
+    ///
+    /// While hidden, the gap ramps: it starts at [`SYNC_HIDDEN_INTERVAL_MS`]
+    /// and doubles the longer [`Self::hidden_since`] has stood, capped at
+    /// [`SYNC_HIDDEN_MAX_MS`] — see [`hidden_ramp_interval`] for the exact
+    /// schedule. A tab left hidden all day should not keep draining every
+    /// minute. `now` is passed in (not read internally) for the same reason
+    /// every other gate in this type takes it: a synthetic clock makes the
+    /// ramp's boundaries exactly testable.
+    ///
+    /// `hidden_since` is stamped lazily, right here, rather than by
+    /// [`Self::set_visible`] on the visible-to-hidden transition: the
+    /// transition itself has no `now` to stamp with on every call site
+    /// without threading a clock through an API that otherwise needs none,
+    /// and every hidden-gate check funnels through this method anyway (it is
+    /// `may_drain`'s only consumer). The first call after going hidden
+    /// establishes the origin at ITS `now`; every later call in the same
+    /// hidden stretch reuses it, since `hidden_since` is by then `Some`.
+    fn quiet_interval(&self, now: f64) -> f64 {
         if !self.visible.get() {
-            return SYNC_HIDDEN_INTERVAL_MS as f64;
+            let since = match self.hidden_since.get() {
+                Some(since) => since,
+                None => {
+                    self.hidden_since.set(Some(now));
+                    now
+                }
+            };
+            let elapsed = (now - since).max(0.0);
+            return hidden_ramp_interval(elapsed);
         }
         0.0
     }
 
     /// Update the visibility reading — the sole input to
-    /// [`quiet_interval`](Self::quiet_interval).
+    /// [`quiet_interval`](Self::quiet_interval). Becoming visible clears
+    /// [`Self::hidden_since`], so the next hidden stretch's first
+    /// [`quiet_interval`](Self::quiet_interval) call re-establishes the ramp's
+    /// origin from scratch instead of reusing a stale one.
     fn set_visible(&self, visible: bool) {
         self.visible.set(visible);
+        if visible {
+            self.hidden_since.set(None);
+        }
     }
+}
+
+/// The hidden-drain interval after `elapsed_ms` of continuous hidden time:
+/// [`SYNC_HIDDEN_INTERVAL_MS`], doubling as `elapsed_ms` grows, capped at
+/// [`SYNC_HIDDEN_MAX_MS`].
+///
+/// The schedule is `BASE * 2^k` for the largest `k` whose step has fully
+/// elapsed. The cumulative time to complete the first `k` doublings of a
+/// `BASE * 2^i` schedule is `BASE * (2^(k+1) - 1)`, so solving for `k` gives
+/// `k = floor(log2(elapsed / BASE + 1))`.
+///
+/// Computed in integer math rather than with `f64::log2`, so the step
+/// boundaries land on exact millisecond values instead of being subject to
+/// float rounding — that's what makes them exactly testable. `n = elapsed /
+/// BASE + 1` is computed via integer division (floor), and `floor(log2(n))`
+/// for `n >= 1` is `n`'s bit length minus one, i.e. `63 - n.leading_zeros()`.
+/// The doubling itself uses `saturating_mul` rather than a raw shift, so an
+/// elapsed time of days (a huge `k`) saturates to `u64::MAX` and is then
+/// clamped to the cap, instead of overflowing/wrapping the shift.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn hidden_ramp_interval(elapsed_ms: f64) -> f64 {
+    let base = SYNC_HIDDEN_INTERVAL_MS as u64;
+    // Saturating float->int cast: an astronomically large elapsed time (a
+    // tab hidden for years) clamps to u64::MAX rather than wrapping.
+    let elapsed = elapsed_ms.max(0.0) as u64;
+    let n = elapsed.saturating_add(base) / base; // >= 1
+    let k = u64::BITS - 1 - n.leading_zeros(); // floor(log2(n))
+    let stepped = base.saturating_mul(1u64 << k);
+    stepped.min(SYNC_HIDDEN_MAX_MS as u64) as f64
 }
 
 /// Decrements the scheduler's in-flight data-plane count on drop, so a request
@@ -1219,11 +1438,23 @@ const SYNC_MAX_WAIT_MS: i32 = 3_000;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_COOLDOWN_MS: i32 = 500;
 
-/// Enforced drain gap while no window client is visible. A hidden tab
-/// still keepalives and holds subscriptions, so without this it pays
-/// the active cadence all night for changes nobody is watching.
+/// Base (and first-step) drain gap while no window client is visible. A
+/// hidden tab still keepalives and holds subscriptions, so without this it
+/// pays the active cadence all night for changes nobody is watching.
+///
+/// This is only the starting point: [`SyncScheduler::quiet_interval`] doubles
+/// it as the hidden period continues, up to [`SYNC_HIDDEN_MAX_MS`] — see
+/// [`hidden_ramp_interval`] for the schedule.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_HIDDEN_INTERVAL_MS: i32 = 60_000;
+
+/// Cap on the hidden-drain ramp (see [`hidden_ramp_interval`]): however long
+/// every tab has stayed continuously hidden, the drain gap never exceeds
+/// this. A tab left hidden all day should not keep widening the gap forever
+/// — an hour is coarse enough to stop paying meaningfully for it, without
+/// leaving a reopened-after-days tab so stale it needs its own full resync.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SYNC_HIDDEN_MAX_MS: i32 = 3_600_000;
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
