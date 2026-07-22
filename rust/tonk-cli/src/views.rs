@@ -25,7 +25,7 @@ use crate::site::TonkSite;
 /// One row of `tonk views`.
 #[derive(Debug, Clone)]
 pub struct ViewSummary {
-    /// `dialog.meta/name` claim on the entity, when one is
+    /// `db.meta/name` claim on the entity, when one is
     /// asserted. The same name might be reused across the
     /// branch's history; we surface the current binding only.
     pub name: Option<String>,
@@ -48,7 +48,7 @@ pub struct ViewSummary {
 /// One row per entity. When an entity carries multiple
 /// `text/html` claims, the [`ViewSummary::body_bytes`] field
 /// records the longest; the name lookup is unaffected (each
-/// entity has at most one `dialog.meta/name` claim).
+/// entity has at most one `db.meta/name` claim).
 pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
     let entities_with_lengths = enumerate_view_claims(site).await?;
     if entities_with_lengths.is_empty() {
@@ -151,16 +151,16 @@ fn body_byte_len(value: &Value) -> usize {
 /// per-entity lookups and avoids N+1 round trips against a large
 /// branch.
 ///
-/// Names are stored inverted under the `dialog.name/referent`
+/// Names are stored inverted under the `db.name/referent`
 /// relation: each anchor `&foo` publishes
-/// `(dialog.name/referent, id:foo, <target-entity>)`. The *name*
+/// `(db.name/referent, id:foo, <target-entity>)`. The *name*
 /// lives in the claim's subject as `id:<name>`; the *target* is
 /// the value. We invert that mapping here so callers can ask
 /// "what's this entity's display name?" with one lookup.
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: Attribute = "dialog.name/referent"
+    let name_attr: Attribute = "db.name/referent"
         .parse()
-        .context("dialog.name/referent should be a valid attribute URI")?;
+        .context("db.name/referent should be a valid attribute URI")?;
     let the_term: attribute::The = name_attr.into();
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
@@ -176,7 +176,7 @@ async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String
         .perform(&site.operator)
         .try_vec()
         .await
-        .map_err(|e| anyhow!("dialog.name/referent query failed: {e:?}"))?;
+        .map_err(|e| anyhow!("db.name/referent query failed: {e:?}"))?;
     let mut out = HashMap::with_capacity(claims.len());
     for claim in claims {
         let Some(name) = name_from_id_entity(&claim.of) else {
@@ -195,7 +195,7 @@ fn name_from_id_entity(entity: &Entity) -> Option<String> {
     entity.to_string().strip_prefix("id:").map(str::to_owned)
 }
 
-/// Look up the entity bound to a `dialog.meta/name` bookmark on
+/// Look up the entity bound to a `db.meta/name` bookmark on
 /// the local branch. `Ok(None)` when nothing matches. Used by
 /// `tonk share view` to resolve a positional name argument
 /// into an entity URI for the launcher path. Delegates to

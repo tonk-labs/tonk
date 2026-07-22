@@ -7,8 +7,8 @@
 //! - [`Application`] captures "predicate applied to terms," shared
 //!   between queries and mutations. [`Application::Rule`] is the
 //!   rule-install / rule-retract counterpart: a rule is not a
-//!   generic concept (its storage shape is the `dialog.effect/*`
-//!   claims, not a per-attribute `dialog.concept.with/*` map), so
+//!   generic concept (its storage shape is the `db.effect/*`
+//!   claims, not a per-attribute `db.concept.with/*` map), so
 //!   it gets its own variant.
 //! - [`Statement::Assert`] / [`Statement::Retract`] are the
 //!   write-direction wrappers. A rule install is
@@ -159,8 +159,8 @@ pub enum Application {
     },
     /// `rule!:` head — an installed or to-be-installed rule.
     /// Distinct from `Concept` because a rule's storage shape is
-    /// the `dialog.effect/*` claim set, not a per-attribute
-    /// `dialog.concept.with/*` map.
+    /// the `db.effect/*` claim set, not a per-attribute
+    /// `db.concept.with/*` map.
     ///
     /// For an install, the carried [`Rule`] was built fresh from
     /// the body lift; for a retract it was resolved off the branch
@@ -420,7 +420,7 @@ impl Planner for Application {
 /// concept-like application — built-in `attribute`/`concept`,
 /// user-defined concepts, and synthesised domain predicates).
 /// [`ApplicationPlan::Rule`] carries the resolved [`Rule`] whose
-/// [`ArtifactsStatement`] impl emits the `dialog.effect/*` storage
+/// [`ArtifactsStatement`] impl emits the `db.effect/*` storage
 /// shape.
 pub enum ApplicationPlan {
     /// Per-attribute concept storage (concept / domain / built-in).
@@ -429,7 +429,7 @@ pub enum ApplicationPlan {
     /// `Rule` variant) would otherwise leave a large size gap between
     /// variants.
     Concept(Box<ConceptPlan>),
-    /// `dialog.effect/*` rule storage. Boxed because [`Rule`]'s
+    /// `db.effect/*` rule storage. Boxed because [`Rule`]'s
     /// embedded [`InductiveRule`] would otherwise inflate every
     /// concept-shaped plan to rule-storage size.
     Rule(Box<Rule>),
@@ -492,7 +492,7 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
 /// (`person!: &alice`) desugars to.
 ///
 /// The anchor name `alice` becomes the entity URI `id:alice`, and
-/// that entity carries a `dialog.meta/name` claim pointing at the
+/// that entity carries a `db.meta/name` claim pointing at the
 /// body-derived target. Equivalent to:
 ///
 /// ```yaml
@@ -501,7 +501,7 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
 ///   entity: <body-derived target>
 /// ```
 ///
-/// Cardinality-one on `dialog.meta/name` means re-running with a
+/// Cardinality-one on `db.meta/name` means re-running with a
 /// different body retracts the prior `entity:` claim and binds the
 /// name to the new target — same git-tag semantics, but the EAV
 /// hangs off the *name* entity, not the named one.
@@ -716,14 +716,14 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
 
         let mut id_alice_name_claim_count = 0;
         let mut wrong_direction_count = 0;
         for inst in changes.into_instructions() {
             // Cardinality-one fields use `Instruction::Replace`
             // (added in dialog tonk-2026-05-11). The anchor name
-            // is `dialog.name/referent` with cardinality one, so
+            // is `db.name/referent` with cardinality one, so
             // the desugared `name!` lands as a Replace, not an
             // Assert.
             let artifact = match &inst {
@@ -741,7 +741,7 @@ mod tests {
         }
         assert_eq!(
             id_alice_name_claim_count, 1,
-            "expected exactly one (id:alice, dialog.meta/name, target) claim"
+            "expected exactly one (id:alice, db.meta/name, target) claim"
         );
         assert_eq!(
             wrong_direction_count, 0,
@@ -760,7 +760,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
 
         let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
             matches!(
@@ -771,7 +771,7 @@ mod tests {
         });
         assert!(
             saw_dissociate,
-            "expected (id:alice, dialog.meta/name, target) dissociation"
+            "expected (id:alice, db.meta/name, target) dissociation"
         );
     }
 
@@ -801,14 +801,14 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()
             .any(|inst| matches!(inst, Instruction::Assert(a) if a.the == meta_name));
         assert!(
             !saw_meta_name,
-            "anonymous bindings should not emit any dialog.meta/name claim"
+            "anonymous bindings should not emit any db.meta/name claim"
         );
     }
 

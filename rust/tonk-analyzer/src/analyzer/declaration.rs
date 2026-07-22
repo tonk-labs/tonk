@@ -199,14 +199,14 @@ pub(crate) struct ConceptBody {
     pub asserts_nothing: bool,
     /// `true` when the body carried the `transient:` tag (bare
     /// key with no value, or the explicit `transient: true`).
-    /// Drives emission of the `dialog.concept/transient` marker
+    /// Drives emission of the `db.concept/transient` marker
     /// fact in [`concept_application`] so the reactor's effects
     /// loop classifies this concept's facts as transient.
     pub transient: bool,
     /// Attributes defined inline in the `with:` map (as opposed
     /// to referenced by name / URI). Each carries the descriptor
-    /// needed to emit `dialog.attribute/{id,type,cardinality}`
-    /// and `dialog.meta/description` claims so the attribute is
+    /// needed to emit `db.attribute/{id,type,cardinality}`
+    /// and `db.meta/description` claims so the attribute is
     /// queryable via `attribute:` after the `concept!` commits.
     pub inline_attributes: Vec<AttributeBody>,
 }
@@ -368,7 +368,7 @@ const STUB_FIELD: &str = "_";
 /// The placeholder attribute spec paired with [`STUB_FIELD`].
 fn stub_attr() -> serde_json::Value {
     serde_json::json!({
-        "the": "dialog.concept/stub",
+        "the": "db.concept/stub",
         "as": "Text",
         "cardinality": "one",
     })
@@ -464,7 +464,7 @@ fn parse_concept_field_block(
             // `field: _` retracts the named field from the stored
             // concept. It is NOT a reference and never enters the
             // descriptor — recorded separately so the emitter
-            // dissociates `dialog.concept.<block>/<field>` (plus the
+            // dissociates `db.concept.<block>/<field>` (plus the
             // `optional` sibling) without re-asserting anything.
             retracted.push(RetractedField {
                 name: sub.name.clone(),
@@ -538,7 +538,7 @@ fn resolve_concept_field(
 /// asserted predicate is the built-in `attribute` schema; the
 /// `this` slot is the descriptor-derived entity URI; the
 /// per-field terms carry the descriptor's id/type/cardinality/
-/// description. The published name (`dialog.meta/name` claim on
+/// description. The published name (`db.meta/name` claim on
 /// `id:<name>`) is emitted by the planner from `Application`'s
 /// `name` slot, not as a body parameter.
 ///
@@ -592,7 +592,7 @@ pub(crate) fn attribute_application(
 /// Build the `Application` for a `concept!` head — the asserted
 /// predicate is a synthesized concept-of-concept schema (one
 /// `with.<field>` per field of the user's concept, plus the
-/// `dialog.meta/concept` marker and `dialog.meta/description`).
+/// `db.meta/concept` marker and `db.meta/description`).
 /// The `this` slot is the descriptor-derived entity URI; the
 /// published name is emitted by the planner from
 /// `Application`'s `name` slot.
@@ -638,7 +638,7 @@ pub(crate) fn concept_application(
             Term::Constant(Value::String(desc.to_owned())),
         );
     }
-    // `transient: true` adds a `(this, dialog.concept/transient,
+    // `transient: true` adds a `(this, db.concept/transient,
     // db:transient)` marker fact. The synthesized
     // `concept_schema` includes a matching field; durable
     // concepts skip the term so no claim is emitted (the
@@ -669,7 +669,7 @@ pub(crate) fn concept_application(
 /// `resolved` is the concept as read off the branch (the scope's
 /// prefetch). Retraction is strict: a body that asks to drop a field
 /// must target a concept that exists on the branch and actually
-/// carries that field — otherwise there's no `dialog.concept.with/…`
+/// carries that field — otherwise there's no `db.concept.with/…`
 /// triple to dissociate (its value is unknown). Both cases surface
 /// as [`AnalyzeErrorKind::InvalidConceptBody`].
 pub(crate) fn build_concept_retractions(
@@ -731,7 +731,7 @@ pub(crate) fn build_concept_retractions(
 ///
 /// `stored` is the concept as resolved off the branch — it supplies
 /// each retracted field's attribute `the:` so the predicate maps the
-/// field to the right `dialog.concept.with/<field>` relation. The
+/// field to the right `db.concept.with/<field>` relation. The
 /// field terms are emitted **blank** (`Term::blank()`): the evaluator
 /// reads each as a retraction directive and queries the branch for
 /// the stored value to dissociate (mirroring how instance `..: _`
@@ -750,7 +750,7 @@ fn concept_field_retraction(
     // Lift exactly the fields being dropped into a sub-descriptor,
     // carrying each one's stored `ConceptFieldDescriptor` (its `the:`
     // attribute) so `concept_schema` maps it to the right
-    // `dialog.concept.with/<field>` relation.
+    // `db.concept.with/<field>` relation.
     let with = stored.with();
     let sub_fields: Vec<(String, ConceptFieldDescriptor)> = fields
         .iter()
@@ -795,11 +795,11 @@ fn attribute_schema() -> ConceptDescriptor {
     }
     let json = serde_json::json!({
         "with": {
-            "id":          { "the": "dialog.attribute/id",          "as": "Text", "cardinality": cardinality_one() },
-            "type":        { "the": "dialog.attribute/type",        "as": "Text", "cardinality": cardinality_one() },
-            "cardinality": { "the": "dialog.attribute/cardinality", "as": "Text", "cardinality": cardinality_one() },
-            "description": { "the": "dialog.meta/description",      "as": "Text", "cardinality": cardinality_one() },
-            "name":        { "the": "dialog.meta/name",             "as": "Text", "cardinality": cardinality_one() },
+            "id":          { "the": "db.attribute/id",          "as": "Text", "cardinality": cardinality_one() },
+            "type":        { "the": "db.attribute/type",        "as": "Text", "cardinality": cardinality_one() },
+            "cardinality": { "the": "db.attribute/cardinality", "as": "Text", "cardinality": cardinality_one() },
+            "description": { "the": "db.meta/description",      "as": "Text", "cardinality": cardinality_one() },
+            "name":        { "the": "db.meta/name",             "as": "Text", "cardinality": cardinality_one() },
         }
     });
     serde_json::from_value(json).expect("attribute schema is well-formed")
@@ -807,7 +807,7 @@ fn attribute_schema() -> ConceptDescriptor {
 
 /// Build a `concept!` schema descriptor — one `with.<field>` per
 /// field of the concept being defined, plus the
-/// `dialog.meta/concept` marker (so branch-wide `concept:` queries
+/// `db.meta/concept` marker (so branch-wide `concept:` queries
 /// can find every concept entity) and optional name and
 /// description fields.
 fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
@@ -816,7 +816,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
         with.insert(
             format!("with.{name}"),
             serde_json::json!({
-                "the": format!("dialog.concept.with/{name}"),
+                "the": format!("db.concept.with/{name}"),
                 "as": "Entity",
                 "cardinality": "one",
             }),
@@ -827,7 +827,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
             with.insert(
                 format!("optional.{name}"),
                 serde_json::json!({
-                    "the": format!("dialog.concept.optional/{name}"),
+                    "the": format!("db.concept.optional/{name}"),
                     "as": "Boolean",
                     "cardinality": "one",
                 }),
@@ -837,7 +837,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     with.insert(
         "concept".into(),
         serde_json::json!({
-            "the": "dialog.meta/concept",
+            "the": "db.meta/concept",
             "as": "Entity",
             "cardinality": "one",
         }),
@@ -845,7 +845,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     with.insert(
         "name".into(),
         serde_json::json!({
-            "the": "dialog.meta/name",
+            "the": "db.meta/name",
             "as": "Text",
             "cardinality": "one",
         }),
@@ -853,7 +853,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     with.insert(
         "description".into(),
         serde_json::json!({
-            "the": "dialog.meta/description",
+            "the": "db.meta/description",
             "as": "Text",
             "cardinality": "one",
         }),
@@ -861,7 +861,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     with.insert(
         "transient".into(),
         serde_json::json!({
-            "the": "dialog.concept/transient",
+            "the": "db.concept/transient",
             "as": "Entity",
             "cardinality": "one",
         }),

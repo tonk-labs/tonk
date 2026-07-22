@@ -192,7 +192,7 @@ pub fn looks_like_uri(s: &str) -> bool {
         return true;
     }
     // Reverse-dotted attribute URI (`xyz.tonk.view/greeting`,
-    // `dialog.name/referent`) — both a dotted prefix and a `/`
+    // `db.name/referent`) — both a dotted prefix and a `/`
     // separator. Plain string values rarely look like this, so
     // emitting them bare is the right default.
     s.contains('.') && s.contains('/')

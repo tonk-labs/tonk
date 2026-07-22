@@ -957,7 +957,7 @@ mod when_sharing_a_view {
         // Seed a task fixture alongside the view fixture; sharing
         // the task bookmark should fail because the task entity
         // doesn't carry a text/html claim — even though it does
-        // resolve through the same `dialog.meta/name` index.
+        // resolve through the same `db.meta/name` index.
         let test = shareable_view_site().await?;
         test.eval_inline(common::ATTRIBUTE_DECL).await?;
         test.eval_inline(common::CONCEPT_DECL).await?;

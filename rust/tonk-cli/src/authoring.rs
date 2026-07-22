@@ -10,7 +10,7 @@
 //! `.superpowers/sdd/repoint-findings.md` §"THE MINIMAL WORKING
 //! RECIPE". That document records a from-scratch investigation into
 //! why a home page renders (or silently doesn't): the root concept's
-//! one `with:` field must map to `the: dialog.origin/subject` /
+//! one `with:` field must map to `the: dialog.replica/subject` /
 //! `as: entity` — the only attribute guaranteed already-asserted on
 //! the entity the space-home route renders — and the inline
 //! attribute under `with:` must carry its own `description:` (a hard
@@ -314,7 +314,7 @@ pub fn build_home_recipe(models: &[String]) -> String {
         "      description: {}",
         quote_string("The repository's subject DID.")
     );
-    out.push_str("      the: dialog.origin/subject\n");
+    out.push_str("      the: dialog.replica/subject\n");
     out.push_str("      as: entity\n");
     out.push('\n');
 
@@ -473,7 +473,7 @@ mod tests {
         let doc = build_home_recipe(&["habit".into(), "entry".into()]);
         assert!(doc.contains("concept!: &space-home"));
         assert!(doc.contains("this: space:home"));
-        assert!(doc.contains("the: dialog.origin/subject"));
+        assert!(doc.contains("the: dialog.replica/subject"));
         assert!(doc.contains("view!: &space-home-view"));
         assert!(doc.contains("this: id:space:home/view"));
         assert!(doc.contains("<tonk-display model=habit />"));

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use dialog_capability::Revision;
+use dialog_artifacts::Revision;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

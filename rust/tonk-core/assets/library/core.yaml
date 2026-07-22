@@ -90,7 +90,7 @@ concept!: &blank
   with:
     subject:
       description: The repository's subject DID (the replica's subject).
-      the: dialog.origin/subject
+      the: dialog.replica/subject
       cardinality: one
       as: entity
 
@@ -1195,12 +1195,12 @@ concept!: &db/origin:
     subject:
       description: |
           The repository subject (as did:key) representing it's unique identifier
-      the: dialog.origin/subject
+      the: dialog.replica/subject
       as: entity
     profile:
       description: |
           Profile entity (as did:key) representing persistent identity on this device
-      the: dialog.origin/profile
+      the: dialog.replica/profile
       as: entity
 
 concept!: &db/branch:
@@ -1215,22 +1215,22 @@ concept!: &db/branch:
       description: The branch name
       the: dialog.branch/name
       as: text
-    origin:
-      description: The origin of this branch
-      the: dialog.branch/origin
+    replica:
+      description: The replica this branch belongs to
+      the: dialog.branch/replica
       as: entity
     tree:
       description: The tree root of this branch
       the: dialog.branch/tree
       as: entity
-    period:
-      description: Synchronization point with an upstream
-      the: dialog.branch/period
+    revision:
+      description: The current revision entity of this branch
+      the: dialog.branch/revision
       as: entity
-    moment:
-      description: Number of commits made since last synchronization
-      the: dialog.branch/moment
-      as: entity
+    edition:
+      description: Causal depth (Lamport edition) of the current revision
+      the: dialog.branch/edition
+      as: unsigned-integer
 
 # A space (replica) the profile has access to. These records live on
 # the profile repository's main branch — one per repository this device
@@ -1278,12 +1278,12 @@ concept!: &tonk/replica
     subject:
       description: |
           The repository subject (as did:key) representing it's unique identifier
-      the: dialog.origin/subject
+      the: dialog.replica/subject
       as: entity
     profile:
       description: |
           Profile entity (as did:key) representing persistent identity on this device
-      the: dialog.origin/profile
+      the: dialog.replica/profile
       as: entity
 
 # This device's live sync STATUS — the observation the chip renders. The worker

@@ -5,7 +5,7 @@
 //!
 //! 1. The built-in `attribute` concept enumerates every attribute
 //!    (named or not). For each, a separate lookup against
-//!    `dialog.name/referent` recovers the bookmark name where one
+//!    `db.name/referent` recovers the bookmark name where one
 //!    exists.
 //! 2. The built-in `concept` concept enumerates every concept
 //!    *with* a name claim — the concept-of-concept descriptor
@@ -20,7 +20,7 @@
 //! would multiply the test surface for a corner case we haven't
 //! seen in real schemas yet.
 //!
-//! Known fidelity gap: `dialog.meta/description` claims on
+//! Known fidelity gap: `db.meta/description` claims on
 //! *concepts* are not surfaced. The dialog query engine's
 //! anonymous-concept dispatch path (which the `concept:` head
 //! lands on) only binds `this`, `name`, and a synthesised
@@ -53,10 +53,10 @@ use crate::site::TonkSite;
 /// notation).
 #[derive(Debug, Clone)]
 pub struct ConceptSummary {
-    /// Bookmark name published via `dialog.name/referent` on
+    /// Bookmark name published via `db.name/referent` on
     /// the matching `id:<name>` entity.
     pub name: String,
-    /// Human description claim (`dialog.meta/description`), if
+    /// Human description claim (`db.meta/description`), if
     /// asserted. Concept descriptions are optional in the
     /// analyzer.
     pub description: Option<String>,
@@ -145,7 +145,7 @@ pub async fn render_one(site: &TonkSite, name: &str) -> Result<Option<String>> {
 
 #[derive(Debug)]
 struct AttributeInfo {
-    /// Bookmark name (the `<n>` from an `id:<n>` `dialog.name/referent`
+    /// Bookmark name (the `<n>` from an `id:<n>` `db.name/referent`
     /// claim pointing at this entity), when one is published.
     name: Option<String>,
     /// Attribute URI (`xyz.tonk.task/title`).
@@ -156,7 +156,7 @@ struct AttributeInfo {
     type_name: String,
     /// `one` / `many`, matching the analyzer's accepted values.
     cardinality: String,
-    /// Human description claim (`dialog.meta/description`).
+    /// Human description claim (`db.meta/description`).
     description: String,
 }
 
@@ -167,7 +167,7 @@ pub struct ConceptInfo {
     /// Bookmark name. Required — anonymous concepts aren't yet
     /// surfaced.
     pub name: String,
-    /// `dialog.meta/description` when present.
+    /// `db.meta/description` when present.
     pub description: Option<String>,
     /// Decoded descriptor — the source of truth for the rendered
     /// `with:` map.
@@ -234,16 +234,16 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
 /// (the built-in `attribute` concept descriptor doesn't carry
 /// `name`).
 ///
-/// Names are stored inverted under `dialog.name/referent`: each
-/// anchor `&foo` publishes `(dialog.name/referent, id:foo,
+/// Names are stored inverted under `db.name/referent`: each
+/// anchor `&foo` publishes `(db.name/referent, id:foo,
 /// <target-entity>)`. The *name* lives in the claim's subject as
 /// `id:<name>`; the *target* is the value. We invert that mapping
 /// here so callers can ask "what's this entity's display name?"
 /// in one lookup.
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: dialog_artifacts::Attribute = "dialog.name/referent"
+    let name_attr: dialog_artifacts::Attribute = "db.name/referent"
         .parse()
-        .context("dialog.name/referent should be a valid attribute URI")?;
+        .context("db.name/referent should be a valid attribute URI")?;
     let the_term: attribute::The = name_attr.into();
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
@@ -259,7 +259,7 @@ async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String
         .perform(&site.operator)
         .try_vec()
         .await
-        .map_err(|e| anyhow!("dialog.name/referent query failed: {e:?}"))?;
+        .map_err(|e| anyhow!("db.name/referent query failed: {e:?}"))?;
 
     let mut out = HashMap::with_capacity(claims.len());
     for claim in claims {

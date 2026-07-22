@@ -194,7 +194,7 @@ async fn resolve_model<B: QueryBackend>(
     Ok((row.this, descriptor))
 }
 
-/// Resolve a bookmark name to its entity URI via `dialog.name/referent`.
+/// Resolve a bookmark name to its entity URI via `db.name/referent`.
 async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String, RenderError> {
     let rows = run_query(backend, name_query(name)).await?;
     let row = rows

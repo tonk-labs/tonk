@@ -313,7 +313,7 @@ fn the(domain: &str, name: &str) -> dialog_query::attribute::The {
 }
 
 /// Query the transaction's overlay for effect entities whose
-/// `dialog.effect/on` index lists the given attribute name.
+/// `db.effect/on` index lists the given attribute name.
 /// Equivalent to [`effects_by_on`](crate::effect_query::effects_by_on)
 /// but reads through the transaction so in-flight effect
 /// installs and retracts are visible.
@@ -329,7 +329,7 @@ async fn effects_on<Env: InduceEnv>(
     let claims: Vec<dialog_query::Claim> = txn
         .query()
         .select(dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the("dialog.effect", "on"))
+            Term::<dialog_query::attribute::The>::from(the("db.effect", "on"))
                 .of(Term::<Entity>::var("effect"))
                 .is(Term::<Entity>::from(attribute_entity)),
         ))
@@ -356,7 +356,7 @@ async fn load_effect<Env: InduceEnv>(
     let source_claims: Vec<dialog_query::Claim> = txn
         .query()
         .select(dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the("dialog.effect", "source"))
+            Term::<dialog_query::attribute::The>::from(the("db.effect", "source"))
                 .of(Term::<Entity>::from(entity.clone()))
                 .is(Term::<String>::var("source")),
         ))
@@ -372,7 +372,7 @@ async fn load_effect<Env: InduceEnv>(
         Value::String(s) => s,
         other => {
             return Err(InduceError::Query(format!(
-                "dialog.effect/source was not a string: {other:?}"
+                "db.effect/source was not a string: {other:?}"
             )));
         }
     };
@@ -380,7 +380,7 @@ async fn load_effect<Env: InduceEnv>(
     let polarity_claims: Vec<dialog_query::Claim> = txn
         .query()
         .select(dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the("dialog.effect", "polarity"))
+            Term::<dialog_query::attribute::The>::from(the("db.effect", "polarity"))
                 .of(Term::<Entity>::from(entity))
                 .is(Term::<String>::var("polarity")),
         ))
@@ -392,12 +392,12 @@ async fn load_effect<Env: InduceEnv>(
     let polarity_claim = polarity_claims
         .into_iter()
         .next()
-        .ok_or_else(|| InduceError::Query("missing dialog.effect/polarity".to_string()))?;
+        .ok_or_else(|| InduceError::Query("missing db.effect/polarity".to_string()))?;
     let polarity_str = match polarity_claim.is {
         Value::String(s) => s,
         _ => {
             return Err(InduceError::Query(
-                "dialog.effect/polarity was not a string".to_string(),
+                "db.effect/polarity was not a string".to_string(),
             ));
         }
     };
@@ -535,7 +535,7 @@ async fn fire_effect<Env: InduceEnv>(
 }
 
 /// Query the transaction overlay for the
-/// `(<concept>, dialog.concept/transient, db:transient)` marker
+/// `(<concept>, db.concept/transient, db:transient)` marker
 /// so the loop can classify emitted heads.
 async fn is_transient<Env: InduceEnv>(
     txn: &Transaction<'_>,
@@ -548,7 +548,7 @@ async fn is_transient<Env: InduceEnv>(
     let claims: Vec<dialog_query::Claim> = dialog_query::Output::try_vec(
         txn.query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the("dialog.concept", "transient"))
+                Term::<dialog_query::attribute::The>::from(the("db.concept", "transient"))
                     .of(Term::from(concept_entity))
                     .is(Term::from(marker_target)),
             ))
@@ -759,7 +759,7 @@ mod tests {
         one_field_concept(domain, name, Type::String)
     }
 
-    /// The string form dialog stores in `dialog.attribute/type`
+    /// The string form dialog stores in `db.attribute/type`
     /// for each `Type` variant the tests need. The labels match
     /// dialog's `TypeDescriptor` names (Text for String,
     /// UnsignedInteger for UnsignedInt, etc.), not the variant
@@ -789,23 +789,23 @@ mod tests {
                 .unwrap_or("String")
                 .to_string();
             txn = txn
+                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                    "{}/{}",
+                    attr.domain(),
+                    attr.name()
+                )))
                 .assert(
-                    the!("dialog.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(format!("{}/{}", attr.domain(), attr.name())),
-                )
-                .assert(
-                    the!("dialog.attribute/type")
+                    the!("db.attribute/type")
                         .of(attr_entity.clone())
                         .is(type_label),
                 )
                 .assert(
-                    the!("dialog.attribute/cardinality")
+                    the!("db.attribute/cardinality")
                         .of(attr_entity.clone())
                         .is("one".to_string()),
                 )
                 .assert(
-                    the!("dialog.meta/description")
+                    the!("db.meta/description")
                         .of(attr_entity)
                         .is(String::new()),
                 );

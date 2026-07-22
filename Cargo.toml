@@ -177,35 +177,39 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-17" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-07-22" }
 
-# NOTE — the dialog deps above are pinned to the `tonk-2026-07-13-2` TAG:
-# `feat/overlay-retain-entities` (dialog-db #390, which tonk's `staging` already
-# depends on for `Overlay::retain_entities`) plus the Revision/TreeReference move
-# to `dialog-capability` (dialog-db #391), which is what lets the host page name a
-# revision without linking the query engine.
+# NOTE — the dialog deps above are pinned to the `tonk-2026-07-22` TAG, which
+# carries two breaking changes tonk must absorb:
 #
-# That move previously lived only on an ORPHANED commit (tagged `tonk-2026-07-12`,
-# reachable from no branch), which is why this crate used to pin the
-# `feat/engine-free-revision` branch to get it — dragging in the whole
-# version-control stack as a side effect, and resolving TWO copies of every dialog
-# crate. #391 cherry-picks it onto a real branch, so one tag now covers everything.
-# Repoint to a tag on the merged base once #390 and #391 land.
+# 1. The `dialog.` attribute namespace is now RESERVED: the artifact write path
+#    (dialog-artifacts tree.rs) rejects any Assert/Replace/Retract whose
+#    attribute starts with `dialog.` (DialogArtifactsError::ReservedAttribute).
+#    tonk pervasively writes `dialog.attribute/*`, `dialog.meta/*`,
+#    `dialog.concept/*`, `dialog.effect/*`, `dialog.name/*`, etc., so every one
+#    of those built-in attribute names must move off the `dialog.` prefix.
+#
+# 2. Binary/version-control format change (#393, #397): search-tree nodes are
+#    self-describing and rebalanced (stored data must be reseeded), and
+#    Revision/TreeReference moved from `dialog-capability` to `dialog-artifacts`.
+#    The old one-commit `Revision.cause: HashSet<TreeReference>` is replaced by a
+#    Lamport `edition` + per-origin `context: Option<Context>` history index, so
+#    `sync::classify` must be rewritten against `Context::includes`.
 
 [profile.dev]
 opt-level = 1

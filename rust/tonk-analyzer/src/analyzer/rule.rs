@@ -926,6 +926,7 @@ mod tests {
         tonk_schema::concept::QueryEnv
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
+        + dialog_query::Provider<dialog_effects::authority::Attest>
     {
     }
 
@@ -933,6 +934,7 @@ mod tests {
         T: tonk_schema::concept::QueryEnv
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
+            + dialog_query::Provider<dialog_effects::authority::Attest>
     {
     }
 
@@ -978,34 +980,30 @@ mod tests {
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| "String".to_owned());
                 txn = txn
+                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                        "{}/{}",
+                        attr.domain(),
+                        attr.name()
+                    )))
                     .assert(
-                        the!("dialog.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(format!("{}/{}", attr.domain(), attr.name())),
-                    )
-                    .assert(
-                        the!("dialog.attribute/type")
+                        the!("db.attribute/type")
                             .of(attr_entity.clone())
                             .is(type_label),
                     )
                     .assert(
-                        the!("dialog.attribute/cardinality")
+                        the!("db.attribute/cardinality")
                             .of(attr_entity.clone())
                             .is("one".to_owned()),
                     )
                     .assert(
-                        the!("dialog.meta/description")
+                        the!("db.meta/description")
                             .of(attr_entity)
                             .is(String::new()),
                     );
             }
             let concept_entity = descriptor.this();
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
-            txn = txn.assert(
-                the!("dialog.name/referent")
-                    .of(id_entity)
-                    .is(concept_entity),
-            );
+            txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
                 .perform(&self.operator)

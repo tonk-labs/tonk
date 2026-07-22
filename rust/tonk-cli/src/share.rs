@@ -318,7 +318,7 @@ pub async fn share_concept(
 /// existing `text/html` body via the host route's iframe viewer.
 ///
 /// `target` is either a bookmark name (resolved via
-/// `dialog.meta/name` on the branch) or a `did:key:…` entity URI.
+/// `db.meta/name` on the branch) or a `did:key:…` entity URI.
 /// Either way the resolved entity must already carry at least
 /// one `text/html` claim — otherwise the host route would 404 on
 /// the embedded path and we'd hand the human a useless URL.
@@ -481,7 +481,7 @@ fn compose_display_then(subject: &str, view: Option<&str>, model: Option<&str>) 
 
 /// Map a `<target>` argument into an `(entity, optional_name)`
 /// pair. `did:key:…` strings are taken as URIs; everything else
-/// is looked up as a `dialog.meta/name` bookmark. `missing` is
+/// is looked up as a `db.meta/name` bookmark. `missing` is
 /// invoked when the bookmark doesn't resolve — callers choose
 /// between [`ShareError::ViewNotFound`] and
 /// [`ShareError::SubjectNotFound`] so the message matches the

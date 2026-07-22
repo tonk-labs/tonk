@@ -33,7 +33,7 @@ use syn::{LitStr, parse_macro_input};
 /// an analysis error all become compile errors.
 ///
 /// Rules have no `TransactRequest` representation (the `Claim` wire
-/// can't carry `dialog.effect/*` triples), so each `rule!:` install
+/// can't carry `db.effect/*` triples), so each `rule!:` install
 /// is embedded as its `(source, polarity)` and rebuilt at runtime
 /// via [`tonk_core::effect::Effect::from_source`] +
 /// `tonk_schema::rule::Rule::asserting`. A document with no `rule!:`

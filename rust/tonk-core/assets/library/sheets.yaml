@@ -778,7 +778,7 @@ concept!: &tonk/binder
         an entity, so the binder carries the replica's `subject` and the
         shell view can read `{subject}` directly to mount the
         repository-name banner — no bridge view needed.
-      the: dialog.origin/subject
+      the: dialog.replica/subject
       as: entity
   maybe:
     active:

@@ -14,7 +14,7 @@
 //! These types only define the *shape* a command carries. The handler
 //! that reacts to one lives in `tonk-worker`; the transient-ness is a
 //! property of how the command is asserted (the
-//! `dialog.concept/transient` marker), not of the type.
+//! `db.concept/transient` marker), not of the type.
 
 use dialog_artifacts::Entity;
 use dialog_capability::Command;
