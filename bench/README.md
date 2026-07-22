@@ -156,7 +156,8 @@ polls until the URL lands off `/join`, then fires the data pull.
 
 - `home` → `$BENCH_URL/`
 - `<path>` → `$BENCH_URL/space/$SPACE_NAME/<path>`
-- `display:<view-name>` → resolved at capture time via `tonk share display`;
+- `display:<view-name>` → resolved at capture time from the view's anchor
+  name (`id:<view-name>`), after a `tonk push`;
   `shots.sh` queries the view's model concept and builds the display URL as
   `/space/$SPACE_NAME/<model>!tonk:view`
 

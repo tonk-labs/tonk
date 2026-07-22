@@ -2,7 +2,7 @@
 # Capture the scenario's checkpoint screenshots. Each line of the
 # scenario's `checkpoints` file is either:
 #   home                — the shell root ($BENCH_URL/)
-#   display:<view-name> — resolved at capture time via `tonk share display`
+#   display:<view-name> — resolved at capture time from the view's anchor name
 #   <path>              — a suffix under /space/$SPACE_NAME/
 # Blank lines and #-comments are skipped. A failed screenshot is
 # recorded as missing, not fatal — the judge sees what there is.
@@ -19,10 +19,10 @@ mkdir -p "$RUN_DIR/shots"
 # Resolve a display:<view-name> checkpoint to a navigable URL.
 #
 # Strategy:
-# 1. Run `tonk share display <view-name> --view <view-name>` to confirm
-#    the view bookmark exists and push the repo. Parse the view entity
-#    URI from stderr.
-# 2. Query the view instance to find its model URI and resolve that to a
+# 1. Push the repo so the browser side sees the current branch.
+# 2. Address the view instance by its anchor name — `tonk view add
+#    --name <view-name>` (and `view!: &<view-name>`) publishes the row
+#    as `id:<view-name>` — then read its model URI and resolve that to a
 #    concept name via the eval JSON API.
 # 3. Build the URL directly in tonk-ui display-route format:
 #      /space/<SPACE_NAME>/<model>!<view>
@@ -41,26 +41,20 @@ resolve_display() {
     return 1
   fi
 
-  # Step 1: confirm view exists and push. Capture the view entity URI
-  # from stderr ("subject: <name> (<entity>)" or "subject: <entity>").
-  local share_stderr view_entity
-  share_stderr="$(mktemp)"
-  cd "$site" && "$TONK" share display "$view_name" --view "$view_name" \
-    >"$share_stderr.stdout" 2>"$share_stderr" || {
-    echo "shots: tonk share display $view_name --view $view_name failed: $(cat "$share_stderr")" >&2
-    rm -f "$share_stderr" "$share_stderr.stdout"
+  # Step 1: push, so the browser side sees the current branch.
+  local push_stderr
+  push_stderr="$(mktemp)"
+  cd "$site" && "$TONK" push >/dev/null 2>"$push_stderr" || {
+    echo "shots: tonk push failed: $(cat "$push_stderr")" >&2
+    rm -f "$push_stderr"
     return 1
   }
-  view_entity="$(grep '^subject:' "$share_stderr" | head -1 \
-    | grep -oE '\(did:key:[^)]+\)' | tr -d '()' || true)"
-  if [ -z "$view_entity" ]; then
-    view_entity="$(grep '^subject:' "$share_stderr" | head -1 | awk '{print $2}' || true)"
-  fi
-  rm -f "$share_stderr" "$share_stderr.stdout"
+  rm -f "$push_stderr"
 
-  # Step 2: resolve the model concept name from the view entity URI.
+  # Step 2: resolve the model concept name from the view's anchor name.
   local model_name="$view_name"
-  if [ -n "$view_entity" ] && command -v jq >/dev/null 2>&1; then
+  local view_entity="id:$view_name"
+  if command -v jq >/dev/null 2>&1; then
     local model_uri
     model_uri="$(cd "$site" && "$TONK" eval --no-sync --format json -c 'view:' 2>/dev/null \
       | jq -r --arg e "$view_entity" \
