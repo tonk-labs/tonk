@@ -108,18 +108,22 @@ impl BranchState {
     }
 
     /// Move every subscription registered on `other` into this state,
-    /// leaving `other` empty.
+    /// leaving `other` empty, and bind its engine to this state's branch.
     ///
     /// Used when the reactor replaces a cached branch handle (e.g. to
     /// pick up an upstream wired on a separate handle): the fresh
     /// [`BranchState`] adopts the live subscribers so their SSE streams
     /// keep updating instead of silently freezing on the discarded
     /// handle. Each `SubscriberSession` carries its `mpsc::Sender`, so
-    /// re-polls through the new state reach the same receivers; the
-    /// subscriptions keep their `last_hash`, so the next poll only
-    /// re-emits on a genuine change.
+    /// re-polls through the new state reach the same receivers. The engine
+    /// itself cannot move unchanged: it captures the old branch handle and
+    /// would keep evaluating its stale revision and overlay. Rebinding marks
+    /// the subscribers pending, so the next poll sends a fresh snapshot.
     pub fn adopt_subscriptions_from(&self, other: &BranchState) {
-        let moved = std::mem::take(&mut *other.subscriptions.lock());
+        let mut moved = std::mem::take(&mut *other.subscriptions.lock());
+        for subscription in moved.values_mut() {
+            subscription.rebind(&self.branch);
+        }
         *self.subscriptions.lock() = moved;
     }
 
@@ -162,7 +166,10 @@ impl BranchState {
         // subscription sees ephemeral facts with no extra wiring here.
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
+            engine: Arc::new(tokio::sync::Mutex::new(Some(
+                self.branch.subscribe(plan.clone()),
+            ))),
+            plan,
             terms,
             subscribers: Vec::new(),
         });

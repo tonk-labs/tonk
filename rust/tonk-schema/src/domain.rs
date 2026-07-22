@@ -288,6 +288,64 @@ pub mod command {
         pub struct Space(pub Entity);
     }
 
+    /// Attributes the `tonk:enable-sync` command carries.
+    ///
+    /// The share control dispatches this routelessly when a user accepts the
+    /// offer to turn sync on, so the target spot and the endpoint both travel
+    /// on the transient rather than being inferred from a dispatch origin.
+    pub mod enable_sync {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The submit event's timestamp. Makes each acceptance a distinct
+        /// transient, and is echoed back on any refusal so the share control
+        /// can match a result to the click that caused it.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("dom.event")]
+        pub struct TimeStamp(pub f64);
+
+        /// The marker giving this command an attribute no other command
+        /// carries, so a transient decodes as exactly one command. Same role
+        /// as [`super::invite::Invite`]; the derived attribute is
+        /// `dom.event.current-target.dataset/enable-sync`.
+        ///
+        /// An `Entity`, not a `String`: the value (`tonk:enable-sync`) has a
+        /// `:`, and the worker's untagged `Value` decode reads any `:`-bearing
+        /// string as an `Entity`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct EnableSync(pub Entity);
+
+        /// The spot to attach the remote to.
+        ///
+        /// An `Entity` for the same reason as [`EnableSync`]: the value is a
+        /// `did:key:…`, and the worker's untagged `Value` decode reads any
+        /// `:`-bearing string as an `Entity`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enable-sync")]
+        pub struct Space(pub Entity);
+
+        /// The UCAN access-service endpoint to attach as `origin`.
+        ///
+        /// Read from the raw facts rather than being a matched field: a URL
+        /// round-trips through JSON and the worker's untagged `Value` decode
+        /// picks `Entity` for any string with a `:`, so a `String`-typed field
+        /// would never decode one. The handler tolerates both representations,
+        /// the same way `remote_from_facts` does for `CreateSpace`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enable-sync")]
+        pub struct Remote(pub String);
+
+        /// Present when the caller wants an invite minted once the remote is
+        /// attached. Absent means attach only.
+        ///
+        /// An `Entity` for the same reason as [`EnableSync`]: the sentinel
+        /// value (`tonk:share`) carries a `:`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enable-sync")]
+        pub struct Share(pub Entity);
+    }
+
     /// Attributes the `tonk:pause-sync` command carries.
     pub mod pause_sync {
         use super::super::Entity;
@@ -495,9 +553,11 @@ pub mod authorization {
     #[domain("xyz.tonk.authorization")]
     pub struct Proof(pub String);
 
-    /// The UCAN access-service endpoint for sync, when the repository
-    /// advertises a remote — the optional `&remote=` parameter suffix.
-    /// Empty when the repository is local-only.
+    /// The UCAN access-service endpoint for sync — the `&remote=` parameter
+    /// suffix. Never empty: `run_invite` refuses to mint an invite (and so
+    /// never asserts this) for a repository with no shareable remote, since
+    /// one that carried no remote would strand its recipient in a spot that
+    /// can never fill.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.authorization")]
     pub struct Remote(pub String);
@@ -529,6 +589,45 @@ pub mod credential {
     #[domain("xyz.tonk.credential")]
     #[cardinality(one)]
     pub struct Link(pub String);
+}
+
+/// Attributes on the overlay-only `tonk:share/blocked` fact — why a share
+/// click could not mint an invite. Keyed on the spot's subject entity, the
+/// same entity [`crate::command::Credential`] is keyed by, so the share
+/// control reads both off one subject.
+///
+/// Overlay-only, so it is session-scoped and never replicated: a refusal is
+/// this device's answer to this click, not a property of the spot.
+pub mod share {
+    use super::Attribute;
+
+    /// The refusal class: `not-synced` | `unshareable-remote` |
+    /// `attach-failed`. Only `not-synced` is repairable by attaching a
+    /// remote, so it is the only one that offers the prompt.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.share")]
+    #[cardinality(one)]
+    pub struct Blocked(pub String);
+
+    /// The sentence shown to the user.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.share")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
+
+    /// The timestamp of the command this refusal answers, echoed back from
+    /// the transient that triggered it.
+    ///
+    /// Load-bearing. The fact is cardinality-one on the subject, so it
+    /// lingers in the overlay and replays on every resubscribe; the share
+    /// control acts only on a refusal whose timestamp matches the click it
+    /// is currently holding a clipboard write for, and ignores every other
+    /// frame. That is what makes the fact safe to leave in place instead of
+    /// retracting it on the next success.
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.share")]
+    #[cardinality(one)]
+    pub struct Time(pub f64);
 }
 
 /// Attributes on the overlay-only `tonk:join/status` concept — the state
