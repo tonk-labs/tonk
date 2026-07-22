@@ -231,6 +231,33 @@ mod when_shortening_an_invite {
         assert!(claim_outcome.remote_url.is_some());
         Ok(())
     }
+
+    /// The regression: with no explicit base, the link must land on
+    /// the remote's own origin — the only origin whose same-origin
+    /// shortcut service can answer, and the deployment actually
+    /// serving the repo.
+    #[dialog_common::test]
+    async fn it_derives_the_base_from_the_remote_and_shortens(
+        env: AccessServiceAddress,
+    ) -> Result<()> {
+        let endpoint = env.access_service_url.as_str();
+        let inviter = common::TestSite::new().await?;
+        remote::add(&inviter.site, "origin", endpoint, None).await?;
+
+        let resolved = remote::resolve(&inviter.site, None)
+            .await?
+            .expect("the lone remote resolves");
+        let base = invite::base_url_for_remote(&resolved.endpoint)?;
+        assert_eq!(base, format!("{endpoint}/join"));
+
+        let outcome = invite::mint(&inviter.site, Some(&base), Some(&resolved.endpoint)).await?;
+        let short = invite::shorten(&outcome.url).await?;
+        assert!(
+            short.starts_with(&format!("{endpoint}/@/")),
+            "short link sits on the remote's origin: {short}"
+        );
+        Ok(())
+    }
 }
 
 mod when_claiming_an_invite_with_a_remote {
