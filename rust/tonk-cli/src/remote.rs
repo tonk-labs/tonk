@@ -181,7 +181,7 @@ pub async fn upstream_remote(site: &TonkSite) -> Result<Option<String>, RemoteEr
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
     Ok(match session.handle().upstream() {
         Some(Upstream::Remote { remote, .. }) => Some(remote),
-        _ => None,
+        Some(Upstream::Local { .. }) | None => None,
     })
 }
 

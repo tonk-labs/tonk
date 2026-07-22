@@ -194,8 +194,10 @@ mod when_the_invite_remote_is_not_the_upstream {
         let test = common::TestSite::new().await?;
         remote::add(&test.site, "origin", ENDPOINT, None).await?;
 
-        // Registering a remote doesn't wire it as the upstream, so
-        // there is nothing to diverge from and nothing to warn about.
+        // `remote::add` only registers; it never touches the upstream,
+        // so there is nothing to diverge from and nothing to warn
+        // about. (`tonk remote add`, the command, layers a default
+        // set-upstream on top when no upstream is configured yet.)
         assert!(remote::upstream_remote(&test.site).await?.is_none());
         Ok(())
     }
