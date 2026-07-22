@@ -384,7 +384,7 @@ Understand the whole file before editing. Note in particular: what `resolve_disp
 ```bash
 cd /Users/jackdouglas/tonk/tonk-invite
 cargo build --release -p tonk-cli 2>&1 | tail -3
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=bench-probe
 ./target/release/tonk spot new bench-probe 2>&1 | tail -2
 ./target/release/tonk eval --no-sync --format json -c 'view:' | head -40
@@ -916,7 +916,7 @@ Expected: success. `remote` and `invite` are already imported in `bin/tonk.rs`; 
 - [ ] **Step 5: Verify by hand against a scratch spot with no remote**
 
 ```bash
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=probe-noremote
 cargo run -q -p tonk-cli --bin tonk -- spot new probe-noremote 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- invite 2>&1 | tail -4
@@ -927,7 +927,7 @@ Expected: the link starts with `https://tonk.spot/join?access=` after Task 7 (be
 - [ ] **Step 6: Verify by hand against a scratch spot with a staging remote**
 
 ```bash
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=probe-staging
 cargo run -q -p tonk-cli --bin tonk -- spot new probe-staging 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- remote add origin https://staging.tonk.spot/ucan/ 2>&1 | tail -2
@@ -1265,7 +1265,7 @@ Expected: the new tests pass; the suite is at its prior count plus yours.
 - [ ] **Step 6: Verify the warning by hand**
 
 ```bash
-export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=probe-mismatch
 cargo run -q -p tonk-cli --bin tonk -- spot new probe-mismatch 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- remote add origin http://127.0.0.1:9/ucan/ 2>&1 | tail -2
