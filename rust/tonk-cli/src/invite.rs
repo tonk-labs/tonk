@@ -224,16 +224,25 @@ pub async fn mint(
 /// worker's `location.origin`, which the browser mint path reads
 /// straight off its own scope.
 ///
+/// Any userinfo on the endpoint is stripped. A registered remote URL
+/// carrying credentials would otherwise ride them into a link printed
+/// to stdout and pasted to whoever is being invited.
+///
 /// # Errors
 ///
 /// Returns an error if `endpoint` doesn't parse, or has no origin to
 /// hang `/join` off (a `data:` or `mailto:` URL, say).
 pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
-    let parsed = Url::parse(endpoint).map_err(|e| {
+    let mut parsed = Url::parse(endpoint).map_err(|e| {
         InviteError::Io(format!(
             "remote endpoint '{endpoint}' is not a valid URL: {e}"
         ))
     })?;
+    // Both setters fail only on a URL that cannot have credentials
+    // (`data:`, `mailto:`) — which has no usable origin either, so the
+    // join below reports it. Nothing to add here.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
     parsed.join("/join").map(String::from).map_err(|e| {
         InviteError::Io(format!(
             "remote endpoint '{endpoint}' has no usable origin: {e}"
@@ -574,6 +583,14 @@ mod tests {
         fn it_keeps_the_port_so_local_services_resolve() {
             let base = base_url_for_remote("http://127.0.0.1:8787/ucan/").unwrap();
             assert_eq!(base, "http://127.0.0.1:8787/join");
+        }
+
+        /// Credentials on a registered remote must not ride into a
+        /// link that gets printed and pasted.
+        #[dialog_common::test]
+        fn it_strips_userinfo_from_the_endpoint() {
+            let base = base_url_for_remote("https://user:secret@tonk.example/ucan/").unwrap();
+            assert_eq!(base, "https://tonk.example/join");
         }
 
         #[dialog_common::test]
