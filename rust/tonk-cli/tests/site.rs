@@ -180,6 +180,60 @@ mod when_resolving_a_remote {
     }
 }
 
+mod when_the_invite_remote_is_not_the_upstream {
+    use anyhow::Result;
+    use tonk_cli::remote;
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+    const OTHER: &str = "https://other.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_reports_no_upstream_remote_on_a_freshly_added_remote() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        // Registering a remote doesn't wire it as the upstream, so
+        // there is nothing to diverge from and nothing to warn about.
+        assert!(remote::upstream_remote(&test.site).await?.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_names_the_remote_the_branch_tracks() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+        remote::set_upstream(&test.site, "origin").await?;
+
+        let upstream = remote::upstream_remote(&test.site).await?;
+        assert_eq!(upstream.as_deref(), Some("origin"));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_differs_from_a_remote_the_branch_does_not_track() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        remote::add(&test.site, "backup", OTHER, None).await?;
+        remote::set_upstream(&test.site, "origin").await?;
+
+        let upstream = remote::upstream_remote(&test.site).await?;
+
+        let backup = remote::resolve(&test.site, Some("backup"))
+            .await?
+            .expect("named remote resolves");
+        assert_ne!(upstream.as_deref(), Some(backup.name.as_str()));
+
+        let origin = remote::resolve(&test.site, Some("origin"))
+            .await?
+            .expect("named remote resolves");
+        assert_eq!(upstream.as_deref(), Some(origin.name.as_str()));
+        Ok(())
+    }
+}
+
 mod when_shortening_an_invite {
     #[cfg(feature = "integration-tests")]
     use anyhow::Result;

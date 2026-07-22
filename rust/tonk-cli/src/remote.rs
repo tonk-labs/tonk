@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Branch, SiteAddress};
+use dialog_repository::{Branch, SiteAddress, Upstream};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -162,6 +162,27 @@ pub async fn upstream_configured(site: &TonkSite) -> Result<bool, RemoteError> {
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
     Ok(session.handle().upstream().is_some())
+}
+
+/// Local name of the remote the site's `main` branch tracks, or
+/// `None` when no upstream is wired.
+///
+/// The upstream cell records the remote under the same local name
+/// it was registered with, so the answer compares straight against
+/// a [`RemoteRecord`]'s `name`. `tonk invite` uses that comparison
+/// to tell whether the remote it is about to embed in a link is the
+/// one the repo actually pushes to. An upstream pointing at another
+/// local branch names no remote and reads as `None` — tonk never
+/// wires one, and there is no remote to compare against if it did.
+pub async fn upstream_remote(site: &TonkSite) -> Result<Option<String>, RemoteError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
+    Ok(match session.handle().upstream() {
+        Some(Upstream::Remote { remote, .. }) => Some(remote),
+        _ => None,
+    })
 }
 
 /// Set the local `main` branch's upstream to `<remote>/main`,

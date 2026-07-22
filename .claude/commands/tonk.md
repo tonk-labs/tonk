@@ -82,7 +82,9 @@ tonk eval -c '…' --dry-run    # preview without committing
 tonk push | tonk pull                       # sync main with its upstream
 tonk remote add <name> <url>                # register a remote; the first one becomes main's upstream
 tonk remote set-upstream <name>             # re-point which remote main tracks
-tonk invite [--remote <name>]               # mint a paste-able invite URL (pushes first)
+tonk invite                                 # invite URL on the repo's remote origin (pushes first)
+tonk invite --remote <name>                 # pick the remote when several are registered
+tonk invite --no-remote                     # mint without a remote; the claimer wires one by hand
 tonk join '<invite-url>' --name <spot>      # claim an invite into a fresh spot
 tonk render <route>                         # headless HTML render (e.g. alice@person!card)
 ```

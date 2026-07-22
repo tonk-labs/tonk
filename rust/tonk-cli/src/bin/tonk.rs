@@ -244,9 +244,10 @@ enum Command {
         #[arg(long, value_name = "NAME", conflicts_with = "no_remote")]
         remote: Option<String>,
 
-        /// Mint a local-only invite carrying no `remote=`, even
-        /// when remotes are registered. The recipient joins with
-        /// no upstream and wires one by hand.
+        /// Mint an invite carrying no `remote=`, even when remotes
+        /// are registered. The recipient joins with no upstream and
+        /// wires one by hand. The mint still syncs this repo to its
+        /// own upstream if it has one.
         #[arg(long)]
         no_remote: bool,
     },
@@ -1339,6 +1340,23 @@ async fn mint_invite(
             Err(err) => return print_error(err.to_string()),
         }
     };
+
+    // The mint pushes to whatever `main` tracks, which need not be the
+    // remote the link embeds. Say so rather than re-route: a deliberate
+    // split setup is legitimate, and a silent one is not. No upstream
+    // means no push at all, so nothing to diverge from.
+    if let Some(record) = &remote_record {
+        match remote::upstream_remote(&site).await {
+            Ok(Some(upstream)) if upstream != record.name => eprintln!(
+                "warning: the invite embeds remote '{embedded}' but the repo pushes to \
+                 '{upstream}';\n         the recipient may join a deployment that has not \
+                 received this data",
+                embedded = record.name,
+            ),
+            Ok(_) => {}
+            Err(err) => eprintln!("warning: could not check the branch's upstream: {err}"),
+        }
+    }
 
     let base_url = match (base_url, &remote_record) {
         (Some(explicit), _) => explicit,
