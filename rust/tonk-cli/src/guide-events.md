@@ -418,54 +418,9 @@ cases 2 and 3 are exactly that false positive.
 
 ### Opening the view in tonk-ui
 
-Once the view and the entity it renders are asserted, push the
-repo and mint a launcher URL with `tonk share display`:
-
-```
-tonk share display <subject> --view <view-name>
-```
-
-- `<subject>` is the bookmark name or `did:key:…` URI of the
-  entity to render — the value `<tonk-display>` reads as its
-  `entity` attribute.
-- `--view <view-name>` is the view's **anchor name** (the `&name`
-  on its `view!:`). `<tonk-display>` resolves it to the view
-  entity the name currently points at, then reads that view's
-  `model` (to project the subject's fields) and `display` (the
-  template). Omit `--view` and the element falls back to
-  carousel mode — every view published for the subject's model.
-
-With `--view`, you don't pass `--model`: the named view declares its
-own `model`, so the caller never repeats it. (`--model` is the carousel
-form — see `tonk guide views`.) The `view` concept is `{model,
-display}`; identity lives in the anchor name, not a `name` field.
-
-Concrete example, given the counter setup above:
-
-```
-tonk share display my-counter --view counter-basic
-```
-
-The launcher URL points at the recipient's
-`/space/<space-name>/branch/main/display/my-counter?view=counter-basic`
-route. `<tonk-display>` resolves `id:counter-basic` to the
-current view entity, opens its subscriptions, and the
-`on<event>=<concept>` bindings in the template fire rules
-end-to-end. Edit the view by re-asserting `view!: &counter-basic`
-with new `display` — the name re-points and a refresh shows the
-latest, with no duplicate rows accumulating.
-
-Two related verbs to keep apart:
-
-- `tonk share view` targets the iframe viewer
-  (`/branch/main/view/<entity>`), driven off entities carrying a
-  `text/html` claim. Useful for one-off HTML pages, but the
-  shell that route serves doesn't currently register
-  `<tonk-display>`, so events won't fire.
-- `tonk share concept` targets the auto-rendered concept
-  listing — no template authoring, no events.
-
-`tonk share display` is the verb that pairs with this guide.
+Once the view works locally, hand the repo to a collaborator with
+`tonk invite`. They join the space and open the view there — events
+fire in the live shell, not in a standalone page.
 
 ### When the declarative path doesn't fit
 
