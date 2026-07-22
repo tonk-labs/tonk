@@ -11,7 +11,7 @@ command = "nix build .#tonk-cloudflare-artifacts"
 [[d1_databases]]
 binding = "DB"
 database_name = "tonk-accounts"
-database_id = "" # filled at first deploy: wrangler d1 create tonk-accounts
+database_id = "a0c6698d-25e6-414b-8986-4fbeb1b5f992"
 migrations_dir = "rust/tonk-account-service/migrations"
 
 [[r2_buckets]]
