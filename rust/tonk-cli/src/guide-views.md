@@ -58,8 +58,8 @@ Omit `view` to fall back to the built-in detail view for the model. A
 view** — every instance of the model — using the model's
 `view/directory`, or a default carousel.
 
-Share a display: `tonk share display <entity> --view <view-name>`
-(or `--model <concept>` for carousel mode).
+Hand the repo to someone: `tonk invite` (they land on the space and
+navigate to the view themselves).
 
 ## Render to HTML headlessly: `tonk render`
 
@@ -200,10 +200,10 @@ page!: &about
     <h1>About</h1>
 ```
 
-`tonk view ls` lists every entity carrying a `text/html` claim;
-`tonk share view <name>` opens it in the iframe viewer. The viewer
-shell does not register `<tonk-display>`, so events won't fire there —
-use `tonk share display` for interactive, data-bound views.
+`tonk view ls` lists every entity carrying a `text/html` claim; the
+viewer serves each one at `/space/<space-name>/view/<entity>`. Hand
+the repo to someone with `tonk invite` and they can navigate to it
+themselves.
 
 ---
 

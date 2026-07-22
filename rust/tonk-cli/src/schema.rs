@@ -47,9 +47,8 @@ use crate::output::EvaluateResponse;
 use crate::site::TonkSite;
 
 /// Slim summary of one named concept on the branch — just enough
-/// for `tonk concepts` to print and for `tonk share concept`
-/// to verify existence. The full descriptor stays internal to
-/// [`render`] (which needs it to re-emit the `with:` map as
+/// for `tonk concepts` to print. The full descriptor stays internal
+/// to [`render`] (which needs it to re-emit the `with:` map as
 /// notation).
 #[derive(Debug, Clone)]
 pub struct ConceptSummary {

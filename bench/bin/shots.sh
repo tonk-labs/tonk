@@ -2,7 +2,7 @@
 # Capture the scenario's checkpoint screenshots. Each line of the
 # scenario's `checkpoints` file is either:
 #   home                — the shell root ($BENCH_URL/)
-#   display:<view-name> — resolved at capture time via `tonk share display`
+#   display:<view-name> — resolved at capture time from the view's anchor name
 #   <path>              — a suffix under /space/$SPACE_NAME/
 # Blank lines and #-comments are skipped. A failed screenshot is
 # recorded as missing, not fatal — the judge sees what there is.
@@ -16,23 +16,51 @@ B="$ROOT/bench/bin/browser.sh"
 TONK="$ROOT/target/release/tonk"
 mkdir -p "$RUN_DIR/shots"
 
+# Print the concept name a view's `model` field points at, or nothing
+# when it cannot be resolved. Never fails — the caller decides what to
+# do with an empty answer.
+#
+# `tonk query view <view-name>` resolves the name through the branch's
+# name table, so it lands on the row whichever way the view was
+# authored: `tonk view add --name <view-name>` writes an explicit
+# `this: id:<view-name>`, while the bare anchor form (`view!:
+# &<view-name>` with no `this:`, what every scenario here uses) derives
+# a `did:key:` entity from the row's content and publishes the name as
+# a separate referent fact. Matching a hardcoded `id:<view-name>` would
+# see only the first shape.
+view_model() {
+  local site="$1"
+  local view_name="$2"
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local view_json
+  view_json="$(cd "$site" && "$TONK" query view "$view_name" --json 2>/dev/null)" || return 0
+
+  local model_uri
+  model_uri="$(printf '%s' "$view_json" \
+    | jq -r '.matches_before[0].results[0].fields.model // empty' 2>/dev/null)" || return 0
+  [ -n "$model_uri" ] || return 0
+
+  # The model field holds a concept URI; the concept's own row carries
+  # the name the display route wants.
+  cd "$site" && "$TONK" eval --no-sync --format json -c 'concept:' 2>/dev/null \
+    | jq -r --arg u "$model_uri" \
+        '.matches_before[0].results[] | select(.this == $u) | .fields.name // empty' \
+      2>/dev/null || return 0
+}
+
 # Resolve a display:<view-name> checkpoint to a navigable URL.
 #
 # Strategy:
-# 1. Run `tonk share display <view-name> --view <view-name>` to confirm
-#    the view bookmark exists and push the repo. Parse the view entity
-#    URI from stderr.
-# 2. Query the view instance to find its model URI and resolve that to a
-#    concept name via the eval JSON API.
-# 3. Build the URL directly in tonk-ui display-route format:
-#      /space/<SPACE_NAME>/<model>!<view>
-#    The `{model}!{view}` subject encoding puts `<tonk-display>` into
-#    directory mode (all instances of <model>) using the named view
-#    template.
+# 1. Push the repo so the browser side sees the current branch.
+# 2. Resolve the view name to the concept name of its model
+#    (`view_model` above).
+# 3. Build the URL as that model's directory route:
+#      /space/<SPACE_NAME>/<model>
 #
-# Falls back to `<view-name>!tonk:view` when the model lookup fails —
-# the URL resolves but may render an error state. Failures append to
-# MISSING, never fatal.
+# Falls back to the view name as the model name when the lookup fails,
+# and says so on stderr — the URL still resolves, but likely to an
+# error state. Failures append to MISSING, never fatal.
 resolve_display() {
   local view_name="$1"
   local site="$RUN_DIR/site"
@@ -41,42 +69,24 @@ resolve_display() {
     return 1
   fi
 
-  # Step 1: confirm view exists and push. Capture the view entity URI
-  # from stderr ("subject: <name> (<entity>)" or "subject: <entity>").
-  local share_stderr view_entity
-  share_stderr="$(mktemp)"
-  cd "$site" && "$TONK" share display "$view_name" --view "$view_name" \
-    >"$share_stderr.stdout" 2>"$share_stderr" || {
-    echo "shots: tonk share display $view_name --view $view_name failed: $(cat "$share_stderr")" >&2
-    rm -f "$share_stderr" "$share_stderr.stdout"
+  # Step 1: push, so the browser side sees the current branch.
+  local push_stderr
+  push_stderr="$(mktemp)"
+  cd "$site" && "$TONK" push >/dev/null 2>"$push_stderr" || {
+    echo "shots: tonk push failed: $(cat "$push_stderr")" >&2
+    rm -f "$push_stderr"
     return 1
   }
-  view_entity="$(grep '^subject:' "$share_stderr" | head -1 \
-    | grep -oE '\(did:key:[^)]+\)' | tr -d '()' || true)"
-  if [ -z "$view_entity" ]; then
-    view_entity="$(grep '^subject:' "$share_stderr" | head -1 | awk '{print $2}' || true)"
-  fi
-  rm -f "$share_stderr" "$share_stderr.stdout"
+  rm -f "$push_stderr"
 
-  # Step 2: resolve the model concept name from the view entity URI.
-  local model_name="$view_name"
-  if [ -n "$view_entity" ] && command -v jq >/dev/null 2>&1; then
-    local model_uri
-    model_uri="$(cd "$site" && "$TONK" eval --no-sync --format json -c 'view:' 2>/dev/null \
-      | jq -r --arg e "$view_entity" \
-          '.matches_before[0].results[] | select(.this == $e) | .fields.model // empty' \
-        2>/dev/null || true)"
-    if [ -n "$model_uri" ]; then
-      local resolved
-      resolved="$(cd "$site" && "$TONK" eval --no-sync --format json -c 'concept:' 2>/dev/null \
-        | jq -r --arg u "$model_uri" \
-            '.matches_before[0].results[] | select(.this == $u) | .fields.name // empty' \
-          2>/dev/null || true)"
-      if [ -n "$resolved" ]; then
-        model_name="$resolved"
-        echo "shots: display:$view_name → model concept '$model_name'" >&2
-      fi
-    fi
+  # Step 2: resolve the model concept name from the view's name.
+  local model_name
+  model_name="$(view_model "$site" "$view_name")"
+  if [ -n "$model_name" ]; then
+    echo "shots: display:$view_name → model concept '$model_name'" >&2
+  else
+    model_name="$view_name"
+    echo "shots: display:$view_name → no model resolved, using '$model_name'" >&2
   fi
 
   # Step 3: build the display URL as the model's directory route:
