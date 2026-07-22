@@ -4,7 +4,7 @@
 
 **Goal:** Make `tonk invite` build its link on the resolved remote's own origin, so the link, the embedded `remote=`, and the shortcut service are always one deployment — and remove the unused `tonk share` that duplicated the remote-resolution logic.
 
-**Architecture:** Two stacked PRs onto `staging`. PR 1 deletes `tonk share` outright (source, CLI surface, tests, docs). PR 2 adds a pure `invite::base_url_for_remote` helper and a `remote::resolve` remote-picker, wires both into `mint_invite` in `bin/tonk.rs`, and retargets `DEFAULT_BASE_URL` to `https://tonk.spot/join` for the no-remote fallback.
+**Architecture:** Two stacked PRs onto `staging`. PR 1 deletes `tonk share` outright (source, CLI surface, tests, docs) and ports its one real caller, `bench/bin/shots.sh`, onto `tonk push` plus a direct entity lookup. PR 2 adds a pure `invite::base_url_for_remote` helper and a `remote::resolve` remote-picker, wires both into `mint_invite` in `bin/tonk.rs`, and retargets `DEFAULT_BASE_URL` to `https://tonk.spot/join` for the no-remote fallback.
 
 **Tech Stack:** Rust, clap 4 derive API, `url::Url`, `#[dialog_common::test]`, `nix develop` dev shell.
 
@@ -301,26 +301,16 @@ tonk invite                                 # invite link to this repo
 
 If `tonk invite` is already listed elsewhere in that file, delete these two lines instead of replacing them.
 
-- [ ] **Step 8: `bench/README.md`**
-
-Line 159:
-
-```
-- `display:<view-name>` → resolved at capture time via `tonk share display`;
-```
-
-Read the surrounding capture-target documentation. If bench actually shells out to `tonk share display`, this is a real breakage, not a doc edit — stop and report it before continuing. If it only describes a route shape, reword to drop the command reference.
-
-- [ ] **Step 9: Verify nothing references the command**
+- [ ] **Step 8: Verify nothing under `rust/` references the command**
 
 ```bash
 cd /Users/jackdouglas/tonk/tonk-invite
-grep -rn "tonk share" --include="*.md" --include="*.rs" --include="*.toml" --include="*.yaml" . | grep -v target | grep -v docs/superpowers
+grep -rn "tonk share" --include="*.md" --include="*.rs" --include="*.toml" --include="*.yaml" rust/ .claude/
 ```
 
-Expected: no output. Hits under `docs/superpowers/` are historical specs and plans and stay as written.
+Expected: no output. `bench/` still references it — Task 3 owns that, because bench genuinely executes the command and needs a working replacement, not a reworded sentence.
 
-- [ ] **Step 10: Run the full native suite**
+- [ ] **Step 9: Run the full native suite**
 
 ```bash
 nix develop -c test:native:debug 2>&1 | tail -30
@@ -328,7 +318,7 @@ nix develop -c test:native:debug 2>&1 | tail -30
 
 Expected: PASS.
 
-- [ ] **Step 11: Lint gate**
+- [ ] **Step 10: Lint gate**
 
 ```bash
 nix flake check 2>&1 | tail -30
@@ -336,11 +326,119 @@ nix flake check 2>&1 | tail -30
 
 Expected: clean.
 
-- [ ] **Step 12: Commit and open PR 1**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add -A
+git add -A rust/ .claude/
 git commit -m "docs(cli): drop tonk share from the guides and readmes
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 3: Port the bench screenshot pipeline off `tonk share`
+
+`bench/bin/shots.sh` executes `tonk share display` for real, so Task 1's deletion breaks the `display:<view-name>` checkpoint in six of the seven scenarios (`from-scratch`, `targeted-edit`, `smoke`, `wiki-conversion`, `artifact-conversion`, and whichever others carry one).
+
+It does not want the launcher URL: stdout goes to `"$share_stderr.stdout"` and is deleted unread. The call buys exactly two things:
+
+1. a push of the local repo to its upstream
+2. the `subject: <name> (<entity>)` line on stderr, parsed to get the view's entity URI
+
+Both have direct replacements. `tonk push` covers (1). For (2), `shots.sh` already runs `tonk eval --no-sync --format json -c 'view:'` in its very next step and filters those rows by `.this == $view_entity` — the entity it went to `share display` to obtain. Resolving the row by the view's own anchor name instead removes the need for the entity entirely.
+
+**Files:**
+- Modify: `bench/bin/shots.sh` (the `resolve_display` function, roughly lines 19-80)
+- Modify: `bench/README.md:159`
+
+**Interfaces:**
+- Consumes: the `tonk` binary at `$TONK` (`$ROOT/target/release/tonk`), which after Task 1 has no `share` subcommand. `tonk push`, `tonk eval --no-sync --format json`, and `tonk view ls` all remain.
+- Produces: nothing other tasks consume. `resolve_display` keeps its contract — given a view name it echoes a navigable URL suffix, or returns non-zero and the caller records the checkpoint as missing.
+
+- [ ] **Step 1: Read the function and its caller in full**
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+cat bench/bin/shots.sh
+```
+
+Understand the whole file before editing. Note in particular: what `resolve_display` echoes on success, how the caller consumes it, and the existing fallback to `<view-name>!tonk:view` when the model lookup fails. Preserve all three.
+
+- [ ] **Step 2: Confirm how a view's anchor name is queryable**
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+cargo build --release -p tonk-cli 2>&1 | tail -3
+export TONK_SPOTS_STATE="$(mktemp -d)/spots.json"
+export TONK_SPOT=bench-probe
+./target/release/tonk spot new bench-probe 2>&1 | tail -2
+./target/release/tonk eval --no-sync --format json -c 'view:' | head -40
+./target/release/tonk view ls 2>&1 | head -10
+```
+
+The probe spot is empty, so the interesting output is the *shape* of the JSON and whether `view:` rows carry a name field. If they do not, `tonk view ls` (tab-separated `name<TAB>entity`) is the lookup — use whichever actually resolves a name to an entity. Do not guess: run the commands and read the output.
+
+If neither surfaces a name for a `view` row, stop and report — the port needs a CLI affordance that does not exist, and that is a plan gap, not something to work around in shell.
+
+- [ ] **Step 3: Rewrite `resolve_display`**
+
+Replace the `tonk share display` invocation with:
+
+- `cd "$site" && "$TONK" push` for the push, keeping the existing failure handling shape (log to stderr, `return 1`, never fatal)
+- the name→entity lookup you confirmed in Step 2, feeding the same `view_entity` variable the rest of the function already uses
+
+Leave Steps 2 and 3 of the function's own documented strategy (model URI lookup, URL construction, the `<view-name>!tonk:view` fallback) untouched. Update the function's header comment so it describes what the code now does — it currently opens by naming `tonk share display`.
+
+- [ ] **Step 4: Verify the script parses and the command is gone**
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+bash -n bench/bin/shots.sh && echo "syntax OK"
+grep -n "share" bench/bin/shots.sh
+```
+
+Expected: `syntax OK`, and the grep prints nothing (or only the unrelated `$share_stderr` variable if you kept the name — rename it, since it no longer refers to sharing).
+
+- [ ] **Step 5: Update `bench/README.md`**
+
+Line 159 reads:
+
+```
+- `display:<view-name>` → resolved at capture time via `tonk share display`;
+```
+
+Reword to name the mechanism the script now uses. Read the two lines that follow — they describe the model query and URL construction and stay accurate.
+
+- [ ] **Step 6: Run a scenario end to end**
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+ls bench/scenarios/
+```
+
+Run the `smoke` scenario — it is the smallest with a `display:` checkpoint. Find the entry point (`bench/README.md` documents it) and run it. Confirm `display:notes` produces a screenshot in the run's `shots/` directory rather than landing in the missing list.
+
+If the bench harness cannot run in this environment (missing browser, missing API key, network sandbox), say so explicitly in your report rather than claiming the port works. A `bash -n` parse check is not evidence that a pipeline runs.
+
+- [ ] **Step 7: Verify nothing anywhere references the command**
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+grep -rn "tonk share" --include="*.md" --include="*.rs" --include="*.sh" --include="*.toml" --include="*.yaml" . | grep -v target | grep -v docs/superpowers | grep -v bench/testdata
+```
+
+Expected: no output. `bench/testdata/codex-episode.jsonl` is a frozen recording of a past CLI session and stays as-is.
+
+- [ ] **Step 8: Commit and open PR 1**
+
+```bash
+git add bench/
+git commit -m "refactor(bench): resolve display checkpoints without tonk share
+
+shots.sh called tonk share display only for its push side effect and
+the view entity it echoed on stderr. Push directly and look the
+entity up through the query the script already runs.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push -u origin refactor/drop-cli-share
@@ -355,6 +453,11 @@ Deletes `share.rs`, the `Share`/`ShareCommand` CLI surface, the three
 Tonk-ui's consumer side is untouched: invites still land on `/join`,
 nothing in the CLI emits `name=`/`then=` any more.
 
+`bench/bin/shots.sh` was the one real caller — it used `share display`
+for its push side effect and the view entity echoed on stderr, and
+discarded the launcher URL. It now pushes directly and resolves the
+entity through the query it already ran.
+
 Spec: `docs/superpowers/specs/2026-07-22-cli-invite-remote-origin-design.md`
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -368,21 +471,26 @@ EOF
 
 Branch: `fix/cli-invite`, rebased onto `refactor/drop-cli-share`.
 
-```bash
-git switch fix/cli-invite
-git rebase refactor/drop-cli-share
-```
-
-### Task 3: `invite::base_url_for_remote`
+### Task 4: `invite::base_url_for_remote`
 
 **Files:**
 - Modify: `rust/tonk-cli/src/invite.rs` (add the helper after `mint`, add a `#[cfg(test)] mod tests` at the end)
 
 **Interfaces:**
 - Consumes: `InviteError` (already defined at `invite.rs:84`), `url::Url` (already imported at `invite.rs:26`).
-- Produces: `pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError>`. Task 5 calls it with a `RemoteRecord::endpoint`, which is a `String`, not a `Url`.
+- Produces: `pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError>`. Task 6 calls it with a `RemoteRecord::endpoint`, which is a `String`, not a `Url`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Switch to the PR 2 branch**
+
+This is the first task of PR 2. Move onto its branch, stacked on PR 1's:
+
+```bash
+cd /Users/jackdouglas/tonk/tonk-invite
+git switch fix/cli-invite
+git rebase refactor/drop-cli-share
+```
+
+- [ ] **Step 2: Write the failing tests**
 
 Append to `rust/tonk-cli/src/invite.rs`:
 
@@ -425,7 +533,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
 ```bash
 cd /Users/jackdouglas/tonk/tonk-invite
@@ -434,7 +542,7 @@ cargo test -p tonk-cli --lib when_deriving_a_base_url_from_a_remote 2>&1 | tail 
 
 Expected: FAIL to compile — `cannot find function 'base_url_for_remote' in this scope`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 4: Write the implementation**
 
 In `rust/tonk-cli/src/invite.rs`, immediately after `mint` (which ends at line 197) and before the `claim` doc comment:
 
@@ -464,7 +572,7 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
 cargo test -p tonk-cli --lib when_deriving_a_base_url_from_a_remote 2>&1 | tail -20
@@ -472,7 +580,7 @@ cargo test -p tonk-cli --lib when_deriving_a_base_url_from_a_remote 2>&1 | tail 
 
 Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add rust/tonk-cli/src/invite.rs
@@ -483,7 +591,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 4: `remote::resolve`
+### Task 5: `remote::resolve`
 
 **Files:**
 - Modify: `rust/tonk-cli/src/remote.rs` (add `AmbiguousRemote` to `RemoteError` around line 82, add `resolve` after `find` at line 295)
@@ -491,7 +599,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `list` and `find` (`remote.rs:242` and `remote.rs:288`), `RemoteRecord` (`remote.rs:40`, whose `endpoint` field is a `String`), `TonkSite`.
-- Produces: `pub async fn resolve(site: &TonkSite, explicit: Option<&str>) -> Result<Option<RemoteRecord>, RemoteError>` and the new `RemoteError::AmbiguousRemote(String)` variant. Task 5 calls both.
+- Produces: `pub async fn resolve(site: &TonkSite, explicit: Option<&str>) -> Result<Option<RemoteRecord>, RemoteError>` and the new `RemoteError::AmbiguousRemote(String)` variant. Task 6 calls both.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -644,7 +752,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Wire `tonk invite` to the resolved remote
+### Task 6: Wire `tonk invite` to the resolved remote
 
 **Files:**
 - Modify: `rust/tonk-cli/src/bin/tonk.rs:226-243` (the `Invite` variant)
@@ -652,10 +760,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `rust/tonk-cli/src/bin/tonk.rs` (`mint_invite`, at line 1537 before PR 1's deletions shift it upward — find it by name)
 
 **Interfaces:**
-- Consumes: `invite::base_url_for_remote` (Task 3), `remote::resolve` (Task 4), `invite::DEFAULT_BASE_URL` (re-exported at `invite.rs:37`), `invite::mint`, `invite::shorten`, the existing `print_error` and `open_selected` helpers in `bin/tonk.rs`.
+- Consumes: `invite::base_url_for_remote` (Task 4), `remote::resolve` (Task 5), `invite::DEFAULT_BASE_URL` (re-exported at `invite.rs:37`), `invite::mint`, `invite::shorten`, the existing `print_error` and `open_selected` helpers in `bin/tonk.rs`.
 - Produces: nothing further tasks consume. This is the behaviour change.
 
-`bin/tonk.rs` has no test harness — it is verified end-to-end in Task 7 and by hand here.
+`bin/tonk.rs` has no test harness — it is verified end-to-end in Task 8 and by hand here.
 
 - [ ] **Step 1: Make `--base-url` optional and add `--no-remote`**
 
@@ -800,7 +908,7 @@ cargo run -q -p tonk-cli --bin tonk -- spot new probe-noremote 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- invite 2>&1 | tail -4
 ```
 
-Expected: the link starts with `https://tonk.spot/join?access=` after Task 6 (before Task 6 it is still `https://hub.tonk.xyz/join?access=`), and stderr carries the shorten warning because neither host serves `PUT /@` yet.
+Expected: the link starts with `https://tonk.spot/join?access=` after Task 7 (before Task 7 it is still `https://hub.tonk.xyz/join?access=`), and stderr carries the shorten warning because neither host serves `PUT /@` yet.
 
 - [ ] **Step 6: Verify by hand against a scratch spot with a staging remote**
 
@@ -848,7 +956,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 6: Retarget `DEFAULT_BASE_URL`
+### Task 7: Retarget `DEFAULT_BASE_URL`
 
 **Files:**
 - Modify: `rust/tonk-invite/src/lib.rs:40-44`
@@ -856,7 +964,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `DEFAULT_BASE_URL` becomes `"https://tonk.spot/join"`. Task 5's `(None, None)` arm reads it. No test asserts its host — the `tonk-invite` unit tests at `lib.rs:488,512,531,681` use it opaquely, and the hardcoded `hub.tonk.xyz` strings at `lib.rs:464,472,506` and throughout `shortcut.rs` are literals unrelated to the constant.
+- Produces: `DEFAULT_BASE_URL` becomes `"https://tonk.spot/join"`. Task 6's `(None, None)` arm reads it. No test asserts its host — the `tonk-invite` unit tests at `lib.rs:488,512,531,681` use it opaquely, and the hardcoded `hub.tonk.xyz` strings at `lib.rs:464,472,506` and throughout `shortcut.rs` are literals unrelated to the constant.
 
 - [ ] **Step 1: Change the constant and its doc**
 
@@ -916,7 +1024,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 7: End-to-end regression test
+### Task 8: End-to-end regression test
 
 The regression this whole change exists to prevent: minting with no explicit `--base-url` must produce a link on the remote's origin, and that link must shorten.
 
@@ -924,7 +1032,7 @@ The regression this whole change exists to prevent: minting with no explicit `--
 - Modify: `rust/tonk-cli/tests/site.rs`, `mod when_shortening_an_invite` (lines 117-168)
 
 **Interfaces:**
-- Consumes: `invite::base_url_for_remote` (Task 3), `remote::resolve` (Task 4), `remote::add`, `invite::mint`, `invite::shorten`, `invite::claim`, `AccessServiceAddress` and `common::TestSite` (both already used by the existing test in this module).
+- Consumes: `invite::base_url_for_remote` (Task 4), `remote::resolve` (Task 5), `remote::add`, `invite::mint`, `invite::shorten`, `invite::claim`, `AccessServiceAddress` and `common::TestSite` (both already used by the existing test in this module).
 - Produces: nothing.
 
 The existing `it_shortens_and_claims_a_minted_invite` passes an explicit `base` and stays as-is — it covers the shortcut round trip. The new test covers the derivation.
@@ -970,7 +1078,7 @@ The `AccessServiceAddress` harness serves an origin with no path, so `base_url_f
 cargo test -p tonk-cli --features integration-tests --test site it_derives_the_base_from_the_remote 2>&1 | tail -20
 ```
 
-Expected: PASS, because Tasks 3 and 4 already landed. If it fails, the failure is real — diagnose before continuing. (This test is written after its implementation deliberately: it exercises the wiring end to end rather than driving a new unit into existence.)
+Expected: PASS, because Tasks 4 and 5 already landed. If it fails, the failure is real — diagnose before continuing. (This test is written after its implementation deliberately: it exercises the wiring end to end rather than driving a new unit into existence.)
 
 - [ ] **Step 3: Run the whole site suite**
 
