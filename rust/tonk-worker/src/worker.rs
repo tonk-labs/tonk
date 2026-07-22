@@ -971,6 +971,84 @@ mod route_for_tests {
              the ramp has climbed",
         );
     }
+
+    /// Pins the invariant documented on [`SyncScheduler::quiet_interval`]:
+    /// `hidden_since` must be stamped strictly after `last_drain_end`, or the
+    /// ramp's closed `>=` boundary test rolls over to the next step one
+    /// instant before `may_drain`'s closed `>=` gate needed the previous
+    /// step still in force. Every ramp test above exercises `quiet_interval`
+    /// in isolation against a synthetic anchor, so they'd all still pass if
+    /// the stamp moved to `set_visible` — this one drives a real hidden
+    /// timeline through `may_drain` itself, which is what actually breaks
+    /// under an eager stamp: refused just under each minute mark, admitted
+    /// exactly at it, landing on the intended 1/3/7-minute schedule.
+    #[dialog_common::test]
+    fn it_pins_hidden_drain_boundaries_through_may_drain() {
+        let s = SyncScheduler::default();
+        s.begin_drain();
+        s.end_drain(0.0);
+        s.set_visible(false);
+
+        // First hidden gate check, at 2_000 rather than 0 — this is what
+        // lazily stamps `hidden_since`, and the schedule below holds
+        // regardless of exactly when it lands, as long as it's after 0.
+        assert!(!s.may_drain(2_000.0, CLEAN));
+
+        assert!(
+            !s.may_drain(59_999.0, CLEAN),
+            "just under a minute hidden: still held",
+        );
+        assert!(
+            s.may_drain(60_000.0, CLEAN),
+            "a full minute hidden: the first hidden drain fires",
+        );
+        s.end_drain(60_000.0);
+
+        assert!(
+            !s.may_drain(179_999.0, CLEAN),
+            "just under 3 minutes cumulative: still held",
+        );
+        assert!(
+            s.may_drain(180_000.0, CLEAN),
+            "3 minutes cumulative: the second step fires",
+        );
+        s.end_drain(180_000.0);
+
+        assert!(
+            !s.may_drain(419_999.0, CLEAN),
+            "just under 7 minutes cumulative: still held",
+        );
+        assert!(
+            s.may_drain(420_000.0, CLEAN),
+            "7 minutes cumulative: the third step fires",
+        );
+    }
+
+    /// [`it_caps_the_ramp_after_many_hours_hidden`] only probes 24h and 10y —
+    /// both far past the clamp — so a variant that clamped `k` instead of the
+    /// resulting value, or was off by one step at the boundary, would still
+    /// pass. Pin where the cap actually first engages: `BASE * 2^6 =
+    /// 3_840_000` is the first uncapped step to exceed [`SYNC_HIDDEN_MAX_MS`],
+    /// and its boundary (step 5 fully elapsed) falls at `BASE * (2^6 - 1) =
+    /// 3_780_000`ms, i.e. 63 minutes.
+    #[dialog_common::test]
+    fn it_pins_where_the_cap_first_engages() {
+        let s = SyncScheduler::default();
+        s.set_visible(false);
+        s.quiet_interval(0.0); // anchors hidden_since at t=0
+        let sixty_three_minutes = 63.0 * 60_000.0;
+        assert_eq!(
+            s.quiet_interval(sixty_three_minutes - 1.0),
+            1_920_000.0,
+            "just under 63 minutes hidden: still the last uncapped step (32 min)",
+        );
+        assert_eq!(
+            s.quiet_interval(sixty_three_minutes),
+            SYNC_HIDDEN_MAX_MS as f64,
+            "at 63 minutes hidden: the next step (64 min) is cut to the 60-minute cap",
+        );
+        assert_eq!(SYNC_HIDDEN_MAX_MS as f64, 3_600_000.0);
+    }
 }
 
 /// Trailing-edge debounce coordinator for the background sync drain, with a
@@ -1321,14 +1399,69 @@ impl SyncScheduler {
     /// every other gate in this type takes it: a synthetic clock makes the
     /// ramp's boundaries exactly testable.
     ///
-    /// `hidden_since` is stamped lazily, right here, rather than by
-    /// [`Self::set_visible`] on the visible-to-hidden transition: the
-    /// transition itself has no `now` to stamp with on every call site
-    /// without threading a clock through an API that otherwise needs none,
-    /// and every hidden-gate check funnels through this method anyway (it is
-    /// `may_drain`'s only consumer). The first call after going hidden
-    /// establishes the origin at ITS `now`; every later call in the same
-    /// hidden stretch reuses it, since `hidden_since` is by then `Some`.
+    /// `hidden_since` is stamped lazily, right here — on the first hidden
+    /// gate check — rather than by [`Self::set_visible`] on the
+    /// visible-to-hidden transition. **This is a correctness constraint, not
+    /// an ergonomic convenience**: do not "clean it up" by threading a `now`
+    /// into `set_visible` and stamping there instead.
+    ///
+    /// [`may_drain`](Self::may_drain) admits a drain when `now -
+    /// last_drain_end >= interval` — a closed, `>=` comparison — and
+    /// [`hidden_ramp_interval`]'s own step boundaries use that same closed
+    /// comparison against elapsed time from this method's origin. At the
+    /// exact instant `elapsed == BASE * (2^k - 1)` (step `k - 1` having just
+    /// fully elapsed), the ramp formula has *already* rolled over to step
+    /// `k` — but the gate needs step `k - 1` to still be in force at that
+    /// instant, to admit the very drain step `k - 1` earned. The two closed
+    /// comparisons can only both land right where they should if the ramp's
+    /// origin (`hidden_since`) sits strictly *before* the drain-completion
+    /// timestamp (`last_drain_end`) it is being read against — i.e. the ramp
+    /// must lag `last_drain_end` by more than zero.
+    ///
+    /// Stamping eagerly, on the transition, sets `hidden_since ==
+    /// last_drain_end` (both fire from the same `end_drain` moment in the
+    /// steady state). Then at `now == last_drain_end + BASE` — e.g.
+    /// `now == 60_000` with both at `0` — elapsed is exactly `BASE`, the
+    /// ramp already reads the *next* step (120s, not 60s), and `may_drain`
+    /// refuses the drain the 60s mark was supposed to admit. Every later
+    /// step is one interval too wide, forever, because the same coincidence
+    /// (`hidden_since == last_drain_end`) keeps recurring: each admitted
+    /// drain sets `last_drain_end` to a value the ramp itself just used as
+    /// `now`.
+    ///
+    /// Stamping lazily avoids this because the origin is set by whichever
+    /// gate check happens to be the first one after going hidden — which
+    /// necessarily runs strictly after [`end_drain`](Self::end_drain) last
+    /// fired (a gate check never coincides with a drain completion; the two
+    /// are different call sites at different times). That gives
+    /// `hidden_since > last_drain_end` from the moment the stamp is taken,
+    /// and every later drain can only push `last_drain_end` further past
+    /// `hidden_since` (never behind it), so the ordering established at the
+    /// first stamp holds for the rest of the hidden stretch. Any positive
+    /// gap between the two works, however small — see
+    /// `it_pins_hidden_drain_boundaries_through_may_drain` for this pinned
+    /// end-to-end through `may_drain`, including a check that it fails under
+    /// the eager alternative described above.
+    ///
+    /// (The transition also happens to have no `now` in scope at most call
+    /// sites, which is a real ergonomic argument for the lazy stamp too —
+    /// but it is not the reason the lazy stamp is required. Even a
+    /// `set_visible` handed a `now` for free would still have to decline to
+    /// stamp with it.)
+    ///
+    /// One bounded degeneracy falls out of the laziness itself: if nothing
+    /// calls a gate at all during the first hidden minute — the
+    /// self-scheduled loop parked (no live subscribers or no syncable repo,
+    /// see the `break`s in [`TonkServiceWorker::ensure_sync_loop`]) or
+    /// [`Self::blocked`] held for that whole stretch — then the *next* call
+    /// to land is the one that both stamps `hidden_since` AND immediately
+    /// measures against it, so `elapsed` reads `0` and the 60s step is
+    /// skipped: the first admitted gap is 120s, not 60s. Bounded (it costs
+    /// exactly one step, never more), conservative (favors NOT draining),
+    /// and confined to a hidden tab — but a reader who has internalized the
+    /// invariant above will wonder about this case, so: yes, it's real, and
+    /// it's the accepted cost of not threading a clock through every call
+    /// site that could stamp the transition instead.
     fn quiet_interval(&self, now: f64) -> f64 {
         if !self.visible.get() {
             let since = match self.hidden_since.get() {
@@ -1370,7 +1503,7 @@ impl SyncScheduler {
 /// boundaries land on exact millisecond values instead of being subject to
 /// float rounding — that's what makes them exactly testable. `n = elapsed /
 /// BASE + 1` is computed via integer division (floor), and `floor(log2(n))`
-/// for `n >= 1` is `n`'s bit length minus one, i.e. `63 - n.leading_zeros()`.
+/// for `n >= 1` is `n.ilog2()`.
 /// The doubling itself uses `saturating_mul` rather than a raw shift, so an
 /// elapsed time of days (a huge `k`) saturates to `u64::MAX` and is then
 /// clamped to the cap, instead of overflowing/wrapping the shift.
@@ -1381,7 +1514,7 @@ fn hidden_ramp_interval(elapsed_ms: f64) -> f64 {
     // tab hidden for years) clamps to u64::MAX rather than wrapping.
     let elapsed = elapsed_ms.max(0.0) as u64;
     let n = elapsed.saturating_add(base) / base; // >= 1
-    let k = u64::BITS - 1 - n.leading_zeros(); // floor(log2(n))
+    let k = n.ilog2(); // floor(log2(n)); n >= 1, so this can't panic
     let stepped = base.saturating_mul(1u64 << k);
     stepped.min(SYNC_HIDDEN_MAX_MS as u64) as f64
 }
