@@ -76,30 +76,32 @@ pub async fn read_body(
 
 /// Build a [`crate::store::d1::D1Store`] from the worker environment's
 /// `DB` binding.
+///
+/// A missing binding is a deployment/config error, not something a
+/// caller can act on: the detail is logged and never put on the wire.
 #[cfg(target_arch = "wasm32")]
 pub fn build_store(
     ctx: &worker::RouteContext<()>,
 ) -> std::result::Result<crate::store::d1::D1Store, crate::error::ServiceError> {
     let db = ctx.env.d1("DB").map_err(|err| {
-        crate::error::ServiceError::new(
-            crate::error::ErrorCode::InternalError,
-            format!("missing D1 binding: {err}"),
-        )
+        worker::console_error!("missing D1 binding: {err}");
+        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
     })?;
     Ok(crate::store::d1::D1Store::new(db))
 }
 
 /// Build a [`crate::chains::r2::R2ChainStore`] from the worker
 /// environment's `CHAINS` binding.
+///
+/// A missing binding is a deployment/config error, not something a
+/// caller can act on: the detail is logged and never put on the wire.
 #[cfg(target_arch = "wasm32")]
 pub fn build_chains(
     ctx: &worker::RouteContext<()>,
 ) -> std::result::Result<crate::chains::r2::R2ChainStore, crate::error::ServiceError> {
     let bucket = ctx.bucket("CHAINS").map_err(|err| {
-        crate::error::ServiceError::new(
-            crate::error::ErrorCode::InternalError,
-            format!("missing R2 binding: {err}"),
-        )
+        worker::console_error!("missing R2 binding: {err}");
+        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
     })?;
     Ok(crate::chains::r2::R2ChainStore::new(bucket))
 }

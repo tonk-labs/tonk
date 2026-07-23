@@ -21,11 +21,15 @@ use super::{
 pub struct SqliteStore(Mutex<Connection>);
 
 impl SqliteStore {
-    /// Open a fresh in-memory database and apply
-    /// `migrations/0001_init.sql` — the same schema applied to
-    /// Cloudflare D1 in production.
+    /// Open a fresh in-memory database and apply every migration under
+    /// `migrations/` — the same schema applied to Cloudflare D1 in
+    /// production.
     pub fn in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
+        // The bundled libsqlite3-sys build already defaults foreign_keys
+        // on, but this pins the behavior explicitly so a future build-flag
+        // change (e.g. switching to the system libsqlite3) can't silently
+        // drop enforcement.
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0001_init.sql"))

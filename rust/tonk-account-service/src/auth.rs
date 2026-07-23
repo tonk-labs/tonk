@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use dialog_credentials::Ed25519KeyResolver;
 use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::promise::Promised;
-use dialog_ucan_core::time::timestamp::Timestamp;
+use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 
 use crate::core::CeremonyError;
@@ -58,8 +58,29 @@ async fn verified_chain(
     Ok(chain)
 }
 
+/// Get the latest expiration a ceremony invocation may carry: five
+/// minutes from now, plus a one-minute allowance for clock skew between
+/// the caller and this service. Mirrors [`Timestamp::five_minutes_from_now`].
+///
+/// # Panics
+///
+/// This function will panic if the current time is before the Unix epoch.
+#[allow(clippy::expect_used)]
+fn ceremony_expiration_upper_bound() -> Timestamp {
+    Timestamp::new(SystemTime::now() + Duration::from_secs(5 * 60) + CEREMONY_SKEW_ALLOWANCE)
+        .expect("the current time to be sometime in the 3rd millennium CE")
+}
+
+/// Clock-skew allowance applied to the upper bound of the ceremony
+/// expiration window, so a caller whose clock runs a little fast isn't
+/// rejected for an invocation that is, in practice, well within the
+/// five-minute ceremony window.
+const CEREMONY_SKEW_ALLOWANCE: Duration = Duration::from_secs(60);
+
 /// Require an expiration on the invocation and bound it to the
-/// five-minute ceremony window every account-service request uses.
+/// five-minute ceremony window every account-service request uses,
+/// plus a one-minute allowance for clock skew on the upper bound. The
+/// lower bound (already expired) carries no such allowance.
 fn require_ceremony_expiration(
     chain: &InvocationChain<Ed25519Signature>,
 ) -> Result<(), CeremonyError> {
@@ -72,9 +93,10 @@ fn require_ceremony_expiration(
             "invocation has expired".to_string(),
         ));
     }
-    if expiration > Timestamp::five_minutes_from_now() {
+    if expiration > ceremony_expiration_upper_bound() {
         return Err(CeremonyError::Unauthorized(
-            "invocation expiration exceeds the five-minute ceremony window".to_string(),
+            "invocation expiration exceeds the five-minute ceremony window plus skew allowance"
+                .to_string(),
         ));
     }
     Ok(())
@@ -424,10 +446,16 @@ mod tests {
         .await;
         seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
 
-        assert!(matches!(
-            authorize(&store, &bytes, &["account", "device", "list"]).await,
-            Err(CeremonyError::Unauthorized(_))
-        ));
+        match authorize(&store, &bytes, &["account", "device", "list"]).await {
+            Err(CeremonyError::Unauthorized(msg)) => {
+                assert!(
+                    msg.contains("must carry an expiration"),
+                    "unexpected message: {msg}"
+                );
+            }
+            Err(other) => panic!("expected Unauthorized, got a different error: {other:?}"),
+            Ok(_) => panic!("expected Unauthorized, got Ok"),
+        }
     }
 
     #[dialog_common::test]
@@ -444,10 +472,39 @@ mod tests {
         .await;
         seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
 
-        assert!(matches!(
-            authorize(&store, &bytes, &["account", "device", "list"]).await,
-            Err(CeremonyError::Unauthorized(_))
-        ));
+        match authorize(&store, &bytes, &["account", "device", "list"]).await {
+            Err(CeremonyError::Unauthorized(msg)) => {
+                assert!(msg.contains("has expired"), "unexpected message: {msg}");
+            }
+            Err(other) => panic!("expected Unauthorized, got a different error: {other:?}"),
+            Ok(_) => panic!("expected Unauthorized, got Ok"),
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_device_invocation_expiring_beyond_the_ceremony_window() {
+        // Ten minutes comfortably clears the five-minute window plus the
+        // one-minute skew allowance, so this must still trip the bound.
+        let too_far_out = Timestamp::new(SystemTime::now() + Duration::from_secs(10 * 60)).unwrap();
+        let store = SqliteStore::in_memory().unwrap();
+        let (root_did, device_did, bytes) = container_with_expiration(
+            vec!["account".into(), "device".into(), "list".into()],
+            BTreeMap::new(),
+            Some(too_far_out),
+        )
+        .await;
+        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+
+        match authorize(&store, &bytes, &["account", "device", "list"]).await {
+            Err(CeremonyError::Unauthorized(msg)) => {
+                assert!(
+                    msg.contains("exceeds the five-minute ceremony window"),
+                    "unexpected message: {msg}"
+                );
+            }
+            Err(other) => panic!("expected Unauthorized, got a different error: {other:?}"),
+            Ok(_) => panic!("expected Unauthorized, got Ok"),
+        }
     }
 
     #[dialog_common::test]
