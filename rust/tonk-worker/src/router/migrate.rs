@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "wasm32")]
 use dialog_query::{Output as _, Query, Term};
 #[cfg(target_arch = "wasm32")]
+use dialog_repository::RepositoryExt as _;
+#[cfg(target_arch = "wasm32")]
 use tonk_common::log;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::prelude::DidExt as _;
@@ -37,6 +39,14 @@ static MIGRATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// Best-effort: no-op when unlinked; one space's failure is logged and
 /// skipped. A concurrent run is skipped (the guard), since both would
 /// migrate the same spaces.
+///
+/// A space whose roster migration returns `Ok(true)` (a device-keyed row
+/// was actually re-keyed) still has its capability chain anchored to this
+/// device — [`reanchor_space`] re-anchors it to the root and backs it up
+/// for the account's other devices. `Ok(false)` means the space was
+/// already root-keyed (migrated on an earlier link, or claimed
+/// post-account), so its chain already terminates at root and needs no
+/// re-anchor.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn migrate_rosters(tonk: &TonkState) {
     if account::account_link(tonk).await.is_none() {
@@ -46,8 +56,10 @@ pub(crate) async fn migrate_rosters(tonk: &TonkState) {
         return;
     }
     for key in crate::router::profile_name::profile_space_keys(tonk).await {
-        if let Err(error) = migrate_space_roster(tonk, &key).await {
-            log!("roster migration for space '{key}' skipped: {error}");
+        match migrate_space_roster(tonk, &key).await {
+            Ok(true) => reanchor_space(tonk, &key).await,
+            Ok(false) => {}
+            Err(error) => log!("roster migration for space '{key}' skipped: {error}"),
         }
     }
     MIGRATE_IN_FLIGHT.store(false, Ordering::SeqCst);
@@ -202,6 +214,79 @@ pub(crate) async fn migrate_space_roster(
         .map_err(|e| RepositoryError::Internal(format!("commit migration '{key}': {e}")))?;
     log!("migrated roster for space '{key}' to the account root");
     Ok(true)
+}
+
+/// Re-anchor a just-migrated space's capability chain to the account root
+/// and back it up so the account's other devices can restore it.
+/// Best-effort, fire-and-forget: any failure is logged and swallowed —
+/// the roster is already root-keyed regardless of whether this succeeds.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn reanchor_space(tonk: &TonkState, key: &str) {
+    if let Err(error) = try_reanchor_space(tonk, key).await {
+        log!("re-anchor of space '{key}' skipped: {error}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn try_reanchor_space(tonk: &TonkState, key: &str) -> Result<(), RepositoryError> {
+    let Some(root_did) = account::account_root_did(tonk).await else {
+        return Ok(());
+    };
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("load space '{key}': {e}")))?;
+
+    // Recover the sync URL off the repo's own stored remote config, the
+    // same recovery `create_invite::resolve_remote_url` already does for
+    // the invite-mint path.
+    let remote_url = match crate::router::create_invite::resolve_remote_url(tonk, &repository)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("resolve remote for '{key}': {e}")))?
+    {
+        crate::router::create_invite::RemoteRequirement::Ready(url) => url.to_string(),
+        // No shareable remote: no other device could restore this space
+        // from a backup anyway, so there is nothing to back up.
+        crate::router::create_invite::RemoteRequirement::Refused(_) => return Ok(()),
+    };
+
+    match repository.try_access() {
+        // Created/owned: mint the one-hop space -> root delegation and
+        // back it up (reuses the restore branch's helper).
+        Some(_) => {
+            crate::router::account_backup::back_up_owned_space(tonk, &repository, &remote_url)
+                .await;
+        }
+        // Claimed: the profile re-delegates its held capability to the
+        // root, composing space -> eph -> device -> root. Save it to the
+        // access store, then back it up.
+        None => {
+            let chain: dialog_ucan::UcanDelegation = tonk
+                .profile
+                .access()
+                .claim(&repository)
+                .delegate(root_did)
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| RepositoryError::Internal(format!("re-anchor '{key}': {e}")))?;
+            tonk.profile
+                .access()
+                .save(chain.clone())
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| RepositoryError::Internal(format!("save re-anchor '{key}': {e}")))?;
+            crate::router::account_backup::back_up_reanchored(
+                tonk,
+                chain.into_chain(),
+                &remote_url,
+            )
+            .await;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]

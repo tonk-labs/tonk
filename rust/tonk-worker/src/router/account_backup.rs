@@ -297,6 +297,20 @@ pub(crate) async fn back_up_claim(
     dispatch_backup(tonk, "claim", chain.clone(), remote_url.map(str::to_owned)).await;
 }
 
+/// Back up a re-anchored space's delegation to the account service. Used
+/// by roster migration: a claimed space's held capability re-delegated
+/// from the device to the account root, composing `space -> eph -> device
+/// -> root`. Best-effort: any failure logs and is swallowed, same as
+/// [`back_up_claim`].
+///
+/// Only called from the wasm worker's roster-migration sweep today, so
+/// this is worker-only rather than carrying dead code on native, mirroring
+/// [`back_up_owned_space`].
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn back_up_reanchored(tonk: &TonkState, chain: DelegationChain, remote_url: &str) {
+    dispatch_backup(tonk, "reanchor", chain, Some(remote_url.to_owned())).await;
+}
+
 /// Back up a created space's `space -> root` delegation so another of the
 /// account's devices can restore it. Best-effort and fire-and-forget; a
 /// no-op when the profile is unlinked, or when `repository` doesn't hold a
