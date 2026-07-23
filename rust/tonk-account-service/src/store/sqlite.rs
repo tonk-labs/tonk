@@ -26,6 +26,8 @@ impl SqliteStore {
     /// Cloudflare D1 in production.
     pub fn in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
             .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0002_link_requests.sql"))
@@ -397,5 +399,22 @@ mod tests {
         assert_eq!((read.code_hash.as_str(), read.attempts), ("h2", 1));
         store.delete_code("a@x.com").await.unwrap();
         assert!(store.code("a@x.com").await.unwrap().is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_enforces_the_device_account_foreign_key() {
+        let store = SqliteStore::in_memory().unwrap();
+        let orphan = Device {
+            account_id: 999,
+            device_did: "did:key:zOrphan".into(),
+            delegation_cid: "bafyCid".into(),
+            name: "ghost".into(),
+            status: DeviceStatus::Active,
+            created_at: 1,
+        };
+        assert!(matches!(
+            store.insert_device(&orphan).await,
+            Err(StoreError::Internal(_))
+        ));
     }
 }
