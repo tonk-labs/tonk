@@ -154,19 +154,28 @@ pub(crate) async fn migrate_space_roster(
 mod tests {
     use axum::Json;
     use axum::extract::State;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{MemberName, MemberRole, Membership};
+    use dialog_artifacts::Entity;
+    use tonk_schema::prelude::{DidExt as _, EntityExt as _};
+    use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership};
 
     use super::migrate_space_roster;
     use crate::router::api_router_with_state;
-    use crate::router::tests::{content_member_roles, content_memberships, put_repo, test_state};
+    use crate::router::tests::{
+        content_invited_via, content_member_names, content_member_roles, content_memberships,
+        put_repo, test_state,
+    };
 
     /// Link the given (already-open) state's profile to a fresh account
     /// root, mirroring `join.rs`'s
     /// `it_keys_membership_on_the_root_did_for_an_account_holder` setup.
     /// Returns the minted root DID.
     async fn link_account(state: &crate::router::AppState) -> dialog_varsig::Did {
+        use dialog_varsig::Principal as _;
         let device_did = state.read().await.profile.did();
         let root = tonk_identity::derive::derive_root_signer(&[9u8; 32])
             .await
@@ -187,6 +196,12 @@ mod tests {
 
     /// Seed a device-keyed founder membership directly on `key`'s content
     /// branch — the state migration is meant to converge away from.
+    ///
+    /// The `InvitedVia` stamp points at a bare stable `Entity` rather
+    /// than a full `Invitation` — mirroring `membership.rs`'s own
+    /// `it_stamps_the_membership_entity` test — since the migration
+    /// only ever copies the invitation reference, never dereferences
+    /// it.
     async fn seed_device_membership(
         state: &crate::router::AppState,
         key: &str,
@@ -196,13 +211,15 @@ mod tests {
         let tonk = state.read().await;
         let membership = Membership::new(device_did.clone(), subject_did.clone());
         let entity = membership.this().clone();
+        let invitation_entity = Entity::of(&"migrate-roster-invitation");
         tonk.reactor
             .repository(key)
             .branch("main")
             .transaction()
             .assert(membership)
             .assert(MemberRole::founder(entity.clone()))
-            .assert(MemberName::new(entity, "Device Member".to_string()))
+            .assert(MemberName::new(entity.clone(), "Device Member".to_string()))
+            .assert(InvitedVia::new(entity, invitation_entity))
             .commit()
             .perform(&tonk.operator)
             .await
@@ -228,6 +245,8 @@ mod tests {
                 .of()
                 .clone()
         };
+        let device_membership = Membership::new(device_did.clone(), subject_did.clone());
+        let device_entity = device_membership.this().clone();
         seed_device_membership(&state, &key, &device_did, &subject_did).await;
 
         let root_did = link_account(&state).await;
@@ -260,6 +279,33 @@ mod tests {
                 .iter()
                 .any(|r| r.this == root_membership.this && r.role.0.to_string() == MemberRole::FOUNDER),
             "founder role must carry over onto the root-keyed entity",
+        );
+
+        let names = content_member_names(&state, &key).await;
+        assert!(
+            names
+                .iter()
+                .any(|n| n.this == root_membership.this && n.name.0 == "Device Member"),
+            "member name must carry over onto the root-keyed entity",
+        );
+        assert!(
+            !names.iter().any(|n| n.this == device_entity),
+            "member name must be gone from the device-keyed entity",
+        );
+
+        let stamps = content_invited_via(&state, &key).await;
+        let root_stamp = stamps
+            .iter()
+            .find(|s| s.this == root_membership.this)
+            .expect("invited-via stamp must carry over onto the root-keyed entity");
+        assert!(
+            !stamps.iter().any(|s| s.this == device_entity),
+            "invited-via stamp must be gone from the device-keyed entity",
+        );
+        assert_eq!(
+            root_stamp.invitation.0,
+            Entity::of(&"migrate-roster-invitation"),
+            "invited-via must reference the same invitation entity as before migration",
         );
 
         // Idempotent: a second call finds no device-keyed row left to migrate.
