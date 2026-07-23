@@ -20,6 +20,8 @@ mod account;
 
 mod account_backup;
 
+mod restore;
+
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 

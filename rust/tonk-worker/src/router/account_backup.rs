@@ -161,7 +161,6 @@ async fn post_for_bytes(endpoint: &str, body: Vec<u8>) -> Result<Vec<u8>, TonkWo
 
 /// List the keys of every chain this account has backed up. Used by
 /// restore to discover what can be pulled from the account service.
-#[allow(dead_code, reason = "wired into the restore flow in a follow-up task")]
 pub(crate) async fn list_backed_up_chains(
     device: &Ed25519Signer,
     link: &DelegationChain,
@@ -183,7 +182,6 @@ pub(crate) async fn list_backed_up_chains(
 
 /// Fetch one backed-up chain's raw artifact bytes by key. Used by restore
 /// to pull down a chain discovered via [`list_backed_up_chains`].
-#[allow(dead_code, reason = "wired into the restore flow in a follow-up task")]
 pub(crate) async fn get_backed_up_chain(
     device: &Ed25519Signer,
     link: &DelegationChain,

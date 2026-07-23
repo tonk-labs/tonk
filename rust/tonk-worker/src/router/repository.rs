@@ -2847,7 +2847,7 @@ async fn set_replica_status(
 /// local seed step (its content arrives over the pull), so it would
 /// otherwise sit at the `blank` status `record_repository_meta` stamps,
 /// stuck on an installing card forever.
-pub(super) async fn mark_replica_initialized(
+pub(crate) async fn mark_replica_initialized(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<(), RepositoryError> {

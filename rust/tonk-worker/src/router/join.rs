@@ -461,7 +461,7 @@ where
 /// The replica is a name-less membership index, so this only tests
 /// existence — the recipient's chosen join name does not flow into it
 /// (the name lives in the synced repository's own `tonk/repository`).
-async fn find_replica_for_subject(
+pub(crate) async fn find_replica_for_subject(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<bool, TonkWorkerError> {
