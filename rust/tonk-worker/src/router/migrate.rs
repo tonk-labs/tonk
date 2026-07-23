@@ -21,7 +21,10 @@ use crate::worker::TonkState;
 /// (mirroring `profile_name.rs`) exists only on the wasm target — gating
 /// it keeps the native `clippy -D warnings` build clean.
 #[cfg(target_arch = "wasm32")]
-#[allow(dead_code, reason = "reached only through the sweep wired in a follow-up task")]
+#[allow(
+    dead_code,
+    reason = "reached only through the sweep wired in a follow-up task"
+)]
 const CONTENT_BRANCH: &str = "main";
 
 /// Re-key one space's roster from the device DID to the account root DID,
@@ -29,7 +32,10 @@ const CONTENT_BRANCH: &str = "main";
 /// `Ok(false)` when the space is already root-keyed, the profile isn't a
 /// member, or the profile is unlinked.
 #[cfg(target_arch = "wasm32")]
-#[allow(dead_code, reason = "wired into the migration sweep in a follow-up task")]
+#[allow(
+    dead_code,
+    reason = "wired into the migration sweep in a follow-up task"
+)]
 pub(crate) async fn migrate_space_roster(
     tonk: &TonkState,
     key: &str,
@@ -138,7 +144,10 @@ pub(crate) async fn migrate_space_roster(
     }
     if let Some(stamp) = device_stamp {
         txn = txn
-            .assert(InvitedVia::new(root_entity.clone(), stamp.invitation.0.clone()))
+            .assert(InvitedVia::new(
+                root_entity.clone(),
+                stamp.invitation.0.clone(),
+            ))
             .retract(stamp);
     }
 
@@ -188,7 +197,7 @@ mod tests {
             root_did: root_did.to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
         };
-        crate::router::account::link(State(state.clone()), Json(request))
+        let _ = crate::router::account::link(State(state.clone()), Json(request))
             .await
             .unwrap();
         root_did
@@ -259,9 +268,7 @@ mod tests {
 
         let memberships = content_memberships(&state, &key).await;
         assert!(
-            memberships
-                .iter()
-                .any(|m| m.member.0 == root_did.this()),
+            memberships.iter().any(|m| m.member.0 == root_did.this()),
             "root-keyed membership must exist after migration",
         );
         assert!(
@@ -277,7 +284,8 @@ mod tests {
         assert!(
             roles
                 .iter()
-                .any(|r| r.this == root_membership.this && r.role.0.to_string() == MemberRole::FOUNDER),
+                .any(|r| r.this == root_membership.this
+                    && r.role.0.to_string() == MemberRole::FOUNDER),
             "founder role must carry over onto the root-keyed entity",
         );
 
