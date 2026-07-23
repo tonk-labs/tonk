@@ -1686,6 +1686,25 @@ impl TonkServiceWorker {
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
+        // Catch up on spaces claimed/created on other devices since last
+        // boot. Fire-and-forget: account-service latency must not delay
+        // startup. `restore_spaces` itself no-ops when unlinked, so an
+        // unconditional call here is fine whether or not this profile
+        // turns out to be linked.
+        //
+        // Placed here rather than right after `bootstrap_profile` above
+        // because the cloneable `AppState` handle a detached task needs to
+        // take its own read lock doesn't exist until `state` is wrapped by
+        // `api_router_with_state` immediately above.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            let state = state.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let tonk = state.read().await;
+                crate::router::restore::restore_spaces(&tonk).await;
+            });
+        }
+
         Ok(Self {
             router,
             state,

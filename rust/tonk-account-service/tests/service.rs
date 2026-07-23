@@ -205,6 +205,22 @@ async fn it_drives_the_full_ceremony_over_http() {
     let put_result: serde_json::Value = response.json().await.unwrap();
     let key = put_result["key"].as_str().unwrap().to_string();
 
+    // POST /chains/list -> the key we just put shows up.
+    let body = container(
+        vec!["account".into(), "chain".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/chains/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let keys: Vec<String> = response.json().await.unwrap();
+    assert!(keys.contains(&key));
+
     let mut get_args = BTreeMap::new();
     get_args.insert("key".to_string(), Promised::String(key));
     let body = container(

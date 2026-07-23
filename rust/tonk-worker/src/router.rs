@@ -20,6 +20,8 @@ mod account;
 
 mod account_backup;
 
+pub(crate) mod restore;
+
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 

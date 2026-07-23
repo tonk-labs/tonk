@@ -246,6 +246,14 @@ pub async fn put_repository(
     let key = subject.repo_key().to_owned();
     let info = build_repository_info(&tonk, &key, &repository).await;
 
+    // A space created with a remote in this one shot is not escrowed for
+    // cross-device restore: the account-holder create flow attaches its
+    // remote through `enable_sync_inner` (which does escrow it), never
+    // this path, so only non-UI callers reach here with a remote. Backing
+    // it up would need the sync URL recovered from the parsed
+    // configuration; left as a follow-up. Fails open — the space works
+    // locally, it just will not follow the user to another device.
+
     // Seed asynchronously, then flip the replica to `initialized`.
     // Seeding the standard library is the slow part (~seconds of
     // prolly-tree commits); doing it inline would block this response
@@ -2020,7 +2028,14 @@ async fn enable_sync_inner(
         }
     };
 
-    ensure_remote_config(&tonk, &repository, key, &configuration).await
+    ensure_remote_config(&tonk, &repository, key, &configuration).await?;
+
+    // Escrow this owned space's delegation so the account's other devices
+    // can restore it. Best-effort; no-op for unlinked profiles or for a
+    // repository that doesn't hold its signer (i.e. wasn't created here).
+    crate::router::account_backup::back_up_owned_space(&tonk, &repository, remote).await;
+
+    Ok(())
 }
 
 /// Spawn the background seed + status flip for a freshly created
@@ -2445,12 +2460,15 @@ pub async fn create_repository(
 /// either via `repository.access().claim().delegate()` for self-
 /// owned repos or via `profile.access().save(invite_chain)` for
 /// invited replicas).
-pub async fn record_repository_meta<C>(
+///
+/// Does not touch the content-branch roster — see
+/// [`record_repository_meta`] for the wrapper that also records
+/// membership.
+pub(crate) async fn record_replica_meta<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
     display_name: &str,
     configuration: &RepositoryConfiguration,
-    role_uri: &str,
 ) -> Result<(), RepositoryError>
 where
     C: Principal + Clone,
@@ -2627,13 +2645,6 @@ where
         },
     );
 
-    // Record the opening profile's membership on the content branch.
-    // Roster facts must live on `main` (which syncs across replicas),
-    // not on the local-only meta branch — otherwise each replica only
-    // ever sees its own membership and the roster never converges. The
-    // branch loop above has already opened `main`, so it is present.
-    record_membership_on_content(tonk, repository, key, role_uri).await?;
-
     // 7. Record this replica in the profile repository's meta
     // branch so the profile keeps an index of every replica it
     // owns. Separate transaction — cross-repo atomicity isn't
@@ -2648,6 +2659,25 @@ where
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
+}
+
+/// Lay down the meta-branch facts and profile index, then record the
+/// opening profile's membership on the content branch. The two halves
+/// are split so the join/restore mount can reuse the meta half without
+/// the roster write (restore must not stamp a role — see the restore
+/// path).
+pub async fn record_repository_meta<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+    display_name: &str,
+    configuration: &RepositoryConfiguration,
+    role_uri: &str,
+) -> Result<(), RepositoryError>
+where
+    C: Principal + Clone,
+{
+    record_replica_meta(tonk, repository, display_name, configuration).await?;
+    record_membership_on_content(tonk, repository, repository.did().repo_key(), role_uri).await
 }
 
 /// Assert the opening profile's [`Membership`] + [`MemberRole`] +
@@ -2825,7 +2855,7 @@ async fn set_replica_status(
 /// local seed step (its content arrives over the pull), so it would
 /// otherwise sit at the `blank` status `record_repository_meta` stamps,
 /// stuck on an installing card forever.
-pub(super) async fn mark_replica_initialized(
+pub(crate) async fn mark_replica_initialized(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<(), RepositoryError> {

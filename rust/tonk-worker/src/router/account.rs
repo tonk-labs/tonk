@@ -148,6 +148,13 @@ pub async fn link(
     State(state): State<AppState>,
     Json(request): Json<AccountLinkRequest>,
 ) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    // Keep the cloneable `AppState` handle around: `state` is about to be
+    // shadowed by a read guard for the body of this handler, but the
+    // fire-and-forget restore dispatch below needs its own independent
+    // read lock inside a detached task. Native awaits restore inline using
+    // the guard already held below, so it never needs this clone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let app_state = state.clone();
     let state = state.read().await;
     let device_did = state.profile.did();
     let (chain, bytes) = validate_link(&request, &device_did).await?;
@@ -182,6 +189,23 @@ pub async fn link(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save local account link: {error}"))
         })?;
+
+    // A freshly linked device pulls the account's backed-up spaces in the
+    // background — a slow/hung account service must never stall the link
+    // response. On wasm, dispatch detached with its own read lock; on
+    // native there's no UI to stall, so it awaits inline using the guard
+    // already held for this handler.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            let tonk = app_state.read().await;
+            crate::router::restore::restore_spaces(&tonk).await;
+        });
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        crate::router::restore::restore_spaces(&state).await;
+    }
 
     Ok(Json(AccountStatus::Linked {
         root_did: request.root_did,
