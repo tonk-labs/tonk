@@ -111,10 +111,13 @@ async fn screen_revoked(
             console_error!("revocation screen failed open: {reason}");
             Ok(())
         }
-        RevocationVerdict::Revoked => Err(ServiceError::new(
-            ErrorCode::DeviceRevoked,
-            "a credential in the presented chain has been revoked",
-        )),
+        RevocationVerdict::Revoked => {
+            worker::console_log!("presign rejected: revoked credential present");
+            Err(ServiceError::new(
+                ErrorCode::DeviceRevoked,
+                "a credential in the presented chain has been revoked",
+            ))
+        }
     }
 }
 

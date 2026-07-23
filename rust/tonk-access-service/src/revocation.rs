@@ -16,6 +16,7 @@ pub mod d1;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 
 use dialog_ucan_core::container::{Container, ContainerError};
 use dialog_ucan_core::delegation::Delegation;
@@ -161,8 +162,6 @@ pub fn cache_probe(keys: &[String], now_ms: u64) -> CacheProbe {
 pub fn cache_record(queried: &[String], revoked: &[String], now_ms: u64) {
     VERDICTS.with(|cell| store_with(&mut cell.borrow_mut(), queried, revoked, now_ms));
 }
-
-use std::fmt;
 
 /// A registry lookup failure. The presign path treats any of these as
 /// fail-open: log and allow, per the design's availability posture.
