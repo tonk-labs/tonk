@@ -23,9 +23,15 @@ for exactly this — never fires. Nothing hangs on the root DID yet.
 
 ## Scope
 
-**In:** account-holders' claim and founder/create writes key on the root DID;
-a newly claimed space converges across the user's devices (chain backed up on
-claim, restored on other devices).
+**In:** account-holders' claim and founder/create writes key on the root DID,
+and each claimed space's chain is backed up to the account service so a later
+device can recover it.
+
+**Out — immediate follow-up PR (restore):** a second device pulling the
+backed-up chains and auto-mounting the spaces. Restore is nearly a re-run of the
+join path (mount a replica per subject, configure the remote, record roster
+rows) and is deferred to keep this PR reviewable. Backing up now means nothing
+is lost in the interim.
 
 **Out (stage 3B):** migrating existing device-keyed members, `device -> root`
 re-anchoring of pre-account chains, the profile-rename root switch, and
@@ -114,18 +120,29 @@ continues to key on the device DID.
 
 ### Cross-device access
 
-**Backup on claim.** After a successful account-holder claim, push the
-`space -> eph -> root` chain to the account-service `chains` table. The put/get
-API exists from stage 1
-(`rust/tonk-account-service/src/handlers/chains.rs`, `store.rs`); stage 2 wired
-the client authentication. Best-effort: a backup failure logs and does not fail
-the claim (the local device already works).
+**Backup on claim.** After a successful account-holder claim, push the claimed
+space's delegation to the account-service `/chains/put` endpoint. The backup
+artifact is a small struct — the `space -> eph -> root` chain **and** the
+invite's `remote_url` — because the chain alone does not carry where the space
+syncs from, and restore needs it to mount the replica. Best-effort: a backup
+failure logs and does not fail the claim (the local device already works).
 
-**Restore.** On device link, and on startup for an already-linked device, pull
-the account's backed-up chains and save each to the local access store. The
-local `root -> device` completes each one via BFS, so the second device can
-sync the space. Best-effort and fail-open, matching the account-service posture
-— account-service downtime never blocks local work or sync.
+The call is a **device-signed** UCAN invocation (issuer = device, subject =
+root, `root -> device` attached as a proof), the shape the `/chains/*` handlers'
+`authorize` requires. The device signer comes from
+`profile.signer().signer().clone()`; it drops straight into
+`InvocationBuilder::issuer(...)`, the same shape `tonk-identity`'s root builder
+already uses, and signs fine even with the non-extractable WebCrypto key on web.
+No dialog dependency change is needed. The account-service base URL is resolved
+from the worker's own host (mirroring the page's refuse-by-default map); an
+unresolvable host skips backup rather than failing.
+
+**Restore is the immediate follow-up PR.** A later device pulls the backed-up
+artifacts (`/chains/list` + `/chains/get`), and for each one re-runs the join's
+replica-mount using the recovered `remote_url`, saves the delegation to the
+access store (the local `root -> device` completes it via BFS), and records the
+roster rows under the root DID. Deferred here to keep this PR reviewable;
+because backup runs now, the artifacts are waiting when restore ships.
 
 ### Coexistence
 
@@ -139,8 +156,8 @@ it; this is the coexistence the parent design accepts on purpose.
 - **Unit:** `account_root_did` returns the root when linked, the device DID
   when unlinked, and the device DID when the stored link is malformed.
 - **Integration (extends the stage-2 CDP harness):** an account-holder claims
-  an invite; the roster row keys on the root DID; a second linked device
-  restores the backed-up chain and syncs the space.
+  an invite; the roster row keys on the root DID; the claimed chain lands in the
+  account service's `chains` store (a `/chains/list` shows the key).
 - **Regression:** the device-only claim path (no account) produces the same
   chain and roster row as today.
 
@@ -149,19 +166,23 @@ it; this is the coexistence the parent design accepts on purpose.
 - **Duplicate rows before 3B.** An account-holder re-touching a pre-account
   space creates a coexisting root-keyed row. Bounded and expected; 3B's
   migration retracts the device-keyed rows.
-- **Restore staleness.** A space claimed on device A appears on device B only
-  after B's next restore (link or startup). Acceptable for 3A; a live follow
-  can come later.
 - **Malformed link fallback masks account state.** If the stored `root ->
   device` link is unreadable, the device silently behaves as unlinked. This is
   the safe failure, but it must be logged so a broken link is diagnosable.
+- **Backup without restore (interim).** Until the restore follow-up ships, a
+  claimed space is backed up but a second device does not auto-mount it. No data
+  is lost — the artifacts accumulate server-side — and the claiming device works
+  fully.
 
 ## Build order
 
 One PR off `origin/staging`:
 
-1. `account_root_did` resolver.
+1. `account_root_did` / `member_did` resolver.
 2. Claim and founder/create key on the resolved member DID.
-3. Chain backup on claim.
-4. Restore on link/startup.
+3. Device-signed account-service invocation builder (`tonk-identity`).
+4. Chain backup on claim (`/chains/put`), best-effort, worker-side URL resolver.
 5. Unit + integration tests; device-only regression.
+
+Restore (`/chains/list` + `/chains/get`, replica mounting, roster re-record,
+link/startup hooks) is the immediate follow-up PR.
