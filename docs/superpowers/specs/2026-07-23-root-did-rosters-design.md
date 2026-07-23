@@ -118,6 +118,18 @@ duplicate rosters. Rename's root switch is entangled with the retract-old-row
 primitive that stage 3B introduces, so it rides with 3B. Until then rename
 continues to key on the device DID.
 
+**Known 3A limitation (until 3B):** because rename still keys on the device
+DID, an account-holder who *renames* does not update their displayed name in
+spaces they joined **as an account-holder**. Those rows are root-keyed (claim
+stamps the initial name correctly at claim time), so a later rename writes a
+`MemberName` against a device-keyed membership entity that has no `Membership`
+row — `build_repository_info`'s `names_by_membership` lookup never matches it,
+and the name silently does not change. This is a no-op, not data loss or a
+crash; the initial name is correct, only subsequent renames are affected, and
+only for the new account-holder cohort. `publish_self_identity`'s device-DID
+overlay sigil is a lesser cosmetic sibling of the same gap. Both are resolved
+by 3B's migration (which re-keys and retracts). Tracked, not a blocker for 3A.
+
 ### Cross-device access
 
 **Backup on claim.** After a successful account-holder claim, push the claimed
