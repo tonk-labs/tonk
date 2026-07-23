@@ -119,8 +119,8 @@ First deploy, in order:
    to apply every pending migration, including `0002_link_requests.sql`.
 3. `wrangler r2 bucket create tonk-account-chains`.
 4. `wrangler secret put RESEND_API_KEY -c wrangler.account.toml`.
-5. Add the DKIM records Resend requires for sending from `tonk.spot` in the
-   Cloudflare dashboard (DNS for the zone), so `accounts@tonk.spot` mail is
+5. Add the DKIM records Resend requires for sending from `tonk.xyz` in the
+   Cloudflare dashboard (DNS for the zone), so `accounts@tonk.xyz` mail is
    authenticated.
 6. Add a WAF rate limiting rule for unauthenticated request creation (zone `tonk.xyz`,
    Security > WAF > Rate limiting rules): expression

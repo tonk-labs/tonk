@@ -19,7 +19,7 @@ binding = "CHAINS"
 bucket_name = "tonk-account-chains"
 
 [vars]
-EMAIL_FROM = "tonk <accounts@tonk.spot>"
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Staging. Disjoint from production in every dimension that holds state:
 # its own worker, route, database, and bucket. The route stays off the
@@ -34,7 +34,7 @@ routes = [{ pattern = "accounts-staging.tonk.xyz", custom_domain = true }]
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "tonk-accounts-staging"
-database_id = ""
+database_id = "d82a5715-d210-4bca-bd9d-4ab64e909566"
 migrations_dir = "rust/tonk-account-service/migrations"
 
 [[env.staging.r2_buckets]]
@@ -42,4 +42,4 @@ binding = "CHAINS"
 bucket_name = "tonk-account-chains-staging"
 
 [env.staging.vars]
-EMAIL_FROM = "tonk <accounts@tonk.spot>"
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"
