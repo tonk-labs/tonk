@@ -34,6 +34,7 @@ use worker::*;
 
 mod error;
 mod handlers;
+mod revocation;
 pub mod shortcut;
 
 /// Test helpers for integration testing.
