@@ -2674,8 +2674,11 @@ where
 {
     // The opening profile is a member of this repository, stamped with
     // its role (founder on create, member on join) and named with the
-    // name their profile was opened under.
-    let membership = Membership::new(tonk.profile.did(), repository.did());
+    // name their profile was opened under. Keyed on the account root
+    // when this profile is linked, so a founder/member row converges
+    // across every device on the same account.
+    let member = crate::router::account::member_did(tonk).await;
+    let membership = Membership::new(member, repository.did());
     let role = if role_uri == MemberRole::FOUNDER {
         MemberRole::founder(membership.this().clone())
     } else {

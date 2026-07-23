@@ -173,8 +173,9 @@ pub(crate) async fn claim_invite(
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
 
+    let member = crate::router::account::member_did(tonk).await;
     let claimed = invite
-        .claim(&tonk.profile.did())
+        .claim(&member)
         .await
         .map_err(|e| TonkWorkerError::Router(format!("invalid invite: {e}")))?;
 
@@ -220,7 +221,7 @@ pub(crate) async fn claim_invite(
                     "replica '{key}' present in profile meta but failed to load: {e}",
                 ))
             })?;
-        record_claim_on_content(tonk, &repository, &key, &invitation).await?;
+        record_claim_on_content(tonk, &repository, &key, &invitation, &member).await?;
         return Ok(JoinOutcome {
             key,
             subject,
@@ -286,7 +287,7 @@ pub(crate) async fn claim_invite(
         tonk_schema::MemberRole::MEMBER,
     )
     .await?;
-    record_claim_on_content(tonk, &repository, &key, &invitation).await?;
+    record_claim_on_content(tonk, &repository, &key, &invitation, &member).await?;
 
     // `record_repository_meta` stamps the replica `blank` (the create
     // path's "still seeding" state). A joined replica has no local seed
@@ -329,11 +330,12 @@ async fn record_claim_on_content<C>(
     repository: &Repository<C>,
     key: &str,
     invitation: &Invitation,
+    member: &dialog_varsig::Did,
 ) -> Result<(), TonkWorkerError>
 where
     C: dialog_varsig::Principal + Clone,
 {
-    let membership = Membership::new(tonk.profile.did(), repository.did());
+    let membership = Membership::new(member.clone(), repository.did());
 
     // Route both the read and the write through the *reactor's* cached
     // `main` handle (keyed by the routing key) rather than a fresh
@@ -1034,5 +1036,45 @@ mod tests {
             .find(|r| r.this == membership_entity)
             .expect("founder role stamped at creation");
         assert_eq!(role.role.0.to_string(), MemberRole::FOUNDER);
+    }
+
+    /// An account-holder's claim keys the roster row on their root DID,
+    /// and no device-keyed row is written.
+    #[dialog_common::test]
+    async fn it_keys_membership_on_the_root_did_for_an_account_holder() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+
+        // Link this profile to an account root.
+        let device_did = state.read().await.profile.did();
+        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let delegation = tonk_identity::delegation::mint_device_delegation(root, &device_did)
+            .await
+            .unwrap();
+        let request = tonk_worker_api::AccountLinkRequest {
+            root_did: root_did.to_string(),
+            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        };
+        crate::router::account::link(axum::extract::State(state.clone()), axum::Json(request))
+            .await
+            .unwrap();
+
+        // Join an invite.
+        let (url, key) = handcrafted_invite_url(50, 51).await;
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let memberships = content_memberships(&state, &key).await;
+        let root_entity = root_did.this();
+        let device_entity = device_did.this();
+        assert!(
+            memberships.iter().any(|m| m.member.0 == root_entity),
+            "membership keyed on the root did",
+        );
+        assert!(
+            !memberships.iter().any(|m| m.member.0 == device_entity),
+            "no device-keyed row was written",
+        );
     }
 }
