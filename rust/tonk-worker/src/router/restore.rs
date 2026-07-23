@@ -2,6 +2,8 @@
 //! this device does not already have. Best-effort: failures log and are
 //! swallowed; nothing here blocks link or boot.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use tonk_common::log;
@@ -11,16 +13,25 @@ use crate::router::account_backup::{
 };
 use crate::worker::TonkState;
 
+/// Guards against concurrent restore runs. Startup and a device-link
+/// response can both dispatch restore fire-and-forget close together; a
+/// second concurrent run would only race the first through
+/// `find_replica_for_subject` and risk double-mounting the same subject.
+static RESTORE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 /// Restore all backed-up spaces for the linked account. No-op when
 /// unlinked or when the account service is unreachable.
-#[allow(
-    dead_code,
-    reason = "wired into link/startup triggers in a follow-up task"
-)]
 pub(crate) async fn restore_spaces(tonk: &TonkState) {
+    // A restore already running covers the same account; a second
+    // concurrent trigger would only race it. Skip and let the running
+    // one (or the next trigger) pick up any new spaces.
+    if RESTORE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
+    }
     if let Err(error) = try_restore_spaces(tonk).await {
         log!("restore skipped: {error}");
     }
+    RESTORE_IN_FLIGHT.store(false, Ordering::SeqCst);
 }
 
 async fn try_restore_spaces(tonk: &TonkState) -> Result<(), crate::TonkWorkerError> {
