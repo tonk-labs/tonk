@@ -19,6 +19,10 @@ pub enum ErrorCode {
     ChainInvalid,
     CommandMismatch,
     SubjectNotAllowed,
+    // Only constructed from the wasm-gated revocation screen
+    // (`handlers::ucan::screen_revoked`); a native build never
+    // constructs it even though `status_code` matches it exhaustively.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     DeviceRevoked,
 
     // 500 Internal Server Error

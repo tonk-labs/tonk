@@ -34,6 +34,7 @@ use worker::*;
 
 mod error;
 mod handlers;
+#[cfg(any(target_arch = "wasm32", test))]
 mod revocation;
 pub mod shortcut;
 
