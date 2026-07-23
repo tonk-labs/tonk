@@ -171,17 +171,19 @@ resend cooldown, 10-minute code TTL, five verification attempts per code.
 Everything IP-shaped is enforced at the Cloudflare edge, not in code:
 
 - **Rate rule** (zone `tonk.xyz`, and the staging host): one rate-limiting
-  rule covering the two unauthenticated write paths —
+  rule per environment covering the two unauthenticated write paths.
+  Each rule's expression should match both `/codes` and `/links`:
 
   ```
-  (http.request.method eq "POST" and
-   http.request.uri.path in {"/codes" "/links"} and
-   http.host in {"accounts.tonk.xyz" "accounts-staging.tonk.xyz"})
+  (http.host eq "accounts.tonk.xyz" and http.request.method eq "POST" and
+   http.request.uri.path in {"/codes" "/links"})
   ```
 
-  Suggested threshold to start: 10 requests per 10 minutes per IP, block
-  for 1 hour. `/links/resolve|complete|consume` need no rule: they demand
-  the 256-bit bearer secret and cheap lookups fail closed.
+  Deployed threshold: 3 requests per 10 seconds per IP, action Block.
+  Verify each environment's existing rule covers both paths in the expression,
+  and extend the path set if `/links` is missing.
+  `/links/resolve|complete|consume` need no rule: they demand the 256-bit
+  bearer secret and cheap lookups fail closed.
 - **Turnstile**: deliberately not deployed. Revisit only if the rate rule
   proves insufficient in practice.
 
@@ -191,8 +193,8 @@ Migrations must be applied to both environments (wrangler reads
 `wrangler.account.toml`):
 
 ```sh
-npx wrangler d1 migrations list tonk-accounts --remote -c wrangler.account.toml
-npx wrangler d1 migrations list tonk-accounts-staging --remote -c wrangler.account.toml --env staging
+wrangler d1 migrations list tonk-accounts --remote -c wrangler.account.toml
+wrangler d1 migrations list tonk-accounts-staging --remote -c wrangler.account.toml --env staging
 ```
 
 Both must show `0001_init.sql` and `0002_link_requests.sql` as applied;
