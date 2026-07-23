@@ -330,7 +330,7 @@ async fn record_claim_on_content<C>(
     repository: &Repository<C>,
     key: &str,
     invitation: &Invitation,
-    member: &dialog_varsig::Did,
+    member: &Did,
 ) -> Result<(), TonkWorkerError>
 where
     C: dialog_varsig::Principal + Clone,
@@ -1075,6 +1075,32 @@ mod tests {
         assert!(
             !memberships.iter().any(|m| m.member.0 == device_entity),
             "no device-keyed row was written",
+        );
+
+        // The viewer's self row must resolve against the same root DID
+        // the membership is keyed on, not the device DID — otherwise an
+        // account-linked user never matches their own roster row.
+        let info = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            build_repository_info(&tonk, &key, &repository).await
+        };
+        let me = info
+            .members
+            .iter()
+            .find(|m| m.is_self)
+            .expect("self present");
+        assert_eq!(
+            me.did,
+            root_did.to_string(),
+            "self row resolves against the account root, not the device did",
         );
     }
 }

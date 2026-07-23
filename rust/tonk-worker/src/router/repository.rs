@@ -2657,9 +2657,13 @@ where
 /// syncs across replicas; the meta branch is local-only, so a roster
 /// written there never converges. Runs on every path
 /// [`record_repository_meta`] serves: on create the opener is the
-/// `tonk:founder`; on join the claimer is a `tonk:member`. The
-/// membership entity is content-derived from `(profile, subject)`, so a
-/// repeat is a no-op; `role`/`name` are cardinality-one stamps.
+/// `tonk:founder`; on join the claimer is a `tonk:member`. The member
+/// is resolved via [`crate::router::account::member_did`] — the
+/// account root when this profile is linked, else the device DID — so
+/// a founder/member row converges across every device on the same
+/// account. The membership entity is content-derived from `(member,
+/// subject)`, so a repeat is a no-op; `role`/`name` are cardinality-one
+/// stamps.
 ///
 /// `key` is the repository's routing key (the `{repo}` param) so the
 /// write goes through the *reactor's* cached `main` handle.
@@ -3376,7 +3380,7 @@ where
         })
         .collect();
 
-    let self_entity = tonk.profile.did().this();
+    let self_entity = crate::router::account::member_did(tonk).await.this();
     let mut members: Vec<MemberInfo> = memberships
         .iter()
         .map(|m| MemberInfo {
