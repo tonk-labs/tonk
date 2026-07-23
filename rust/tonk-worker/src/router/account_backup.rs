@@ -1,5 +1,7 @@
-//! Best-effort backup of a claimed space's delegation to the account
-//! service, so a later device can recover the space.
+//! Best-effort backup of a delegation chain to the account service, so a
+//! later device can recover the space. Covers both a claimed space's
+//! `space -> eph -> root` chain and a created space's one-hop
+//! `space -> root` chain.
 
 use dialog_credentials::Ed25519Signer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -13,12 +15,15 @@ use tonk_common::log;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
-/// What gets backed up per claimed space: the delegation chain plus the
-/// invite's sync URL, which the chain itself does not carry. A restoring
-/// device needs both to mount and sync the space.
+/// What gets backed up per space: the delegation chain plus the invite's
+/// sync URL, which the chain itself does not carry. A restoring device
+/// needs both to mount and sync the space. The chain is either a claimed
+/// space's `space -> eph -> root` chain or a created space's one-hop
+/// `space -> root` chain.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ClaimBackup {
-    /// Hex-encoded `space → eph → root` delegation chain.
+    /// Hex-encoded delegation chain: `space -> eph -> root` for a claimed
+    /// space, or the one-hop `space -> root` for a created space.
     pub chain_hex: String,
     /// The invite's remote/sync URL, when it carried one.
     pub remote_url: Option<String>,
@@ -27,7 +32,7 @@ pub(crate) struct ClaimBackup {
 /// Resolve the account-service base URL for this context. Unknown hosts
 /// resolve to `None` so backup is skipped rather than failing.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn account_service_url() -> Option<String> {
+pub(crate) fn account_service_url() -> Option<String> {
     use wasm_bindgen::JsCast;
     let scope: web_sys::ServiceWorkerGlobalScope = js_sys::global().dyn_into().ok()?;
     match scope.location().host().as_str() {
@@ -38,7 +43,7 @@ fn account_service_url() -> Option<String> {
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn account_service_url() -> Option<String> {
+pub(crate) fn account_service_url() -> Option<String> {
     std::env::var("TONK_ACCOUNT_SERVICE_URL")
         .ok()
         .or_else(|| Some("https://accounts.tonk.xyz".to_owned()))
@@ -91,6 +96,113 @@ async fn post_chains_put(endpoint: &str, body: Vec<u8>) -> Result<(), TonkWorker
         )));
     }
     Ok(())
+}
+
+/// POST a device-signed invocation container to the account service and
+/// return the raw response body bytes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn post_for_bytes(endpoint: &str, body: Vec<u8>) -> Result<Vec<u8>, TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestInit, Response};
+
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_body(&js_sys::Uint8Array::from(body.as_slice()).into());
+    let request = Request::new_with_str_and_init(endpoint, &init)
+        .map_err(|e| TonkWorkerError::Internal(format!("account-service request: {e:?}")))?;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| TonkWorkerError::Internal(format!("account-service fetch: {e:?}")))?;
+    if !response.ok() {
+        return Err(TonkWorkerError::Internal(format!(
+            "account-service returned HTTP {}",
+            response.status()
+        )));
+    }
+    let buffer = JsFuture::from(
+        response
+            .array_buffer()
+            .map_err(|e| TonkWorkerError::Internal(format!("account-service body: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("account-service body: {e:?}")))?;
+    let array = js_sys::Uint8Array::new(&buffer);
+    Ok(array.to_vec())
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn post_for_bytes(endpoint: &str, body: Vec<u8>) -> Result<Vec<u8>, TonkWorkerError> {
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .body(body)
+        // Same reasoning as `post_chains_put`: bound the wait so a wedged
+        // account service can't wedge the native caller.
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("account-service: {e}")))?;
+    if !response.status().is_success() {
+        return Err(TonkWorkerError::Internal(format!(
+            "account-service returned HTTP {}",
+            response.status()
+        )));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("account-service body: {e}")))?;
+    Ok(bytes.to_vec())
+}
+
+/// List the keys of every chain this account has backed up. Used by
+/// restore to discover what can be pulled from the account service.
+#[allow(dead_code, reason = "wired into the restore flow in a follow-up task")]
+pub(crate) async fn list_backed_up_chains(
+    device: &Ed25519Signer,
+    link: &DelegationChain,
+    service: &str,
+) -> Result<Vec<String>, TonkWorkerError> {
+    let body = tonk_identity::request::build_device_invocation(
+        device.clone(),
+        link,
+        vec!["account".into(), "chain".into(), "list".into()],
+        std::collections::BTreeMap::new(),
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("build list invocation: {e}")))?;
+    let endpoint = format!("{}/chains/list", service.trim_end_matches('/'));
+    let bytes = post_for_bytes(&endpoint, body).await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| TonkWorkerError::Internal(format!("parse chain keys: {e}")))
+}
+
+/// Fetch one backed-up chain's raw artifact bytes by key. Used by restore
+/// to pull down a chain discovered via [`list_backed_up_chains`].
+#[allow(dead_code, reason = "wired into the restore flow in a follow-up task")]
+pub(crate) async fn get_backed_up_chain(
+    device: &Ed25519Signer,
+    link: &DelegationChain,
+    service: &str,
+    key: &str,
+) -> Result<Vec<u8>, TonkWorkerError> {
+    let arguments = [("key".to_owned(), Promised::String(key.to_owned()))]
+        .into_iter()
+        .collect();
+    let body = tonk_identity::request::build_device_invocation(
+        device.clone(),
+        link,
+        vec!["account".into(), "chain".into(), "get".into()],
+        arguments,
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("build get invocation: {e}")))?;
+    let endpoint = format!("{}/chains/get", service.trim_end_matches('/'));
+    post_for_bytes(&endpoint, body).await
 }
 
 /// Build the backup artifact, sign the device invocation, and POST it to
