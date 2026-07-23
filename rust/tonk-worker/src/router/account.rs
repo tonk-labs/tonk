@@ -199,6 +199,11 @@ pub async fn link(
     {
         wasm_bindgen_futures::spawn_local(async move {
             let tonk = app_state.read().await;
+            // Migrate this device's existing spaces onto the root first:
+            // restore only mounts subjects this device doesn't already
+            // have, so running migration first means restore won't
+            // re-touch a space migration just re-keyed.
+            crate::router::migrate::migrate_rosters(&tonk).await;
             crate::router::restore::restore_spaces(&tonk).await;
         });
     }

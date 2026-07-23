@@ -127,7 +127,7 @@ pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), Reposito
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
 #[cfg(target_arch = "wasm32")]
-async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
+pub(crate) async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
     use dialog_varsig::Did;
     use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity};
 

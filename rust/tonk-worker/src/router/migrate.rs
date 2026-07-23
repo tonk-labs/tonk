@@ -2,6 +2,9 @@
 //! account root DID.
 
 #[cfg(target_arch = "wasm32")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_arch = "wasm32")]
 use dialog_query::{Output as _, Query, Term};
 #[cfg(target_arch = "wasm32")]
 use tonk_common::log;
@@ -21,21 +24,40 @@ use crate::worker::TonkState;
 /// (mirroring `profile_name.rs`) exists only on the wasm target — gating
 /// it keeps the native `clippy -D warnings` build clean.
 #[cfg(target_arch = "wasm32")]
-#[allow(
-    dead_code,
-    reason = "reached only through the sweep wired in a follow-up task"
-)]
 const CONTENT_BRANCH: &str = "main";
+
+/// Guards against concurrent migration sweeps. A device-link response
+/// dispatches the sweep fire-and-forget; a second concurrent trigger
+/// would only race the first through the same set of spaces. Mirrors
+/// `restore.rs`'s `RESTORE_IN_FLIGHT` guard.
+#[cfg(target_arch = "wasm32")]
+static MIGRATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Converge every existing device-keyed space onto the account root.
+/// Best-effort: no-op when unlinked; one space's failure is logged and
+/// skipped. A concurrent run is skipped (the guard), since both would
+/// migrate the same spaces.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn migrate_rosters(tonk: &TonkState) {
+    if account::account_link(tonk).await.is_none() {
+        return; // unlinked
+    }
+    if MIGRATE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    for key in crate::router::profile_name::profile_space_keys(tonk).await {
+        if let Err(error) = migrate_space_roster(tonk, &key).await {
+            log!("roster migration for space '{key}' skipped: {error}");
+        }
+    }
+    MIGRATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+}
 
 /// Re-key one space's roster from the device DID to the account root DID,
 /// atomically. Returns `Ok(true)` when a device-keyed row was migrated,
 /// `Ok(false)` when the space is already root-keyed, the profile isn't a
 /// member, or the profile is unlinked.
 #[cfg(target_arch = "wasm32")]
-#[allow(
-    dead_code,
-    reason = "wired into the migration sweep in a follow-up task"
-)]
 pub(crate) async fn migrate_space_roster(
     tonk: &TonkState,
     key: &str,
@@ -59,6 +81,9 @@ pub(crate) async fn migrate_space_roster(
 
     let device_membership = Membership::new(device.clone(), subject.clone());
     let device_entity = device_membership.this().clone();
+
+    let root_membership = Membership::new(member.clone(), subject.clone());
+    let root_entity = root_membership.this().clone();
 
     // Is there a device-keyed row to migrate?
     let memberships: Vec<Membership> = session
@@ -89,6 +114,11 @@ pub(crate) async fn migrate_space_roster(
         .try_vec()
         .await
         .map_err(|e| RepositoryError::Internal(format!("role query '{key}': {e:?}")))?;
+    // First-wins: if a root-keyed role row already exists, a prior
+    // migration (from another linked device) or a direct root-keyed join
+    // has already stamped it. `roles` already contains every row on the
+    // branch, so this is a plain lookup, not an extra query.
+    let root_role_exists = roles.iter().any(|r| r.this == root_entity);
     let device_role = roles.into_iter().find(|r| r.this == device_entity);
 
     let names: Vec<MemberName> = session
@@ -115,12 +145,11 @@ pub(crate) async fn migrate_space_roster(
         .try_vec()
         .await
         .map_err(|e| RepositoryError::Internal(format!("invited-via query '{key}': {e:?}")))?;
+    // Same first-wins reasoning as the role guard above.
+    let root_stamp_exists = stamps.iter().any(|s| s.this == root_entity);
     let device_stamp = stamps.into_iter().find(|s| s.this == device_entity);
 
     // Build the root-keyed rows and one atomic assert+retract transaction.
-    let root_membership = Membership::new(member.clone(), subject.clone());
-    let root_entity = root_membership.this().clone();
-
     let mut txn = tonk
         .reactor
         .repository(key)
@@ -130,25 +159,41 @@ pub(crate) async fn migrate_space_roster(
         .retract(device_row);
 
     if let Some(role) = device_role {
-        let root_role = if role.role.0.to_string() == MemberRole::FOUNDER {
-            MemberRole::founder(root_entity.clone())
-        } else {
-            MemberRole::member(root_entity.clone())
-        };
-        txn = txn.assert(root_role).retract(role);
+        // First-wins: another device may have already migrated (or
+        // directly joined) this space onto the root entity, stamping its
+        // own role there first. Don't overwrite that — in particular,
+        // don't let a plain-member device row demote an already-recorded
+        // founder role. The device row is retracted either way, since it
+        // must not linger regardless of which role wins on the root.
+        if !root_role_exists {
+            let root_role = if role.role.0.to_string() == MemberRole::FOUNDER {
+                MemberRole::founder(root_entity.clone())
+            } else {
+                MemberRole::member(root_entity.clone())
+            };
+            txn = txn.assert(root_role);
+        }
+        txn = txn.retract(role);
     }
     if let Some(name) = device_name {
+        // Last-wins: unlike role/provenance, a display name has no
+        // "first stamp wins" ownership concern, so this device's name
+        // simply overwrites whatever the root entity carried before.
         txn = txn
             .assert(MemberName::new(root_entity.clone(), name.name.0.clone()))
             .retract(name);
     }
     if let Some(stamp) = device_stamp {
-        txn = txn
-            .assert(InvitedVia::new(
+        // First-wins, same reasoning as the role guard above: a prior
+        // migration's invitation provenance for the root entity must not
+        // be overwritten by a later device's migration.
+        if !root_stamp_exists {
+            txn = txn.assert(InvitedVia::new(
                 root_entity.clone(),
                 stamp.invitation.0.clone(),
-            ))
-            .retract(stamp);
+            ));
+        }
+        txn = txn.retract(stamp);
     }
 
     txn.commit()
@@ -352,5 +397,91 @@ mod tests {
             migrate_space_roster(&tonk, &key).await.unwrap()
         };
         assert!(!migrated, "unlinked profile has no root to migrate to");
+    }
+
+    /// First-wins guard: a second linked device's migration must not
+    /// demote a founder role another migration (or a direct root-keyed
+    /// join) has already stamped onto the root entity.
+    #[dialog_common::test]
+    async fn it_does_not_demote_an_existing_root_founder_role() {
+        let state = test_state().await;
+        let (app, state, _lsp) = api_router_with_state(state);
+
+        let device_did = state.read().await.profile.did();
+        let key = put_repo(&app, "migrate-roster-first-wins").await;
+        let subject_did = {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .of()
+                .clone()
+        };
+
+        let root_did = link_account(&state).await;
+
+        // Simulate a prior migration (or a direct root-keyed join): the
+        // root entity already carries a founder role.
+        let root_membership = Membership::new(root_did.clone(), subject_did.clone());
+        let root_entity = root_membership.this().clone();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .transaction()
+                .assert(root_membership)
+                .assert(MemberRole::founder(root_entity.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        // This device still has its own device-keyed *member* row to
+        // migrate — a lesser role than the root's existing founder.
+        let device_membership = Membership::new(device_did.clone(), subject_did.clone());
+        let device_entity = device_membership.this().clone();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .transaction()
+                .assert(device_membership)
+                .assert(MemberRole::member(device_entity.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        let migrated = {
+            let tonk = state.read().await;
+            migrate_space_roster(&tonk, &key).await.unwrap()
+        };
+        assert!(migrated, "expected the device-keyed row to be migrated");
+
+        let roles = content_member_roles(&state, &key).await;
+        assert!(
+            roles
+                .iter()
+                .any(|r| r.this == root_entity && r.role.0.to_string() == MemberRole::FOUNDER),
+            "root founder role must survive a later device's migration unchanged",
+        );
+        assert!(
+            !roles.iter().any(|r| r.this == device_entity),
+            "device-keyed role must be gone after migration",
+        );
+
+        let memberships = content_memberships(&state, &key).await;
+        assert!(
+            !memberships.iter().any(|m| m.this == device_entity),
+            "device-keyed membership must be gone after migration",
+        );
     }
 }
