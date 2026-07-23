@@ -288,8 +288,6 @@ async fn try_reanchor_space(tonk: &TonkState, key: &str) -> Result<(), Repositor
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
-    use axum::Json;
-    use axum::extract::State;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -307,9 +305,12 @@ mod tests {
     };
 
     /// Link the given (already-open) state's profile to a fresh account
-    /// root, mirroring `join.rs`'s
-    /// `it_keys_membership_on_the_root_did_for_an_account_holder` setup.
-    /// Returns the minted root DID.
+    /// root and return the minted root DID.
+    ///
+    /// Stores the link directly rather than going through the `link`
+    /// handler: the handler also dispatches the background convergence
+    /// sweep, which would migrate these spaces itself and pre-empt the
+    /// explicit `migrate_space_roster` calls these tests are asserting on.
     async fn link_account(state: &crate::router::AppState) -> dialog_varsig::Did {
         use dialog_varsig::Principal as _;
         let device_did = state.read().await.profile.did();
@@ -324,7 +325,8 @@ mod tests {
             root_did: root_did.to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
         };
-        let _ = crate::router::account::link(State(state.clone()), Json(request))
+        let tonk = state.read().await;
+        crate::router::account::persist_link(&tonk, &request)
             .await
             .unwrap();
         root_did

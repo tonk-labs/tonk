@@ -142,24 +142,21 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<AccountStatus>, T
     }))
 }
 
-/// Validate and persist a `root → current profile` delegation.
-#[wasm_compat]
-pub async fn link(
-    State(state): State<AppState>,
-    Json(request): Json<AccountLinkRequest>,
-) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    // Keep the cloneable `AppState` handle around: `state` is about to be
-    // shadowed by a read guard for the body of this handler, but the
-    // fire-and-forget restore dispatch below needs its own independent
-    // read lock inside a detached task. Native awaits restore inline using
-    // the guard already held below, so it never needs this clone.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let app_state = state.clone();
-    let state = state.read().await;
+/// Validate and store a `root → current profile` delegation.
+///
+/// This is the persistence half of [`link`], split out so it can be used
+/// without the handler's post-link convergence dispatch. Tests that only
+/// need a linked profile call this directly: going through [`link`] would
+/// also fire the background sweep, which races whatever the test does
+/// next.
+pub(crate) async fn persist_link(
+    state: &crate::worker::TonkState,
+    request: &AccountLinkRequest,
+) -> Result<(), TonkWorkerError> {
     let device_did = state.profile.did();
-    let (chain, bytes) = validate_link(&request, &device_did).await?;
+    let (chain, bytes) = validate_link(request, &device_did).await?;
 
-    if let Some(existing) = load_link(&state).await? {
+    if let Some(existing) = load_link(state).await? {
         let existing = DelegationChain::try_from(existing.as_slice()).map_err(|error| {
             TonkWorkerError::Internal(format!("stored account delegation is invalid: {error}"))
         })?;
@@ -189,6 +186,26 @@ pub async fn link(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save local account link: {error}"))
         })?;
+    Ok(())
+}
+
+/// Validate and persist a `root → current profile` delegation, then
+/// converge this device's spaces onto the account in the background.
+#[wasm_compat]
+pub async fn link(
+    State(state): State<AppState>,
+    Json(request): Json<AccountLinkRequest>,
+) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    // Keep the cloneable `AppState` handle around: `state` is about to be
+    // shadowed by a read guard for the body of this handler, but the
+    // fire-and-forget convergence dispatch below needs its own independent
+    // lock inside a detached task. Native awaits restore inline using
+    // the guard already held below, so it never needs this clone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let app_state = state.clone();
+    let state = state.read().await;
+    let device_did = state.profile.did();
+    persist_link(&state, &request).await?;
 
     // A freshly linked device converges its existing spaces and pulls the
     // account's backed-up ones in the background — a slow/hung account
