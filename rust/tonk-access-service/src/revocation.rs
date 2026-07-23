@@ -11,7 +11,8 @@
 //! (or adds a sibling) — the collection and decision shapes here stay
 //! as they are.
 
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 
 use dialog_ucan_core::container::{Container, ContainerError};
 use dialog_ucan_core::delegation::Delegation;
@@ -78,6 +79,84 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
         delegation_cids: delegation_cids.into_iter().collect(),
         delegation_issuers: delegation_issuers.into_iter().collect(),
     })
+}
+
+/// How long a revocation verdict may be served from the per-isolate
+/// cache. Short on purpose: this bounds how stale enforcement can be,
+/// and the design accepts up to a minute of lag after a revoke.
+pub const REVOCATION_TTL_MS: u64 = 60_000;
+
+/// A cached per-key verdict.
+#[derive(Debug, Clone, Copy)]
+pub struct CachedVerdict {
+    /// Whether the key matched a revoked device when last queried.
+    pub revoked: bool,
+    /// Absolute expiry, in the caller's millisecond clock.
+    pub expires_at_ms: u64,
+}
+
+/// The result of probing the cache for a key set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheProbe {
+    /// True if any key has a live cached `revoked = true` verdict.
+    pub cached_revoked: bool,
+    /// Keys with no live cached verdict, needing a registry query.
+    pub misses: Vec<String>,
+}
+
+/// Probe `map` for `keys` at `now_ms`, evicting expired entries.
+pub fn split_with(
+    map: &mut HashMap<String, CachedVerdict>,
+    keys: &[String],
+    now_ms: u64,
+) -> CacheProbe {
+    map.retain(|_, verdict| verdict.expires_at_ms > now_ms);
+    let mut cached_revoked = false;
+    let mut misses = Vec::new();
+    for key in keys {
+        match map.get(key) {
+            Some(verdict) => cached_revoked |= verdict.revoked,
+            None => misses.push(key.clone()),
+        }
+    }
+    CacheProbe {
+        cached_revoked,
+        misses,
+    }
+}
+
+/// Record fresh verdicts: every `queried` key gets an entry, `true` for
+/// those in `revoked`.
+pub fn store_with(
+    map: &mut HashMap<String, CachedVerdict>,
+    queried: &[String],
+    revoked: &[String],
+    now_ms: u64,
+) {
+    let expires_at_ms = now_ms + REVOCATION_TTL_MS;
+    for key in queried {
+        map.insert(
+            key.clone(),
+            CachedVerdict {
+                revoked: revoked.contains(key),
+                expires_at_ms,
+            },
+        );
+    }
+}
+
+thread_local! {
+    static VERDICTS: RefCell<HashMap<String, CachedVerdict>> = RefCell::new(HashMap::new());
+}
+
+/// Probe the per-isolate verdict cache.
+pub fn cache_probe(keys: &[String], now_ms: u64) -> CacheProbe {
+    VERDICTS.with(|cell| split_with(&mut cell.borrow_mut(), keys, now_ms))
+}
+
+/// Record fresh verdicts in the per-isolate cache.
+pub fn cache_record(queried: &[String], revoked: &[String], now_ms: u64) {
+    VERDICTS.with(|cell| store_with(&mut cell.borrow_mut(), queried, revoked, now_ms));
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
@@ -243,5 +322,40 @@ mod tests {
         assert!(keys.contains(&root_did));
         assert!(keys.contains(&device1_did));
         assert!(keys.contains(&device2_did));
+    }
+
+    #[dialog_common::test]
+    async fn it_splits_unseen_keys_into_misses() {
+        let mut map = HashMap::new();
+        let keys = vec!["a".to_string(), "b".to_string()];
+
+        let probe = split_with(&mut map, &keys, 1_000);
+
+        assert!(!probe.cached_revoked);
+        assert_eq!(probe.misses, keys);
+    }
+
+    #[dialog_common::test]
+    async fn it_serves_cached_verdicts_within_ttl() {
+        let mut map = HashMap::new();
+        let keys = vec!["a".to_string(), "b".to_string()];
+        store_with(&mut map, &keys, &["b".to_string()], 1_000);
+
+        let probe = split_with(&mut map, &keys, 1_000 + REVOCATION_TTL_MS - 1);
+
+        assert!(probe.cached_revoked, "b is cached revoked");
+        assert!(probe.misses.is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn it_expires_cached_verdicts_after_ttl() {
+        let mut map = HashMap::new();
+        let keys = vec!["a".to_string()];
+        store_with(&mut map, &keys, &[], 1_000);
+
+        let probe = split_with(&mut map, &keys, 1_000 + REVOCATION_TTL_MS + 1);
+
+        assert!(!probe.cached_revoked);
+        assert_eq!(probe.misses, keys);
     }
 }
