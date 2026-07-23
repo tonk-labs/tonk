@@ -11,6 +11,9 @@
 //! (or adds a sibling) — the collection and decision shapes here stay
 //! as they are.
 
+#[cfg(target_arch = "wasm32")]
+pub mod d1;
+
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
@@ -170,6 +173,22 @@ impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// The one query this service issues against the account registry:
+/// which of the presented keys match a revoked device, by delegation
+/// CID or by device DID. Numbered placeholders are reused across both
+/// `IN` lists so the key set binds once.
+pub fn revoked_query(key_count: usize) -> String {
+    let placeholders = (1..=key_count)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT delegation_cid, device_did FROM devices \
+         WHERE status = 'revoked' \
+         AND (delegation_cid IN ({placeholders}) OR device_did IN ({placeholders}))"
+    )
 }
 
 /// Answers which presented credential keys belong to revoked devices.
@@ -537,6 +556,18 @@ mod tests {
             registry.queries.load(Ordering::SeqCst),
             2,
             "a fail-open result must not be served from cache"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_the_revoked_query_with_numbered_placeholders() {
+        let sql = revoked_query(2);
+
+        assert_eq!(
+            sql,
+            "SELECT delegation_cid, device_did FROM devices \
+             WHERE status = 'revoked' \
+             AND (delegation_cid IN (?1, ?2) OR device_did IN (?1, ?2))"
         );
     }
 }
