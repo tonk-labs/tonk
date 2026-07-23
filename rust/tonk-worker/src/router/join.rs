@@ -49,7 +49,8 @@ use tonk_schema::{
 use super::AppState;
 use super::repository::{
     BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
-    UpstreamConfiguration, build_repository_info, mark_replica_initialized, record_repository_meta,
+    UpstreamConfiguration, build_repository_info, mark_replica_initialized,
+    record_membership_on_content, record_replica_meta,
 };
 use crate::{TonkWorkerError, worker::TonkState};
 
@@ -239,14 +240,65 @@ pub(crate) async fn claim_invite(
         });
     }
 
-    // Create a verifier-only credential keyed to the invited
-    // subject DID, then mount it as a local replica at the routing
-    // key (so path == identity). Local DID == invited subject DID, so
-    // `Replica.this` and the sigil glyph converge across recipients.
+    // Mount a verifier-only local replica keyed to the invited subject
+    // DID (so path == identity; `Replica.this` and the sigil glyph
+    // converge across recipients) and wire up its remote/branch
+    // configuration, mirroring what `PUT /api/repository/{name}` writes.
+    // `mount_replica` only lays down the device-local meta — the
+    // content roster is this claim's job, below.
+    let (key, repository) =
+        mount_replica(tonk, &subject, remote_url.as_ref().map(url::Url::as_str)).await?;
+
+    // Roster on the content branch: the claimer is a member. (mount_replica
+    // wrote only the device-local meta; the content roster is claim-only.)
+    record_membership_on_content(tonk, &repository, &key, tonk_schema::MemberRole::MEMBER).await?;
+    record_claim_on_content(tonk, &repository, &key, &invitation, &member).await?;
+
+    // `record_membership_on_content` stamps the replica's roster row, but
+    // the replica itself is still marked `blank` (the create path's
+    // "still seeding" state) by `mount_replica`. A joined replica has no
+    // local seed step — its content arrives over the pull the recipient
+    // triggers — so flip it straight to `initialized`, otherwise its Hub
+    // card is stuck on "Installing…" forever.
+    mark_replica_initialized(tonk, &subject).await?;
+
+    log!("Joined invite for subject {subject} as local replica (key {key})");
+
+    Ok(JoinOutcome {
+        key,
+        subject,
+        renewed: false,
+    })
+}
+
+/// Mount a local verifier-only replica for `subject` and configure its
+/// remote/branch, without touching the content roster.
+///
+/// Shared by the invite claim (which writes a `member` roster row
+/// afterward) and by cross-device restore (which writes nothing —
+/// the roster already exists on the content branch it pulls). Local
+/// DID == `subject` DID, so `Replica.this` (`hash(profile, subject)`)
+/// and the sigil glyph converge across every recipient of the same
+/// space.
+///
+/// Callers that care about idempotency (join, restore) should check
+/// [`find_replica_for_subject`] first — this always creates.
+///
+/// Returns the routing key (the DID suffix) and the mounted
+/// repository handle, so the caller can write further facts (e.g.
+/// the roster) without a reload.
+pub(crate) async fn mount_replica(
+    tonk: &TonkState,
+    subject: &Did,
+    remote_url: Option<&str>,
+) -> Result<(String, Repository<Credential>), TonkWorkerError> {
+    let key = subject.repo_key().to_owned();
+
+    // Create a verifier-only credential keyed to the subject DID, then
+    // mount it as a local replica at the routing key (so path ==
+    // identity).
     let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
-        TonkWorkerError::Router(format!(
-            "invite subject is not a valid Ed25519 did:key: {e:?}"
-        ))
+        TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
     })?;
     let credential = Credential::from(verifier);
 
@@ -256,18 +308,16 @@ pub(crate) async fn claim_invite(
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to create local replica '{key}' for invited subject: {e}",
-            ))
+            TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
         })?;
     let repository = Repository::from(space_credential);
 
-    // Mirror what `PUT /api/repository/{name}` writes: a single
-    // `main` branch, plus an `origin` remote tracking the
-    // invite's access service if one was attached.
+    // Mirror what `PUT /api/repository/{name}` writes: a single `main`
+    // branch, plus an `origin` remote tracking the invite's/space's
+    // access service if one was attached.
     let mut configuration = RepositoryConfiguration::default();
     if let Some(url) = remote_url {
-        let address = SiteAddress::from(UcanAddress::new(url.as_str()));
+        let address = SiteAddress::from(UcanAddress::new(url));
         configuration = configuration
             .remote(
                 DEFAULT_REMOTE,
@@ -284,35 +334,14 @@ pub(crate) async fn claim_invite(
         configuration = configuration.branch(DEFAULT_BRANCH, BranchConfiguration::default());
     }
 
-    // No display name to seed: a joined repo's name lives in the shared
-    // content branch and arrives over the pull the Hub triggers when it
-    // queries the repo for its name. `record_repository_meta` only uses
-    // this for log context + the home-demo check (never matched here), so
-    // the routing key stands in.
-    record_repository_meta(
-        tonk,
-        &repository,
-        &key,
-        &configuration,
-        tonk_schema::MemberRole::MEMBER,
-    )
-    .await?;
-    record_claim_on_content(tonk, &repository, &key, &invitation, &member).await?;
+    // No display name to seed: a joined/restored repo's name lives in
+    // the shared content branch and arrives over the pull the recipient
+    // triggers by querying the repo. `record_replica_meta` only uses
+    // this for log context, so the routing key stands in. Device-local
+    // meta only — no content roster.
+    record_replica_meta(tonk, &repository, &key, &configuration).await?;
 
-    // `record_repository_meta` stamps the replica `blank` (the create
-    // path's "still seeding" state). A joined replica has no local seed
-    // step — its content arrives over the pull the recipient triggers —
-    // so flip it straight to `initialized`, otherwise its Hub card is
-    // stuck on "Installing…" forever.
-    mark_replica_initialized(tonk, &subject).await?;
-
-    log!("Joined invite for subject {subject} as local replica (key {key})");
-
-    Ok(JoinOutcome {
-        key,
-        subject,
-        renewed: false,
-    })
+    Ok((key, repository))
 }
 
 /// Record the roster facts for a claimed invite on the repo's content
