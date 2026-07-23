@@ -230,14 +230,41 @@ pub(crate) async fn restamp_member_name(
         .await
         .map_err(|e| RepositoryError::Internal(format!("acquire content branch '{key}': {e}")))?;
     let repo_did = session.handle().of().clone();
-    let membership = Membership::new(tonk.profile.did(), repo_did);
 
-    tonk.reactor
+    let member = crate::router::account::member_did(tonk).await;
+    let membership = Membership::new(member.clone(), repo_did.clone());
+
+    let mut txn = tonk
+        .reactor
         .repository(key)
         .branch(CONTENT_BRANCH)
         .transaction()
-        .assert(MemberName::new(membership.this().clone(), name.to_string()))
-        .commit()
+        .assert(MemberName::new(membership.this().clone(), name.to_string()));
+
+    // Linked profiles: a rename must also clear the orphaned device-keyed
+    // name row (cardinality-one on a different entity, so the assert above
+    // won't overwrite it).
+    let device = tonk.profile.did();
+    if member != device {
+        let device_membership = Membership::new(device, repo_did);
+        let device_entity = device_membership.this().clone();
+        let names: Vec<MemberName> = session
+            .handle()
+            .query()
+            .select(Query::<MemberName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("name query '{key}': {e:?}")))?;
+        for stale in names.into_iter().filter(|n| n.this == device_entity) {
+            txn = txn.retract(stale);
+        }
+    }
+
+    txn.commit()
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("restamp member name for '{key}': {e}")))?;
@@ -336,5 +363,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resolve_display_name(&tonk).await, "brave-lynx");
+    }
+
+    /// A rename after linking a device to an account root must move the
+    /// space's roster row rather than duplicate it: the founder membership
+    /// was stamped on the device DID (the account was unlinked when the
+    /// space was created), so [`restamp_member_name`] has to key the new
+    /// `MemberName` on the root and retract the now-orphaned device-keyed
+    /// row.
+    #[dialog_common::test]
+    async fn it_rekeys_the_roster_name_to_the_root_and_retracts_the_device_row() {
+        use axum::Json;
+        use axum::body::Body;
+        use axum::extract::State;
+        use axum::http::{Request, StatusCode};
+        use dialog_varsig::{Did, Principal};
+        use tower::ServiceExt;
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+
+        // Create the space while unlinked: the founder membership is
+        // stamped on the device DID.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/rename-rekey-test")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: crate::router::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        let key = info.name;
+        let device_did = state.read().await.profile.did();
+
+        // Link the device to a root after the space already exists —
+        // exactly the order the bug depends on.
+        let root = tonk_identity::derive::derive_root_signer(&[42u8; 32])
+            .await
+            .unwrap();
+        let root_did_str = root.did().to_string();
+        let delegation = tonk_identity::delegation::mint_device_delegation(root, &device_did)
+            .await
+            .unwrap();
+        let link_request = tonk_worker_api::AccountLinkRequest {
+            root_did: root_did_str.clone(),
+            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        };
+        let _ = crate::router::account::link(State(state.clone()), Json(link_request))
+            .await
+            .unwrap();
+
+        let tonk = state.read().await;
+        restamp_member_name(&tonk, &key, "brave-lynx")
+            .await
+            .expect("restamp succeeds");
+
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let repo_did = session.handle().of().clone();
+        let root_did: Did = root_did_str.parse().unwrap();
+        let root_entity = Membership::new(root_did, repo_did.clone()).this().clone();
+        let device_entity = Membership::new(device_did, repo_did).this().clone();
+
+        let names: Vec<MemberName> = session
+            .handle()
+            .query()
+            .select(Query::<MemberName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            names
+                .iter()
+                .find(|n| n.this == root_entity)
+                .map(|n| n.name.0.as_str()),
+            Some("brave-lynx"),
+            "the renamed name lands on the root-keyed roster row",
+        );
+        assert!(
+            names.iter().all(|n| n.this != device_entity),
+            "the stale device-keyed MemberName is retracted",
+        );
     }
 }
