@@ -246,6 +246,14 @@ pub async fn put_repository(
     let key = subject.repo_key().to_owned();
     let info = build_repository_info(&tonk, &key, &repository).await;
 
+    // A space created with a remote in this one shot is not escrowed for
+    // cross-device restore: the account-holder create flow attaches its
+    // remote through `enable_sync_inner` (which does escrow it), never
+    // this path, so only non-UI callers reach here with a remote. Backing
+    // it up would need the sync URL recovered from the parsed
+    // configuration; left as a follow-up. Fails open — the space works
+    // locally, it just will not follow the user to another device.
+
     // Seed asynchronously, then flip the replica to `initialized`.
     // Seeding the standard library is the slow part (~seconds of
     // prolly-tree commits); doing it inline would block this response

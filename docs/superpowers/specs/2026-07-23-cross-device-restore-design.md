@@ -49,13 +49,24 @@ full space authority, so a restored device acts with the founder's rights
 through the composed `space -> root -> device` chain.
 
 Create is local-only; the remote is attached later. So created-space backup
-fires **when a created space gains a remote** — `enable_sync_inner`
-(`repository.rs:1988`) and the create-with-remote `put_repository` path
-(`repository.rs:216`). When the profile is account-linked: mint `space -> root`,
+fires **when a created space gains a remote** — hooked in `enable_sync_inner`
+(`repository.rs:1988`), which is where the account-holder create flow attaches
+its remote (`CreateSpaceHandler` runs `create_space_inner` local-only, then
+`enable_sync_inner`). When the profile is account-linked: mint `space -> root`,
 push `{chain, remote_url}` to `/chains/put`. Best-effort and fire-and-forget,
 exactly like the 3A claim backup (`account_backup.rs` `back_up_claim`). A
 local-only space with no remote is not backed up — there is nothing for another
 device to sync.
+
+**Not hooked (deliberate follow-up):** the one-shot `PUT /api/repository/{name}`
+with a remote in the body (`put_repository`, `repository.rs:216`) attaches a
+remote without going through `enable_sync_inner`, so a space created that way is
+not backed up. The account-holder UI never uses this path (it creates
+local-only then enables sync), so the exposure is limited to non-UI /
+programmatic callers; it fails open (the space works locally, it just does not
+restore on another device). Hooking it needs the raw sync URL recovered from
+the parsed `SiteAddress` in the request configuration; tracked as a follow-up
+rather than done here.
 
 ## Restore consumer + a shared mount helper
 
