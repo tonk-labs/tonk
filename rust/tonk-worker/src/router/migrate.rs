@@ -126,12 +126,7 @@ pub(crate) async fn migrate_space_roster(
         .try_vec()
         .await
         .map_err(|e| RepositoryError::Internal(format!("role query '{key}': {e:?}")))?;
-    // First-wins: if a root-keyed role row already exists, a prior
-    // migration (from another linked device) or a direct root-keyed join
-    // has already stamped it. `roles` already contains every row on the
-    // branch, so this is a plain lookup, not an extra query.
-    let root_role_exists = roles.iter().any(|r| r.this == root_entity);
-    let device_role = roles.into_iter().find(|r| r.this == device_entity);
+    let device_role = roles.iter().find(|r| r.this == device_entity).cloned();
 
     let names: Vec<MemberName> = session
         .handle()
@@ -171,19 +166,20 @@ pub(crate) async fn migrate_space_roster(
         .retract(device_row);
 
     if let Some(role) = device_role {
-        // First-wins: another device may have already migrated (or
-        // directly joined) this space onto the root entity, stamping its
-        // own role there first. Don't overwrite that — in particular,
-        // don't let a plain-member device row demote an already-recorded
-        // founder role. The device row is retracted either way, since it
-        // must not linger regardless of which role wins on the root.
-        if !root_role_exists {
-            let root_role = if role.role.0.to_string() == MemberRole::FOUNDER {
-                MemberRole::founder(root_entity.clone())
-            } else {
-                MemberRole::member(root_entity.clone())
-            };
-            txn = txn.assert(root_role);
+        // Founder-wins convergence, order-independent: a founder assertion
+        // wins over an existing member, a member never demotes an existing
+        // founder, and a member is stamped only when the root has no role
+        // yet. The device row is retracted regardless of which role wins.
+        let device_is_founder = role.role.0.to_string() == MemberRole::FOUNDER;
+        let root_is_founder = roles
+            .iter()
+            .any(|r| r.this == root_entity && r.role.0.to_string() == MemberRole::FOUNDER);
+        let root_has_role = roles.iter().any(|r| r.this == root_entity);
+
+        if device_is_founder && !root_is_founder {
+            txn = txn.assert(MemberRole::founder(root_entity.clone())); // upgrade / first founder
+        } else if !device_is_founder && !root_has_role {
+            txn = txn.assert(MemberRole::member(root_entity.clone())); // first member
         }
         txn = txn.retract(role);
     }
@@ -240,9 +236,10 @@ async fn try_reanchor_space(tonk: &TonkState, key: &str) -> Result<(), Repositor
         .await
         .map_err(|e| RepositoryError::Internal(format!("load space '{key}': {e}")))?;
 
-    // Recover the sync URL off the repo's own stored remote config, the
-    // same recovery `create_invite::resolve_remote_url` already does for
-    // the invite-mint path.
+    // Recover the sync URL off the content branch's (`main`) own stored
+    // upstream remote config — the same recovery
+    // `create_invite::resolve_remote_url` already does for the
+    // invite-mint path.
     let remote_url = match crate::router::create_invite::resolve_remote_url(tonk, &repository)
         .await
         .map_err(|e| RepositoryError::Internal(format!("resolve remote for '{key}': {e}")))?
@@ -557,6 +554,94 @@ mod tests {
                 .iter()
                 .any(|r| r.this == root_entity && r.role.0.to_string() == MemberRole::FOUNDER),
             "root founder role must survive a later device's migration unchanged",
+        );
+        assert!(
+            !roles.iter().any(|r| r.this == device_entity),
+            "device-keyed role must be gone after migration",
+        );
+
+        let memberships = content_memberships(&state, &key).await;
+        assert!(
+            !memberships.iter().any(|m| m.this == device_entity),
+            "device-keyed membership must be gone after migration",
+        );
+    }
+
+    /// Founder-wins upgrade: a linked device's *founder* row must upgrade
+    /// the root entity's role even when another device already stamped a
+    /// lesser *member* role there first (self-healing, order-independent
+    /// convergence — the mirror image of the demotion-guard test above).
+    #[dialog_common::test]
+    async fn it_upgrades_an_existing_root_member_role_to_founder() {
+        let state = test_state().await;
+        let (app, state, _lsp) = api_router_with_state(state);
+
+        let device_did = state.read().await.profile.did();
+        let key = put_repo(&app, "migrate-roster-upgrade").await;
+        let subject_did = {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .of()
+                .clone()
+        };
+
+        let root_did = link_account(&state).await;
+
+        // Simulate a prior migration (or a direct root-keyed join) that
+        // only ever recorded a plain member role on the root entity.
+        let root_membership = Membership::new(root_did.clone(), subject_did.clone());
+        let root_entity = root_membership.this().clone();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .transaction()
+                .assert(root_membership)
+                .assert(MemberRole::member(root_entity.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        // This device holds the true founder row for the space — its
+        // migration must upgrade the root to founder, not be blocked by
+        // the root's existing (lesser) member role.
+        let device_membership = Membership::new(device_did.clone(), subject_did.clone());
+        let device_entity = device_membership.this().clone();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .transaction()
+                .assert(device_membership)
+                .assert(MemberRole::founder(device_entity.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        let migrated = {
+            let tonk = state.read().await;
+            migrate_space_roster(&tonk, &key).await.unwrap()
+        };
+        assert!(migrated, "expected the device-keyed row to be migrated");
+
+        let roles = content_member_roles(&state, &key).await;
+        assert!(
+            roles
+                .iter()
+                .any(|r| r.this == root_entity && r.role.0.to_string() == MemberRole::FOUNDER),
+            "root role must be upgraded to founder by the later device's migration",
         );
         assert!(
             !roles.iter().any(|r| r.this == device_entity),
