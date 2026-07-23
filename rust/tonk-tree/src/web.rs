@@ -784,7 +784,9 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .key-seg.seg-entity { color: var(--tonk-circle, #3d6da8); }
 .key-seg.seg-attribute { color: var(--tonk-triangle, #c89a2b); }
 .key-seg.seg-value { color: var(--tonk-square, #b94a3d); }
-.key-seg.seg-vtype { color: var(--tonk-square, #b94a3d); }
+/* The value-TYPE tag reads as a distinct marker (a muted violet), so it never
+   blurs into the red value it precedes. */
+.key-seg.seg-vtype { color: #8a6ab0; font-weight: var(--wa-font-weight-normal, 400); }
 .key-seg.seg-unknown { color: var(--tonk-closure, #7a7268); }
 /* The index-type segment is neutral (the page's normal text color). */
 .key-seg.seg-index-type { color: var(--wa-color-text-normal); }
@@ -834,7 +836,7 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .keybytes .key-seg.seg-entity { background: var(--tonk-circle, #3d6da8); color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-attribute { background: var(--tonk-triangle, #c89a2b); color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-value { background: var(--tonk-square, #b94a3d); color: light-dark(#000, #fff); }
-.keybytes .key-seg.seg-vtype { background: var(--tonk-square, #b94a3d); color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-vtype { background: #8a6ab0; color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-unknown { background: var(--tonk-closure, #7a7268); color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-index-type { background: light-dark(#000, #fff);
   color: light-dark(#fff, #000); }

@@ -62,6 +62,7 @@ fn part_of(kind: &str) -> (Part, &'static str) {
         "origin" => (Part::Structural, "Revision origin"),
         "edition" => (Part::Structural, "Revision edition"),
         "blob" => (Part::ValueRef, "Blob (content-addressed)"),
+        "min" => (Part::Structural, "Leftmost subtree (no lower bound)"),
         "opaque" => (Part::Unknown, "Key"),
         _ => (Part::Unknown, "Key"),
     }
@@ -96,10 +97,17 @@ pub fn components(parts: &[KeyPart]) -> Vec<Component> {
     let mut offset = 0usize;
     for p in parts {
         let (part, label) = part_of(&p.kind);
-        let len = hex_len(&p.hex).max(1);
+        // The index and value-type chips carry a NAME in `hex` (not real
+        // bytes) for the tooltip, and always span one byte (the tag). Every
+        // other part's byte span comes from its `hex` length.
+        let (len, label) = match p.kind.as_str() {
+            "index" => (1usize, capitalize(&p.hex)),
+            "vtype" => (1usize, format!("Value type: {}", p.hex)),
+            _ => (hex_len(&p.hex).max(1), label.to_owned()),
+        };
         let text = glyphs(&p.text);
         out.push(Component {
-            label: label.to_owned(),
+            label,
             part,
             full: text.clone(),
             text,
@@ -108,6 +116,16 @@ pub fn components(parts: &[KeyPart]) -> Vec<Component> {
         offset += len;
     }
     out
+}
+
+/// Title-case an ordering name for the index tooltip (`entity` → `Entity
+/// index`).
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => format!("{}{} index", first.to_uppercase(), chars.as_str()),
+        None => "Index".to_owned(),
+    }
 }
 
 /// Decode a `0x`-prefixed hex key into raw bytes, for the pivot comparison.

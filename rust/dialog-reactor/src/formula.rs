@@ -285,11 +285,11 @@ async fn child_rows<Env: SelectProvider>(
         .collect();
 
     let mut rows = Vec::with_capacity(children.len());
-    for (at, (child, bound)) in children.into_iter().enumerate() {
+    for (at, (child, separator)) in children.into_iter().enumerate() {
         // Local-only read: a hit is cached, a miss is remote (the block
         // would have to be fetched). A cached child carries its full node
-        // fields; a remote one carries only what the parent's link knows —
-        // its bound key and rank — and is flagged `cached: false`.
+        // fields (size/count/kind); a remote one carries only what the
+        // parent's link knows, flagged `cached: false`.
         let mut fields = match read_local(branch, env, child).await? {
             Some(node) => {
                 let mut fields = node_fields(&node)?;
@@ -299,19 +299,28 @@ async fn child_rows<Env: SelectProvider>(
             None => {
                 let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
                 fields.insert("cached".into(), Ipld::Bool(false));
-                // The link's separator is the child's lower boundary — a
-                // front-coded key PREFIX, not a whole key, so it may decode
-                // only partially. `key_parts` still surfaces its tag + as many
-                // leading components as the prefix carries.
-                fields.insert("bound".into(), Ipld::String(bytes_hex(&bound)));
-                fields.insert("bound-parts".into(), Ipld::List(key_parts(&bound)));
-                fields.insert(
-                    "rank".into(),
-                    Ipld::Integer(Geometric::rank(&bound, &manifest) as i128),
-                );
                 fields
             }
         };
+        // The child's boundary in the outline is its LINK SEPARATOR — the
+        // left-edge key of the subtree it roots — for both cached and remote
+        // children. This is the right thing to show on the left: an index node
+        // has no whole upper-bound key of its own (its table holds
+        // separators), so without this a cached index row falls back to its
+        // opaque hash fragment. The separator is a front-coded PREFIX, so it
+        // may decode only partially; `key_parts` still surfaces its tag and as
+        // many leading components as the prefix carries. Overrides any
+        // `bound`/`bound-parts` a segment child's `node_fields` set from its
+        // own upper key, so the whole outline is keyed uniformly by separator.
+        fields.insert("bound".into(), Ipld::String(bytes_hex(&separator)));
+        fields.insert(
+            "bound-parts".into(),
+            Ipld::List(separator_parts(&separator)),
+        );
+        fields.insert(
+            "rank".into(),
+            Ipld::Integer(Geometric::rank(&separator, &manifest) as i128),
+        );
         fields.insert("child".into(), Ipld::String(to_base58(&child)));
         fields.insert("at".into(), Ipld::Integer(at as i128));
         rows.push(Conclusion {
@@ -467,11 +476,20 @@ fn key_parts(bytes: &[u8]) -> Vec<Ipld> {
     };
     let opaque = |bytes: &[u8]| vec![part("opaque", bytes_hex(bytes), bytes_hex(bytes))];
 
+    // An empty separator is the boundary of the level's GLOBAL LEFTMOST
+    // subtree: it has no lower bound (everything sorts at or after it). Show a
+    // `⊥ start` marker so the outline reads it as "the beginning" rather than
+    // falling back to the node's opaque hash.
+    if bytes.is_empty() {
+        return vec![part("min", "⊥ start".into(), String::new())];
+    }
     let Some(&tag) = bytes.first() else {
         return opaque(bytes);
     };
     let key = Key::from(bytes.to_vec());
-    let mut out = vec![part("index", tag_name(tag).into(), format!("{tag:02x}"))];
+    // The index chip shows just the tag byte; the ordering name (`entity` /
+    // `attribute` / …) rides `hex` so the client puts it in the hover tooltip.
+    let mut out = vec![part("index", tag.to_string(), tag_name(tag).into())];
 
     // The EAV/AEV/VAE orderings share the same logical fields; the `KeyView`
     // reads them regardless of physical byte order. `eav` emits the fields in
@@ -498,7 +516,10 @@ fn key_parts(bytes: &[u8]) -> Vec<Ipld> {
         [
             ("entity", entity, bytes_hex(view.entity().raw())),
             ("attribute", attribute, bytes_hex(view.attribute().raw())),
-            ("vtype", format!("{vtype}"), format!("{:02x}", vtype as u8)),
+            // The value-type chip shows just the type tag byte; the type name
+            // (`Entity` / `String` / …) rides `hex` for the hover tooltip, the
+            // same convention as the index chip.
+            ("vtype", (vtype as u8).to_string(), format!("{vtype}")),
             (val_kind, val_text, val_hex),
         ]
     }
@@ -567,6 +588,57 @@ fn key_parts(bytes: &[u8]) -> Vec<Ipld> {
         }
         _ => return opaque(bytes),
     }
+    out
+}
+
+/// Decode an index node's LINK SEPARATOR into parts. A separator is the
+/// front-coded left-edge key of a subtree — a *prefix* of a full key, not a
+/// self-contained one, so [`key_parts`]'s `KeyView` decode reads its columns as
+/// empty (the column framing that decode relies on lives past the prefix's
+/// truncation). Instead, surface the tag chip and render the post-tag prefix
+/// bytes as one glyphed-text chip, colored by the ordering's *leading* sort
+/// column (entity for EAV/history, attribute for AEV, value for VAE). This is
+/// what actually reads on the left of the outline: `\0concept:J4J64…` shows as
+/// `concept:J4J64…` in entity-blue rather than an empty `‹0 bytes›`.
+fn separator_parts(bytes: &[u8]) -> Vec<Ipld> {
+    let part = |kind: &str, text: String, hex: String| -> Ipld {
+        let mut m: BTreeMap<String, Ipld> = BTreeMap::new();
+        m.insert("kind".into(), Ipld::String(kind.into()));
+        m.insert("text".into(), Ipld::String(text));
+        m.insert("hex".into(), Ipld::String(hex));
+        Ipld::Map(m)
+    };
+
+    // The empty / leftmost-subtree separator: reuse `key_parts`' `⊥ start`.
+    if bytes.is_empty() {
+        return key_parts(bytes);
+    }
+    let Some(&tag) = bytes.first() else {
+        return vec![part("opaque", bytes_hex(bytes), bytes_hex(bytes))];
+    };
+    let prefix = &bytes[1..];
+
+    // The color/kind of the leading sort column, so the prefix text reads in
+    // the right hue. History / coverage lead with the version prefix (origin),
+    // blob with its hash; both are structural, so leave them opaque.
+    let lead_kind = match tag {
+        ENTITY_KEY_TAG => "entity",
+        ATTRIBUTE_KEY_TAG => "attribute",
+        VALUE_KEY_TAG => "value",
+        _ => "opaque",
+    };
+
+    let mut out = vec![part("index", tag.to_string(), tag_name(tag).into())];
+    if prefix.is_empty() {
+        return out;
+    }
+    // Render the whole prefix as text (glyphs substituted client-side for the
+    // structural bytes); the raw hex rides `hex` for the tooltip.
+    out.push(part(
+        lead_kind,
+        String::from_utf8_lossy(prefix).into_owned(),
+        bytes_hex(prefix),
+    ));
     out
 }
 
