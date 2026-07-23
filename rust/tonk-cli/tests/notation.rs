@@ -423,7 +423,7 @@ mod when_serving_the_guide {
 
     #[dialog_common::test]
     fn it_returns_the_index_for_no_topic() {
-        let text = guide::resolve(None).expect("index resolves");
+        let text = guide::resolve(None, None).expect("index resolves");
         assert!(text.contains("tonk guide notation"));
     }
 
@@ -442,7 +442,7 @@ mod when_serving_the_guide {
 
     #[dialog_common::test]
     fn it_returns_the_full_guide_for_all() {
-        let all = guide::resolve(Some("all")).expect("all resolves");
+        let all = guide::resolve(Some("all"), None).expect("all resolves");
         assert!(all.starts_with("# Asserted-notation guide"));
         assert_eq!(all, guide::GUIDE);
     }
@@ -473,16 +473,64 @@ mod when_serving_the_guide {
             let body =
                 guide::topic(name).unwrap_or_else(|| panic!("advertised topic {name} has no body"));
             assert!(!body.is_empty(), "topic {name} is empty");
-            assert_eq!(guide::resolve(Some(name)).expect("topic resolves"), body);
+            assert_eq!(
+                guide::resolve(Some(name), None).expect("topic resolves"),
+                body
+            );
         }
     }
 
     #[dialog_common::test]
     fn it_errors_on_an_unknown_topic() {
-        let err = guide::resolve(Some("nope")).expect_err("unknown rejects");
+        let err = guide::resolve(Some("nope"), None).expect_err("unknown rejects");
         let message = err.to_string();
         assert!(message.contains("nope"), "echoes the bad input");
         assert!(message.contains("notation"), "lists a valid topic");
         assert!(message.contains("all"), "advertises the `all` pseudo-topic");
+    }
+
+    #[dialog_common::test]
+    fn it_serves_every_advertised_element_under_views() {
+        // `ELEMENTS`, the `element()` match arms, the catalog table in
+        // guide-views.md, and the include_str! files are hand-synced.
+        // Drive off `ELEMENTS` so a name advertised without a body (or
+        // vice versa) is caught.
+        for name in guide::ELEMENTS {
+            let body = guide::element(name)
+                .unwrap_or_else(|| panic!("advertised element {name} has no body"));
+            assert!(!body.is_empty(), "element {name} is empty");
+            assert!(
+                body.contains(name),
+                "element doc for {name} should mention the tag"
+            );
+            assert_eq!(
+                guide::resolve(Some("views"), Some(name)).expect("element resolves"),
+                body,
+                "`views {name}` should serve the element doc",
+            );
+        }
+        // tonk-table is the crate this work added; make sure it's wired.
+        assert!(guide::element("tonk-table").is_some());
+    }
+
+    #[dialog_common::test]
+    fn it_errors_on_an_unknown_element() {
+        let err =
+            guide::resolve(Some("views"), Some("tonk-nope")).expect_err("unknown element rejects");
+        let message = err.to_string();
+        assert!(message.contains("tonk-nope"), "echoes the bad input");
+        assert!(message.contains("tonk-table"), "lists documented elements");
+    }
+
+    #[dialog_common::test]
+    fn it_errors_when_a_plain_topic_is_given_an_item() {
+        // Only `views` takes a second argument.
+        let err = guide::resolve(Some("notation"), Some("x")).expect_err("rejects an item");
+        assert!(
+            err.to_string().contains("views"),
+            "points at the right form"
+        );
+        // A bogus topic with an item still reads as an unknown topic.
+        assert!(guide::resolve(Some("bogus"), Some("x")).is_err());
     }
 }

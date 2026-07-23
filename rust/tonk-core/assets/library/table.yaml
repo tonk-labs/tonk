@@ -1,0 +1,574 @@
+# ===========================================================================
+# table — a <tonk-table> spreadsheet over INDIVIDUATED claims.
+# ===========================================================================
+# The workbook is not a blob: every sheet and every non-empty cell is its
+# own claim instance, so cells are addressable (`tonk query table/cell`,
+# `tonk assert table/cell --at B2 --content '=A1*2'`), concurrent editors
+# merge at cell grain, and rules can react to individual cells. Only the
+# raw INPUT is stored (`"=B2*C2"`, `"3.5"`); computed values are derived —
+# every replica's IronCalc engine recomputes them.
+#
+# Wiring follows the board pattern: directory views materialize each claim
+# as a hidden data-row div inside the element's light DOM (claims IN, via
+# the element's MutationObserver); the element emits one typed CustomEvent
+# per user mutation (claims OUT), each bound below to a command whose rule
+# asserts or retracts the one claim. Facet concepts (`table/cell-content`,
+# `table/sheet-name`) give rules a partial-upsert head, and clearing a
+# cell RETRACTS its content — the keystone fact whose absence unmatches
+# the cell from the directory.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &sheet/table
+  description: The workbook a sheet belongs to.
+  the: xyz.tonk.table.sheet/table
+  as: entity
+
+attribute!: &sheet/name
+  description: The sheet's display name.
+  the: xyz.tonk.table.sheet/name
+  as: text
+
+attribute!: &sheet/order
+  description: Lexicographic key ordering sheets in the tab strip.
+  the: xyz.tonk.table.sheet/order
+  as: text
+
+attribute!: &cell/sheet
+  description: The sheet a cell belongs to.
+  the: xyz.tonk.table.cell/sheet
+  as: entity
+
+attribute!: &cell/at
+  description: The cell's A1-style address ("B2").
+  the: xyz.tonk.table.cell/at
+  as: text
+
+attribute!: &cell/content
+  description: |
+    The cell's raw user input — a formula ("=B2*C2") or a literal
+    ("3.5", "Widget"). Never the computed value: values are derived by
+    the engine on every replica.
+  the: xyz.tonk.table.cell/content
+  as: text
+
+attribute!: &cell/style
+  description: Optional style JSON (font/fill/format), absent when plain.
+  the: xyz.tonk.table.cell/style
+  as: text
+
+attribute!: &column/sheet
+  description: The sheet a sized column belongs to.
+  the: xyz.tonk.table.column/sheet
+  as: entity
+
+attribute!: &column/at
+  description: The column's letters ("B").
+  the: xyz.tonk.table.column/at
+  as: text
+
+attribute!: &column/width
+  description: The column's width in px, as decimal text.
+  the: xyz.tonk.table.column/width
+  as: text
+
+attribute!: &row/sheet
+  description: The sheet a sized row belongs to.
+  the: xyz.tonk.table.row/sheet
+  as: entity
+
+attribute!: &row/at
+  description: The row's 1-based number, as text ("2").
+  the: xyz.tonk.table.row/at
+  as: text
+
+attribute!: &row/height
+  description: The row's height in px, as decimal text.
+  the: xyz.tonk.table.row/height
+  as: text
+
+# ---------------------------------------------------------------------------
+# Concepts
+# ---------------------------------------------------------------------------
+
+concept!: &table
+  this: tonk:table
+  description: A spreadsheet workbook edited with <tonk-table>.
+  with:
+    name:
+      description: The workbook's display name.
+      the: xyz.tonk.table/name
+      as: text
+
+concept!: &table/sheet
+  this: tonk:table/sheet
+  description: One sheet of a table workbook.
+  with:
+    table: sheet/table
+    name: sheet/name
+    order: sheet/order
+
+# A sheet's name as a standalone fact, so a rename upserts one field.
+concept!: &table/sheet-name
+  description: A sheet's name, as a standalone fact.
+  with:
+    name: sheet/name
+
+concept!: &table/cell
+  this: tonk:table/cell
+  description: One non-empty cell of a sheet.
+  with:
+    sheet: cell/sheet
+    at: cell/at
+    content: cell/content
+  maybe:
+    style: cell/style
+
+# A cell's content as a standalone fact: the edit rule's upsert head,
+# and the keystone the clear rule retracts — a cell without content
+# no longer matches `table/cell`, so its row (and the cell) disappear.
+concept!: &table/cell-content
+  description: A cell's raw input, as a standalone fact.
+  with:
+    content: cell/content
+
+# A cell's style as a standalone fact (formatting edits never contend
+# with typing).
+concept!: &table/cell-style
+  description: A cell's style JSON, as a standalone fact.
+  with:
+    style: cell/style
+
+# Sizing claims: only EXPLICITLY sized columns/rows have one — every
+# other line uses the engine default, so a fresh sheet mints zero
+# sizing claims.
+concept!: &table/column
+  this: tonk:table/column
+  description: An explicitly-sized column of a sheet.
+  with:
+    sheet: column/sheet
+    at: column/at
+    width: column/width
+
+concept!: &table/column-width
+  description: A column's width, as a standalone fact.
+  with:
+    width: column/width
+
+concept!: &table/row
+  this: tonk:table/row
+  description: An explicitly-sized row of a sheet.
+  with:
+    sheet: row/sheet
+    at: row/at
+    height: row/height
+
+concept!: &table/row-height
+  description: A row's height, as a standalone fact.
+  with:
+    height: row/height
+
+# ---------------------------------------------------------------------------
+# Commands — one per element event; field URIs are command-specific
+# (`dom.event.detail/edit-cell` ↔ detail.editCell) so one event can
+# never read as another. `time` is a component-minted monotonic nonce
+# that keeps otherwise-identical creates distinct.
+# ---------------------------------------------------------------------------
+
+command!: &table/create-sheet
+  description: Create a sheet in workbook `table`.
+  with:
+    table:
+      description: The workbook gaining the sheet
+      the: dom.event.detail/sheet-table
+      as: entity
+    name:
+      description: The new sheet's name
+      the: dom.event.detail/sheet-name
+      as: text
+    order:
+      description: Tab-strip order key, computed by the element
+      the: dom.event.detail/sheet-order
+      as: text
+    time:
+      description: A monotonic integer nonce from the element
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+command!: &table/rename-sheet
+  description: Rename `sheet` to `name`.
+  with:
+    sheet:
+      description: The sheet being renamed
+      the: dom.event.detail/rename-sheet
+      as: entity
+    name:
+      description: The new name
+      the: dom.event.detail/rename-name
+      as: text
+
+command!: &table/create-cell
+  description: Set a previously-empty cell (mints its claim).
+  with:
+    sheet:
+      description: The sheet the cell is on
+      the: dom.event.detail/cell-sheet
+      as: entity
+    at:
+      description: A1-style address
+      the: dom.event.detail/cell-at
+      as: text
+    content:
+      description: The raw input
+      the: dom.event.detail/cell-content
+      as: text
+    time:
+      description: A monotonic integer nonce from the element
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+command!: &table/edit-cell
+  description: Replace `cell`'s raw input.
+  with:
+    cell:
+      description: The edited cell
+      the: dom.event.detail/edit-cell
+      as: entity
+    content:
+      description: The new raw input
+      the: dom.event.detail/edit-content
+      as: text
+
+command!: &table/clear-cell
+  description: Empty `cell` (retracts it from the sheet).
+  with:
+    cell:
+      description: The cleared cell
+      the: dom.event.detail/clear-cell
+      as: entity
+
+command!: &table/create-column
+  description: Size a previously-default column (mints its claim).
+  with:
+    sheet:
+      description: The sheet the column is on
+      the: dom.event.detail/column-sheet
+      as: entity
+    at:
+      description: Column letters
+      the: dom.event.detail/column-at
+      as: text
+    width:
+      description: Width px, as decimal text
+      the: dom.event.detail/column-width
+      as: text
+    time:
+      description: A monotonic integer nonce from the element
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+command!: &table/resize-column
+  description: Change `column`'s width.
+  with:
+    column:
+      description: The resized column
+      the: dom.event.detail/resize-column
+      as: entity
+    width:
+      description: The new width px, as decimal text
+      the: dom.event.detail/resize-width
+      as: text
+
+command!: &table/create-row
+  description: Size a previously-default row (mints its claim).
+  with:
+    sheet:
+      description: The sheet the row is on
+      the: dom.event.detail/row-sheet
+      as: entity
+    at:
+      description: The row number, as text
+      the: dom.event.detail/row-at
+      as: text
+    height:
+      description: Height px, as decimal text
+      the: dom.event.detail/row-height
+      as: text
+    time:
+      description: A monotonic integer nonce from the element
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+command!: &table/resize-row
+  description: Change `row`'s height.
+  with:
+    row:
+      description: The resized row
+      the: dom.event.detail/resize-row
+      as: entity
+    height:
+      description: The new height px, as decimal text
+      the: dom.event.detail/resize-height
+      as: text
+
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
+
+# Sheet lifecycle. The created sheet's entity is the command entity
+# (`?this` flows from the command match into the head).
+rule!:
+  description: Creates a sheet
+  assert!: table/sheet
+  when:
+    - assert: table/create-sheet
+      where: { this: ?this, table: ?table, name: ?name, order: ?order }
+
+rule!:
+  description: Renames a sheet
+  assert!: table/sheet-name
+  when:
+    - assert: table/rename-sheet
+      where: { sheet: ?this, name: ?name }
+
+# Cell lifecycle. Created cells are the command entity; edits upsert
+# the content facet in place.
+rule!:
+  description: Sets a previously-empty cell
+  assert!: table/cell
+  when:
+    - assert: table/create-cell
+      where: { this: ?this, sheet: ?sheet, at: ?at, content: ?content }
+
+rule!:
+  description: Replaces an edited cell's input
+  assert!: table/cell-content
+  when:
+    - assert: table/edit-cell
+      where: { cell: ?this, content: ?content }
+
+# Clearing retracts the content fact — the keystone whose absence
+# unmatches the cell from `table/cell` (its style may linger on the
+# entity, harmlessly, until the address is written again).
+rule!:
+  description: Empties a cleared cell
+  retract!: table/cell-content
+  when:
+    - assert: table/clear-cell
+      where: { cell: ?this }
+    - assert: table/cell-content
+      where: { this: ?this, content: ?content }
+
+# Sizing lifecycle, same shape as cells: creates flow the command
+# entity into the head, resizes upsert the single-fact facet.
+rule!:
+  description: Sizes a previously-default column
+  assert!: table/column
+  when:
+    - assert: table/create-column
+      where: { this: ?this, sheet: ?sheet, at: ?at, width: ?width }
+
+rule!:
+  description: Resizes a column
+  assert!: table/column-width
+  when:
+    - assert: table/resize-column
+      where: { column: ?this, width: ?width }
+
+rule!:
+  description: Sizes a previously-default row
+  assert!: table/row
+  when:
+    - assert: table/create-row
+      where: { this: ?this, sheet: ?sheet, at: ?at, height: ?height }
+
+rule!:
+  description: Resizes a row
+  assert!: table/row-height
+  when:
+    - assert: table/resize-row
+      where: { row: ?this, height: ?height }
+
+# ---------------------------------------------------------------------------
+# Data-row views (invisible; feed the element)
+# ---------------------------------------------------------------------------
+#
+# Each directory view renders one bare data div per claim. The element
+# reads and observes these rows inside its light DOM; the `hidden`
+# wrapper in the main view keeps them unpainted. `subject={this}`
+# carries each claim's entity id.
+
+view/directory!:
+  this: tonk:table/sheet-rows
+  model: tonk:table/sheet
+  display: |
+    <div class="table-sheet-rows">
+      <div class="table-sheet-row" subject={this} data-table={table} data-name={name} data-order={order}></div>
+    </div>
+
+view/directory!:
+  this: tonk:table/cell-rows
+  model: tonk:table/cell
+  display: |
+    <div class="table-cell-rows">
+      <div class="table-cell-row" subject={this} data-sheet={sheet} data-at={at} data-content={content} data-style={style}></div>
+    </div>
+
+view/directory!:
+  this: tonk:table/column-rows
+  model: tonk:table/column
+  display: |
+    <div class="table-column-rows">
+      <div class="table-column-row" subject={this} data-sheet={sheet} data-at={at} data-width={width}></div>
+    </div>
+
+view/directory!:
+  this: tonk:table/rowsize-rows
+  model: tonk:table/row
+  display: |
+    <div class="table-rowsize-rows">
+      <div class="table-rowsize-row" subject={this} data-sheet={sheet} data-at={at} data-height={height}></div>
+    </div>
+
+# ---------------------------------------------------------------------------
+# Views — the live grid. `subject={this}` selects the element's claims
+# mode; the nested hidden displays materialize this branch's sheet and
+# cell claims where the element's observer can see them; each on* binds
+# one element event to its command.
+# ---------------------------------------------------------------------------
+
+view!:
+  this: id:table/view
+  model: table
+  display: |
+    <tonk-table subject={this}
+      oncreatesheet=table/create-sheet
+      onrenamesheet=table/rename-sheet
+      oncreatecell=table/create-cell
+      oneditcell=table/edit-cell
+      onclearcell=table/clear-cell
+      oncreatecolumn=table/create-column
+      onresizecolumn=table/resize-column
+      oncreaterow=table/create-row
+      onresizerow=table/resize-row
+    >
+      <div hidden>
+        <tonk-display model=tonk:table/sheet></tonk-display>
+        <tonk-display model=tonk:table/cell></tonk-display>
+        <tonk-display model=tonk:table/column></tonk-display>
+        <tonk-display model=tonk:table/row></tonk-display>
+      </div>
+    </tonk-table>
+
+# A directory view so `tonk render table` (list of workbooks) resolves.
+view/directory!:
+  this: id:table/directory
+  model: table
+  display: |
+    <div class="table-directory">
+      <tonk-display entity={this} model={dom.host/model}></tonk-display>
+    </div>
+
+# ---------------------------------------------------------------------------
+# Starter content: one workbook, one sheet, and the demo cells — each
+# cell ITS OWN CLAIM (`tonk query table/cell` lists them; agents assert
+# more). Stable `id:` URIs keep re-seeding idempotent. Only raw input
+# is seeded; D-column values compute on load.
+# ---------------------------------------------------------------------------
+
+table!:
+  this: id:table/book
+  name: "Demo"
+
+table/sheet!:
+  this: id:table/book/sheet1
+  table: id:table/book
+  name: "Sheet1"
+  order: "m"
+
+table/cell!:
+  this: id:table/book/s1!A1
+  sheet: id:table/book/sheet1
+  at: "A1"
+  content: "Item"
+---
+table/cell!:
+  this: id:table/book/s1!B1
+  sheet: id:table/book/sheet1
+  at: "B1"
+  content: "Qty"
+---
+table/cell!:
+  this: id:table/book/s1!C1
+  sheet: id:table/book/sheet1
+  at: "C1"
+  content: "Price"
+---
+table/cell!:
+  this: id:table/book/s1!D1
+  sheet: id:table/book/sheet1
+  at: "D1"
+  content: "Total"
+---
+table/cell!:
+  this: id:table/book/s1!A2
+  sheet: id:table/book/sheet1
+  at: "A2"
+  content: "Widget"
+---
+table/cell!:
+  this: id:table/book/s1!B2
+  sheet: id:table/book/sheet1
+  at: "B2"
+  content: "2"
+---
+table/cell!:
+  this: id:table/book/s1!C2
+  sheet: id:table/book/sheet1
+  at: "C2"
+  content: "3.5"
+---
+table/cell!:
+  this: id:table/book/s1!D2
+  sheet: id:table/book/sheet1
+  at: "D2"
+  content: "=B2*C2"
+---
+table/cell!:
+  this: id:table/book/s1!A3
+  sheet: id:table/book/sheet1
+  at: "A3"
+  content: "Gadget"
+---
+table/cell!:
+  this: id:table/book/s1!B3
+  sheet: id:table/book/sheet1
+  at: "B3"
+  content: "1"
+---
+table/cell!:
+  this: id:table/book/s1!C3
+  sheet: id:table/book/sheet1
+  at: "C3"
+  content: "12"
+---
+table/cell!:
+  this: id:table/book/s1!D3
+  sheet: id:table/book/sheet1
+  at: "D3"
+  content: "=B3*C3"
+---
+table/cell!:
+  this: id:table/book/s1!C4
+  sheet: id:table/book/sheet1
+  at: "C4"
+  content: "Sum"
+---
+table/cell!:
+  this: id:table/book/s1!D4
+  sheet: id:table/book/sheet1
+  at: "D4"
+  content: "=SUM(D2:D3)"

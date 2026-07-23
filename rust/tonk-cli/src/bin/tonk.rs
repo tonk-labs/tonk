@@ -55,13 +55,17 @@ enum Command {
     /// access.
     // Topic list here is hand-rolled for help text; keep in sync with `guide::TOPICS`.
     #[command(
-        after_help = "Topics: notation, views, events, workspace, all\n\nExamples:\n  tonk guide\n  tonk guide notation\n  tonk guide views\n  tonk guide all"
+        after_help = "Topics: notation, views, events, workspace, all\n\nBuilt-in elements (full docs): tonk guide views <element>\n  tonk-display, tonk-prose, tonk-code, tonk-table\n\nExamples:\n  tonk guide\n  tonk guide views\n  tonk guide views tonk-table\n  tonk guide all"
     )]
     Guide {
         /// One of: notation, views, events, workspace, all. Omit for
         /// the index.
         #[arg(value_name = "TOPIC")]
         topic: Option<String>,
+        /// Under `views`, a built-in element to show full docs for
+        /// (e.g. `tonk guide views tonk-table`).
+        #[arg(value_name = "ITEM")]
+        item: Option<String>,
     },
 
     /// Print the branch's schema as re-submittable notation
@@ -740,7 +744,7 @@ async fn main() {
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
-        Command::Guide { topic } => print_guide(topic.as_deref()),
+        Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
         Command::Schema { concept } => print_schema(concept, spot.as_deref()).await,
         Command::Query {
             concept,
@@ -973,8 +977,8 @@ fn resolve_source(args: &EvalArgs) -> Result<Source, String> {
     }
 }
 
-fn print_guide(topic: Option<&str>) -> ExitCode {
-    let text = match guide::resolve(topic) {
+fn print_guide(topic: Option<&str>, item: Option<&str>) -> ExitCode {
+    let text = match guide::resolve(topic, item) {
         Ok(text) => text,
         Err(err) => return print_error(err.to_string()),
     };
