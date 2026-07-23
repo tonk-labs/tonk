@@ -5,7 +5,7 @@
 //! device: the CID of every delegation, the issuer DID of every
 //! delegation, and the invocation's issuer DID are matched against the
 //! account registry. The decision logic here is pure and natively
-//! tested; D1 glue lives in [`d1`] and is wasm-only.
+//! tested; D1 glue lives in d1 and is wasm-only.
 //!
 //! An entitlement lookup for billing later extends the registry trait
 //! (or adds a sibling) — the collection and decision shapes here stay
@@ -93,6 +93,7 @@ mod tests {
 
     const ROOT_SEED: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [8u8; 32];
+    const DEVICE2_SEED: [u8; 32] = [9u8; 32];
 
     /// A container shaped like a linked device's presign request: one
     /// subject-open `root → device` delegation, invocation issued by the
@@ -163,5 +164,84 @@ mod tests {
     async fn it_rejects_an_empty_or_garbage_container() {
         assert!(collect_presented(&[]).is_err());
         assert!(collect_presented(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    /// A container shaped like a two-hop redelegation chain: one
+    /// subject-open `root → device1` delegation (A), one subject-open
+    /// `device1 → device2` delegation (B), invocation issued by device2
+    /// with both delegations as proofs. Returns (delegation A cid,
+    /// delegation B cid, root did, device1 did, device2 did, bytes).
+    async fn two_hop_device_container() -> (String, String, String, String, String, Vec<u8>) {
+        let root = Ed25519Signer::import(&ROOT_SEED).await.unwrap();
+        let device1 = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let device2 = Ed25519Signer::import(&DEVICE2_SEED).await.unwrap();
+        let root_did = root.did();
+        let device1_did = device1.did();
+        let device2_did = device2.did();
+
+        let delegation_a = DelegationBuilder::new()
+            .issuer(root.clone())
+            .audience(&device1_did)
+            .subject(Subject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let cid_a = delegation_a.to_cid();
+
+        let delegation_b = DelegationBuilder::new()
+            .issuer(device1.clone())
+            .audience(&device2_did)
+            .subject(Subject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let cid_b = delegation_b.to_cid();
+
+        let invocation = InvocationBuilder::new()
+            .issuer(device2.clone())
+            .audience(&root_did)
+            .subject(&root_did)
+            .command(vec!["memory".to_string(), "resolve".to_string()])
+            .arguments(BTreeMap::new())
+            .proofs(vec![cid_a, cid_b])
+            .try_build()
+            .await
+            .unwrap();
+
+        let mut proofs = HashMap::new();
+        proofs.insert(cid_a, Arc::new(delegation_a));
+        proofs.insert(cid_b, Arc::new(delegation_b));
+        let bytes = InvocationChain::new(invocation, proofs).to_bytes().unwrap();
+        (
+            cid_a.to_string(),
+            cid_b.to_string(),
+            root_did.to_string(),
+            device1_did.to_string(),
+            device2_did.to_string(),
+            bytes,
+        )
+    }
+
+    #[dialog_common::test]
+    async fn it_collects_every_hop_of_a_multi_delegation_chain() {
+        let (cid_a, cid_b, root_did, device1_did, device2_did, bytes) =
+            two_hop_device_container().await;
+
+        let presented = collect_presented(&bytes).unwrap();
+
+        assert_eq!(presented.invocation_issuer, device2_did);
+        assert!(presented.delegation_cids.contains(&cid_a));
+        assert!(presented.delegation_cids.contains(&cid_b));
+        assert!(presented.delegation_issuers.contains(&root_did));
+        assert!(presented.delegation_issuers.contains(&device1_did));
+
+        let keys = presented.keys();
+        assert!(keys.contains(&cid_a));
+        assert!(keys.contains(&cid_b));
+        assert!(keys.contains(&root_did));
+        assert!(keys.contains(&device1_did));
+        assert!(keys.contains(&device2_did));
     }
 }
