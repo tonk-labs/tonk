@@ -339,6 +339,62 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_rejects_a_registered_device_presenting_another_accounts_root() {
+        let store = SqliteStore::in_memory().unwrap();
+
+        // The device is registered under account A…
+        let root_a = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let root_a_did = root_a.did();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let device_did = device.did();
+        seed_device(
+            &store,
+            root_a_did.as_ref(),
+            device_did.as_ref(),
+            DeviceStatus::Active,
+        )
+        .await;
+
+        // …but invokes as a delegate of account B, with a chain that
+        // verifies: root B really did delegate to this device key.
+        let root_b = tonk_identity::derive::derive_root_signer(&[9u8; 32])
+            .await
+            .unwrap();
+        let root_b_did = root_b.did();
+        store
+            .create_account("b@x.com", root_b_did.as_ref(), "cred-b", 0)
+            .await
+            .unwrap();
+
+        let chain = tonk_identity::delegation::mint_device_delegation(root_b, &device_did)
+            .await
+            .unwrap();
+        let delegation = chain.proofs().last().unwrap().clone();
+        let cid = delegation.to_cid();
+        let invocation = InvocationBuilder::new()
+            .issuer(device)
+            .audience(&root_b_did)
+            .subject(&root_b_did)
+            .command(vec!["account".into(), "device".into(), "list".into()])
+            .arguments(BTreeMap::new())
+            .proofs(vec![cid])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .unwrap();
+        let mut proofs = std::collections::HashMap::new();
+        proofs.insert(cid, std::sync::Arc::new(delegation));
+        let bytes = InvocationChain::new(invocation, proofs).to_bytes().unwrap();
+
+        assert!(matches!(
+            authorize(&store, &bytes, &["account", "device", "list"]).await,
+            Err(CeremonyError::Forbidden(_))
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_authorizes_a_request_signed_directly_by_the_root() {
         let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
             .await
