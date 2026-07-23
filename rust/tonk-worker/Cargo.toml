@@ -57,6 +57,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
 tonk-evaluator = { workspace = true }
+tonk-identity = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }
 tonk-notation = { workspace = true }
@@ -116,7 +117,6 @@ dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 tonk-fab = { path = "../tonk-fab" }
-tonk-identity = { workspace = true }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 

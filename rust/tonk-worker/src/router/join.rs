@@ -190,12 +190,22 @@ pub(crate) async fn claim_invite(
     // shrink, by joining.
     tonk.profile
         .access()
-        .save(UcanDelegation(chain))
+        .save(UcanDelegation(chain.clone()))
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to persist delegation chain: {e}"))
         })?;
+
+    // Escrow the claimed chain (with the invite's sync URL) so another of
+    // this account's devices can recover the space. No-op for unlinked
+    // devices; best-effort for linked ones.
+    crate::router::account_backup::back_up_claim(
+        tonk,
+        &chain,
+        remote_url.as_ref().map(url::Url::as_str),
+    )
+    .await;
 
     // The shared repository's DID is its identity; the routing/storage
     // key is the DID suffix. There is no local display name — it lives in
