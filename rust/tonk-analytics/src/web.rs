@@ -64,10 +64,15 @@ export function ph_init(key, host) {
         // staging, dev, and the marketing site (which registers
         // environment = "website" in its own repo) apart within the
         // shared PostHog project.
+        // Each deployment answers on both its tonk.xyz and its
+        // tonk.spot name. tonk.spot is the canonical one the CLI
+        // builds invite links against, so a recipient arriving from
+        // `tonk invite` lands here on tonk.spot — matching only the
+        // tonk.xyz names would file every CLI invitee under "dev".
         var host = location.hostname;
         var environment =
-            host === "hub.tonk.xyz" ? "production"
-            : host === "staging.tonk.xyz" ? "staging"
+            (host === "hub.tonk.xyz" || host === "tonk.spot") ? "production"
+            : (host === "staging.tonk.xyz" || host === "staging.tonk.spot") ? "staging"
             : "dev";
         window.posthog.register({ environment: environment });
         return true;

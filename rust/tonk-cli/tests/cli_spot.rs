@@ -248,6 +248,52 @@ mod when_the_invite_remote_is_the_upstream {
     }
 }
 
+/// The base-selection arm nothing could reach before: no remotes at
+/// all, so no origin resolves and the canonical base is the answer.
+///
+/// `--no-shorten` is what makes this testable. Shortening PUTs to the
+/// link's own origin, which here is production — so without it this
+/// test would write to the real shortcut store on every run.
+mod when_no_remote_is_registered_at_all {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_mints_on_the_canonical_base() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["invite", "--no-shorten"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+
+        let url = stdout_of(&output);
+        let url = url.trim();
+        assert!(
+            url.starts_with(tonk_cli::invite::DEFAULT_BASE_URL),
+            "canonical base: {url}"
+        );
+        assert!(url.contains("access="), "a real invite: {url}");
+    }
+
+    /// The environment form of the same switch, so automation can opt
+    /// out without threading a flag through every call site.
+    #[dialog_common::test]
+    fn it_honours_the_environment_switch() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["invite"], &[("TONK_NO_SHORTEN", "1")]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+
+        let url = stdout_of(&output);
+        let url = url.trim();
+        assert!(
+            url.starts_with(tonk_cli::invite::DEFAULT_BASE_URL),
+            "canonical base: {url}"
+        );
+        assert!(!url.contains("/@/"), "not shortened: {url}");
+    }
+}
+
 mod when_inviting_without_a_remote {
     use super::*;
 

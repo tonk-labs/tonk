@@ -262,8 +262,13 @@ pub async fn set_upstream(
 /// Reads the meta branch's `Remote` concepts filtered by the
 /// local replica entity, then decodes each `Address` claim back
 /// into a `SiteAddress` so the endpoint URL is human-readable.
-/// Anything that doesn't decode (legacy non-UCAN addresses,
-/// future variants) is logged via the error path and skipped.
+///
+/// Rows tonk cannot act on are dropped silently: an address that
+/// isn't a UCAN endpoint (legacy shapes, future variants), or a
+/// subject that isn't a parseable DID. This is not just a display
+/// filter — [`resolve`] counts what survives, so a repo with two
+/// registered remotes where one fails to decode resolves the other
+/// implicitly, as if it were the only one.
 pub async fn list(site: &TonkSite) -> Result<Vec<RemoteRecord>, RemoteError> {
     use dialog_query::{Output as _, Query, Term};
 
@@ -328,6 +333,11 @@ pub async fn find(site: &TonkSite, name: &str) -> Result<Option<RemoteRecord>, R
 /// (`None`, not an error — a local-only repo is a legitimate thing to
 /// invite someone to), and several is a question only the caller can
 /// answer.
+///
+/// "Lone" means lone *after* [`list`]'s filtering, which drops rows
+/// tonk cannot push through. A repo holding one usable remote beside
+/// one undecodable one resolves implicitly, with no mention of the
+/// dropped row.
 pub async fn resolve(
     site: &TonkSite,
     explicit: Option<&str>,
