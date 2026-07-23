@@ -4,7 +4,8 @@
 //! key whose `root → device` delegation is attached as a proof, with the
 //! account root as subject. This builds exactly that container from a
 //! profile's live device signer and its stored `root → device` link — no
-//! root key, no raw seed.
+//! root key, no raw seed. Invocations carry a five-minute expiration; the
+//! service refuses stale ones.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 
 /// Build a device-signed account-service invocation container.
@@ -44,6 +46,7 @@ pub async fn build_device_invocation(
         .command(command)
         .arguments(arguments)
         .proofs(vec![cid])
+        .expiration(Timestamp::five_minutes_from_now())
         .try_build()
         .await
         .context("failed to sign the device invocation")?;
@@ -94,6 +97,10 @@ mod tests {
             .verify(&dialog_credentials::Ed25519KeyResolver)
             .await
             .unwrap();
+        assert!(
+            chain.invocation.expiration().is_some(),
+            "device invocations must carry a ceremony expiration"
+        );
         assert_eq!(chain.issuer(), &device_did);
         assert_eq!(chain.subject(), &root_did);
         assert_eq!(
