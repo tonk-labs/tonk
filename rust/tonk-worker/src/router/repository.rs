@@ -2020,7 +2020,14 @@ async fn enable_sync_inner(
         }
     };
 
-    ensure_remote_config(&tonk, &repository, key, &configuration).await
+    ensure_remote_config(&tonk, &repository, key, &configuration).await?;
+
+    // Escrow this owned space's delegation so the account's other devices
+    // can restore it. Best-effort; no-op for unlinked profiles or for a
+    // repository that doesn't hold its signer (i.e. wasn't created here).
+    crate::router::account_backup::back_up_owned_space(&tonk, &repository, remote).await;
+
+    Ok(())
 }
 
 /// Spawn the background seed + status flip for a freshly created

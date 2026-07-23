@@ -2,6 +2,10 @@
 //! service, so a later device can recover the space.
 
 use dialog_credentials::Ed25519Signer;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_repository::Repository;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::promise::Promised;
 use tonk_common::log;
@@ -128,9 +132,10 @@ async fn run_backup(
     post_chains_put(&endpoint, body).await
 }
 
-/// Back up a claimed space's delegation to the account service.
-/// Best-effort: any failure logs and is swallowed — the claiming device
-/// already works, and the roster keys on the root regardless.
+/// Resolve the account link, service URL, and device signer, then hand the
+/// backup off to [`run_backup`]. Shared by every backup caller
+/// ([`back_up_claim`] and [`back_up_owned_space`]): a no-op when the
+/// profile is unlinked or the account service is unknown for this host.
 ///
 /// The lookups here (account link, service URL, device signer) are cheap
 /// local reads, so they run inline. The actual network POST is handed off
@@ -138,10 +143,11 @@ async fn run_backup(
 /// service can never stall the caller's `.await`; on native the caller has
 /// no UI to stall, so it awaits inline, bounded by `post_chains_put`'s
 /// request timeout.
-pub(crate) async fn back_up_claim(
+async fn dispatch_backup(
     tonk: &TonkState,
-    chain: &DelegationChain,
-    remote_url: Option<&str>,
+    context: &'static str,
+    chain: DelegationChain,
+    remote_url: Option<String>,
 ) {
     // Only account-holders back up; an unlinked device has no account to
     // escrow under and returns early.
@@ -152,14 +158,12 @@ pub(crate) async fn back_up_claim(
         return;
     };
     let device = tonk.profile.signer().signer().clone();
-    let chain = chain.clone();
-    let remote_url = remote_url.map(str::to_owned);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         wasm_bindgen_futures::spawn_local(async move {
             if let Err(error) = run_backup(device, link, service, chain, remote_url).await {
-                log!("claim backup failed: {error}");
+                log!("{context} backup failed: {error}");
             }
         });
     }
@@ -167,9 +171,81 @@ pub(crate) async fn back_up_claim(
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         if let Err(error) = run_backup(device, link, service, chain, remote_url).await {
-            log!("claim backup failed: {error}");
+            log!("{context} backup failed: {error}");
         }
     }
+}
+
+/// Back up a claimed space's delegation to the account service.
+/// Best-effort: any failure logs and is swallowed — the claiming device
+/// already works, and the roster keys on the root regardless.
+pub(crate) async fn back_up_claim(
+    tonk: &TonkState,
+    chain: &DelegationChain,
+    remote_url: Option<&str>,
+) {
+    dispatch_backup(tonk, "claim", chain.clone(), remote_url.map(str::to_owned)).await;
+}
+
+/// Back up a created space's `space -> root` delegation so another of the
+/// account's devices can restore it. Best-effort and fire-and-forget; a
+/// no-op when the profile is unlinked, or when `repository` doesn't hold a
+/// signer (a joined/verifier-only space has nothing to delegate from —
+/// only the space that created it can mint this).
+///
+/// Only called from the wasm worker today (its one hook is
+/// `enable_sync_inner`, which is itself worker-only), so this — like that
+/// hook — is worker-only rather than carrying dead code on native.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn back_up_owned_space(
+    tonk: &TonkState,
+    repository: &Repository,
+    remote_url: &str,
+) {
+    if let Err(error) = try_back_up_owned_space(tonk, repository, remote_url).await {
+        log!("created-space backup skipped: {error}");
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn try_back_up_owned_space(
+    tonk: &TonkState,
+    repository: &Repository,
+    remote_url: &str,
+) -> Result<(), TonkWorkerError> {
+    // A repository loaded via `.load()` carries a verifier-only credential
+    // for a space this profile only joined; only a space this profile
+    // created still holds its signing key and can mint a delegation from
+    // it directly.
+    let Some(access) = repository.try_access() else {
+        return Ok(());
+    };
+    // No account linked: nothing to escrow the delegation under.
+    let Some(root_did) = crate::router::account::account_root_did(tonk).await else {
+        return Ok(());
+    };
+
+    // One-hop, subject-specific delegation: issuer = the space itself,
+    // subject = the space DID, audience = the account root. Never
+    // `Subject::Any` — a restoring device must only ever recover the one
+    // space this chain names.
+    let delegation: UcanDelegation = access
+        .claim(repository)
+        .delegate(root_did)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to mint space->root delegation: {e}"))
+        })?;
+
+    dispatch_backup(
+        tonk,
+        "created-space",
+        delegation.into_chain(),
+        Some(remote_url.to_owned()),
+    )
+    .await;
+    Ok(())
 }
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
