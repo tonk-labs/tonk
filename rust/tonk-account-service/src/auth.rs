@@ -58,6 +58,28 @@ async fn verified_chain(
     Ok(chain)
 }
 
+/// Require an expiration on the invocation and bound it to the
+/// five-minute ceremony window every account-service request uses.
+fn require_ceremony_expiration(
+    chain: &InvocationChain<Ed25519Signature>,
+) -> Result<(), CeremonyError> {
+    let expiration = chain.invocation.expiration().ok_or_else(|| {
+        CeremonyError::Unauthorized("invocation must carry an expiration".to_string())
+    })?;
+    let now = Timestamp::now();
+    if expiration < now {
+        return Err(CeremonyError::Unauthorized(
+            "invocation has expired".to_string(),
+        ));
+    }
+    if expiration > Timestamp::five_minutes_from_now() {
+        return Err(CeremonyError::Unauthorized(
+            "invocation expiration exceeds the five-minute ceremony window".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Parse + cryptographically verify an invocation container, require the
 /// exact command, then bind it to a registered account and an active
 /// device. The invocation subject is the root DID; the invocation issuer
@@ -68,6 +90,7 @@ pub async fn authorize<S: Store>(
     expected_command: &[&str],
 ) -> Result<Caller, CeremonyError> {
     let chain = verified_chain(body, expected_command).await?;
+    require_ceremony_expiration(&chain)?;
 
     let account = store
         .account_by_root(chain.subject().as_ref())
@@ -105,20 +128,7 @@ pub async fn authorize_root(
             "root invocation issuer must equal its subject".to_string(),
         ));
     }
-    let expiration = chain.invocation.expiration().ok_or_else(|| {
-        CeremonyError::Unauthorized("root invocation must carry an expiration".to_string())
-    })?;
-    let now = Timestamp::now();
-    if expiration < now {
-        return Err(CeremonyError::Unauthorized(
-            "root invocation has expired".to_string(),
-        ));
-    }
-    if expiration > Timestamp::five_minutes_from_now() {
-        return Err(CeremonyError::Unauthorized(
-            "root invocation expiration exceeds the five-minute ceremony window".to_string(),
-        ));
-    }
+    require_ceremony_expiration(&chain)?;
 
     Ok(RootCaller {
         root_did: chain.subject().to_string(),
@@ -155,9 +165,10 @@ mod tests {
     const ROOT_PRF: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [8u8; 32];
 
-    async fn container(
+    async fn container_with_expiration(
         command: Vec<String>,
         args: BTreeMap<String, Promised>,
+        expiration: Option<Timestamp>,
     ) -> (String, String, Vec<u8>) {
         let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
             .await
@@ -169,20 +180,28 @@ mod tests {
             .unwrap();
         let delegation = chain.proofs().last().unwrap().clone();
         let cid = delegation.to_cid();
-        let invocation = InvocationBuilder::new()
+        let mut builder = InvocationBuilder::new()
             .issuer(device.clone())
             .audience(&root_did)
             .subject(&root_did)
             .command(command)
             .arguments(args)
-            .proofs(vec![cid])
-            .try_build()
-            .await
-            .unwrap();
+            .proofs(vec![cid]);
+        if let Some(expiration) = expiration {
+            builder = builder.expiration(expiration);
+        }
+        let invocation = builder.try_build().await.unwrap();
         let mut proofs = std::collections::HashMap::new();
         proofs.insert(cid, std::sync::Arc::new(delegation));
         let bytes = InvocationChain::new(invocation, proofs).to_bytes().unwrap();
         (root_did.to_string(), device.did().to_string(), bytes)
+    }
+
+    async fn container(
+        command: Vec<String>,
+        args: BTreeMap<String, Promised>,
+    ) -> (String, String, Vec<u8>) {
+        container_with_expiration(command, args, Some(Timestamp::five_minutes_from_now())).await
     }
 
     async fn seed_device(
@@ -391,6 +410,43 @@ mod tests {
         assert!(matches!(
             authorize(&store, &bytes, &["account", "device", "list"]).await,
             Err(CeremonyError::Forbidden(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_device_invocation_without_expiration() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (root_did, device_did, bytes) = container_with_expiration(
+            vec!["account".into(), "device".into(), "list".into()],
+            BTreeMap::new(),
+            None,
+        )
+        .await;
+        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+
+        assert!(matches!(
+            authorize(&store, &bytes, &["account", "device", "list"]).await,
+            Err(CeremonyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_an_expired_device_invocation() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let store = SqliteStore::in_memory().unwrap();
+        let expired = Timestamp::new(UNIX_EPOCH + Duration::from_secs(1)).unwrap();
+        let (root_did, device_did, bytes) = container_with_expiration(
+            vec!["account".into(), "device".into(), "list".into()],
+            BTreeMap::new(),
+            Some(expired),
+        )
+        .await;
+        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+
+        assert!(matches!(
+            authorize(&store, &bytes, &["account", "device", "list"]).await,
+            Err(CeremonyError::Unauthorized(_))
         ));
     }
 
