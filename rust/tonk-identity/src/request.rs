@@ -26,6 +26,10 @@ pub async fn build_device_invocation(
     arguments: BTreeMap<String, Promised>,
 ) -> Result<Vec<u8>> {
     let root_did = link.issuer().clone();
+    debug_assert!(
+        link.proofs().count() == 1,
+        "build_device_invocation expects a single-hop root -> device link"
+    );
     let delegation = link
         .proofs()
         .last()

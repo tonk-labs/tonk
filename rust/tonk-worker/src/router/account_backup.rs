@@ -1,6 +1,7 @@
 //! Best-effort backup of a claimed space's delegation to the account
 //! service, so a later device can recover the space.
 
+use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::promise::Promised;
 use tonk_common::log;
@@ -72,6 +73,10 @@ async fn post_chains_put(endpoint: &str, body: Vec<u8>) -> Result<(), TonkWorker
     let response = reqwest::Client::new()
         .post(endpoint)
         .body(body)
+        // Native awaits this inline (there's no UI to stall), but it must
+        // never hang indefinitely — bound it so a wedged account service
+        // can't wedge whatever native caller is doing the claim.
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("chains/put: {e}")))?;
@@ -84,31 +89,26 @@ async fn post_chains_put(endpoint: &str, body: Vec<u8>) -> Result<(), TonkWorker
     Ok(())
 }
 
-async fn try_back_up_claim(
-    tonk: &TonkState,
-    chain: &DelegationChain,
-    remote_url: Option<&str>,
+/// Build the backup artifact, sign the device invocation, and POST it to
+/// the account service. Takes only owned data so it can run detached from
+/// the caller (see [`back_up_claim`]).
+async fn run_backup(
+    device: Ed25519Signer,
+    link: DelegationChain,
+    service: String,
+    chain: DelegationChain,
+    remote_url: Option<String>,
 ) -> Result<(), TonkWorkerError> {
-    // Only account-holders back up; an unlinked device has no account to
-    // escrow under and returns early.
-    let Some(link) = crate::router::account::account_link(tonk).await else {
-        return Ok(());
-    };
-    let Some(service) = account_service_url() else {
-        return Ok(());
-    };
-
     let chain_bytes = chain
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("serialize claimed chain: {e}")))?;
     let artifact = ClaimBackup {
         chain_hex: hex::encode(chain_bytes),
-        remote_url: remote_url.map(str::to_owned),
+        remote_url,
     };
     let artifact_bytes = serde_json::to_vec(&artifact)
         .map_err(|e| TonkWorkerError::Internal(format!("serialize backup artifact: {e}")))?;
 
-    let device = tonk.profile.signer().signer().clone();
     let arguments = [(
         "chain".to_owned(),
         Promised::String(hex::encode(artifact_bytes)),
@@ -131,13 +131,44 @@ async fn try_back_up_claim(
 /// Back up a claimed space's delegation to the account service.
 /// Best-effort: any failure logs and is swallowed — the claiming device
 /// already works, and the roster keys on the root regardless.
+///
+/// The lookups here (account link, service URL, device signer) are cheap
+/// local reads, so they run inline. The actual network POST is handed off
+/// to run detached: on wasm via `spawn_local`, so a slow/hung account
+/// service can never stall the caller's `.await`; on native the caller has
+/// no UI to stall, so it awaits inline, bounded by `post_chains_put`'s
+/// request timeout.
 pub(crate) async fn back_up_claim(
     tonk: &TonkState,
     chain: &DelegationChain,
     remote_url: Option<&str>,
 ) {
-    if let Err(error) = try_back_up_claim(tonk, chain, remote_url).await {
-        log!("claim backup skipped: {error}");
+    // Only account-holders back up; an unlinked device has no account to
+    // escrow under and returns early.
+    let Some(link) = crate::router::account::account_link(tonk).await else {
+        return;
+    };
+    let Some(service) = account_service_url() else {
+        return;
+    };
+    let device = tonk.profile.signer().signer().clone();
+    let chain = chain.clone();
+    let remote_url = remote_url.map(str::to_owned);
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = run_backup(device, link, service, chain, remote_url).await {
+                log!("claim backup failed: {error}");
+            }
+        });
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        if let Err(error) = run_backup(device, link, service, chain, remote_url).await {
+            log!("claim backup failed: {error}");
+        }
     }
 }
 
