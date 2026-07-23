@@ -25,6 +25,8 @@ pub(crate) mod restore;
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 
+pub(crate) mod migrate;
+
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
