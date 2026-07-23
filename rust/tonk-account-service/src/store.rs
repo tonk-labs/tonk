@@ -98,6 +98,25 @@ pub struct CodeRow {
     pub attempts: u32,
 }
 
+/// A short-lived browser handoff requested by a native CLI profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkRequest {
+    /// BLAKE3 hash of the bearer secret; the raw secret is never stored.
+    pub token_hash: String,
+    /// CLI profile DID that will receive the root delegation.
+    pub device_did: String,
+    /// Human-readable CLI device name.
+    pub device_name: String,
+    /// Completed root-to-device delegation, until it is consumed once.
+    pub delegation_hex: Option<String>,
+    /// Creation time, as unix seconds.
+    pub created_at: u64,
+    /// Expiry time, as unix seconds.
+    pub expires_at: u64,
+    /// Consumption time, if the CLI has retrieved the delegation.
+    pub consumed_at: Option<u64>,
+}
+
 /// Errors surfaced by a [`Store`] implementation.
 #[derive(Debug)]
 pub enum StoreError {
@@ -170,6 +189,24 @@ pub trait Store {
     /// Mark a device as revoked. Returns `false` if no matching device
     /// was found.
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError>;
+
+    /// Create a pending CLI browser handoff.
+    async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError>;
+
+    /// Look up a handoff by its secret hash.
+    async fn link(&self, token_hash: &str) -> Result<Option<LinkRequest>, StoreError>;
+
+    /// Atomically register a device and complete its pending handoff.
+    async fn complete_link(
+        &self,
+        token_hash: &str,
+        device: &Device,
+        delegation_hex: &str,
+        now: u64,
+    ) -> Result<bool, StoreError>;
+
+    /// Atomically retrieve and consume a completed handoff once.
+    async fn consume_link(&self, token_hash: &str, now: u64) -> Result<Option<String>, StoreError>;
 }
 
 /// SQL: look up the pending code row for an email.
@@ -224,6 +261,30 @@ pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegatio
 /// SQL: mark a device as revoked.
 pub const UPDATE_DEVICE_REVOKE: &str =
     "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2";
+
+/// SQL: create a pending browser handoff.
+pub const INSERT_LINK: &str = "INSERT INTO link_requests \
+    (token_hash, device_did, device_name, delegation_hex, created_at, expires_at, consumed_at) \
+    VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL)";
+
+/// SQL: load a browser handoff by token hash.
+pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, delegation_hex, \
+    created_at, expires_at, consumed_at FROM link_requests WHERE token_hash = ?1";
+
+/// SQL: insert a handoff device only while its request is pending and live.
+pub const INSERT_DEVICE_FOR_LINK: &str = "INSERT INTO devices \
+    (account_id, device_did, delegation_cid, name, status, created_at) \
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE EXISTS (SELECT 1 FROM link_requests \
+    WHERE token_hash = ?7 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?8)";
+
+/// SQL: attach the delegation to a live, still-pending handoff.
+pub const COMPLETE_LINK: &str = "UPDATE link_requests SET delegation_hex = ?1 \
+    WHERE token_hash = ?2 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?3";
+
+/// SQL: retrieve a completed handoff and mark it consumed in one statement.
+pub const CONSUME_LINK: &str = "UPDATE link_requests SET consumed_at = ?1 \
+    WHERE token_hash = ?2 AND delegation_hex IS NOT NULL AND consumed_at IS NULL AND expires_at >= ?3 \
+    RETURNING delegation_hex";
 
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;

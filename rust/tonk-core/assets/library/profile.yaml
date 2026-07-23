@@ -213,9 +213,10 @@ view/directory!:
           font-family: var(--spot-font-ui);
           display: flex; flex-direction: column; padding: 26px 38px 30px;
         }
-        /* header: brand (logo + badge) left, New spot trigger right */
-        .spot-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex: none; }
+        /* header: brand (logo + badge) left, account and New spot actions right */
+        .spot-top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 20px; flex: none; }
         .spot-brand { display: flex; align-items: center; gap: 12px; }
+        .spot-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
         /* The "tonk" wordmark — a display-scale heading (the `3xl` type token,
            ~41px, matching the deployed logo image's height so "tonk" dominates
            the "spot" badge). Live text, not an image, so it takes the theme ink
@@ -239,6 +240,9 @@ view/directory!:
            so it is `pointer-events: none` and the label alone is interactive.
            Hover feedback is driven off the LABEL's :hover onto the button's
            base part, since the button can't receive :hover itself. */
+        .spot-account { display: inline-flex; align-items: center; min-height: 44px;
+          color: var(--wa-color-text-normal); font-size: 18px; text-decoration: none; }
+        .spot-account:hover { color: var(--wa-color-brand-on-quiet); }
         .spot-new, .onb-nav { cursor: pointer; }
         .spot-new wa-button, .onb-nav wa-button { pointer-events: none; }
         /* "+ new spot" reads as plain ink text at the wireframe size (18px);
@@ -474,11 +478,14 @@ view/directory!:
              chrome inside it (pointer-events flow to the label). Neutral+plain
              so it reads as plain ink text ("+ new spot"), matching the
              wireframe — not the brand lime, which read as a small green pill. -->
-        <label class="spot-new" for="wiz-start">
-          <wa-button variant="neutral" appearance="plain">
-            <wa-icon slot="start" name="plus"></wa-icon>new spot
-          </wa-button>
-        </label>
+        <div class="spot-actions">
+          <a class="spot-account" href="/account">account</a>
+          <label class="spot-new" for="wiz-start">
+            <wa-button variant="neutral" appearance="plain">
+              <wa-icon slot="start" name="plus"></wa-icon>new spot
+            </wa-button>
+          </label>
+        </div>
       </header>
 
       <div class="spot-list">

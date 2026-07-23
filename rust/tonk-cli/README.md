@@ -59,6 +59,10 @@ tonk push
 tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
+# Link this native profile to a passkey-backed account.
+tonk account status
+tonk account link --name workstation
+
 # Delegate access to the space.
 tonk invite                    # audience-open: anyone holding it can claim
 tonk invite --remote prod      # pick the remote when several are registered

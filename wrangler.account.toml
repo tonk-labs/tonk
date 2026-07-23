@@ -3,7 +3,7 @@ main = "./result/tonk-account-service/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-routes = [{ pattern = "accounts.tonk.spot", custom_domain = true }]
+routes = [{ pattern = "accounts.tonk.xyz", custom_domain = true }]
 
 [build]
 command = "nix build .#tonk-cloudflare-artifacts"
@@ -11,7 +11,7 @@ command = "nix build .#tonk-cloudflare-artifacts"
 [[d1_databases]]
 binding = "DB"
 database_name = "tonk-accounts"
-database_id = "" # filled at first deploy: wrangler d1 create tonk-accounts
+database_id = "a0c6698d-25e6-414b-8986-4fbeb1b5f992"
 migrations_dir = "rust/tonk-account-service/migrations"
 
 [[r2_buckets]]
@@ -19,4 +19,27 @@ binding = "CHAINS"
 bucket_name = "tonk-account-chains"
 
 [vars]
+EMAIL_FROM = "tonk <accounts@tonk.spot>"
+
+# Staging. Disjoint from production in every dimension that holds state:
+# its own worker, route, database, and bucket. The route stays off the
+# tonk.spot apex so staging mints its own passkey credentials rather than
+# production ones (see the RP ID invariants in the crate README).
+[env.staging]
+routes = [{ pattern = "accounts-staging.tonk.xyz", custom_domain = true }]
+
+# Ships empty on purpose, as production's did: wrangler refuses to deploy
+# without it, so there is no way to silently deploy staging against the
+# production database.
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "tonk-accounts-staging"
+database_id = ""
+migrations_dir = "rust/tonk-account-service/migrations"
+
+[[env.staging.r2_buckets]]
+binding = "CHAINS"
+bucket_name = "tonk-account-chains-staging"
+
+[env.staging.vars]
 EMAIL_FROM = "tonk <accounts@tonk.spot>"

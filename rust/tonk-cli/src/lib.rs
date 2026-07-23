@@ -28,6 +28,7 @@
 //! - [`telemetry`] — anonymous usage telemetry (PostHog), opt-out.
 //! - [`update`] — self-update: `tonk update` plus the release check.
 
+pub mod account;
 pub mod authoring;
 pub mod auto_sync;
 pub mod blob;

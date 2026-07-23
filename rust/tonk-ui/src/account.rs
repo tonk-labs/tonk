@@ -10,9 +10,10 @@ use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
 use tonk_worker_api::AccountStatus;
 
-const DEFAULT_ACCOUNT_SERVICE: &str = "https://accounts.tonk.spot";
+const PROD: &str = "https://accounts.tonk.xyz";
+const STAGING: &str = "https://accounts-staging.tonk.xyz";
 const STYLE_ID: &str = "tonk-account-styles";
-const PENDING_LINK: &str = "__tonkPendingAccountLink";
+const HANDOFF: &str = "__tonkCliHandoff";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +27,14 @@ struct CreateInput {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LinkInput {
+    device_did: String,
+    device_name: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffInput {
+    token_hash: String,
     device_did: String,
     device_name: String,
 }
@@ -97,10 +106,38 @@ fn ensure_stylesheet() {
     }
 }
 
-fn service(host: &HtmlElement) -> String {
-    host.get_attribute("service")
+/// The account service for a page host, or `None` if account ceremonies
+/// must not run there.
+///
+/// Refuse-by-default, not production-by-default. Ceremonies run only where
+/// the host is the pinned apex or is its own relying party by design (see
+/// `tonk_identity::passkey`), so that one user has exactly one root key per
+/// environment. Widening `_` re-opens that: `hub.tonk.xyz` serves the same
+/// production build but is a different relying party, so a ceremony there
+/// would write a second, disjoint identity into the production registry.
+fn default_service(host: &str) -> Option<&'static str> {
+    match host {
+        "tonk.spot" => Some(PROD),
+        "staging.tonk.xyz" => Some(STAGING),
+        _ => None,
+    }
+}
+
+fn service(host: &HtmlElement) -> Result<String, String> {
+    if let Some(attribute) = host
+        .get_attribute("service")
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_ACCOUNT_SERVICE.to_string())
+    {
+        return Ok(attribute);
+    }
+    let hostname = window()
+        .and_then(|window| window.location().hostname().ok())
+        .ok_or_else(|| "window is unavailable".to_string())?;
+    default_service(&hostname)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!("Accounts are not available on {hostname}. Go to https://tonk.spot/account.")
+        })
 }
 
 fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
@@ -123,7 +160,9 @@ fn set_mode(host: &HtmlElement, mode: &str) {
     for (name, selector) in [
         ("choice", "#account-choice"),
         ("create", "#account-create"),
+        ("verify", "#account-verify"),
         ("link", "#account-link"),
+        ("handoff", "#account-handoff"),
         ("success", "#account-success"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
@@ -141,7 +180,7 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-send-code",
         "#account-create-submit",
         "#account-link-submit",
-        "#account-retry-local",
+        "#account-handoff-submit",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
             && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
@@ -168,23 +207,43 @@ fn clear_error(host: &HtmlElement) {
     }
 }
 
-fn show_success(host: &HtmlElement, root_did: &str) {
+fn focus_input(host: &HtmlElement, selector: &str) {
+    if let Ok(Some(input)) = host.query_selector(selector)
+        && let Ok(input) = input.dyn_into::<HtmlInputElement>()
+    {
+        let _ = input.focus();
+    }
+}
+
+fn show_success(host: &HtmlElement) {
     clear_error(host);
     set_busy(host, false, "");
-    if let Ok(Some(did)) = host.query_selector("#account-root-did") {
-        did.set_text_content(Some(root_did));
-    }
-    if let Ok(Some(retry)) = host.query_selector("#account-retry-local") {
-        let _ = retry.set_attribute("hidden", "");
-    }
     set_mode(host, "success");
 }
 
+fn show_handoff_success(host: &HtmlElement) {
+    if let Ok(Some(message)) = host.query_selector("#account-success-message") {
+        message.set_text_content(Some("The command-line profile is connected."));
+    }
+    show_success(host);
+}
+
 fn load_status(host: HtmlElement) {
+    if let Err(error) = service(&host) {
+        set_mode(&host, "blocked");
+        return show_error(&host, error);
+    }
+    let handoff_route = window()
+        .and_then(|window| window.location().pathname().ok())
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
+    if handoff_route {
+        load_handoff(host);
+        return;
+    }
     set_busy(&host, true, "Checking this browser…");
     spawn_local(async move {
         match crate::api::account_status().await {
-            Ok(AccountStatus::Linked { root_did, .. }) => show_success(&host, &root_did),
+            Ok(AccountStatus::Linked { .. }) => show_success(&host),
             Ok(AccountStatus::Unlinked { .. }) => {
                 set_busy(&host, false, "");
                 set_mode(&host, "choice");
@@ -192,6 +251,66 @@ fn load_status(host: HtmlElement) {
             Err(error) => {
                 set_busy(&host, false, "");
                 set_mode(&host, "choice");
+                show_error(&host, error.to_string());
+            }
+        }
+    });
+}
+
+fn load_handoff(host: HtmlElement) {
+    let Some(window) = window() else {
+        return show_error(&host, "window is unavailable");
+    };
+    let secret = window
+        .location()
+        .hash()
+        .ok()
+        .and_then(|hash| hash.strip_prefix('#').map(str::to_owned))
+        .filter(|secret| !secret.is_empty());
+    let Some(secret) = secret else {
+        set_mode(&host, "handoff");
+        return show_error(
+            &host,
+            "This link is missing its handoff secret. Start again from the terminal.",
+        );
+    };
+    if let Ok(path) = window.location().pathname() {
+        let _ = window
+            .history()
+            .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
+    }
+
+    let service_url = match service(&host) {
+        Ok(service_url) => service_url,
+        Err(error) => {
+            set_mode(&host, "handoff");
+            return show_error(&host, error);
+        }
+    };
+    set_busy(&host, true, "Checking the command-line request…");
+    spawn_local(async move {
+        match crate::api::resolve_account_link(&service_url, &secret).await {
+            Ok(link) => {
+                let handoff = HandoffInput {
+                    token_hash: link.token_hash,
+                    device_did: link.device_did,
+                    device_name: link.device_name,
+                };
+                if let Ok(value) = serde_wasm_bindgen::to_value(&handoff) {
+                    let _ = Reflect::set(host.as_ref(), &HANDOFF.into(), &value);
+                }
+                if let Ok(Some(name)) = host.query_selector("#account-handoff-name") {
+                    name.set_text_content(Some(&handoff.device_name));
+                }
+                if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
+                    did.set_text_content(Some(&handoff.device_did));
+                }
+                set_busy(&host, false, "");
+                set_mode(&host, "handoff");
+            }
+            Err(error) => {
+                set_busy(&host, false, "");
+                set_mode(&host, "handoff");
                 show_error(&host, error.to_string());
             }
         }
@@ -218,24 +337,10 @@ async fn identity_call<T: Serialize>(method: &str, input: &T) -> Result<Ceremony
     serde_wasm_bindgen::from_value(output).map_err(|error| error.to_string())
 }
 
-fn save_pending(host: &HtmlElement, ceremony: &CeremonyOutput) {
-    if let Ok(value) = serde_wasm_bindgen::to_value(ceremony) {
-        let _ = Reflect::set(host.as_ref(), &PENDING_LINK.into(), &value);
-    }
-}
-
-fn pending(host: &HtmlElement) -> Result<CeremonyOutput, String> {
-    let value = Reflect::get(host.as_ref(), &PENDING_LINK.into())
-        .map_err(|error| format!("failed to read pending link: {error:?}"))?;
-    serde_wasm_bindgen::from_value(value).map_err(|_| "no account link is pending".to_string())
-}
-
-async fn persist(host: &HtmlElement, ceremony: &CeremonyOutput) -> Result<(), String> {
-    save_pending(host, ceremony);
+async fn persist(ceremony: &CeremonyOutput) -> Result<(), String> {
     crate::api::save_account_link(ceremony.root_did.clone(), ceremony.delegation_hex.clone())
         .await
         .map_err(|error| error.to_string())?;
-    let _ = Reflect::delete_property(host.as_ref(), &PENDING_LINK.into());
     Ok(())
 }
 
@@ -244,16 +349,20 @@ async fn complete_remote(
     path: &str,
     ceremony: CeremonyOutput,
 ) -> Result<(), String> {
-    crate::api::submit_account_ceremony(&service(host), path, &ceremony.invocation_hex)
+    crate::api::submit_account_ceremony(&service(host)?, path, &ceremony.invocation_hex)
         .await
         .map_err(|error| error.to_string())?;
-    persist(host, &ceremony).await.map_err(|error| {
-        if let Ok(Some(retry)) = host.query_selector("#account-retry-local") {
-            let _ = retry.remove_attribute("hidden");
-        }
-        format!("The account service accepted the link, but this browser could not save it. Retry the local save: {error}")
-    })?;
-    show_success(host, &ceremony.root_did);
+    if let Err(error) = persist(&ceremony).await {
+        web_sys::console::error_1(
+            &format!("failed to save the accepted account link: {error}").into(),
+        );
+        set_mode(host, "choice");
+        return Err(
+            "Your account is ready, but this browser couldn't finish signing in. Log in to continue."
+                .to_string(),
+        );
+    }
+    show_success(host);
     Ok(())
 }
 
@@ -274,6 +383,7 @@ fn bind(host: &HtmlElement) {
     on_click(host, "#account-choose-create", |host| {
         clear_error(&host);
         set_mode(&host, "create");
+        focus_input(&host, "#account-email");
     });
     on_click(host, "#account-choose-link", |host| {
         clear_error(&host);
@@ -285,6 +395,12 @@ fn bind(host: &HtmlElement) {
             set_mode(&host, "choice");
         });
     }
+    on_click(host, "#account-verify-back", |host| {
+        clear_error(&host);
+        set_busy(&host, false, "");
+        set_mode(&host, "create");
+        focus_input(&host, "#account-email");
+    });
 
     on_click(host, "#account-send-code", |host| {
         clear_error(&host);
@@ -292,10 +408,26 @@ fn bind(host: &HtmlElement) {
             Ok(value) => value,
             Err(error) => return show_error(&host, error),
         };
+        let service_url = match service(&host) {
+            Ok(service_url) => service_url,
+            Err(error) => return show_error(&host, error),
+        };
         set_busy(&host, true, "Sending verification code…");
         spawn_local(async move {
-            match crate::api::request_account_code(&service(&host), &email).await {
-                Ok(()) => set_busy(&host, false, "Code sent. Check your email."),
+            match crate::api::request_account_code(&service_url, &email).await {
+                Ok(()) => {
+                    set_busy(&host, false, "");
+                    if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
+                        destination.set_text_content(Some(&email));
+                    }
+                    set_mode(&host, "verify");
+                    if let Ok(Some(code)) = host.query_selector("#account-code")
+                        && let Ok(code) = code.dyn_into::<HtmlInputElement>()
+                    {
+                        code.set_value("");
+                        let _ = code.focus();
+                    }
+                }
                 Err(error) => {
                     set_busy(&host, false, "");
                     show_error(&host, error.to_string());
@@ -377,20 +509,36 @@ fn bind(host: &HtmlElement) {
         });
     });
 
-    on_click(host, "#account-retry-local", |host| {
+    on_click(host, "#account-handoff-submit", |host| {
         clear_error(&host);
-        set_busy(&host, true, "Saving the link locally…");
+        let handoff = Reflect::get(host.as_ref(), &HANDOFF.into())
+            .ok()
+            .and_then(|value| serde_wasm_bindgen::from_value::<HandoffInput>(value).ok());
+        let Some(handoff) = handoff else {
+            return show_error(
+                &host,
+                "This handoff is no longer available. Start again from the terminal.",
+            );
+        };
+        set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
-            let result = match pending(&host) {
-                Ok(ceremony) => persist(&host, &ceremony).await.map(|()| ceremony.root_did),
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(root_did) => show_success(&host, &root_did),
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error);
-                }
+            let result = async {
+                let ceremony = identity_call("completeLink", &handoff).await?;
+                set_busy(&host, true, "Linking the command-line profile…");
+                crate::api::submit_account_ceremony(
+                    &service(&host)?,
+                    "/links/complete",
+                    &ceremony.invocation_hex,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                show_handoff_success(&host);
+                Ok::<(), String>(())
+            }
+            .await;
+            if let Err(error) = result {
+                set_busy(&host, false, "");
+                show_error(&host, error);
             }
         });
     });
@@ -432,21 +580,35 @@ mod tests {
             "#account-send-code",
             "#account-create-submit",
             "#account-link-submit",
-            "#account-retry-local",
+            "#account-handoff-submit",
         ] {
             assert!(
                 host.query_selector(selector).unwrap().is_some(),
                 "{selector}"
             );
         }
+        assert_eq!(
+            host.query_selector("#account-choose-link")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Log in")
+        );
+        assert!(
+            host.query_selector("#account-retry-local")
+                .unwrap()
+                .is_none(),
+            "local persistence recovery must not be exposed in the account UI"
+        );
     }
 
     #[dialog_common::test]
     fn it_switches_between_account_panels_without_reauthoring_the_dom() {
         let host = host();
-        set_mode(&host, "link");
+        set_mode(&host, "verify");
         assert!(
-            host.query_selector("#account-link")
+            host.query_selector("#account-verify")
                 .unwrap()
                 .unwrap()
                 .get_attribute("hidden")
@@ -458,5 +620,45 @@ mod tests {
                 .unwrap()
                 .has_attribute("hidden")
         );
+        assert!(
+            host.query_selector("#account-create #account-code")
+                .unwrap()
+                .is_none(),
+            "email and verification fields should be on separate screens"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_maps_each_environment_host_to_its_own_service() {
+        assert_eq!(default_service("tonk.spot"), Some(PROD));
+        assert_eq!(default_service("staging.tonk.xyz"), Some(STAGING));
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_ceremonies_on_unmapped_hosts() {
+        // Off-apex, so it is its own relying party: a ceremony here would
+        // derive a different root key and write a second identity for the
+        // same person into the production registry.
+        assert_eq!(default_service("hub.tonk.xyz"), None);
+        // Inside the apex but not the apex origin, so also its own RP.
+        assert_eq!(default_service("staging.tonk.spot"), None);
+        assert_eq!(default_service("www.tonk.spot"), None);
+        assert_eq!(default_service("random123.tonk.spot"), None);
+        assert_eq!(default_service("localhost"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_prefers_an_explicit_service_attribute_over_the_host() {
+        let host = host();
+        host.set_attribute("service", "http://127.0.0.1:8787")
+            .unwrap();
+        assert_eq!(service(&host).unwrap(), "http://127.0.0.1:8787");
+    }
+
+    #[dialog_common::test]
+    fn it_errors_when_the_host_has_no_mapping_and_no_attribute() {
+        // wasm tests run on a localhost origin, which is unmapped.
+        let host = host();
+        assert!(service(&host).is_err());
     }
 }

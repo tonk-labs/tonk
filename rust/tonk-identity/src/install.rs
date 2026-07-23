@@ -133,6 +133,22 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
     ceremony_result(ceremony)
 }
 
+async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
+    let token_hash = string_property(&input, "tokenHash")?;
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let device_name = string_property(&input, "deviceName")?;
+    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+    let ceremony = crate::ceremony::complete_link(root, token_hash, device_did, device_name)
+        .await
+        .map_err(js_error)?;
+    ceremony_result(ceremony)
+}
+
 /// Install `window.tonkIdentity` on the page. Idempotent; a no-op
 /// outside a window context.
 pub fn install() {
@@ -179,6 +195,16 @@ pub fn install() {
     );
     link_device.forget();
 
+    let complete_link = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(complete_link(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"completeLink".into(),
+        complete_link.as_ref().unchecked_ref(),
+    );
+    complete_link.forget();
+
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
@@ -199,6 +225,7 @@ mod tests {
             "deriveRootDid",
             "createAccount",
             "linkDevice",
+            "completeLink",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

@@ -12,6 +12,8 @@ pub mod chains;
 pub mod codes;
 #[cfg(target_arch = "wasm32")]
 pub mod devices;
+#[cfg(target_arch = "wasm32")]
+pub mod links;
 
 /// Add CORS headers permitting cross-origin requests to a response.
 #[cfg(target_arch = "wasm32")]
