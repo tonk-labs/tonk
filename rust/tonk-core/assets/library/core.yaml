@@ -1631,7 +1631,7 @@ concept!: &diagnose
   with:
     name:
       description: A label for the inspector (unused; satisfies the concept shape).
-      the: dialog.diagnose/name
+      the: db.diagnose/name
       cardinality: one
       as: text
 

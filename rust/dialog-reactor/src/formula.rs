@@ -227,6 +227,9 @@ fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> 
     if let Some(bound) = node.upper_bound().map_err(decode)? {
         let manifest = node.manifest().map_err(decode)?;
         fields.insert("bound".into(), Ipld::String(bytes_hex(&bound)));
+        // The decoded, self-describing components of the bound key — the
+        // inspector renders these as textual/colored chips (see `key_parts`).
+        fields.insert("bound-parts".into(), Ipld::List(key_parts(&bound)));
         // The node's rank — the boundary level its upper-bound key
         // falls on (geometric over the key bytes). Higher rank ⇒
         // higher in the tree; it's what determines the tree's shape.
@@ -296,7 +299,12 @@ async fn child_rows<Env: SelectProvider>(
             None => {
                 let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
                 fields.insert("cached".into(), Ipld::Bool(false));
+                // The link's separator is the child's lower boundary — a
+                // front-coded key PREFIX, not a whole key, so it may decode
+                // only partially. `key_parts` still surfaces its tag + as many
+                // leading components as the prefix carries.
                 fields.insert("bound".into(), Ipld::String(bytes_hex(&bound)));
+                fields.insert("bound-parts".into(), Ipld::List(key_parts(&bound)));
                 fields.insert(
                     "rank".into(),
                     Ipld::Integer(Geometric::rank(&bound, &manifest) as i128),
@@ -353,6 +361,8 @@ async fn entry_rows<Env: SelectProvider>(
         let key_hex = bytes_hex(&key_bytes);
         let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
         fields.insert("key".into(), Ipld::String(key_hex.clone()));
+        // The decoded, self-describing key components for the entry's key row.
+        fields.insert("key-parts".into(), Ipld::List(key_parts(&key_bytes)));
         fields.insert("at".into(), Ipld::Integer(at as i128));
         fields.insert(
             "rank".into(),
@@ -418,6 +428,198 @@ fn value_to_ipld(value: &Value) -> Option<Ipld> {
 const ENTITY_KEY_TAG: u8 = 0;
 const ATTRIBUTE_KEY_TAG: u8 = 1;
 const VALUE_KEY_TAG: u8 = 2;
+const HISTORY_KEY_TAG: u8 = 3;
+const BLOB_KEY_TAG: u8 = 4;
+const COVERAGE_KEY_TAG: u8 = 5;
+
+/// The human name of a key's index ordering, from its leading tag byte.
+fn tag_name(tag: u8) -> &'static str {
+    match tag {
+        ENTITY_KEY_TAG => "entity",
+        ATTRIBUTE_KEY_TAG => "attribute",
+        VALUE_KEY_TAG => "value",
+        HISTORY_KEY_TAG => "history",
+        BLOB_KEY_TAG => "blob",
+        COVERAGE_KEY_TAG => "coverage",
+        _ => "unknown",
+    }
+}
+
+/// Decode a raw key into structured, self-describing parts for the tree
+/// inspector. Each part is a map `{ kind, text, hex }`: `kind` selects the
+/// UI's color/glyph, `text` is the human rendering (a `did:key:…` entity, a
+/// `db.meta/name` attribute, a typed value, a decimal edition), and `hex` is
+/// the raw bytes for the detail/tooltip. The client renders these directly —
+/// it no longer re-implements the variable-length key parse.
+///
+/// A key that does not parse under its tag's schema (a `min`/`max` sentinel,
+/// a truncated separator, or an unknown tag) falls back to a single opaque
+/// `hex` part so the row still shows *something* legible.
+fn key_parts(bytes: &[u8]) -> Vec<Ipld> {
+    use dialog_artifacts::{AttributeKey, EntityKey, Key, ValueKey};
+
+    let part = |kind: &str, text: String, hex: String| -> Ipld {
+        let mut m: BTreeMap<String, Ipld> = BTreeMap::new();
+        m.insert("kind".into(), Ipld::String(kind.into()));
+        m.insert("text".into(), Ipld::String(text));
+        m.insert("hex".into(), Ipld::String(hex));
+        Ipld::Map(m)
+    };
+    let opaque = |bytes: &[u8]| vec![part("opaque", bytes_hex(bytes), bytes_hex(bytes))];
+
+    let Some(&tag) = bytes.first() else {
+        return opaque(bytes);
+    };
+    let key = Key::from(bytes.to_vec());
+    let mut out = vec![part("index", tag_name(tag).into(), format!("{tag:02x}"))];
+
+    // The EAV/AEV/VAE orderings share the same logical fields; the `KeyView`
+    // reads them regardless of physical byte order. `eav` emits the fields in
+    // EAV logical order (entity, attribute, vtype, value); the AEV/VAE arms
+    // reorder the chips to match their own sort. `part` is `Copy`-free so it
+    // is threaded in.
+    fn eav_fields<V: dialog_artifacts::KeyView>(view: &V) -> [(&'static str, String, String); 4] {
+        let entity = String::from_utf8_lossy(view.entity().raw()).into_owned();
+        let attribute = String::from_utf8_lossy(view.attribute().raw()).into_owned();
+        let vtype = view.value_type();
+        let (val_kind, val_text, val_hex) = if view.value_is_spilled() {
+            (
+                "spill",
+                "⇥ spilled".to_owned(),
+                view.value_spill_hash().map(bytes_hex).unwrap_or_default(),
+            )
+        } else {
+            (
+                "value",
+                format_inline_value(vtype, view.value_payload()),
+                bytes_hex(view.value_payload()),
+            )
+        };
+        [
+            ("entity", entity, bytes_hex(view.entity().raw())),
+            ("attribute", attribute, bytes_hex(view.attribute().raw())),
+            ("vtype", format!("{vtype}"), format!("{:02x}", vtype as u8)),
+            (val_kind, val_text, val_hex),
+        ]
+    }
+    let push_fields =
+        |out: &mut Vec<Ipld>, order: &[usize], f: [(&'static str, String, String); 4]| {
+            // Clone into a reusable vec so we can pick fields by sort order.
+            let f: Vec<(&'static str, String, String)> = f.to_vec();
+            for &i in order {
+                let (k, t, h) = &f[i];
+                out.push(part(k, t.clone(), h.clone()));
+            }
+        };
+
+    match tag {
+        // Sort order: entity ‖ attribute ‖ vtype ‖ value (EAV logical order).
+        ENTITY_KEY_TAG => {
+            let f = eav_fields(&EntityKey(&key));
+            push_fields(&mut out, &[0, 1, 2, 3], f);
+        }
+        // Sort order: attribute ‖ entity ‖ vtype ‖ value.
+        ATTRIBUTE_KEY_TAG => {
+            let f = eav_fields(&AttributeKey(&key));
+            push_fields(&mut out, &[1, 0, 2, 3], f);
+        }
+        // Sort order: vtype ‖ value ‖ attribute ‖ entity.
+        VALUE_KEY_TAG => {
+            let f = eav_fields(&ValueKey(&key));
+            push_fields(&mut out, &[2, 3, 1, 0], f);
+        }
+        // History / coverage: tag ‖ origin(32) ‖ edition(8, big-endian) ‖ EAV…
+        // The version prefix (origin, edition) is what these regions sort by;
+        // surface it, then reuse the EAV view for the trailing fact fields.
+        HISTORY_KEY_TAG | COVERAGE_KEY_TAG => {
+            if bytes.len() >= 1 + 32 + 8 {
+                let origin = &bytes[1..33];
+                let edition = u64::from_be_bytes(bytes[33..41].try_into().unwrap_or_default());
+                out.push(part(
+                    "origin",
+                    format!("origin:{}", short_hex(origin)),
+                    bytes_hex(origin),
+                ));
+                out.push(part("edition", format!("@{edition}"), format!("{edition}")));
+                // The fact fields follow the version prefix under the ENTITY
+                // (EAV) ordering; parse the tail as an entity-tagged key.
+                let tail = &bytes[41..];
+                if !tail.is_empty() {
+                    let mut synthetic = Vec::with_capacity(tail.len() + 1);
+                    synthetic.push(ENTITY_KEY_TAG);
+                    synthetic.extend_from_slice(tail);
+                    let tail_key = Key::from(synthetic);
+                    let f = eav_fields(&EntityKey(&tail_key));
+                    push_fields(&mut out, &[0, 1, 2, 3], f);
+                }
+            } else {
+                return opaque(bytes);
+            }
+        }
+        // Blob: tag ‖ blob_hash. One content-addressed reference.
+        BLOB_KEY_TAG => {
+            let hash = &bytes[1..];
+            out.push(part(
+                "blob",
+                format!("blob:{}", short_hex(hash)),
+                bytes_hex(hash),
+            ));
+        }
+        _ => return opaque(bytes),
+    }
+    out
+}
+
+/// A short hex preview (first 8 bytes) for origin / blob hashes shown in a
+/// chip; the full hex rides the `hex` field for the tooltip.
+fn short_hex(bytes: &[u8]) -> String {
+    let n = bytes.len().min(8);
+    let mut s = String::with_capacity(n * 2 + 1);
+    for b in &bytes[..n] {
+        s.push_str(&format!("{b:02x}"));
+    }
+    if bytes.len() > n {
+        s.push('…');
+    }
+    s
+}
+
+/// Render a key's inline value payload as legible text, by its declared type.
+/// Falls back to hex for bytes/records and undecodable payloads — the goal is
+/// a readable chip in the inspector, not a round-trip decode.
+fn format_inline_value(vtype: dialog_artifacts::ValueDataType, payload: &[u8]) -> String {
+    use dialog_artifacts::{Value, decode_value};
+    match decode_value(vtype, payload) {
+        Some((value, _rest)) => match value {
+            Value::String(s) => format!("\"{s}\""),
+            Value::Entity(e) => e.to_string(),
+            Value::Symbol(s) => s.to_string(),
+            Value::Boolean(b) => b.to_string(),
+            Value::UnsignedInt(u) => u.to_string(),
+            Value::SignedInt(i) => {
+                if i >= 0 {
+                    format!("+{i}")
+                } else {
+                    i.to_string()
+                }
+            }
+            Value::Float(f) => {
+                if f.fract() == 0.0 {
+                    format!("{f:.1}")
+                } else {
+                    f.to_string()
+                }
+            }
+            // Bytes / records are opaque binary — a full hex dump would swamp
+            // the chip (a revision record is hundreds of bytes). Label them
+            // with their size; the raw hex still rides the part's `hex` field
+            // for the inspector detail.
+            Value::Bytes(b) => format!("‹{} bytes›", b.len()),
+            Value::Record(b) => format!("‹record, {} bytes›", b.len()),
+        },
+        None => format!("‹{} bytes›", payload.len()),
+    }
+}
 
 /// Resolve the required `key` input: a `0x`-prefixed hex string of the raw
 /// composite key bytes.
@@ -449,35 +651,11 @@ fn key_input(query: &Query, param: &str, formula: &str) -> Result<Option<Key>, F
 /// value type, and (for an inline key) value are reconstructed from the
 /// columnar key. A spilled value shows the placeholder.
 fn key_row(key: Key) -> Result<Conclusion, FormulaError> {
-    let tag = match key.tag() {
-        ENTITY_KEY_TAG => "entity",
-        ATTRIBUTE_KEY_TAG => "attribute",
-        VALUE_KEY_TAG => "value",
-        _ => "unknown",
-    };
-
     let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
-    fields.insert("tag".into(), Ipld::String(tag.into()));
-
-    // A bare key carries no datum, so reconstruct the fact against an empty
-    // one (only its `cause` is read, and that is absent here).
-    let datum = Datum::for_artifact(&Artifact {
-        the: "x/x".parse().expect("placeholder attribute parses"),
-        of: dialog_artifacts::Entity::new().expect("placeholder entity mints"),
-        is: Value::Boolean(false),
-        cause: None,
-    });
-    if let Ok(artifact) = Artifact::from_key_datum_placeholder(&key, &datum) {
-        fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
-        fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
-        fields.insert(
-            "value-type".into(),
-            Ipld::String(artifact.is.data_type().to_string()),
-        );
-        if let Some(ipld) = value_to_ipld(&artifact.is) {
-            fields.insert("value".into(), ipld);
-        }
-    }
+    fields.insert("tag".into(), Ipld::String(tag_name(key.tag()).into()));
+    // The decoded, self-describing components — the single source of truth for
+    // the inspector's key rendering (entity/attribute/value-type/value chips).
+    fields.insert("parts".into(), Ipld::List(key_parts(key.as_ref())));
 
     Ok(Conclusion {
         this: bytes_hex(key.as_ref()),

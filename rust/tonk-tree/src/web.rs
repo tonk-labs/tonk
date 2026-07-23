@@ -289,10 +289,11 @@ fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&
 
     // The key, front-coded against the neighboring siblings.
     let keystr = el("span").class("keystr").attr("title", &node.hash);
-    if let Some(bound) = &node.bound {
-        append_key(&keystr, bound, prev, next);
-    } else {
-        keystr.set_text_content(Some(&short(&node.hash, 8)));
+    match (&node.bound, node.bound_parts.is_empty()) {
+        (Some(bound), false) => append_key(&keystr, &node.bound_parts, bound, prev, next),
+        // A bound with no decoded parts (or none at all) falls back to the
+        // node hash — a leaf we have not fetched, or an undecodable bound.
+        _ => keystr.set_text_content(Some(&short(&node.hash, 8))),
     }
     let _ = row.append_child(&keystr);
 
@@ -346,9 +347,15 @@ fn next_seg_id() -> String {
 /// branches, so they stay bright; the tail past the pivot is dimmed. The
 /// chip containing the pivot shows the hex bright through the pivot digit
 /// then a short dim tail.
-pub fn append_key(parent: &Element, key_str: &str, prev: Option<&str>, next: Option<&str>) {
-    let comps = key::components(key_str);
-    let pivot = key::pivot_byte(key_str, prev, next);
+pub fn append_key(
+    parent: &Element,
+    parts: &[crate::model::KeyPart],
+    key_hex: &str,
+    prev: Option<&str>,
+    next: Option<&str>,
+) {
+    let comps = key::components(parts);
+    let pivot = key::pivot_byte(key_hex, prev, next);
     for (i, c) in comps.iter().enumerate() {
         let mut base = format!("key-seg {}", c.part.class());
         if i == 0 {
@@ -372,45 +379,43 @@ pub fn append_key(parent: &Element, key_str: &str, prev: Option<&str>, next: Opt
             let _ = parent.append_child(&el("wa-tooltip").attr("for", &id).text(&c.label));
         };
 
+        // Dimming is per-chip now that chips carry decoded TEXT (not hex): a
+        // component whose bytes begin past the routing pivot is noise for this
+        // row's placement, so it dims whole; a component containing or before
+        // the pivot stays bright. (The old per-hex-digit split relied on the
+        // 2-chars-per-byte hex mapping, which no longer holds.)
         match pivot {
-            // Chip lies entirely past the pivot → one dim pill, kept short.
-            Some(p) if c.bytes.start > p => emit(&c.text, true),
-            // Chip straddles the pivot → a bright pill through the pivot
-            // byte and a separate dim pill for the short tail, so the tail's
-            // background dims with its text (the rest is routing noise).
-            Some(p) if c.bytes.end > p + 1 && p + 1 > c.bytes.start => {
-                let bright_chars = (p + 1 - c.bytes.start) * 2;
-                let full: Vec<char> = c.full.chars().collect();
-                let head: String = full.iter().take(bright_chars).collect();
-                let rest = full.len() - bright_chars;
-                let tail: String = if rest > 6 {
-                    let t: String = full.iter().skip(full.len() - 4).collect();
-                    format!("…{t}")
-                } else {
-                    full.iter().skip(bright_chars).collect()
-                };
-                emit(&head, false);
-                if !tail.is_empty() {
-                    emit(&tail, true);
-                }
-            }
+            Some(p) if c.bytes.start > p => emit(&elide(&c.text), true),
             // Chip is at or before the pivot, or no pivot → bright, truncated.
-            _ => emit(&c.text, false),
+            _ => emit(&elide(&c.text), false),
         }
     }
 }
 
+/// Shorten a chip's text for the dense outline: keep the head, elide the
+/// middle of anything long (a `did:key:…` entity, a long value). The inspector
+/// pane shows the full text; here we keep rows compact.
+fn elide(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= 18 {
+        return text.to_owned();
+    }
+    let head: String = chars[..12].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
+}
+
 /// Append a key's segments in full (the inspector pane): every chip shows
 /// its complete hex, nothing dimmed or truncated, so the row may wrap.
-pub fn append_key_full(parent: &Element, key_str: &str) {
-    for (i, c) in key::components(key_str).iter().enumerate() {
+pub fn append_key_full(parent: &Element, parts: &[crate::model::KeyPart]) {
+    for (i, c) in key::components(parts).iter().enumerate() {
         let mut cls = format!("key-seg {}", c.part.class());
         if i == 0 {
             cls.push_str(" seg-index-type");
         }
-        // Single-byte chips (index type, value type) show just the byte;
-        // the multi-byte parts show their full hex.
-        let text = if c.bytes.len() <= 1 { &c.text } else { &c.full };
+        // Every chip shows its full decoded text (the worker already
+        // textualized it — entity URI, attribute name, typed value).
+        let text = &c.full;
         let id = next_seg_id();
         let chip = el("span")
             .attr("id", &id)
@@ -765,9 +770,17 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .keystr { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px;
   flex: 1 1 auto; min-width: 0; }
 /* In the outline, key segments are colored TEXT (no background fill) so
-   the row stays compact. The component class sets the color. */
+   the row stays compact. The component class sets the color. A thin divider
+   separates adjacent chips so the decoded parts read as a delimited key
+   (entity · attribute · value) rather than running together. */
 .key-seg { font-weight: var(--wa-font-weight-semibold, 600);
   display: inline-flex; align-items: center; }
+.keystr .key-seg + .key-seg::before {
+  content: "\2009\00B7\2009"; color: var(--wa-color-text-quiet, #94959b);
+  font-weight: 400; }
+/* A NUL / control byte rendered as a glyph (␀ / ·) reads as structure, not
+   text; dim it so the real content stands out. */
+.key-seg .seg-text { unicode-bidi: plaintext; }
 .key-seg.seg-entity { color: var(--tonk-circle, #3d6da8); }
 .key-seg.seg-attribute { color: var(--tonk-triangle, #c89a2b); }
 .key-seg.seg-value { color: var(--tonk-square, #b94a3d); }

@@ -20,6 +20,19 @@ pub enum Kind {
     Segment,
 }
 
+/// One decoded, self-describing component of a key, as the worker's
+/// `key_parts` emits it. `kind` selects the UI color/glyph, `text` is the
+/// human rendering (a `did:key:…` entity, a `db.meta/name` attribute, a typed
+/// value, a decimal edition), and `hex` is the raw bytes for the tooltip.
+#[derive(Clone, Deserialize)]
+pub struct KeyPart {
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub hex: String,
+}
+
 /// One node's fields — the `tree/node` / `tree/child` shape.
 #[derive(Clone)]
 pub struct TreeNode {
@@ -27,7 +40,11 @@ pub struct TreeNode {
     pub kind: Kind,
     pub size: u64,
     pub count: u64,
+    /// The bound key's raw hex — kept for the front-coding pivot, which
+    /// compares raw bytes across siblings.
     pub bound: Option<NodeHash>,
+    /// The bound key's decoded components (the worker's `bound-parts`).
+    pub bound_parts: Vec<KeyPart>,
     pub rank: Option<u64>,
     pub cached: bool,
 }
@@ -35,7 +52,8 @@ pub struct TreeNode {
 /// One entry in a segment — the `tree/entry` shape.
 #[derive(Clone)]
 pub struct TreeEntry {
-    pub key: NodeHash,
+    /// The entry key's decoded components (the worker's `key-parts`).
+    pub key_parts: Vec<KeyPart>,
     pub retracted: bool,
     pub entity: Option<String>,
     pub attribute: Option<String>,
@@ -56,6 +74,13 @@ fn s(map: &serde_json::Map<String, serde_json::Value>, k: &str) -> Option<String
 }
 fn u(map: &serde_json::Map<String, serde_json::Value>, k: &str) -> Option<u64> {
     map.get(k).and_then(|v| v.as_u64())
+}
+/// Parse a `[{kind, text, hex}, …]` parts array off a fields map. Absent or
+/// malformed → an empty list (the caller falls back to the raw hex).
+fn parts(map: &serde_json::Map<String, serde_json::Value>, k: &str) -> Vec<KeyPart> {
+    map.get(k)
+        .and_then(|v| serde_json::from_value::<Vec<KeyPart>>(v.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// The worker-backed tree loader for a `{repo, branch}`. Cheap to clone
@@ -139,6 +164,7 @@ impl Loader {
             size: u(f, "size").unwrap_or(0),
             count: u(f, "count").unwrap_or(0),
             bound: s(f, "bound"),
+            bound_parts: parts(f, "bound-parts"),
             rank: u(f, "rank"),
             cached: f.get("cached").and_then(|v| v.as_bool()) != Some(false),
         }
@@ -168,7 +194,7 @@ impl Loader {
             .map(|r| {
                 let f = &r.fields;
                 TreeEntry {
-                    key: s(f, "key").unwrap_or_else(|| r.this.clone()),
+                    key_parts: parts(f, "key-parts"),
                     retracted: f.get("retracted").and_then(|v| v.as_bool()) == Some(true),
                     entity: s(f, "entity"),
                     attribute: s(f, "attribute"),
