@@ -159,6 +159,71 @@ pub fn cache_record(queried: &[String], revoked: &[String], now_ms: u64) {
     VERDICTS.with(|cell| store_with(&mut cell.borrow_mut(), queried, revoked, now_ms));
 }
 
+use std::fmt;
+
+/// A registry lookup failure. The presign path treats any of these as
+/// fail-open: log and allow, per the design's availability posture.
+#[derive(Debug)]
+pub struct RegistryError(pub String);
+
+impl fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Answers which presented credential keys belong to revoked devices.
+///
+/// The one production implementation reads the account registry's
+/// `devices` table over D1 ([`d1::D1RevocationRegistry`]). An
+/// entitlement lookup for plan limits later extends this trait — the
+/// decision flow in [`assess`] stays as it is.
+pub trait RevocationRegistry {
+    /// Return the subset of `keys` (delegation CIDs and device DIDs)
+    /// that match a revoked device.
+    async fn revoked_of(&self, keys: &[String]) -> Result<Vec<String>, RegistryError>;
+}
+
+/// The outcome of screening presented credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevocationVerdict {
+    /// No presented credential is revoked.
+    Allowed,
+    /// The registry could not answer; allowed by the fail-open posture.
+    /// Carries the reason for logging.
+    AllowedFailOpen(String),
+    /// A presented credential belongs to a revoked device.
+    Revoked,
+}
+
+/// Screen presented credentials against the registry, through the
+/// per-isolate verdict cache. Fail-open results are never cached.
+pub async fn assess<R: RevocationRegistry>(
+    registry: &R,
+    presented: &PresentedCredentials,
+    now_ms: u64,
+) -> RevocationVerdict {
+    let keys = presented.keys();
+    let probe = cache_probe(&keys, now_ms);
+    if probe.cached_revoked {
+        return RevocationVerdict::Revoked;
+    }
+    if probe.misses.is_empty() {
+        return RevocationVerdict::Allowed;
+    }
+    match registry.revoked_of(&probe.misses).await {
+        Ok(revoked) => {
+            cache_record(&probe.misses, &revoked, now_ms);
+            if revoked.is_empty() {
+                RevocationVerdict::Allowed
+            } else {
+                RevocationVerdict::Revoked
+            }
+        }
+        Err(err) => RevocationVerdict::AllowedFailOpen(err.to_string()),
+    }
+}
+
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -357,5 +422,121 @@ mod tests {
 
         assert!(!probe.cached_revoked);
         assert_eq!(probe.misses, keys);
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct StubRegistry {
+        revoked: Vec<String>,
+        fail: bool,
+        queries: AtomicUsize,
+    }
+
+    impl StubRegistry {
+        fn revoking(revoked: &[&str]) -> Self {
+            Self {
+                revoked: revoked.iter().map(|s| s.to_string()).collect(),
+                fail: false,
+                queries: AtomicUsize::new(0),
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                revoked: Vec::new(),
+                fail: true,
+                queries: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RevocationRegistry for StubRegistry {
+        async fn revoked_of(&self, keys: &[String]) -> Result<Vec<String>, RegistryError> {
+            self.queries.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(RegistryError("d1 unavailable".to_string()));
+            }
+            Ok(keys
+                .iter()
+                .filter(|key| self.revoked.contains(key))
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn presented(prefix: &str) -> PresentedCredentials {
+        PresentedCredentials {
+            invocation_issuer: format!("did:key:{prefix}-device"),
+            delegation_cids: vec![format!("bafy{prefix}cid")],
+            delegation_issuers: vec![format!("did:key:{prefix}-root")],
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_allows_a_chain_with_no_revoked_credentials() {
+        let registry = StubRegistry::revoking(&[]);
+
+        let verdict = assess(&registry, &presented("clean"), 1_000).await;
+
+        assert!(matches!(verdict, RevocationVerdict::Allowed));
+    }
+
+    #[dialog_common::test]
+    async fn it_revokes_when_a_delegation_cid_is_revoked() {
+        let registry = StubRegistry::revoking(&["bafycidhitcid"]);
+
+        let verdict = assess(&registry, &presented("cidhit"), 1_000).await;
+
+        assert!(matches!(verdict, RevocationVerdict::Revoked));
+    }
+
+    #[dialog_common::test]
+    async fn it_revokes_when_a_delegation_issuer_is_a_revoked_device() {
+        let registry = StubRegistry::revoking(&["did:key:didhit-root"]);
+
+        let verdict = assess(&registry, &presented("didhit"), 1_000).await;
+
+        assert!(matches!(verdict, RevocationVerdict::Revoked));
+    }
+
+    #[dialog_common::test]
+    async fn it_fails_open_when_the_registry_errors() {
+        let registry = StubRegistry::failing();
+
+        let verdict = assess(&registry, &presented("outage"), 1_000).await;
+
+        assert!(matches!(verdict, RevocationVerdict::AllowedFailOpen(_)));
+    }
+
+    #[dialog_common::test]
+    async fn it_serves_the_second_assessment_from_cache() {
+        let registry = StubRegistry::revoking(&[]);
+        let credentials = presented("cached");
+
+        let first = assess(&registry, &credentials, 1_000).await;
+        let second = assess(&registry, &credentials, 2_000).await;
+
+        assert!(matches!(first, RevocationVerdict::Allowed));
+        assert!(matches!(second, RevocationVerdict::Allowed));
+        assert_eq!(
+            registry.queries.load(Ordering::SeqCst),
+            1,
+            "second assessment within the ttl must not query the registry"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_cache_a_fail_open_allowance() {
+        let registry = StubRegistry::failing();
+        let credentials = presented("nocache");
+
+        let _ = assess(&registry, &credentials, 1_000).await;
+        let _ = assess(&registry, &credentials, 2_000).await;
+
+        assert_eq!(
+            registry.queries.load(Ordering::SeqCst),
+            2,
+            "a fail-open result must not be served from cache"
+        );
     }
 }
