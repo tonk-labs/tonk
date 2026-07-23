@@ -2445,12 +2445,15 @@ pub async fn create_repository(
 /// either via `repository.access().claim().delegate()` for self-
 /// owned repos or via `profile.access().save(invite_chain)` for
 /// invited replicas).
-pub async fn record_repository_meta<C>(
+///
+/// Does not touch the content-branch roster — see
+/// [`record_repository_meta`] for the wrapper that also records
+/// membership.
+pub(crate) async fn record_replica_meta<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
     display_name: &str,
     configuration: &RepositoryConfiguration,
-    role_uri: &str,
 ) -> Result<(), RepositoryError>
 where
     C: Principal + Clone,
@@ -2627,13 +2630,6 @@ where
         },
     );
 
-    // Record the opening profile's membership on the content branch.
-    // Roster facts must live on `main` (which syncs across replicas),
-    // not on the local-only meta branch — otherwise each replica only
-    // ever sees its own membership and the roster never converges. The
-    // branch loop above has already opened `main`, so it is present.
-    record_membership_on_content(tonk, repository, key, role_uri).await?;
-
     // 7. Record this replica in the profile repository's meta
     // branch so the profile keeps an index of every replica it
     // owns. Separate transaction — cross-repo atomicity isn't
@@ -2648,6 +2644,25 @@ where
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
+}
+
+/// Lay down the meta-branch facts and profile index, then record the
+/// opening profile's membership on the content branch. The two halves
+/// are split so the join/restore mount can reuse the meta half without
+/// the roster write (restore must not stamp a role — see the restore
+/// path).
+pub async fn record_repository_meta<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+    display_name: &str,
+    configuration: &RepositoryConfiguration,
+    role_uri: &str,
+) -> Result<(), RepositoryError>
+where
+    C: Principal + Clone,
+{
+    record_replica_meta(tonk, repository, display_name, configuration).await?;
+    record_membership_on_content(tonk, repository, repository.did().repo_key(), role_uri).await
 }
 
 /// Assert the opening profile's [`Membership`] + [`MemberRole`] +
