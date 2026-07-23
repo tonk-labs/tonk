@@ -23,7 +23,7 @@ mod query;
 mod repository;
 mod sync;
 
-pub use account::{AccountLinkRequest, AccountStatus};
+pub use account::{AccountDevice, AccountLinkRequest, AccountStatus, RevokeDeviceRequest};
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
