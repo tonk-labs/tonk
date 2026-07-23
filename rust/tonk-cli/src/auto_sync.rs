@@ -30,10 +30,14 @@ pub fn enabled(no_sync_flag: bool) -> bool {
     !no_sync_flag && !env_value_opts_out(std::env::var(NO_SYNC_ENV).ok().as_deref())
 }
 
-/// Whether a [`NO_SYNC_ENV`] value opts out of auto-sync. Pure so
-/// the truthiness rule is testable without mutating the process
-/// environment.
-fn env_value_opts_out(value: Option<&str>) -> bool {
+/// Whether an opt-out environment variable's value actually opts out.
+/// Empty, `0`, `false` and `no` mean "leave it on"; anything else
+/// (including the bare `=1` everyone reaches for) means "turn it off".
+///
+/// Pure so the truthiness rule is testable without mutating the
+/// process environment. Shared by every `TONK_NO_*` switch so they
+/// all read the same way.
+pub(crate) fn env_value_opts_out(value: Option<&str>) -> bool {
     match value {
         Some(raw) => !matches!(
             raw.trim().to_ascii_lowercase().as_str(),

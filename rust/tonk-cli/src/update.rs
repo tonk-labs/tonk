@@ -97,13 +97,22 @@ pub fn is_newer(local: &str, remote: &str) -> bool {
 /// `TONK_CHANNEL` is what `install.sh` reads, so honouring it lets a
 /// receipt-less copy still be checked against the right release.
 pub fn resolve_channel() -> Channel {
-    if let Some(channel) = receipt::load().and_then(|receipt| Channel::from_label(&receipt.channel))
-    {
-        return channel;
-    }
-    std::env::var("TONK_CHANNEL")
-        .ok()
-        .and_then(|label| Channel::from_label(&label))
+    channel_from(
+        receipt::load()
+            .as_ref()
+            .map(|receipt| receipt.channel.as_str()),
+        std::env::var("TONK_CHANNEL").ok().as_deref(),
+    )
+}
+
+/// The precedence [`resolve_channel`] applies, over labels the caller
+/// has already read. Split out so it can be tested without mutating
+/// process-global environment state that every other test in the
+/// binary reads concurrently.
+fn channel_from(receipt_label: Option<&str>, env_label: Option<&str>) -> Channel {
+    receipt_label
+        .and_then(Channel::from_label)
+        .or_else(|| env_label.and_then(Channel::from_label))
         .unwrap_or(Channel::Stable)
 }
 
@@ -369,60 +378,28 @@ mod tests {
 
     #[dialog_common::test]
     fn it_resolves_the_channel_from_receipt_then_env_then_stable() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: tests in this mod run on one thread per process
-        // invocation; nothing else reads these vars concurrently.
-        unsafe { std::env::set_var(STATE_ENV, dir.path()) };
-        unsafe { std::env::remove_var("TONK_CHANNEL") };
-
-        // No receipt, no env: stable.
-        assert_eq!(resolve_channel(), Channel::Stable);
+        // Neither source: stable.
+        assert_eq!(channel_from(None, None), Channel::Stable);
 
         // Env alone is honoured.
-        unsafe { std::env::set_var("TONK_CHANNEL", "staging") };
-        assert_eq!(resolve_channel(), Channel::Staging);
+        assert_eq!(channel_from(None, Some("staging")), Channel::Staging);
 
         // A receipt wins over the env.
-        receipt::store(&receipt::Receipt {
-            channel: "stable".to_owned(),
-            version: "0.4.0".to_owned(),
-            commit: "abc".to_owned(),
-            install_dir: "/usr/local/bin".to_owned(),
-            installed_at: "2026-07-16T00:00:00Z".to_owned(),
-        })
-        .expect("store");
-        assert_eq!(resolve_channel(), Channel::Stable);
-
-        unsafe { std::env::remove_var("TONK_CHANNEL") };
-        unsafe { std::env::remove_var(STATE_ENV) };
+        assert_eq!(
+            channel_from(Some("stable"), Some("staging")),
+            Channel::Stable
+        );
     }
 
     #[dialog_common::test]
     fn it_falls_through_an_unrecognized_receipt_channel_to_env_then_stable() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: tests in this mod run on one thread per process
-        // invocation; nothing else reads these vars concurrently.
-        unsafe { std::env::set_var(STATE_ENV, dir.path()) };
-        unsafe { std::env::remove_var("TONK_CHANNEL") };
-
         // A receipt channel label of "beta" is unrecognized: it must
-        // not panic and must not win, falling through to the env.
-        receipt::store(&receipt::Receipt {
-            channel: "beta".to_owned(),
-            version: "0.4.0".to_owned(),
-            commit: "abc".to_owned(),
-            install_dir: "/usr/local/bin".to_owned(),
-            installed_at: "2026-07-16T00:00:00Z".to_owned(),
-        })
-        .expect("store");
-
-        assert_eq!(resolve_channel(), Channel::Stable);
-
-        unsafe { std::env::set_var("TONK_CHANNEL", "staging") };
-        assert_eq!(resolve_channel(), Channel::Staging);
-
-        unsafe { std::env::remove_var("TONK_CHANNEL") };
-        unsafe { std::env::remove_var(STATE_ENV) };
+        // not win, falling through to the env and then to stable.
+        assert_eq!(channel_from(Some("beta"), None), Channel::Stable);
+        assert_eq!(
+            channel_from(Some("beta"), Some("staging")),
+            Channel::Staging
+        );
     }
 
     #[dialog_common::test]

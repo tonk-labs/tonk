@@ -15,6 +15,13 @@ ROOT="${ROOT:?}"
 # calls, since those run under EPISODE_HOME rather than inheriting this.
 export TONK_NO_UPDATE_CHECK=1
 
+# Minting an invite shortens the link with a live PUT to its own
+# origin. Against the local stack that is the bench worker, which is
+# fine, but a scenario that mints without a resolved remote would PUT
+# to production. Nothing here reads a short link, so skip the round
+# trip entirely.
+export TONK_NO_SHORTEN=1
+
 SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N]}"; shift
 SCRIPTED=0; RUNS=1
 while [ $# -gt 0 ]; do
@@ -36,12 +43,24 @@ cleanup() {
 
 for i in $(seq 1 "$RUNS"); do
   RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-${i}-$SCENARIO_NAME"
-  unset EPISODE_DIR EPISODE_BIN EPISODE_PATH_SANDBOX EPISODE_RUNNER EPISODE_SANDBOX
+  unset EPISODE_DIR EPISODE_BIN EPISODE_PATH_SANDBOX EPISODE_RUNNER EPISODE_SANDBOX \
+        EPISODE_SPOT EPISODE_SPOTS_STATE
   mkdir -p "$RUN_DIR"
   export RUN_DIR SCENARIO SCENARIO_NAME
   export BENCH_PORT="${BENCH_PORT:-8787}"
   export BENCH_URL="http://127.0.0.1:$BENCH_PORT"
   echo "run: $RUN_DIR" >&2
+
+  # The CLI is spot-based: it resolves a spot by --spot, then TONK_SPOT,
+  # then the `tonk use` selection, and never consults the cwd. So a
+  # `cd` into the site directory buys nothing — without these two the
+  # harness would silently drive whatever spot the developer happens to
+  # have selected globally. TONK_SPOTS_STATE keeps the registry (and
+  # the canonical spots/ root beneath it) inside the run directory, so
+  # concurrent runs and the developer's own spots never see each other.
+  export TONK_SPOTS_STATE="$RUN_DIR/spots-state"
+  export TONK_SPOT=bench
+  mkdir -p "$TONK_SPOTS_STATE"
 
   trap cleanup EXIT
 

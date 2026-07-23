@@ -36,6 +36,25 @@ use crate::sync;
 /// `tonk-invite` directly.
 pub use tonk_invite::DEFAULT_BASE_URL;
 
+/// Environment variable that opts a mint out of shortening, mirroring
+/// the `--no-shorten` flag.
+///
+/// Shortening is a live `PUT` to the link's own origin. When no remote
+/// resolves, that origin is [`DEFAULT_BASE_URL`]'s — production — so
+/// without a way off this path any test of the no-remote base arm
+/// writes to the real shortcut store.
+pub const NO_SHORTEN_ENV: &str = "TONK_NO_SHORTEN";
+
+/// Whether a mint should shorten its link.
+///
+/// Off when `--no-shorten` was passed (`no_shorten_flag`) or when
+/// [`NO_SHORTEN_ENV`] is set to a value other than empty / `0` /
+/// `false` / `no`.
+pub fn shorten_enabled(no_shorten_flag: bool) -> bool {
+    !no_shorten_flag
+        && !crate::auto_sync::env_value_opts_out(std::env::var(NO_SHORTEN_ENV).ok().as_deref())
+}
+
 /// Outcome of [`mint`].
 #[derive(Debug)]
 pub struct InviteOutcome {
@@ -205,16 +224,25 @@ pub async fn mint(
 /// worker's `location.origin`, which the browser mint path reads
 /// straight off its own scope.
 ///
+/// Any userinfo on the endpoint is stripped. A registered remote URL
+/// carrying credentials would otherwise ride them into a link printed
+/// to stdout and pasted to whoever is being invited.
+///
 /// # Errors
 ///
 /// Returns an error if `endpoint` doesn't parse, or has no origin to
 /// hang `/join` off (a `data:` or `mailto:` URL, say).
 pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
-    let parsed = Url::parse(endpoint).map_err(|e| {
+    let mut parsed = Url::parse(endpoint).map_err(|e| {
         InviteError::Io(format!(
             "remote endpoint '{endpoint}' is not a valid URL: {e}"
         ))
     })?;
+    // Both setters fail only on a URL that cannot have credentials
+    // (`data:`, `mailto:`) — which has no usable origin either, so the
+    // join below reports it. Nothing to add here.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
     parsed.join("/join").map(String::from).map_err(|e| {
         InviteError::Io(format!(
             "remote endpoint '{endpoint}' has no usable origin: {e}"
@@ -538,15 +566,45 @@ mod tests {
             assert_eq!(base, "https://staging.tonk.xyz/join");
         }
 
+        /// `/ucan` and `/ucan/` behave identically: joining an
+        /// absolute path discards the base path entirely rather than
+        /// resolving relative to its last segment (RFC 3986 §5.3).
+        /// Pinned because it is the shape a reader is most likely to
+        /// guess wrong about.
+        #[dialog_common::test]
+        fn it_treats_a_trailing_slash_as_irrelevant() {
+            assert_eq!(
+                base_url_for_remote("https://staging.tonk.xyz/ucan").unwrap(),
+                base_url_for_remote("https://staging.tonk.xyz/ucan/").unwrap(),
+            );
+        }
+
         #[dialog_common::test]
         fn it_keeps_the_port_so_local_services_resolve() {
             let base = base_url_for_remote("http://127.0.0.1:8787/ucan/").unwrap();
             assert_eq!(base, "http://127.0.0.1:8787/join");
         }
 
+        /// Credentials on a registered remote must not ride into a
+        /// link that gets printed and pasted.
+        #[dialog_common::test]
+        fn it_strips_userinfo_from_the_endpoint() {
+            let base = base_url_for_remote("https://user:secret@tonk.example/ucan/").unwrap();
+            assert_eq!(base, "https://tonk.example/join");
+        }
+
         #[dialog_common::test]
         fn it_rejects_an_endpoint_that_is_not_a_url() {
             assert!(base_url_for_remote("not a url").is_err());
+        }
+    }
+
+    mod when_deciding_whether_to_shorten {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_is_off_when_the_flag_is_passed() {
+            assert!(!shorten_enabled(true));
         }
     }
 }

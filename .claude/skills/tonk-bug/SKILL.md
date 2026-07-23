@@ -16,7 +16,7 @@ document. Run `tonk guide notation` if you need a syntax refresher.
 
 ```bash
 tonk status                 # synced / ahead / behind / diverged / no-upstream
-tonk concepts | grep bug    # confirm the `bug` concept exists on this branch
+tonk concept ls | grep bug  # confirm the `bug` concept exists on this branch
 tonk schema | grep -A8 'concept!: &bug'   # see the live field list
 ```
 

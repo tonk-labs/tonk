@@ -51,7 +51,7 @@ Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to 
 
 ## The `tonk` CLI
 
-`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a `.tonk/` site (a Dialog repository in the current directory) and speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk schema`, `tonk concepts`, `tonk views`) and a built-in notation reference (`tonk guide`).
+`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *spot* — a named Dialog repository in a registry the CLI keeps for you, selected with `tonk use`, `--spot`, or `TONK_SPOT` — and speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk schema`, `tonk concept ls`, `tonk view ls`) and a built-in notation reference (`tonk guide`).
 
 ### Install
 
@@ -102,7 +102,7 @@ curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh
 ### Quick start
 
 ```sh
-tonk init                  # create a .tonk/ repo in the current directory
+tonk spot new garden       # register a spot and select it
 tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
 tonk schema                # every named attribute + concept on the branch
 tonk guide                 # built-in asserted-notation reference
