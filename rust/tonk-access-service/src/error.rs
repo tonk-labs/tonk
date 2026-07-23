@@ -19,6 +19,7 @@ pub enum ErrorCode {
     ChainInvalid,
     CommandMismatch,
     SubjectNotAllowed,
+    DeviceRevoked,
 
     // 500 Internal Server Error
     InternalError,
@@ -37,9 +38,10 @@ impl ErrorCode {
             | ErrorCode::InvocationExpired => 401,
 
             // 403 Forbidden
-            ErrorCode::ChainInvalid | ErrorCode::CommandMismatch | ErrorCode::SubjectNotAllowed => {
-                403
-            }
+            ErrorCode::ChainInvalid
+            | ErrorCode::CommandMismatch
+            | ErrorCode::SubjectNotAllowed
+            | ErrorCode::DeviceRevoked => 403,
 
             // 500 Internal Server Error
             ErrorCode::InternalError => 500,
