@@ -190,20 +190,36 @@ pub async fn link(
             TonkWorkerError::Internal(format!("failed to save local account link: {error}"))
         })?;
 
-    // A freshly linked device pulls the account's backed-up spaces in the
-    // background — a slow/hung account service must never stall the link
-    // response. On wasm, dispatch detached with its own read lock; on
-    // native there's no UI to stall, so it awaits inline using the guard
-    // already held for this handler.
+    // A freshly linked device converges its existing spaces and pulls the
+    // account's backed-up ones in the background — a slow/hung account
+    // service must never stall the link response. On native there's no UI
+    // to stall, so it awaits inline using the guard already held here.
+    //
+    // Migration runs under the WRITE lock. It is a purely local storage
+    // sweep (its backup requests are themselves dispatched detached), and
+    // handlers hold read locks while writing, so a read lock here would let
+    // the sweep's transactions run concurrently with a handler's against
+    // the same stores — which the storage layer rejects. The write lock
+    // makes the sweep mutually exclusive with request handling instead.
+    // It cannot deadlock: `spawn_local` defers the task, so this handler's
+    // read guard is dropped before the task asks for the lock.
+    //
+    // Restore deliberately stays on a read lock: it awaits account-service
+    // round trips, and holding the write lock across those would stall
+    // every handler on that latency — the one thing this dispatch exists
+    // to avoid. The lock is therefore released between the two.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         wasm_bindgen_futures::spawn_local(async move {
-            let tonk = app_state.read().await;
             // Migrate this device's existing spaces onto the root first:
             // restore only mounts subjects this device doesn't already
             // have, so running migration first means restore won't
             // re-touch a space migration just re-keyed.
-            crate::router::migrate::migrate_rosters(&tonk).await;
+            {
+                let tonk = app_state.write().await;
+                crate::router::migrate::migrate_rosters(&tonk).await;
+            }
+            let tonk = app_state.read().await;
             crate::router::restore::restore_spaces(&tonk).await;
         });
     }
