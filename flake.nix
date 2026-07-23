@@ -36,6 +36,7 @@
           overlays = [
             (import rust-overlay)
             (import ./nix/esbuild.nix)
+            (import ./nix/darwin-remarshal-libffi.nix)
           ];
         };
         filter = nix-filter.lib;
