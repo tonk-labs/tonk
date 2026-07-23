@@ -13,6 +13,7 @@ pub mod derive;
 mod install;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod passkey;
+pub mod request;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use install::install;

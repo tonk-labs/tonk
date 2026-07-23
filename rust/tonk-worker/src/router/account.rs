@@ -7,6 +7,7 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_common::log;
 use tonk_worker_api::{AccountLinkRequest, AccountStatus};
 
 use super::AppState;
@@ -72,6 +73,47 @@ async fn load_link(state: &crate::worker::TonkState) -> Result<Option<Vec<u8>>, 
         Err(error) => Err(TonkWorkerError::Internal(format!(
             "failed to load local account link: {error}"
         ))),
+    }
+}
+
+/// The stored `root → device` delegation for this profile, or `None`
+/// when the profile is unlinked or the stored link is unreadable.
+///
+/// Fail-safe: an unreadable or malformed link resolves to `None`, so the
+/// device behaves exactly as an unlinked one and keeps working.
+pub(crate) async fn account_link(tonk: &crate::worker::TonkState) -> Option<DelegationChain> {
+    let bytes = match load_link(tonk).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(error) => {
+            log!("account link unreadable; treating profile as unlinked: {error}");
+            return None;
+        }
+    };
+    match DelegationChain::try_from(bytes.as_slice()) {
+        Ok(chain) => Some(chain),
+        Err(error) => {
+            log!("account link malformed; treating profile as unlinked: {error}");
+            None
+        }
+    }
+}
+
+/// The account root DID for this profile, or `None` when unlinked. A
+/// linked device knows its root without holding the root key: the
+/// `root → device` delegation names the root as issuer.
+pub(crate) async fn account_root_did(
+    tonk: &crate::worker::TonkState,
+) -> Option<dialog_varsig::Did> {
+    account_link(tonk).await.map(|chain| chain.issuer().clone())
+}
+
+/// The DID roster writes and invite claims key on: the account root when
+/// linked, otherwise this device's own DID.
+pub(crate) async fn member_did(tonk: &crate::worker::TonkState) -> dialog_varsig::Did {
+    match account_root_did(tonk).await {
+        Some(root) => root,
+        None => tonk.profile.did(),
     }
 }
 
@@ -242,5 +284,30 @@ mod tests {
             link(State(state), Json(second)).await,
             Err(TonkWorkerError::Conflict(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_the_member_did_to_the_root_when_linked() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let request = request_for(&[7u8; 32], device_did.clone()).await;
+        let expected_root = request.root_did.clone();
+        let _ = link(State(state.clone()), Json(request)).await.unwrap();
+
+        let tonk = state.read().await;
+        assert_eq!(member_did(&tonk).await.to_string(), expected_root);
+        assert_eq!(
+            account_root_did(&tonk).await.map(|did| did.to_string()),
+            Some(expected_root),
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_the_member_did_to_the_device_when_unlinked() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let tonk = state.read().await;
+        let device_did = tonk.profile.did();
+        assert_eq!(member_did(&tonk).await, device_did);
+        assert!(account_root_did(&tonk).await.is_none());
     }
 }

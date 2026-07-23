@@ -4,10 +4,8 @@
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use dialog_credentials::Ed25519Signer;
-use dialog_ucan_core::InvocationBuilder;
 use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Principal;
 use tonk_account_service::helpers::AccountServer;
@@ -15,34 +13,19 @@ use tonk_account_service::helpers::AccountServer;
 const ROOT_PRF: [u8; 32] = [7u8; 32];
 const DEVICE_SEED: [u8; 32] = [8u8; 32];
 
-/// Build a signed UCAN invocation container for the account's first
-/// device, crediting the same `root -> device` delegation minted for
-/// account creation.
+/// Build a device-signed invocation container for the account's first
+/// device, using the production builder against the `root → device`
+/// delegation minted for account creation.
 async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Vec<u8> {
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
-    let root_did = root.did();
-    let chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+    let link = tonk_identity::delegation::mint_device_delegation(root, &device.did())
         .await
         .unwrap();
-    let delegation = chain.proofs().last().unwrap().clone();
-    let cid = delegation.to_cid();
-    let invocation = InvocationBuilder::new()
-        .issuer(device.clone())
-        .audience(&root_did)
-        .subject(&root_did)
-        .command(command)
-        .arguments(args)
-        .proofs(vec![cid])
-        .try_build()
+    tonk_identity::request::build_device_invocation(device, &link, command, args)
         .await
-        .unwrap();
-    let mut proofs = std::collections::HashMap::new();
-    proofs.insert(cid, Arc::new(delegation));
-    dialog_ucan_core::InvocationChain::new(invocation, proofs)
-        .to_bytes()
         .unwrap()
 }
 

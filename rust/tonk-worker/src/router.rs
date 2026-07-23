@@ -18,6 +18,8 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 mod account;
 
+mod account_backup;
+
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 
