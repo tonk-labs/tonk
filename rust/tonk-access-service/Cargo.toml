@@ -16,7 +16,7 @@ required-features = ["helpers"]
 
 [dependencies]
 # Cloudflare Workers
-worker = { workspace = true }
+worker = { workspace = true, features = ["d1"] }
 worker-macros = { workspace = true }
 
 # S3 presigning with UCAN support
