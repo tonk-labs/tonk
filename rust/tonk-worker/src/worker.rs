@@ -295,11 +295,6 @@ pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Operator<DefaultSpace>;
 
-/// Name of the profile this worker opens on startup. Also used as
-/// the label for the profile's self-replica record in its meta
-/// branch.
-const PROFILE_NAME: &str = "tonk";
-
 /// Application state containing the profile and operator.
 pub struct TonkState {
     /// The user's persistent profile.
@@ -1657,9 +1652,10 @@ impl TonkServiceWorker {
         // 1. Create storage backend
         let storage = Storage::<DefaultSpace>::default();
 
-        // 2. Open or create profile
-        let profile = Profile::open(PROFILE_NAME)
-            .perform(&storage)
+        // 2. Open the profile this device signs as. Usually the one it
+        // started with; a device that has signed out since then signs
+        // as the profile that replaced the key it revoked.
+        let (profile_name, profile) = crate::device::open_active(&storage)
             .await
             .map_err(|e| JsError::new(&format!("Failed to open profile: {}", e)))?;
         log!("Profile DID: {}", profile.did());
@@ -1680,7 +1676,7 @@ impl TonkServiceWorker {
             operator: session.operator,
             storage,
             session_expires_at: session.expires_at,
-            profile_name: PROFILE_NAME.to_string(),
+            profile_name,
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
