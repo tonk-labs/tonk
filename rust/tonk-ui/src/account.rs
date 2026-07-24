@@ -182,6 +182,8 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-create-submit",
         "#account-link-submit",
         "#account-handoff-submit",
+        "#account-manage-devices",
+        "#account-unlink",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
             && let Ok(button) = button.dyn_into::<HtmlButtonElement>()

@@ -90,7 +90,12 @@ async fn stored_link(profile: &Profile) -> Result<Option<Vec<u8>>> {
         .perform(&storage())
         .await
     {
-        Ok(bytes) => Ok(Some(bytes)),
+        Ok(bytes) => {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(bytes))
+        }
         Err(CredentialError::NotFound(_)) => Ok(None),
         Err(error) => Err(error).context("failed to load the local account link"),
     }
