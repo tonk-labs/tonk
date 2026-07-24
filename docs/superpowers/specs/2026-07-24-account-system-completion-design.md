@@ -74,12 +74,102 @@ device-management UX is meaningless without it):
   revoked device can mint fresh delegations. Verified feasible with public
   dialog APIs against the pinned dialog tag (no upstream change needed);
   unregistered device-only users produce no matches and are untouched.
-- **Fail-open** on D1 error/outage with a per-isolate verdict cache
-  (~60 s TTL), per the master spec's availability posture.
+- **Fail-closed** on D1 error/outage, softened by the per-isolate verdict
+  cache: a verdict is authoritative for 60 s and then usable for a further
+  10 minutes *only* to cover an unreachable registry. Credentials the
+  registry cleared recently ride out a blip; anything it has not cleared
+  inside the grace window gets `503 REVOCATION_UNAVAILABLE` (retryable,
+  distinct from the 403). A failed query is never cached, so grace is
+  anchored to the last successful lookup and repeated failures cannot walk
+  it forward. Unparseable container and missing `ACCOUNTS_DB` binding are
+  also 503 — a misconfigured binding now stops presigns loudly instead of
+  silently disabling enforcement.
 - The lookup seam is written so billing later adds its entitlement join
   without touching the handler again.
 
+Superseded decision, recorded because the reasoning matters: R shipped
+(#641) with a **fail-open** posture, on the master spec's availability
+grounds. That trades the security property for uptime in exactly the
+scenario where it is load-bearing, and makes enforcement a function of
+config correctness — a renamed binding disabled it with only a log line.
+The grace window buys back the availability that fail-open was protecting
+without making the guarantee conditional.
+
+### S — Signed revocation artifacts (R follow-on)
+
+R's registry check works, but a `devices` row is not a revocation — it is
+a status flag whose authority is "whoever can write this database". Two
+consequences. There is no cryptographic trail: a D1 write (ours, or an
+attacker's) can revoke or un-revoke with nothing to audit and nothing to
+verify against. And there is nothing portable: the day enforcement has to
+happen anywhere but this one worker — peer sync, the FS remote, the CLI,
+a second service — there is no artifact to hand it, only a database
+credential to spread around.
+
+UCAN's answer is a signed revocation: an invocation with command
+`ucan/revoke` naming the CID of the revoked delegation, optionally with a
+`path` witness, issuable by any issuer in that delegation's proof chain.
+The set is monotone and append-only, which is what makes it safe to
+gossip and to cache: you can only ever learn more revocations, so no
+distribution failure produces a wrongly-permissive answer.
+
+Decision — mint the artifact, keep the index:
+
+- `POST /devices/revoke` additionally records a signed `ucan/revoke`
+  invocation in the existing R2 chains store. D1 `status` stays exactly as
+  it is and remains what the access-service hot path reads: this adds an
+  auditable artifact, it does not add a hop to the presign path.
+- The access-service is unchanged for now. The artifact's value is that a
+  *second* enforcement point becomes possible without extending the D1
+  binding to it.
+
+The open question that decides the shape, and the reason this is a stage
+rather than a patch: **only the root can sign it.** The issuer of
+`root → device` is the root, so under UCAN semantics only the root (or a
+principal holding a delegated `ucan/revoke` capability) may revoke it. The
+account service does not hold the root key — it is derived from the
+passkey PRF on the user's own device and never leaves it. So either
+revocation becomes a root ceremony (passkey prompt, and a device without
+the passkey can no longer revoke — a UX regression that is also a real
+tightening), or the root delegates `ucan/revoke` to each device at link
+time (keeps today's UX, and means a stolen device can revoke its
+siblings). Pick before writing code. Plan:
+`2026-07-24-signed-revocation-artifacts.md`.
+
+Verified against the pinned dialog tag: `dialog-ucan-core` has no
+revocation type at all. Nothing upstream is needed — a revocation is an
+ordinary `Invocation` with command `["ucan", "revoke"]` and the CID in
+its arguments — but nothing upstream *verifies* it either, so the
+semantics live in this repo until dialog grows them.
+
 ### H — Service hardening (tracked debt from #625/#628)
+
+The first batch shipped in #640 (expiry enforcement, sanitized error text,
+the foreign-key pragma, the two negative tests). One item remains, added
+after R landed:
+
+- **Session delegations.** `root → device` is subject-open, command-open
+  and unexpiring — the most powerful thing the root can sign, held
+  indefinitely by every linked device. That shape is what forces
+  revocation to be a lookup: with no expiry there is nothing to *not*
+  renew. Split it in two. The `root → device` grant stays as it is (it is
+  what survives offline and what the registry records), but it is used to
+  mint a short-lived `device → session` delegation, and the session key is
+  what signs presign invocations. Revocation then degrades gracefully:
+  the registry check stops new sessions immediately, and an unreachable
+  registry costs at most one session lifetime rather than unbounded
+  access. This is the UCAN spec's own preference — *"Revocation SHOULD be
+  considered the last line of defense against abuse. Proactive expiry
+  through time bounds or other constraints SHOULD be preferred."*
+  Open questions for the plan: session TTL (hours, not minutes — it must
+  survive an offline stretch), whether renewal is a new account-service
+  endpoint or the device self-mints from the stored `root → device` grant
+  (self-minting needs no network and is preferred if the access-service
+  can enforce the expiry), and whether the access-service should *require*
+  a bounded invocation rather than merely accepting one, which is the
+  breaking half and wants a soak first.
+
+Shipped in #640:
 
 - Enforce **expiry on device-signed invocations** in `authorize` (the root
   path already enforces a 5-minute window; the device path checks nothing).
@@ -197,19 +287,27 @@ copy should say so).
 ## Sequencing
 
 ```
-#639 merge → H (hardening, account-service crate)
-           → R (revocation, access-service crate)   [H ∥ R, disjoint crates]
-           → D (device management: worker + UI + CLI)
-           → C (recovery ceremonies, three sub-stages)
-           → B (billing; blocked on user inputs)
+H (#640, merged) ∥ R (#641, merged)
+  → R' fail-closed + grace window (access-service)      [immediate]
+  → H' session delegations (identity + both services)   [R' ∥ H' after R']
+  → D (device management: worker + UI + CLI)
+  → S (signed revocation artifacts; needs D's revoke UX decision)
+  → C (recovery ceremonies, three sub-stages)
+  → B (billing; blocked on user inputs)
 F follow-ups and T debt interleave as small PRs whenever convenient.
-#618 refresh + merge and the #635 rename coordination are immediate,
-independent of the chain.
 ```
 
+R' is the correction to R's availability posture and carries no
+dependencies. H' (session delegations) should land before D so the device
+panel documents a bounded credential rather than an unexpiring one. S
+follows D because the root-vs-delegated-`ucan/revoke` decision is really a
+question about the revoke UX, and D is where that UX gets designed.
+
 H and R are planned in full (`2026-07-24-account-service-hardening.md`,
-`2026-07-24-revocation-enforcement.md`); D and C have plans at the same
-paths pattern (`2026-07-24-device-management.md`,
+`2026-07-24-revocation-enforcement.md`); S is planned in
+`2026-07-24-signed-revocation-artifacts.md`. H' needs a plan before
+execution — the open questions in its bullet decide the task list. D and C
+have plans at the same paths pattern (`2026-07-24-device-management.md`,
 `2026-07-24-recovery-ceremonies.md`) with verify-first gates where dialog
 APIs need confirmation. B gets its plan after the Stripe decisions.
 
@@ -225,8 +323,19 @@ APIs need confirmation. B gets its plan after the Stripe decisions.
   senders of device-signed invocations live in the worker (deployed with
   the service) — verified, not assumed, in the hardening plan. CLI link
   flow uses bearer-token endpoints and is unaffected.
-- **Fail-open revocation** leaves a revoked device a brief window during a
-  D1 outage — accepted by the master spec in exchange for sync
-  availability.
+- **Fail-closed revocation can refuse legitimate presigns.** A D1 outage
+  longer than the 10-minute grace window, or one that starts before a
+  client's credentials have ever been screened by the isolate serving it,
+  returns 503 and stops sync for those requests. This is the deliberate
+  inversion of R's original posture: the grace window is sized so a blip
+  costs nothing and a sustained outage degrades rather than silently
+  unenforces. Two things must hold for that trade to stay sound — clients
+  must treat 503 as retryable (verify before relying on it), and the
+  grace window must never be extended by failed queries (pinned by
+  `it_does_not_slide_the_grace_window_on_repeated_failures`).
+- **Revocation authority is a database write, not a signature**, until S
+  lands. Anyone who can write `ACCOUNTS_DB` can revoke or un-revoke with
+  no audit trail, and no other enforcement point can check revocation
+  without that same credential.
 - **Stage B scope creep.** The entitlement seam in R must stay a seam;
   billing lands only after the log-only soak the master spec requires.
