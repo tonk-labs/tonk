@@ -1,20 +1,21 @@
-//! Checking a `root → device` delegation chain presented at account
-//! creation or device linking.
+//! Checking a subject-open, single-hop delegation chain presented during
+//! account ceremonies: `root → device` at creation and linking,
+//! `oldRoot → newRoot` at rotation, `newRoot → device` at recovery.
 
 use dialog_credentials::Ed25519KeyResolver;
 use dialog_ucan_core::DelegationChain;
 
 use crate::core::CeremonyError;
 
-/// Parse and check a hex-encoded `root → device` delegation chain.
+/// Parse and check a hex-encoded subject-open delegation chain.
 ///
-/// Requires exactly one proof, issued by `root_did` to `device_did`,
+/// Requires exactly one proof, issued by `issuer_did` to `audience_did`,
 /// subject-open, with a valid signature. Returns the delegation's CID,
 /// stringified — the key `devices.delegation_cid` is stored under.
-pub async fn check_device_delegation(
+pub async fn check_subject_open_delegation(
     delegation_hex: &str,
-    root_did: &str,
-    device_did: &str,
+    issuer_did: &str,
+    audience_did: &str,
 ) -> Result<String, CeremonyError> {
     let bytes = hex::decode(delegation_hex)
         .map_err(|err| CeremonyError::Invalid(format!("bad delegation hex: {err}")))?;
@@ -26,14 +27,14 @@ pub async fn check_device_delegation(
             "delegation chain must have exactly one proof".to_string(),
         ));
     }
-    if chain.issuer().to_string() != root_did {
+    if chain.issuer().to_string() != issuer_did {
         return Err(CeremonyError::Invalid(
-            "delegation issuer does not match the claimed root".to_string(),
+            "delegation issuer does not match the expected principal".to_string(),
         ));
     }
-    if chain.audience().to_string() != device_did {
+    if chain.audience().to_string() != audience_did {
         return Err(CeremonyError::Invalid(
-            "delegation audience does not match the device".to_string(),
+            "delegation audience does not match the expected principal".to_string(),
         ));
     }
     if chain.subject().is_some() {

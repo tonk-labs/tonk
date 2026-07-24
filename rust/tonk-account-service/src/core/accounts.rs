@@ -4,7 +4,7 @@
 
 use crate::core::CeremonyError;
 use crate::core::codes::verify_code;
-use crate::core::delegation::check_device_delegation;
+use crate::core::delegation::check_subject_open_delegation;
 use crate::store::{NewDevice, Store};
 
 /// A request to create a new account and register its first device.
@@ -41,7 +41,7 @@ pub async fn create_account<S: Store>(
     now: u64,
 ) -> Result<i64, CeremonyError> {
     verify_code(store, &request.email, &request.code, now).await?;
-    let delegation_cid = check_device_delegation(
+    let delegation_cid = check_subject_open_delegation(
         &request.delegation_hex,
         &request.root_did,
         &request.device_did,

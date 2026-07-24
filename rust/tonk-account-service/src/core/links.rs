@@ -1,7 +1,7 @@
 //! One-time browser handoffs for linking native CLI profiles.
 
 use crate::core::CeremonyError;
-use crate::core::delegation::check_device_delegation;
+use crate::core::delegation::check_subject_open_delegation;
 use crate::store::{Device, DeviceStatus, LinkRequest, Store};
 
 /// Handoffs are deliberately short-lived bearer capabilities.
@@ -130,7 +130,8 @@ pub async fn complete_link<S: Store>(
         .account_by_root(root_did)
         .await?
         .ok_or_else(|| CeremonyError::Unauthorized("unknown account".to_string()))?;
-    let delegation_cid = check_device_delegation(delegation_hex, root_did, device_did).await?;
+    let delegation_cid =
+        check_subject_open_delegation(delegation_hex, root_did, device_did).await?;
     let completed = store
         .complete_link(
             token_hash,

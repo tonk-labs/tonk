@@ -2,7 +2,7 @@
 //! under an account's root DID.
 
 use crate::core::CeremonyError;
-use crate::core::delegation::check_device_delegation;
+use crate::core::delegation::check_subject_open_delegation;
 use crate::store::{Account, Device, DeviceStatus, Store};
 
 /// A device row as surfaced to API callers.
@@ -55,7 +55,7 @@ pub async fn register_device<S: Store>(
     now: u64,
 ) -> Result<(), CeremonyError> {
     let delegation_cid =
-        check_device_delegation(delegation_hex, &account.root_did, device_did).await?;
+        check_subject_open_delegation(delegation_hex, &account.root_did, device_did).await?;
     store
         .insert_device(&Device {
             account_id: account.id,
