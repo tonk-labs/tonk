@@ -284,6 +284,26 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn tests_request_for(
+    root_seed: &[u8; 32],
+    audience: dialog_varsig::Did,
+) -> tonk_worker_api::AccountLinkRequest {
+    use dialog_varsig::Principal;
+
+    let root = tonk_identity::derive::derive_root_signer(root_seed)
+        .await
+        .unwrap();
+    let root_did = root.did().to_string();
+    let delegation = tonk_identity::delegation::mint_device_delegation(root, &audience)
+        .await
+        .unwrap();
+    tonk_worker_api::AccountLinkRequest {
+        root_did,
+        delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use std::sync::Arc;
 
@@ -298,17 +318,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn request_for(root_seed: &[u8; 32], audience: dialog_varsig::Did) -> AccountLinkRequest {
-        let root = tonk_identity::derive::derive_root_signer(root_seed)
-            .await
-            .unwrap();
-        let root_did = root.did().to_string();
-        let delegation = tonk_identity::delegation::mint_device_delegation(root, &audience)
-            .await
-            .unwrap();
-        AccountLinkRequest {
-            root_did,
-            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
-        }
+        tests_request_for(root_seed, audience).await
     }
 
     #[dialog_common::test]
