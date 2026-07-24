@@ -13,9 +13,9 @@ use web_sys::{
     AuthenticationExtensionsClientInputs, AuthenticationExtensionsPrfInputs,
     AuthenticationExtensionsPrfValues, AuthenticatorSelectionCriteria, CredentialCreationOptions,
     CredentialRequestOptions, CredentialsContainer, PublicKeyCredential,
-    PublicKeyCredentialCreationOptions, PublicKeyCredentialParameters,
-    PublicKeyCredentialRequestOptions, PublicKeyCredentialRpEntity, PublicKeyCredentialType,
-    PublicKeyCredentialUserEntity, UserVerificationRequirement,
+    PublicKeyCredentialCreationOptions, PublicKeyCredentialDescriptor,
+    PublicKeyCredentialParameters, PublicKeyCredentialRequestOptions, PublicKeyCredentialRpEntity,
+    PublicKeyCredentialType, PublicKeyCredentialUserEntity, UserVerificationRequirement,
 };
 use zeroize::Zeroizing;
 
@@ -146,15 +146,34 @@ pub async fn create_passkey(user_name: &str) -> Result<PasskeyCredential> {
     Ok(PasskeyCredential { id, prf_output })
 }
 
-/// Evaluate the passkey's PRF via a discoverable-credential assertion.
-/// One biometric prompt; must be called during a user gesture.
-pub async fn prf_output() -> Result<Zeroizing<[u8; 32]>> {
+/// Evaluate the passkey's PRF via an assertion. One biometric prompt;
+/// must be called during a user gesture.
+///
+/// `allowed_credential`, when `Some`, scopes the assertion's
+/// `allowCredentials` to that one raw credential id, so the platform
+/// picker cannot offer any other resident credential for the RP —
+/// needed once a second passkey exists on the origin (rotation's
+/// follow-up derivation of the just-created credential). `None` keeps
+/// the prior discoverable-credential behavior: `allowCredentials` is
+/// left empty and the picker enumerates every resident credential,
+/// which is correct while at most one credential exists yet.
+pub async fn prf_output(allowed_credential: Option<&[u8]>) -> Result<Zeroizing<[u8; 32]>> {
     let mut challenge = rand::random::<[u8; 32]>();
     let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
     options.set_user_verification(UserVerificationRequirement::Required);
     options.set_extensions(&prf_extensions());
     if let Some(id) = current_rp_id() {
         options.set_rp_id(id);
+    }
+    if let Some(credential_id) = allowed_credential {
+        let mut id = credential_id.to_vec();
+        let descriptor = PublicKeyCredentialDescriptor::new_with_u8_slice(
+            &mut id,
+            PublicKeyCredentialType::PublicKey,
+        );
+        let allow = Array::new();
+        allow.push(&descriptor);
+        options.set_allow_credentials(&allow);
     }
     let request = CredentialRequestOptions::new();
     request.set_public_key(&options);
@@ -211,6 +230,37 @@ mod tests {
         assert_eq!(apex_rp_id("localhost"), None);
         // A suffix match must not treat a sibling registrable domain as ours.
         assert_eq!(apex_rp_id("evil-tonk.spot"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_leaves_allow_credentials_unset_without_a_scoping_id() {
+        let mut challenge = [0u8; 32];
+        let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
+        assert!(
+            Reflect::get(&options, &"allowCredentials".into())
+                .unwrap()
+                .is_undefined()
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_scopes_allow_credentials_to_the_given_id() {
+        let mut challenge = [0u8; 32];
+        let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
+        let mut id = vec![1u8, 2, 3];
+        let descriptor = PublicKeyCredentialDescriptor::new_with_u8_slice(
+            &mut id,
+            PublicKeyCredentialType::PublicKey,
+        );
+        let allow = js_sys::Array::new();
+        allow.push(&descriptor);
+        options.set_allow_credentials(&allow);
+        let allow_credentials = Reflect::get(&options, &"allowCredentials".into()).unwrap();
+        let allow_credentials = js_sys::Array::from(&allow_credentials);
+        assert_eq!(allow_credentials.length(), 1);
+        let first = allow_credentials.get(0);
+        let first_id = Reflect::get(&first, &"id".into()).unwrap();
+        assert_eq!(Uint8Array::new(&first_id).to_vec(), vec![1, 2, 3]);
     }
 
     #[dialog_common::test]

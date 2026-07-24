@@ -46,7 +46,7 @@ async fn create(name: JsValue) -> Result<JsValue, JsValue> {
 
 async fn derive_root_did() -> Result<JsValue, JsValue> {
     use dialog_varsig::Principal;
-    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let prf = crate::passkey::prf_output(None).await.map_err(js_error)?;
     let signer = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
@@ -97,7 +97,7 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     let prf_at_create = created.prf_output.is_some();
     let prf = match created.prf_output {
         Some(output) => output,
-        None => crate::passkey::prf_output().await.map_err(js_error)?,
+        None => crate::passkey::prf_output(None).await.map_err(js_error)?,
     };
     let root = crate::derive::derive_root_signer(&prf)
         .await
@@ -123,7 +123,7 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let prf = crate::passkey::prf_output(None).await.map_err(js_error)?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
@@ -133,13 +133,81 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
     ceremony_result(ceremony)
 }
 
+/// Rotate the account onto a freshly created passkey.
+///
+/// Derives the OLD root before the new passkey exists — at that point it
+/// is the only credential on the origin, so the discoverable-credential
+/// `get()` cannot be picker-ambiguous. Only once the new passkey is
+/// created does a second credential exist; deriving its root then scopes
+/// the follow-up `get()` (the PRF-at-create fallback) to that credential's
+/// id via `allowCredentials`, so the platform picker cannot offer the old
+/// credential in its place.
+async fn rotate_account(input: JsValue) -> Result<JsValue, JsValue> {
+    let name = string_property(&input, "name")?;
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+
+    let old_prf = crate::passkey::prf_output(None).await.map_err(js_error)?;
+    let old_root = crate::derive::derive_root_signer(&old_prf)
+        .await
+        .map_err(js_error)?;
+
+    let created = crate::passkey::create_passkey(&name)
+        .await
+        .map_err(js_error)?;
+    let credential_id = hex::encode(&created.id);
+    let prf_at_create = created.prf_output.is_some();
+    let new_prf = match created.prf_output {
+        Some(output) => output,
+        None => crate::passkey::prf_output(Some(&created.id))
+            .await
+            .map_err(js_error)?,
+    };
+    let new_root = crate::derive::derive_root_signer(&new_prf)
+        .await
+        .map_err(js_error)?;
+
+    let ceremony =
+        crate::ceremony::rotate_account(old_root, new_root, credential_id.clone(), device_did)
+            .await
+            .map_err(js_error)?;
+
+    let result = Object::new();
+    Reflect::set(&result, &"oldRootDid".into(), &ceremony.old_root_did.into())?;
+    Reflect::set(&result, &"newRootDid".into(), &ceremony.new_root_did.into())?;
+    Reflect::set(&result, &"newCredentialId".into(), &credential_id.into())?;
+    Reflect::set(
+        &result,
+        &"successionHex".into(),
+        &ceremony.succession_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"deviceDelegationHex".into(),
+        &ceremony.device_delegation_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"rotationHex".into(),
+        &ceremony.rotation_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"confirmationHex".into(),
+        &ceremony.confirmation_hex.into(),
+    )?;
+    Reflect::set(&result, &"prfAtCreate".into(), &prf_at_create.into())?;
+    Ok(result.into())
+}
+
 async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
     let token_hash = string_property(&input, "tokenHash")?;
     let device_did = string_property(&input, "deviceDid")?
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let prf = crate::passkey::prf_output(None).await.map_err(js_error)?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
@@ -205,6 +273,16 @@ pub fn install() {
     );
     complete_link.forget();
 
+    let rotate_account = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(rotate_account(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"rotateAccount".into(),
+        rotate_account.as_ref().unchecked_ref(),
+    );
+    rotate_account.forget();
+
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
@@ -226,6 +304,7 @@ mod tests {
             "createAccount",
             "linkDevice",
             "completeLink",
+            "rotateAccount",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");
