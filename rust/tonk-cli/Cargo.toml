@@ -128,6 +128,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-s
 tokio-util = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-evaluator = { workspace = true }
+tonk-identity = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }

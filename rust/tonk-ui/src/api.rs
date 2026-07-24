@@ -1,8 +1,9 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
-    AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse, JoinRequest,
-    JoinResponse, QueryResponse, RepositoryInfo, SyncResponse, SyncStatusResponse,
+    AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
+    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -468,6 +469,64 @@ pub async fn save_account_link(
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "POST /api/account/link returned {status}: {text}"
+        )))
+    }
+}
+
+/// List the devices registered under the linked account.
+pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/account/devices", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/account/devices returned {status}: {text}"
+        )))
+    }
+}
+
+/// Revoke one of the account's devices; returns the refreshed list.
+pub async fn revoke_account_device(did: String) -> Result<Vec<AccountDevice>, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/devices/revoke", origin()))
+        .json(&RevokeDeviceRequest { did })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/devices/revoke returned {status}: {text}"
+        )))
+    }
+}
+
+/// Clear this browser's stored account link (local sign-out).
+pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .delete(format!("{}/api/account", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "DELETE /api/account returned {status}: {text}"
         )))
     }
 }

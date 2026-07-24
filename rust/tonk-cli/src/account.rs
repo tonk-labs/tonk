@@ -90,7 +90,12 @@ async fn stored_link(profile: &Profile) -> Result<Option<Vec<u8>>> {
         .perform(&storage())
         .await
     {
-        Ok(bytes) => Ok(Some(bytes)),
+        Ok(bytes) => {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(bytes))
+        }
         Err(CredentialError::NotFound(_)) => Ok(None),
         Err(error) => Err(error).context("failed to load the local account link"),
     }
@@ -277,6 +282,99 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
     })
 }
 
+/// One registry row from `POST /devices/list`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRow {
+    /// The device's DID.
+    pub did: String,
+    /// Display name registered at link time.
+    pub name: String,
+    /// Registry status: `active` or `revoked`.
+    pub status: String,
+    /// Registration time, seconds since the epoch.
+    pub created_at: u64,
+}
+
+fn revoke_target_guard(own_did: &str, target_did: &str) -> Result<()> {
+    if own_did == target_did {
+        bail!("refusing to revoke the device you are using");
+    }
+    Ok(())
+}
+
+async fn linked_chain(profile: &Profile) -> Result<DelegationChain> {
+    let bytes = stored_link(profile)
+        .await?
+        .context("this profile is not linked to an account; run `tonk account link`")?;
+    DelegationChain::try_from(bytes.as_slice()).context("stored account delegation is invalid")
+}
+
+async fn post_invocation(
+    service_url: &str,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<reqwest::Response> {
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/{}",
+            service_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+        .body(body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .with_context(|| format!("failed to reach the account service at {path}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("account service rejected {path} ({status}): {text}");
+    }
+    Ok(response)
+}
+
+/// List the devices registered under this profile's account.
+pub async fn devices(profile: &Profile, service_url: &str) -> Result<Vec<DeviceRow>> {
+    let link = linked_chain(profile).await?;
+    let body = tonk_identity::request::build_device_invocation(
+        profile.signer().signer().clone(),
+        &link,
+        vec!["account".into(), "device".into(), "list".into()],
+        std::collections::BTreeMap::new(),
+    )
+    .await
+    .context("failed to sign the device-list request")?;
+    let response = post_invocation(service_url, "devices/list", body).await?;
+    response
+        .json()
+        .await
+        .context("account service returned an invalid device list")
+}
+
+/// Revoke another of the account's devices.
+pub async fn revoke(profile: &Profile, service_url: &str, did: &str) -> Result<()> {
+    revoke_target_guard(profile.did().as_ref(), did)?;
+    let link = linked_chain(profile).await?;
+    let arguments = [(
+        "did".to_owned(),
+        dialog_ucan_core::promise::Promised::String(did.to_owned()),
+    )]
+    .into_iter()
+    .collect();
+    let body = tonk_identity::request::build_device_invocation(
+        profile.signer().signer().clone(),
+        &link,
+        vec!["account".into(), "device".into(), "revoke".into()],
+        arguments,
+    )
+    .await
+    .context("failed to sign the revoke request")?;
+    post_invocation(service_url, "devices/revoke", body).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +393,22 @@ mod tests {
         let bytes = hex::decode(secret).unwrap();
         assert_eq!(bytes.len(), 32);
         assert_eq!(hash, blake3::hash(&bytes).to_hex().to_string());
+    }
+
+    #[test]
+    fn it_parses_a_service_device_row() {
+        let rows: Vec<DeviceRow> = serde_json::from_str(
+            r#"[{"did":"did:key:z1","name":"laptop","status":"active",
+                 "delegationCid":"bafy","createdAt":1753300000}]"#,
+        )
+        .unwrap();
+        assert_eq!(rows[0].did, "did:key:z1");
+        assert_eq!(rows[0].created_at, 1_753_300_000);
+    }
+
+    #[test]
+    fn it_refuses_to_revoke_the_own_device_did() {
+        assert!(revoke_target_guard("did:key:same", "did:key:same").is_err());
+        assert!(revoke_target_guard("did:key:same", "did:key:other").is_ok());
     }
 }

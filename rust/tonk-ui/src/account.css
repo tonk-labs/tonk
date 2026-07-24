@@ -240,6 +240,29 @@ tonk-account {
     color: var(--account-muted);
 }
 
+.account__devices {
+    display: grid;
+    gap: 8px;
+    margin: 0 0 18px;
+    padding: 0;
+    list-style: none;
+}
+
+.account__device-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid color-mix(in oklab, var(--account-ink) 12%, transparent);
+    background: var(--account-field);
+}
+
+.account__device-meta {
+    color: var(--account-muted);
+    font-size: 13px;
+}
+
 @media (prefers-color-scheme: dark) {
     .account {
         box-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
