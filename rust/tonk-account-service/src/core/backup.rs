@@ -102,4 +102,18 @@ mod tests {
 
         assert_eq!(round_tripped, bytes);
     }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_chain_get_across_accounts() {
+        let chains = MemoryChainStore::default();
+        let account_a = account(1, "did:key:root-a");
+        let account_b = account(2, "did:key:root-b");
+
+        let key = put_chain(&chains, &account_a, b"a-bytes").await.unwrap();
+
+        assert!(matches!(
+            get_chain(&chains, &account_b, &key).await,
+            Err(CeremonyError::Invalid(_))
+        ));
+    }
 }
