@@ -18,6 +18,14 @@ run_worker_first = ["/@", "/@/*", "/ucan", "/ucan/*"]
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
 
+# Read-only view of the account registry (owned and migrated by
+# tonk-account-service): the presign path checks presented credentials
+# against revoked devices. Never write through this binding.
+[[d1_databases]]
+binding = "ACCOUNTS_DB"
+database_name = "tonk-accounts"
+database_id = "a0c6698d-25e6-414b-8986-4fbeb1b5f992"
+
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
@@ -28,6 +36,11 @@ routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
+
+[[env.staging.d1_databases]]
+binding = "ACCOUNTS_DB"
+database_name = "tonk-accounts-staging"
+database_id = "d82a5715-d210-4bca-bd9d-4ab64e909566"
 
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"

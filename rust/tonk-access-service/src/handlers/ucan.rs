@@ -56,6 +56,12 @@ async fn handle_inner(
         .await
         .map_err(map_access_error)?;
 
+    // 3b. Screen the presented credentials against revoked devices.
+    // Runs only after cryptographic authorization succeeded, and fails
+    // open: registry trouble must never take sync down.
+    #[cfg(target_arch = "wasm32")]
+    screen_revoked(&body_bytes, ctx).await?;
+
     // 4. Serialize the response as CBOR
     let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request).map_err(|e| {
         ServiceError::new(
@@ -72,6 +78,47 @@ async fn handle_inner(
             r.with_headers(headers)
         })
         .map_err(|e| ServiceError::new(ErrorCode::InternalError, format!("Response error: {}", e)))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn screen_revoked(
+    body_bytes: &[u8],
+    ctx: &RouteContext<()>,
+) -> std::result::Result<(), ServiceError> {
+    use crate::revocation::{self, RevocationVerdict, d1::D1RevocationRegistry};
+
+    let presented = match revocation::collect_presented(body_bytes) {
+        Ok(presented) => presented,
+        Err(err) => {
+            // The authorizer already accepted this container; a parse
+            // failure here is a shape drift to surface, not a reason to
+            // block the request.
+            console_error!("revocation screen skipped, container unparseable: {err}");
+            return Ok(());
+        }
+    };
+    let registry = match ctx.d1("ACCOUNTS_DB") {
+        Ok(db) => D1RevocationRegistry::new(db),
+        Err(err) => {
+            console_error!("revocation screen skipped, no ACCOUNTS_DB binding: {err}");
+            return Ok(());
+        }
+    };
+    let now_ms = Date::now().as_millis();
+    match revocation::assess(&registry, &presented, now_ms).await {
+        RevocationVerdict::Allowed => Ok(()),
+        RevocationVerdict::AllowedFailOpen(reason) => {
+            console_error!("revocation screen failed open: {reason}");
+            Ok(())
+        }
+        RevocationVerdict::Revoked => {
+            worker::console_log!("presign rejected: revoked credential present");
+            Err(ServiceError::new(
+                ErrorCode::DeviceRevoked,
+                "a credential in the presented chain has been revoked",
+            ))
+        }
+    }
 }
 
 /// Create UcanAuthorizer from environment configuration.
