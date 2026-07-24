@@ -65,6 +65,27 @@ pub(crate) async fn migrate_rosters(tonk: &TonkState) {
     MIGRATE_IN_FLIGHT.store(false, Ordering::SeqCst);
 }
 
+/// Converge every space keyed on a superseded root onto the current one.
+/// Runs after a succession replaced this profile's account root:
+/// re-keys rosters `old → new` and re-anchors + backs up each space so
+/// devices linked under the new root can restore it.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn converge_after_rotation(tonk: &TonkState, old_root: &dialog_varsig::Did) {
+    let Some(new_root) = account::account_root_did(tonk).await else {
+        return;
+    };
+    if MIGRATE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    for key in crate::router::profile_name::profile_space_keys(tonk).await {
+        match rekey_space_roster(tonk, &key, old_root, &new_root).await {
+            Ok(_) => reanchor_space(tonk, &key).await,
+            Err(error) => log!("rotation convergence for space '{key}' skipped: {error}"),
+        }
+    }
+    MIGRATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+}
+
 /// Re-key one space's roster from the device DID to the account root DID,
 /// atomically. Returns `Ok(true)` when a device-keyed row was migrated,
 /// `Ok(false)` when the space is already root-keyed, the profile isn't a
@@ -74,10 +95,23 @@ pub(crate) async fn migrate_space_roster(
     tonk: &TonkState,
     key: &str,
 ) -> Result<bool, RepositoryError> {
-    let member = account::member_did(tonk).await;
-    let device = tonk.profile.did();
-    // Unlinked: no root to migrate to. (member_did == device DID.)
-    if member == device {
+    let to = account::member_did(tonk).await;
+    let from = tonk.profile.did();
+    rekey_space_roster(tonk, key, &from, &to).await
+}
+
+/// Re-key one space's roster from one DID to another, atomically. Returns
+/// `Ok(true)` when a `from`-keyed row was migrated, `Ok(false)` when the
+/// space is already keyed on `to` (or `from` has no roster row at all), or
+/// when `from == to` (nothing to converge).
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn rekey_space_roster(
+    tonk: &TonkState,
+    key: &str,
+    from: &dialog_varsig::Did,
+    to: &dialog_varsig::Did,
+) -> Result<bool, RepositoryError> {
+    if from == to {
         return Ok(false);
     }
 
@@ -91,10 +125,10 @@ pub(crate) async fn migrate_space_roster(
     let subject = session.handle().of().clone();
     let subject_entity = subject.this();
 
-    let device_membership = Membership::new(device.clone(), subject.clone());
+    let device_membership = Membership::new(from.clone(), subject.clone());
     let device_entity = device_membership.this().clone();
 
-    let root_membership = Membership::new(member.clone(), subject.clone());
+    let root_membership = Membership::new(to.clone(), subject.clone());
     let root_entity = root_membership.this().clone();
 
     // Is there a device-keyed row to migrate?
@@ -297,7 +331,7 @@ mod tests {
     use tonk_schema::prelude::{DidExt as _, EntityExt as _};
     use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership};
 
-    use super::migrate_space_roster;
+    use super::{migrate_space_roster, rekey_space_roster};
     use crate::router::api_router_with_state;
     use crate::router::tests::{
         content_invited_via, content_member_names, content_member_roles, content_memberships,
@@ -324,6 +358,7 @@ mod tests {
         let request = tonk_worker_api::AccountLinkRequest {
             root_did: root_did.to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+            succession_hex: None,
         };
         let tonk = state.read().await;
         crate::router::account::persist_link(&tonk, &request)
@@ -451,6 +486,84 @@ mod tests {
             migrate_space_roster(&tonk, &key).await.unwrap()
         };
         assert!(!migrated_again, "second migration call must be a no-op");
+    }
+
+    /// `rekey_space_roster` generalizes `migrate_space_roster` to any two
+    /// DIDs — exercise it directly between two account roots, mirroring a
+    /// rotation's `old → new` convergence rather than a device migration.
+    #[dialog_common::test]
+    async fn it_rekeys_a_membership_between_two_account_roots() {
+        let state = test_state().await;
+        let (app, state, _lsp) = api_router_with_state(state);
+
+        let key = put_repo(&app, "migrate-roster-rotation").await;
+        let subject_did = {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .of()
+                .clone()
+        };
+
+        let old_root = link_account(&state).await;
+        let old_membership = Membership::new(old_root.clone(), subject_did.clone());
+        let old_entity = old_membership.this().clone();
+        seed_device_membership(&state, &key, &old_root, &subject_did).await;
+
+        use dialog_varsig::Principal as _;
+        let new_root = tonk_identity::derive::derive_root_signer(&[10u8; 32])
+            .await
+            .unwrap()
+            .did();
+
+        let migrated = {
+            let tonk = state.read().await;
+            rekey_space_roster(&tonk, &key, &old_root, &new_root)
+                .await
+                .unwrap()
+        };
+        assert!(migrated, "expected the old-root-keyed row to be migrated");
+
+        let memberships = content_memberships(&state, &key).await;
+        assert!(
+            memberships.iter().any(|m| m.member.0 == new_root.this()),
+            "new-root-keyed membership must exist after rekeying",
+        );
+        assert!(
+            !memberships.iter().any(|m| m.member.0 == old_root.this()),
+            "old-root-keyed membership must be gone after rekeying",
+        );
+
+        let roles = content_member_roles(&state, &key).await;
+        let new_membership = memberships
+            .iter()
+            .find(|m| m.member.0 == new_root.this())
+            .expect("new-root membership present");
+        assert!(
+            roles
+                .iter()
+                .any(|r| r.this == new_membership.this
+                    && r.role.0.to_string() == MemberRole::FOUNDER),
+            "founder role must carry over onto the new-root-keyed entity",
+        );
+        assert!(
+            !roles.iter().any(|r| r.this == old_entity),
+            "old-root-keyed role must be gone after rekeying",
+        );
+
+        // Idempotent: a second call finds no old-root-keyed row left to rekey.
+        let migrated_again = {
+            let tonk = state.read().await;
+            rekey_space_roster(&tonk, &key, &old_root, &new_root)
+                .await
+                .unwrap()
+        };
+        assert!(!migrated_again, "second rekey call must be a no-op");
     }
 
     #[dialog_common::test]

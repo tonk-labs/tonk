@@ -59,6 +59,48 @@ async fn validate_link(
     Ok((chain, bytes))
 }
 
+async fn validate_succession(
+    succession_hex: &str,
+    old_root: &dialog_varsig::Did,
+    new_root: &dialog_varsig::Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let bytes = hex::decode(succession_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("invalid succession hex: {error}")))?;
+    let chain = DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| TonkWorkerError::Router(format!("invalid succession chain: {error}")))?;
+    if chain.proof_cids().len() != 1 {
+        return Err(TonkWorkerError::Router(
+            "succession must contain exactly one proof".to_string(),
+        ));
+    }
+    if chain.issuer() != old_root {
+        return Err(TonkWorkerError::Forbidden(
+            "succession issuer is not the linked account root".to_string(),
+        ));
+    }
+    if chain.audience() != new_root {
+        return Err(TonkWorkerError::Forbidden(
+            "succession audience is not the new account root".to_string(),
+        ));
+    }
+    if chain.subject().is_some() {
+        return Err(TonkWorkerError::Router(
+            "succession must be subject-open".to_string(),
+        ));
+    }
+    let proof = chain
+        .proofs()
+        .next()
+        .expect("a one-proof chain contains one proof");
+    proof
+        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Forbidden(format!("invalid succession signature: {error}"))
+        })?;
+    Ok(chain)
+}
+
 async fn load_link(state: &crate::worker::TonkState) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match state
         .profile
@@ -168,9 +210,24 @@ pub(crate) async fn persist_link(
             TonkWorkerError::Internal(format!("stored account delegation is invalid: {error}"))
         })?;
         if existing.issuer() != chain.issuer() {
-            return Err(TonkWorkerError::Conflict(
-                "profile is already linked to another account root".to_string(),
-            ));
+            let Some(succession_hex) = &request.succession_hex else {
+                return Err(TonkWorkerError::Conflict(
+                    "profile is already linked to another account root".to_string(),
+                ));
+            };
+            let succession =
+                validate_succession(succession_hex, existing.issuer(), chain.issuer()).await?;
+            state
+                .profile
+                .access()
+                .save(UcanDelegation(succession))
+                .perform(&state.operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!(
+                        "failed to save succession delegation: {error}"
+                    ))
+                })?;
         }
     }
 
@@ -212,6 +269,10 @@ pub async fn link(
     let app_state = state.clone();
     let state = state.read().await;
     let device_did = state.profile.did();
+    // Only the wasm dispatch below acts on a root change; capturing it
+    // unconditionally would leave the native build with an unused binding.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let previous_root = account_root_did(&state).await;
     persist_link(&state, &request).await?;
 
     // A freshly linked device converges its existing spaces and pulls the
@@ -234,6 +295,7 @@ pub async fn link(
     // to avoid. The lock is therefore released between the two.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
+        let new_root_did = request.root_did.clone();
         wasm_bindgen_futures::spawn_local(async move {
             // Migrate this device's existing spaces onto the root first:
             // restore only mounts subjects this device doesn't already
@@ -241,6 +303,10 @@ pub async fn link(
             // re-touch a space migration just re-keyed.
             {
                 let tonk = app_state.write().await;
+                if let Some(old_root) = previous_root.filter(|old| old.to_string() != new_root_did)
+                {
+                    crate::router::migrate::converge_after_rotation(&tonk, &old_root).await;
+                }
                 crate::router::migrate::migrate_rosters(&tonk).await;
             }
             let tonk = app_state.read().await;
@@ -300,6 +366,7 @@ pub(crate) async fn tests_request_for(
     tonk_worker_api::AccountLinkRequest {
         root_did,
         delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        succession_hex: None,
     }
 }
 
@@ -387,6 +454,62 @@ mod tests {
         assert!(matches!(
             link(State(state), Json(second)).await,
             Err(TonkWorkerError::Conflict(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_replaces_the_root_when_a_succession_authorizes_it() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let first = request_for(&[7u8; 32], device_did.clone()).await;
+        let _ = link(State(state.clone()), Json(first.clone()))
+            .await
+            .unwrap();
+
+        let old_root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+            .await
+            .unwrap();
+        let new_root = tonk_identity::derive::derive_root_signer(&[8u8; 32])
+            .await
+            .unwrap();
+        let succession = tonk_identity::delegation::mint_root_succession(old_root, &new_root.did())
+            .await
+            .unwrap();
+        let mut second = request_for(&[8u8; 32], device_did).await;
+        second.succession_hex = Some(hex::encode(succession.to_bytes().unwrap()));
+
+        let Json(status) = link(State(state.clone()), Json(second.clone()))
+            .await
+            .unwrap();
+        match status {
+            AccountStatus::Linked { root_did, .. } => assert_eq!(root_did, second.root_did),
+            AccountStatus::Unlinked { .. } => panic!("relink did not persist"),
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_succession_from_the_wrong_root() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let first = request_for(&[7u8; 32], device_did.clone()).await;
+        let _ = link(State(state.clone()), Json(first)).await.unwrap();
+
+        // Succession issued by an unrelated key, not the linked root.
+        let stranger = tonk_identity::derive::derive_root_signer(&[13u8; 32])
+            .await
+            .unwrap();
+        let new_root = tonk_identity::derive::derive_root_signer(&[8u8; 32])
+            .await
+            .unwrap();
+        let succession = tonk_identity::delegation::mint_root_succession(stranger, &new_root.did())
+            .await
+            .unwrap();
+        let mut second = request_for(&[8u8; 32], device_did).await;
+        second.succession_hex = Some(hex::encode(succession.to_bytes().unwrap()));
+
+        assert!(matches!(
+            link(State(state), Json(second)).await,
+            Err(TonkWorkerError::Forbidden(_))
         ));
     }
 

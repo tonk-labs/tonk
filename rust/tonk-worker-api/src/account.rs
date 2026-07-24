@@ -10,6 +10,10 @@ pub struct AccountLinkRequest {
     pub root_did: String,
     /// Hex-encoded UCAN delegation chain from the root to this profile.
     pub delegation_hex: String,
+    /// Hex-encoded succession delegation authorizing replacement of an
+    /// already-linked root with `root_did`, when this link is a rotation.
+    #[serde(default)]
+    pub succession_hex: Option<String>,
 }
 
 /// Local account-link state.

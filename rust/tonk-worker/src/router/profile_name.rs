@@ -417,6 +417,7 @@ mod tests {
         let link_request = tonk_worker_api::AccountLinkRequest {
             root_did: root_did_str.clone(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+            succession_hex: None,
         };
         let _ = crate::router::account::link(State(state.clone()), Json(link_request))
             .await

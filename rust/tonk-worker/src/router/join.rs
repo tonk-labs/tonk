@@ -1095,6 +1095,7 @@ mod tests {
         let request = tonk_worker_api::AccountLinkRequest {
             root_did: root_did.to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+            succession_hex: None,
         };
         crate::router::account::link(axum::extract::State(state.clone()), axum::Json(request))
             .await

@@ -458,6 +458,7 @@ pub async fn save_account_link(
         .json(&AccountLinkRequest {
             root_did,
             delegation_hex,
+            succession_hex: None,
         })
         .send()
         .await
