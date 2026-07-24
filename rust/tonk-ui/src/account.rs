@@ -913,6 +913,7 @@ mod tests {
         let devices = vec![
             tonk_worker_api::AccountDevice {
                 did: "did:key:zThis".into(),
+                delegation_cid: "bafythis".into(),
                 name: "This browser".into(),
                 status: "active".into(),
                 created_at: 1_753_300_000,
@@ -920,6 +921,7 @@ mod tests {
             },
             tonk_worker_api::AccountDevice {
                 did: "did:key:zOther".into(),
+                delegation_cid: "bafyother".into(),
                 name: "Old laptop".into(),
                 status: "revoked".into(),
                 created_at: 1_753_200_000,
@@ -927,6 +929,7 @@ mod tests {
             },
             tonk_worker_api::AccountDevice {
                 did: "did:key:zPhone".into(),
+                delegation_cid: "bafyphone".into(),
                 name: "Phone".into(),
                 status: "active".into(),
                 created_at: 1_753_100_000,
@@ -951,6 +954,17 @@ mod tests {
                 .unwrap()
                 .length(),
             1
+        );
+
+        // The ceremony signs a revocation of a named delegation, so the
+        // button has to carry the CID as well as the DID.
+        let button = list
+            .query_selector("button[data-revoke]")
+            .unwrap()
+            .expect("the active, non-self row has a revoke button");
+        assert_eq!(
+            button.get_attribute("data-delegation-cid").as_deref(),
+            Some("bafyphone")
         );
     }
 }

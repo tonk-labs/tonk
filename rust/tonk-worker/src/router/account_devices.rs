@@ -168,11 +168,40 @@ mod tests {
             revoke(
                 State(state),
                 Json(RevokeDeviceRequest {
-                    did: device_did.to_string()
+                    did: device_did.to_string(),
+                    revocation: "beef".to_string(),
                 })
             )
             .await,
             Err(TonkWorkerError::Conflict(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_revoke_without_a_signed_revocation() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let request =
+            crate::router::account::tests_request_for(&[7u8; 32], device_did.clone()).await;
+        {
+            let tonk = state.read().await;
+            crate::router::account::persist_link(&tonk, &request)
+                .await
+                .unwrap();
+        }
+        assert!(
+            matches!(
+                revoke(
+                    State(state),
+                    Json(RevokeDeviceRequest {
+                        did: "did:key:zOtherDevice".to_string(),
+                        revocation: String::new(),
+                    })
+                )
+                .await,
+                Err(TonkWorkerError::Conflict(_))
+            ),
+            "cutting off another device takes a passkey-signed revocation"
+        );
     }
 }
