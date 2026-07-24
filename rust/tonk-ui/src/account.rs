@@ -164,6 +164,7 @@ fn set_mode(host: &HtmlElement, mode: &str) {
         ("link", "#account-link"),
         ("handoff", "#account-handoff"),
         ("success", "#account-success"),
+        ("devices", "#account-devices"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
             if name == mode {
@@ -226,6 +227,71 @@ fn show_handoff_success(host: &HtmlElement) {
         message.set_text_content(Some("The command-line profile is connected."));
     }
     show_success(host);
+}
+
+fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]) {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Ok(Some(list)) = host.query_selector("#account-device-list") else {
+        return;
+    };
+    list.set_inner_html("");
+    for device in devices {
+        let Ok(item) = document.create_element("li") else {
+            continue;
+        };
+        let _ = item.set_attribute("class", "account__device-row");
+
+        let Ok(name) = document.create_element("span") else {
+            continue;
+        };
+        name.set_text_content(Some(&device.name));
+
+        let Ok(meta) = document.create_element("span") else {
+            continue;
+        };
+        let _ = meta.set_attribute("class", "account__device-meta");
+        let registered = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
+            .to_locale_date_string("default", &JsValue::UNDEFINED);
+        let mut details = format!("{} · {}", device.status, String::from(registered));
+        if device.this_device {
+            details.push_str(" · this device");
+        }
+        meta.set_text_content(Some(&details));
+
+        let _ = item.append_child(&name);
+        let _ = item.append_child(&meta);
+
+        if device.status == "active" && !device.this_device {
+            let Ok(button) = document.create_element("button") else {
+                continue;
+            };
+            let _ = button.set_attribute("type", "button");
+            let _ = button.set_attribute("class", "account__button account__button--quiet");
+            let _ = button.set_attribute("data-revoke", &device.did);
+            button.set_text_content(Some("Revoke"));
+            let _ = item.append_child(&button);
+        }
+        let _ = list.append_child(&item);
+    }
+}
+
+fn load_devices(host: HtmlElement) {
+    set_busy(&host, true, "Loading devices…");
+    spawn_local(async move {
+        match crate::api::account_devices().await {
+            Ok(devices) => {
+                set_busy(&host, false, "");
+                render_devices(&host, &devices);
+                set_mode(&host, "devices");
+            }
+            Err(error) => {
+                set_busy(&host, false, "");
+                show_error(&host, error.to_string());
+            }
+        }
+    });
 }
 
 fn load_status(host: HtmlElement) {
@@ -542,6 +608,90 @@ fn bind(host: &HtmlElement) {
             }
         });
     });
+
+    on_click(host, "#account-manage-devices", |host| {
+        clear_error(&host);
+        load_devices(host);
+    });
+    on_click(host, "#account-devices-back", |host| {
+        clear_error(&host);
+        set_mode(&host, "success");
+    });
+    on_click(host, "#account-unlink", |host| {
+        clear_error(&host);
+        let confirmed = window()
+            .map(|window| {
+                window
+                    .confirm_with_message(
+                        "Sign out of your account on this device? Your data stays; \
+                         this browser stops acting as the account until you log in again.",
+                    )
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+        set_busy(&host, true, "Signing out…");
+        spawn_local(async move {
+            match crate::api::unlink_account().await {
+                Ok(_) => {
+                    set_busy(&host, false, "");
+                    set_mode(&host, "choice");
+                }
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error.to_string());
+                }
+            }
+        });
+    });
+
+    if let Ok(Some(list)) = host.query_selector("#account-device-list") {
+        let host_for_revoke = host.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            let Some(did) = target.get_attribute("data-revoke") else {
+                return;
+            };
+            let host = host_for_revoke.clone();
+            let confirmed = window()
+                .map(|window| {
+                    window
+                        .confirm_with_message(
+                            "Revoke this device? It immediately loses account and sync \
+                             access. Spaces it joined before it was linked may need a \
+                             fresh invite.",
+                        )
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if !confirmed {
+                return;
+            }
+            clear_error(&host);
+            set_busy(&host, true, "Revoking device…");
+            spawn_local(async move {
+                match crate::api::revoke_account_device(did).await {
+                    Ok(devices) => {
+                        set_busy(&host, false, "");
+                        render_devices(&host, &devices);
+                    }
+                    Err(error) => {
+                        set_busy(&host, false, "");
+                        show_error(&host, error.to_string());
+                    }
+                }
+            });
+        });
+        let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+        closure.forget();
+    }
 }
 
 /// Register `<tonk-account>` with the top document.
@@ -570,6 +720,33 @@ mod tests {
             .unchecked_into();
         let mut element = TonkAccount;
         element.inject_children(&host);
+        host
+    }
+
+    /// Yield to the event loop for `ms` milliseconds.
+    async fn yield_for(ms: i32) {
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let win = window().unwrap();
+            win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .unwrap();
+        });
+        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    }
+
+    /// Build a `<tonk-account>` host with its panels injected, attach it to
+    /// the document body so it sits in a real DOM tree, and give it a tick
+    /// to settle.
+    async fn mounted_account_host() -> HtmlElement {
+        let host = host();
+        window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .body()
+            .unwrap()
+            .append_child(host.as_ref())
+            .unwrap();
+        yield_for(0).await;
         host
     }
 
@@ -660,5 +837,45 @@ mod tests {
         // wasm tests run on a localhost origin, which is unmapped.
         let host = host();
         assert!(service(&host).is_err());
+    }
+
+    #[dialog_common::test]
+    async fn it_renders_the_device_list_with_a_this_device_marker() {
+        let host = mounted_account_host().await;
+        let devices = vec![
+            tonk_worker_api::AccountDevice {
+                did: "did:key:zThis".into(),
+                name: "This browser".into(),
+                status: "active".into(),
+                created_at: 1_753_300_000,
+                this_device: true,
+            },
+            tonk_worker_api::AccountDevice {
+                did: "did:key:zOther".into(),
+                name: "Old laptop".into(),
+                status: "revoked".into(),
+                created_at: 1_753_200_000,
+                this_device: false,
+            },
+        ];
+        render_devices(&host, &devices);
+
+        let list = host
+            .query_selector("#account-device-list")
+            .unwrap()
+            .unwrap();
+        let items = list.query_selector_all("li").unwrap();
+        assert_eq!(items.length(), 2);
+        let text = list.text_content().unwrap();
+        assert!(text.contains("This browser"));
+        assert!(text.contains("this device"));
+        assert!(text.contains("revoked"));
+        // Only the active, non-self row gets a revoke button.
+        assert_eq!(
+            list.query_selector_all("button[data-revoke]")
+                .unwrap()
+                .length(),
+            1
+        );
     }
 }

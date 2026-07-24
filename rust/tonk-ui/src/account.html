@@ -61,7 +61,18 @@
 
   <section id="account-success" class="account__panel" hidden>
     <p id="account-success-message" class="account__status">You're logged in.</p>
+    <button id="account-manage-devices" class="account__button account__button--secondary" type="button">Manage devices</button>
     <a class="account__button account__button--secondary" href="/">Back to Tonk</a>
+  </section>
+
+  <section id="account-devices" class="account__panel" hidden>
+    <h2>Your devices</h2>
+    <p class="account__hint">Revoking a device cuts off its sync access. Spaces that device joined before it was linked may need a fresh invite afterwards.</p>
+    <ul id="account-device-list" class="account__devices"></ul>
+    <div class="account__actions">
+      <button id="account-unlink" class="account__button account__button--quiet" type="button">Sign out on this device</button>
+      <button id="account-devices-back" class="account__button account__button--secondary" type="button">Back</button>
+    </div>
   </section>
 
   <p id="account-working" class="account__hint" role="status" aria-live="polite">Checking this browser…</p>
