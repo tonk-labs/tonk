@@ -170,13 +170,22 @@ after R landed:
   access. This is the UCAN spec's own preference — *"Revocation SHOULD be
   considered the last line of defense against abuse. Proactive expiry
   through time bounds or other constraints SHOULD be preferred."*
-  Open questions for the plan: session TTL (hours, not minutes — it must
-  survive an offline stretch), whether renewal is a new account-service
-  endpoint or the device self-mints from the stored `root → device` grant
-  (self-minting needs no network and is preferred if the access-service
-  can enforce the expiry), and whether the access-service should *require*
-  a bounded invocation rather than merely accepting one, which is the
-  breaking half and wants a soak first.
+  Settled and partly built (plan: `2026-07-24-session-delegations.md`):
+  12-hour TTL, self-minted by the device from the grant it already holds
+  (no renewal endpoint, nothing to be unreachable), and the access-service
+  *enforces* a presented window without *requiring* one — additive, so it
+  ships ahead of the clients that will start bounding themselves.
+  Requiring bounded invocations is the breaking half and is gated on a
+  soak.
+
+  This uncovered a live gap worth stating on its own: **expiry was not
+  enforced at the presign boundary at all.** `Invocation::check` computes
+  the chain's valid `TimeRange` and returns it, `InvocationChain::verify`
+  discards it with `.map(|_| ())`, and `UcanAuthorizer::authorize` never
+  looked — so a chain that expired last year verified exactly like a fresh
+  one, and only a chain that could never be valid was rejected. Enforcement
+  now lives in the access-service's own credential screen, reading the
+  window off the parse the revocation screen already does.
 
 Shipped in #640:
 
