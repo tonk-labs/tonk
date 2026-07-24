@@ -179,26 +179,27 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "6a4d562b2c5b0706e9b0975530f5d9f947bb1e34" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2395873d9a0e764ca32853545d35159988b86e77" }
 
 # NOTE — the dialog deps above are pinned to a REV, not a tag, and that rev is
-# `tonk-2026-07-17` plus exactly one commit: `feat/storage-clone`, which makes
-# `Storage` cloneable (dialog-db #407).
+# `tonk-2026-07-17` plus exactly one commit, making `Storage` cloneable. It sits
+# on the dialog branch `tonk-2026-07-17-storage-clone`; the same commit is up for
+# review against dialog `main` as dialog-db #407.
 #
 # Why the extra commit: the worker's presign credential is its operator
 # delegation, and bounding it in time means rotating the operator before it
