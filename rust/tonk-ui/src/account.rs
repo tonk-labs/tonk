@@ -319,6 +319,21 @@ fn load_devices(host: HtmlElement) {
     });
 }
 
+/// The account rotated server-side, but this browser failed to persist the
+/// new link. Send the user to log in with the new passkey rather than
+/// leaving the rotate panel (and its "create a new passkey" submit) live,
+/// which would risk a third credential.
+fn show_relink_failure(host: &HtmlElement) {
+    set_busy(host, false, "");
+    set_mode(host, "link");
+    show_error(
+        host,
+        "Your account is now on the new passkey, but this browser could not \
+         finish linking. Do not create another passkey — use Log in with your \
+         new passkey instead.",
+    );
+}
+
 fn load_status(host: HtmlElement) {
     if let Err(error) = service(&host) {
         set_mode(&host, "blocked");
@@ -739,36 +754,51 @@ fn bind(host: &HtmlElement) {
         };
         set_busy(&host, true, "Waiting for your current passkey…");
         spawn_local(async move {
-            let result = async {
+            let setup = async {
                 let device_did = crate::api::identify()
                     .await
                     .map_err(|error| error.to_string())?
                     .did;
                 let rotation: RotationOutput =
                     identity_call("rotateAccount", &RotateInput { name, device_did }).await?;
-                set_busy(&host, true, "Rotating your account…");
-                crate::api::rotate_account(
-                    &service(&host)?,
-                    &rotation.rotation_hex,
-                    &rotation.confirmation_hex,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-                crate::api::save_account_link(
-                    rotation.new_root_did,
-                    rotation.device_delegation_hex,
-                    Some(&rotation.succession_hex),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-                Ok::<(), String>(())
+                let service_url = service(&host)?;
+                Ok::<(String, RotationOutput), String>((service_url, rotation))
             }
             .await;
-            match result {
-                Ok(()) => show_success(&host),
+            let (service_url, rotation) = match setup {
+                Ok(value) => value,
                 Err(error) => {
                     set_busy(&host, false, "");
-                    show_error(&host, error);
+                    return show_error(&host, error);
+                }
+            };
+
+            set_busy(&host, true, "Rotating your account…");
+            if let Err(error) = crate::api::rotate_account(
+                &service_url,
+                &rotation.rotation_hex,
+                &rotation.confirmation_hex,
+            )
+            .await
+            {
+                // Nothing changed server-side: safe to retry the whole rotation.
+                set_busy(&host, false, "");
+                return show_error(&host, error.to_string());
+            }
+
+            match crate::api::save_account_link(
+                rotation.new_root_did,
+                rotation.device_delegation_hex,
+                Some(&rotation.succession_hex),
+            )
+            .await
+            {
+                Ok(_status) => show_success(&host),
+                Err(error) => {
+                    web_sys::console::error_1(
+                        &format!("failed to save the rotated account link: {error}").into(),
+                    );
+                    show_relink_failure(&host);
                 }
             }
         });
@@ -916,6 +946,52 @@ mod tests {
                 "{selector} should be hidden while rotate is shown"
             );
         }
+    }
+
+    #[dialog_common::test]
+    fn it_routes_a_failed_post_rotation_relink_to_log_in() {
+        let host = host();
+        set_mode(&host, "rotate");
+        set_busy(&host, true, "Rotating your account…");
+
+        show_relink_failure(&host);
+
+        assert!(
+            host.query_selector("#account-link")
+                .unwrap()
+                .unwrap()
+                .get_attribute("hidden")
+                .is_none(),
+            "the log-in panel should be shown"
+        );
+        assert!(
+            host.query_selector("#account-rotate")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden"),
+            "the rotate panel (with its create-a-new-passkey submit) must not stay live"
+        );
+        assert_eq!(
+            host.query_selector("#account-error")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some(
+                "Your account is now on the new passkey, but this browser could not \
+                 finish linking. Do not create another passkey — use Log in with your \
+                 new passkey instead."
+            )
+        );
+        assert!(
+            !host
+                .query_selector("#account-rotate-submit")
+                .unwrap()
+                .unwrap()
+                .unchecked_into::<HtmlButtonElement>()
+                .disabled(),
+            "buttons must be re-enabled, not left busy"
+        );
     }
 
     #[dialog_common::test]
