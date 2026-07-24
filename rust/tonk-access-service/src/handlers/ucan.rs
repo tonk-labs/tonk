@@ -56,11 +56,12 @@ async fn handle_inner(
         .await
         .map_err(map_access_error)?;
 
-    // 3b. Screen the presented credentials against revoked devices.
-    // Runs only after cryptographic authorization succeeded, and fails
-    // closed: a presign the screen cannot clear is refused.
+    // 3b. Screen the presented credentials: the window they claim, and
+    // whether any of them belongs to a revoked device. Runs only after
+    // cryptographic authorization succeeded, and fails closed: a
+    // presign the screen cannot clear is refused.
     #[cfg(target_arch = "wasm32")]
-    screen_revoked(&body_bytes, ctx).await?;
+    screen_credentials(&body_bytes, ctx).await?;
 
     // 4. Serialize the response as CBOR
     let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request).map_err(|e| {
@@ -81,10 +82,11 @@ async fn handle_inner(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn screen_revoked(
+async fn screen_credentials(
     body_bytes: &[u8],
     ctx: &RouteContext<()>,
 ) -> std::result::Result<(), ServiceError> {
+    use crate::expiry::{WindowVerdict, check_window};
     use crate::revocation::{self, RevocationVerdict, d1::D1RevocationRegistry};
 
     let presented = match revocation::collect_presented(body_bytes) {
@@ -98,6 +100,28 @@ async fn screen_revoked(
             return Err(unavailable());
         }
     };
+
+    // The window screen needs no registry, so it runs first: an expired
+    // chain is refused without spending a D1 query on it.
+    let now_ms = Date::now().as_millis();
+    match check_window(&presented, now_ms / 1_000) {
+        WindowVerdict::Valid => {}
+        WindowVerdict::Expired => {
+            worker::console_log!("presign rejected: presented chain has expired");
+            return Err(ServiceError::new(
+                ErrorCode::InvocationExpired,
+                "the presented chain is outside its valid window",
+            ));
+        }
+        WindowVerdict::NotYetValid => {
+            worker::console_log!("presign rejected: presented chain is not yet valid");
+            return Err(ServiceError::new(
+                ErrorCode::InvocationExpired,
+                "the presented chain is outside its valid window",
+            ));
+        }
+    }
+
     let registry = match ctx.d1("ACCOUNTS_DB") {
         Ok(db) => D1RevocationRegistry::new(db),
         Err(err) => {
@@ -105,7 +129,6 @@ async fn screen_revoked(
             return Err(unavailable());
         }
     };
-    let now_ms = Date::now().as_millis();
     match revocation::assess(&registry, &presented, now_ms).await {
         RevocationVerdict::Allowed => Ok(()),
         RevocationVerdict::AllowedStale(reason) => {

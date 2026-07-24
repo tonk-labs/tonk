@@ -33,6 +33,8 @@
 use worker::*;
 
 mod error;
+#[cfg(any(target_arch = "wasm32", test))]
+mod expiry;
 mod handlers;
 #[cfg(any(target_arch = "wasm32", test))]
 mod revocation;
