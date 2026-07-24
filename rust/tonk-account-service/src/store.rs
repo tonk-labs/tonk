@@ -190,6 +190,25 @@ pub trait Store {
     /// was found.
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError>;
 
+    /// Flip the account's root DID and passkey credential in one
+    /// statement. Returns `StoreError::Conflict` if the new root DID is
+    /// already registered to any account.
+    async fn rotate_root(
+        &self,
+        account_id: i64,
+        new_root_did: &str,
+        new_credential_id: &str,
+    ) -> Result<(), StoreError>;
+
+    /// Repoint one device row at a fresh delegation CID. Returns `false`
+    /// if no matching device was found.
+    async fn update_device_delegation(
+        &self,
+        account_id: i64,
+        device_did: &str,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError>;
+
     /// Create a pending CLI browser handoff.
     async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError>;
 
@@ -261,6 +280,14 @@ pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegatio
 /// SQL: mark a device as revoked.
 pub const UPDATE_DEVICE_REVOKE: &str =
     "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2";
+
+/// SQL: flip an account's root DID and passkey credential.
+pub const UPDATE_ACCOUNT_ROOT: &str =
+    "UPDATE accounts SET root_did = ?2, credential_id = ?3 WHERE id = ?1";
+
+/// SQL: repoint one device row at a fresh delegation.
+pub const UPDATE_DEVICE_DELEGATION: &str =
+    "UPDATE devices SET delegation_cid = ?3 WHERE account_id = ?1 AND device_did = ?2";
 
 /// SQL: create a pending browser handoff.
 pub const INSERT_LINK: &str = "INSERT INTO link_requests \

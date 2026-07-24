@@ -10,7 +10,8 @@ use super::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest,
     NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_ACCOUNT_ROOT,
+    UPDATE_DEVICE_DELEGATION, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -242,6 +243,37 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
+    async fn rotate_root(
+        &self,
+        account_id: i64,
+        new_root_did: &str,
+        new_credential_id: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.execute(
+            UPDATE_ACCOUNT_ROOT,
+            params![account_id, new_root_did, new_credential_id],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn update_device_delegation(
+        &self,
+        account_id: i64,
+        device_did: &str,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(
+                UPDATE_DEVICE_DELEGATION,
+                params![account_id, device_did, delegation_cid],
+            )
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
     async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.execute(
@@ -403,6 +435,86 @@ mod tests {
         assert_eq!((read.code_hash.as_str(), read.attempts), ("h2", 1));
         store.delete_code("a@x.com").await.unwrap();
         assert!(store.code("a@x.com").await.unwrap().is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_rotates_the_root_and_keeps_the_row_id() {
+        let store = SqliteStore::in_memory().unwrap();
+        let id = store
+            .create_account("a@x.com", "did:key:zOld", "cred-old", 100)
+            .await
+            .unwrap();
+        store
+            .rotate_root(id, "did:key:zNew", "cred-new")
+            .await
+            .unwrap();
+        assert!(
+            store
+                .account_by_root("did:key:zOld")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let account = store
+            .account_by_root("did:key:zNew")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (account.id, account.credential_id.as_str()),
+            (id, "cred-new")
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_rotating_onto_a_registered_root() {
+        let store = SqliteStore::in_memory().unwrap();
+        let id = store
+            .create_account("a@x.com", "did:key:zA", "cred-a", 100)
+            .await
+            .unwrap();
+        store
+            .create_account("b@x.com", "did:key:zB", "cred-b", 100)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.rotate_root(id, "did:key:zB", "cred-x").await,
+            Err(StoreError::Conflict(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_repoints_a_device_delegation() {
+        let store = SqliteStore::in_memory().unwrap();
+        let id = store
+            .create_account("a@x.com", "did:key:zA", "cred", 100)
+            .await
+            .unwrap();
+        store
+            .insert_device(&Device {
+                account_id: id,
+                device_did: "did:key:zDev".into(),
+                delegation_cid: "bafyOld".into(),
+                name: "laptop".into(),
+                status: DeviceStatus::Active,
+                created_at: 100,
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .update_device_delegation(id, "did:key:zDev", "bafyNew")
+                .await
+                .unwrap()
+        );
+        let device = store.device_by_did("did:key:zDev").await.unwrap().unwrap();
+        assert_eq!(device.delegation_cid, "bafyNew");
+        assert!(
+            !store
+                .update_device_delegation(id, "did:key:zGhost", "bafyNew")
+                .await
+                .unwrap()
+        );
     }
 
     #[dialog_common::test]
