@@ -305,15 +305,16 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
         tonk.sync_queue = Default::default();
     }
 
+    // Lay down the replacement profile's meta branch. Not fatal: by
+    // here the device is revoked and the key rotated, so reporting a
+    // failure would name an action that did happen and leave nothing to
+    // retry. Boot bootstraps the profile too, so a miss here heals on
+    // the next worker start.
     {
         let tonk = state.read().await;
-        crate::router::repository::bootstrap_profile(&tonk)
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to bootstrap the replacement profile: {error}"
-                ))
-            })?;
+        if let Err(error) = crate::router::repository::bootstrap_profile(&tonk).await {
+            log!("replacement profile not bootstrapped, deferring to next boot: {error}");
+        }
     }
 
     Ok(Json(AccountStatus::Unlinked { device_did }))

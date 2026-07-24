@@ -98,13 +98,17 @@ pub async fn revoke(
             "cannot revoke the device you are using; sign out instead".to_string(),
         ));
     }
-    let (link, service) = linked_service(&state).await?;
-    let device = state.profile.signer().signer().clone();
+    // Checked before the account link and service are resolved: this is
+    // a property of the request itself, and a caller who sent no
+    // revocation should hear that rather than whichever lookup happened
+    // to fail first.
     if request.revocation.is_empty() {
         return Err(TonkWorkerError::Conflict(
             "revoking another device needs a passkey-signed revocation".to_string(),
         ));
     }
+    let (link, service) = linked_service(&state).await?;
+    let device = state.profile.signer().signer().clone();
     let arguments = [
         ("did".to_owned(), Promised::String(request.did)),
         (
