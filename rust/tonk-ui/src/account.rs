@@ -663,8 +663,10 @@ fn bind(host: &HtmlElement) {
             .map(|window| {
                 window
                     .confirm_with_message(
-                        "Sign out of your account on this device? Your data stays; \
-                         this browser stops acting as the account until you log in again.",
+                        "Sign out and revoke this device? This browser starts over with a \
+                         new device identity, so logging back in needs your passkey. Your \
+                         spaces come back from your account — anything you never turned on \
+                         sync for does not.",
                     )
                     .unwrap_or(false)
             })
@@ -675,10 +677,16 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Signing out…");
         spawn_local(async move {
             match crate::api::unlink_account().await {
-                Ok(_) => {
-                    set_busy(&host, false, "");
-                    set_mode(&host, "choice");
-                }
+                // Everything on screen belongs to the profile that just
+                // got replaced, down to the spaces in the sidebar, so
+                // reload rather than trying to reconcile it in place.
+                Ok(_) => match window().map(|window| window.location().reload()) {
+                    Some(Ok(())) => {}
+                    _ => {
+                        set_busy(&host, false, "");
+                        set_mode(&host, "choice");
+                    }
+                },
                 Err(error) => {
                     set_busy(&host, false, "");
                     show_error(&host, error.to_string());
