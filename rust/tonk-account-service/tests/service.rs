@@ -639,54 +639,36 @@ async fn it_recovers_the_account_via_surviving_device_and_new_root_over_http() {
     let device_link = tonk_identity::delegation::mint_device_delegation(old_root, &device_b.did())
         .await
         .unwrap();
-    let fresh_delegation =
-        tonk_identity::delegation::mint_device_delegation(new_root, &device_b.did())
-            .await
-            .unwrap();
-    let device_delegation_hex = hex::encode(fresh_delegation.to_bytes().unwrap());
 
-    let mut recovery_args = BTreeMap::new();
-    recovery_args.insert(
-        "newRootDid".to_string(),
-        Promised::String(new_root_did.clone()),
-    );
-    recovery_args.insert(
-        "newCredentialId".to_string(),
-        Promised::String("cred-recovered".to_string()),
-    );
-    recovery_args.insert(
-        "deviceDelegation".to_string(),
-        Promised::String(device_delegation_hex.clone()),
-    );
-    let recovery_bytes = tonk_identity::request::build_device_invocation(
-        device_b,
-        &device_link,
-        vec!["account".into(), "recover".into()],
-        recovery_args,
+    // The production ceremony builder produces the new-root-signed half
+    // (confirmation) plus the fresh device delegation; the production
+    // request builder wraps that into the device-signed half (recovery),
+    // proved by the OLD root's link to device B.
+    let recovery_ceremony = tonk_identity::ceremony::recover_account(
+        new_root,
+        "cred-recovered".to_string(),
+        old_root_did.clone(),
+        device_b.did(),
     )
     .await
     .unwrap();
+    assert_eq!(recovery_ceremony.new_root_did, new_root_did);
 
-    let new_root = tonk_identity::derive::derive_root_signer(&NEW_ROOT_PRF)
-        .await
-        .unwrap();
-    let mut confirmation_args = BTreeMap::new();
-    confirmation_args.insert(
-        "oldRootDid".to_string(),
-        Promised::String(old_root_did.clone()),
-    );
-    let confirmation_bytes = root_container(
-        new_root,
-        vec!["account".into(), "recover".into(), "confirm".into()],
-        confirmation_args,
+    let recovery_bytes = tonk_identity::request::build_recovery_invocation(
+        device_b,
+        &device_link,
+        recovery_ceremony.new_root_did.clone(),
+        recovery_ceremony.new_credential_id.clone(),
+        recovery_ceremony.device_delegation_hex.clone(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let response = client
         .post(format!("{base}/accounts/recover"))
         .json(&serde_json::json!({
             "recovery": hex::encode(recovery_bytes),
-            "confirmation": hex::encode(confirmation_bytes),
+            "confirmation": recovery_ceremony.confirmation_hex,
         }))
         .send()
         .await

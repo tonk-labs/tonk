@@ -238,6 +238,61 @@ pub async fn rotate_account(
     })
 }
 
+/// Output of the new-root half of the surviving-device recovery ceremony.
+///
+/// The device-signed half (command `["account", "recover"]`, carrying
+/// these same `newRootDid`/`newCredentialId`/`deviceDelegationHex`
+/// values plus proof of the old `root → device` link) is built
+/// worker-side, where the device key lives — see
+/// `request::build_recovery_invocation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryCeremony {
+    /// The root DID the account recovers onto.
+    pub new_root_did: String,
+    /// The credential id backing the new root's passkey.
+    pub new_credential_id: String,
+    /// Hex-encoded `newRoot → device` delegation for the ceremony device.
+    pub device_delegation_hex: String,
+    /// Hex-encoded new-root-signed confirmation container.
+    pub confirmation_hex: String,
+}
+
+/// Build the new-root-signed confirmation half of a surviving-device
+/// recovery: proof the new DID is controllable, naming the account's old
+/// root so the service can cross-check it against the device-signed
+/// recovery container.
+pub async fn recover_account(
+    new_root: Ed25519Signer,
+    new_credential_id: String,
+    old_root_did: String,
+    device_did: dialog_varsig::Did,
+) -> Result<RecoveryCeremony> {
+    let new_root_did = new_root.did().to_string();
+
+    let device_link = mint_device_delegation(new_root.clone(), &device_did).await?;
+    let device_delegation_hex = hex::encode(
+        device_link
+            .to_bytes()
+            .context("failed to serialize the device delegation")?,
+    );
+
+    let confirmation = build(
+        new_root,
+        vec!["account".into(), "recover".into(), "confirm".into()],
+        strings([("oldRootDid", old_root_did)]),
+        device_did.to_string(),
+        device_delegation_hex.clone(),
+    )
+    .await?;
+
+    Ok(RecoveryCeremony {
+        new_root_did,
+        new_credential_id,
+        device_delegation_hex,
+        confirmation_hex: confirmation.invocation_hex,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +446,42 @@ mod tests {
             vec![
                 "account".to_string(),
                 "rotate".to_string(),
+                "confirm".to_string()
+            ]
+        );
+        assert_eq!(
+            confirmation.arguments().get("oldRootDid"),
+            Some(&Promised::String(old_did))
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_the_new_root_half_of_a_recovery() {
+        let old_root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let new_root = crate::derive::derive_root_signer(&[9u8; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
+        let old_did = old_root.did().to_string();
+        let new_did = new_root.did().to_string();
+
+        let ceremony = recover_account(new_root, "cred-new".into(), old_did.clone(), device.did())
+            .await
+            .unwrap();
+        assert_eq!(ceremony.new_root_did, new_did);
+        assert_eq!(ceremony.new_credential_id, "cred-new");
+
+        let confirmation =
+            InvocationChain::try_from(hex::decode(&ceremony.confirmation_hex).unwrap().as_slice())
+                .unwrap();
+        confirmation
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await
+            .unwrap();
+        assert_eq!(confirmation.issuer().to_string(), new_did);
+        assert_eq!(
+            confirmation.command().0,
+            vec![
+                "account".to_string(),
+                "recover".to_string(),
                 "confirm".to_string()
             ]
         );

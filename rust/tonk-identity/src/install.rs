@@ -208,6 +208,62 @@ async fn rotate_account(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
+/// Recover the account onto a freshly created passkey under the
+/// authority of a surviving device.
+///
+/// `old_root_did` and `device_did` are supplied by the caller (the page
+/// reads them from `GET /api/account`, which the surviving device can
+/// still reach even though the old passkey is gone) rather than derived
+/// locally, since there is no credential left on this origin to derive
+/// the old root from.
+async fn recover_account(input: JsValue) -> Result<JsValue, JsValue> {
+    let name = string_property(&input, "name")?;
+    let old_root_did = string_property(&input, "oldRootDid")?;
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+
+    let created = crate::passkey::create_passkey(&name)
+        .await
+        .map_err(js_error)?;
+    let credential_id = hex::encode(&created.id);
+    let prf_at_create = created.prf_output.is_some();
+    let prf = match created.prf_output {
+        Some(output) => output,
+        None => crate::passkey::prf_output(Some(&created.id))
+            .await
+            .map_err(js_error)?,
+    };
+    let new_root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+
+    let ceremony =
+        crate::ceremony::recover_account(new_root, credential_id.clone(), old_root_did, device_did)
+            .await
+            .map_err(js_error)?;
+
+    let result = Object::new();
+    Reflect::set(&result, &"newRootDid".into(), &ceremony.new_root_did.into())?;
+    Reflect::set(
+        &result,
+        &"newCredentialId".into(),
+        &ceremony.new_credential_id.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"deviceDelegationHex".into(),
+        &ceremony.device_delegation_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"confirmationHex".into(),
+        &ceremony.confirmation_hex.into(),
+    )?;
+    Reflect::set(&result, &"prfAtCreate".into(), &prf_at_create.into())?;
+    Ok(result.into())
+}
+
 async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
     let token_hash = string_property(&input, "tokenHash")?;
     let device_did = string_property(&input, "deviceDid")?
@@ -270,6 +326,16 @@ pub fn install() {
     );
     link_device.forget();
 
+    let recover_account = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(recover_account(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"recoverAccount".into(),
+        recover_account.as_ref().unchecked_ref(),
+    );
+    recover_account.forget();
+
     let complete_link = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(complete_link(input))
     });
@@ -312,6 +378,7 @@ mod tests {
             "linkDevice",
             "completeLink",
             "rotateAccount",
+            "recoverAccount",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

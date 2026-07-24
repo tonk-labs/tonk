@@ -58,6 +58,36 @@ pub async fn build_device_invocation(
         .context("failed to serialize the device invocation")
 }
 
+/// Build the device-signed half of the surviving-device recovery
+/// ceremony: proof of the old `root → device` link (attached as `link`'s
+/// proof), naming the new root, its credential, and the fresh
+/// `newRoot → device` delegation the service installs on success.
+pub async fn build_recovery_invocation(
+    device: Ed25519Signer,
+    link: &DelegationChain,
+    new_root_did: String,
+    new_credential_id: String,
+    device_delegation_hex: String,
+) -> Result<Vec<u8>> {
+    let mut arguments = BTreeMap::new();
+    arguments.insert("newRootDid".to_owned(), Promised::String(new_root_did));
+    arguments.insert(
+        "newCredentialId".to_owned(),
+        Promised::String(new_credential_id),
+    );
+    arguments.insert(
+        "deviceDelegation".to_owned(),
+        Promised::String(device_delegation_hex),
+    );
+    build_device_invocation(
+        device,
+        link,
+        vec!["account".into(), "recover".into()],
+        arguments,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +140,53 @@ mod tests {
                 "chain".to_string(),
                 "put".to_string()
             ],
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_a_device_signed_recovery_invocation() {
+        let old_root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let old_root_did = old_root.did();
+        let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
+        let device_did = device.did();
+        let link = crate::delegation::mint_device_delegation(old_root, &device_did)
+            .await
+            .unwrap();
+        let expected_proof = link.proofs().last().unwrap().to_cid();
+
+        let bytes = build_recovery_invocation(
+            device,
+            &link,
+            "did:key:new-root".to_owned(),
+            "cred-new".to_owned(),
+            "deadbeef".to_owned(),
+        )
+        .await
+        .unwrap();
+
+        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
+        chain
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await
+            .unwrap();
+        assert_eq!(chain.issuer(), &device_did);
+        assert_eq!(chain.subject(), &old_root_did);
+        assert_eq!(chain.proofs(), &vec![expected_proof]);
+        assert_eq!(
+            chain.command().0,
+            vec!["account".to_string(), "recover".to_string()],
+        );
+        assert_eq!(
+            chain.arguments().get("newRootDid"),
+            Some(&Promised::String("did:key:new-root".to_owned()))
+        );
+        assert_eq!(
+            chain.arguments().get("newCredentialId"),
+            Some(&Promised::String("cred-new".to_owned()))
+        );
+        assert_eq!(
+            chain.arguments().get("deviceDelegation"),
+            Some(&Promised::String("deadbeef".to_owned()))
         );
     }
 }
