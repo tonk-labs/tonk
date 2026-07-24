@@ -53,6 +53,7 @@ pub(crate) async fn migrate_rosters(tonk: &TonkState) {
         return; // unlinked
     }
     if MIGRATE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        log!("roster migration sweep skipped: another sweep is already in flight");
         return;
     }
     for key in crate::router::profile_name::profile_space_keys(tonk).await {
@@ -75,6 +76,7 @@ pub(crate) async fn converge_after_rotation(tonk: &TonkState, old_root: &dialog_
         return;
     };
     if MIGRATE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        log!("rotation convergence sweep skipped: another sweep is already in flight");
         return;
     }
     for key in crate::router::profile_name::profile_space_keys(tonk).await {

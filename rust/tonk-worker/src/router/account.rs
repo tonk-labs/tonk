@@ -505,7 +505,22 @@ pub async fn recover(
         delegation_hex: request.device_delegation_hex.clone(),
         succession_hex: None,
     };
-    persist_link_replacing(&state, &link_request).await?;
+    // The service registry is already flipped onto the new root by
+    // `post_recovery` above; if the local persist below fails now, retrying
+    // this handler from scratch is a dead end — it would rebuild the
+    // recovery invocation from the stored *old* link and get a 401 from a
+    // service that has already forgotten that root. Since the failure mode
+    // here is a local storage write (not a network round trip), retry it
+    // once in place before surfacing an error the caller cannot recover
+    // from.
+    //
+    // A fully idempotent `recover` — one that detects the service already
+    // reports the flip as done and re-drives the local persist from that
+    // state instead of re-running the whole ceremony — is a tracked
+    // follow-up, not implemented here.
+    if let Err(_first_error) = persist_link_replacing(&state, &link_request).await {
+        persist_link_replacing(&state, &link_request).await?;
+    }
 
     // Same write-then-read lock handoff as `link`'s rotation arm, and for
     // the same reason: the sweep is a purely local storage sweep that must
@@ -519,6 +534,10 @@ pub async fn recover(
             {
                 let tonk = app_state.write().await;
                 crate::router::migrate::converge_after_rotation(&tonk, &old_root).await;
+                // Recovery creates no device-keyed rows, so this sweep has
+                // nothing to migrate here — but it's idempotent, cheap, and
+                // keeps this arm symmetric with `link`'s rotation arm above.
+                crate::router::migrate::migrate_rosters(&tonk).await;
             }
             let tonk = app_state.read().await;
             crate::router::restore::restore_spaces(&tonk).await;
