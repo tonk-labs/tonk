@@ -58,7 +58,7 @@ async fn handle_inner(
 
     // 3b. Screen the presented credentials against revoked devices.
     // Runs only after cryptographic authorization succeeded, and fails
-    // open: registry trouble must never take sync down.
+    // closed: a presign the screen cannot clear is refused.
     #[cfg(target_arch = "wasm32")]
     screen_revoked(&body_bytes, ctx).await?;
 
@@ -90,25 +90,26 @@ async fn screen_revoked(
     let presented = match revocation::collect_presented(body_bytes) {
         Ok(presented) => presented,
         Err(err) => {
-            // The authorizer already accepted this container; a parse
-            // failure here is a shape drift to surface, not a reason to
-            // block the request.
-            console_error!("revocation screen skipped, container unparseable: {err}");
-            return Ok(());
+            // The authorizer already accepted this container, so a parse
+            // failure here is shape drift between two parsers of the same
+            // bytes. There is no key set to screen and no cached verdict
+            // to fall back on, so the request cannot be cleared.
+            console_error!("revocation screen unavailable, container unparseable: {err}");
+            return Err(unavailable());
         }
     };
     let registry = match ctx.d1("ACCOUNTS_DB") {
         Ok(db) => D1RevocationRegistry::new(db),
         Err(err) => {
-            console_error!("revocation screen skipped, no ACCOUNTS_DB binding: {err}");
-            return Ok(());
+            console_error!("revocation screen unavailable, no ACCOUNTS_DB binding: {err}");
+            return Err(unavailable());
         }
     };
     let now_ms = Date::now().as_millis();
     match revocation::assess(&registry, &presented, now_ms).await {
         RevocationVerdict::Allowed => Ok(()),
-        RevocationVerdict::AllowedFailOpen(reason) => {
-            console_error!("revocation screen failed open: {reason}");
+        RevocationVerdict::AllowedStale(reason) => {
+            console_error!("revocation registry unreachable, serving cached verdicts: {reason}");
             Ok(())
         }
         RevocationVerdict::Revoked => {
@@ -118,7 +119,22 @@ async fn screen_revoked(
                 "a credential in the presented chain has been revoked",
             ))
         }
+        RevocationVerdict::Unavailable(reason) => {
+            console_error!("presign refused, revocation registry unreachable: {reason}");
+            Err(unavailable())
+        }
     }
+}
+
+/// The client-facing 503. The reason stays in the logs: it names
+/// internal infrastructure and the caller can do nothing with it but
+/// retry.
+#[cfg(target_arch = "wasm32")]
+fn unavailable() -> ServiceError {
+    ServiceError::new(
+        ErrorCode::RevocationUnavailable,
+        "revocation registry unavailable, retry shortly",
+    )
 }
 
 /// Create UcanAuthorizer from environment configuration.

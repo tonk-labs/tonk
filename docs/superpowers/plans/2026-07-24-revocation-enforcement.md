@@ -27,6 +27,14 @@
   (60 s TTL) so the hot path does at most one D1 query per unseen credential
   set per minute. Accepted by the master design: a revoked device gets a brief
   window during a D1 outage, never an availability loss for everyone else.
+
+  > **Superseded.** This shipped as written in #641 and was then inverted:
+  > the screen fails *closed*, with the cache extended by a 10-minute grace
+  > window that covers an unreachable registry for credentials it recently
+  > cleared. Fail-open made the security property conditional on config
+  > correctness — a renamed binding disabled enforcement with only a log
+  > line — while the grace window buys back the availability fail-open was
+  > protecting. See the completion spec's stage R for the reasoning.
 - **Entitlement seam:** billing later adds an `entitlements` lookup as a new
   method on `RevocationRegistry` (or a sibling trait) plus one more arm in the
   handler; `collect_presented`, `assess`, and the cache do not change. Keep
