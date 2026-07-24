@@ -84,6 +84,22 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_mints_a_subject_open_delegation_to_the_new_root() {
+        let old_root = crate::derive::derive_root_signer(&ROOT_PRF).await.unwrap();
+        let new_root = crate::derive::derive_root_signer(&[9u8; 32]).await.unwrap();
+        let old_did = old_root.did();
+        let new_did = new_root.did();
+        let chain = mint_root_succession(old_root, &new_did).await.unwrap();
+        assert_eq!(*chain.issuer(), old_did);
+        assert_eq!(*chain.audience(), new_did);
+        assert!(
+            chain.subject().is_none(),
+            "oldRoot → newRoot must be subject-open"
+        );
+        assert_eq!(chain.proof_cids().len(), 1);
+    }
+
+    #[dialog_common::test]
     async fn it_extends_a_space_chain_through_the_root_to_the_device() {
         let space = signer(&SPACE_SEED).await;
         let space_did = space.did();

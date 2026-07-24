@@ -160,10 +160,89 @@ pub async fn complete_link(
     .await
 }
 
+/// Output of the two-container rotation ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RotationCeremony {
+    /// The account's current (old) root DID.
+    pub old_root_did: String,
+    /// The root DID the account rotates onto.
+    pub new_root_did: String,
+    /// Hex-encoded `oldRoot → newRoot` succession chain.
+    pub succession_hex: String,
+    /// Hex-encoded `newRoot → device` delegation for the ceremony device.
+    pub device_delegation_hex: String,
+    /// Hex-encoded old-root-signed rotation container.
+    pub rotation_hex: String,
+    /// Hex-encoded new-root-signed confirmation container.
+    pub confirmation_hex: String,
+}
+
+/// Build both rotation containers, the succession chain, and a fresh
+/// device link. The old root signs the rotation (account authority); the
+/// new root signs the confirmation (proof the new DID is controllable, so
+/// a typo cannot strand the account on an inert root).
+pub async fn rotate_account(
+    old_root: Ed25519Signer,
+    new_root: Ed25519Signer,
+    new_credential_id: String,
+    device_did: dialog_varsig::Did,
+) -> Result<RotationCeremony> {
+    let old_root_did = old_root.did().to_string();
+    let new_root_did = new_root.did().to_string();
+
+    let succession =
+        crate::delegation::mint_root_succession(old_root.clone(), &new_root.did()).await?;
+    let succession_hex = hex::encode(
+        succession
+            .to_bytes()
+            .context("failed to serialize the succession delegation")?,
+    );
+    let device_link =
+        crate::delegation::mint_device_delegation(new_root.clone(), &device_did).await?;
+    let device_delegation_hex = hex::encode(
+        device_link
+            .to_bytes()
+            .context("failed to serialize the device delegation")?,
+    );
+
+    let rotation = build(
+        old_root,
+        vec!["account".into(), "rotate".into()],
+        strings([
+            ("newRootDid", new_root_did.clone()),
+            ("newCredentialId", new_credential_id),
+            ("succession", succession_hex.clone()),
+            ("deviceDid", device_did.to_string()),
+            ("deviceDelegation", device_delegation_hex.clone()),
+        ]),
+        device_did.to_string(),
+        device_delegation_hex.clone(),
+    )
+    .await?;
+    let confirmation = build(
+        new_root,
+        vec!["account".into(), "rotate".into(), "confirm".into()],
+        strings([("oldRootDid", old_root_did.clone())]),
+        device_did.to_string(),
+        device_delegation_hex.clone(),
+    )
+    .await?;
+
+    Ok(RotationCeremony {
+        old_root_did,
+        new_root_did,
+        succession_hex,
+        device_delegation_hex,
+        rotation_hex: rotation.invocation_hex,
+        confirmation_hex: confirmation.invocation_hex,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dialog_ucan_core::InvocationChain;
+    use dialog_ucan_core::promise::Promised;
 
     async fn fixture() -> (Ed25519Signer, dialog_varsig::Did) {
         let root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
@@ -265,6 +344,59 @@ mod tests {
         assert_eq!(
             chain.arguments().get("deviceDid"),
             Some(&Promised::String(device.to_string()))
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_a_two_container_rotation() {
+        let old_root = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let new_root = crate::derive::derive_root_signer(&[9u8; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
+        let old_did = old_root.did().to_string();
+        let new_did = new_root.did().to_string();
+
+        let ceremony = rotate_account(old_root, new_root, "cred-new".into(), device.did())
+            .await
+            .unwrap();
+        assert_eq!(ceremony.old_root_did, old_did);
+        assert_eq!(ceremony.new_root_did, new_did);
+
+        let rotation =
+            InvocationChain::try_from(hex::decode(&ceremony.rotation_hex).unwrap().as_slice())
+                .unwrap();
+        rotation
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await
+            .unwrap();
+        assert_eq!(rotation.issuer().to_string(), old_did);
+        assert_eq!(
+            rotation.command().0,
+            vec!["account".to_string(), "rotate".to_string()]
+        );
+        assert_eq!(
+            rotation.arguments().get("newRootDid"),
+            Some(&Promised::String(new_did.clone()))
+        );
+
+        let confirmation =
+            InvocationChain::try_from(hex::decode(&ceremony.confirmation_hex).unwrap().as_slice())
+                .unwrap();
+        confirmation
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await
+            .unwrap();
+        assert_eq!(confirmation.issuer().to_string(), new_did);
+        assert_eq!(
+            confirmation.command().0,
+            vec![
+                "account".to_string(),
+                "rotate".to_string(),
+                "confirm".to_string()
+            ]
+        );
+        assert_eq!(
+            confirmation.arguments().get("oldRootDid"),
+            Some(&Promised::String(old_did))
         );
     }
 }
