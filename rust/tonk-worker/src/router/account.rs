@@ -518,7 +518,8 @@ pub async fn recover(
     // reports the flip as done and re-drives the local persist from that
     // state instead of re-running the whole ceremony — is a tracked
     // follow-up, not implemented here.
-    if let Err(_first_error) = persist_link_replacing(&state, &link_request).await {
+    if let Err(first_error) = persist_link_replacing(&state, &link_request).await {
+        log!("recovery persist failed once, retrying: {first_error}");
         persist_link_replacing(&state, &link_request).await?;
     }
 
