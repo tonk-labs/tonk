@@ -446,6 +446,34 @@ enum AccountCommand {
         #[arg(long)]
         no_open: bool,
     },
+
+    /// List the devices linked to this profile's account
+    Devices {
+        /// Account service base URL (for staging or local development).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_SERVICE_URL,
+            hide = true
+        )]
+        service_url: String,
+    },
+
+    /// Revoke one of the account's devices by DID
+    #[command(after_help = "Examples:\n  tonk account revoke did:key:z6Mk...")]
+    Revoke {
+        /// DID of the device to revoke (see `tonk account devices`).
+        #[arg(value_name = "DID")]
+        did: String,
+        /// Account service base URL (for staging or local development).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_SERVICE_URL,
+            hide = true
+        )]
+        service_url: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -702,6 +730,8 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             Some(match command {
                 AccountCommand::Status => "status",
                 AccountCommand::Link { .. } => "link",
+                AccountCommand::Devices { .. } => "devices",
+                AccountCommand::Revoke { .. } => "revoke",
             }),
         ),
         Command::Eval(_) => ("eval", None),
@@ -920,6 +950,28 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_error(error.to_string()),
         },
+        AccountCommand::Devices { service_url } => {
+            match account::devices(&profile, &service_url).await {
+                Ok(rows) => {
+                    let own = profile.did().to_string();
+                    for row in rows {
+                        let marker = if row.did == own { " (this device)" } else { "" };
+                        println!("{}\t{}\t{}{}", row.status, row.name, row.did, marker);
+                    }
+                    ExitCode::Success
+                }
+                Err(error) => print_error(error.to_string()),
+            }
+        }
+        AccountCommand::Revoke { did, service_url } => {
+            match account::revoke(&profile, &service_url, &did).await {
+                Ok(()) => {
+                    println!("revoked\ndevice: {did}");
+                    ExitCode::Success
+                }
+                Err(error) => print_error(error.to_string()),
+            }
+        }
     }
 }
 

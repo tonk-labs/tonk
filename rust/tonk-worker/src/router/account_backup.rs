@@ -101,7 +101,10 @@ async fn post_chains_put(endpoint: &str, body: Vec<u8>) -> Result<(), TonkWorker
 /// POST a device-signed invocation container to the account service and
 /// return the raw response body bytes.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn post_for_bytes(endpoint: &str, body: Vec<u8>) -> Result<Vec<u8>, TonkWorkerError> {
+pub(crate) async fn post_for_bytes(
+    endpoint: &str,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestInit, Response};
@@ -136,7 +139,10 @@ async fn post_for_bytes(endpoint: &str, body: Vec<u8>) -> Result<Vec<u8>, TonkWo
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn post_for_bytes(endpoint: &str, body: Vec<u8>) -> Result<Vec<u8>, TonkWorkerError> {
+pub(crate) async fn post_for_bytes(
+    endpoint: &str,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, TonkWorkerError> {
     let response = reqwest::Client::new()
         .post(endpoint)
         .body(body)

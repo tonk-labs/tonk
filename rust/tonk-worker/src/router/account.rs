@@ -68,7 +68,14 @@ async fn load_link(state: &crate::worker::TonkState) -> Result<Option<Vec<u8>>, 
         .perform(&state.operator)
         .await
     {
-        Ok(bytes) => Ok(Some(bytes)),
+        Ok(bytes) => {
+            // An empty value is the unlink tombstone: the credential
+            // store has no delete, so signing out writes empty bytes.
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(bytes))
+        }
         Err(CredentialError::NotFound(_)) => Ok(None),
         Err(error) => Err(TonkWorkerError::Internal(format!(
             "failed to load local account link: {error}"
@@ -251,6 +258,51 @@ pub async fn link(
     }))
 }
 
+/// Clear the stored account link for this profile — local sign-out.
+///
+/// Writes an empty tombstone over the stored link (the credential store
+/// has no delete effect). The `root → device` delegation saved into the
+/// access store at link time has no removal API and stays behind: a
+/// signed-out device that is not also *revoked* still holds a usable
+/// delegation. Revocation, not unlink, is the security boundary.
+#[wasm_compat]
+pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    let state = state.read().await;
+    state
+        .profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .save(Vec::new())
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to clear local account link: {error}"))
+        })?;
+    Ok(Json(AccountStatus::Unlinked {
+        device_did: state.profile.did().to_string(),
+    }))
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn tests_request_for(
+    root_seed: &[u8; 32],
+    audience: dialog_varsig::Did,
+) -> tonk_worker_api::AccountLinkRequest {
+    use dialog_varsig::Principal;
+
+    let root = tonk_identity::derive::derive_root_signer(root_seed)
+        .await
+        .unwrap();
+    let root_did = root.did().to_string();
+    let delegation = tonk_identity::delegation::mint_device_delegation(root, &audience)
+        .await
+        .unwrap();
+    tonk_worker_api::AccountLinkRequest {
+        root_did,
+        delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use std::sync::Arc;
@@ -266,17 +318,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn request_for(root_seed: &[u8; 32], audience: dialog_varsig::Did) -> AccountLinkRequest {
-        let root = tonk_identity::derive::derive_root_signer(root_seed)
-            .await
-            .unwrap();
-        let root_did = root.did().to_string();
-        let delegation = tonk_identity::delegation::mint_device_delegation(root, &audience)
-            .await
-            .unwrap();
-        AccountLinkRequest {
-            root_did,
-            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
-        }
+        tests_request_for(root_seed, audience).await
     }
 
     #[dialog_common::test]
@@ -371,5 +413,48 @@ mod tests {
         let device_did = tonk.profile.did();
         assert_eq!(member_did(&tonk).await, device_did);
         assert!(account_root_did(&tonk).await.is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_unlinks_and_returns_to_the_unlinked_state() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let request = request_for(&[7u8; 32], device_did.clone()).await;
+        {
+            let tonk = state.read().await;
+            persist_link(&tonk, &request).await.unwrap();
+        }
+
+        let Json(after) = unlink(State(state.clone())).await.unwrap();
+        assert_eq!(
+            after,
+            AccountStatus::Unlinked {
+                device_did: device_did.to_string()
+            }
+        );
+        let Json(loaded) = get(State(state.clone())).await.unwrap();
+        assert!(matches!(loaded, AccountStatus::Unlinked { .. }));
+
+        // The tombstone must read as "no link", not as a malformed link.
+        let tonk = state.read().await;
+        assert!(account_link(&tonk).await.is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_relinks_the_same_root_after_an_unlink() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let request = request_for(&[7u8; 32], device_did.clone()).await;
+        {
+            let tonk = state.read().await;
+            persist_link(&tonk, &request).await.unwrap();
+        }
+        let _ = unlink(State(state.clone())).await.unwrap();
+        {
+            let tonk = state.read().await;
+            persist_link(&tonk, &request).await.unwrap();
+        }
+        let Json(loaded) = get(State(state)).await.unwrap();
+        assert!(matches!(loaded, AccountStatus::Linked { .. }));
     }
 }

@@ -4414,6 +4414,7 @@ dependencies = [
  "tonk-access-service",
  "tonk-analytics",
  "tonk-evaluator",
+ "tonk-identity",
  "tonk-invite",
  "tonk-notation",
  "tonk-render",
