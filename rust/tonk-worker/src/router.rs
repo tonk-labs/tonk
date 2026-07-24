@@ -142,7 +142,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
-        .route("/api/account", get(account::get))
+        .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/link", post(account::link))
         .route("/api/profile", get(profile::get_profile))
         // Profile-as-repository routes. The profile is its own
