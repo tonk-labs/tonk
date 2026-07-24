@@ -123,17 +123,26 @@ Decision — mint the artifact, keep the index:
   *second* enforcement point becomes possible without extending the D1
   binding to it.
 
-The open question that decides the shape, and the reason this is a stage
-rather than a patch: **only the root can sign it.** The issuer of
+The question that decides the shape: **who signs it?** The issuer of
 `root → device` is the root, so under UCAN semantics only the root (or a
-principal holding a delegated `ucan/revoke` capability) may revoke it. The
-account service does not hold the root key — it is derived from the
-passkey PRF on the user's own device and never leaves it. So either
-revocation becomes a root ceremony (passkey prompt, and a device without
-the passkey can no longer revoke — a UX regression that is also a real
-tightening), or the root delegates `ucan/revoke` to each device at link
-time (keeps today's UX, and means a stolen device can revoke its
-siblings). Pick before writing code. Plan:
+principal holding a delegated `ucan/revoke` capability) may revoke it, and
+the account service does not hold the root key — it is derived from the
+passkey PRF on the user's own device and never leaves it.
+
+Decided: **authority scales with blast radius.** A device may revoke
+*itself* with its own key — always available, offline, no prompt, and a
+stolen device can only sign itself out. Revoking *another* device requires
+the root, so a stolen device cannot lock out its siblings. The artifact
+records whichever authority was actually used; a root-signed artifact
+standing in for a device-authorized action would be a fiction. Consumers
+filter on the attestation level rather than assuming one.
+
+Two consequences worth carrying forward. The cross-device tightening is
+**gated on stage C**: if the lost device is the passkey device, its owner
+cannot derive the root, and the ceremony fails in the exact scenario it
+exists for. And delegated signing needs no migration — `root → device` is
+command-open, so every linked device already holds authority to sign
+`ucan/revoke` under the root. Plan:
 `2026-07-24-signed-revocation-artifacts.md`.
 
 Verified against the pinned dialog tag: `dialog-ucan-core` has no
@@ -205,6 +214,15 @@ no CLI verbs. Ships after R so revoke is real:
   **unlink** (`DELETE /api/account`) that clears the stored `root → device`
   link — self-service "sign out of the account on this device".
 - CLI: `tonk account devices`, `tonk account revoke <device-did>`.
+
+Two copy requirements, both from S's authority decision. Revoking is
+**permanent for that device's key** — the presign screen matches
+`device_did`, so a device that comes back does so as a new device, not a
+restored one; the confirm dialog must say that rather than implying a
+toggle. And the two actions differ in kind: "sign out on this device" is
+self-revocation the device signs itself, while revoking a *different*
+device is a root ceremony (passkey prompt) once S's Task 7 lands. Design
+the panel for both from the start so the tightening is not a redesign.
 
 ### C — Recovery and rotation ceremonies
 
@@ -337,5 +355,14 @@ APIs need confirmation. B gets its plan after the Stripe decisions.
   lands. Anyone who can write `ACCOUNTS_DB` can revoke or un-revoke with
   no audit trail, and no other enforcement point can check revocation
   without that same credential.
+- **Live: any device can permanently lock out its siblings.**
+  `handle_revoke_inner` authorizes any active device of the account and
+  takes the target `did` as a free argument, and the store has no
+  un-revoke. A stolen device can therefore revoke every other device, and
+  the access-service screen matches on `device_did`, so re-registering the
+  same key cannot undo it — recovery is a fresh key and a re-link. Closed
+  by S's Task 7, which is itself gated on C; until then this is an
+  accepted, documented exposure, and D's revoke UX must warn that
+  revocation is permanent for that device's key.
 - **Stage B scope creep.** The entitlement seam in R must stay a seam;
   billing lands only after the log-only soak the master spec requires.
