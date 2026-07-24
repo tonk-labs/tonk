@@ -2,8 +2,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountRecoverRequest, AccountStatus, EvaluateResponse,
-    IdentifyResponse, JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest,
-    SyncResponse, SyncStatusResponse,
+    IdentifyResponse, JoinRequest, JoinResponse, QueryResponse, RepositoryInfo,
+    RevokeDeviceRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;

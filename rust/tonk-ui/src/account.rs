@@ -262,8 +262,9 @@ fn focus_input(host: &HtmlElement, selector: &str) {
 fn set_recover_availability(host: &HtmlElement, linked: bool) {
     if let Ok(Some(message)) = host.query_selector("#account-recover-message") {
         message.set_text_content(Some(if linked {
-            "This replaces the account's passkey. Other devices keep their data and \
-             re-connect the next time they open tonk."
+            "This replaces the account's passkey. Other devices keep their local data, \
+             but reconnecting them to the recovered account is a separate step that isn't \
+             available yet."
         } else {
             "This browser isn't connected to the account, so it can't recover it. Open \
              tonk on a device that's still connected and continue from there instead."
@@ -1234,8 +1235,9 @@ mod tests {
                 .text_content()
                 .as_deref(),
             Some(
-                "This replaces the account's passkey. Other devices keep their data and \
-                 re-connect the next time they open tonk."
+                "This replaces the account's passkey. Other devices keep their local data, \
+                 but reconnecting them to the recovered account is a separate step that isn't \
+                 available yet."
             )
         );
     }
