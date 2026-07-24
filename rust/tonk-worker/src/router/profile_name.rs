@@ -280,7 +280,6 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use crate::worker::{DefaultSpace, TonkState};
-    use dialog_capability::Subject;
     use dialog_operator::Profile;
     use dialog_storage::provider::storage::Storage;
     use tonk_schema::petname;
@@ -295,16 +294,15 @@ mod tests {
             .perform(&storage)
             .await
             .expect("profile opens");
-        let operator = profile
-            .derive(b"test-worker")
-            .allow(Subject::any())
-            .build(storage)
+        let session = crate::session::open(&profile, &storage)
             .await
-            .expect("operator builds");
+            .expect("signing session opens");
         let reactor = crate::Reactor::new(profile.clone());
         TonkState {
             profile,
-            operator,
+            operator: session.operator,
+            storage,
+            session_expires_at: session.expires_at,
             profile_name: name.to_string(),
             reactor,
             view_bindings: Default::default(),

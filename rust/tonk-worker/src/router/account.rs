@@ -8,7 +8,7 @@ use dialog_ucan_core::DelegationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_worker_api::{AccountLinkRequest, AccountStatus};
+use tonk_worker_api::{AccountLinkRequest, AccountStatus, SignOutResponse};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -258,29 +258,171 @@ pub async fn link(
     }))
 }
 
-/// Clear the stored account link for this profile — local sign-out.
+/// Sign out on this device: revoke it in the registry, then rotate onto
+/// a fresh key.
 ///
-/// Writes an empty tombstone over the stored link (the credential store
-/// has no delete effect). The `root → device` delegation saved into the
-/// access store at link time has no removal API and stays behind: a
-/// signed-out device that is not also *revoked* still holds a usable
-/// delegation. Revocation, not unlink, is the security boundary.
+/// Clearing the local link alone would leave a signed-out device still
+/// holding a usable `root → device` delegation — the access store has no
+/// removal API — so sign-out revokes instead. That makes the registry
+/// agree with what the user just asked for, and it is the only half of
+/// this that a stolen device cannot undo.
+///
+/// Revocation is permanent for a key, and the access-service screen
+/// matches a revoked device DID against every chain that DID issues a
+/// hop in, unscoped by account. Keeping the same profile afterwards
+/// would therefore refuse *all* presigns from this browser, local spaces
+/// included, forever. So the device rotates onto a new profile in the
+/// same movement, and the old key is simply left behind.
+///
+/// Nothing outside the device is keyed to the device DID — a linked
+/// profile's roster entries name the account root, and its spaces are
+/// escrowed under that root — so logging back in restores them. The
+/// costs are a passkey prompt to link again, and any space that was
+/// never sync-enabled, which was never escrowed and does not come back.
 #[wasm_compat]
-pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    let state = state.read().await;
-    state
-        .profile
-        .credential()
-        .site(ACCOUNT_LINK_SITE)
-        .save(Vec::new())
-        .perform(&state.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to clear local account link: {error}"))
-        })?;
-    Ok(Json(AccountStatus::Unlinked {
-        device_did: state.profile.did().to_string(),
+pub async fn unlink(
+    State(state): State<AppState>,
+) -> Result<Json<SignOutResponse>, TonkWorkerError> {
+    // Revoke first, while this device's key is still the one the
+    // registry knows. Best-effort: an unreachable account service must
+    // not strand the user on a device they asked to sign out of, and
+    // the local half is what they can see. Failure is carried into the
+    // response rather than aborting: the user asked to leave this
+    // device, and they can finish the revocation from another one.
+    let (revoked, warning) = match revoke_this_device(&state).await {
+        SelfRevocation::Recorded => (true, None),
+        SelfRevocation::NothingToRecord => (false, None),
+        SelfRevocation::Failed(cause) => {
+            log!("sign-out revoked nothing in the registry: {cause}");
+            (false, Some(cause))
+        }
+    };
+
+    let storage = { state.read().await.storage.clone() };
+    let (profile_name, profile) = crate::device::rotate(&storage).await?;
+    let session = crate::session::open(&profile, &storage).await?;
+    let device_did = profile.did().to_string();
+
+    {
+        let mut tonk = state.write().await;
+        // The reactor caches repositories and branches opened as the
+        // old profile. They are not this device's to serve any more, so
+        // it is replaced rather than flushed.
+        tonk.reactor = crate::Reactor::new(profile.clone());
+        tonk.profile = profile;
+        tonk.operator = session.operator;
+        tonk.session_expires_at = session.expires_at;
+        tonk.profile_name = profile_name;
+        tonk.sync_queue = Default::default();
+    }
+
+    // Lay down the replacement profile's meta branch. Not fatal: by
+    // here the device is revoked and the key rotated, so reporting a
+    // failure would name an action that did happen and leave nothing to
+    // retry. Boot bootstraps the profile too, so a miss here heals on
+    // the next worker start.
+    {
+        let tonk = state.read().await;
+        if let Err(error) = crate::router::repository::bootstrap_profile(&tonk).await {
+            log!("replacement profile not bootstrapped, deferring to next boot: {error}");
+        }
+    }
+
+    Ok(Json(SignOutResponse {
+        device_did,
+        revoked,
+        warning,
     }))
+}
+
+/// What became of the registry half of a sign-out.
+enum SelfRevocation {
+    /// The registry accepted this device's self-revocation.
+    Recorded,
+    /// There was no registry to tell: the profile was never linked, or
+    /// this deployment has no account service.
+    NothingToRecord,
+    /// The registry should have been told and was not. The device still
+    /// signs out locally; the cause travels to the user, who can revoke
+    /// from another device.
+    Failed(String),
+}
+
+/// Tell the account registry this device is out, signing the revocation
+/// with the device's own key.
+///
+/// A self-revoke is the one revocation a device can always make: it
+/// needs no passkey and no root, because the only thing it cuts off is
+/// itself. Nothing here is fatal — a profile that was never linked has
+/// nothing to revoke, and a failed call leaves a device the registry
+/// still believes in, which is the state it was already in.
+async fn revoke_this_device(state: &AppState) -> SelfRevocation {
+    use dialog_ucan_core::promise::Promised;
+
+    // Read what the call needs and let the lock go: the rest of this
+    // signs and then waits on the network, and nothing else may touch
+    // the state while a guard is held across those awaits.
+    let (link, device, device_did) = {
+        let tonk = state.read().await;
+        let Some(link) = account_link(&tonk).await else {
+            return SelfRevocation::NothingToRecord; // never linked
+        };
+        (
+            link,
+            tonk.profile.signer().signer().clone(),
+            tonk.profile.did().to_string(),
+        )
+    };
+    let Some(service) = crate::router::account_backup::account_service_url() else {
+        return SelfRevocation::NothingToRecord;
+    };
+    let root_did = link.issuer().clone();
+
+    let revocation =
+        match tonk_identity::revocation::mint_self_revocation(device.clone(), &link, &root_did)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return SelfRevocation::Failed(format!(
+                    "could not sign a revocation for this device: {error}"
+                ));
+            }
+        };
+
+    let arguments = [
+        ("did".to_owned(), Promised::String(device_did)),
+        (
+            "revocation".to_owned(),
+            Promised::String(hex::encode(revocation)),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let body = match tonk_identity::request::build_device_invocation(
+        device,
+        &link,
+        vec!["account".into(), "device".into(), "revoke".into()],
+        arguments,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(error) => {
+            return SelfRevocation::Failed(format!(
+                "could not build the revoke invocation: {error}"
+            ));
+        }
+    };
+
+    let endpoint = format!("{}/devices/revoke", service.trim_end_matches('/'));
+    match crate::router::account_backup::post_for_bytes(&endpoint, body).await {
+        Ok(_) => SelfRevocation::Recorded,
+        Err(error) => SelfRevocation::Failed(format!(
+            "could not reach the account service to revoke this device: {error}"
+        )),
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -426,34 +568,85 @@ mod tests {
         }
 
         let Json(after) = unlink(State(state.clone())).await.unwrap();
-        assert_eq!(
-            after,
-            AccountStatus::Unlinked {
-                device_did: device_did.to_string()
-            }
+        // The test scope has no account service, so there was no
+        // registry to tell — which is not a failure and must not warn.
+        assert!(!after.revoked);
+        assert!(
+            after.warning.is_none(),
+            "nothing-to-record is not a failure worth warning about"
         );
         let Json(loaded) = get(State(state.clone())).await.unwrap();
         assert!(matches!(loaded, AccountStatus::Unlinked { .. }));
 
-        // The tombstone must read as "no link", not as a malformed link.
         let tonk = state.read().await;
         assert!(account_link(&tonk).await.is_none());
     }
 
+    /// The device this browser presents afterwards must not be the one
+    /// sign-out just revoked. Revocation is permanent for a key and the
+    /// access-service screen matches the device DID unscoped by account,
+    /// so coming back as the same profile would refuse every presign
+    /// this browser ever makes again.
     #[dialog_common::test]
-    async fn it_relinks_the_same_root_after_an_unlink() {
+    async fn it_signs_out_onto_a_key_it_did_not_just_revoke() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let revoked_did = state.read().await.profile.did();
+        let request = request_for(&[7u8; 32], revoked_did.clone()).await;
+        {
+            let tonk = state.read().await;
+            persist_link(&tonk, &request).await.unwrap();
+        }
+
+        let Json(after) = unlink(State(state.clone())).await.unwrap();
+
+        let device_did = after.device_did;
+        assert_ne!(device_did, revoked_did.to_string());
+        assert_eq!(
+            state.read().await.profile.did().to_string(),
+            device_did,
+            "the reported device has to be the one the worker actually signs as"
+        );
+    }
+
+    /// Sign-out replaces the operator too, not just the profile. An
+    /// operator still delegated from the retired profile would sign
+    /// presigns that prove nothing about the key this device now has.
+    #[dialog_common::test]
+    async fn it_re_keys_the_signing_session_on_sign_out() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let before = state.read().await.operator.did();
+
+        let _ = unlink(State(state.clone())).await.unwrap();
+
+        let tonk = state.read().await;
+        assert_ne!(before, tonk.operator.did());
+        assert_eq!(
+            tonk.operator.profile_did(),
+            tonk.profile.did(),
+            "the session has to descend from the profile this device now signs as"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_relinks_the_same_root_after_a_sign_out() {
         let state = Arc::new(RwLock::new(test_state().await));
         let device_did = state.read().await.profile.did();
-        let request = request_for(&[7u8; 32], device_did.clone()).await;
+        let request = request_for(&[7u8; 32], device_did).await;
         {
             let tonk = state.read().await;
             persist_link(&tonk, &request).await.unwrap();
         }
         let _ = unlink(State(state.clone())).await.unwrap();
+
+        // The same account root, but delegated to the replacement key —
+        // the old delegation names a device this browser no longer is.
+        let rotated_did = state.read().await.profile.did();
+        let relink = request_for(&[7u8; 32], rotated_did).await;
         {
             let tonk = state.read().await;
-            persist_link(&tonk, &request).await.unwrap();
+            persist_link(&tonk, &relink).await.unwrap();
         }
+
         let Json(loaded) = get(State(state)).await.unwrap();
         assert!(matches!(loaded, AccountStatus::Linked { .. }));
     }

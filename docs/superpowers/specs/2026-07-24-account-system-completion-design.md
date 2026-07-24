@@ -123,17 +123,26 @@ Decision — mint the artifact, keep the index:
   *second* enforcement point becomes possible without extending the D1
   binding to it.
 
-The open question that decides the shape, and the reason this is a stage
-rather than a patch: **only the root can sign it.** The issuer of
+The question that decides the shape: **who signs it?** The issuer of
 `root → device` is the root, so under UCAN semantics only the root (or a
-principal holding a delegated `ucan/revoke` capability) may revoke it. The
-account service does not hold the root key — it is derived from the
-passkey PRF on the user's own device and never leaves it. So either
-revocation becomes a root ceremony (passkey prompt, and a device without
-the passkey can no longer revoke — a UX regression that is also a real
-tightening), or the root delegates `ucan/revoke` to each device at link
-time (keeps today's UX, and means a stolen device can revoke its
-siblings). Pick before writing code. Plan:
+principal holding a delegated `ucan/revoke` capability) may revoke it, and
+the account service does not hold the root key — it is derived from the
+passkey PRF on the user's own device and never leaves it.
+
+Decided: **authority scales with blast radius.** A device may revoke
+*itself* with its own key — always available, offline, no prompt, and a
+stolen device can only sign itself out. Revoking *another* device requires
+the root, so a stolen device cannot lock out its siblings. The artifact
+records whichever authority was actually used; a root-signed artifact
+standing in for a device-authorized action would be a fiction. Consumers
+filter on the attestation level rather than assuming one.
+
+Two consequences worth carrying forward. The cross-device tightening is
+**gated on stage C**: if the lost device is the passkey device, its owner
+cannot derive the root, and the ceremony fails in the exact scenario it
+exists for. And delegated signing needs no migration — `root → device` is
+command-open, so every linked device already holds authority to sign
+`ucan/revoke` under the root. Plan:
 `2026-07-24-signed-revocation-artifacts.md`.
 
 Verified against the pinned dialog tag: `dialog-ucan-core` has no
@@ -161,13 +170,22 @@ after R landed:
   access. This is the UCAN spec's own preference — *"Revocation SHOULD be
   considered the last line of defense against abuse. Proactive expiry
   through time bounds or other constraints SHOULD be preferred."*
-  Open questions for the plan: session TTL (hours, not minutes — it must
-  survive an offline stretch), whether renewal is a new account-service
-  endpoint or the device self-mints from the stored `root → device` grant
-  (self-minting needs no network and is preferred if the access-service
-  can enforce the expiry), and whether the access-service should *require*
-  a bounded invocation rather than merely accepting one, which is the
-  breaking half and wants a soak first.
+  Settled and partly built (plan: `2026-07-24-session-delegations.md`):
+  12-hour TTL, self-minted by the device from the grant it already holds
+  (no renewal endpoint, nothing to be unreachable), and the access-service
+  *enforces* a presented window without *requiring* one — additive, so it
+  ships ahead of the clients that will start bounding themselves.
+  Requiring bounded invocations is the breaking half and is gated on a
+  soak.
+
+  This uncovered a live gap worth stating on its own: **expiry was not
+  enforced at the presign boundary at all.** `Invocation::check` computes
+  the chain's valid `TimeRange` and returns it, `InvocationChain::verify`
+  discards it with `.map(|_| ())`, and `UcanAuthorizer::authorize` never
+  looked — so a chain that expired last year verified exactly like a fresh
+  one, and only a chain that could never be valid was rejected. Enforcement
+  now lives in the access-service's own credential screen, reading the
+  window off the parse the revocation screen already does.
 
 Shipped in #640:
 
@@ -205,6 +223,27 @@ no CLI verbs. Ships after R so revoke is real:
   **unlink** (`DELETE /api/account`) that clears the stored `root → device`
   link — self-service "sign out of the account on this device".
 - CLI: `tonk account devices`, `tonk account revoke <device-did>`.
+
+Shipped in #642. Three follow-ups fall out of S's authority decision,
+all against code that now exists:
+
+1. **Sign out is not self-revocation.** `#account-unlink` clears the
+   stored `root → device` link locally ("Your data stays; this browser
+   stops acting as the account until you log in again"); the registry row
+   stays `active` and the delegation stays valid, so anyone who extracted
+   the key material beforehand keeps full access. Under the decided
+   model a device may revoke *itself*, and sign-out is exactly that
+   gesture — it should mark the registry too, or say plainly that it does
+   not.
+2. **The revoke dialog does not say permanent.** It warns that spaces may
+   need a fresh invite, but the presign screen matches `device_did`, so
+   the device's key is finished: it comes back as a new device, not a
+   restored one. The copy must say so rather than implying a toggle.
+3. **Cross-device revoke now runs a passkey ceremony.** The panel calls
+   `window.tonkIdentity.signRevocation` before revoking, and the CLI —
+   which cannot prompt for a passkey — opens the panel with
+   `?revoke=<did>` and watches the registry until the named device comes
+   back revoked.
 
 ### C — Recovery and rotation ceremonies
 
@@ -337,5 +376,19 @@ APIs need confirmation. B gets its plan after the Stripe decisions.
   lands. Anyone who can write `ACCOUNTS_DB` can revoke or un-revoke with
   no audit trail, and no other enforcement point can check revocation
   without that same credential.
+- **Closed: any device could permanently lock out its siblings.**
+  `handle_revoke_inner` authorized any active device of the account and
+  took the target `did` as a free argument, with no un-revoke in the
+  store — so a stolen device could revoke every other device
+  irreversibly. Cross-device revocation now requires a root-signed
+  artifact, which only the passkey can produce. Revocation is still
+  permanent for a device's key (the presign screen matches `device_did`,
+  so coming back means re-linking as a new device), and the revoke copy
+  says so.
+- **Requiring root landed ahead of C**, by decision. A user whose
+  device-bound passkey was on the lost device can no longer revoke it —
+  but nor can they link devices or run any other root ceremony, so they
+  are already in the territory C exists to serve rather than in a new
+  failure mode.
 - **Stage B scope creep.** The entitlement seam in R must stay a seam;
   billing lands only after the log-only soak the master spec requires.

@@ -15,6 +15,7 @@ pub mod codes;
 pub mod delegation;
 pub mod devices;
 pub mod links;
+pub mod revocation;
 
 /// Errors shared by every ceremony in this crate.
 #[derive(Debug)]

@@ -24,6 +24,7 @@ struct ServiceDevice {
     name: String,
     status: String,
     created_at: u64,
+    delegation_cid: String,
 }
 
 /// Resolve the stored link and service URL, or explain what's missing.
@@ -66,6 +67,7 @@ async fn fetch_devices(
             name: row.name,
             status: row.status,
             created_at: row.created_at,
+            delegation_cid: row.delegation_cid,
         })
         .collect())
 }
@@ -96,11 +98,26 @@ pub async fn revoke(
             "cannot revoke the device you are using; sign out instead".to_string(),
         ));
     }
+    // Checked before the account link and service are resolved: this is
+    // a property of the request itself, and a caller who sent no
+    // revocation should hear that rather than whichever lookup happened
+    // to fail first.
+    if request.revocation.is_empty() {
+        return Err(TonkWorkerError::Conflict(
+            "revoking another device needs a passkey-signed revocation".to_string(),
+        ));
+    }
     let (link, service) = linked_service(&state).await?;
     let device = state.profile.signer().signer().clone();
-    let arguments = [("did".to_owned(), Promised::String(request.did))]
-        .into_iter()
-        .collect();
+    let arguments = [
+        ("did".to_owned(), Promised::String(request.did)),
+        (
+            "revocation".to_owned(),
+            Promised::String(request.revocation),
+        ),
+    ]
+    .into_iter()
+    .collect();
     let body = tonk_identity::request::build_device_invocation(
         device,
         &link,
@@ -155,11 +172,40 @@ mod tests {
             revoke(
                 State(state),
                 Json(RevokeDeviceRequest {
-                    did: device_did.to_string()
+                    did: device_did.to_string(),
+                    revocation: "beef".to_string(),
                 })
             )
             .await,
             Err(TonkWorkerError::Conflict(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_revoke_without_a_signed_revocation() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let request =
+            crate::router::account::tests_request_for(&[7u8; 32], device_did.clone()).await;
+        {
+            let tonk = state.read().await;
+            crate::router::account::persist_link(&tonk, &request)
+                .await
+                .unwrap();
+        }
+        assert!(
+            matches!(
+                revoke(
+                    State(state),
+                    Json(RevokeDeviceRequest {
+                        did: "did:key:zOtherDevice".to_string(),
+                        revocation: String::new(),
+                    })
+                )
+                .await,
+                Err(TonkWorkerError::Conflict(_))
+            ),
+            "cutting off another device takes a passkey-signed revocation"
+        );
     }
 }

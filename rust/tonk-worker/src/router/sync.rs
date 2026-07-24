@@ -1002,6 +1002,10 @@ impl SyncQueue {
 /// Branches are synced per-repo; repos run sequentially here (the reactor
 /// serializes branch state anyway), priority-ordered by activity.
 pub async fn drain_sync(state: &AppState) {
+    // Before anything presigns: the operator's delegation expires, and a
+    // drain is the regular beat this worker has to notice that on.
+    renew_session(state).await;
+
     // Dirty repos first (push priority), then repos owed a retry, then every
     // other open repo (pull).
     let now = current_millis();
@@ -1034,6 +1038,56 @@ pub async fn drain_sync(state: &AppState) {
             tonk.sync_queue.requeue(&repo, now);
         }
     }
+}
+
+/// Rotate the signing session when its delegation is close to lapsing.
+///
+/// Rotation replaces the operator key, not just its delegation: the
+/// certificate store is content-addressed with no delete, and its chain
+/// walk never consults the clock, so a re-minted delegation filed under
+/// the same audience would sit beside the lapsed one and be chosen about
+/// half the time. A new key means a new audience and no ambiguity.
+///
+/// The replacement is built over the state's existing storage pool, so
+/// every repository and branch handle the reactor has cached stays
+/// valid — the operator changes, the spaces underneath do not.
+///
+/// Best-effort. Minting is local (a key derivation and a self-signed
+/// delegation, no network), but a failure here must not take the drain
+/// down: the current session keeps working until it lapses, and the next
+/// drain tries again.
+async fn renew_session(state: &AppState) {
+    let (profile, storage, expires_at) = {
+        let tonk = state.read().await;
+        if !crate::session::needs_renewal(tonk.session_expires_at, crate::session::now()) {
+            return;
+        }
+        (
+            tonk.profile.clone(),
+            tonk.storage.clone(),
+            tonk.session_expires_at,
+        )
+    };
+
+    // Mint outside the lock — nothing else may proceed while a write
+    // lock is held, and this signs.
+    let session = match crate::session::open(&profile, &storage).await {
+        Ok(session) => session,
+        Err(error) => {
+            log!("signing session rotation failed, keeping the current one: {error}");
+            return;
+        }
+    };
+
+    let mut tonk = state.write().await;
+    // A concurrent drain may have rotated while this one was minting.
+    // Theirs is no worse than ours, and adopting both would retire a
+    // session that requests are already presenting.
+    if tonk.session_expires_at != expires_at {
+        return;
+    }
+    tonk.operator = session.operator;
+    tonk.session_expires_at = session.expires_at;
 }
 
 /// `POST /api/sync` — an external sync poke.

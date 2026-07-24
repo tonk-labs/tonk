@@ -8,23 +8,42 @@
 
 **Tech Stack:** `dialog-ucan-core` (`InvocationBuilder`, `Invocation`, `Container`), `dialog-credentials` (`Ed25519Signer`), the crate's existing `ChainStore`/`Store` traits, `dialog_common::test`.
 
-## Blocking decision — resolve before Task 2
+## Authority — decided
 
-**Who signs the revocation?** UCAN semantics: the issuer of a delegation, or a principal holding a delegated `ucan/revoke` capability, may revoke it. The issuer of `root → device` is the root, and the account service does not hold the root key — it is derived from the passkey PRF on the user's device and never leaves it. So the service cannot mint this artifact itself. Two options, and they are not close to equivalent:
+**Who signs the revocation?** UCAN semantics: the issuer of a delegation, or a principal holding a delegated `ucan/revoke` capability, may revoke it. The issuer of `root → device` is the root, and the account service does not hold the root key — it is derived from the passkey PRF on the user's device and never leaves it. So the service cannot mint the artifact itself; a client must.
 
-| | Root ceremony | Delegated `ucan/revoke` |
+**Decision: authority scales with blast radius.**
+
+| | Self-revoke (device revokes itself) | Cross-device revoke |
 |---|---|---|
-| Who can revoke | only a passkey-holding device | any linked device |
-| UX | passkey prompt on every revoke | unchanged from today |
-| Stolen-device blast radius | cannot revoke its siblings | **can revoke its siblings** |
-| Client work | derive root, sign, upload | mint `root → device` with a `ucan/revoke` capability at link time; devices sign directly |
-| Migration | none | existing devices have no such capability; needs a re-link or a root-signed top-up |
+| Signed by | the device's own key | the account root |
+| Available when | always, offline, no prompt | a passkey-holding device is at hand |
+| What it means | "sign this account out of this device" | "that device is no longer me" |
+| Can a stolen device do it | yes, to itself only | **no** |
 
-Recommendation: **root ceremony.** The whole point of the stage is that a revocation should be harder to forge than a database write; letting a compromised device revoke its siblings hands an attacker a denial-of-service against the legitimate owner, which is the exact scenario revocation exists for. The UX cost is a passkey prompt on an action users take approximately once.
+The artifact records whichever authority actually authorized the action — a root-signed artifact standing in for a device-authorized revoke would be a fiction, and a verifier that trusts it learns something false. So both shapes are legitimate and the artifact carries its attestation level; consumers set their own bar. A second enforcement point deciding "root-attested only" is making a policy choice, not detecting a defect.
 
-This is a user decision. Do not start Task 2 until it is recorded here.
+**Root attestation is required for cross-device revocation.**
+`revoke_device` takes the caller's device DID alongside the target's:
+same device means a self-revoke, which the device signs itself and which
+may carry no artifact at all; different device means a root-signed
+artifact is mandatory. A device-attested artifact naming someone else is
+refused. This is what stops a stolen device from locking out its
+siblings.
 
-- [ ] **Decision recorded:** ______________________
+The callers were brought along rather than left behind: the browser runs
+a passkey ceremony (`window.tonkIdentity.signRevocation`) before calling
+revoke, and the CLI — which cannot run a passkey ceremony — opens that
+page with `?revoke=<did>` and watches the registry until the device it
+named comes back revoked.
+
+Consequences this plan must carry:
+
+- **The current policy is the permissive one and is a live irreversible DoS.** `handle_revoke_inner` authorizes any active device of the account and takes the target `did` as a free argument, and there is no un-revoke anywhere in the store. Any device can therefore lock out every sibling, permanently. Tightening cross-device revoke to root is what closes it.
+- **Tightening depends on stage C.** If the lost device *is* the passkey device, its owner cannot derive the root and so cannot revoke it — the ceremony fails in its own primary scenario. Do not land the cross-device tightening before surviving-device recovery exists, or ship it with an explicit escape hatch. Until then, cross-device revoke stays device-signed and records a device-attested artifact.
+- **Passkey syncability decides the felt cost.** A synced passkey (iCloud Keychain, a password manager) derives the same root on every device in the sync group, so the ceremony is one prompt anywhere. A device-bound passkey lives on exactly one device. Same feature, very different UX; the device-management copy should not promise the easy case.
+- **Delegated signing needs no migration.** `root → device` is minted `command(vec![])`, and an empty command is a prefix of every command (`Command::starts_with` is vacuously true), so every linked device already holds authority to sign `ucan/revoke` under the root. Nothing to issue, nothing to re-link.
+- **Revocation is permanent for a key.** The access-service screen matches `device_did`, so re-registering the same device key after a mistaken revoke cannot restore access. Recovery is a fresh key, delegation and row — not a flag flip. Stage D's copy must say so.
 
 ## Why this shape (decisions)
 
@@ -65,28 +84,28 @@ This is a user decision. Do not start Task 2 until it is recorded here.
 
 **Files:** none modified — read-only verification.
 
-- [ ] **Step 1: dialog has no revocation type to conflict with**
+- [x] **Step 1: dialog has no revocation type to conflict with**
 
 ```bash
 grep -rn "Revocation\|ucan/revoke" ~/.cargo/git/checkouts/dialog-db-*/*/rust/dialog-ucan-core/src/
 ```
 Expected: no matches. The revocation is modelled as an ordinary `Invocation` with command `["ucan", "revoke"]`; nothing upstream competes with or verifies that shape.
 
-- [ ] **Step 2: `InvocationBuilder` takes an arbitrary command and arguments**
+- [x] **Step 2: `InvocationBuilder` takes an arbitrary command and arguments**
 
 ```bash
 grep -n "pub fn command\|pub fn arguments\|pub fn subject\|pub fn proofs" ~/.cargo/git/checkouts/dialog-db-*/*/rust/dialog-ucan-core/src/invocation/builder.rs
 ```
 Expected: builder accepts `Vec<String>` command and a `BTreeMap` of arguments, so `["ucan","revoke"]` with `{"revoke": <cid string>}` needs no upstream change.
 
-- [ ] **Step 3: the chain store is reachable from the revoke handler's context**
+- [x] **Step 3: the chain store is reachable from the revoke handler's context**
 
 ```bash
 grep -n "chain_store\|ChainStore\|R2" rust/tonk-account-service/src/handlers/devices.rs rust/tonk-account-service/src/handlers.rs
 ```
 Expected: `handle_revoke_inner` currently builds only a `Store`. Note what the chains handlers do to obtain a `ChainStore` from `RouteContext` — Task 3 mirrors it. If they use a different binding pattern, follow theirs.
 
-- [ ] **Step 4: `revoke_device` is the only status writer and there is no inverse**
+- [x] **Step 4: `revoke_device` is the only status writer and there is no inverse**
 
 ```bash
 grep -rn "status = 'revoked'\|DeviceStatus::Active" rust/tonk-account-service/src/store/
@@ -97,33 +116,35 @@ Expected: one `UPDATE ... SET status = 'revoked'`, no path back to `active`. If 
 - The root key is reachable server-side by any path → the blocking decision above is moot and the plan needs rewriting around service-side signing.
 - `ChainStore` has grown a delete → revocations must not be stored somewhere erasable; use a separate append-only prefix with no delete path.
 
-- [ ] **Step 5: Nothing to commit** — verification only.
+- [x] **Step 5: Nothing to commit** — verification only.
 
 ---
 
-### Task 2: Mint the revocation client-side
+### Task 2: Mint the revocation client-side — DONE
 
 **Files:**
 - Modify: `rust/tonk-identity/src/revocation.rs` (new), `rust/tonk-identity/src/lib.rs`
 
 **Interfaces:**
-- Produces: `mint_revocation(root: Ed25519Signer, delegation_cid: &Cid) -> Result<Vec<u8>>` returning container bytes, consumed by Task 3's handler and Task 5's client call.
+- Produces: `mint_root_revocation(root: Ed25519Signer, delegation_cid: &Cid)` and `mint_self_revocation(device: Ed25519Signer, root_delegation: &DelegationChain, delegation_cid: &Cid)`, both returning container bytes, consumed by Task 3's handler and Task 5's client call.
 
-- [ ] **Step 1: Write the failing test first**
+- [x] **Step 1: Write the failing tests first**
 
 `it_mints_a_root_signed_revocation_naming_the_delegation`: mint a `root → device` delegation, take its CID, mint a revocation, assert the invocation's issuer is the root DID, its command is `["ucan","revoke"]`, and its arguments carry the delegation CID as a string.
 
-- [ ] **Step 2: Implement**
+`it_mints_a_device_signed_self_revocation`: same, issued by the device and carrying the `root → device` delegation as its proof, so the chain shows the authority used.
 
-Mirror `mint_device_delegation` in the same crate: `InvocationBuilder::new().issuer(root).audience(&root_did).subject(&root_did).command(vec!["ucan".into(), "revoke".into()]).arguments(...)`, serialize through a container. Subject is the account root: the revocation is an act on the account, not on a space.
+- [x] **Step 2: Implement**
 
-- [ ] **Step 3: Second test** — `it_rejects_a_revocation_not_issued_by_the_root` covering the verifier from Task 4 once it exists, or leave a `TODO`-free note in the plan and add it in Task 4.
+Mirror `mint_device_delegation` in the same crate: `InvocationBuilder::new().issuer(...).audience(&root_did).subject(&root_did).command(vec!["ucan".into(), "revoke".into()]).arguments(...)`, serialize through a container. Subject is the account root in both cases: the revocation is an act on the account, not on a space. The self-revocation additionally carries its `root → device` proof; the root-signed one needs no proof (issuer equals subject).
 
-- [ ] **Step 4: Commit** `feat(tonk-identity): mint signed device revocations`
+- [x] **Step 3: Third test** — `it_distinguishes_a_root_signed_revocation_from_a_self_revocation`, asserting the two are separable by issuer without parsing arguments. Task 4 depends on that being cheap.
+
+- [x] **Step 4: Commit** `feat(tonk-identity): mint signed device revocations`
 
 ---
 
-### Task 3: Store the artifact on revoke
+### Task 3: Store the artifact on revoke — DONE
 
 **Files:**
 - Modify: `rust/tonk-account-service/src/core/devices.rs`, `rust/tonk-account-service/src/handlers/devices.rs`, `rust/tonk-account-service/src/helpers/server.rs`
@@ -132,45 +153,45 @@ Mirror `mint_device_delegation` in the same crate: `InvocationBuilder::new().iss
 - Consumes: Task 2's container bytes, arriving as a new required field on the revoke request body.
 - Produces: an object at `revocations/{chain_key(bytes)}` in the account's namespace.
 
-- [ ] **Step 1: Extend `revoke_device` to take the artifact**
+- [x] **Step 1: Extend `revoke_device` to take the artifact**
 
 Signature becomes `revoke_device<S: Store, C: ChainStore>(store, chains, account, device_did, revocation_bytes)`. Verify before storing (Task 4), then write the artifact **before** flipping the status — a stored artifact with no flag is a recoverable inconsistency; a flag with no artifact is a silent gap in the audit trail.
 
-- [ ] **Step 2: Tests**
+- [x] **Step 2: Tests**
 
 `it_stores_the_artifact_and_flips_the_status`, `it_does_not_flip_the_status_when_the_artifact_is_rejected`, `it_keeps_earlier_revocations_when_a_second_device_is_revoked` (monotonicity).
 
-- [ ] **Step 3: Mirror the wiring in the native helpers server** so the HTTP integration test covers the same path.
+- [x] **Step 3: Mirror the wiring in the native helpers server** so the HTTP integration test covers the same path.
 
-- [ ] **Step 4: Commit** `feat(tonk-account-service): record a signed artifact on device revoke`
+- [x] **Step 4: Commit** `feat(tonk-account-service): record a signed artifact on device revoke`
 
 ---
 
-### Task 4: Verify the artifact before accepting it
+### Task 4: Verify the artifact before accepting it — DONE
 
 **Files:**
 - Modify: `rust/tonk-account-service/src/core/revocation.rs` (new)
 
-- [ ] **Step 1: Write the tests first** — a revocation issued by a foreign root is rejected; one naming a delegation CID that is not this device's registered `delegation_cid` is rejected; the happy path is accepted. Reuse the fixture style in `core/devices.rs` tests.
+- [x] **Step 1: Write the tests first** — a revocation issued by a foreign root is rejected; one naming a delegation CID that is not the target device's registered `delegation_cid` is rejected; a device-signed revocation naming *another* device is rejected (this is the authority rule, and it is the test that matters); a device-signed revocation naming itself is accepted; a root-signed revocation of any device of that account is accepted. Reuse the fixture style in `core/devices.rs` tests.
 
-- [ ] **Step 2: Implement** `check_revocation(bytes, root_did, expected_delegation_cid)` mirroring `core/delegation.rs:check_device_delegation` — parse, verify signature, check issuer equals the account root, check the named CID matches the device row.
+- [x] **Step 2: Implement** `check_revocation(bytes, root_did, target_device) -> Result<Attestation>` mirroring `core/delegation.rs:check_device_delegation` — parse, verify signature and chain, check the named CID matches the target's row, then classify: issuer equals the account root → `Attestation::Root`; issuer equals the target device and the chain proves `root → that device` → `Attestation::Device`; anything else is rejected. The returned attestation is stored with the artifact so consumers can filter on it.
 
-- [ ] **Step 3: Commit** `feat(tonk-account-service): verify revocation artifacts before storing them`
+- [x] **Step 3: Commit** `feat(tonk-account-service): verify revocation artifacts before storing them`
 
 ---
 
-### Task 5: Expose the revocation set
+### Task 5: Expose the revocation set — DONE
 
 **Files:**
 - Modify: `rust/tonk-account-service/src/handlers/devices.rs`, `rust/tonk-account-service/src/lib.rs`, `rust/tonk-account-service/src/helpers/server.rs`, `rust/tonk-account-service/README.md`
 
-- [ ] **Step 1: `GET`-shaped read endpoint** `POST /devices/revocations` (device-signed invocation, command `["account","device","revocations"]` — the crate's endpoints are all POST-with-invocation; follow that, do not invent a bearer route). Returns the stored artifacts as an array of hex-encoded containers.
+- [x] **Step 1: `GET`-shaped read endpoint** `POST /devices/revocations` (device-signed invocation, command `["account","device","revocations"]` — the crate's endpoints are all POST-with-invocation; follow that, do not invent a bearer route). Returns the stored artifacts as an array of hex-encoded containers.
 
-- [ ] **Step 2: Tests** — a caller sees only their own account's revocations (mirror the cross-account `/chains/get` isolation test added in the hardening batch).
+- [x] **Step 2: Tests** — a caller sees only their own account's revocations (mirror the cross-account `/chains/get` isolation test added in the hardening batch).
 
-- [ ] **Step 3: README** — document the endpoint and state plainly that consumers MUST verify artifacts themselves rather than trusting the service.
+- [x] **Step 3: README** — document the endpoint and state plainly that consumers MUST verify artifacts themselves rather than trusting the service.
 
-- [ ] **Step 4: Commit** `feat(tonk-account-service): serve the signed revocation set`
+- [x] **Step 4: Commit** `feat(tonk-account-service): serve the signed revocation set`
 
 ---
 
@@ -181,6 +202,25 @@ Signature becomes `revoke_device<S: Store, C: ChainStore>(store, chains, account
 
 Depends on D's device-management surface existing. If D has not landed, stop after Task 5 and let D pick this up — the endpoints are complete and testable without a UI.
 
-- [ ] **Step 1:** Wire the revoke button through the root ceremony (or the delegated capability, per the blocking decision).
-- [ ] **Step 2:** Manual staging smoke: revoke a device, confirm the artifact appears in the revocation set, confirm presigns from that device 403 within 60s, confirm the artifact verifies standalone against the account root DID.
+- [x] **Step 1a:** The device-list revoke button runs the root ceremony, and the confirm copy states that revocation is permanent for that device's key.
+- [x] **Step 1b:** Sign-out self-revokes **and rotates the profile**. Wiring it through self-revocation alone would have bricked the browser: the access-service screen matches a revoked `device_did` unscoped by account, every chain this profile produces carries that DID as a delegation issuer, and there is no un-revoke — so a device coming back as the same profile is refused every presign it ever makes again, local spaces included.
+
+  Rotation is safe because nothing outside the device is keyed to the device DID: `member_did` returns the account root when linked, and `restore_spaces` re-mounts each escrowed `space → root` chain against a fresh `root → newdevice` link. It costs a passkey prompt to link again, and **anything never escrowed does not come back** — `back_up_owned_space` is hooked only into `enable_sync_inner`, so a space that was never sync-enabled is lost. The confirm copy says so; closing that gap is its own piece of work.
+
+  `rust/tonk-worker/src/device.rs` records which profile the device signs as, since the name was a constant and a rotated profile has to survive a worker restart. The pointer lives on a fixed registry profile — one stored inside the profile it names could not be read before opening it.
+- [ ] **Step 2:** Manual staging smoke: self-revoke from a device and confirm the artifact is device-attested; revoke a second device from a passkey-holding device and confirm the artifact is root-attested; confirm presigns from both 403 within 60s; confirm both artifacts verify standalone against the account root DID.
 - [ ] **Step 3: Commit** and update the completion spec's stage S section to "shipped".
+
+---
+
+### Task 7: Tighten cross-device revoke authority — DONE
+
+Landed ahead of stage C by explicit decision. The concern that prompted the gate — a user whose passkey lived on the lost device cannot derive the root, and so cannot revoke it — is real but is not a new failure mode: without the passkey that user also cannot link devices or run any other root ceremony, so they are already in the territory stage C exists to serve. Recovery remains stage C's job.
+
+**Files:**
+- Modify: `rust/tonk-account-service/src/handlers/devices.rs`, `rust/tonk-account-service/src/auth.rs`
+
+- [x] **Step 1:** `revoke_device` takes the caller's DID and requires `Attestation::Root` unless the target is the caller. A device-attested artifact naming another device is refused, as is a cross-device revoke carrying no artifact.
+- [x] **Step 2:** Tests — cross-device with no artifact refused, cross-device with a device-attested artifact refused, self-revoke with a device artifact accepted, root-attested cross-device accepted.
+- [x] **Step 3:** Browser ceremony (`signRevocation` on `window.tonkIdentity`, wired into the device panel) and CLI handoff (`?revoke=<did>` deep link plus registry polling).
+- [x] **Step 4:** The completion spec's risk list records the exposure as closed.

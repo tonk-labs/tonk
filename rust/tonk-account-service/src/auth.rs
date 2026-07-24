@@ -176,6 +176,23 @@ pub fn string_argument(caller: &Caller, name: &str) -> Result<String, CeremonyEr
     required_string(&caller.arguments, name)
 }
 
+/// The optional `revocation` argument, hex-decoded.
+///
+/// Absent means the caller could not mint a signed revocation — every
+/// caller without the account root, today. Present but malformed is a
+/// client bug worth surfacing rather than ignoring.
+pub fn optional_revocation(caller: &Caller) -> Result<Option<Vec<u8>>, CeremonyError> {
+    match caller.arguments.get("revocation") {
+        None => Ok(None),
+        Some(Promised::String(hex_bytes)) => hex::decode(hex_bytes)
+            .map(Some)
+            .map_err(|err| CeremonyError::Invalid(format!("bad revocation hex: {err}"))),
+        Some(_) => Err(CeremonyError::Invalid(
+            "revocation must be a hex string".to_string(),
+        )),
+    }
+}
+
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -573,6 +590,46 @@ mod tests {
         assert!(matches!(
             authorize_root(&bytes, &["account", "device", "link"]).await,
             Err(CeremonyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_treats_an_absent_revocation_as_none() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (root_did, device_did, bytes) = container(
+            vec!["account".into(), "device".into(), "revoke".into()],
+            BTreeMap::new(),
+        )
+        .await;
+        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+        let caller = authorize(&store, &bytes, &["account", "device", "revoke"])
+            .await
+            .unwrap();
+
+        assert_eq!(optional_revocation(&caller).unwrap(), None);
+    }
+
+    /// Present-but-not-a-string is a malformed request, not an absent
+    /// argument — silently dropping it would read as "no artifact" and
+    /// change which authority rule applies.
+    #[dialog_common::test]
+    async fn it_rejects_a_revocation_that_is_not_a_string() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (root_did, device_did, bytes) = container(
+            vec!["account".into(), "device".into(), "revoke".into()],
+            [("revocation".to_owned(), Promised::Integer(7))]
+                .into_iter()
+                .collect(),
+        )
+        .await;
+        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+        let caller = authorize(&store, &bytes, &["account", "device", "revoke"])
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            optional_revocation(&caller),
+            Err(CeremonyError::Invalid(_))
         ));
     }
 }

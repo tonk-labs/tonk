@@ -1096,9 +1096,10 @@ mod tests {
             root_did: root_did.to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
         };
-        crate::router::account::link(axum::extract::State(state.clone()), axum::Json(request))
-            .await
-            .unwrap();
+        let _ =
+            crate::router::account::link(axum::extract::State(state.clone()), axum::Json(request))
+                .await
+                .unwrap();
 
         // Join an invite.
         let (url, key) = handcrafted_invite_url(50, 51).await;

@@ -29,7 +29,9 @@ use dialog_ucan_core::delegation::Delegation;
 use dialog_ucan_core::invocation::Invocation;
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 
-/// Every credential identity found in a presented UCAN container.
+/// Everything a presented UCAN container asserts about itself: the
+/// credential identities in it, and the time window they agree on.
+/// Both screens run off this one parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentedCredentials {
     /// The DID that signed the invocation (the requesting operator).
@@ -39,6 +41,13 @@ pub struct PresentedCredentials {
     pub delegation_cids: Vec<String>,
     /// Issuer DIDs of every delegation carried in the container.
     pub delegation_issuers: Vec<String>,
+    /// The latest `not_before` any delegation carries, in unix seconds.
+    /// `None` when nothing in the chain bounds its start.
+    pub not_before: Option<u64>,
+    /// The earliest `expiration` anything in the chain carries, in unix
+    /// seconds. `None` when nothing bounds its end — which is the shape
+    /// of an unexpiring `root → device` grant.
+    pub expires_at: Option<u64>,
 }
 
 impl PresentedCredentials {
@@ -74,6 +83,11 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
         delegation_cids.insert(cid.to_string());
     }
 
+    // The chain is valid only where every hop agrees, so the window
+    // narrows to the latest start and the earliest end.
+    let mut not_before: Option<u64> = None;
+    let mut expires_at: Option<u64> = invocation.expiration().map(|stamp| stamp.to_unix());
+
     let mut delegation_issuers = BTreeSet::new();
     for (index, bytes) in tokens.iter().skip(1).enumerate() {
         let delegation: Delegation<Ed25519Signature> = serde_ipld_dagcbor::from_slice(bytes)
@@ -82,12 +96,20 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
             })?;
         delegation_cids.insert(delegation.to_cid().to_string());
         delegation_issuers.insert(delegation.issuer().to_string());
+        if let Some(stamp) = delegation.not_before() {
+            not_before = Some(not_before.map_or(stamp.to_unix(), |seen| seen.max(stamp.to_unix())));
+        }
+        if let Some(stamp) = delegation.expiration() {
+            expires_at = Some(expires_at.map_or(stamp.to_unix(), |seen| seen.min(stamp.to_unix())));
+        }
     }
 
     Ok(PresentedCredentials {
         invocation_issuer: invocation.issuer().to_string(),
         delegation_cids: delegation_cids.into_iter().collect(),
         delegation_issuers: delegation_issuers.into_iter().collect(),
+        not_before,
+        expires_at,
     })
 }
 
@@ -449,6 +471,88 @@ mod tests {
         assert!(keys.contains(&device2_did));
     }
 
+    /// A container shaped like a session presign: an unexpiring
+    /// `root → device` grant, a short-lived `device → session`
+    /// delegation, invocation issued by the session key.
+    async fn session_container(session_ttl_seconds: u64) -> (u64, Vec<u8>) {
+        use dialog_ucan_core::time::Timestamp;
+
+        let root = Ed25519Signer::import(&ROOT_SEED).await.unwrap();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let session = Ed25519Signer::import(&DEVICE2_SEED).await.unwrap();
+        let root_did = root.did();
+
+        let grant = DelegationBuilder::new()
+            .issuer(root.clone())
+            .audience(&device.did())
+            .subject(Subject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let grant_cid = grant.to_cid();
+
+        let expiration = Timestamp::new(
+            std::time::SystemTime::now() + std::time::Duration::from_secs(session_ttl_seconds),
+        )
+        .unwrap();
+        let expires_at = expiration.to_unix();
+        let session_delegation = DelegationBuilder::new()
+            .issuer(device.clone())
+            .audience(&session.did())
+            .subject(Subject::Any)
+            .command(vec![])
+            .expiration(expiration)
+            .try_build()
+            .await
+            .unwrap();
+        let session_cid = session_delegation.to_cid();
+
+        let invocation = InvocationBuilder::new()
+            .issuer(session.clone())
+            .audience(&root_did)
+            .subject(&root_did)
+            .command(vec!["memory".to_string(), "resolve".to_string()])
+            .arguments(BTreeMap::new())
+            .proofs(vec![grant_cid, session_cid])
+            .try_build()
+            .await
+            .unwrap();
+
+        let mut proofs = HashMap::new();
+        proofs.insert(grant_cid, Arc::new(grant));
+        proofs.insert(session_cid, Arc::new(session_delegation));
+        let bytes = InvocationChain::new(invocation, proofs).to_bytes().unwrap();
+        (expires_at, bytes)
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_the_window_from_an_expiring_delegation() {
+        let (expires_at, bytes) = session_container(900).await;
+
+        let presented = collect_presented(&bytes).unwrap();
+
+        assert_eq!(
+            presented.expires_at,
+            Some(expires_at),
+            "the session hop's expiry must narrow the chain's window"
+        );
+        assert_eq!(presented.not_before, None);
+    }
+
+    #[dialog_common::test]
+    async fn it_leaves_the_window_open_when_nothing_bounds_it() {
+        let (_, _, _, bytes) = device_container().await;
+
+        let presented = collect_presented(&bytes).unwrap();
+
+        assert_eq!(
+            presented.expires_at, None,
+            "an unexpiring root to device grant bounds nothing"
+        );
+        assert_eq!(presented.not_before, None);
+    }
+
     #[dialog_common::test]
     async fn it_splits_unseen_keys_into_misses() {
         let mut map = HashMap::new();
@@ -565,6 +669,8 @@ mod tests {
             invocation_issuer: format!("did:key:{prefix}-device"),
             delegation_cids: vec![format!("bafy{prefix}cid")],
             delegation_issuers: vec![format!("did:key:{prefix}-root")],
+            not_before: None,
+            expires_at: None,
         }
     }
 

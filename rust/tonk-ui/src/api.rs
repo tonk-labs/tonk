@@ -2,8 +2,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
-    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SyncResponse,
-    SyncStatusResponse,
+    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SignOutResponse,
+    SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -493,11 +493,14 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
 }
 
 /// Revoke one of the account's devices; returns the refreshed list.
-pub async fn revoke_account_device(did: String) -> Result<Vec<AccountDevice>, TonkUiError> {
+pub async fn revoke_account_device(
+    did: String,
+    revocation: String,
+) -> Result<Vec<AccountDevice>, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
-        .json(&RevokeDeviceRequest { did })
+        .json(&RevokeDeviceRequest { did, revocation })
         .send()
         .await
         .map_err(into_api_error)?;
@@ -512,8 +515,9 @@ pub async fn revoke_account_device(did: String) -> Result<Vec<AccountDevice>, To
     }
 }
 
-/// Clear this browser's stored account link (local sign-out).
-pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
+/// Sign out on this device: revoke it in the registry (best-effort,
+/// reported in the response) and rotate onto a fresh key.
+pub async fn unlink_account() -> Result<SignOutResponse, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .delete(format!("{}/api/account", origin()))

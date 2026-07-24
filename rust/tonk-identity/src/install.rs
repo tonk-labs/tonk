@@ -61,6 +61,25 @@ fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
         .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
 }
 
+/// `signRevocation({ delegationCid })` → `{ revocationHex }`.
+///
+/// Prompts for the passkey, derives the root, and signs a revocation of
+/// the named delegation. The caller sends the hex on as an argument to
+/// its own device-signed revoke request.
+async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
+    let delegation_cid = string_property(&input, "delegationCid")?;
+    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+    let revocation_hex = crate::ceremony::sign_revocation(root, &delegation_cid)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(&result, &"revocationHex".into(), &revocation_hex.into())?;
+    Ok(result.into())
+}
+
 fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue, JsValue> {
     let result = Object::new();
     Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
@@ -204,6 +223,16 @@ pub fn install() {
         complete_link.as_ref().unchecked_ref(),
     );
     complete_link.forget();
+
+    let sign_revocation = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(sign_revocation(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"signRevocation".into(),
+        sign_revocation.as_ref().unchecked_ref(),
+    );
+    sign_revocation.forget();
 
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }

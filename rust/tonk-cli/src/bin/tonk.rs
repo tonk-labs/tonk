@@ -460,6 +460,9 @@ enum AccountCommand {
     },
 
     /// Revoke one of the account's devices by DID
+    ///
+    /// Opens a browser to approve with your passkey: cutting off another
+    /// device takes the account root, which only the passkey can derive.
     #[command(after_help = "Examples:\n  tonk account revoke did:key:z6Mk...")]
     Revoke {
         /// DID of the device to revoke (see `tonk account devices`).
@@ -473,6 +476,17 @@ enum AccountCommand {
             hide = true
         )]
         service_url: String,
+        /// Browser page that runs the approval ceremony.
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_ACCOUNT_PAGE,
+            hide = true
+        )]
+        account_url: String,
+        /// Print the approval URL without asking the OS to open it.
+        #[arg(long)]
+        no_open: bool,
     },
 }
 
@@ -963,10 +977,24 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 Err(error) => print_error(error.to_string()),
             }
         }
-        AccountCommand::Revoke { did, service_url } => {
-            match account::revoke(&profile, &service_url, &did).await {
-                Ok(()) => {
+        AccountCommand::Revoke {
+            did,
+            service_url,
+            account_url,
+            no_open,
+        } => {
+            let options = account::RevokeOptions {
+                service_url,
+                account_url,
+                open_browser: !no_open,
+            };
+            match account::revoke(&profile, &options, &did).await {
+                Ok(account::RevokeOutcome::Revoked) => {
                     println!("revoked\ndevice: {did}");
+                    ExitCode::Success
+                }
+                Ok(account::RevokeOutcome::AlreadyRevoked) => {
+                    println!("already revoked\ndevice: {did}");
                     ExitCode::Success
                 }
                 Err(error) => print_error(error.to_string()),

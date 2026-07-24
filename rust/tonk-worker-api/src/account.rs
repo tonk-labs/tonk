@@ -34,6 +34,27 @@ pub enum AccountStatus {
     },
 }
 
+/// Result of signing out on this device.
+///
+/// Sign-out is two acts: telling the registry this device is out, and
+/// rotating the local key. The rotation always happens; the registry
+/// call is best-effort, and this response is where its failure
+/// surfaces instead of vanishing into a console log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignOutResponse {
+    /// DID of the replacement profile this browser now signs as.
+    pub device_did: String,
+    /// Whether the registry recorded this device's self-revocation.
+    /// `false` when there was nothing to record — never linked, or no
+    /// account service for this deployment — as well as on failure.
+    pub revoked: bool,
+    /// Why the registry was not told, when it should have been. The
+    /// device is signed out locally either way; a caller showing this
+    /// should tell the user to revoke from another device.
+    pub warning: Option<String>,
+}
+
 /// One device registered under the linked account, as returned by the
 /// worker's device-list proxy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +68,9 @@ pub struct AccountDevice {
     pub status: String,
     /// Registration time, seconds since the epoch.
     pub created_at: u64,
+    /// CID of the `root → device` delegation, which a revocation must
+    /// name. Carried to the browser so it can sign one.
+    pub delegation_cid: String,
     /// Whether this row is the profile making the request.
     pub this_device: bool,
 }
@@ -57,6 +81,12 @@ pub struct AccountDevice {
 pub struct RevokeDeviceRequest {
     /// DID of the device to revoke.
     pub did: String,
+    /// Hex-encoded root-signed revocation of that device's delegation.
+    ///
+    /// Required: cutting off a device other than the one in your hand
+    /// takes the account root, and the root lives behind the passkey, so
+    /// the browser must run the ceremony before calling this.
+    pub revocation: String,
 }
 
 #[cfg(test)]
@@ -83,16 +113,35 @@ mod tests {
             name: "laptop".into(),
             status: "active".into(),
             created_at: 1_753_300_000,
+            delegation_cid: "bafycid".into(),
             this_device: true,
         })
         .unwrap();
         assert_eq!(json["did"], "did:key:device");
         assert_eq!(json["createdAt"], 1_753_300_000);
         assert_eq!(json["thisDevice"], true);
+        assert_eq!(json["delegationCid"], "bafycid");
         assert!(json.get("created_at").is_none());
+        assert!(json.get("delegation_cid").is_none());
 
-        let request: RevokeDeviceRequest =
-            serde_json::from_value(serde_json::json!({ "did": "did:key:device" })).unwrap();
+        let request: RevokeDeviceRequest = serde_json::from_value(
+            serde_json::json!({ "did": "did:key:device", "revocation": "beef" }),
+        )
+        .unwrap();
         assert_eq!(request.did, "did:key:device");
+        assert_eq!(request.revocation, "beef");
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_the_sign_out_warning_in_camel_case() {
+        let json = serde_json::to_value(SignOutResponse {
+            device_did: "did:key:fresh".into(),
+            revoked: false,
+            warning: Some("service unreachable".into()),
+        })
+        .unwrap();
+        assert_eq!(json["deviceDid"], "did:key:fresh");
+        assert_eq!(json["revoked"], false);
+        assert_eq!(json["warning"], "service unreachable");
     }
 }

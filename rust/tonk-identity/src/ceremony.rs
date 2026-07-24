@@ -71,6 +71,24 @@ async fn build(
     })
 }
 
+/// Sign a revocation of `delegation_cid` with the passkey-derived root.
+///
+/// Unlike the other ceremonies this returns no delegation and no
+/// service invocation: the revocation travels as an argument inside a
+/// device-signed request, because the service still authorizes the call
+/// by device while the artifact carries the authority to revoke.
+///
+/// This is the ceremony behind revoking a device other than the one in
+/// your hand. Requiring it is what stops a stolen device from locking
+/// out its siblings — a device holds only its grant, and a grant cannot
+/// produce a root signature.
+pub async fn sign_revocation(root: Ed25519Signer, delegation_cid: &str) -> Result<String> {
+    let bytes = crate::revocation::mint_root_revocation(root, delegation_cid)
+        .await
+        .context("failed to sign the revocation")?;
+    Ok(hex::encode(bytes))
+}
+
 /// Build the root-signed account-creation request and first-device delegation.
 pub async fn create_account(
     root: Ed25519Signer,

@@ -29,7 +29,17 @@ The handler reads the body, builds a `UcanAuthorizer` from the Worker environmen
 
 On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error codes map verification outcomes to HTTP status (see `src/error.rs`): `INVALID_ARGUMENT` (400); `SIGNATURE_INVALID` / `AUDIENCE_MISMATCH` / `INVOCATION_EXPIRED` (401); `CHAIN_INVALID` / `COMMAND_MISMATCH` / `SUBJECT_NOT_ALLOWED` / `DEVICE_REVOKED` (403); `INTERNAL_ERROR` (500); `REVOCATION_UNAVAILABLE` (503).
 
-## Revocation screening
+## Credential screening
+
+After cryptographic authorization succeeds, `POST /ucan/` re-parses the presented container once and runs two screens off that parse: the window the chain claims, and whether any credential in it belongs to a revoked device.
+
+### Time window
+
+The chain verifier computes the intersection of every hop's time bounds and hands it back as a `TimeRange`, but `InvocationChain::verify` discards it — so nothing on this path ever compared it to the clock. `src/expiry.rs` closes that: `collect_presented` carries the latest `not_before` and earliest `expiration` across the invocation and every delegation, and a presign outside that window returns `401 INVOCATION_EXPIRED`.
+
+Unbounded chains are unaffected. A `root → device` grant carries no expiration, so its window is open and every check passes; only a chain that bounds itself can fall outside one. That is what makes this safe ahead of the clients that will start presenting short-lived session delegations — and it is the enforcement those sessions depend on, since an expiry nothing checks buys nothing.
+
+### Revocation
 
 After cryptographic authorization succeeds, `POST /ucan/` screens the presented container against the account registry (`src/revocation.rs`). It re-parses the container independently, collects every delegation CID, every delegation issuer DID, and the invocation issuer DID, and asks whether any of them belongs to a device with `status = 'revoked'`. Matching on issuer DIDs as well as CIDs is what severs chains that flow through a delegation the registry never recorded — anything a revoked key signed, whenever it signed it. A match returns `403 DEVICE_REVOKED`; users with no account match nothing and are unaffected.
 
