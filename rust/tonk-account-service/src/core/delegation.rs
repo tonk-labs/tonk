@@ -39,7 +39,7 @@ pub async fn check_subject_open_delegation(
     }
     if chain.subject().is_some() {
         return Err(CeremonyError::Invalid(
-            "root to device delegation must be subject-open".to_string(),
+            "delegation chain must be subject-open".to_string(),
         ));
     }
 
