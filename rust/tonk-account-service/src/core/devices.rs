@@ -1,8 +1,10 @@
 //! Device registry operations: list, register, and revoke devices
 //! under an account's root DID.
 
+use crate::chains::ChainStore;
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
+use crate::core::revocation::{Attestation, check_revocation, put_revocation};
 use crate::store::{Account, Device, DeviceStatus, Store};
 
 /// A device row as surfaced to API callers.
@@ -69,25 +71,58 @@ pub async fn register_device<S: Store>(
     Ok(())
 }
 
-/// Revoke a device under an account.
+/// Revoke a device under an account, recording the signed revocation
+/// that authorized it when one is supplied.
 ///
+/// A supplied artifact is verified and stored *before* the status
+/// flips: a stored artifact with no flag is a recoverable
+/// inconsistency, while a flag with no artifact is a silent gap in the
+/// audit trail. A rejected artifact leaves the device active.
+///
+/// The artifact is optional so that callers which cannot yet mint one —
+/// anything without access to the account root, which today is every
+/// caller but the browser — keep working. Requiring root attestation
+/// for cross-device revocation is a later, deliberate tightening; it
+/// closes the exposure where any device can lock out its siblings, and
+/// it must not land before a device that lost its passkey has a
+/// recovery path.
+///
+/// Returns the attestation level when an artifact was recorded.
 /// Returns `CeremonyError::Invalid` if the device does not exist under
 /// this account.
-pub async fn revoke_device<S: Store>(
+pub async fn revoke_device<S: Store, C: ChainStore>(
     store: &S,
+    chains: &C,
     account: &Account,
     device_did: &str,
-) -> Result<(), CeremonyError> {
+    revocation: Option<&[u8]>,
+) -> Result<Option<Attestation>, CeremonyError> {
+    let device = store
+        .device_by_did(device_did)
+        .await?
+        .filter(|device| device.account_id == account.id)
+        .ok_or_else(|| CeremonyError::Invalid("unknown device".to_string()))?;
+
+    let attestation = match revocation {
+        Some(bytes) => {
+            let attestation = check_revocation(bytes, &account.root_did, &device).await?;
+            put_revocation(chains, account, attestation, bytes).await?;
+            Some(attestation)
+        }
+        None => None,
+    };
+
     let changed = store.revoke_device(account.id, device_did).await?;
     if !changed {
         return Err(CeremonyError::Invalid("unknown device".to_string()));
     }
-    Ok(())
+    Ok(attestation)
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::chains::MemoryChainStore;
     use crate::store::sqlite::SqliteStore;
 
     const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -155,19 +190,126 @@ mod tests {
         assert!(matches!(result, Err(CeremonyError::Invalid(_))));
     }
 
+    /// Register a device, then mint the root-signed revocation of its
+    /// grant. Returns (device did, revocation container bytes).
+    async fn registered_with_revocation(
+        store: &SqliteStore,
+        account: &Account,
+    ) -> (String, Vec<u8>) {
+        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
+        register_device(store, account, &device_did, "phone", &delegation_hex, 200)
+            .await
+            .unwrap();
+        let device = store.device_by_did(&device_did).await.unwrap().unwrap();
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let revocation =
+            tonk_identity::revocation::mint_root_revocation(root, &device.delegation_cid)
+                .await
+                .unwrap();
+        (device_did, revocation)
+    }
+
     #[dialog_common::test]
     async fn it_revokes_and_reflects_status_in_the_listing() {
         let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
         let account = seeded_account(&store).await;
-        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
-        register_device(&store, &account, &device_did, "phone", &delegation_hex, 200)
+        let (device_did, revocation) = registered_with_revocation(&store, &account).await;
+
+        revoke_device(&store, &chains, &account, &device_did, Some(&revocation))
             .await
             .unwrap();
-
-        revoke_device(&store, &account, &device_did).await.unwrap();
 
         let views = list_devices(&store, &account).await.unwrap();
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, "revoked");
+    }
+
+    #[dialog_common::test]
+    async fn it_revokes_without_an_artifact_and_records_nothing() {
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+        let (device_did, _) = registered_with_revocation(&store, &account).await;
+
+        let attestation = revoke_device(&store, &chains, &account, &device_did, None)
+            .await
+            .unwrap();
+
+        assert!(
+            attestation.is_none(),
+            "a caller that cannot mint an artifact still revokes"
+        );
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(views[0].status, "revoked");
+        let stored = crate::core::revocation::list_revocations(&chains, &account)
+            .await
+            .unwrap();
+        assert!(
+            stored.is_empty(),
+            "nothing unsigned enters the artifact set"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_stores_the_artifact_alongside_the_status_flip() {
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+        let (device_did, revocation) = registered_with_revocation(&store, &account).await;
+
+        let attestation = revoke_device(&store, &chains, &account, &device_did, Some(&revocation))
+            .await
+            .unwrap();
+
+        assert_eq!(attestation, Some(Attestation::Root));
+        let stored = crate::core::revocation::list_revocations(&chains, &account)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].attestation, "root");
+    }
+
+    #[dialog_common::test]
+    async fn it_leaves_the_device_active_when_the_artifact_is_rejected() {
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+        let (device_did, _) = registered_with_revocation(&store, &account).await;
+        let foreign = tonk_identity::derive::derive_root_signer(&FOREIGN_ROOT_PRF)
+            .await
+            .unwrap();
+        let device = store.device_by_did(&device_did).await.unwrap().unwrap();
+        let forged =
+            tonk_identity::revocation::mint_root_revocation(foreign, &device.delegation_cid)
+                .await
+                .unwrap();
+
+        let result = revoke_device(&store, &chains, &account, &device_did, Some(&forged)).await;
+
+        assert!(matches!(result, Err(CeremonyError::Forbidden(_))));
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(
+            views[0].status, "active",
+            "a rejected artifact must not flip the status"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_revoking_a_device_of_another_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+        let (device_did, revocation) = registered_with_revocation(&store, &account).await;
+        let foreign = Account {
+            id: account.id + 1,
+            ..account.clone()
+        };
+
+        let result = revoke_device(&store, &chains, &foreign, &device_did, Some(&revocation)).await;
+
+        assert!(matches!(result, Err(CeremonyError::Invalid(_))));
     }
 }

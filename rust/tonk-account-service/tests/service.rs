@@ -131,12 +131,28 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert!(devices[0].get("created_at").is_none());
     assert!(devices[0].get("delegation_cid").is_none());
 
-    // POST /devices/revoke -> the first device cuts off the second.
+    // POST /devices/revoke -> the first device cuts off the second,
+    // carrying a root-signed revocation of the second device's grant.
+    // Cross-device revocation needs root attestation; a device-signed
+    // artifact only ever names its own grant.
+    let second_grant_cid = devices[1]["delegationCid"].as_str().unwrap().to_string();
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let revocation = tonk_identity::revocation::mint_root_revocation(root, &second_grant_cid)
+        .await
+        .unwrap();
     let body = container(
         vec!["account".into(), "device".into(), "revoke".into()],
-        [("did".to_owned(), Promised::String(second_did.clone()))]
-            .into_iter()
-            .collect(),
+        [
+            ("did".to_owned(), Promised::String(second_did.clone())),
+            (
+                "revocation".to_owned(),
+                Promised::String(hex::encode(&revocation)),
+            ),
+        ]
+        .into_iter()
+        .collect(),
     )
     .await;
     let response = client
@@ -146,6 +162,28 @@ async fn it_drives_the_full_ceremony_over_http() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    let revoked: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(revoked["attestation"], "root");
+
+    // POST /devices/revocations -> the artifact is retrievable and
+    // carries its attestation level.
+    let body = container(
+        vec!["account".into(), "device".into(), "revocations".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/devices/revocations"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let listed: serde_json::Value = response.json().await.unwrap();
+    let listed = listed["revocations"].as_array().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["attestation"], "root");
+    assert_eq!(listed[0]["revocation"], hex::encode(&revocation));
 
     let body = container(
         vec!["account".into(), "device".into(), "list".into()],

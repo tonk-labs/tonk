@@ -176,6 +176,20 @@ pub fn string_argument(caller: &Caller, name: &str) -> Result<String, CeremonyEr
     required_string(&caller.arguments, name)
 }
 
+/// The optional `revocation` argument, hex-decoded.
+///
+/// Absent means the caller could not mint a signed revocation — every
+/// caller without the account root, today. Present but malformed is a
+/// client bug worth surfacing rather than ignoring.
+pub fn optional_revocation(caller: &Caller) -> Result<Option<Vec<u8>>, CeremonyError> {
+    let Some(Promised::String(hex_bytes)) = caller.arguments.get("revocation") else {
+        return Ok(None);
+    };
+    hex::decode(hex_bytes)
+        .map(Some)
+        .map_err(|err| CeremonyError::Invalid(format!("bad revocation hex: {err}")))
+}
+
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

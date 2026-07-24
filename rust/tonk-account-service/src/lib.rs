@@ -40,6 +40,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/devices/link", handlers::devices::handle_options)
         .post_async("/devices/revoke", handlers::devices::handle_revoke)
         .options_async("/devices/revoke", handlers::devices::handle_options)
+        .post_async(
+            "/devices/revocations",
+            handlers::devices::handle_revocations,
+        )
+        .options_async("/devices/revocations", handlers::devices::handle_options)
         .post_async("/links", handlers::links::handle_create)
         .options_async("/links", handlers::links::handle_options)
         .post_async("/links/resolve", handlers::links::handle_resolve)

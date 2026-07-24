@@ -22,13 +22,16 @@ use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
-use crate::auth::{authorize, authorize_root, required_string, string_argument};
+use crate::auth::{
+    authorize, authorize_root, optional_revocation, required_string, string_argument,
+};
 use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::backup::{get_chain, list_chains, put_chain};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
 use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
+use crate::core::revocation::list_revocations;
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -133,6 +136,7 @@ async fn handle_request(
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
+        (Method::POST, "/devices/revocations") => devices_revocations_route(req, &backends).await,
         (Method::POST, "/links") => links_create_route(req, &backends).await,
         (Method::POST, "/links/resolve") => links_resolve_route(req, &backends).await,
         (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
@@ -347,11 +351,56 @@ async fn devices_revoke_route(
         .map_err(ceremony_error)?;
 
     let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
-    revoke_device(&backends.store, &caller.account, &device_did)
+    let revocation = optional_revocation(&caller).map_err(ceremony_error)?;
+    let attestation = revoke_device(
+        &backends.store,
+        &backends.chains,
+        &caller.account,
+        &device_did,
+        revocation.as_deref(),
+    )
+    .await
+    .map_err(ceremony_error)?;
+
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "attestation": attestation.map(|level| level.as_str()) }),
+    ))
+}
+
+/// `POST /devices/revocations` → list this account's signed revocations.
+async fn devices_revocations_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize(
+        &backends.store,
+        &body,
+        &["account", "device", "revocations"],
+    )
+    .await
+    .map_err(ceremony_error)?;
+
+    let stored = list_revocations(&backends.chains, &caller.account)
         .await
         .map_err(ceremony_error)?;
 
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+    let revocations: Vec<serde_json::Value> = stored
+        .into_iter()
+        .map(|item| {
+            serde_json::json!({
+                "key": item.key,
+                "attestation": item.attestation,
+                "revocation": item.revocation_hex,
+            })
+        })
+        .collect();
+
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "revocations": revocations }),
+    ))
 }
 
 #[derive(Deserialize)]
