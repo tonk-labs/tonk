@@ -17,7 +17,8 @@ use crate::store::{
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK,
     INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_ROOT,
     SELECT_CODE, SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError,
-    UPDATE_ACCOUNT_ROOT, UPDATE_DEVICE_DELEGATION, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    UPDATE_ACCOUNT_ROOT, UPDATE_DEVICE_DELEGATION, UPDATE_DEVICE_REGISTRATION,
+    UPDATE_DEVICE_REVOKE, UPSERT_CODE,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -374,6 +375,34 @@ impl Store for D1Store {
                 JsValue::from_f64(account_id as f64),
                 JsValue::from(device_did),
                 JsValue::from(delegation_cid),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        let changes = result
+            .meta()
+            .map_err(map_err)?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0);
+        Ok(changes > 0)
+    }
+
+    async fn update_device_registration(
+        &self,
+        account_id: i64,
+        device_did: &str,
+        delegation_cid: &str,
+        name: &str,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(UPDATE_DEVICE_REGISTRATION)
+            .bind(&[
+                JsValue::from_f64(account_id as f64),
+                JsValue::from(device_did),
+                JsValue::from(delegation_cid),
+                JsValue::from(name),
             ])
             .map_err(map_err)?
             .run()

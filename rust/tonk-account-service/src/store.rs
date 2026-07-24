@@ -209,6 +209,18 @@ pub trait Store {
         delegation_cid: &str,
     ) -> Result<bool, StoreError>;
 
+    /// Update the delegation and display name of an already-registered,
+    /// active device — used when a device re-registers under the same
+    /// account, e.g. after its account rotates onto a new root. Returns
+    /// `false` if no matching active device was found.
+    async fn update_device_registration(
+        &self,
+        account_id: i64,
+        device_did: &str,
+        delegation_cid: &str,
+        name: &str,
+    ) -> Result<bool, StoreError>;
+
     /// Create a pending CLI browser handoff.
     async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError>;
 
@@ -288,6 +300,12 @@ pub const UPDATE_ACCOUNT_ROOT: &str =
 /// SQL: repoint one device row at a fresh delegation.
 pub const UPDATE_DEVICE_DELEGATION: &str =
     "UPDATE devices SET delegation_cid = ?3 WHERE account_id = ?1 AND device_did = ?2";
+
+/// SQL: repoint an active device row at a fresh delegation and name, on
+/// re-registration. Revoked devices never match, so a revoked device
+/// can never be silently resurrected by re-registering it.
+pub const UPDATE_DEVICE_REGISTRATION: &str = "UPDATE devices SET delegation_cid = ?3, name = ?4 \
+     WHERE account_id = ?1 AND device_did = ?2 AND status = 'active'";
 
 /// SQL: create a pending browser handoff.
 pub const INSERT_LINK: &str = "INSERT INTO link_requests \

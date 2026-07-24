@@ -3,7 +3,7 @@
 
 use crate::core::CeremonyError;
 use crate::core::delegation::check_subject_open_delegation;
-use crate::store::{Account, Store};
+use crate::store::{Account, DeviceStatus, Store};
 
 /// A verified request to rotate an account onto a new root.
 pub struct RotateAccount {
@@ -25,7 +25,10 @@ pub struct RotateAccount {
 /// the ceremony device's fresh delegation before touching the registry.
 /// Devices other than the ceremony device keep their existing rows: their
 /// old-root delegations remain cryptographically valid for space access,
-/// and they re-link on their next service ceremony.
+/// and they re-link on their next service ceremony. The ceremony device
+/// itself must be a currently *active* device on this account: a revoked
+/// device can never drive a rotation back into the registry, and is
+/// rejected as `CeremonyError::Forbidden`.
 pub async fn rotate_account<S: Store>(
     store: &S,
     account: &Account,
@@ -43,6 +46,25 @@ pub async fn rotate_account<S: Store>(
         &request.device_did,
     )
     .await?;
+
+    match store.device_by_did(&request.device_did).await? {
+        Some(device) if device.account_id != account.id => {
+            return Err(CeremonyError::Invalid(
+                "ceremony device is not registered under this account".to_string(),
+            ));
+        }
+        Some(device) if device.status == DeviceStatus::Revoked => {
+            return Err(CeremonyError::Forbidden(
+                "ceremony device has been revoked".to_string(),
+            ));
+        }
+        Some(_) => {}
+        None => {
+            return Err(CeremonyError::Invalid(
+                "ceremony device is not registered under this account".to_string(),
+            ));
+        }
+    }
 
     let repointed = store
         .update_device_delegation(account.id, &request.device_did, &delegation_cid)
@@ -182,5 +204,28 @@ mod tests {
             rotate_account(&store, &account, &request).await,
             Err(CeremonyError::Invalid(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_revoked_ceremony_device() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (account, request, _) = fixture(&store).await;
+        store
+            .revoke_device(account.id, &request.device_did)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            rotate_account(&store, &account, &request).await,
+            Err(CeremonyError::Forbidden(_))
+        ));
+        // Nothing flipped.
+        assert!(
+            store
+                .account_by_root(&account.root_did)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

@@ -40,12 +40,18 @@ pub async fn list_devices<S: Store>(
     Ok(devices.into_iter().map(DeviceView::from).collect())
 }
 
-/// Register a new device under an account.
+/// Register a new device under an account, or upsert its delegation and
+/// name if it is already registered under this same account.
 ///
 /// Checks that `delegation_hex` is a valid `root → device` delegation
-/// issued by `account.root_did` to `device_did` before registering the
-/// device as active. A duplicate device DID surfaces as
-/// `CeremonyError::Conflict`.
+/// issued by `account.root_did` to `device_did` before touching the
+/// registry. A `device_did` already registered under a *different*
+/// account surfaces as `CeremonyError::Conflict`. A `device_did` already
+/// registered under *this* account is upserted in place — this is the
+/// re-registration path a device takes after its account rotates onto a
+/// new root — unless the existing row is revoked, in which case it stays
+/// revoked and the request is rejected as `CeremonyError::Forbidden`; a
+/// revoked device is never silently resurrected by re-registering it.
 pub async fn register_device<S: Store>(
     store: &S,
     account: &Account,
@@ -56,6 +62,24 @@ pub async fn register_device<S: Store>(
 ) -> Result<(), CeremonyError> {
     let delegation_cid =
         check_subject_open_delegation(delegation_hex, &account.root_did, device_did).await?;
+
+    if let Some(existing) = store.device_by_did(device_did).await? {
+        if existing.account_id != account.id {
+            return Err(CeremonyError::Conflict(
+                "device DID is already registered to a different account".to_string(),
+            ));
+        }
+        if existing.status == DeviceStatus::Revoked {
+            return Err(CeremonyError::Forbidden(
+                "device has been revoked and cannot re-register".to_string(),
+            ));
+        }
+        store
+            .update_device_registration(account.id, device_did, &delegation_cid, device_name)
+            .await?;
+        return Ok(());
+    }
+
     store
         .insert_device(&Device {
             account_id: account.id,
@@ -114,14 +138,18 @@ mod tests {
     }
 
     async fn seeded_account(store: &SqliteStore) -> Account {
+        seeded_account_with(store, "a@x.com", ROOT_PRF).await
+    }
+
+    async fn seeded_account_with(store: &SqliteStore, email: &str, root_prf: [u8; 32]) -> Account {
         use dialog_varsig::Principal;
-        let root_did = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        let root_did = tonk_identity::derive::derive_root_signer(&root_prf)
             .await
             .unwrap()
             .did()
             .to_string();
         store
-            .create_account("a@x.com", &root_did, "cred", 100)
+            .create_account(email, &root_did, "cred", 100)
             .await
             .unwrap();
         store.account_by_root(&root_did).await.unwrap().unwrap()
@@ -169,5 +197,94 @@ mod tests {
         let views = list_devices(&store, &account).await.unwrap();
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, "revoked");
+    }
+
+    #[dialog_common::test]
+    async fn it_upserts_an_active_device_reregistering_under_the_same_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let account = seeded_account(&store).await;
+        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
+        register_device(&store, &account, &device_did, "phone", &delegation_hex, 200)
+            .await
+            .unwrap();
+        let original_cid = list_devices(&store, &account).await.unwrap()[0]
+            .delegation_cid
+            .clone();
+
+        let (_, delegation_hex_2) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
+        register_device(
+            &store,
+            &account,
+            &device_did,
+            "phone (renamed)",
+            &delegation_hex_2,
+            300,
+        )
+        .await
+        .unwrap();
+
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].name, "phone (renamed)");
+        assert_eq!(views[0].status, "active");
+        assert_ne!(views[0].delegation_cid, original_cid);
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_reregistering_a_revoked_device() {
+        let store = SqliteStore::in_memory().unwrap();
+        let account = seeded_account(&store).await;
+        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
+        register_device(&store, &account, &device_did, "phone", &delegation_hex, 200)
+            .await
+            .unwrap();
+        revoke_device(&store, &account, &device_did).await.unwrap();
+
+        let (_, delegation_hex_2) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
+        let result = register_device(
+            &store,
+            &account,
+            &device_did,
+            "phone",
+            &delegation_hex_2,
+            300,
+        )
+        .await;
+        assert!(matches!(result, Err(CeremonyError::Forbidden(_))));
+
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(views[0].status, "revoked");
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_device_did_already_registered_to_a_different_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let account_a = seeded_account(&store).await;
+        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
+        register_device(
+            &store,
+            &account_a,
+            &device_did,
+            "phone",
+            &delegation_hex,
+            200,
+        )
+        .await
+        .unwrap();
+
+        let account_b = seeded_account_with(&store, "b@x.com", FOREIGN_ROOT_PRF).await;
+        let (device_did_2, delegation_hex_2) = delegation_from(FOREIGN_ROOT_PRF, DEVICE_SEED).await;
+        assert_eq!(device_did, device_did_2);
+
+        let result = register_device(
+            &store,
+            &account_b,
+            &device_did_2,
+            "phone",
+            &delegation_hex_2,
+            300,
+        )
+        .await;
+        assert!(matches!(result, Err(CeremonyError::Conflict(_))));
     }
 }
