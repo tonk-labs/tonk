@@ -137,6 +137,10 @@ pub struct StoredRevocation {
 
 /// List every revocation stored under this account, newest-agnostic:
 /// the set is unordered, and consumers verify each artifact themselves.
+///
+/// One `get` per key over an unscoped `list` — fine while revocation
+/// sets are tiny. A prefix-scoped `ChainStore::list` is the fix if
+/// they stop being tiny.
 pub async fn list_revocations<C: ChainStore>(
     chains: &C,
     account: &Account,
