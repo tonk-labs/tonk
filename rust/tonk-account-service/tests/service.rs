@@ -128,16 +128,15 @@ async fn it_drives_the_full_ceremony_over_http() {
             "device list row is missing `{key}`"
         );
     }
+    assert!(devices[0].get("created_at").is_none());
+    assert!(devices[0].get("delegation_cid").is_none());
 
     // POST /devices/revoke -> the first device cuts off the second.
     let body = container(
         vec!["account".into(), "device".into(), "revoke".into()],
-        [(
-            "did".to_owned(),
-            Promised::String(second_did.clone()),
-        )]
-        .into_iter()
-        .collect(),
+        [("did".to_owned(), Promised::String(second_did.clone()))]
+            .into_iter()
+            .collect(),
     )
     .await;
     let response = client
