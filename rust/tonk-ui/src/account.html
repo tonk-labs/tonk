@@ -12,6 +12,7 @@
       <button id="account-choose-create" class="account__button" type="button">Create account</button>
       <button id="account-choose-link" class="account__button account__button--secondary" type="button">Log in</button>
     </div>
+    <button id="account-choose-recover" class="account__button account__button--quiet" type="button">Lost your passkey?</button>
   </section>
 
   <section id="account-create" class="account__panel" hidden>
@@ -64,6 +65,7 @@
     <p id="account-success-message" class="account__status">You're logged in.</p>
     <button id="account-manage-devices" class="account__button account__button--secondary" type="button">Manage devices</button>
     <button id="account-rotate-open" class="account__button account__button--quiet" type="button">Rotate passkey</button>
+    <button id="account-recover-open" class="account__button account__button--quiet" type="button">Lost your passkey?</button>
     <a class="account__button account__button--secondary" href="/">Back to Tonk</a>
   </section>
 
@@ -85,6 +87,17 @@
         <input id="account-rotate-name" name="New passkey name" type="text" autocomplete="off" required>
       </label>
       <button id="account-rotate-submit" class="account__button" type="submit">Create new passkey</button>
+    </form>
+  </section>
+
+  <section id="account-recover" class="account__panel" hidden>
+    <h2>Recover your account</h2>
+    <p id="account-recover-message" class="account__message">This replaces the account's passkey. Other devices keep their data and re-connect the next time they open tonk.</p>
+    <form class="account__form" id="account-recover-form" hidden>
+      <label>New passkey name
+        <input id="account-recover-name" name="New passkey name" type="text" autocomplete="off" required>
+      </label>
+      <button id="account-recover-submit" class="account__button" type="submit">Create new passkey</button>
     </form>
   </section>
 

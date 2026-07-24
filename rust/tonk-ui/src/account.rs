@@ -8,7 +8,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
-use tonk_worker_api::AccountStatus;
+use tonk_worker_api::{AccountRecoverRequest, AccountStatus};
 
 const PROD: &str = "https://accounts.tonk.xyz";
 const STAGING: &str = "https://accounts-staging.tonk.xyz";
@@ -52,6 +52,14 @@ struct CeremonyOutput {
 #[serde(rename_all = "camelCase")]
 struct RotateInput {
     name: String,
+    device_did: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoverInput {
+    name: String,
+    old_root_did: String,
     device_did: String,
 }
 
@@ -188,6 +196,7 @@ fn set_mode(host: &HtmlElement, mode: &str) {
         ("success", "#account-success"),
         ("devices", "#account-devices"),
         ("rotate", "#account-rotate"),
+        ("recover", "#account-recover"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
             if name == mode {
@@ -209,6 +218,7 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-unlink",
         "#account-rotate-submit",
         "#account-relink-retry",
+        "#account-recover-submit",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
             && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
@@ -241,6 +251,54 @@ fn focus_input(host: &HtmlElement, selector: &str) {
     {
         let _ = input.focus();
     }
+}
+
+/// Gate the recovery panel's message and form on whether this browser
+/// currently holds an account link. Recovery is driven by a surviving
+/// device — one that already holds a `root → device` delegation, which is
+/// what lets the worker build the device-signed half of the ceremony. An
+/// unlinked browser cannot do that, so it sees only the static message
+/// pointing at a device that can.
+fn set_recover_availability(host: &HtmlElement, linked: bool) {
+    if let Ok(Some(message)) = host.query_selector("#account-recover-message") {
+        message.set_text_content(Some(if linked {
+            "This replaces the account's passkey. Other devices keep their data and \
+             re-connect the next time they open tonk."
+        } else {
+            "This browser isn't connected to the account, so it can't recover it. Open \
+             tonk on a device that's still connected and continue from there instead."
+        }));
+    }
+    if let Ok(Some(form)) = host.query_selector("#account-recover-form") {
+        if linked {
+            let _ = form.remove_attribute("hidden");
+        } else {
+            let _ = form.set_attribute("hidden", "");
+        }
+    }
+}
+
+/// Enter the recovery panel and resolve which of its two faces to show.
+/// Reachable from a browser in either link state — the choice panel (not
+/// yet linked) and the success panel (already linked) both offer the
+/// "Lost your passkey?" entry point — so the availability check is a live
+/// read rather than assumed from which entry point was used.
+fn open_recover(host: &HtmlElement) {
+    clear_error(host);
+    set_mode(host, "recover");
+    set_busy(host, true, "Checking this browser…");
+    let host = host.clone();
+    spawn_local(async move {
+        let linked = matches!(
+            crate::api::account_status().await,
+            Ok(AccountStatus::Linked { .. })
+        );
+        set_recover_availability(&host, linked);
+        set_busy(&host, false, "");
+        if linked {
+            focus_input(&host, "#account-recover-name");
+        }
+    });
 }
 
 fn show_success(host: &HtmlElement) {
@@ -781,6 +839,10 @@ fn bind(host: &HtmlElement) {
         focus_input(&host, "#account-rotate-name");
     });
 
+    for selector in ["#account-choose-recover", "#account-recover-open"] {
+        on_click(host, selector, |host| open_recover(&host));
+    }
+
     on_click(host, "#account-rotate-submit", |host| {
         clear_error(&host);
         let name = match input(&host, "#account-rotate-name") {
@@ -884,6 +946,62 @@ fn bind(host: &HtmlElement) {
             }
         });
     });
+
+    on_click(host, "#account-recover-submit", |host| {
+        clear_error(&host);
+        let name = match input(&host, "#account-recover-name") {
+            Ok(value) => value,
+            Err(error) => return show_error(&host, error),
+        };
+        set_busy(&host, true, "Checking this browser's link…");
+        spawn_local(async move {
+            let result = async {
+                let (old_root_did, device_did) = match crate::api::account_status()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    AccountStatus::Linked {
+                        root_did,
+                        device_did,
+                    } => (root_did, device_did),
+                    AccountStatus::Unlinked { .. } => {
+                        return Err("This browser isn't connected to the account, so it can't \
+                             recover it. Open tonk on a device that's still connected."
+                            .to_string());
+                    }
+                };
+                set_busy(&host, true, "Waiting for your new passkey…");
+                let request: AccountRecoverRequest = identity_call(
+                    "recoverAccount",
+                    &RecoverInput {
+                        name,
+                        old_root_did,
+                        device_did,
+                    },
+                )
+                .await?;
+                set_busy(&host, true, "Recovering your account…");
+                crate::api::recover_account(&request)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            .await;
+            match result {
+                Ok(_status) => {
+                    if let Ok(Some(message)) = host.query_selector("#account-success-message") {
+                        message.set_text_content(Some(
+                            "Your account is recovered on the new passkey.",
+                        ));
+                    }
+                    show_success(&host);
+                }
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
+                }
+            }
+        });
+    });
 }
 
 /// Register `<tonk-account>` with the top document.
@@ -953,6 +1071,10 @@ mod tests {
             "#account-rotate-open",
             "#account-rotate-name",
             "#account-rotate-submit",
+            "#account-choose-recover",
+            "#account-recover-open",
+            "#account-recover-name",
+            "#account-recover-submit",
         ] {
             assert!(
                 host.query_selector(selector).unwrap().is_some(),
@@ -1018,6 +1140,7 @@ mod tests {
             "#account-link",
             "#account-handoff",
             "#account-success",
+            "#account-recover",
         ] {
             assert!(
                 host.query_selector(selector)
@@ -1027,6 +1150,94 @@ mod tests {
                 "{selector} should be hidden while rotate is shown"
             );
         }
+    }
+
+    #[dialog_common::test]
+    fn it_reveals_the_recover_panel_and_hides_the_others() {
+        let host = host();
+        set_mode(&host, "recover");
+        assert!(
+            host.query_selector("#account-recover")
+                .unwrap()
+                .unwrap()
+                .get_attribute("hidden")
+                .is_none()
+        );
+        for selector in [
+            "#account-choice",
+            "#account-create",
+            "#account-verify",
+            "#account-link",
+            "#account-handoff",
+            "#account-success",
+            "#account-rotate",
+        ] {
+            assert!(
+                host.query_selector(selector)
+                    .unwrap()
+                    .unwrap()
+                    .has_attribute("hidden"),
+                "{selector} should be hidden while recover is shown"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_hides_the_recovery_form_until_link_status_is_resolved() {
+        let host = host();
+        assert!(
+            host.query_selector("#account-recover-form")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden"),
+            "the recovery form must default to hidden — an unresolved link \
+             status must not expose the submit control"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_shows_the_recovery_form_only_once_this_browser_is_linked() {
+        let host = host();
+        set_recover_availability(&host, false);
+        assert!(
+            host.query_selector("#account-recover-form")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden"),
+            "an unlinked browser cannot drive recovery, so the form stays hidden"
+        );
+        assert_eq!(
+            host.query_selector("#account-recover-message")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some(
+                "This browser isn't connected to the account, so it can't recover it. Open \
+                 tonk on a device that's still connected and continue from there instead."
+            )
+        );
+
+        set_recover_availability(&host, true);
+        assert!(
+            host.query_selector("#account-recover-form")
+                .unwrap()
+                .unwrap()
+                .get_attribute("hidden")
+                .is_none(),
+            "a linked browser is the recovery prerequisite, so the form is revealed"
+        );
+        assert_eq!(
+            host.query_selector("#account-recover-message")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some(
+                "This replaces the account's passkey. Other devices keep their data and \
+                 re-connect the next time they open tonk."
+            )
+        );
     }
 
     fn dummy_rotation() -> RotationOutput {

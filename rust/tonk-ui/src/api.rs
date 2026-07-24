@@ -1,9 +1,9 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
-    AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
-    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SyncResponse,
-    SyncStatusResponse,
+    AccountDevice, AccountLinkRequest, AccountRecoverRequest, AccountStatus, EvaluateResponse,
+    IdentifyResponse, JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest,
+    SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -569,6 +569,33 @@ pub async fn rotate_account(
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "POST /accounts/rotate returned {status}: {text}"
+        )))
+    }
+}
+
+/// Recover an account onto a fresh root under a surviving device's
+/// authority, via `POST /api/account/recover`. The worker builds the
+/// device-signed half of the ceremony from the stored link, submits both
+/// containers to the account service, replaces the local link, and
+/// converges spaces — so a single successful response means recovery is
+/// fully done, with nothing left for the caller to persist separately.
+pub async fn recover_account(
+    request: &AccountRecoverRequest,
+) -> Result<AccountStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/recover", origin()))
+        .json(request)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/recover returned {status}: {text}"
         )))
     }
 }
