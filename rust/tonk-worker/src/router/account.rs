@@ -8,7 +8,7 @@ use dialog_ucan_core::DelegationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_worker_api::{AccountLinkRequest, AccountStatus};
+use tonk_worker_api::{AccountLinkRequest, AccountStatus, SignOutResponse};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -280,12 +280,23 @@ pub async fn link(
 /// costs are a passkey prompt to link again, and any space that was
 /// never sync-enabled, which was never escrowed and does not come back.
 #[wasm_compat]
-pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
+pub async fn unlink(
+    State(state): State<AppState>,
+) -> Result<Json<SignOutResponse>, TonkWorkerError> {
     // Revoke first, while this device's key is still the one the
     // registry knows. Best-effort: an unreachable account service must
     // not strand the user on a device they asked to sign out of, and
-    // the local half is what they can see.
-    revoke_this_device(&state).await;
+    // the local half is what they can see. Failure is carried into the
+    // response rather than aborting: the user asked to leave this
+    // device, and they can finish the revocation from another one.
+    let (revoked, warning) = match revoke_this_device(&state).await {
+        SelfRevocation::Recorded => (true, None),
+        SelfRevocation::NothingToRecord => (false, None),
+        SelfRevocation::Failed(cause) => {
+            log!("sign-out revoked nothing in the registry: {cause}");
+            (false, Some(cause))
+        }
+    };
 
     let storage = { state.read().await.storage.clone() };
     let (profile_name, profile) = crate::device::rotate(&storage).await?;
@@ -317,7 +328,24 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
         }
     }
 
-    Ok(Json(AccountStatus::Unlinked { device_did }))
+    Ok(Json(SignOutResponse {
+        device_did,
+        revoked,
+        warning,
+    }))
+}
+
+/// What became of the registry half of a sign-out.
+enum SelfRevocation {
+    /// The registry accepted this device's self-revocation.
+    Recorded,
+    /// There was no registry to tell: the profile was never linked, or
+    /// this deployment has no account service.
+    NothingToRecord,
+    /// The registry should have been told and was not. The device still
+    /// signs out locally; the cause travels to the user, who can revoke
+    /// from another device.
+    Failed(String),
 }
 
 /// Tell the account registry this device is out, signing the revocation
@@ -328,7 +356,7 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
 /// itself. Nothing here is fatal — a profile that was never linked has
 /// nothing to revoke, and a failed call leaves a device the registry
 /// still believes in, which is the state it was already in.
-async fn revoke_this_device(state: &AppState) {
+async fn revoke_this_device(state: &AppState) -> SelfRevocation {
     use dialog_ucan_core::promise::Promised;
 
     // Read what the call needs and let the lock go: the rest of this
@@ -337,7 +365,7 @@ async fn revoke_this_device(state: &AppState) {
     let (link, device, device_did) = {
         let tonk = state.read().await;
         let Some(link) = account_link(&tonk).await else {
-            return; // never linked — nothing to tell the registry
+            return SelfRevocation::NothingToRecord; // never linked
         };
         (
             link,
@@ -346,7 +374,7 @@ async fn revoke_this_device(state: &AppState) {
         )
     };
     let Some(service) = crate::router::account_backup::account_service_url() else {
-        return;
+        return SelfRevocation::NothingToRecord;
     };
     let root_did = link.issuer().clone();
 
@@ -356,8 +384,9 @@ async fn revoke_this_device(state: &AppState) {
         {
             Ok(bytes) => bytes,
             Err(error) => {
-                log!("sign-out could not sign a revocation for this device: {error}");
-                return;
+                return SelfRevocation::Failed(format!(
+                    "could not sign a revocation for this device: {error}"
+                ));
             }
         };
 
@@ -381,14 +410,18 @@ async fn revoke_this_device(state: &AppState) {
     {
         Ok(body) => body,
         Err(error) => {
-            log!("sign-out could not build the revoke invocation: {error}");
-            return;
+            return SelfRevocation::Failed(format!(
+                "could not build the revoke invocation: {error}"
+            ));
         }
     };
 
     let endpoint = format!("{}/devices/revoke", service.trim_end_matches('/'));
-    if let Err(error) = crate::router::account_backup::post_for_bytes(&endpoint, body).await {
-        log!("sign-out could not reach the account service to revoke this device: {error}");
+    match crate::router::account_backup::post_for_bytes(&endpoint, body).await {
+        Ok(_) => SelfRevocation::Recorded,
+        Err(error) => SelfRevocation::Failed(format!(
+            "could not reach the account service to revoke this device: {error}"
+        )),
     }
 }
 
@@ -535,7 +568,13 @@ mod tests {
         }
 
         let Json(after) = unlink(State(state.clone())).await.unwrap();
-        assert!(matches!(after, AccountStatus::Unlinked { .. }));
+        // The test scope has no account service, so there was no
+        // registry to tell — which is not a failure and must not warn.
+        assert!(!after.revoked);
+        assert!(
+            after.warning.is_none(),
+            "nothing-to-record is not a failure worth warning about"
+        );
         let Json(loaded) = get(State(state.clone())).await.unwrap();
         assert!(matches!(loaded, AccountStatus::Unlinked { .. }));
 
@@ -560,9 +599,7 @@ mod tests {
 
         let Json(after) = unlink(State(state.clone())).await.unwrap();
 
-        let AccountStatus::Unlinked { device_did } = after else {
-            panic!("sign-out must leave the profile unlinked");
-        };
+        let device_did = after.device_did;
         assert_ne!(device_did, revoked_did.to_string());
         assert_eq!(
             state.read().await.profile.did().to_string(),

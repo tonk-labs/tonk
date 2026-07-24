@@ -480,7 +480,7 @@ enum AccountCommand {
         #[arg(
             long,
             value_name = "URL",
-            default_value = account::DEFAULT_ACCOUNT_URL,
+            default_value = account::DEFAULT_ACCOUNT_PAGE,
             hide = true
         )]
         account_url: String,
@@ -989,8 +989,12 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 open_browser: !no_open,
             };
             match account::revoke(&profile, &options, &did).await {
-                Ok(()) => {
+                Ok(account::RevokeOutcome::Revoked) => {
                     println!("revoked\ndevice: {did}");
+                    ExitCode::Success
+                }
+                Ok(account::RevokeOutcome::AlreadyRevoked) => {
+                    println!("already revoked\ndevice: {did}");
                     ExitCode::Success
                 }
                 Err(error) => print_error(error.to_string()),

@@ -34,6 +34,27 @@ pub enum AccountStatus {
     },
 }
 
+/// Result of signing out on this device.
+///
+/// Sign-out is two acts: telling the registry this device is out, and
+/// rotating the local key. The rotation always happens; the registry
+/// call is best-effort, and this response is where its failure
+/// surfaces instead of vanishing into a console log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignOutResponse {
+    /// DID of the replacement profile this browser now signs as.
+    pub device_did: String,
+    /// Whether the registry recorded this device's self-revocation.
+    /// `false` when there was nothing to record — never linked, or no
+    /// account service for this deployment — as well as on failure.
+    pub revoked: bool,
+    /// Why the registry was not told, when it should have been. The
+    /// device is signed out locally either way; a caller showing this
+    /// should tell the user to revoke from another device.
+    pub warning: Option<String>,
+}
+
 /// One device registered under the linked account, as returned by the
 /// worker's device-list proxy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,5 +130,18 @@ mod tests {
         .unwrap();
         assert_eq!(request.did, "did:key:device");
         assert_eq!(request.revocation, "beef");
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_the_sign_out_warning_in_camel_case() {
+        let json = serde_json::to_value(SignOutResponse {
+            device_did: "did:key:fresh".into(),
+            revoked: false,
+            warning: Some("service unreachable".into()),
+        })
+        .unwrap();
+        assert_eq!(json["deviceDid"], "did:key:fresh");
+        assert_eq!(json["revoked"], false);
+        assert_eq!(json["warning"], "service unreachable");
     }
 }

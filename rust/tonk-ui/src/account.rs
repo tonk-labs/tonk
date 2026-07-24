@@ -299,8 +299,31 @@ fn revoke_target_from_url() -> Option<String> {
     let query = search.strip_prefix('?')?;
     query.split('&').find_map(|pair| {
         let (name, value) = pair.split_once('=')?;
-        (name == "revoke" && !value.is_empty()).then(|| value.to_owned())
+        if name != "revoke" || value.is_empty() {
+            return None;
+        }
+        // A browser may percent-encode the DID; decode before matching
+        // registry rows, falling back to the raw value if decoding
+        // fails.
+        Some(
+            js_sys::decode_uri_component(value)
+                .map(String::from)
+                .unwrap_or_else(|_| value.to_owned()),
+        )
     })
+}
+
+/// Strip the query once the deep link has been acted on, mirroring what
+/// [`load_handoff`] does with the fragment secret. Without this a
+/// cancelled confirm re-fires on every later visit to the device list
+/// in this tab.
+fn consume_revoke_target() {
+    let Some(window) = window() else { return };
+    if let Ok(path) = window.location().pathname() {
+        let _ = window
+            .history()
+            .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
+    }
 }
 
 fn load_devices(host: HtmlElement) {
@@ -311,16 +334,23 @@ fn load_devices(host: HtmlElement) {
                 set_busy(&host, false, "");
                 render_devices(&host, &devices);
                 set_mode(&host, "devices");
-                if let Some(did) = revoke_target_from_url()
-                    && let Some(device) = devices
+                if let Some(did) = revoke_target_from_url() {
+                    consume_revoke_target();
+                    match devices
                         .iter()
                         .find(|device| device.did == did && device.status == "active")
-                {
-                    begin_revoke(
-                        host.clone(),
-                        device.did.clone(),
-                        device.delegation_cid.clone(),
-                    );
+                    {
+                        Some(device) => begin_revoke(
+                            host.clone(),
+                            device.did.clone(),
+                            device.delegation_cid.clone(),
+                        ),
+                        None => show_error(
+                            &host,
+                            "The device named by this link is not an active device \
+                             of this account.",
+                        ),
+                    }
                 }
             }
             Err(error) => {
@@ -329,6 +359,27 @@ fn load_devices(host: HtmlElement) {
             }
         }
     });
+}
+
+/// Where a fresh page load lands once the account status is known.
+#[derive(Debug, PartialEq, Eq)]
+enum Landing {
+    /// Straight to the device list: a `?revoke=` deep link names a
+    /// device, and the revoke ceremony lives there.
+    Devices,
+    /// The signed-in success screen.
+    Success,
+    /// The link/create choice, with a hint when a revoke deep link
+    /// cannot proceed because this browser is not linked.
+    Choice { revoke_hint: bool },
+}
+
+fn landing(linked: bool, revoke_target: bool) -> Landing {
+    match (linked, revoke_target) {
+        (true, true) => Landing::Devices,
+        (true, false) => Landing::Success,
+        (false, revoke_hint) => Landing::Choice { revoke_hint },
+    }
 }
 
 fn load_status(host: HtmlElement) {
@@ -346,10 +397,23 @@ fn load_status(host: HtmlElement) {
     set_busy(&host, true, "Checking this browser…");
     spawn_local(async move {
         match crate::api::account_status().await {
-            Ok(AccountStatus::Linked { .. }) => show_success(&host),
-            Ok(AccountStatus::Unlinked { .. }) => {
-                set_busy(&host, false, "");
-                set_mode(&host, "choice");
+            Ok(status) => {
+                let linked = matches!(status, AccountStatus::Linked { .. });
+                match landing(linked, revoke_target_from_url().is_some()) {
+                    Landing::Devices => load_devices(host),
+                    Landing::Success => show_success(&host),
+                    Landing::Choice { revoke_hint } => {
+                        set_busy(&host, false, "");
+                        set_mode(&host, "choice");
+                        if revoke_hint {
+                            show_error(
+                                &host,
+                                "This browser is not linked to an account. Link it \
+                                 first, then reopen the revoke link from the terminal.",
+                            );
+                        }
+                    }
+                }
             }
             Err(error) => {
                 set_busy(&host, false, "");
@@ -680,13 +744,28 @@ fn bind(host: &HtmlElement) {
                 // Everything on screen belongs to the profile that just
                 // got replaced, down to the spaces in the sidebar, so
                 // reload rather than trying to reconcile it in place.
-                Ok(_) => match window().map(|window| window.location().reload()) {
-                    Some(Ok(())) => {}
-                    _ => {
-                        set_busy(&host, false, "");
-                        set_mode(&host, "choice");
+                Ok(response) => {
+                    // The registry half of sign-out is best-effort; if
+                    // it failed, say so before the reload wipes the
+                    // page — finishing the revocation now falls to the
+                    // user's other devices.
+                    if let Some(warning) = response.warning
+                        && let Some(window) = window()
+                    {
+                        let _ = window.alert_with_message(&format!(
+                            "Signed out on this device, but the account registry could \
+                             not record it ({warning}). This device may still show as \
+                             active — revoke it from another device's account page."
+                        ));
                     }
-                },
+                    match window().map(|window| window.location().reload()) {
+                        Some(Ok(())) => {}
+                        _ => {
+                            set_busy(&host, false, "");
+                            set_mode(&host, "choice");
+                        }
+                    }
+                }
                 Err(error) => {
                     set_busy(&host, false, "");
                     show_error(&host, error.to_string());
@@ -973,6 +1052,20 @@ mod tests {
         assert_eq!(
             button.get_attribute("data-delegation-cid").as_deref(),
             Some("bafyphone")
+        );
+    }
+
+    /// A `?revoke=` deep link must land on the device list, where the
+    /// ceremony runs — parking a linked browser on the success screen
+    /// leaves the CLI polling until it times out.
+    #[dialog_common::test]
+    fn it_routes_a_revoke_deep_link_to_the_device_list() {
+        assert_eq!(landing(true, true), Landing::Devices);
+        assert_eq!(landing(true, false), Landing::Success);
+        assert_eq!(landing(false, true), Landing::Choice { revoke_hint: true });
+        assert_eq!(
+            landing(false, false),
+            Landing::Choice { revoke_hint: false }
         );
     }
 }

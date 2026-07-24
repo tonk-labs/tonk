@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production top-document ceremony route.
 pub const DEFAULT_ACCOUNT_URL: &str = "https://tonk.spot/account/link";
+/// Production account page, where the revoke ceremony runs. Distinct
+/// from [`DEFAULT_ACCOUNT_URL`]: `/account/link` is the link handoff and
+/// consumes a fragment secret, so a `?revoke=` sent there dead-ends.
+pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
 /// Credential-store key shared with the browser worker.
 pub const ACCOUNT_LINK_SITE: &str = "tonk-account-link-v1";
 
@@ -378,6 +382,15 @@ pub struct RevokeOptions {
     pub open_browser: bool,
 }
 
+/// How a revocation request resolved. The caller owns the messaging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    /// The registry now shows the device revoked.
+    Revoked,
+    /// The registry already showed the device revoked; nothing to do.
+    AlreadyRevoked,
+}
+
 /// Revoke another of the account's devices, by way of a browser
 /// ceremony.
 ///
@@ -385,7 +398,11 @@ pub struct RevokeOptions {
 /// root-signed revocation, the root key is derived from the passkey, and
 /// a passkey needs a browser — so the CLI hands off, then watches the
 /// registry until the device it named comes back revoked.
-pub async fn revoke(profile: &Profile, options: &RevokeOptions, did: &str) -> Result<()> {
+pub async fn revoke(
+    profile: &Profile,
+    options: &RevokeOptions,
+    did: &str,
+) -> Result<RevokeOutcome> {
     revoke_target_guard(profile.did().as_ref(), did)?;
 
     let rows = devices(profile, &options.service_url).await?;
@@ -394,8 +411,7 @@ pub async fn revoke(profile: &Profile, options: &RevokeOptions, did: &str) -> Re
         .find(|row| row.did == did)
         .with_context(|| format!("no device {did} under this account"))?;
     if target.status == "revoked" {
-        println!("already revoked\ndevice: {did}");
-        return Ok(());
+        return Ok(RevokeOutcome::AlreadyRevoked);
     }
 
     let url = revoke_url(&options.account_url, did);
@@ -404,27 +420,53 @@ pub async fn revoke(profile: &Profile, options: &RevokeOptions, did: &str) -> Re
         eprintln!("Could not open a browser; use the URL above.");
     }
 
+    // One pinned listener for the whole wait. Tokio replaces the
+    // process's default SIGINT handling the first time this is polled
+    // and never restores it, so a fresh `ctrl_c()` per iteration would
+    // swallow any Ctrl-C that lands between polls.
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+
+    // A failed poll is not a failed revocation — the user may be
+    // mid-passkey while the service hiccups — so polling tolerates
+    // errors until the deadline and reports the last one then.
+    let mut last_error: Option<anyhow::Error> = None;
     let mut delay = Duration::from_millis(500);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5 * 60);
     loop {
         if tokio::time::Instant::now() >= deadline {
-            bail!("revocation was not approved in time; run `tonk account revoke` again");
-        }
-        tokio::select! {
-            rows = devices(profile, &options.service_url) => {
-                if rows?
-                    .iter()
-                    .any(|row| row.did == did && row.status == "revoked")
-                {
-                    return Ok(());
+            match last_error {
+                Some(error) => bail!(
+                    "revocation was not approved in time (last poll failed: {error:#}); \
+                     run `tonk account revoke` again"
+                ),
+                None => {
+                    bail!("revocation was not approved in time; run `tonk account revoke` again")
                 }
             }
-            signal = tokio::signal::ctrl_c() => {
+        }
+        tokio::select! {
+            rows = devices(profile, &options.service_url) => match rows {
+                Ok(rows) => {
+                    last_error = None;
+                    if rows.iter().any(|row| row.did == did && row.status == "revoked") {
+                        return Ok(RevokeOutcome::Revoked);
+                    }
+                }
+                Err(error) => last_error = Some(error),
+            },
+            signal = &mut ctrl_c => {
                 signal.context("failed to listen for Ctrl-C")?;
                 bail!("revocation cancelled");
             }
         }
-        tokio::time::sleep(delay).await;
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            signal = &mut ctrl_c => {
+                signal.context("failed to listen for Ctrl-C")?;
+                bail!("revocation cancelled");
+            }
+        }
         delay = (delay * 2).min(Duration::from_secs(5));
     }
 }
@@ -436,9 +478,18 @@ mod tests {
     #[test]
     fn it_points_the_revoke_ceremony_at_the_named_device() {
         assert_eq!(
-            revoke_url("https://tonk.spot/account", "did:key:zDevice"),
+            revoke_url(DEFAULT_ACCOUNT_PAGE, "did:key:zDevice"),
             "https://tonk.spot/account?revoke=did:key:zDevice"
         );
+    }
+
+    /// The revoke deep link must not default to the link-handoff page:
+    /// `/account/link` consumes a fragment secret and errors without
+    /// one, so a `?revoke=` sent there is never read.
+    #[test]
+    fn it_does_not_hand_the_revoke_ceremony_to_the_link_page() {
+        assert_ne!(DEFAULT_ACCOUNT_PAGE, DEFAULT_ACCOUNT_URL);
+        assert!(!DEFAULT_ACCOUNT_PAGE.ends_with("/link"));
     }
 
     #[test]

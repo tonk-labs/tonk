@@ -2,8 +2,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
-    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SyncResponse,
-    SyncStatusResponse,
+    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SignOutResponse,
+    SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -515,8 +515,9 @@ pub async fn revoke_account_device(
     }
 }
 
-/// Clear this browser's stored account link (local sign-out).
-pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
+/// Sign out on this device: revoke it in the registry (best-effort,
+/// reported in the response) and rotate onto a fresh key.
+pub async fn unlink_account() -> Result<SignOutResponse, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .delete(format!("{}/api/account", origin()))
