@@ -148,6 +148,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/account/link", post(account::link))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
+        .route("/api/account/recover", post(account::recover))
         .route("/api/profile", get(profile::get_profile))
         // Profile-as-repository routes. The profile is its own
         // repository but lives outside the named-repo namespace

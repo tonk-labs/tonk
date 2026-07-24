@@ -16,6 +16,23 @@ pub struct AccountLinkRequest {
     pub succession_hex: Option<String>,
 }
 
+/// Recover an account onto a fresh root under a surviving device's
+/// authority, replacing the account's current root registration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRecoverRequest {
+    /// The root DID the account recovers onto.
+    pub new_root_did: String,
+    /// The credential id backing the new root's passkey.
+    pub new_credential_id: String,
+    /// Hex-encoded new-root-signed confirmation container, proving control
+    /// of `new_root_did`.
+    pub confirmation_hex: String,
+    /// Hex-encoded `newRoot → device` delegation the service installs on
+    /// this device once recovery succeeds.
+    pub device_delegation_hex: String,
+}
+
 /// Local account-link state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -98,5 +115,24 @@ mod tests {
         let request: RevokeDeviceRequest =
             serde_json::from_value(serde_json::json!({ "did": "did:key:device" })).unwrap();
         assert_eq!(request.did, "did:key:device");
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_account_recover_request_in_camel_case() {
+        let json = serde_json::to_value(AccountRecoverRequest {
+            new_root_did: "did:key:new-root".into(),
+            new_credential_id: "cred-new".into(),
+            confirmation_hex: "deadbeef".into(),
+            device_delegation_hex: "beefdead".into(),
+        })
+        .unwrap();
+        assert_eq!(json["newRootDid"], "did:key:new-root");
+        assert_eq!(json["newCredentialId"], "cred-new");
+        assert_eq!(json["confirmationHex"], "deadbeef");
+        assert_eq!(json["deviceDelegationHex"], "beefdead");
+
+        let request: AccountRecoverRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.new_root_did, "did:key:new-root");
+        assert_eq!(request.device_delegation_hex, "beefdead");
     }
 }

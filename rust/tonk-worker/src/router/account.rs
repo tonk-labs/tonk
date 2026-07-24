@@ -8,7 +8,7 @@ use dialog_ucan_core::DelegationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_worker_api::{AccountLinkRequest, AccountStatus};
+use tonk_worker_api::{AccountLinkRequest, AccountRecoverRequest, AccountStatus};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -231,6 +231,35 @@ pub(crate) async fn persist_link(
         }
     }
 
+    save_validated_link(state, chain, bytes).await
+}
+
+/// Validate and store a `root → current profile` delegation, unconditionally
+/// replacing whatever link is currently stored.
+///
+/// [`persist_link`] minus the same-issuer guard: recovery legitimately
+/// swaps the account onto a brand-new root under the recovering device's own
+/// authority, which is the entire point of the ceremony, so it cannot go
+/// through the guarded path. Only the recovery route may call this — the
+/// HTTP `link` route keeps calling [`persist_link`], which still refuses a
+/// bare relink onto a different root without a succession chain.
+pub(crate) async fn persist_link_replacing(
+    state: &crate::worker::TonkState,
+    request: &AccountLinkRequest,
+) -> Result<(), TonkWorkerError> {
+    let device_did = state.profile.did();
+    let (chain, bytes) = validate_link(request, &device_did).await?;
+    save_validated_link(state, chain, bytes).await
+}
+
+/// Shared tail of [`persist_link`] and [`persist_link_replacing`]: save the
+/// already-validated delegation as this profile's live account capability
+/// and persist its bytes as the local account link.
+async fn save_validated_link(
+    state: &crate::worker::TonkState,
+    chain: DelegationChain,
+    bytes: Vec<u8>,
+) -> Result<(), TonkWorkerError> {
     state
         .profile
         .access()
@@ -346,6 +375,163 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
         })?;
     Ok(Json(AccountStatus::Unlinked {
         device_did: state.profile.did().to_string(),
+    }))
+}
+
+/// POST the two recovery containers to the account service and surface a
+/// non-2xx response as [`TonkWorkerError::Forbidden`], carrying the
+/// service's own error text — unlike `account_backup`'s POST helpers, which
+/// are best-effort and only ever log an [`TonkWorkerError::Internal`], a
+/// caller waiting on this route needs the real reason the ceremony was
+/// refused.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn post_recovery(endpoint: &str, body: Vec<u8>) -> Result<(), TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestInit, Response};
+
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_body(&js_sys::Uint8Array::from(body.as_slice()).into());
+    let request = Request::new_with_str_and_init(endpoint, &init)
+        .map_err(|e| TonkWorkerError::Internal(format!("recovery request: {e:?}")))?;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| TonkWorkerError::Internal(format!("recovery fetch: {e:?}")))?;
+    if !response.ok() {
+        let text = JsFuture::from(
+            response
+                .text()
+                .map_err(|e| TonkWorkerError::Internal(format!("recovery error body: {e:?}")))?,
+        )
+        .await
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_else(|| format!("account service returned HTTP {}", response.status()));
+        return Err(TonkWorkerError::Forbidden(text));
+    }
+    Ok(())
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn post_recovery(endpoint: &str, body: Vec<u8>) -> Result<(), TonkWorkerError> {
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .body(body)
+        // Same reasoning as `account_backup`'s POST helpers: bound the
+        // wait so a wedged account service can't wedge the native caller.
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("recovery: {e}")))?;
+    if !response.status().is_success() {
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "account service returned an error".to_owned());
+        return Err(TonkWorkerError::Forbidden(text));
+    }
+    Ok(())
+}
+
+/// Recover an account onto a fresh root under this surviving device's
+/// authority: prove the old `root → device` link to the account service,
+/// swap its registry entry onto the new root, replace the local link, and
+/// converge every space this device holds onto the new root.
+///
+/// Mirrors [`link`]'s rotation arm for the convergence dispatch: the wasm
+/// build fires the migration sweep (`migrate::converge_after_rotation`,
+/// itself `wasm32`-only) detached under the write lock, then restore under
+/// the read lock; native has no sweep to run (there is nothing to migrate
+/// off the device DID that a worker-only sweep would touch) and just
+/// restores inline.
+#[wasm_compat]
+pub async fn recover(
+    State(state): State<AppState>,
+    Json(request): Json<AccountRecoverRequest>,
+) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    // Keep the cloneable `AppState` handle around for the same reason
+    // `link` does: the wasm convergence dispatch below needs its own
+    // independent lock inside a detached task, after this handler's read
+    // guard has been dropped. Native awaits restore inline using the guard
+    // already held below, so it never needs this clone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let app_state = state.clone();
+    let state = state.read().await;
+    let device_did = state.profile.did();
+
+    let Some(link) = account_link(&state).await else {
+        return Err(TonkWorkerError::Router(
+            "profile has no account link".to_string(),
+        ));
+    };
+    // Only the wasm dispatch below acts on the old root; capturing it
+    // unconditionally would leave the native build with an unused binding.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let old_root = link.issuer().clone();
+
+    let device = state.profile.signer().signer().clone();
+    let recovery_bytes = tonk_identity::request::build_recovery_invocation(
+        device,
+        &link,
+        request.new_root_did.clone(),
+        request.new_credential_id.clone(),
+        request.device_delegation_hex.clone(),
+    )
+    .await
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to build recovery invocation: {error}"))
+    })?;
+
+    let service = crate::router::account_backup::account_service_url().ok_or_else(|| {
+        TonkWorkerError::Internal("account service is unavailable for this host".to_string())
+    })?;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "recovery": hex::encode(recovery_bytes),
+        "confirmation": request.confirmation_hex,
+    }))
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to serialize recovery request: {error}"))
+    })?;
+    let endpoint = format!("{}/accounts/recover", service.trim_end_matches('/'));
+    post_recovery(&endpoint, body).await?;
+
+    let link_request = AccountLinkRequest {
+        root_did: request.new_root_did.clone(),
+        delegation_hex: request.device_delegation_hex.clone(),
+        succession_hex: None,
+    };
+    persist_link_replacing(&state, &link_request).await?;
+
+    // Same write-then-read lock handoff as `link`'s rotation arm, and for
+    // the same reason: the sweep is a purely local storage sweep that must
+    // be mutually exclusive with handler-level writes (write lock), while
+    // restore awaits account-service round trips it must not stall every
+    // other handler behind it (read lock, acquired only after the sweep's
+    // write lock is released).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            {
+                let tonk = app_state.write().await;
+                crate::router::migrate::converge_after_rotation(&tonk, &old_root).await;
+            }
+            let tonk = app_state.read().await;
+            crate::router::restore::restore_spaces(&tonk).await;
+        });
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        crate::router::restore::restore_spaces(&state).await;
+    }
+
+    Ok(Json(AccountStatus::Linked {
+        root_did: request.new_root_did,
+        device_did: device_did.to_string(),
     }))
 }
 
@@ -607,5 +793,26 @@ mod tests {
         }
         let Json(loaded) = get(State(state)).await.unwrap();
         assert!(matches!(loaded, AccountStatus::Linked { .. }));
+    }
+
+    // `recover`'s happy path needs a live account service to authorize the
+    // recovery/confirmation containers and flip the registry, so it is
+    // covered by the account service's own integration test and the manual
+    // staging pass, not here. This only exercises the local guard that
+    // runs before any service call.
+    #[dialog_common::test]
+    async fn it_refuses_recovery_when_unlinked() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let request = AccountRecoverRequest {
+            new_root_did: "did:key:z6Mkunreachable".to_string(),
+            new_credential_id: "cred-new".to_string(),
+            confirmation_hex: "deadbeef".to_string(),
+            device_delegation_hex: "deadbeef".to_string(),
+        };
+
+        assert!(matches!(
+            recover(State(state), Json(request)).await,
+            Err(TonkWorkerError::Router(_))
+        ));
     }
 }
