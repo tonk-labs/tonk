@@ -859,6 +859,13 @@ mod tests {
                 created_at: 1_753_200_000,
                 this_device: false,
             },
+            tonk_worker_api::AccountDevice {
+                did: "did:key:zPhone".into(),
+                name: "Phone".into(),
+                status: "active".into(),
+                created_at: 1_753_100_000,
+                this_device: false,
+            },
         ];
         render_devices(&host, &devices);
 
@@ -867,7 +874,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let items = list.query_selector_all("li").unwrap();
-        assert_eq!(items.length(), 2);
+        assert_eq!(items.length(), 3);
         let text = list.text_content().unwrap();
         assert!(text.contains("This browser"));
         assert!(text.contains("this device"));
