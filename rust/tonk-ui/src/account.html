@@ -62,6 +62,7 @@
   <section id="account-success" class="account__panel" hidden>
     <p id="account-success-message" class="account__status">You're logged in.</p>
     <button id="account-manage-devices" class="account__button account__button--secondary" type="button">Manage devices</button>
+    <button id="account-rotate-open" class="account__button account__button--quiet" type="button">Rotate passkey</button>
     <a class="account__button account__button--secondary" href="/">Back to Tonk</a>
   </section>
 
@@ -73,6 +74,17 @@
       <button id="account-unlink" class="account__button account__button--quiet" type="button">Sign out on this device</button>
       <button id="account-devices-back" class="account__button account__button--secondary" type="button">Back</button>
     </div>
+  </section>
+
+  <section id="account-rotate" class="account__panel" hidden>
+    <h2>Rotate your passkey</h2>
+    <p class="account__message">Creates a new passkey for this account. Your devices keep working and re-connect to the new passkey the next time they sync in.</p>
+    <form class="account__form">
+      <label>New passkey name
+        <input id="account-rotate-name" name="New passkey name" type="text" autocomplete="off" required>
+      </label>
+      <button id="account-rotate-submit" class="account__button" type="submit">Create new passkey</button>
+    </form>
   </section>
 
   <p id="account-working" class="account__hint" role="status" aria-live="polite">Checking this browser…</p>

@@ -47,6 +47,27 @@ struct CeremonyOutput {
     invocation_hex: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateInput {
+    name: String,
+    device_did: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotationOutput {
+    #[allow(dead_code)]
+    old_root_did: String,
+    new_root_did: String,
+    #[allow(dead_code)]
+    new_credential_id: String,
+    succession_hex: String,
+    device_delegation_hex: String,
+    rotation_hex: String,
+    confirmation_hex: String,
+}
+
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
 struct TonkAccount;
@@ -165,6 +186,7 @@ fn set_mode(host: &HtmlElement, mode: &str) {
         ("handoff", "#account-handoff"),
         ("success", "#account-success"),
         ("devices", "#account-devices"),
+        ("rotate", "#account-rotate"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
             if name == mode {
@@ -184,6 +206,7 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-handoff-submit",
         "#account-manage-devices",
         "#account-unlink",
+        "#account-rotate-submit",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
             && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
@@ -385,7 +408,10 @@ fn load_handoff(host: HtmlElement) {
     });
 }
 
-async fn identity_call<T: Serialize>(method: &str, input: &T) -> Result<CeremonyOutput, String> {
+async fn identity_call<I: Serialize, O: for<'de> Deserialize<'de>>(
+    method: &str,
+    input: &I,
+) -> Result<O, String> {
     let window = window().ok_or_else(|| "window is unavailable".to_string())?;
     let identity = Reflect::get(&window, &"tonkIdentity".into())
         .map_err(|error| format!("identity API unavailable: {error:?}"))?;
@@ -406,9 +432,13 @@ async fn identity_call<T: Serialize>(method: &str, input: &T) -> Result<Ceremony
 }
 
 async fn persist(ceremony: &CeremonyOutput) -> Result<(), String> {
-    crate::api::save_account_link(ceremony.root_did.clone(), ceremony.delegation_hex.clone())
-        .await
-        .map_err(|error| error.to_string())?;
+    crate::api::save_account_link(
+        ceremony.root_did.clone(),
+        ceremony.delegation_hex.clone(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -524,7 +554,7 @@ fn bind(host: &HtmlElement) {
                     .await
                     .map_err(|error| error.to_string())?
                     .did;
-                let ceremony = identity_call(
+                let ceremony: CeremonyOutput = identity_call(
                     "createAccount",
                     &CreateInput {
                         email,
@@ -558,7 +588,7 @@ fn bind(host: &HtmlElement) {
                     .await
                     .map_err(|error| error.to_string())?
                     .did;
-                let ceremony = identity_call(
+                let ceremony: CeremonyOutput = identity_call(
                     "linkDevice",
                     &LinkInput {
                         device_did,
@@ -591,7 +621,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let ceremony = identity_call("completeLink", &handoff).await?;
+                let ceremony: CeremonyOutput = identity_call("completeLink", &handoff).await?;
                 set_busy(&host, true, "Linking the command-line profile…");
                 crate::api::submit_account_ceremony(
                     &service(&host)?,
@@ -694,6 +724,55 @@ fn bind(host: &HtmlElement) {
         let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
         closure.forget();
     }
+
+    on_click(host, "#account-rotate-open", |host| {
+        clear_error(&host);
+        set_mode(&host, "rotate");
+        focus_input(&host, "#account-rotate-name");
+    });
+
+    on_click(host, "#account-rotate-submit", |host| {
+        clear_error(&host);
+        let name = match input(&host, "#account-rotate-name") {
+            Ok(value) => value,
+            Err(error) => return show_error(&host, error),
+        };
+        set_busy(&host, true, "Waiting for your current passkey…");
+        spawn_local(async move {
+            let result = async {
+                let device_did = crate::api::identify()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .did;
+                let rotation: RotationOutput =
+                    identity_call("rotateAccount", &RotateInput { name, device_did }).await?;
+                set_busy(&host, true, "Rotating your account…");
+                crate::api::rotate_account(
+                    &service(&host)?,
+                    &rotation.rotation_hex,
+                    &rotation.confirmation_hex,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                crate::api::save_account_link(
+                    rotation.new_root_did,
+                    rotation.device_delegation_hex,
+                    Some(&rotation.succession_hex),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok::<(), String>(())
+            }
+            .await;
+            match result {
+                Ok(()) => show_success(&host),
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
+                }
+            }
+        });
+    });
 }
 
 /// Register `<tonk-account>` with the top document.
@@ -760,6 +839,9 @@ mod tests {
             "#account-create-submit",
             "#account-link-submit",
             "#account-handoff-submit",
+            "#account-rotate-open",
+            "#account-rotate-name",
+            "#account-rotate-submit",
         ] {
             assert!(
                 host.query_selector(selector).unwrap().is_some(),
@@ -805,6 +887,35 @@ mod tests {
                 .is_none(),
             "email and verification fields should be on separate screens"
         );
+    }
+
+    #[dialog_common::test]
+    fn it_reveals_the_rotate_panel_and_hides_the_others() {
+        let host = host();
+        set_mode(&host, "rotate");
+        assert!(
+            host.query_selector("#account-rotate")
+                .unwrap()
+                .unwrap()
+                .get_attribute("hidden")
+                .is_none()
+        );
+        for selector in [
+            "#account-choice",
+            "#account-create",
+            "#account-verify",
+            "#account-link",
+            "#account-handoff",
+            "#account-success",
+        ] {
+            assert!(
+                host.query_selector(selector)
+                    .unwrap()
+                    .unwrap()
+                    .has_attribute("hidden"),
+                "{selector} should be hidden while rotate is shown"
+            );
+        }
     }
 
     #[dialog_common::test]

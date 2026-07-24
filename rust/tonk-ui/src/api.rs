@@ -448,9 +448,15 @@ pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
 }
 
 /// Persist a verified account-root delegation in the local profile.
+///
+/// `succession_hex` is `Some` only for a rotation relink: the hex-encoded
+/// `oldRoot → newRoot` succession chain that authorizes the worker to
+/// replace an already-linked root with `root_did` instead of rejecting the
+/// request as a conflicting root.
 pub async fn save_account_link(
     root_did: String,
     delegation_hex: String,
+    succession_hex: Option<&str>,
 ) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -458,7 +464,7 @@ pub async fn save_account_link(
         .json(&AccountLinkRequest {
             root_did,
             delegation_hex,
-            succession_hex: None,
+            succession_hex: succession_hex.map(str::to_owned),
         })
         .send()
         .await
@@ -528,6 +534,41 @@ pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "DELETE /api/account returned {status}: {text}"
+        )))
+    }
+}
+
+/// Submit a signed rotation ceremony to the account service.
+///
+/// `POST {service_url}/accounts/rotate` with the old-root-signed rotation
+/// container and the new-root-signed confirmation container. On success the
+/// service has flipped the account onto the new root; the caller still must
+/// relink this profile locally (`save_account_link` with the succession
+/// chain) to pick up the new custody key.
+pub async fn rotate_account(
+    service_url: &str,
+    rotation_hex: &str,
+    confirmation_hex: &str,
+) -> Result<(), TonkUiError> {
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/accounts/rotate",
+            service_url.trim_end_matches('/')
+        ))
+        .json(&serde_json::json!({
+            "rotation": rotation_hex,
+            "confirmation": confirmation_hex,
+        }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /accounts/rotate returned {status}: {text}"
         )))
     }
 }
