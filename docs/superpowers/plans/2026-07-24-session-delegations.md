@@ -54,18 +54,26 @@
 
 ---
 
-### Task 3: Hold a session key in the client
+### Task 3: Hold a session key in the client — DONE, but not as written
 
 **Files:**
-- Modify: `rust/tonk-ui/` (wherever the device grant is loaded for sync), `rust/tonk-worker/`
+- Added: `rust/tonk-worker/src/session.rs`
+- Modified: `rust/tonk-worker/src/worker.rs`, `src/router.rs`, `src/router/sync.rs`, `src/router/profile_name.rs`, `src/lib.rs`, `Cargo.toml`
+- Upstream: dialog-db `feat/storage-clone` (#407)
 
-**This is where the remaining work is.** Tasks 1 and 2 give the primitives; nothing yet *uses* a session key to sign a presign.
+**The seam this task assumed does not exist.** There is no point where the client "loads its `root → device` grant for sync" and could call `extend_with_session`. The presign invocation is signed by dialog's *operator* key, and its proofs are assembled by a `CertificateStore::prove` walk starting at the operator — the client never hands a grant to a signing call.
 
-- [ ] **Step 1: Decide where the session key lives.** It must not outlive its delegation and must not be more durable than the grant. An in-memory key regenerated per page load is the simplest correct answer and costs one delegation mint per load; persisting it to IndexedDB buys fewer mints and adds a key-at-rest to reason about. Prefer in-memory unless mint cost measures badly.
-- [ ] **Step 2: Mint on load.** Where the client currently loads its `root → device` grant for sync, generate an ephemeral signer and call `extend_with_session`. Use the composed chain for presign invocations.
-- [ ] **Step 3: Renew before expiry.** A session that lapses mid-session must re-mint transparently rather than surfacing a 401 to the user. Renewal is local — no network — so this is a timer and a re-mint, not an error path.
-- [ ] **Step 4: Tests.** The wasm suites cannot run locally (macOS 27 blocker); rely on the CI web leg and verify it actually exercises the feature before trusting it.
-- [ ] **Step 5: Commit** `feat(tonk-ui): sign presigns with a short-lived session delegation`
+The `device → session` hop the plan wanted is already there structurally: it is `profile → operator`, minted unexpiring by `.allow(Subject::any())`. Bounding *that* is what bounds every chain the worker presents, and it keeps the device's identity in the chain exactly as the architecture paragraph intended.
+
+- [x] **Step 1: Where the session key lives.** In memory, re-derived per session from the profile seed and a random context. Not persisted: `derive` is a KDF over profile seed plus caller-supplied context, so a random context is all it takes to get a fresh key, and there is no key-at-rest beyond the profile that already exists.
+- [x] **Step 2: Mint on boot.** `session::open` derives the operator and claims `profile → operator` with a `SESSION_TTL_SECONDS` expiration instead of `.allow(Subject::any())`.
+- [x] **Step 3: Renew before expiry.** The sync drain rotates when within `RENEWAL_MARGIN_SECONDS`. Rotation replaces the *key*, not just the delegation: certificates are content-addressed with no delete, and `prove` filters on the *requested* range — which the presign path leaves unbounded, and an unbounded requirement is satisfied by every range including a lapsed one. A re-mint under the same audience would sit beside the dead certificate and be picked about half the time.
+- [x] **Step 4: Tests.** Seven in `session.rs`, including `it_authorizes_a_presign_chain_bounded_by_the_session` — the one that proves swapping `.allow()` for a bounded claim still resolves a real two-hop chain. The wasm suites *do* run locally: Chrome 150 at the default path plus nixpkgs chromedriver 150, `CHROMEDRIVER=… cargo test -p tonk-worker --target wasm32-unknown-unknown`. All 200 pass.
+- [x] **Step 5: Commit** `feat(tonk-worker): sign presigns with a short-lived session delegation`
+
+**Upstream dependency.** Rotation needs the replacement operator built over the *same* storage pool, or the reactor's cached repository and branch handles keep talking to the retired one. `OperatorBuilder::build` consumes its `Storage` and `Storage` was not `Clone`, so the pin moved to a rev carrying that one commit. See the implementation notes.
+
+`tonk_identity::session::extend_with_session` (Task 2) is consequently unused by the client. It stays as the primitive for anything that does hold a grant directly — the CLI, which presents unbounded chains today.
 
 ---
 

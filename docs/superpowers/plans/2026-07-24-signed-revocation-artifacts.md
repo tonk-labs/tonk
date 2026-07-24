@@ -203,7 +203,11 @@ Signature becomes `revoke_device<S: Store, C: ChainStore>(store, chains, account
 Depends on D's device-management surface existing. If D has not landed, stop after Task 5 and let D pick this up — the endpoints are complete and testable without a UI.
 
 - [x] **Step 1a:** The device-list revoke button runs the root ceremony, and the confirm copy states that revocation is permanent for that device's key.
-- [ ] **Step 1b:** "Sign out on this device" still only clears the local link. Wire it through self-revocation so the registry reflects it — the service already accepts a device-attested self-revoke.
+- [x] **Step 1b:** Sign-out self-revokes **and rotates the profile**. Wiring it through self-revocation alone would have bricked the browser: the access-service screen matches a revoked `device_did` unscoped by account, every chain this profile produces carries that DID as a delegation issuer, and there is no un-revoke — so a device coming back as the same profile is refused every presign it ever makes again, local spaces included.
+
+  Rotation is safe because nothing outside the device is keyed to the device DID: `member_did` returns the account root when linked, and `restore_spaces` re-mounts each escrowed `space → root` chain against a fresh `root → newdevice` link. It costs a passkey prompt to link again, and **anything never escrowed does not come back** — `back_up_owned_space` is hooked only into `enable_sync_inner`, so a space that was never sync-enabled is lost. The confirm copy says so; closing that gap is its own piece of work.
+
+  `rust/tonk-worker/src/device.rs` records which profile the device signs as, since the name was a constant and a rotated profile has to survive a worker restart. The pointer lives on a fixed registry profile — one stored inside the profile it names could not be read before opening it.
 - [ ] **Step 2:** Manual staging smoke: self-revoke from a device and confirm the artifact is device-attested; revoke a second device from a passkey-holding device and confirm the artifact is root-attested; confirm presigns from both 403 within 60s; confirm both artifacts verify standalone against the account root DID.
 - [ ] **Step 3: Commit** and update the completion spec's stage S section to "shipped".
 
