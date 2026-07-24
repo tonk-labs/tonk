@@ -7,6 +7,12 @@
 //! account registry. The decision logic here is pure and natively
 //! tested; D1 glue lives in d1 and is wasm-only.
 //!
+//! An unreachable registry fails closed: a presign the screen cannot
+//! clear is refused. The cache softens that without weakening it —
+//! credentials the registry cleared recently keep working through a
+//! grace window past their TTL, so a brief D1 outage stops unseen
+//! chains rather than active sync.
+//!
 //! An entitlement lookup for billing later extends the registry trait
 //! (or adds a sibling) — the collection and decision shapes here stay
 //! as they are.
@@ -85,47 +91,74 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
     })
 }
 
-/// How long a revocation verdict may be served from the per-isolate
-/// cache. Short on purpose: this bounds how stale enforcement can be,
-/// and the design accepts up to a minute of lag after a revoke.
+/// How long a verdict is authoritative: within this window the screen
+/// answers from cache without touching the registry. Short on purpose —
+/// it bounds how stale enforcement can be, and the design accepts up to
+/// a minute of lag after a revoke.
 pub const REVOCATION_TTL_MS: u64 = 60_000;
+
+/// How long past its TTL a verdict may still cover an unreachable
+/// registry. Inside this window the screen serves what the registry
+/// last told it; outside it, an unanswerable request is refused. This
+/// is the whole width of the fail-closed exemption, so it is measured
+/// from the last *successful* query and never extended by a failure.
+pub const REVOCATION_GRACE_MS: u64 = 600_000;
 
 /// A cached per-key verdict.
 #[derive(Debug, Clone, Copy)]
 pub struct CachedVerdict {
     /// Whether the key matched a revoked device when last queried.
     pub revoked: bool,
-    /// Absolute expiry, in the caller's millisecond clock.
+    /// When this verdict stops being authoritative, in the caller's
+    /// millisecond clock. It survives in the cache for
+    /// [`REVOCATION_GRACE_MS`] beyond that, usable only to cover a
+    /// registry outage.
     pub expires_at_ms: u64,
 }
 
 /// The result of probing the cache for a key set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheProbe {
-    /// True if any key has a live cached `revoked = true` verdict.
+    /// True if any key is cached as revoked, fresh or stale. Revocation
+    /// is monotone — the registry has no un-revoke — so a stale revoked
+    /// verdict can only have become more true.
     pub cached_revoked: bool,
-    /// Keys with no live cached verdict, needing a registry query.
+    /// Keys with no authoritative verdict, needing a registry query.
     pub misses: Vec<String>,
+    /// True if every miss still has a stale in-grace verdict, so an
+    /// unreachable registry can be covered from what was last learned.
+    pub stale_cover: bool,
 }
 
-/// Probe `map` for `keys` at `now_ms`, evicting expired entries.
+/// Probe `map` for `keys` at `now_ms`, dropping entries past the grace
+/// window. Entries between their TTL and the grace boundary count as
+/// misses — they are re-queried — but leave `stale_cover` intact.
 pub fn split_with(
     map: &mut HashMap<String, CachedVerdict>,
     keys: &[String],
     now_ms: u64,
 ) -> CacheProbe {
-    map.retain(|_, verdict| verdict.expires_at_ms > now_ms);
+    map.retain(|_, verdict| verdict.expires_at_ms + REVOCATION_GRACE_MS > now_ms);
     let mut cached_revoked = false;
     let mut misses = Vec::new();
+    let mut stale_cover = true;
     for key in keys {
         match map.get(key) {
-            Some(verdict) => cached_revoked |= verdict.revoked,
-            None => misses.push(key.clone()),
+            Some(verdict) if verdict.expires_at_ms > now_ms => cached_revoked |= verdict.revoked,
+            Some(verdict) => {
+                cached_revoked |= verdict.revoked;
+                misses.push(key.clone());
+            }
+            None => {
+                misses.push(key.clone());
+                stale_cover = false;
+            }
         }
     }
     CacheProbe {
         cached_revoked,
         misses,
+        stale_cover,
     }
 }
 
@@ -163,8 +196,8 @@ pub fn cache_record(queried: &[String], revoked: &[String], now_ms: u64) {
     VERDICTS.with(|cell| store_with(&mut cell.borrow_mut(), queried, revoked, now_ms));
 }
 
-/// A registry lookup failure. The presign path treats any of these as
-/// fail-open: log and allow, per the design's availability posture.
+/// A registry lookup failure. The presign path refuses the request
+/// unless the cache still covers every presented credential.
 #[derive(Debug)]
 pub struct RegistryError(pub String);
 
@@ -207,15 +240,23 @@ pub trait RevocationRegistry {
 pub enum RevocationVerdict {
     /// No presented credential is revoked.
     Allowed,
-    /// The registry could not answer; allowed by the fail-open posture.
-    /// Carries the reason for logging.
-    AllowedFailOpen(String),
+    /// The registry could not answer, but it cleared every presented
+    /// credential recently enough to stand in. Carries the reason for
+    /// logging.
+    AllowedStale(String),
     /// A presented credential belongs to a revoked device.
     Revoked,
+    /// The registry could not answer and the cache does not cover the
+    /// presented credentials. Carries the reason for logging.
+    Unavailable(String),
 }
 
 /// Screen presented credentials against the registry, through the
-/// per-isolate verdict cache. Fail-open results are never cached.
+/// per-isolate verdict cache.
+///
+/// A failed query is never recorded, which is what keeps the grace
+/// window anchored to the last successful one: repeated failures cannot
+/// walk it forward.
 pub async fn assess<R: RevocationRegistry>(
     registry: &R,
     presented: &PresentedCredentials,
@@ -238,7 +279,8 @@ pub async fn assess<R: RevocationRegistry>(
                 RevocationVerdict::Revoked
             }
         }
-        Err(err) => RevocationVerdict::AllowedFailOpen(err.to_string()),
+        Err(err) if probe.stale_cover => RevocationVerdict::AllowedStale(err.to_string()),
+        Err(err) => RevocationVerdict::Unavailable(err.to_string()),
     }
 }
 
@@ -416,6 +458,10 @@ mod tests {
 
         assert!(!probe.cached_revoked);
         assert_eq!(probe.misses, keys);
+        assert!(
+            !probe.stale_cover,
+            "keys never seen cannot cover a registry outage"
+        );
     }
 
     #[dialog_common::test]
@@ -431,7 +477,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_expires_cached_verdicts_after_ttl() {
+    async fn it_re_queries_a_verdict_past_its_ttl_but_keeps_it_as_cover() {
         let mut map = HashMap::new();
         let keys = vec!["a".to_string()];
         store_with(&mut map, &keys, &[], 1_000);
@@ -439,7 +485,39 @@ mod tests {
         let probe = split_with(&mut map, &keys, 1_000 + REVOCATION_TTL_MS + 1);
 
         assert!(!probe.cached_revoked);
+        assert_eq!(probe.misses, keys, "a stale verdict is still re-queried");
+        assert!(probe.stale_cover);
+    }
+
+    #[dialog_common::test]
+    async fn it_drops_verdicts_past_the_grace_window() {
+        let mut map = HashMap::new();
+        let keys = vec!["a".to_string()];
+        store_with(&mut map, &keys, &[], 1_000);
+
+        let probe = split_with(
+            &mut map,
+            &keys,
+            1_000 + REVOCATION_TTL_MS + REVOCATION_GRACE_MS + 1,
+        );
+
         assert_eq!(probe.misses, keys);
+        assert!(!probe.stale_cover);
+        assert!(map.is_empty(), "the entry is evicted, not merely ignored");
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_a_stale_revoked_verdict_binding() {
+        let mut map = HashMap::new();
+        let keys = vec!["a".to_string()];
+        store_with(&mut map, &keys, &["a".to_string()], 1_000);
+
+        let probe = split_with(&mut map, &keys, 1_000 + REVOCATION_TTL_MS + 1);
+
+        assert!(
+            probe.cached_revoked,
+            "revocation is monotone: a stale revoked verdict still binds"
+        );
     }
 
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -518,12 +596,83 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_fails_open_when_the_registry_errors() {
+    async fn it_fails_closed_when_the_registry_errors_on_unseen_credentials() {
         let registry = StubRegistry::failing();
 
         let verdict = assess(&registry, &presented("outage"), 1_000).await;
 
-        assert!(matches!(verdict, RevocationVerdict::AllowedFailOpen(_)));
+        assert!(matches!(verdict, RevocationVerdict::Unavailable(_)));
+    }
+
+    #[dialog_common::test]
+    async fn it_serves_a_stale_verdict_while_the_registry_is_unreachable() {
+        let credentials = presented("grace");
+        let cleared = assess(&StubRegistry::revoking(&[]), &credentials, 1_000).await;
+
+        let during_outage = assess(
+            &StubRegistry::failing(),
+            &credentials,
+            1_000 + REVOCATION_TTL_MS + 1,
+        )
+        .await;
+
+        assert!(matches!(cleared, RevocationVerdict::Allowed));
+        assert!(
+            matches!(during_outage, RevocationVerdict::AllowedStale(_)),
+            "credentials the registry cleared recently ride out the outage"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_fails_closed_once_the_grace_window_lapses() {
+        let credentials = presented("lapsed");
+        let _ = assess(&StubRegistry::revoking(&[]), &credentials, 1_000).await;
+
+        let verdict = assess(
+            &StubRegistry::failing(),
+            &credentials,
+            1_000 + REVOCATION_TTL_MS + REVOCATION_GRACE_MS + 1,
+        )
+        .await;
+
+        assert!(matches!(verdict, RevocationVerdict::Unavailable(_)));
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_slide_the_grace_window_on_repeated_failures() {
+        let credentials = presented("slide");
+        let _ = assess(&StubRegistry::revoking(&[]), &credentials, 1_000).await;
+        let registry = StubRegistry::failing();
+
+        let inside = assess(&registry, &credentials, 1_000 + REVOCATION_TTL_MS + 1).await;
+        let outside = assess(
+            &registry,
+            &credentials,
+            1_000 + REVOCATION_TTL_MS + REVOCATION_GRACE_MS + 1,
+        )
+        .await;
+
+        assert!(matches!(inside, RevocationVerdict::AllowedStale(_)));
+        assert!(
+            matches!(outside, RevocationVerdict::Unavailable(_)),
+            "grace is measured from the last successful query, not the last attempt"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_revoking_a_stale_credential_during_an_outage() {
+        let credentials = presented("stalehit");
+        let cid = credentials.delegation_cids[0].clone();
+        let _ = assess(&StubRegistry::revoking(&[&cid]), &credentials, 1_000).await;
+
+        let verdict = assess(
+            &StubRegistry::failing(),
+            &credentials,
+            1_000 + REVOCATION_TTL_MS + 1,
+        )
+        .await;
+
+        assert!(matches!(verdict, RevocationVerdict::Revoked));
     }
 
     #[dialog_common::test]
@@ -544,7 +693,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_does_not_cache_a_fail_open_allowance() {
+    async fn it_does_not_cache_an_unavailable_verdict() {
         let registry = StubRegistry::failing();
         let credentials = presented("nocache");
 
@@ -554,7 +703,7 @@ mod tests {
         assert_eq!(
             registry.queries.load(Ordering::SeqCst),
             2,
-            "a fail-open result must not be served from cache"
+            "a failed query must leave no trace in the cache"
         );
     }
 

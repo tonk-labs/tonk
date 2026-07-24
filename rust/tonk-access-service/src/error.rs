@@ -27,6 +27,13 @@ pub enum ErrorCode {
 
     // 500 Internal Server Error
     InternalError,
+
+    // 503 Service Unavailable - the revocation registry could not be
+    // consulted and no cached verdict covers the request. Retryable,
+    // unlike the 403s above. Same wasm-only construction as
+    // `DeviceRevoked`.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    RevocationUnavailable,
 }
 
 impl ErrorCode {
@@ -49,6 +56,9 @@ impl ErrorCode {
 
             // 500 Internal Server Error
             ErrorCode::InternalError => 500,
+
+            // 503 Service Unavailable
+            ErrorCode::RevocationUnavailable => 503,
         }
     }
 }
