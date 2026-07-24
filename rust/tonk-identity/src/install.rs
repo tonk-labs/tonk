@@ -135,12 +135,19 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
 
 /// Rotate the account onto a freshly created passkey.
 ///
-/// Derives the OLD root before the new passkey exists — at that point it
-/// is the only credential on the origin, so the discoverable-credential
-/// `get()` cannot be picker-ambiguous. Only once the new passkey is
-/// created does a second credential exist; deriving its root then scopes
-/// the follow-up `get()` (the PRF-at-create fallback) to that credential's
-/// id via `allowCredentials`, so the platform picker cannot offer the old
+/// Derives the OLD root before the new passkey exists, on the assumption
+/// that it is the only credential on the origin so the discoverable-
+/// credential `get()` is unambiguous — usually true, but not guaranteed:
+/// a second account's passkey or a prior rotation's leftover credential
+/// can still be sitting on the origin, and the platform picker could
+/// resolve to the wrong one. That failure mode is safe, not silent: a
+/// `get()` against the wrong credential derives a root the service does
+/// not recognize as this account's current root, so the rotation is
+/// rejected rather than corrupting the registry. Only once the new
+/// passkey is created does a second credential definitely exist;
+/// deriving its root then scopes the follow-up `get()` (the
+/// PRF-at-create fallback) to that credential's id via
+/// `allowCredentials`, so the platform picker cannot offer the old
 /// credential in its place.
 async fn rotate_account(input: JsValue) -> Result<JsValue, JsValue> {
     let name = string_property(&input, "name")?;

@@ -514,6 +514,34 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_rejects_a_succession_minted_for_a_different_root() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device_did = state.read().await.profile.did();
+        let first = request_for(&[7u8; 32], device_did.clone()).await;
+        let _ = link(State(state.clone()), Json(first)).await.unwrap();
+
+        // Succession correctly issued by the linked root, but audienced to
+        // a third DID — not the root this relink actually claims.
+        let old_root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+            .await
+            .unwrap();
+        let third_root = tonk_identity::derive::derive_root_signer(&[42u8; 32])
+            .await
+            .unwrap();
+        let succession =
+            tonk_identity::delegation::mint_root_succession(old_root, &third_root.did())
+                .await
+                .unwrap();
+        let mut second = request_for(&[8u8; 32], device_did).await;
+        second.succession_hex = Some(hex::encode(succession.to_bytes().unwrap()));
+
+        assert!(matches!(
+            link(State(state), Json(second)).await,
+            Err(TonkWorkerError::Forbidden(_))
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_resolves_the_member_did_to_the_root_when_linked() {
         let state = Arc::new(RwLock::new(test_state().await));
         let device_did = state.read().await.profile.did();
