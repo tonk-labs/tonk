@@ -6,19 +6,33 @@ use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
 
-/// Mint the `root → device` delegation: subject-open, audience-specific —
-/// "this device may act as me, for anything". Deliberately the opposite
-/// shape from space invites, which are subject-specific and must stay so.
-pub async fn mint_device_delegation(root: Ed25519Signer, device: &Did) -> Result<DelegationChain> {
+async fn mint_subject_open(issuer: Ed25519Signer, audience: &Did) -> Result<DelegationChain> {
     let delegation = DelegationBuilder::new()
-        .issuer(root)
-        .audience(device)
+        .issuer(issuer)
+        .audience(audience)
         .subject(UcanSubject::Any)
         .command(vec![])
         .try_build()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to mint the device delegation: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to mint the delegation: {e}"))?;
     Ok(DelegationChain::new(delegation))
+}
+
+/// Mint the `root → device` delegation: subject-open, audience-specific —
+/// "this device may act as me, for anything". Deliberately the opposite
+/// shape from space invites, which are subject-specific and must stay so.
+pub async fn mint_device_delegation(root: Ed25519Signer, device: &Did) -> Result<DelegationChain> {
+    mint_subject_open(root, device).await
+}
+
+/// Mint the `oldRoot → newRoot` succession delegation. Same subject-open
+/// shape as a device link: every chain anchored at the old root extends
+/// through it to the new root, so rotation never rewrites space chains.
+pub async fn mint_root_succession(
+    old_root: Ed25519Signer,
+    new_root: &Did,
+) -> Result<DelegationChain> {
+    mint_subject_open(old_root, new_root).await
 }
 
 #[cfg(test)]
