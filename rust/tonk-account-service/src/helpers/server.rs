@@ -356,6 +356,7 @@ async fn devices_revoke_route(
         &backends.store,
         &backends.chains,
         &caller.account,
+        &caller.device.device_did,
         &device_did,
         revocation.as_deref(),
     )

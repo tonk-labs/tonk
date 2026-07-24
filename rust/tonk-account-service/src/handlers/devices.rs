@@ -186,6 +186,7 @@ async fn handle_revoke_inner(
         &store,
         &chains,
         &caller.account,
+        &caller.device.device_did,
         &device_did,
         revocation.as_deref(),
     )

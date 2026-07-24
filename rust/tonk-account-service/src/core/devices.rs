@@ -72,47 +72,58 @@ pub async fn register_device<S: Store>(
 }
 
 /// Revoke a device under an account, recording the signed revocation
-/// that authorized it when one is supplied.
+/// that authorized it.
 ///
-/// A supplied artifact is verified and stored *before* the status
-/// flips: a stored artifact with no flag is a recoverable
-/// inconsistency, while a flag with no artifact is a silent gap in the
-/// audit trail. A rejected artifact leaves the device active.
+/// **Authority scales with blast radius.** Revoking a device other than
+/// the caller requires a root-signed revocation: only the account root
+/// can produce one, and the root key lives behind the user's passkey, so
+/// a stolen device cannot lock out its siblings. A device revoking
+/// itself signs with its own key — always available, offline, no prompt.
 ///
-/// The artifact is optional so that callers which cannot yet mint one —
-/// anything without access to the account root, which today is every
-/// caller but the browser — keep working. Requiring root attestation
-/// for cross-device revocation is a later, deliberate tightening; it
-/// closes the exposure where any device can lock out its siblings, and
-/// it must not land before a device that lost its passkey has a
-/// recovery path.
+/// The artifact is verified and stored *before* the status flips: a
+/// stored artifact with no flag is a recoverable inconsistency, while a
+/// flag with no artifact is a silent gap in the audit trail. A rejected
+/// artifact leaves the device active.
 ///
-/// Returns the attestation level when an artifact was recorded.
-/// Returns `CeremonyError::Invalid` if the device does not exist under
-/// this account.
+/// Returns the attestation level recorded, or `None` for a self-revoke
+/// that carried no artifact. Returns `CeremonyError::Invalid` if the
+/// device does not exist under this account.
 pub async fn revoke_device<S: Store, C: ChainStore>(
     store: &S,
     chains: &C,
     account: &Account,
-    device_did: &str,
+    caller_did: &str,
+    target_did: &str,
     revocation: Option<&[u8]>,
 ) -> Result<Option<Attestation>, CeremonyError> {
     let device = store
-        .device_by_did(device_did)
+        .device_by_did(target_did)
         .await?
         .filter(|device| device.account_id == account.id)
         .ok_or_else(|| CeremonyError::Invalid("unknown device".to_string()))?;
 
+    let revoking_self = caller_did == target_did;
+
     let attestation = match revocation {
         Some(bytes) => {
             let attestation = check_revocation(bytes, &account.root_did, &device).await?;
+            if !revoking_self && attestation != Attestation::Root {
+                return Err(CeremonyError::Forbidden(
+                    "revoking another device requires a root-signed revocation".to_string(),
+                ));
+            }
             put_revocation(chains, account, attestation, bytes).await?;
             Some(attestation)
         }
-        None => None,
+        None if revoking_self => None,
+        None => {
+            return Err(CeremonyError::Forbidden(
+                "revoking another device requires a root-signed revocation".to_string(),
+            ));
+        }
     };
 
-    let changed = store.revoke_device(account.id, device_did).await?;
+    let changed = store.revoke_device(account.id, target_did).await?;
     if !changed {
         return Err(CeremonyError::Invalid("unknown device".to_string()));
     }
@@ -128,6 +139,10 @@ mod tests {
     const ROOT_PRF: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [11u8; 32];
     const FOREIGN_ROOT_PRF: [u8; 32] = [9u8; 32];
+
+    /// A caller that is not the device being revoked, so the
+    /// cross-device authority rule applies.
+    const CALLER_DID: &str = "did:key:zCaller";
 
     /// Seed an account through the store directly (root PRF `[7u8; 32]`,
     /// the same root as Task 5's `fixture()`), then mint a fresh
@@ -218,9 +233,16 @@ mod tests {
         let account = seeded_account(&store).await;
         let (device_did, revocation) = registered_with_revocation(&store, &account).await;
 
-        revoke_device(&store, &chains, &account, &device_did, Some(&revocation))
-            .await
-            .unwrap();
+        revoke_device(
+            &store,
+            &chains,
+            &account,
+            CALLER_DID,
+            &device_did,
+            Some(&revocation),
+        )
+        .await
+        .unwrap();
 
         let views = list_devices(&store, &account).await.unwrap();
         assert_eq!(views.len(), 1);
@@ -234,7 +256,7 @@ mod tests {
         let account = seeded_account(&store).await;
         let (device_did, _) = registered_with_revocation(&store, &account).await;
 
-        let attestation = revoke_device(&store, &chains, &account, &device_did, None)
+        let attestation = revoke_device(&store, &chains, &account, &device_did, &device_did, None)
             .await
             .unwrap();
 
@@ -254,15 +276,140 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_refuses_to_revoke_another_device_without_an_artifact() {
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+        let (device_did, _) = registered_with_revocation(&store, &account).await;
+
+        let result = revoke_device(&store, &chains, &account, CALLER_DID, &device_did, None).await;
+
+        assert!(
+            matches!(result, Err(CeremonyError::Forbidden(_))),
+            "cutting off another device takes the root, not a device signature"
+        );
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(views[0].status, "active");
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_device_attested_revocation_of_another_device() {
+        use dialog_varsig::Principal;
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+
+        // Register from the very grant the self-revocation will name, so
+        // the CIDs match and the only thing left to reject is the
+        // attestation level.
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
+            .await
+            .unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+        let device_did = device.did().to_string();
+        register_device(
+            &store,
+            &account,
+            &device_did,
+            "phone",
+            &hex::encode(grant.to_bytes().unwrap()),
+            200,
+        )
+        .await
+        .unwrap();
+
+        let self_signed =
+            tonk_identity::revocation::mint_self_revocation(device, &grant, &root.did())
+                .await
+                .unwrap();
+
+        let result = revoke_device(
+            &store,
+            &chains,
+            &account,
+            CALLER_DID,
+            &device_did,
+            Some(&self_signed),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(CeremonyError::Forbidden(_))),
+            "a device-attested artifact is only good for revoking itself"
+        );
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(views[0].status, "active");
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_device_attested_revocation_of_itself() {
+        use dialog_varsig::Principal;
+        let store = SqliteStore::in_memory().unwrap();
+        let chains = MemoryChainStore::default();
+        let account = seeded_account(&store).await;
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
+            .await
+            .unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+        let device_did = device.did().to_string();
+        register_device(
+            &store,
+            &account,
+            &device_did,
+            "phone",
+            &hex::encode(grant.to_bytes().unwrap()),
+            200,
+        )
+        .await
+        .unwrap();
+        let self_signed =
+            tonk_identity::revocation::mint_self_revocation(device, &grant, &root.did())
+                .await
+                .unwrap();
+
+        let attestation = revoke_device(
+            &store,
+            &chains,
+            &account,
+            &device_did,
+            &device_did,
+            Some(&self_signed),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(attestation, Some(Attestation::Device));
+        let views = list_devices(&store, &account).await.unwrap();
+        assert_eq!(views[0].status, "revoked");
+    }
+
+    #[dialog_common::test]
     async fn it_stores_the_artifact_alongside_the_status_flip() {
         let store = SqliteStore::in_memory().unwrap();
         let chains = MemoryChainStore::default();
         let account = seeded_account(&store).await;
         let (device_did, revocation) = registered_with_revocation(&store, &account).await;
 
-        let attestation = revoke_device(&store, &chains, &account, &device_did, Some(&revocation))
-            .await
-            .unwrap();
+        let attestation = revoke_device(
+            &store,
+            &chains,
+            &account,
+            CALLER_DID,
+            &device_did,
+            Some(&revocation),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(attestation, Some(Attestation::Root));
         let stored = crate::core::revocation::list_revocations(&chains, &account)
@@ -287,7 +434,15 @@ mod tests {
                 .await
                 .unwrap();
 
-        let result = revoke_device(&store, &chains, &account, &device_did, Some(&forged)).await;
+        let result = revoke_device(
+            &store,
+            &chains,
+            &account,
+            CALLER_DID,
+            &device_did,
+            Some(&forged),
+        )
+        .await;
 
         assert!(matches!(result, Err(CeremonyError::Forbidden(_))));
         let views = list_devices(&store, &account).await.unwrap();
@@ -308,7 +463,15 @@ mod tests {
             ..account.clone()
         };
 
-        let result = revoke_device(&store, &chains, &foreign, &device_did, Some(&revocation)).await;
+        let result = revoke_device(
+            &store,
+            &chains,
+            &foreign,
+            CALLER_DID,
+            &device_did,
+            Some(&revocation),
+        )
+        .await;
 
         assert!(matches!(result, Err(CeremonyError::Invalid(_))));
     }

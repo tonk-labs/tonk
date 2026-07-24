@@ -16,6 +16,7 @@ use anyhow::Result;
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::Timestamp;
+use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
 
@@ -41,9 +42,10 @@ pub async fn mint_session_delegation(
     session: &Did,
     ttl_seconds: u64,
 ) -> Result<DelegationChain> {
-    let expiration =
-        Timestamp::new(std::time::SystemTime::now() + std::time::Duration::from_secs(ttl_seconds))
-            .map_err(|err| anyhow::anyhow!("session expiration out of range: {err}"))?;
+    // dialog re-exports the platform clock: std natively, web_time
+    // under wasm, where std::time::SystemTime is a different type.
+    let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(ttl_seconds))
+        .map_err(|err| anyhow::anyhow!("session expiration out of range: {err}"))?;
 
     let delegation = DelegationBuilder::new()
         .issuer(device)

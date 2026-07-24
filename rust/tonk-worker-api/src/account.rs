@@ -47,6 +47,9 @@ pub struct AccountDevice {
     pub status: String,
     /// Registration time, seconds since the epoch.
     pub created_at: u64,
+    /// CID of the `root → device` delegation, which a revocation must
+    /// name. Carried to the browser so it can sign one.
+    pub delegation_cid: String,
     /// Whether this row is the profile making the request.
     pub this_device: bool,
 }
@@ -57,6 +60,12 @@ pub struct AccountDevice {
 pub struct RevokeDeviceRequest {
     /// DID of the device to revoke.
     pub did: String,
+    /// Hex-encoded root-signed revocation of that device's delegation.
+    ///
+    /// Required: cutting off a device other than the one in your hand
+    /// takes the account root, and the root lives behind the passkey, so
+    /// the browser must run the ceremony before calling this.
+    pub revocation: String,
 }
 
 #[cfg(test)]
@@ -83,16 +92,22 @@ mod tests {
             name: "laptop".into(),
             status: "active".into(),
             created_at: 1_753_300_000,
+            delegation_cid: "bafycid".into(),
             this_device: true,
         })
         .unwrap();
         assert_eq!(json["did"], "did:key:device");
         assert_eq!(json["createdAt"], 1_753_300_000);
         assert_eq!(json["thisDevice"], true);
+        assert_eq!(json["delegationCid"], "bafycid");
         assert!(json.get("created_at").is_none());
+        assert!(json.get("delegation_cid").is_none());
 
-        let request: RevokeDeviceRequest =
-            serde_json::from_value(serde_json::json!({ "did": "did:key:device" })).unwrap();
+        let request: RevokeDeviceRequest = serde_json::from_value(
+            serde_json::json!({ "did": "did:key:device", "revocation": "beef" }),
+        )
+        .unwrap();
         assert_eq!(request.did, "did:key:device");
+        assert_eq!(request.revocation, "beef");
     }
 }

@@ -47,6 +47,14 @@ struct CeremonyOutput {
     invocation_hex: String,
 }
 
+/// What `window.tonkIdentity.signRevocation` hands back: the
+/// root-signed revocation, ready to travel as a request argument.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RevocationOutput {
+    revocation_hex: String,
+}
+
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
 struct TonkAccount;
@@ -272,11 +280,27 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
             let _ = button.set_attribute("type", "button");
             let _ = button.set_attribute("class", "account__button account__button--quiet");
             let _ = button.set_attribute("data-revoke", &device.did);
+            let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
             button.set_text_content(Some("Revoke"));
             let _ = item.append_child(&button);
         }
         let _ = list.append_child(&item);
     }
+}
+
+/// The device DID named by a `?revoke=` deep link, if any.
+///
+/// The CLI cannot run a passkey ceremony, so `tonk account revoke` opens
+/// this page pointed at the device it wants cut off. The page still asks
+/// for confirmation and still runs the ceremony — the link chooses the
+/// target, it does not authorize anything.
+fn revoke_target_from_url() -> Option<String> {
+    let search = window()?.location().search().ok()?;
+    let query = search.strip_prefix('?')?;
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == "revoke" && !value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 fn load_devices(host: HtmlElement) {
@@ -287,6 +311,17 @@ fn load_devices(host: HtmlElement) {
                 set_busy(&host, false, "");
                 render_devices(&host, &devices);
                 set_mode(&host, "devices");
+                if let Some(did) = revoke_target_from_url()
+                    && let Some(device) = devices
+                        .iter()
+                        .find(|device| device.did == did && device.status == "active")
+                {
+                    begin_revoke(
+                        host.clone(),
+                        device.did.clone(),
+                        device.delegation_cid.clone(),
+                    );
+                }
             }
             Err(error) => {
                 set_busy(&host, false, "");
@@ -385,7 +420,10 @@ fn load_handoff(host: HtmlElement) {
     });
 }
 
-async fn identity_call<T: Serialize>(method: &str, input: &T) -> Result<CeremonyOutput, String> {
+async fn identity_call<T: Serialize, O: serde::de::DeserializeOwned>(
+    method: &str,
+    input: &T,
+) -> Result<O, String> {
     let window = window().ok_or_else(|| "window is unavailable".to_string())?;
     let identity = Reflect::get(&window, &"tonkIdentity".into())
         .map_err(|error| format!("identity API unavailable: {error:?}"))?;
@@ -591,7 +629,7 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let ceremony = identity_call("completeLink", &handoff).await?;
+                let ceremony: CeremonyOutput = identity_call("completeLink", &handoff).await?;
                 set_busy(&host, true, "Linking the command-line profile…");
                 crate::api::submit_account_ceremony(
                     &service(&host)?,
@@ -661,39 +699,67 @@ fn bind(host: &HtmlElement) {
             let Some(did) = target.get_attribute("data-revoke") else {
                 return;
             };
-            let host = host_for_revoke.clone();
-            let confirmed = window()
-                .map(|window| {
-                    window
-                        .confirm_with_message(
-                            "Revoke this device? It immediately loses account and sync \
-                             access. Spaces it joined before it was linked may need a \
-                             fresh invite.",
-                        )
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-            if !confirmed {
-                return;
-            }
-            clear_error(&host);
-            set_busy(&host, true, "Revoking device…");
-            spawn_local(async move {
-                match crate::api::revoke_account_device(did).await {
-                    Ok(devices) => {
-                        set_busy(&host, false, "");
-                        render_devices(&host, &devices);
-                    }
-                    Err(error) => {
-                        set_busy(&host, false, "");
-                        show_error(&host, error.to_string());
-                    }
-                }
-            });
+            let delegation_cid = target
+                .get_attribute("data-delegation-cid")
+                .unwrap_or_default();
+            begin_revoke(host_for_revoke.clone(), did, delegation_cid);
         });
         let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
         closure.forget();
     }
+}
+
+/// Confirm, run the passkey ceremony, and revoke.
+///
+/// Only the account root can revoke another device, and the root lives
+/// behind the passkey — so the ceremony runs here, in the page, and the
+/// signed revocation travels with the request. Shared by the device
+/// list's button and the CLI's `?revoke=` handoff.
+fn begin_revoke(host: HtmlElement, did: String, delegation_cid: String) {
+    let confirmed = window()
+        .map(|window| {
+            window
+                .confirm_with_message(
+                    "Revoke this device? This is permanent for that device: it loses \
+                     account and sync access immediately, and coming back means linking \
+                     again as a new device. Spaces it joined before it was linked may \
+                     need a fresh invite.\n\nYou will be asked for your passkey to \
+                     authorize this.",
+                )
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if !confirmed {
+        return;
+    }
+    clear_error(&host);
+    set_busy(&host, true, "Waiting for your passkey…");
+    spawn_local(async move {
+        let signed: Result<RevocationOutput, String> = identity_call(
+            "signRevocation",
+            &serde_json::json!({ "delegationCid": delegation_cid }),
+        )
+        .await;
+        let revocation_hex = match signed {
+            Ok(output) => output.revocation_hex,
+            Err(error) => {
+                set_busy(&host, false, "");
+                show_error(&host, error);
+                return;
+            }
+        };
+        set_busy(&host, true, "Revoking device…");
+        match crate::api::revoke_account_device(did, revocation_hex).await {
+            Ok(devices) => {
+                set_busy(&host, false, "");
+                render_devices(&host, &devices);
+            }
+            Err(error) => {
+                set_busy(&host, false, "");
+                show_error(&host, error.to_string());
+            }
+        }
+    });
 }
 
 /// Register `<tonk-account>` with the top document.

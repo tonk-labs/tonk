@@ -24,6 +24,7 @@ struct ServiceDevice {
     name: String,
     status: String,
     created_at: u64,
+    delegation_cid: String,
 }
 
 /// Resolve the stored link and service URL, or explain what's missing.
@@ -66,6 +67,7 @@ async fn fetch_devices(
             name: row.name,
             status: row.status,
             created_at: row.created_at,
+            delegation_cid: row.delegation_cid,
         })
         .collect())
 }
@@ -98,9 +100,20 @@ pub async fn revoke(
     }
     let (link, service) = linked_service(&state).await?;
     let device = state.profile.signer().signer().clone();
-    let arguments = [("did".to_owned(), Promised::String(request.did))]
-        .into_iter()
-        .collect();
+    if request.revocation.is_empty() {
+        return Err(TonkWorkerError::Conflict(
+            "revoking another device needs a passkey-signed revocation".to_string(),
+        ));
+    }
+    let arguments = [
+        ("did".to_owned(), Promised::String(request.did)),
+        (
+            "revocation".to_owned(),
+            Promised::String(request.revocation),
+        ),
+    ]
+    .into_iter()
+    .collect();
     let body = tonk_identity::request::build_device_invocation(
         device,
         &link,

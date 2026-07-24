@@ -239,11 +239,11 @@ all against code that now exists:
    need a fresh invite, but the presign screen matches `device_did`, so
    the device's key is finished: it comes back as a new device, not a
    restored one. The copy must say so rather than implying a toggle.
-3. **Cross-device revoke is still device-signed**, which is the permissive
-   policy with a button on it — any device can irreversibly lock out its
-   siblings. S's Task 7 moves it to a root ceremony; the panel already
-   separates self from cross-device, so the change is a signing path, not
-   a redesign.
+3. **Cross-device revoke now runs a passkey ceremony.** The panel calls
+   `window.tonkIdentity.signRevocation` before revoking, and the CLI —
+   which cannot prompt for a passkey — opens the panel with
+   `?revoke=<did>` and watches the registry until the named device comes
+   back revoked.
 
 ### C — Recovery and rotation ceremonies
 
@@ -376,14 +376,19 @@ APIs need confirmation. B gets its plan after the Stripe decisions.
   lands. Anyone who can write `ACCOUNTS_DB` can revoke or un-revoke with
   no audit trail, and no other enforcement point can check revocation
   without that same credential.
-- **Live: any device can permanently lock out its siblings.**
-  `handle_revoke_inner` authorizes any active device of the account and
-  takes the target `did` as a free argument, and the store has no
-  un-revoke. A stolen device can therefore revoke every other device, and
-  the access-service screen matches on `device_did`, so re-registering the
-  same key cannot undo it — recovery is a fresh key and a re-link. Closed
-  by S's Task 7, which is itself gated on C; until then this is an
-  accepted, documented exposure, and D's revoke UX must warn that
-  revocation is permanent for that device's key.
+- **Closed: any device could permanently lock out its siblings.**
+  `handle_revoke_inner` authorized any active device of the account and
+  took the target `did` as a free argument, with no un-revoke in the
+  store — so a stolen device could revoke every other device
+  irreversibly. Cross-device revocation now requires a root-signed
+  artifact, which only the passkey can produce. Revocation is still
+  permanent for a device's key (the presign screen matches `device_did`,
+  so coming back means re-linking as a new device), and the revoke copy
+  says so.
+- **Requiring root landed ahead of C**, by decision. A user whose
+  device-bound passkey was on the lost device can no longer revoke it —
+  but nor can they link devices or run any other root ceremony, so they
+  are already in the territory C exists to serve rather than in a new
+  failure mode.
 - **Stage B scope creep.** The entitlement seam in R must stay a seam;
   billing lands only after the log-only soak the master spec requires.

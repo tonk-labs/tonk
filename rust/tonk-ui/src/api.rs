@@ -493,11 +493,14 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
 }
 
 /// Revoke one of the account's devices; returns the refreshed list.
-pub async fn revoke_account_device(did: String) -> Result<Vec<AccountDevice>, TonkUiError> {
+pub async fn revoke_account_device(
+    did: String,
+    revocation: String,
+) -> Result<Vec<AccountDevice>, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
-        .json(&RevokeDeviceRequest { did })
+        .json(&RevokeDeviceRequest { did, revocation })
         .send()
         .await
         .map_err(into_api_error)?;

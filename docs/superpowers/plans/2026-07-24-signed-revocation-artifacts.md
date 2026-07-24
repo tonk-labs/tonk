@@ -23,14 +23,19 @@
 
 The artifact records whichever authority actually authorized the action — a root-signed artifact standing in for a device-authorized revoke would be a fiction, and a verifier that trusts it learns something false. So both shapes are legitimate and the artifact carries its attestation level; consumers set their own bar. A second enforcement point deciding "root-attested only" is making a policy choice, not detecting a defect.
 
-**The artifact is optional, deliberately.** `revoke_device` takes
-`Option<&[u8]>`: supplied means verify, classify and store; absent means
-revoke as before and record nothing. Making it mandatory would have
-broken every shipped caller the moment it deployed — the worker and CLI
-cannot mint a root-signed revocation, because the root key is derived
-from the passkey in the browser and never reaches them. Optionality is
-what lets the artifact path land ahead of the browser ceremony rather
-than in a flag day with it. Requiring attestation is Task 7.
+**Root attestation is required for cross-device revocation.**
+`revoke_device` takes the caller's device DID alongside the target's:
+same device means a self-revoke, which the device signs itself and which
+may carry no artifact at all; different device means a root-signed
+artifact is mandatory. A device-attested artifact naming someone else is
+refused. This is what stops a stolen device from locking out its
+siblings.
+
+The callers were brought along rather than left behind: the browser runs
+a passkey ceremony (`window.tonkIdentity.signRevocation`) before calling
+revoke, and the CLI — which cannot run a passkey ceremony — opens that
+page with `?revoke=<did>` and watches the registry until the device it
+named comes back revoked.
 
 Consequences this plan must carry:
 
@@ -197,20 +202,21 @@ Signature becomes `revoke_device<S: Store, C: ChainStore>(store, chains, account
 
 Depends on D's device-management surface existing. If D has not landed, stop after Task 5 and let D pick this up — the endpoints are complete and testable without a UI.
 
-- [ ] **Step 1:** Wire "sign out on this device" through self-revocation (device key, no prompt) and the device-list revoke button through the root ceremony (passkey assertion → derive root → sign). Copy must state that revoking is permanent for that device's key: coming back means re-linking as a new device.
+- [x] **Step 1a:** The device-list revoke button runs the root ceremony, and the confirm copy states that revocation is permanent for that device's key.
+- [ ] **Step 1b:** "Sign out on this device" still only clears the local link. Wire it through self-revocation so the registry reflects it — the service already accepts a device-attested self-revoke.
 - [ ] **Step 2:** Manual staging smoke: self-revoke from a device and confirm the artifact is device-attested; revoke a second device from a passkey-holding device and confirm the artifact is root-attested; confirm presigns from both 403 within 60s; confirm both artifacts verify standalone against the account root DID.
 - [ ] **Step 3: Commit** and update the completion spec's stage S section to "shipped".
 
 ---
 
-### Task 7: Tighten cross-device revoke authority — GATED ON STAGE C
+### Task 7: Tighten cross-device revoke authority — DONE
 
-**Do not start this task before surviving-device recovery exists.** Until then, a user whose passkey lived on the lost device cannot derive the root, and tightening would leave them unable to revoke the very device they lost — strictly worse than today.
+Landed ahead of stage C by explicit decision. The concern that prompted the gate — a user whose passkey lived on the lost device cannot derive the root, and so cannot revoke it — is real but is not a new failure mode: without the passkey that user also cannot link devices or run any other root ceremony, so they are already in the territory stage C exists to serve. Recovery remains stage C's job.
 
 **Files:**
 - Modify: `rust/tonk-account-service/src/handlers/devices.rs`, `rust/tonk-account-service/src/auth.rs`
 
-- [ ] **Step 1:** Require a root-attested artifact when the target device is not the caller; accept device-attested only for self-revoke. This is the change that closes the live DoS where any active device can permanently lock out its siblings.
-- [ ] **Step 2:** Tests — cross-device revoke with a device-attested artifact is rejected; with a root-attested artifact is accepted; self-revoke is unaffected.
-- [ ] **Step 3:** Note in the completion spec's risk list that the DoS is closed, and drop it from the live-issues list.
-- [ ] **Step 4: Commit** `feat(tonk-account-service): require root attestation to revoke another device`
+- [x] **Step 1:** `revoke_device` takes the caller's DID and requires `Attestation::Root` unless the target is the caller. A device-attested artifact naming another device is refused, as is a cross-device revoke carrying no artifact.
+- [x] **Step 2:** Tests — cross-device with no artifact refused, cross-device with a device-attested artifact refused, self-revoke with a device artifact accepted, root-attested cross-device accepted.
+- [x] **Step 3:** Browser ceremony (`signRevocation` on `window.tonkIdentity`, wired into the device panel) and CLI handoff (`?revoke=<did>` deep link plus registry polling).
+- [x] **Step 4:** The completion spec's risk list records the exposure as closed.
