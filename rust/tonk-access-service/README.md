@@ -27,7 +27,15 @@ The handler reads the body, builds a `UcanAuthorizer` from the Worker environmen
 - `method`: HTTP method (GET, PUT, DELETE)
 - `headers`: headers to send with the request
 
-On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error codes map verification outcomes to HTTP status (see `src/error.rs`): `INVALID_ARGUMENT` (400); `SIGNATURE_INVALID` / `AUDIENCE_MISMATCH` / `INVOCATION_EXPIRED` (401); `CHAIN_INVALID` / `COMMAND_MISMATCH` / `SUBJECT_NOT_ALLOWED` (403); `INTERNAL_ERROR` (500).
+On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error codes map verification outcomes to HTTP status (see `src/error.rs`): `INVALID_ARGUMENT` (400); `SIGNATURE_INVALID` / `AUDIENCE_MISMATCH` / `INVOCATION_EXPIRED` (401); `CHAIN_INVALID` / `COMMAND_MISMATCH` / `SUBJECT_NOT_ALLOWED` / `DEVICE_REVOKED` (403); `INTERNAL_ERROR` (500); `REVOCATION_UNAVAILABLE` (503).
+
+## Revocation screening
+
+After cryptographic authorization succeeds, `POST /ucan/` screens the presented container against the account registry (`src/revocation.rs`). It re-parses the container independently, collects every delegation CID, every delegation issuer DID, and the invocation issuer DID, and asks whether any of them belongs to a device with `status = 'revoked'`. Matching on issuer DIDs as well as CIDs is what severs chains that flow through a delegation the registry never recorded — anything a revoked key signed, whenever it signed it. A match returns `403 DEVICE_REVOKED`; users with no account match nothing and are unaffected.
+
+The screen **fails closed**. A verdict is authoritative for 60 seconds (`REVOCATION_TTL_MS`) and then usable for a further 10 minutes (`REVOCATION_GRACE_MS`) *only* to cover an unreachable registry, so a brief D1 outage stops chains the isolate has never cleared rather than stopping active sync. Outside that window — and for an unparseable container or a missing `ACCOUNTS_DB` binding — the request gets `503 REVOCATION_UNAVAILABLE`, which clients should treat as retryable. Failed queries are never cached, so the grace window is anchored to the last successful lookup.
+
+Operationally this means a misconfigured `ACCOUNTS_DB` binding **stops presigns** rather than silently disabling enforcement. That is deliberate. Verify the binding after any change to `wrangler.toml`.
 
 ## Configuration
 
@@ -37,6 +45,7 @@ The authorizer is constructed per request from the Worker environment (`src/hand
 - `R2_BUCKET_NAME` (var): target bucket
 - `R2_ACCESS_KEY_ID` (secret): R2 access key
 - `R2_SECRET_ACCESS_KEY` (secret): R2 secret key
+- `ACCOUNTS_DB` (D1 binding): read-only view of the account registry, owned and migrated by `tonk-account-service`. Never write through it; this crate issues nothing but `SELECT`.
 
 The S3 address uses region `auto`, as R2 requires.
 
