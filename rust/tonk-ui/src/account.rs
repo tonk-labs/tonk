@@ -14,6 +14,7 @@ const PROD: &str = "https://accounts.tonk.xyz";
 const STAGING: &str = "https://accounts-staging.tonk.xyz";
 const STYLE_ID: &str = "tonk-account-styles";
 const HANDOFF: &str = "__tonkCliHandoff";
+const PENDING_ROTATION: &str = "__tonkPendingRotation";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -207,6 +208,7 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-manage-devices",
         "#account-unlink",
         "#account-rotate-submit",
+        "#account-relink-retry",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
             && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
@@ -319,18 +321,49 @@ fn load_devices(host: HtmlElement) {
     });
 }
 
+/// Hide the post-rotation retry control and forget any rotation output
+/// held for it, so a stale retry never lingers into an unrelated log-in.
+fn hide_relink_retry(host: &HtmlElement) {
+    if let Ok(Some(retry)) = host.query_selector("#account-relink-retry") {
+        let _ = retry.set_attribute("hidden", "");
+    }
+    let _ = Reflect::delete_property(host.as_ref(), &PENDING_ROTATION.into());
+}
+
 /// The account rotated server-side, but this browser failed to persist the
-/// new link. Send the user to log in with the new passkey rather than
-/// leaving the rotate panel (and its "create a new passkey" submit) live,
-/// which would risk a third credential.
-fn show_relink_failure(host: &HtmlElement) {
+/// new link. Keep the just-verified `rotation` output on the element so a
+/// single click can retry the same save — the common case is a transport
+/// hiccup, not a bad ceremony, and the rotation cannot be re-run (it would
+/// mint a second passkey). Leave the rotate panel (with its "create a new
+/// passkey" submit) hidden either way.
+fn show_relink_failure(host: &HtmlElement, rotation: RotationOutput) {
+    if let Ok(value) = serde_wasm_bindgen::to_value(&rotation) {
+        let _ = Reflect::set(host.as_ref(), &PENDING_ROTATION.into(), &value);
+    }
+    set_busy(host, false, "");
+    set_mode(host, "link");
+    if let Ok(Some(retry)) = host.query_selector("#account-relink-retry") {
+        let _ = retry.remove_attribute("hidden");
+    }
+    show_error(
+        host,
+        "Your account is now on the new passkey, but this browser could not \
+         finish connecting it. Try again below — if that also fails, log in \
+         with your new passkey as a last resort.",
+    );
+}
+
+/// The retry also failed: route to logging in with the new passkey. This
+/// works once the service accepts a device re-registering under the same
+/// account, so it is a safe last resort rather than a dead end.
+fn show_relink_last_resort(host: &HtmlElement) {
+    hide_relink_retry(host);
     set_busy(host, false, "");
     set_mode(host, "link");
     show_error(
         host,
-        "Your account is now on the new passkey, but this browser could not \
-         finish linking. Do not create another passkey — use Log in with your \
-         new passkey instead.",
+        "Your account is now on the new passkey, but this browser still could \
+         not finish connecting it. Log in with your new passkey instead.",
     );
 }
 
@@ -500,11 +533,13 @@ fn bind(host: &HtmlElement) {
     });
     on_click(host, "#account-choose-link", |host| {
         clear_error(&host);
+        hide_relink_retry(&host);
         set_mode(&host, "link");
     });
     for selector in ["#account-create-back", "#account-link-back"] {
         on_click(host, selector, |host| {
             clear_error(&host);
+            hide_relink_retry(&host);
             set_mode(&host, "choice");
         });
     }
@@ -781,24 +816,70 @@ fn bind(host: &HtmlElement) {
             )
             .await
             {
-                // Nothing changed server-side: safe to retry the whole rotation.
+                // A lost response here does not mean nothing happened: the
+                // service may have already applied the flip before the
+                // reply was lost in transit. Retrying from scratch mints
+                // another passkey, but that retry fails cleanly at the
+                // service (this account's old root is no longer on file)
+                // rather than corrupting anything.
                 set_busy(&host, false, "");
                 return show_error(&host, error.to_string());
             }
 
             match crate::api::save_account_link(
-                rotation.new_root_did,
-                rotation.device_delegation_hex,
+                rotation.new_root_did.clone(),
+                rotation.device_delegation_hex.clone(),
                 Some(&rotation.succession_hex),
             )
             .await
             {
-                Ok(_status) => show_success(&host),
+                Ok(_status) => {
+                    if let Ok(Some(message)) = host.query_selector("#account-success-message") {
+                        message.set_text_content(Some("Your account is on the new passkey."));
+                    }
+                    show_success(&host);
+                }
                 Err(error) => {
                     web_sys::console::error_1(
                         &format!("failed to save the rotated account link: {error}").into(),
                     );
-                    show_relink_failure(&host);
+                    show_relink_failure(&host, rotation);
+                }
+            }
+        });
+    });
+
+    on_click(host, "#account-relink-retry", |host| {
+        let rotation = Reflect::get(host.as_ref(), &PENDING_ROTATION.into())
+            .ok()
+            .filter(|value| !value.is_undefined())
+            .and_then(|value| serde_wasm_bindgen::from_value::<RotationOutput>(value).ok());
+        let Some(rotation) = rotation else {
+            return show_relink_last_resort(&host);
+        };
+        clear_error(&host);
+        set_busy(&host, true, "Reconnecting this browser…");
+        spawn_local(async move {
+            match crate::api::save_account_link(
+                rotation.new_root_did.clone(),
+                rotation.device_delegation_hex.clone(),
+                Some(&rotation.succession_hex),
+            )
+            .await
+            {
+                Ok(_status) => {
+                    hide_relink_retry(&host);
+                    if let Ok(Some(message)) = host.query_selector("#account-success-message") {
+                        message.set_text_content(Some("Your account is on the new passkey."));
+                    }
+                    show_success(&host);
+                }
+                Err(error) => {
+                    web_sys::console::error_1(
+                        &format!("retry also failed to save the rotated account link: {error}")
+                            .into(),
+                    );
+                    show_relink_last_resort(&host);
                 }
             }
         });
@@ -948,13 +1029,25 @@ mod tests {
         }
     }
 
+    fn dummy_rotation() -> RotationOutput {
+        RotationOutput {
+            old_root_did: "did:key:zOld".into(),
+            new_root_did: "did:key:zNew".into(),
+            new_credential_id: "cred-new".into(),
+            succession_hex: "aa".into(),
+            device_delegation_hex: "bb".into(),
+            rotation_hex: "cc".into(),
+            confirmation_hex: "dd".into(),
+        }
+    }
+
     #[dialog_common::test]
-    fn it_routes_a_failed_post_rotation_relink_to_log_in() {
+    fn it_routes_a_failed_post_rotation_relink_to_a_retry_control() {
         let host = host();
         set_mode(&host, "rotate");
         set_busy(&host, true, "Rotating your account…");
 
-        show_relink_failure(&host);
+        show_relink_failure(&host, dummy_rotation());
 
         assert!(
             host.query_selector("#account-link")
@@ -971,6 +1064,14 @@ mod tests {
                 .has_attribute("hidden"),
             "the rotate panel (with its create-a-new-passkey submit) must not stay live"
         );
+        assert!(
+            host.query_selector("#account-relink-retry")
+                .unwrap()
+                .unwrap()
+                .get_attribute("hidden")
+                .is_none(),
+            "a retry control should be offered before routing to log in"
+        );
         assert_eq!(
             host.query_selector("#account-error")
                 .unwrap()
@@ -979,8 +1080,8 @@ mod tests {
                 .as_deref(),
             Some(
                 "Your account is now on the new passkey, but this browser could not \
-                 finish linking. Do not create another passkey — use Log in with your \
-                 new passkey instead."
+                 finish connecting it. Try again below — if that also fails, log in \
+                 with your new passkey as a last resort."
             )
         );
         assert!(
@@ -991,6 +1092,41 @@ mod tests {
                 .unchecked_into::<HtmlButtonElement>()
                 .disabled(),
             "buttons must be re-enabled, not left busy"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_routes_a_second_relink_failure_to_log_in_as_a_last_resort() {
+        let host = host();
+        show_relink_failure(&host, dummy_rotation());
+
+        show_relink_last_resort(&host);
+
+        assert!(
+            host.query_selector("#account-link")
+                .unwrap()
+                .unwrap()
+                .get_attribute("hidden")
+                .is_none(),
+            "the log-in panel should still be shown"
+        );
+        assert!(
+            host.query_selector("#account-relink-retry")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden"),
+            "the spent retry control should be hidden again"
+        );
+        assert_eq!(
+            host.query_selector("#account-error")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some(
+                "Your account is now on the new passkey, but this browser still could \
+                 not finish connecting it. Log in with your new passkey instead."
+            )
         );
     }
 

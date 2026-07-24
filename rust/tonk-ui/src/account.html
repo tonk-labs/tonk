@@ -42,6 +42,7 @@
     <h2>Log in</h2>
     <form class="account__form">
       <input id="account-link-device-name" name="Device name" type="hidden" value="This browser">
+      <button id="account-relink-retry" class="account__button" type="button" hidden>Retry connecting</button>
       <button id="account-link-submit" class="account__button" type="submit">Log in</button>
       <button id="account-link-back" class="account__button account__button--quiet" type="button">Back</button>
     </form>
@@ -78,7 +79,7 @@
 
   <section id="account-rotate" class="account__panel" hidden>
     <h2>Rotate your passkey</h2>
-    <p class="account__message">Creates a new passkey for this account. Your devices keep working and re-connect to the new passkey the next time they sync in.</p>
+    <p class="account__message">Creates a new passkey for this account. Your other devices keep working on their existing delegations; re-connecting them to the new passkey is a separate step, done on each device.</p>
     <form class="account__form">
       <label>New passkey name
         <input id="account-rotate-name" name="New passkey name" type="text" autocomplete="off" required>
