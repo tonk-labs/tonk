@@ -21,6 +21,13 @@
 //! replacement under one audience would be chosen about half the time.
 //! A rotated key gets its own audience, and the retired one is simply
 //! never proved to again.
+//!
+//! Renewal rides the sync drain — the regular beat this worker has —
+//! rather than chasing every presign path. The gap that leaves: a
+//! worker alive past the TTL whose next presign is not preceded by a
+//! drain presents a lapsed chain and takes one 401, which the next
+//! drain's rotation heals. Service-worker lifetimes make that window
+//! rare; revisit only if it is ever observed.
 
 use dialog_capability::Subject;
 use dialog_operator::Profile;
