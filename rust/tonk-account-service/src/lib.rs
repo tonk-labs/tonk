@@ -32,6 +32,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/codes", handlers::codes::handle_options)
         .post_async("/accounts", handlers::accounts::handle)
         .options_async("/accounts", handlers::accounts::handle_options)
+        .post_async("/accounts/rotate", handlers::rotate::handle)
+        .options_async("/accounts/rotate", handlers::rotate::handle_options)
         .post_async("/devices/list", handlers::devices::handle_list)
         .options_async("/devices/list", handlers::devices::handle_options)
         .post_async("/devices/register", handlers::devices::handle_register)

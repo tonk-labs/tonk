@@ -29,6 +29,7 @@ use crate::core::backup::{get_chain, list_chains, put_chain};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
 use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
+use crate::core::rotation::{RotateAccount, rotate_account};
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -129,6 +130,7 @@ async fn handle_request(
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
+        (Method::POST, "/accounts/rotate") => accounts_rotate_route(req, &backends).await,
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
@@ -248,6 +250,72 @@ async fn accounts_route(
         StatusCode::CREATED,
         &serde_json::json!({ "accountId": account_id }),
     ))
+}
+
+/// `POST /accounts/rotate` → rotate an account onto a new root, under
+/// old-root authority with new-root proof of control.
+async fn accounts_rotate_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    #[derive(Deserialize)]
+    struct RotateRequest {
+        rotation: String,
+        confirmation: String,
+    }
+
+    let body: RotateRequest = parse_json(req).await?;
+    let rotation_bytes = hex::decode(&body.rotation).map_err(|err| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("bad rotation hex: {err}"),
+        )
+    })?;
+    let confirmation_bytes = hex::decode(&body.confirmation).map_err(|err| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("bad confirmation hex: {err}"),
+        )
+    })?;
+
+    let old = authorize_root(&rotation_bytes, &["account", "rotate"])
+        .await
+        .map_err(ceremony_error)?;
+    let new = authorize_root(&confirmation_bytes, &["account", "rotate", "confirm"])
+        .await
+        .map_err(ceremony_error)?;
+
+    // Each container must name the other's principal.
+    let claimed_new = required_string(&old.arguments, "newRootDid").map_err(ceremony_error)?;
+    let claimed_old = required_string(&new.arguments, "oldRootDid").map_err(ceremony_error)?;
+    if claimed_new != new.root_did || claimed_old != old.root_did {
+        return Err(ServiceError::new(
+            ErrorCode::Forbidden,
+            "rotation and confirmation containers do not name each other",
+        ));
+    }
+
+    let account = backends
+        .store
+        .account_by_root(&old.root_did)
+        .await
+        .map_err(|err| ceremony_error(err.into()))?
+        .ok_or_else(|| ServiceError::new(ErrorCode::Unauthorized, "unknown account"))?;
+
+    let request = RotateAccount {
+        new_root_did: new.root_did,
+        new_credential_id: required_string(&old.arguments, "newCredentialId")
+            .map_err(ceremony_error)?,
+        succession_hex: required_string(&old.arguments, "succession").map_err(ceremony_error)?,
+        device_did: required_string(&old.arguments, "deviceDid").map_err(ceremony_error)?,
+        device_delegation_hex: required_string(&old.arguments, "deviceDelegation")
+            .map_err(ceremony_error)?,
+    };
+    rotate_account(&backends.store, &account, &request)
+        .await
+        .map_err(ceremony_error)?;
+
+    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
 }
 
 /// `POST /devices/link` → register a device from a root-key ceremony.

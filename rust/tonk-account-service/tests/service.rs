@@ -11,6 +11,7 @@ use dialog_varsig::Principal;
 use tonk_account_service::helpers::AccountServer;
 
 const ROOT_PRF: [u8; 32] = [7u8; 32];
+const NEW_ROOT_PRF: [u8; 32] = [9u8; 32];
 const DEVICE_SEED: [u8; 32] = [8u8; 32];
 
 /// Build a device-signed invocation container for the account's first
@@ -284,4 +285,112 @@ async fn it_drives_the_full_ceremony_over_http() {
     );
     let round_tripped = response.bytes().await.unwrap();
     assert_eq!(round_tripped.as_ref(), chain_bytes.as_slice());
+}
+
+#[dialog_common::test]
+async fn it_rotates_the_account_onto_a_new_root_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+
+    // POST /codes -> request a verification code, then read it back out
+    // of the captured emails instead of receiving mail.
+    let response = client
+        .post(format!("{base}/codes"))
+        .json(&serde_json::json!({ "email": "person@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let code = {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .find(|(email, _)| email == "person@example.com")
+            .map(|(_, code): &(String, String)| code.clone())
+            .expect("a code was sent to person@example.com")
+    };
+
+    // POST /accounts -> create the account from a root-signed ceremony.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let ceremony = tonk_identity::ceremony::create_account(
+        root,
+        "person@example.com".into(),
+        code,
+        "cred-1".into(),
+        device.did(),
+        "laptop".into(),
+    )
+    .await
+    .unwrap();
+    let response = client
+        .post(format!("{base}/accounts"))
+        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+
+    // POST /accounts/rotate -> flip the account onto a new root.
+    let old_root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let new_root = tonk_identity::derive::derive_root_signer(&NEW_ROOT_PRF)
+        .await
+        .unwrap();
+    let rotation =
+        tonk_identity::ceremony::rotate_account(old_root, new_root, "cred-2".into(), device.did())
+            .await
+            .unwrap();
+    let response = client
+        .post(format!("{base}/accounts/rotate"))
+        .json(&serde_json::json!({
+            "rotation": rotation.rotation_hex,
+            "confirmation": rotation.confirmation_hex,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // A device-signed invocation under the NEW root succeeds.
+    let new_root = tonk_identity::derive::derive_root_signer(&NEW_ROOT_PRF)
+        .await
+        .unwrap();
+    let new_link = tonk_identity::delegation::mint_device_delegation(new_root, &device.did())
+        .await
+        .unwrap();
+    let body = tonk_identity::request::build_device_invocation(
+        device,
+        &new_link,
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+    let response = client
+        .post(format!("{base}/devices/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // The same invocation, signed against the OLD root, is rejected: the
+    // account no longer resolves by its old root DID.
+    let body = container(
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/devices/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
 }
