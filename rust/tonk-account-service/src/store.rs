@@ -200,8 +200,9 @@ pub trait Store {
         new_credential_id: &str,
     ) -> Result<(), StoreError>;
 
-    /// Repoint one device row at a fresh delegation CID. Returns `false`
-    /// if no matching device was found.
+    /// Repoint one *active* device row at a fresh delegation CID.
+    /// Returns `false` if no matching active device was found — in
+    /// particular, a revoked device never matches.
     async fn update_device_delegation(
         &self,
         account_id: i64,
@@ -297,9 +298,11 @@ pub const UPDATE_DEVICE_REVOKE: &str =
 pub const UPDATE_ACCOUNT_ROOT: &str =
     "UPDATE accounts SET root_did = ?2, credential_id = ?3 WHERE id = ?1";
 
-/// SQL: repoint one device row at a fresh delegation.
-pub const UPDATE_DEVICE_DELEGATION: &str =
-    "UPDATE devices SET delegation_cid = ?3 WHERE account_id = ?1 AND device_did = ?2";
+/// SQL: repoint one active device row at a fresh delegation. Revoked
+/// devices never match, so a revoked device can never drive a
+/// rotation or recovery ceremony back into the registry.
+pub const UPDATE_DEVICE_DELEGATION: &str = "UPDATE devices SET delegation_cid = ?3 \
+     WHERE account_id = ?1 AND device_did = ?2 AND status = 'active'";
 
 /// SQL: repoint an active device row at a fresh delegation and name, on
 /// re-registration. Revoked devices never match, so a revoked device

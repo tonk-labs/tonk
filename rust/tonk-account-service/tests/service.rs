@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::time::timestamp::Timestamp;
+use dialog_ucan_core::{InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
 use tonk_account_service::helpers::AccountServer;
 
@@ -15,6 +17,7 @@ const NEW_ROOT_PRF: [u8; 32] = [9u8; 32];
 const DEVICE_SEED: [u8; 32] = [8u8; 32];
 const UNRELATED_NEW_ROOT_PRF: [u8; 32] = [11u8; 32];
 const UNRELATED_OLD_ROOT_PRF: [u8; 32] = [13u8; 32];
+const SURVIVING_DEVICE_SEED: [u8; 32] = [20u8; 32];
 
 /// Build a device-signed invocation container for the account's first
 /// device, using the production builder against the `root → device`
@@ -29,6 +32,33 @@ async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Ve
         .unwrap();
     tonk_identity::request::build_device_invocation(device, &link, command, args)
         .await
+        .unwrap()
+}
+
+/// Build a root-signed ceremony container: issuer, audience, and subject
+/// all equal `root`, with no proofs -- the same shape `authorize_root`
+/// requires. Not yet available as a production builder (that lands with
+/// the recovery ceremony's client-facing crate), so tests assemble it
+/// directly.
+async fn root_container(
+    root: Ed25519Signer,
+    command: Vec<String>,
+    args: BTreeMap<String, Promised>,
+) -> Vec<u8> {
+    let root_did = root.did();
+    let invocation = InvocationBuilder::new()
+        .issuer(root)
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(command)
+        .arguments(args)
+        .proofs(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .unwrap();
+    InvocationChain::new(invocation, std::collections::HashMap::new())
+        .to_bytes()
         .unwrap()
 }
 
@@ -502,6 +532,221 @@ async fn it_rejects_a_rotation_whose_confirmation_names_a_different_root() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+}
+
+#[dialog_common::test]
+async fn it_recovers_the_account_via_surviving_device_and_new_root_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+
+    // POST /codes -> request a verification code, then read it back out
+    // of the captured emails instead of receiving mail.
+    let response = client
+        .post(format!("{base}/codes"))
+        .json(&serde_json::json!({ "email": "person@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let code = {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .find(|(email, _)| email == "person@example.com")
+            .map(|(_, code): &(String, String)| code.clone())
+            .expect("a code was sent to person@example.com")
+    };
+
+    // POST /accounts -> create the account from a root-signed ceremony,
+    // device A its first device.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device_a = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let device_a_did = device_a.did().to_string();
+    let ceremony = tonk_identity::ceremony::create_account(
+        root,
+        "person@example.com".into(),
+        code,
+        "cred-1".into(),
+        device_a.did(),
+        "laptop".into(),
+    )
+    .await
+    .unwrap();
+    let response = client
+        .post(format!("{base}/accounts"))
+        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+
+    // Link device B (the surviving device) from the root ceremony.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device_b = Ed25519Signer::import(&SURVIVING_DEVICE_SEED).await.unwrap();
+    let device_b_did = device_b.did().to_string();
+    let ceremony = tonk_identity::ceremony::link_device(root, device_b.did(), "phone".into())
+        .await
+        .unwrap();
+    let response = client
+        .post(format!("{base}/devices/link"))
+        .body(hex::decode(ceremony.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // Capture device A's delegation CID before recovery, so we can prove
+    // recovery leaves it untouched.
+    let body = container(
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/devices/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let devices: serde_json::Value = response.json().await.unwrap();
+    let devices = devices.as_array().unwrap();
+    let device_a_original_cid = devices
+        .iter()
+        .find(|d| d["did"] == device_a_did)
+        .expect("device A is registered")["delegationCid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The old passkey is lost: recovery flips the account onto a freshly
+    // created root, under device B's authority plus proof the new root
+    // is controllable.
+    let old_root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let new_root = tonk_identity::derive::derive_root_signer(&NEW_ROOT_PRF)
+        .await
+        .unwrap();
+    let old_root_did = old_root.did().to_string();
+    let new_root_did = new_root.did().to_string();
+
+    let device_link = tonk_identity::delegation::mint_device_delegation(old_root, &device_b.did())
+        .await
+        .unwrap();
+    let fresh_delegation =
+        tonk_identity::delegation::mint_device_delegation(new_root, &device_b.did())
+            .await
+            .unwrap();
+    let device_delegation_hex = hex::encode(fresh_delegation.to_bytes().unwrap());
+
+    let mut recovery_args = BTreeMap::new();
+    recovery_args.insert(
+        "newRootDid".to_string(),
+        Promised::String(new_root_did.clone()),
+    );
+    recovery_args.insert(
+        "newCredentialId".to_string(),
+        Promised::String("cred-recovered".to_string()),
+    );
+    recovery_args.insert(
+        "deviceDelegation".to_string(),
+        Promised::String(device_delegation_hex.clone()),
+    );
+    let recovery_bytes = tonk_identity::request::build_device_invocation(
+        device_b,
+        &device_link,
+        vec!["account".into(), "recover".into()],
+        recovery_args,
+    )
+    .await
+    .unwrap();
+
+    let new_root = tonk_identity::derive::derive_root_signer(&NEW_ROOT_PRF)
+        .await
+        .unwrap();
+    let mut confirmation_args = BTreeMap::new();
+    confirmation_args.insert(
+        "oldRootDid".to_string(),
+        Promised::String(old_root_did.clone()),
+    );
+    let confirmation_bytes = root_container(
+        new_root,
+        vec!["account".into(), "recover".into(), "confirm".into()],
+        confirmation_args,
+    )
+    .await;
+
+    let response = client
+        .post(format!("{base}/accounts/recover"))
+        .json(&serde_json::json!({
+            "recovery": hex::encode(recovery_bytes),
+            "confirmation": hex::encode(confirmation_bytes),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // Device B, signed under the new root, can now list devices.
+    let new_root = tonk_identity::derive::derive_root_signer(&NEW_ROOT_PRF)
+        .await
+        .unwrap();
+    let device_b = Ed25519Signer::import(&SURVIVING_DEVICE_SEED).await.unwrap();
+    let new_link = tonk_identity::delegation::mint_device_delegation(new_root, &device_b.did())
+        .await
+        .unwrap();
+    let body = tonk_identity::request::build_device_invocation(
+        device_b,
+        &new_link,
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+    let response = client
+        .post(format!("{base}/devices/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let devices: serde_json::Value = response.json().await.unwrap();
+    let devices = devices.as_array().unwrap();
+    assert_eq!(devices.len(), 2);
+
+    let device_a_row = devices
+        .iter()
+        .find(|d| d["did"] == device_a_did)
+        .expect("device A is still registered");
+    assert_eq!(device_a_row["status"], "active");
+    assert_eq!(device_a_row["delegationCid"], device_a_original_cid);
+
+    let device_b_row = devices
+        .iter()
+        .find(|d| d["did"] == device_b_did)
+        .expect("device B is still registered");
+    assert_eq!(device_b_row["status"], "active");
+
+    // A device-signed call under the OLD root is rejected: the account
+    // no longer resolves by its old root DID.
+    let body = container(
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/devices/list"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
 }
 
 #[dialog_common::test]

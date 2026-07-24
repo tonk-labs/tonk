@@ -29,6 +29,7 @@ use crate::core::backup::{get_chain, list_chains, put_chain};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
 use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
+use crate::core::recovery::recover_account;
 use crate::core::rotation::{RotateAccount, rotate_account};
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
@@ -131,6 +132,7 @@ async fn handle_request(
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/accounts/rotate") => accounts_rotate_route(req, &backends).await,
+        (Method::POST, "/accounts/recover") => accounts_recover_route(req, &backends).await,
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
@@ -314,6 +316,70 @@ async fn accounts_rotate_route(
     rotate_account(&backends.store, &account, &request)
         .await
         .map_err(ceremony_error)?;
+
+    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+}
+
+/// `POST /accounts/recover` → recover an account onto a freshly created
+/// passkey root, under the authority of a surviving device plus proof of
+/// control of the new root.
+async fn accounts_recover_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    #[derive(Deserialize)]
+    struct RecoverRequest {
+        recovery: String,
+        confirmation: String,
+    }
+
+    let body: RecoverRequest = parse_json(req).await?;
+    let recovery_bytes = hex::decode(&body.recovery).map_err(|err| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("bad recovery hex: {err}"),
+        )
+    })?;
+    let confirmation_bytes = hex::decode(&body.confirmation).map_err(|err| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("bad confirmation hex: {err}"),
+        )
+    })?;
+
+    let caller = authorize(&backends.store, &recovery_bytes, &["account", "recover"])
+        .await
+        .map_err(ceremony_error)?;
+    let confirm = authorize_root(&confirmation_bytes, &["account", "recover", "confirm"])
+        .await
+        .map_err(ceremony_error)?;
+
+    // Each container must name the other's principal.
+    let claimed_new_root =
+        required_string(&caller.arguments, "newRootDid").map_err(ceremony_error)?;
+    let claimed_old_root =
+        required_string(&confirm.arguments, "oldRootDid").map_err(ceremony_error)?;
+    if claimed_new_root != confirm.root_did || claimed_old_root != caller.account.root_did {
+        return Err(ServiceError::new(
+            ErrorCode::Forbidden,
+            "recovery and confirmation containers do not name each other",
+        ));
+    }
+
+    let new_credential_id =
+        required_string(&caller.arguments, "newCredentialId").map_err(ceremony_error)?;
+    let device_delegation_hex =
+        required_string(&caller.arguments, "deviceDelegation").map_err(ceremony_error)?;
+
+    recover_account(
+        &backends.store,
+        &caller,
+        &claimed_new_root,
+        &new_credential_id,
+        &device_delegation_hex,
+    )
+    .await
+    .map_err(ceremony_error)?;
 
     Ok(json_response(StatusCode::OK, &serde_json::json!({})))
 }
