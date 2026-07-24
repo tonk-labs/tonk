@@ -15,7 +15,6 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
-use dialog_capability::Subject;
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
@@ -305,8 +304,20 @@ const PROFILE_NAME: &str = "tonk";
 pub struct TonkState {
     /// The user's persistent profile.
     pub profile: Profile,
-    /// The operator derived from the profile.
+    /// The operator derived from the profile — the key that signs
+    /// presign invocations. Rotated by
+    /// [`session`](crate::session) before its delegation lapses, so it
+    /// is not stable for the life of the worker.
     pub operator: DefaultOperator,
+    /// The storage pool every space is mounted in. Held so a rotated
+    /// operator can be built over the *same* pool: a replacement with
+    /// its own would leave the reactor's cached repository and branch
+    /// handles talking to the retired one.
+    pub storage: Storage<DefaultSpace>,
+    /// When the current operator's delegation stops being valid, unix
+    /// seconds. Consulted by the sync drain, which rotates the session
+    /// as this approaches.
+    pub session_expires_at: u64,
     /// Display name the profile was opened under. `Profile` does
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
@@ -1653,20 +1664,22 @@ impl TonkServiceWorker {
             .map_err(|e| JsError::new(&format!("Failed to open profile: {}", e)))?;
         log!("Profile DID: {}", profile.did());
 
-        // 3. Derive operator with full capabilities
-        let operator = profile
-            .derive(b"worker")
-            .allow(Subject::any())
-            .build(storage)
+        // 3. Open a signing session — an operator keyed for this
+        // session alone, authorized by a delegation that expires. The
+        // storage is shared, not handed over, so a later rotation can
+        // build its replacement over the same pool.
+        let session = crate::session::open(&profile, &storage)
             .await
-            .map_err(|e| JsError::new(&format!("Failed to build operator: {}", e)))?;
+            .map_err(|e| JsError::new(&format!("Failed to open a signing session: {}", e)))?;
 
         // 4. Build state and bootstrap the profile repo's meta
         // branch. Idempotent — safe to run on every worker boot.
         let reactor = crate::Reactor::new(profile.clone());
         let state = TonkState {
             profile,
-            operator,
+            operator: session.operator,
+            storage,
+            session_expires_at: session.expires_at,
             profile_name: PROFILE_NAME.to_string(),
             reactor,
             view_bindings: Default::default(),

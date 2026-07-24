@@ -69,6 +69,8 @@ pub use error::*;
 mod worker;
 pub use worker::*;
 
+pub mod session;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod cache;
 

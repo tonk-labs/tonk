@@ -350,7 +350,6 @@ pub mod tests {
     use crate::api_router;
     use crate::worker::TonkState;
 
-    use dialog_capability::Subject;
     use dialog_credentials::Ed25519Signer;
     use dialog_operator::Profile;
     use dialog_storage::provider::storage::Storage;
@@ -408,17 +407,16 @@ pub mod tests {
             .await
             .expect("Failed to create test profile");
 
-        let operator = profile
-            .derive(b"test-worker")
-            .allow(Subject::any())
-            .build(storage)
+        let session = crate::session::open(&profile, &storage)
             .await
-            .expect("Failed to build test operator");
+            .expect("Failed to open a test signing session");
 
         let reactor = crate::Reactor::new(profile.clone());
         TonkState {
             profile,
-            operator,
+            operator: session.operator,
+            storage,
+            session_expires_at: session.expires_at,
             profile_name,
             reactor,
             view_bindings: Default::default(),
