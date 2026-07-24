@@ -163,3 +163,41 @@ tonk account link \
   --service-url https://accounts-staging.tonk.xyz \
   --account-url https://staging.tonk.xyz/account/link
 ```
+
+## Abuse controls
+
+Application-level throttles live in `src/core/codes.rs`: per-email 60 s
+resend cooldown, 10-minute code TTL, five verification attempts per code.
+Everything IP-shaped is enforced at the Cloudflare edge, not in code:
+
+- **Rate rule** (zone `tonk.xyz`, and the staging host): one rate-limiting
+  rule per environment covering the two unauthenticated write paths.
+  Each rule's expression should match both `/codes` and `/links`:
+
+  ```
+  (http.host eq "accounts.tonk.xyz" and http.request.method eq "POST" and
+   http.request.uri.path in {"/codes" "/links"})
+  ```
+
+  Deployed threshold: 3 requests per 10 seconds per IP, action Block.
+  Verify each environment's existing rule covers both paths in the expression,
+  and extend the path set if `/links` is missing.
+  `/links/resolve|complete|consume` need no rule: they demand the 256-bit
+  bearer secret and cheap lookups fail closed.
+- **Turnstile**: deliberately not deployed. Revisit only if the rate rule
+  proves insufficient in practice.
+
+### Deploy verification
+
+Migrations must be applied to both environments (wrangler reads
+`wrangler.account.toml`):
+
+```sh
+wrangler d1 migrations list tonk-accounts --remote -c wrangler.account.toml
+wrangler d1 migrations list tonk-accounts-staging --remote -c wrangler.account.toml --env staging
+```
+
+Both must show `0001_init.sql` and `0002_link_requests.sql` as applied;
+apply any pending ones with the matching `d1 migrations apply` command.
+Confirm the rate rule exists in the Cloudflare dashboard (Security →
+WAF → Rate limiting rules) and that its path list includes `/links`.
