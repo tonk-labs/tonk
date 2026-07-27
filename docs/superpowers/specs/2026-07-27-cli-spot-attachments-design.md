@@ -134,7 +134,23 @@ TONK_SPOT`.
   an explicit act.
 - An orphaned attachment (hand-edited file naming an unregistered
   spot) hits the existing `SpotError::Unknown`, which lists what is
-  registered.
+  registered and, when the name came from an attachment, names the
+  directory and points at `tonk spot detach` — otherwise the error
+  reads as coming from nowhere.
+- `tonk use <name>` (no `--here`), `tonk spot new`, and `tonk join`
+  all set the global `current`, but an attachment ranks above it — so
+  running any of them from a directory attached to a *different*
+  spot confirms a selection the very next command will not honour.
+  This is the scenario the tier was built for (an agent binds a
+  worktree with `--here`, a human `cd`s in and runs `tonk use
+  garden`), so it is not treated as a footgun to leave alone: after a
+  successful `select` / `create` / `join`, each command resolves once
+  more against the real cwd, and if that still lands on
+  `Source::Attached` naming a spot other than the one just picked, it
+  warns on stderr (`warning: commands here still resolve to '<name>'
+  (attached <dir>); run \`tonk spot detach\` to drop it`), leaving the
+  stdout confirmation alone. Silent whenever there is no attachment or
+  the attachment already agrees.
 
 ### Testing
 
