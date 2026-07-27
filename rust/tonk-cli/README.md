@@ -94,8 +94,9 @@ directory bound to a spot with `tonk use <name> --here`; the nearest attached
 ancestor of the working directory wins, so parallel sessions in separate
 directories each hold their own spot without passing a flag. The directory is
 only a key into the registry — nothing about a site is stored there, and
-`tonk spot detach` unbinds it. `spots.json` is plain JSON, so any application
-can read the registry without going through the CLI.
+`tonk spot detach` unbinds it, matching the given directory exactly rather
+than by ancestor. `spots.json` is plain JSON, so any application can read
+the registry without going through the CLI.
 
 To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
 somewhere you keep data outside the canonical store) as a spot, point
