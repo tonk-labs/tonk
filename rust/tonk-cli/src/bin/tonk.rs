@@ -36,7 +36,8 @@ use tonk_cli::{ExitCode, account, guide, identity, schema, site};
 )]
 struct Cli {
     /// Operate on this spot instead of the selected one.
-    /// Precedence: --spot > TONK_SPOT > `tonk use` selection.
+    /// Precedence: --spot > TONK_SPOT > an attached directory
+    /// (`tonk use --here`) > the global `tonk use` selection.
     #[arg(long, global = true, value_name = "NAME")]
     spot: Option<String>,
 
@@ -296,14 +297,22 @@ enum Command {
     // -- setup --------------------------------------------------------
     /// Select the current spot (used by every command from anywhere)
     ///
-    /// The selection is global to this machine. Concurrent sessions
-    /// (agents, CI) should pin their spot per-process with --spot or
-    /// TONK_SPOT instead of relying on it.
-    #[command(after_help = "Examples:\n  tonk use garden")]
+    /// Without `--here` the selection is global to this machine.
+    /// Concurrent sessions (agents, CI) should bind their directory
+    /// with `--here`, or pin per-process with --spot / TONK_SPOT,
+    /// rather than relying on the global selection.
+    #[command(after_help = "Examples:\n  tonk use garden\n  tonk use garden --here")]
     Use {
         /// A registered spot name (see `tonk spot list`).
         #[arg(value_name = "NAME")]
         name: String,
+        /// Bind this directory to the spot instead of changing the
+        /// machine-global selection. Commands run from here or any
+        /// subdirectory resolve to it, so sessions in different
+        /// directories never clobber each other. Unbind with
+        /// `tonk spot detach`.
+        #[arg(long)]
+        here: bool,
     },
 
     /// Manage spots: named, centrally registered fact stores
@@ -562,6 +571,18 @@ enum SpotCommand {
         #[arg(long)]
         delete: bool,
     },
+
+    /// Unbind a directory from its spot (see `tonk use --here`)
+    ///
+    /// Matches exactly: run from the directory that was attached,
+    /// not a subdirectory of it.
+    #[command(after_help = "Examples:\n  tonk spot detach\n  tonk spot detach ~/old-project")]
+    Detach {
+        /// Directory to unbind. Default: the current directory. Pass
+        /// a path to clear an entry whose directory no longer exists.
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -729,13 +750,14 @@ enum TelemetryAction {
 /// (never argument values) are ever reported.
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
-        Command::Use { .. } => ("use", None),
+        Command::Use { here, .. } => ("use", here.then_some("here")),
         Command::Spot { command } => (
             "spot",
             Some(match command {
                 SpotCommand::New { .. } => "new",
                 SpotCommand::List => "list",
                 SpotCommand::Rm { .. } => "rm",
+                SpotCommand::Detach { .. } => "detach",
             }),
         ),
         Command::Identity { .. } => ("identity", None),
@@ -832,7 +854,7 @@ async fn main() {
     let is_update = matches!(cli.command, Command::Update { .. });
     let spot = cli.spot;
     let exit = match cli.command {
-        Command::Use { name } => use_op(name).await,
+        Command::Use { name, here } => use_op(name, here).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
@@ -1003,12 +1025,33 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-/// `tonk use` — set the global current spot.
-async fn use_op(name: String) -> ExitCode {
+/// `tonk use` — set the global current spot, or bind this directory
+/// to one with `--here`.
+async fn use_op(name: String, here: bool) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
     };
+    if here {
+        let Some(cwd) = working_directory() else {
+            return print_error("could not read the current directory".to_owned());
+        };
+        return match tonk_cli::spot::attach(&store, &name, &cwd) {
+            Ok(outcome) => {
+                let was = match &outcome.previous {
+                    Some(previous) => format!(" (was {previous})"),
+                    None => String::new(),
+                };
+                println!(
+                    "attached {directory} to {name}{was}",
+                    directory = outcome.directory.display(),
+                    name = outcome.name,
+                );
+                ExitCode::Success
+            }
+            Err(err) => print_error(err.to_string()),
+        };
+    }
     match tonk_cli::spot::select(&store, &name) {
         Ok(resolved) => {
             println!(
@@ -1047,7 +1090,8 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             let env = std::env::var(tonk_cli::spot::SPOT_ENV)
                 .ok()
                 .filter(|value| !value.is_empty());
-            match tonk_cli::spot::listing(&store, flag, env.as_deref(), None) {
+            let cwd = working_directory();
+            match tonk_cli::spot::listing(&store, flag, env.as_deref(), cwd.as_deref()) {
                 Ok(listing) => {
                     if listing.rows.is_empty() {
                         println!("(no spots registered; create one with `tonk spot new <name>`)");
@@ -1069,6 +1113,13 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                             source = resolved.source,
                         );
                     }
+                    if !listing.attachments.is_empty() {
+                        println!();
+                        println!("attached:");
+                        for (directory, name) in &listing.attachments {
+                            println!("  {directory}\t{name}", directory = directory.display());
+                        }
+                    }
                     ExitCode::Success
                 }
                 Err(err) => print_error(err.to_string()),
@@ -1082,10 +1133,30 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 } else {
                     println!("site kept at {}", outcome.site.display());
                 }
+                for directory in &outcome.detached {
+                    println!("detached {}", directory.display());
+                }
                 ExitCode::Success
             }
             Err(err) => print_error(err.to_string()),
         },
+        SpotCommand::Detach { path } => {
+            let directory = match path.or_else(working_directory) {
+                Some(directory) => directory,
+                None => return print_error("could not read the current directory".to_owned()),
+            };
+            match tonk_cli::spot::detach(&store, &directory) {
+                Ok(outcome) => {
+                    println!(
+                        "detached {directory} from {name}",
+                        directory = outcome.directory.display(),
+                        name = outcome.name,
+                    );
+                    ExitCode::Success
+                }
+                Err(err) => print_error(err.to_string()),
+            }
+        }
     }
 }
 
@@ -2078,10 +2149,19 @@ fn print_error(message: impl Into<String>) -> ExitCode {
     ExitCode::IoError
 }
 
-/// Resolve the selected spot (--spot > TONK_SPOT > `tonk use`) and
-/// open its site. Every failure path names the spot and the
-/// selection source so a wrong-spot mistake is visible in the
-/// error itself. The cwd is never consulted.
+/// The process's working directory, used only as a key into the
+/// attachment map. A cwd the OS refuses to report (deleted out from
+/// under the process) is not fatal — resolution just skips the
+/// attachment tier and falls through to the global selection.
+fn working_directory() -> Option<PathBuf> {
+    std::env::current_dir().ok()
+}
+
+/// Resolve the selected spot (--spot > TONK_SPOT > attached
+/// directory > `tonk use`) and open its site. Every failure path
+/// names the spot and the selection source so a wrong-spot mistake
+/// is visible in the error itself. The cwd is passed in only as a
+/// key into the attachment map — it never locates site data.
 async fn open_selected(
     flag: Option<&str>,
 ) -> Result<(tonk_cli::spot::Resolved, site::TonkSite), ExitCode> {
@@ -2092,7 +2172,8 @@ async fn open_selected(
     let env = std::env::var(tonk_cli::spot::SPOT_ENV)
         .ok()
         .filter(|value| !value.is_empty());
-    let resolved = match store.resolve(flag, env.as_deref(), None) {
+    let cwd = working_directory();
+    let resolved = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
         Ok(resolved) => resolved,
         Err(err) => return Err(print_error(err.to_string())),
     };

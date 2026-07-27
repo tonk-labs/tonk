@@ -49,6 +49,16 @@ fn run(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
         .expect("tonk binary runs")
 }
 
+/// Same isolation as [`tonk_cmd`], run *from* `cwd`. The attachment
+/// tier keys off the working directory, so these have to control it
+/// rather than inherit the test runner's.
+fn run_in(state_dir: &Path, cwd: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+    tonk_cmd(state_dir, args, extra_env)
+        .current_dir(cwd)
+        .output()
+        .expect("tonk binary runs")
+}
+
 fn stderr_of(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -493,5 +503,135 @@ mod when_minting_against_a_live_remote {
             "{stderr}"
         );
         Ok(())
+    }
+}
+
+mod when_a_directory_is_attached {
+    use super::*;
+
+    /// Two registered spots with `b` selected globally, plus a real
+    /// `work/nested/` tree to attach and run from. Site paths need
+    /// not hold a repo: resolution and its error text are what is
+    /// under test, not site opening.
+    fn fixture(state: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let a = state.join("site-a");
+        let b = state.join("site-b");
+        std::fs::create_dir_all(&a).expect("mkdir a");
+        std::fs::create_dir_all(&b).expect("mkdir b");
+        write_registry(state, &[("a", &a), ("b", &b)], Some("b"));
+
+        let work = state.join("work");
+        let nested = work.join("nested");
+        std::fs::create_dir_all(&nested).expect("mkdir work/nested");
+        (work, nested)
+    }
+
+    /// The CLI stores canonicalized paths, and on macOS a tempdir
+    /// under `/var/...` canonicalizes to `/private/var/...`, so
+    /// assertions on printed paths have to canonicalize too.
+    fn shown(path: &Path) -> String {
+        path.canonicalize()
+            .expect("canonicalize")
+            .display()
+            .to_string()
+    }
+
+    fn attach(state: &Path, cwd: &Path, name: &str) {
+        let output = run_in(state, cwd, &["use", name, "--here"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+    }
+
+    #[dialog_common::test]
+    fn it_resolves_the_attachment_from_a_subdirectory() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let output = run_in(state.path(), &nested, &["status"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("spot 'a' (via attached"), "{stderr}");
+        assert!(stderr.contains(&shown(&work)), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_leaves_the_global_selection_alone() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let elsewhere = state.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("mkdir elsewhere");
+        let output = run_in(state.path(), &elsewhere, &["spot", "list"], &[]);
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("current: b (global)"), "{stdout}");
+    }
+
+    #[dialog_common::test]
+    fn it_prefers_tonk_spot_over_an_attachment() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let output = run_in(state.path(), &nested, &["status"], &[("TONK_SPOT", "b")]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("spot 'b' (via env"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_takes_the_deepest_attachment() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+        attach(state.path(), &nested, "b");
+
+        let output = run_in(state.path(), &nested, &["status"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("spot 'b' (via attached"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_lists_attachments() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let output = run_in(state.path(), state.path(), &["spot", "list"], &[]);
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("attached:"), "{stdout}");
+        assert!(stdout.contains(&shown(&work)), "{stdout}");
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_to_detach_from_a_subdirectory() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let refused = run_in(state.path(), &nested, &["spot", "detach"], &[]);
+        assert!(!refused.status.success());
+        let stderr = stderr_of(&refused);
+        assert!(stderr.contains("is attached to a"), "{stderr}");
+
+        let detached = run_in(state.path(), &work, &["spot", "detach"], &[]);
+        assert!(detached.status.success(), "{}", stderr_of(&detached));
+
+        let output = run_in(state.path(), &nested, &["status"], &[]);
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("spot 'b' (via global"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_reports_the_previous_binding_on_reattach() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let output = run_in(state.path(), &work, &["use", "b", "--here"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("to b (was a)"), "{stdout}");
     }
 }
