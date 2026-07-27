@@ -6,9 +6,11 @@ claims and **retract** them — a retraction is itself an assertion that
 invalidates an old claim, not a deletion.
 
 Commands run from anywhere, against whichever spot is selected —
-resolution is `--spot` > `TONK_SPOT` > `tonk use`. Automation (agents,
-CI) should set `TONK_SPOT` or pass `--spot` rather than relying on the
-global `tonk use` selection.
+resolution is `--spot` > `TONK_SPOT` > a directory attached with
+`tonk use <name> --here` > `tonk use`. Automation (agents, CI) should
+set `TONK_SPOT` or pass `--spot` rather than relying on the global
+`tonk use` selection; an agent working out of a fixed directory can
+attach it once instead.
 
 ## Orientation
 
