@@ -5,10 +5,25 @@ tonk is a headless CLI for reading and writing data and views in a spot
 claims and **retract** them — a retraction is itself an assertion that
 invalidates an old claim, not a deletion.
 
-Commands run from anywhere, against whichever spot is selected —
-resolution is `--spot` > `TONK_SPOT` > `tonk use`. Automation (agents,
-CI) should set `TONK_SPOT` or pass `--spot` rather than relying on the
-global `tonk use` selection.
+Every command runs against exactly one spot and prints which one (and
+why) on stderr. Resolution reads exactly one thing: `TONK_SPOT`. There
+is no `--spot` flag, no machine-wide default, and the working
+directory is never consulted — a `.tonk` you happen to be standing
+next to is not a selection. Unset means every command errors.
+
+A reference is a registered name (`garden`) or a path to a site
+directory (`~/proj/.tonk`). As an agent, set `TONK_SPOT=<ref>` on each
+invocation — this is not a fallback for automation, it is the
+mechanism, and `tonk spot enter` is only a wrapper that exports the
+same variable into a human's terminal.
+
+Set it even when a command would already work. If you were launched
+from a shell that ran `tonk spot enter`, you inherit its `TONK_SPOT`
+and bare commands succeed against whatever spot the human happened to
+be on — which may not be the one you were asked to work in. tonk
+warns when it detects this (`warning: TONK_SPOT was inherited …`);
+treat that warning as a bug in your own invocation, not a note.
+`tonk spot list` works with no spot set and shows what is registered.
 
 ## Orientation
 
@@ -92,10 +107,12 @@ tonk render <route>                         # headless HTML render (e.g. alice@p
 ## Setup
 
 ```bash
-tonk spot new <name>              # create a spot (site) and select it
+tonk spot new <name>              # create a spot (site); does NOT select it
 tonk spot new <name> --site <path>  # adopt an existing .tonk directory as a spot
-tonk spot list                    # registered spots, with the resolved current
-tonk use <name>                   # set the global current spot
+tonk spot list                    # registered spots + what this shell resolves to
+tonk spot enter <name>            # shell with TONK_SPOT exported (humans)
+tonk spot enter                   # same, using ./.tonk
+TONK_SPOT=<name> tonk <cmd>       # one command, no subshell (agents)
 tonk identity                     # show the local profile DID
 tonk migrate                      # convert a .carry/ site to .tonk/
 ```

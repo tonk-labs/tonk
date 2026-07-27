@@ -43,6 +43,7 @@ pub mod output;
 pub mod remote;
 pub mod render;
 pub mod schema;
+pub mod shell;
 pub mod site;
 pub mod spot;
 pub mod sync;

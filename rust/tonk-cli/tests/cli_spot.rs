@@ -1,8 +1,13 @@
 //! CLI-level spot resolution: spawns the real `tonk` binary against
-//! an isolated registry (`TONK_SPOTS_STATE`) and pins `TONK_SPOT` /
-//! `--spot` explicitly, so these exercise the same precedence and
-//! error text a human or an agent actually sees — not just the
-//! `spot` module's in-process ops (covered by `tests/spot.rs`).
+//! an isolated registry (`TONK_SPOTS_STATE`) and pins `TONK_SPOT`
+//! explicitly, so these exercise the same order and error text a
+//! human or an agent actually sees — not just the `spot`
+//! module's in-process ops (covered by `tests/spot.rs`).
+//!
+//! Every invocation runs in a cwd of the test's choosing, because
+//! `.tonk` in the working directory is the last resolution tier.
+//! [`run`] uses a scratch directory with no `.tonk` unless a test
+//! says otherwise, so nothing resolves by accident.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -36,15 +41,34 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         .env("TONK_NO_UPDATE_CHECK", "1")
         .env("TONK_UPDATE_STATE", state_dir)
         .env("HOME", state_dir)
-        .env_remove("TONK_SPOT");
+        .env_remove("TONK_SPOT")
+        .current_dir(scratch_cwd(state_dir));
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
     cmd
 }
 
+/// A working directory with no `.tonk` in it. The default for every
+/// invocation, so the local-directory tier only fires in the tests
+/// that build a site there on purpose.
+fn scratch_cwd(state_dir: &Path) -> std::path::PathBuf {
+    let dir = state_dir.join("cwd");
+    std::fs::create_dir_all(&dir).expect("mkdir cwd");
+    dir
+}
+
 fn run(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
     tonk_cmd(state_dir, args, extra_env)
+        .output()
+        .expect("tonk binary runs")
+}
+
+/// Run with an explicit working directory — for the `.tonk`-here
+/// tier, which is the one thing `run` deliberately avoids.
+fn run_in(state_dir: &Path, cwd: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+    tonk_cmd(state_dir, args, extra_env)
+        .current_dir(cwd)
         .output()
         .expect("tonk binary runs")
 }
@@ -75,17 +99,22 @@ fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) {
     assert!(output.status.success(), "{}", stderr_of(&output));
 
     for (name, endpoint) in remotes {
-        let output = run(state_dir, &["remote", "add", name, endpoint], &[]);
+        let output = run(state_dir, &["remote", "add", name, endpoint], DEMO);
         assert!(output.status.success(), "{}", stderr_of(&output));
     }
 }
+
+/// Pins the spot [`spot_with_remotes`] builds. Creating a spot does
+/// not select it, so every follow-up invocation names it — exactly
+/// as a shell or an agent would.
+const DEMO: &[(&str, &str)] = &[("TONK_SPOT", "demo")];
 
 /// Write a `spots.json` registry directly (bypassing the CLI) so
 /// each test starts from a known, isolated fixture. `entries` are
 /// `(name, absolute site path)` pairs; site paths need not contain a
 /// real repo — resolution and its error text are what's under test,
 /// not site opening.
-fn write_registry(state_dir: &Path, entries: &[(&str, &Path)], current: Option<&str>) {
+fn write_registry(state_dir: &Path, entries: &[(&str, &Path)]) {
     let spots: String = entries
         .iter()
         .map(|(name, site)| {
@@ -97,11 +126,7 @@ fn write_registry(state_dir: &Path, entries: &[(&str, &Path)], current: Option<&
         })
         .collect::<Vec<_>>()
         .join(",");
-    let current = match current {
-        Some(name) => format!("\"current\":\"{name}\","),
-        None => String::new(),
-    };
-    let json = format!("{{{current}\"spots\":{{{spots}}}}}");
+    let json = format!("{{\"spots\":{{{spots}}}}}");
     std::fs::write(state_dir.join("spots.json"), json).expect("write spots.json");
 }
 
@@ -119,7 +144,7 @@ mod when_nothing_is_registered {
     }
 }
 
-mod when_resolving_with_precedence {
+mod when_resolving_in_order {
     use super::*;
 
     fn two_spot_registry(state: &Path) {
@@ -127,22 +152,24 @@ mod when_resolving_with_precedence {
         let b = state.join("site-b");
         std::fs::create_dir_all(&a).expect("mkdir a");
         std::fs::create_dir_all(&b).expect("mkdir b");
-        write_registry(state, &[("a", &a), ("b", &b)], Some("b"));
+        write_registry(state, &[("a", &a), ("b", &b)]);
     }
 
+    /// There is no `--spot`: a second spelling of `TONK_SPOT` is
+    /// the redundancy this design exists to remove, so the flag
+    /// must be rejected outright rather than quietly accepted.
     #[dialog_common::test]
-    fn it_prefers_the_flag_over_env_and_global() {
+    fn it_has_no_spot_flag() {
         let state = tempfile::tempdir().expect("tempdir");
         two_spot_registry(state.path());
 
-        let output = run(
-            state.path(),
-            &["--spot", "a", "status"],
-            &[("TONK_SPOT", "b")],
-        );
+        let output = run(state.path(), &["--spot", "a", "status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'a' (via flag"), "{stderr}");
+        assert!(
+            stderr.contains("unexpected argument") || stderr.contains("--spot"),
+            "{stderr}"
+        );
     }
 
     #[dialog_common::test]
@@ -151,11 +178,13 @@ mod when_resolving_with_precedence {
         two_spot_registry(state.path());
 
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
-        assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'a' (via env"), "{stderr}");
+        assert!(stderr.contains("spot: a (via env)"), "{stderr}");
     }
 
+    /// An exported-but-empty `TONK_SPOT` is a shell accident, not a
+    /// selection. With nothing else to fall back to, it must fail
+    /// rather than resolve something.
     #[dialog_common::test]
     fn it_treats_an_empty_tonk_spot_as_unset() {
         let state = tempfile::tempdir().expect("tempdir");
@@ -164,7 +193,21 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'b' (via global"), "{stderr}");
+        assert!(stderr.contains("no spot selected"), "{stderr}");
+    }
+
+    /// The headline change: registered spots exist, none is named,
+    /// and tonk stops instead of picking one.
+    #[dialog_common::test]
+    fn it_refuses_to_guess_when_nothing_names_a_spot() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_spot_registry(state.path());
+
+        let output = run(state.path(), &["status"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("no spot selected"), "{stderr}");
+        assert!(stderr.contains("tonk spot enter"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -172,13 +215,223 @@ mod when_resolving_with_precedence {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
-        write_registry(state.path(), &[("a", &a)], None);
+        write_registry(state.path(), &[("a", &a)]);
 
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "nope")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(stderr.contains("unknown spot 'nope'"), "{stderr}");
         assert!(stderr.contains("registered: a"), "{stderr}");
+    }
+}
+
+/// The working directory is not a selector. A `.tonk` right beside
+/// you is the strongest case there is for consulting the cwd, and it
+/// still resolves to nothing — otherwise a command could act on a
+/// directory you merely walked into.
+mod when_the_working_directory_holds_a_site {
+    use super::*;
+
+    /// Build a real site at `<parent>/.tonk` through the CLI, then
+    /// unregister it, leaving a directory that only a path
+    /// reference can name.
+    fn project_dir(state_dir: &Path, name: &str) -> std::path::PathBuf {
+        let proj = state_dir.join(name);
+        let site = proj.join(".tonk");
+        let output = run(
+            state_dir,
+            &[
+                "spot",
+                "new",
+                "tmp",
+                "--site",
+                site.to_str().expect("utf-8"),
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let output = run(state_dir, &["spot", "rm", "tmp"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        proj
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_to_resolve_a_dot_tonk_sitting_right_here() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let proj = project_dir(state.path(), "proj");
+        // An unrelated registered spot, so this asks only "was the
+        // local .tonk used?" and not "is the registry empty?" —
+        // which has its own, different error.
+        let a = state.path().join("site-a");
+        std::fs::create_dir_all(&a).expect("mkdir a");
+        write_registry(state.path(), &[("a", &a)]);
+
+        let output = run_in(state.path(), &proj, &["status"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("no spot selected"), "{stderr}");
+        assert!(stderr.contains("TONK_SPOT"), "{stderr}");
+    }
+
+    /// The same directory *is* usable — by naming it. That is what
+    /// bare `tonk spot enter` resolves and exports, so the site
+    /// stays reachable without the cwd ever being a selector.
+    #[dialog_common::test]
+    fn it_resolves_that_same_directory_when_named_as_a_path() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let proj = project_dir(state.path(), "proj");
+        let site = proj.join(".tonk");
+
+        let output = run_in(
+            state.path(),
+            &proj,
+            &["status"],
+            &[("TONK_SPOT", site.to_str().expect("utf-8"))],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(
+            stderr_of(&output).contains("(via env)"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+}
+
+mod when_announcing_the_spot {
+    use super::*;
+
+    /// Every command says which spot it used, on stderr — so a
+    /// piped stdout stays exactly what it was. `schema` stands in
+    /// for the data commands here; `status` is the one command that
+    /// repeats the spot on stdout on purpose, being a report.
+    #[dialog_common::test]
+    fn it_announces_on_stderr_and_leaves_stdout_alone() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["schema"], DEMO);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(stderr_of(&output).contains("spot: demo (via env)"));
+        assert!(
+            !stdout_of(&output).contains("spot: demo"),
+            "stdout is data only: {}",
+            stdout_of(&output)
+        );
+    }
+
+    /// The report form: `tonk status > file` has to record which
+    /// spot it described, so this one is on stdout as well.
+    #[dialog_common::test]
+    fn it_repeats_the_spot_on_stdout_for_status() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["status"], DEMO);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(stdout_of(&output).contains("spot: demo (via env)"));
+    }
+}
+
+/// The one hole `TONK_SPOT`-only resolution leaves: a human enters a
+/// spot, launches an agent from that shell, and the agent inherits
+/// the variable without ever choosing it. An inherited value and one
+/// set for a single command are byte-identical to the process, so
+/// this compares against what `tonk spot enter` recorded.
+///
+/// Every invocation here has its output captured, so stderr is never
+/// a terminal — which is exactly the non-interactive condition the
+/// warning keys on, and why these tests can see it at all.
+mod when_the_spot_was_inherited_from_an_entered_shell {
+    use super::*;
+
+    const WARNING: &str = "TONK_SPOT was inherited";
+
+    #[dialog_common::test]
+    fn it_warns_when_the_spot_matches_the_session() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(
+            state.path(),
+            &["schema"],
+            &[("TONK_SPOT", "demo"), ("TONK_SPOT_SESSION", "demo")],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains(WARNING), "{stderr}");
+        // It has to say what to do, not just that something is off.
+        assert!(stderr.contains("TONK_SPOT=<name>"), "{stderr}");
+    }
+
+    /// Overriding the session is the explicit act the design asks
+    /// for. Warning about it would punish the right behaviour.
+    #[dialog_common::test]
+    fn it_stays_quiet_when_the_caller_named_a_different_spot() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(
+            state.path(),
+            &["schema"],
+            &[("TONK_SPOT", "demo"), ("TONK_SPOT_SESSION", "other")],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(
+            !stderr_of(&output).contains(WARNING),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+
+    /// Outside an entered shell there is nothing to compare against,
+    /// so the warning must not fire on an ordinary agent invocation
+    /// that set the variable itself.
+    #[dialog_common::test]
+    fn it_stays_quiet_with_no_session_recorded() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["schema"], DEMO);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert!(
+            !stderr_of(&output).contains(WARNING),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+
+    /// A warning, never a refusal: an agent launched inside an
+    /// entered shell may well be meant to work there.
+    #[dialog_common::test]
+    fn it_warns_without_failing_the_command() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(
+            state.path(),
+            &["schema"],
+            &[("TONK_SPOT", "demo"), ("TONK_SPOT_SESSION", "demo")],
+        );
+        assert!(output.status.success());
+        assert!(!stdout_of(&output).is_empty(), "the command still ran");
+    }
+}
+
+mod when_calling_the_removed_use_command {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_errors_and_names_enter_instead() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let a = state.path().join("site-a");
+        std::fs::create_dir_all(&a).expect("mkdir a");
+        write_registry(state.path(), &[("a", &a)]);
+
+        let output = run(state.path(), &["use", "a"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("has been removed"), "{stderr}");
+        assert!(stderr.contains("tonk spot enter a"), "{stderr}");
     }
 }
 
@@ -190,7 +443,7 @@ mod when_joining {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
-        write_registry(state.path(), &[("a", &a)], Some("a"));
+        write_registry(state.path(), &[("a", &a)]);
 
         let output = run(
             state.path(),
@@ -218,7 +471,7 @@ mod when_the_invite_remote_differs_from_the_upstream {
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
 
-        let output = run(state.path(), &["invite", "--remote", "other"], &[]);
+        let output = run(state.path(), &["invite", "--remote", "other"], DEMO);
         let stderr = stderr_of(&output);
         assert!(
             stderr.contains("the invite embeds remote 'other' but the repo pushes to 'origin'"),
@@ -242,7 +495,7 @@ mod when_the_invite_remote_is_the_upstream {
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
 
-        let output = run(state.path(), &["invite", "--remote", "origin"], &[]);
+        let output = run(state.path(), &["invite", "--remote", "origin"], DEMO);
         let stderr = stderr_of(&output);
         assert!(!stderr.contains("the invite embeds remote"), "{stderr}");
     }
@@ -262,7 +515,7 @@ mod when_no_remote_is_registered_at_all {
         let state = tempfile::tempdir().expect("tempdir");
         spot_with_remotes(state.path(), &[]);
 
-        let output = run(state.path(), &["invite", "--no-shorten"], &[]);
+        let output = run(state.path(), &["invite", "--no-shorten"], DEMO);
         assert!(output.status.success(), "{}", stderr_of(&output));
 
         let url = stdout_of(&output);
@@ -281,7 +534,11 @@ mod when_no_remote_is_registered_at_all {
         let state = tempfile::tempdir().expect("tempdir");
         spot_with_remotes(state.path(), &[]);
 
-        let output = run(state.path(), &["invite"], &[("TONK_NO_SHORTEN", "1")]);
+        let output = run(
+            state.path(),
+            &["invite"],
+            &[("TONK_NO_SHORTEN", "1"), ("TONK_SPOT", "demo")],
+        );
         assert!(output.status.success(), "{}", stderr_of(&output));
 
         let url = stdout_of(&output);
@@ -305,7 +562,7 @@ mod when_inviting_without_a_remote {
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
 
-        let output = run(state.path(), &["invite", "--no-remote"], &[]);
+        let output = run(state.path(), &["invite", "--no-remote"], DEMO);
         let stderr = stderr_of(&output);
         assert!(!stderr.contains("the invite embeds remote"), "{stderr}");
     }
@@ -321,7 +578,7 @@ mod when_inviting_without_a_remote {
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
 
-        let output = run(state.path(), &["invite", "--no-remote"], &[]);
+        let output = run(state.path(), &["invite", "--no-remote"], DEMO);
         let stderr = stderr_of(&output);
         assert!(
             stderr.contains("warning: several remotes are registered"),
@@ -349,7 +606,7 @@ mod when_several_remotes_are_registered {
             &[("origin", DEAD_REMOTE), ("other", OTHER_DEAD_REMOTE)],
         );
 
-        let output = run(state.path(), &["invite"], &[]);
+        let output = run(state.path(), &["invite"], DEMO);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(stderr.contains("--remote <NAME>"), "{stderr}");
@@ -381,7 +638,7 @@ mod when_minting_against_a_live_remote {
         tokio::task::spawn_blocking(move || {
             spot_with_remotes(&state_dir, &[("origin", &endpoint)]);
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            run(&state_dir, &args, &[])
+            run(&state_dir, &args, DEMO)
         })
         .await
         .expect("blocking tonk invocation joins")

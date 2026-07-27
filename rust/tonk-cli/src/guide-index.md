@@ -29,12 +29,18 @@ quote every string literal (`name: "alice"`, not `name: alice`).
 
 ## Spots
 
-Commands run against the selected *spot* (a named fact store), not
-the cwd. Resolution order: `--spot <name>` > `TONK_SPOT` env >
-`tonk use <name>` selection. In automation, always pin the spot
-per-process (`TONK_SPOT=x tonk ...` or `--spot x`) — never rely on
-`tonk use`, which is shared global state another session can change.
-`tonk spot list` shows what's registered and what is current.
+Every command runs against one *spot* (a named fact store) and says
+which, on stderr. It comes from exactly one place: `TONK_SPOT`. No
+flag form, no machine-wide default, and the working directory is
+never consulted — a `.tonk` next to you is not a selection. Unset
+means the command errors instead of guessing.
+
+A reference is a registered name (`garden`) or a path to a site
+directory (`~/proj/.tonk`). `tonk spot enter <ref>` opens a shell
+with `TONK_SPOT` exported and the spot in the prompt, so a terminal
+keeps it; in automation set the same variable per-command:
+`TONK_SPOT=garden tonk query task`. `tonk spot list` shows what's
+registered and what this shell resolves to.
 
 ## The loop
 

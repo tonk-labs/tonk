@@ -24,7 +24,7 @@ use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views::{self, ViewSummary};
-use tonk_cli::{ExitCode, account, guide, identity, schema, site};
+use tonk_cli::{ExitCode, account, guide, identity, schema, shell, site};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,14 +32,9 @@ use tonk_cli::{ExitCode, account, guide, identity, schema, site};
     about = "Headless CLI for a datalog-flavoured, syncable fact store: define concepts, assert facts, query them, render views",
     version,
     propagate_version = true,
-    after_help = "The loop: orient, define concepts, assert facts, give them a view, invite.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   invite · join · push · pull · remote\n  setup    spot · use · blob · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
+    after_help = "The loop: enter a spot, define concepts, assert facts, give them a view, invite.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   invite · join · push · pull · remote\n  setup    spot · blob · telemetry\n\nEvery command runs against one spot, and says which. Get one with\n`tonk spot enter <name>`, or set TONK_SPOT for a single command.\nStart with `tonk guide`; every command's --help carries examples."
 )]
 struct Cli {
-    /// Operate on this spot instead of the selected one.
-    /// Precedence: --spot > TONK_SPOT > `tonk use` selection.
-    #[arg(long, global = true, value_name = "NAME")]
-    spot: Option<String>,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -294,14 +289,14 @@ enum Command {
     },
 
     // -- setup --------------------------------------------------------
-    /// Select the current spot (used by every command from anywhere)
+    /// Deprecated — see `tonk spot enter <name>`
     ///
-    /// The selection is global to this machine. Concurrent sessions
-    /// (agents, CI) should pin their spot per-process with --spot or
-    /// TONK_SPOT instead of relying on it.
-    #[command(after_help = "Examples:\n  tonk use garden")]
+    /// Removed rather than repointed: it set a machine-wide current
+    /// spot that every other terminal silently shared, which is the
+    /// ambiguity `tonk spot enter` exists to end.
+    #[command(hide = true)]
     Use {
-        /// A registered spot name (see `tonk spot list`).
+        /// The name that used to be selected globally.
         #[arg(value_name = "NAME")]
         name: String,
     },
@@ -528,7 +523,11 @@ enum RemoteCommand {
 
 #[derive(Subcommand, Debug)]
 enum SpotCommand {
-    /// Create (or adopt) a spot, register it, and select it
+    /// Create (or adopt) a spot and register it
+    ///
+    /// Registering does not select: your shell stays on whatever it
+    /// was on, and `tonk spot enter <name>` is the separate, visible
+    /// act that puts a session on the new spot.
     ///
     /// The site lands in the canonical store
     /// (`~/Library/Application Support/tonk/spots/<name>` on macOS)
@@ -548,7 +547,29 @@ enum SpotCommand {
         site: Option<PathBuf>,
     },
 
-    /// List registered spots and the current selection
+    /// Open a shell on a spot — every command in it uses that spot
+    ///
+    /// `tonk spot enter <name>` looks the name up in the registry;
+    /// bare `tonk spot enter` uses `.tonk` in the current directory,
+    /// and never a parent, so the spot is always something `ls`
+    /// shows you. Either form runs your $SHELL with TONK_SPOT
+    /// exported, so the spot belongs to that terminal and two
+    /// terminals can hold different ones. `exit` leaves it.
+    ///
+    /// The subshell is a convenience over the variable, not a
+    /// separate mechanism: agents and scripts set TONK_SPOT
+    /// per-command and get identical resolution.
+    #[command(
+        after_help = "Examples:\n  tonk spot enter garden\n  tonk spot enter                    # ./.tonk in this directory\n  tonk spot enter ~/proj/.tonk       # a site directory by path\n  TONK_SPOT=garden tonk query task   # one command, no subshell"
+    )]
+    Enter {
+        /// A registered spot name (see `tonk spot list`) or a path
+        /// to a site directory. Omit for `.tonk` in this directory.
+        #[arg(value_name = "REF")]
+        reference: Option<String>,
+    },
+
+    /// List registered spots and what this shell resolves to
     #[command(after_help = "Examples:\n  tonk spot list")]
     List,
 
@@ -734,6 +755,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             "spot",
             Some(match command {
                 SpotCommand::New { .. } => "new",
+                SpotCommand::Enter { .. } => "enter",
                 SpotCommand::List => "list",
                 SpotCommand::Rm { .. } => "rm",
             }),
@@ -805,8 +827,16 @@ async fn main() {
 
     // The telemetry subcommand itself is never tracked — toggling
     // must not race its own event, and opt-out should be silent.
+    // `spot enter` is skipped for a different reason: it blocks for
+    // the life of a shell, so its "duration" would be a session
+    // length, not a command's, and hours-long samples would skew
+    // every duration aggregate in the dataset. Recording it would
+    // mean firing the event before the shell is spawned.
     let mut recorder = match &cli.command {
         Command::Telemetry { .. } => None,
+        Command::Spot {
+            command: SpotCommand::Enter { .. },
+        } => None,
         command => {
             let (name, subcommand) = descriptor(command);
             tonk_cli::telemetry::begin(name, subcommand).await
@@ -829,49 +859,62 @@ async fn main() {
 
     let started = std::time::Instant::now();
     // `cli.command` is moved by the dispatch below, so ask now.
+    //
+    // Both of these skip the post-command update work. `update`
+    // because a nag mid-update contradicts the command that just
+    // ran; `spot enter` because it returns when you leave the
+    // shell, and firing a network check and printing a version
+    // banner on your way *out* of a session is noise attached to
+    // the wrong moment.
     let is_update = matches!(cli.command, Command::Update { .. });
-    let spot = cli.spot;
+    let skips_update_work = is_update
+        || matches!(
+            cli.command,
+            Command::Spot {
+                command: SpotCommand::Enter { .. }
+            }
+        );
     let exit = match cli.command {
         Command::Use { name } => use_op(name).await,
-        Command::Spot { command } => spot_op(command, spot.as_deref()).await,
+        Command::Spot { command } => spot_op(command).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
-        Command::Eval(args) => eval(args, spot.as_deref()).await,
+        Command::Eval(args) => eval(args).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
-        Command::Schema { concept } => print_schema(concept, spot.as_deref()).await,
+        Command::Schema { concept } => print_schema(concept).await,
         Command::Query {
             concept,
             entity,
             json,
         } => match entity {
-            Some(entity) => get_op(concept, entity, json, spot.as_deref()).await,
-            None => query_op(concept, json, spot.as_deref()).await,
+            Some(entity) => get_op(concept, entity, json).await,
+            None => query_op(concept, json).await,
         },
-        Command::Assert { concept, rest } => assert_cmd(concept, rest, spot.as_deref()).await,
+        Command::Assert { concept, rest } => assert_cmd(concept, rest).await,
         Command::Retract {
             concept,
             entity,
             field,
-        } => retract_op(concept, entity, field, spot.as_deref()).await,
+        } => retract_op(concept, entity, field).await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
-        Command::Export { out } => export_op(out, spot.as_deref()).await,
-        Command::Render { route, out } => render_op(route, out, spot.as_deref()).await,
-        Command::Import { file } => import_op(file, spot.as_deref()).await,
-        Command::Push => sync_op(SyncOp::Push, spot.as_deref()).await,
-        Command::Pull => sync_op(SyncOp::Pull, spot.as_deref()).await,
-        Command::Status => status_op(spot.as_deref()).await,
+        Command::Export { out } => export_op(out).await,
+        Command::Render { route, out } => render_op(route, out).await,
+        Command::Import { file } => import_op(file).await,
+        Command::Push => sync_op(SyncOp::Push).await,
+        Command::Pull => sync_op(SyncOp::Pull).await,
+        Command::Status => status_op().await,
         Command::Invite {
             base_url,
             remote,
             no_remote,
             no_shorten,
-        } => mint_invite(base_url, remote, no_remote, no_shorten, spot.as_deref()).await,
+        } => mint_invite(base_url, remote, no_remote, no_shorten).await,
         Command::Join { url, name } => claim_invite(url, name).await,
-        Command::Remote { command } => remote_op(command, spot.as_deref()).await,
-        Command::Blob { command } => blob_op(command, spot.as_deref()).await,
-        Command::Concept { command } => concept_op(command, spot.as_deref()).await,
-        Command::View { command } => view_op(command, spot.as_deref()).await,
-        Command::Home { models } => home_op(models, spot.as_deref()).await,
+        Command::Remote { command } => remote_op(command).await,
+        Command::Blob { command } => blob_op(command).await,
+        Command::Concept { command } => concept_op(command).await,
+        Command::View { command } => view_op(command).await,
+        Command::Home { models } => home_op(models).await,
         Command::Telemetry { action } => telemetry_op(action),
         Command::Update {
             disable_check,
@@ -887,7 +930,7 @@ async fn main() {
     // front of the command, so the marginal cost is one small GET
     // parallel to a request already in flight.
     let check = async {
-        if !is_update {
+        if !skips_update_work {
             tonk_cli::update::check().await;
         }
     };
@@ -897,7 +940,7 @@ async fn main() {
         }
         None => check.await,
     }
-    if !is_update {
+    if !skips_update_work {
         tonk_cli::update::nag();
     }
 
@@ -1003,27 +1046,122 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-/// `tonk use` — set the global current spot.
-async fn use_op(name: String) -> ExitCode {
+/// `tonk spot enter [ref]` — run a shell with [`SPOT_ENV`] exported.
+///
+/// The reference is resolved *before* the shell starts, so a bad
+/// name fails here rather than on the first command inside a
+/// subshell that looks fine. What gets exported is the reference,
+/// not the resolved path: entering `garden` keeps following the
+/// registry, and entering a directory pins that directory even
+/// after a `cd`.
+async fn enter_op(reference: Option<String>) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
     };
-    match tonk_cli::spot::select(&store, &name) {
-        Ok(resolved) => {
-            println!(
-                "current spot: {name} ({site})",
-                name = resolved.name,
-                site = resolved.site.display(),
-            );
-            ExitCode::Success
-        }
-        Err(err) => print_error(err.to_string()),
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => return print_error(format!("could not read the current directory: {err}")),
+    };
+
+    // No argument means this directory's `.tonk`, and nothing else
+    // — the local site is resolved to an absolute path so the
+    // subshell survives a `cd`.
+    let reference = match reference {
+        Some(reference) => reference,
+        None => match tonk_cli::spot::SpotStore::local_site(&cwd) {
+            Some(site) => site.canonicalize().unwrap_or(site).display().to_string(),
+            None => {
+                return print_error(tonk_cli::spot::SpotError::NoLocalSite(cwd).to_string());
+            }
+        },
+    };
+
+    let resolved = match store.resolve_reference(&reference, tonk_cli::spot::Source::Argument) {
+        Ok(resolved) => resolved,
+        Err(err) => return print_error(err.to_string()),
+    };
+    // Opening it here turns "the site is broken" into a failure to
+    // enter, instead of a shell where every command fails.
+    if let Err(err) = site::TonkSite::open(&resolved.site).await {
+        return print_error(format!(
+            "spot '{name}' (site {site}): {err:#}",
+            name = resolved.name,
+            site = resolved.site.display(),
+        ));
+    }
+
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/bin/sh".to_string());
+
+    if let Ok(outer) = std::env::var(tonk_cli::spot::SPOT_ENV)
+        && !outer.is_empty()
+        && outer != reference
+    {
+        eprintln!("note: replacing spot '{outer}' for this shell");
+    }
+    // Not `describe()`: that reports a *resolution* source, and
+    // "via argument" would be a lie about how this shell got its
+    // spot.
+    let site = resolved.site.display().to_string();
+    if resolved.name == site {
+        eprintln!("spot: {site}");
+    } else {
+        eprintln!("spot: {name} ({site})", name = resolved.name);
+    }
+
+    // A subshell you can't see is the failure mode a subshell has:
+    // the prompt is what tells you, every line, which spot you are
+    // typing into.
+    let decorate = std::env::var(shell::NO_PROMPT_ENV)
+        .ok()
+        .is_none_or(|value| value.is_empty());
+    let launch = shell::plan(&shell, &resolved.name, &std::env::temp_dir(), decorate);
+    if launch.plain {
+        eprintln!("note: {hint}", hint = shell::FRAMEWORK_HINT);
+    }
+    eprintln!("exit this shell to leave it");
+
+    let mut command = std::process::Command::new(&shell);
+    command.args(&launch.args);
+    command.env(tonk_cli::spot::SPOT_ENV, &reference);
+    // Record what this shell was entered on, so a later command can
+    // tell "the session's spot" from "a spot named for me". Nothing
+    // else can distinguish the two — see `SESSION_ENV`.
+    command.env(tonk_cli::spot::SESSION_ENV, &reference);
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    let status = command.status();
+    shell::cleanup(launch.scratch.as_deref());
+
+    match status {
+        // Success/failure carries out of the shell, but not the
+        // exact code: tonk's exit codes are a fixed enum, and
+        // returning through main is what flushes telemetry. Scripts
+        // that need a specific status shouldn't be wrapping a shell
+        // anyway — `TONK_SPOT=x tonk <cmd>` exits as the command.
+        Ok(status) if status.success() => ExitCode::Success,
+        Ok(_) => ExitCode::IoError,
+        Err(err) => print_error(format!("could not start {shell}: {err}")),
     }
 }
 
+/// `tonk use` — removed. Errors with the replacement rather than
+/// silently doing something with different scope.
+async fn use_op(name: String) -> ExitCode {
+    print_error(format!(
+        "`tonk use` has been removed: it set a machine-wide current spot \
+         that every other terminal shared.\n  \
+         run `tonk spot enter {name}` to open a shell on it, or set \
+         TONK_SPOT={name} for a single command."
+    ))
+}
+
 /// `tonk spot new|list|rm` — registry management.
-async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
+async fn spot_op(command: SpotCommand) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
@@ -1037,37 +1175,40 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     println!("Registered spot '{}'", outcome.name);
                     println!("site: {}", outcome.site.display());
                     println!("DID: {}", outcome.did);
-                    println!("current spot: {}", outcome.name);
+                    // Creating deliberately doesn't select: this
+                    // shell is still on whatever it was on.
+                    println!("enter it with: tonk spot enter {}", outcome.name);
                     ExitCode::Success
                 }
                 Err(err) => print_error(err.to_string()),
             }
         }
+        SpotCommand::Enter { reference } => enter_op(reference).await,
         SpotCommand::List => {
             let env = std::env::var(tonk_cli::spot::SPOT_ENV)
                 .ok()
                 .filter(|value| !value.is_empty());
-            match tonk_cli::spot::listing(&store, flag, env.as_deref()) {
+            match tonk_cli::spot::listing(&store, env.as_deref()) {
                 Ok(listing) => {
                     if listing.rows.is_empty() {
                         println!("(no spots registered; create one with `tonk spot new <name>`)");
-                        return ExitCode::Success;
                     }
-                    let current = listing.current.as_ref().map(|c| c.name.as_str());
+                    // The marker means "this session is on it", not
+                    // "the machine is on it" — a path reference or a
+                    // local `.tonk` marks no row at all, which is
+                    // why the active line below stands on its own.
+                    let active = listing.active.as_ref().map(|a| a.name.as_str());
                     for (name, site) in &listing.rows {
-                        let marker = if Some(name.as_str()) == current {
+                        let marker = if Some(name.as_str()) == active {
                             '*'
                         } else {
                             ' '
                         };
                         println!("{marker} {name}\t{site}", site = site.display());
                     }
-                    if let Some(resolved) = &listing.current {
-                        println!(
-                            "current: {name} ({source})",
-                            name = resolved.name,
-                            source = resolved.source,
-                        );
+                    match &listing.active {
+                        Some(resolved) => println!("this shell: {}", resolved.describe()),
+                        None => println!("this shell: no spot (run `tonk spot enter <name>`)"),
                     }
                     ExitCode::Success
                 }
@@ -1089,7 +1230,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
     }
 }
 
-async fn eval(args: EvalArgs, spot: Option<&str>) -> ExitCode {
+async fn eval(args: EvalArgs) -> ExitCode {
     let source = match resolve_source(&args) {
         Ok(s) => s,
         Err(message) => return print_error(message),
@@ -1101,7 +1242,7 @@ async fn eval(args: EvalArgs, spot: Option<&str>) -> ExitCode {
         dry_run: args.dry_run,
     };
 
-    let (_, site) = match open_selected(spot).await {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1176,8 +1317,8 @@ enum SyncOp {
     Pull,
 }
 
-async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn sync_op(op: SyncOp) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1199,8 +1340,8 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
     }
 }
 
-async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn export_op(out: Option<PathBuf>) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1227,12 +1368,12 @@ async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
     }
 }
 
-async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
+async fn render_op(route: String, out: Option<PathBuf>) -> ExitCode {
     let parsed = match RenderRoute::parse(&route) {
         Ok(r) => r,
         Err(err) => return print_error(err.to_string()),
     };
-    let (_, site) = match open_selected(spot).await {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1255,8 +1396,8 @@ async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> E
     }
 }
 
-async fn import_op(file: PathBuf, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn import_op(file: PathBuf) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1296,16 +1437,15 @@ fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
     }
 }
 
-async fn status_op(spot: Option<&str>) -> ExitCode {
-    let (resolved, site) = match open_selected(spot).await {
+async fn status_op() -> ExitCode {
+    let (resolved, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
-    println!(
-        "spot: {name} ({source})",
-        name = resolved.name,
-        source = resolved.source,
-    );
+    // `open_selected` already announced this on stderr. Repeated on
+    // stdout because status *is* the report: `tonk status > file`
+    // has to record which spot it described.
+    println!("spot: {}", resolved.describe());
 
     match sync::status(&site).await {
         Ok(state) => {
@@ -1339,8 +1479,8 @@ fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
     }
 }
 
-async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn remote_op(command: RemoteCommand) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1439,8 +1579,8 @@ fn print_remote_list(records: &[RemoteRecord]) {
     }
 }
 
-async fn blob_op(command: BlobCommand, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn blob_op(command: BlobCommand) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1514,9 +1654,8 @@ async fn mint_invite(
     remote_name: Option<String>,
     no_remote: bool,
     no_shorten: bool,
-    spot: Option<&str>,
 ) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1679,7 +1818,6 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
                 name.clone(),
                 tonk_cli::spot::SpotEntry { site: root.clone() },
             );
-            registry.current = Some(name.clone());
             if let Err(err) = store.save(&registry) {
                 return print_error(format!(
                     "joined, but registering spot '{name}' failed: {err}\n\
@@ -1710,7 +1848,7 @@ fn print_claim_outcome(name: &str, root: &std::path::Path, outcome: &ClaimOutcom
             println!("synced:  no (run `tonk pull` before making changes)");
         }
     }
-    println!("current spot: {name}");
+    println!("enter it with: tonk spot enter {name}");
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
@@ -1765,8 +1903,8 @@ async fn list_concepts_op(site: &site::TonkSite) -> ExitCode {
 
 /// Query every instance of `concept` as rendered by
 /// [`data_ops::query`].
-async fn query_op(concept: String, json: bool, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn query_op(concept: String, json: bool) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1788,8 +1926,8 @@ async fn query_op(concept: String, json: bool, spot: Option<&str>) -> ExitCode {
 
 /// Print a single instance of `concept` as rendered by
 /// [`data_ops::get`].
-async fn get_op(concept: String, entity: String, json: bool, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn get_op(concept: String, entity: String, json: bool) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1815,12 +1953,12 @@ async fn get_op(concept: String, entity: String, json: bool, spot: Option<&str>)
 /// never starts with `-`, and flag values always follow their
 /// flag, so the first token is either a flag or the entity. Same
 /// dynamic-flag / `--help` handling as the old `add`/`set`.
-async fn assert_cmd(concept: String, rest: Vec<String>, spot: Option<&str>) -> ExitCode {
+async fn assert_cmd(concept: String, rest: Vec<String>) -> ExitCode {
     let (entity, argv) = match rest.split_first() {
         Some((first, tail)) if !first.starts_with('-') => (Some(first.clone()), tail.to_vec()),
         _ => (None, rest),
     };
-    let (_, site) = match open_selected(spot).await {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1842,13 +1980,8 @@ async fn assert_cmd(concept: String, rest: Vec<String>, spot: Option<&str>) -> E
 
 /// Retract a single field, or a whole instance, as rendered by
 /// [`data_ops::retract`].
-async fn retract_op(
-    concept: String,
-    entity: String,
-    field: Option<String>,
-    spot: Option<&str>,
-) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn retract_op(concept: String, entity: String, field: Option<String>) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1869,8 +2002,8 @@ async fn retract_op(
 }
 
 /// Author a new concept, as rendered by [`data_ops::concept_add`].
-async fn concept_op(command: ConceptCommand, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn concept_op(command: ConceptCommand) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1902,8 +2035,8 @@ async fn concept_op(command: ConceptCommand, spot: Option<&str>) -> ExitCode {
 /// missing or empty template surfaces as
 /// [`tonk_cli::authoring::AuthoringError::EmptyTemplate`] via
 /// `data_ops::view_add`'s own check.
-async fn view_op(command: ViewCommand, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn view_op(command: ViewCommand) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1952,8 +2085,8 @@ async fn view_op(command: ViewCommand, spot: Option<&str>) -> ExitCode {
 
 /// Put one or more concepts' directories on the space home, as
 /// rendered by [`data_ops::home`].
-async fn home_op(models: Vec<String>, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn home_op(models: Vec<String>) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1995,8 +2128,8 @@ fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::
     writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
 }
 
-async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+async fn print_schema(concept: Option<String>) -> ExitCode {
+    let (_, site) = match open_selected().await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -2078,13 +2211,11 @@ fn print_error(message: impl Into<String>) -> ExitCode {
     ExitCode::IoError
 }
 
-/// Resolve the selected spot (--spot > TONK_SPOT > `tonk use`) and
-/// open its site. Every failure path names the spot and the
-/// selection source so a wrong-spot mistake is visible in the
-/// error itself. The cwd is never consulted.
-async fn open_selected(
-    flag: Option<&str>,
-) -> Result<(tonk_cli::spot::Resolved, site::TonkSite), ExitCode> {
+/// Resolve this session's spot (`TONK_SPOT` > `.tonk` here) and
+/// open its site. Every failure path names the spot and the source
+/// so a wrong-spot mistake is visible in the error itself; the
+/// success path announces it too, via [`announce_spot`].
+async fn open_selected() -> Result<(tonk_cli::spot::Resolved, site::TonkSite), ExitCode> {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return Err(print_error(err.to_string())),
@@ -2092,10 +2223,12 @@ async fn open_selected(
     let env = std::env::var(tonk_cli::spot::SPOT_ENV)
         .ok()
         .filter(|value| !value.is_empty());
-    let resolved = match store.resolve(flag, env.as_deref()) {
+    let resolved = match store.resolve(env.as_deref()) {
         Ok(resolved) => resolved,
         Err(err) => return Err(print_error(err.to_string())),
     };
+    announce_spot(&resolved);
+    warn_if_inherited(env.as_deref());
     match site::TonkSite::open(&resolved.site).await {
         Ok(site) => Ok((resolved, site)),
         Err(err) => Err(print_error(format!(
@@ -2105,6 +2238,60 @@ async fn open_selected(
             site = resolved.site.display(),
         ))),
     }
+}
+
+/// Tell the operator which spot this command is about to touch,
+/// and why that one.
+///
+/// Unconditional, because a spot you have to remember is a spot you
+/// can get wrong — the ambient selection this design removed was
+/// only dangerous because nothing ever said it out loud. On stderr,
+/// so `tonk query ... > file` and `-f json` piping are unaffected.
+fn announce_spot(resolved: &tonk_cli::spot::Resolved) {
+    eprintln!("spot: {}", resolved.describe());
+}
+
+/// Warn when a non-interactive caller is riding the surrounding
+/// `tonk spot enter` shell's spot instead of naming one.
+///
+/// The case this exists for: a human enters a spot and launches an
+/// agent from that shell. The agent inherits `TONK_SPOT`, never sets
+/// it, and every command quietly succeeds against whatever the human
+/// happened to be on — the same "work landing somewhere nobody
+/// chose" that dropping the machine-wide default and the local
+/// `.tonk` was meant to end.
+///
+/// Two conditions, because either alone would be noise:
+///
+/// - The spot equals [`SESSION_ENV`]. A *different* value means the
+///   caller overrode the session on purpose, which is the explicit
+///   act we want, and silence is correct.
+/// - Stderr is not a terminal. A human typing in their own entered
+///   shell is the intended use and must never be nagged; they also
+///   have the prompt telling them. Piping (`tonk query | grep`)
+///   keeps stderr on the tty, so that stays quiet too — what trips
+///   this is output being captured wholesale, which is what a
+///   harness does.
+///
+/// A warning rather than an error: an agent launched inside
+/// `spot enter` may well be *meant* to work there, exactly as one
+/// launched inside a git worktree is. This makes the inheritance
+/// visible in the transcript without deciding it was wrong.
+fn warn_if_inherited(spot: Option<&str>) {
+    let session = std::env::var(tonk_cli::spot::SESSION_ENV)
+        .ok()
+        .filter(|value| !value.is_empty());
+    if !tonk_cli::spot::inherited_from_session(spot, session.as_deref()) {
+        return;
+    }
+    if std::io::stderr().is_terminal() {
+        return;
+    }
+    eprintln!(
+        "warning: TONK_SPOT was inherited from the surrounding \
+         `tonk spot enter` shell, not set for this command; pass \
+         TONK_SPOT=<name> explicitly if this is not the spot you meant"
+    );
 }
 
 /// Specialized [`print_error`] for parse-error mapping. Kept

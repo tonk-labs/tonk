@@ -16,8 +16,12 @@ drive the same code paths as the binary.
 ```sh
 # Create a spot (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
 tonk spot new garden
-# Later, from anywhere:
-tonk use garden
+# Open a shell on it — every command in this terminal now uses it.
+tonk spot enter garden
+# Or, in a directory that has a .tonk: no argument needed.
+tonk spot enter
+# One command without entering (what agents and scripts do):
+TONK_SPOT=garden tonk query task
 
 # Evaluate a notation document: inline, from a file, or piped.
 tonk eval -c 'person:'
@@ -88,9 +92,42 @@ entry points at a **site**: the working directory holding the actual dialog
 repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
 `spots/<name>/`, or anywhere you like via `tonk spot new --site <path>`.
-Commands resolve which spot to use as `--spot` > `TONK_SPOT` > the `tonk use`
-selection, then open its site. `spots.json` is plain JSON, so any application
-can read the registry without going through the CLI.
+Commands resolve which spot to use from exactly one place — `TONK_SPOT` —
+then open its site, and print which spot they picked on stderr. There is no
+flag form, no machine-wide default, and the working directory is never
+consulted: a `.tonk` you happen to be standing next to is not a decision you
+made. With the variable unset, every command stops rather than guessing.
+`spots.json` is plain JSON, so any application can read the registry without
+going through the CLI.
+
+A *reference* is either a registered name (`garden`) or a path to a site
+directory (`~/proj/.tonk`); anything that isn't a legal name slug is read as a
+path. So a spot is acquired in exactly two ways, both of them things you typed:
+
+- `tonk spot enter <ref>` runs your `$SHELL` with `TONK_SPOT` exported, so a
+  terminal keeps its spot and two terminals can hold different ones. The
+  prompt gains a `(tonk: <name>)` segment that reads the variable live, so it
+  follows an `export` and empties on `unset` rather than going stale. Set
+  `TONK_NO_PROMPT=1` to skip that; prompt frameworks (starship, powerlevel10k)
+  rebuild the prompt themselves and will overwrite the segment — add
+  `$TONK_SPOT` to your own prompt config instead.
+- `TONK_SPOT=garden tonk …` sets it for one process. This is what agents and
+  CI use, since they can't live in a subshell. Note this is a *temporary*
+  assignment: it does not change the surrounding shell's spot.
+
+`spot enter` also exports `TONK_SPOT_SESSION`, recording what the shell was
+entered on. An inherited variable and one set for a single command reach the
+process byte-identical, so nothing can tell them apart — but comparing the two
+can. When they agree *and* stderr is not a terminal (output is being captured,
+as by an agent harness), tonk warns that the spot came from the surrounding
+shell rather than from the caller. A human typing in their own entered shell is
+never warned, and neither is `tonk query | grep`, which keeps stderr on the
+tty. It stays a warning rather than an error because an agent launched inside
+an entered shell may well be meant to work there.
+
+Bare `tonk spot enter` is the one place a `.tonk` beside you is consulted —
+running it is itself the explicit act, and what it exports is the resolved
+absolute path.
 
 To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
 somewhere you keep data outside the canonical store) as a spot, point
