@@ -67,7 +67,7 @@
 //                 embeds shrink it, content/selection still grow it.
 //
 // Programmatic surface — `el.grid` (null until `ready`): setCell /
-// getCell / addSheet / setColumnWidth / setRowHeight / insertRows /
+// getCell / addSheet / deleteSheet / setColumnWidth / setRowHeight / insertRows /
 // deleteRows / insertColumns / deleteColumns / select / selection /
 // toCsv / serialize / model. Every mutating method routes through the
 // same commit path as typing, so repaint, events, and persistence fire
@@ -104,8 +104,9 @@
 //      formula-bar, cell-reference, formula-input, body, grid, corner,
 //      column-header, row-header, row, cell (state tokens: number /
 //      error / selected / range), tab-strip, tab (token: active),
-//      add-sheet, cell-editor, sheet-rename. Full CSS power per part:
-//      `tonk-table::part(cell selected) { outline-color: hotpink }`.
+//      tab-delete, add-sheet, cell-editor, sheet-rename, sheet-confirm
+//      (+ sheet-confirm-delete / sheet-confirm-keep). Full CSS power
+//      per part: `tonk-table::part(cell selected) { outline: … }`.
 //   3. `<style>` children — any style element placed inside
 //      `<tonk-table>` is adopted into the shadow root LAST (it wins
 //      the cascade), for rules parts can't express (e.g. zebra rows:
