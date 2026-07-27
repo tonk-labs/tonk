@@ -151,6 +151,8 @@ TONK_SPOT`.
   (attached <dir>); run \`tonk spot detach\` to drop it`), leaving the
   stdout confirmation alone. Silent whenever there is no attachment or
   the attachment already agrees.
+- The registry preserves fields it does not recognise, so a writer
+  that predates a field cannot silently drop it.
 
 ### Testing
 

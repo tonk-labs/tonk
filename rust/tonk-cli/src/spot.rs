@@ -70,6 +70,14 @@ pub struct Registry {
     /// "one directory, one spot" is structural rather than enforced.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attachments: BTreeMap<PathBuf, String>,
+    /// Fields this binary does not recognise. `spots.json` is a public
+    /// format other applications read and rewrite directly, and this
+    /// binary is not necessarily the newest one touching it — an
+    /// older `tonk` (stable channel, pre-`tonk update`) or a
+    /// third-party writer must not silently drop a field it has never
+    /// heard of just because it round-tripped the registry.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One registered spot.
@@ -669,6 +677,7 @@ mod tests {
                 })
                 .collect(),
             attachments: BTreeMap::new(),
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -714,6 +723,58 @@ mod tests {
                 .filter(|n| n.to_string_lossy().ends_with(".tmp"))
                 .collect();
             assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+
+        #[dialog_common::test]
+        fn it_preserves_a_field_it_does_not_recognise_across_a_save() {
+            let (_tmp, store) = store();
+            std::fs::create_dir_all(store.registry_path().parent().unwrap()).unwrap();
+            std::fs::write(
+                store.registry_path(),
+                r#"{
+                    "current": "garden",
+                    "spots": { "garden": { "site": "/tmp/garden" } },
+                    "futureField": { "some": "value" }
+                }"#,
+            )
+            .unwrap();
+
+            let mut registry = store.load().expect("load");
+            assert_eq!(registry.current.as_deref(), Some("garden"));
+            assert_eq!(
+                registry.spots.get("garden").map(|e| &e.site),
+                Some(&PathBuf::from("/tmp/garden"))
+            );
+
+            // A writer that only knows the fields above still round
+            // trips the one it doesn't.
+            registry.current = Some("garden".to_owned());
+            store.save(&registry).expect("save");
+
+            let reloaded: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store.registry_path()).unwrap())
+                    .expect("parse");
+            assert_eq!(reloaded["futureField"]["some"], "value");
+            assert_eq!(reloaded["current"], "garden");
+            assert_eq!(reloaded["spots"]["garden"]["site"], "/tmp/garden");
+        }
+
+        #[dialog_common::test]
+        fn it_serializes_without_an_extra_or_attachments_key_when_neither_is_used() {
+            let (_tmp, store) = store();
+            let registry = registry_with(&[("garden", "/tmp/garden")], Some("garden"));
+            store.save(&registry).expect("save");
+
+            let text = std::fs::read_to_string(store.registry_path()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).expect("parse");
+            let object = value.as_object().expect("object");
+            assert!(!object.contains_key("attachments"), "{text}");
+            for key in object.keys() {
+                assert!(
+                    matches!(key.as_str(), "current" | "spots"),
+                    "unexpected key {key}: {text}"
+                );
+            }
         }
     }
 
