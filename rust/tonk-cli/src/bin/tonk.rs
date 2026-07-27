@@ -579,7 +579,9 @@ enum SpotCommand {
     #[command(after_help = "Examples:\n  tonk spot detach\n  tonk spot detach ~/old-project")]
     Detach {
         /// Directory to unbind. Default: the current directory. Pass
-        /// a path to clear an entry whose directory no longer exists.
+        /// an absolute path to clear an entry whose directory no
+        /// longer exists — a vanished directory can't canonicalize,
+        /// so a relative path never matches it.
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
@@ -1059,6 +1061,7 @@ async fn use_op(name: String, here: bool) -> ExitCode {
                 name = resolved.name,
                 site = resolved.site.display(),
             );
+            warn_if_shadowed_by_attachment(&store, &resolved.name);
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
@@ -1081,6 +1084,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     println!("site: {}", outcome.site.display());
                     println!("DID: {}", outcome.did);
                     println!("current spot: {}", outcome.name);
+                    warn_if_shadowed_by_attachment(&store, &outcome.name);
                     ExitCode::Success
                 }
                 Err(err) => print_error(err.to_string()),
@@ -1759,6 +1763,7 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
                 ));
             }
             print_claim_outcome(&name, &root, &outcome);
+            warn_if_shadowed_by_attachment(&store, &name);
             ExitCode::Success
         }
         Err(err) => {
@@ -2155,6 +2160,36 @@ fn print_error(message: impl Into<String>) -> ExitCode {
 /// attachment tier and falls through to the global selection.
 fn working_directory() -> Option<PathBuf> {
     std::env::current_dir().ok()
+}
+
+/// After `tonk use`, `spot new`, or `join` set the global `current`
+/// to `name`, check whether the very next bare command here would
+/// actually land somewhere else. Attachments outrank `current`, so a
+/// directory bound earlier — by `--here`, often from another session
+/// entirely — silently keeps winning; without this, the command just
+/// confirmed a selection it has no intention of honouring. Quiet
+/// when there is no attachment, or when the attachment already names
+/// `name`.
+fn warn_if_shadowed_by_attachment(store: &tonk_cli::spot::SpotStore, name: &str) {
+    let Some(cwd) = working_directory() else {
+        return;
+    };
+    let env = std::env::var(tonk_cli::spot::SPOT_ENV)
+        .ok()
+        .filter(|value| !value.is_empty());
+    // No `--spot` here: a flag on this invocation never persists, so
+    // it plays no part in what the *next* bare command will resolve.
+    if let Ok(resolved) = store.resolve(None, env.as_deref(), Some(&cwd))
+        && let tonk_cli::spot::Source::Attached(directory) = &resolved.source
+        && resolved.name != name
+    {
+        eprintln!(
+            "warning: commands here still resolve to '{other}' (attached {directory}); \
+             run `tonk spot detach` to drop it",
+            other = resolved.name,
+            directory = directory.display(),
+        );
+    }
 }
 
 /// Resolve the selected spot (--spot > TONK_SPOT > attached

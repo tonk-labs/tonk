@@ -129,6 +129,23 @@ mod when_nothing_is_registered {
     }
 }
 
+mod when_asking_for_detach_help {
+    use super::*;
+
+    /// Clearing a dead attachment (a directory that no longer
+    /// exists) is `PATH`'s whole reason for being — canonicalization
+    /// means only an absolute path can still match a vanished
+    /// directory, so the help text has to say so.
+    #[dialog_common::test]
+    fn it_says_the_path_must_be_absolute() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let output = run(state.path(), &["spot", "detach", "--help"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("absolute"), "{stdout}");
+    }
+}
+
 mod when_resolving_with_precedence {
     use super::*;
 
@@ -633,5 +650,101 @@ mod when_a_directory_is_attached {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("to b (was a)"), "{stdout}");
+    }
+
+    #[dialog_common::test]
+    fn it_warns_that_an_attachment_still_outranks_a_fresh_use() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        // `b` is confirmed as current, but `work` is still attached
+        // to `a`, which outranks `current` — so every bare command
+        // run from here keeps landing on `a`, not `b`.
+        let output = run_in(state.path(), &work, &["use", "b"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("current spot: b"), "{stdout}");
+        let stderr = stderr_of(&output);
+        assert!(
+            stderr.contains("warning:") && stderr.contains("resolve to 'a'"),
+            "{stderr}"
+        );
+        assert!(stderr.contains(&shown(&work)), "{stderr}");
+        assert!(stderr.contains("spot detach"), "{stderr}");
+    }
+
+    /// The companion to the warning test above: without an
+    /// attachment on the cwd, `use` must stay silent. This is what
+    /// keeps the warning test honest — a naive implementation that
+    /// always prints on `use` would pass the first test too.
+    #[dialog_common::test]
+    fn it_prints_no_shadow_warning_without_an_attachment() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+
+        let output = run_in(state.path(), &work, &["use", "a"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stderr = stderr_of(&output);
+        assert!(stderr.is_empty(), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_warns_after_spot_new_too() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+        attach(state.path(), &work, "a");
+
+        let site = state.path().join("site-c");
+        let site = site.to_str().expect("utf-8 site path");
+        let output = run_in(
+            state.path(),
+            &work,
+            &["spot", "new", "c", "--site", site],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stderr = stderr_of(&output);
+        assert!(
+            stderr.contains("warning:") && stderr.contains("resolve to 'a'"),
+            "{stderr}"
+        );
+    }
+}
+
+mod when_an_attachment_is_orphaned {
+    use super::*;
+
+    /// A directory attached to a name that isn't registered — the
+    /// hand-edited-`spots.json` scenario `spot rm`'s own pruning
+    /// normally prevents. The resulting error must say the name came
+    /// from the attachment and point at `spot detach`, not read as
+    /// an unexplained `unknown spot`.
+    #[dialog_common::test]
+    fn it_blames_the_attachment_in_the_unknown_spot_error() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let b = state.path().join("site-b");
+        std::fs::create_dir_all(&b).expect("mkdir b");
+        let work = state.path().join("work");
+        std::fs::create_dir_all(&work).expect("mkdir work");
+        let work_canon = work.canonicalize().expect("canonicalize work");
+
+        let json = format!(
+            "{{\"current\":\"b\",\"spots\":{{\"b\":{{\"site\":{site:?}}}}},\
+             \"attachments\":{{{dir:?}:\"a\"}}}}",
+            site = b.display().to_string(),
+            dir = work_canon.display().to_string(),
+        );
+        std::fs::write(state.path().join("spots.json"), json).expect("write spots.json");
+
+        let output = run_in(state.path(), &work, &["status"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("unknown spot 'a'"), "{stderr}");
+        assert!(
+            stderr.contains(&work_canon.display().to_string()),
+            "{stderr}"
+        );
+        assert!(stderr.contains("spot detach"), "{stderr}");
     }
 }

@@ -135,12 +135,17 @@ pub enum SpotError {
     )]
     NothingRegistered,
     /// A name that isn't in the registry.
-    #[error("unknown spot '{name}'{}", unknown_hint(.available))]
+    #[error("unknown spot '{name}'{}", unknown_hint(.available, .attached))]
     Unknown {
         /// The name that failed to resolve.
         name: String,
         /// Every registered name, for the error hint.
         available: Vec<String>,
+        /// The attached directory that produced this name, when
+        /// resolution got here via [`Source::Attached`]. `None` for
+        /// the flag/env/global cases, which have no directory to
+        /// blame and no `detach` to suggest.
+        attached: Option<PathBuf>,
     },
     /// `spot detach` against a directory with no attachment of its
     /// own. Matching is exact on purpose — unbinding a whole project
@@ -183,13 +188,23 @@ pub enum SpotError {
     Io(String),
 }
 
-/// Hint suffix for [`SpotError::Unknown`]: list what is
-/// registered, or point at `spot new` when nothing is.
-fn unknown_hint(available: &[String]) -> String {
-    if available.is_empty() {
+/// Hint suffix for [`SpotError::Unknown`]: list what is registered,
+/// or point at `spot new` when nothing is; when the name came from a
+/// directory attachment, name the directory too and point at `spot
+/// detach` — otherwise the error reads as coming from nowhere, and
+/// there is no obvious way to clear it.
+fn unknown_hint(available: &[String], attached: &Option<PathBuf>) -> String {
+    let registered = if available.is_empty() {
         "; none registered (create one with `tonk spot new <name>`)".to_string()
     } else {
         format!("; registered: {}", available.join(", "))
+    };
+    match attached {
+        Some(directory) => format!(
+            "{registered}; via attachment at {directory} — clear it with `tonk spot detach {directory}`",
+            directory = directory.display(),
+        ),
+        None => registered,
     }
 }
 
@@ -323,10 +338,23 @@ impl SpotStore {
                 site: entry.site.clone(),
                 source,
             }),
-            None => Err(SpotError::Unknown {
-                name,
-                available: registry.spots.keys().cloned().collect(),
-            }),
+            None => {
+                // Name the attached directory in the error too, when
+                // that is where the name came from — otherwise an
+                // orphaned attachment (the registered spot was
+                // removed by hand or by `spot rm` on another
+                // machine) reads as an unexplained failure with no
+                // way to clear it.
+                let attached = match &source {
+                    Source::Attached(directory) => Some(directory.clone()),
+                    _ => None,
+                };
+                Err(SpotError::Unknown {
+                    name,
+                    available: registry.spots.keys().cloned().collect(),
+                    attached,
+                })
+            }
         }
     }
 }
@@ -462,6 +490,7 @@ pub fn select(store: &SpotStore, name: &str) -> Result<Resolved, SpotError> {
         return Err(SpotError::Unknown {
             name: name.to_owned(),
             available: registry.spots.keys().cloned().collect(),
+            attached: None,
         });
     };
     let resolved = Resolved {
@@ -504,6 +533,7 @@ pub fn attach(store: &SpotStore, name: &str, directory: &Path) -> Result<AttachO
         return Err(SpotError::Unknown {
             name: name.to_owned(),
             available: registry.spots.keys().cloned().collect(),
+            attached: None,
         });
     }
     let directory = canonical(directory);
@@ -576,6 +606,7 @@ pub fn remove(store: &SpotStore, name: &str, delete: bool) -> Result<RemoveOutco
         return Err(SpotError::Unknown {
             name: name.to_owned(),
             available: registry.spots.keys().cloned().collect(),
+            attached: None,
         });
     };
     if registry.current.as_deref() == Some(name) {
@@ -814,6 +845,46 @@ mod tests {
                 .expect("flag");
             assert_eq!(resolved.name, "b");
             assert_eq!(resolved.source, Source::Flag);
+        }
+
+        #[dialog_common::test]
+        fn it_blames_the_attachment_for_an_orphaned_name() {
+            let (_tmp, store) = store();
+            // `a` is attached at `/proj` but was never registered —
+            // the hand-edit-the-file scenario `spot rm` normally
+            // prevents by pruning attachments alongside the entry.
+            let mut registry = registry_with(&[("b", "/s/b")], Some("b"));
+            registry
+                .attachments
+                .insert(PathBuf::from("/proj"), "a".to_owned());
+            store.save(&registry).expect("save");
+
+            let err = store
+                .resolve(None, None, Some(Path::new("/proj")))
+                .expect_err("orphaned attachment");
+            let SpotError::Unknown { attached, .. } = &err else {
+                panic!("{err}");
+            };
+            assert_eq!(attached.as_deref(), Some(Path::new("/proj")));
+            assert!(err.to_string().contains("/proj"), "{err}");
+            assert!(err.to_string().contains("spot detach"), "{err}");
+        }
+
+        #[dialog_common::test]
+        fn it_leaves_the_unknown_hint_unchanged_for_the_global_case() {
+            let (_tmp, store) = store();
+            store
+                .save(&registry_with(&[("a", "/s/a")], Some("nope")))
+                .expect("save");
+
+            let err = store
+                .resolve(None, None, None)
+                .expect_err("unknown global selection");
+            let SpotError::Unknown { attached, .. } = &err else {
+                panic!("{err}");
+            };
+            assert_eq!(*attached, None);
+            assert!(!err.to_string().contains("spot detach"), "{err}");
         }
     }
 
