@@ -13,10 +13,14 @@
 //!   spots/<name>/   canonical site dirs
 //! ```
 //!
-//! Selection resolves `--spot` > `TONK_SPOT` > the registry's
-//! `current`. The flag and env forms are per-invocation /
+//! Selection resolves `--spot` > `TONK_SPOT` > a directory
+//! attachment (the nearest attached ancestor of the cwd) > the
+//! registry's `current`. The flag and env forms are per-invocation /
 //! per-process, so concurrent sessions pinning their own spot can
-//! never mix regardless of who rewrites the shared `current`.
+//! never mix regardless of who rewrites the shared `current`;
+//! attachments give a session that lives in a directory the same
+//! isolation without repeating itself every invocation. A directory
+//! is only ever a key into the registry — it never locates data.
 //!
 //! `spots.json` stores absolute, expanded paths so applications
 //! built on tonk can resolve a name with zero path logic. Writes
@@ -78,23 +82,27 @@ pub struct SpotEntry {
 /// Where a resolution's spot name came from. Surfaced in status
 /// and error output so a session can always tell what it is about
 /// to touch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// `--spot` flag.
     Flag,
     /// [`SPOT_ENV`] environment variable.
     Env,
+    /// An attachment on the cwd or one of its ancestors. Carries the
+    /// attached directory, so output can say *which* one answered.
+    Attached(PathBuf),
     /// The registry's `current` field.
     Global,
 }
 
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Source::Flag => "flag",
-            Source::Env => "env",
-            Source::Global => "global",
-        })
+        match self {
+            Source::Flag => f.write_str("flag"),
+            Source::Env => f.write_str("env"),
+            Source::Attached(directory) => write!(f, "attached {}", directory.display()),
+            Source::Global => f.write_str("global"),
+        }
     }
 }
 
@@ -114,7 +122,10 @@ pub struct Resolved {
 #[derive(Debug, Error)]
 pub enum SpotError {
     /// Spots exist but nothing is selected anywhere.
-    #[error("no spot selected; run `tonk use <name>`, pass --spot, or set TONK_SPOT")]
+    #[error(
+        "no spot selected; run `tonk use <name>`, add --here to bind this \
+         directory, pass --spot, or set TONK_SPOT"
+    )]
     NoSelection,
     /// The registry has zero spots — selection is moot; the fix is
     /// creating one.
@@ -276,14 +287,29 @@ impl SpotStore {
     /// Resolve the spot a command should operate on.
     ///
     /// Strict precedence: `flag` (`--spot`) > `env` ([`SPOT_ENV`],
-    /// already read and empty-filtered by the caller) > the
-    /// registry's `current`. The cwd is never consulted.
-    pub fn resolve(&self, flag: Option<&str>, env: Option<&str>) -> Result<Resolved, SpotError> {
+    /// already read and empty-filtered by the caller) > a directory
+    /// attachment at or above `cwd` > the registry's `current`.
+    ///
+    /// `cwd` is passed in rather than read here so nothing depends on
+    /// process-global state, and it is only ever a key into the
+    /// registry: the directory never locates site data.
+    ///
+    /// `SPOT_ENV` outranks attachments deliberately. A harness that
+    /// pinned a spot for the process must not be overridden by
+    /// whatever directory it happened to launch in.
+    pub fn resolve(
+        &self,
+        flag: Option<&str>,
+        env: Option<&str>,
+        cwd: Option<&Path>,
+    ) -> Result<Resolved, SpotError> {
         let registry = self.load()?;
         let (name, source) = if let Some(name) = flag {
             (name.to_owned(), Source::Flag)
         } else if let Some(name) = env {
             (name.to_owned(), Source::Env)
+        } else if let Some((directory, name)) = cwd.and_then(|cwd| attached(&registry, cwd)) {
+            (name, Source::Attached(directory))
         } else if let Some(name) = registry.current.clone() {
             (name, Source::Global)
         } else if registry.spots.is_empty() {
@@ -380,6 +406,8 @@ pub struct RemoveOutcome {
 pub struct Listing {
     /// `(name, site)` per registered spot, in name order.
     pub rows: Vec<(String, PathBuf)>,
+    /// `(directory, spot)` per attachment, in path order.
+    pub attachments: Vec<(PathBuf, String)>,
     /// The spot a bare command would hit right now, with source.
     pub current: Option<Resolved>,
 }
@@ -518,6 +546,7 @@ pub fn listing(
     store: &SpotStore,
     flag: Option<&str>,
     env: Option<&str>,
+    cwd: Option<&Path>,
 ) -> Result<Listing, SpotError> {
     let registry = store.load()?;
     let rows = registry
@@ -525,9 +554,15 @@ pub fn listing(
         .iter()
         .map(|(name, entry)| (name.clone(), entry.site.clone()))
         .collect();
+    let attachments = registry
+        .attachments
+        .iter()
+        .map(|(directory, name)| (directory.clone(), name.clone()))
+        .collect();
     Ok(Listing {
         rows,
-        current: store.resolve(flag, env).ok(),
+        attachments,
+        current: store.resolve(flag, env, cwd).ok(),
     })
 }
 
@@ -660,14 +695,17 @@ mod tests {
             let registry = registry_with(&[("a", "/s/a"), ("b", "/s/b"), ("c", "/s/c")], Some("c"));
             store.save(&registry).expect("save");
 
-            let flag = store.resolve(Some("a"), Some("b")).expect("flag");
-            assert_eq!((flag.name.as_str(), flag.source), ("a", Source::Flag));
+            let flag = store.resolve(Some("a"), Some("b"), None).expect("flag");
+            assert_eq!(flag.name, "a");
+            assert_eq!(flag.source, Source::Flag);
 
-            let env = store.resolve(None, Some("b")).expect("env");
-            assert_eq!((env.name.as_str(), env.source), ("b", Source::Env));
+            let env = store.resolve(None, Some("b"), None).expect("env");
+            assert_eq!(env.name, "b");
+            assert_eq!(env.source, Source::Env);
 
-            let global = store.resolve(None, None).expect("global");
-            assert_eq!((global.name.as_str(), global.source), ("c", Source::Global));
+            let global = store.resolve(None, None, None).expect("global");
+            assert_eq!(global.name, "c");
+            assert_eq!(global.source, Source::Global);
             assert_eq!(global.site, PathBuf::from("/s/c"));
         }
 
@@ -677,14 +715,14 @@ mod tests {
             store
                 .save(&registry_with(&[("a", "/s/a")], None))
                 .expect("save");
-            let err = store.resolve(None, None).expect_err("no selection");
+            let err = store.resolve(None, None, None).expect_err("no selection");
             assert!(matches!(err, SpotError::NoSelection), "{err}");
         }
 
         #[test]
         fn it_hints_spot_new_when_the_registry_is_empty() {
             let (_tmp, store) = store();
-            let err = store.resolve(None, None).expect_err("empty");
+            let err = store.resolve(None, None, None).expect_err("empty");
             assert!(matches!(err, SpotError::NothingRegistered), "{err}");
             assert!(err.to_string().contains("tonk spot new"), "{err}");
         }
@@ -695,8 +733,87 @@ mod tests {
             store
                 .save(&registry_with(&[("a", "/s/a")], None))
                 .expect("save");
-            let err = store.resolve(Some("nope"), None).expect_err("unknown");
+            let err = store
+                .resolve(Some("nope"), None, None)
+                .expect_err("unknown");
             assert!(err.to_string().contains("registered: a"), "{err}");
+        }
+
+        /// A registry with two spots, `b` selected globally, and
+        /// `/proj` attached to `a`.
+        fn attached_registry() -> Registry {
+            let mut registry = registry_with(&[("a", "/s/a"), ("b", "/s/b")], Some("b"));
+            registry
+                .attachments
+                .insert(PathBuf::from("/proj"), "a".to_owned());
+            registry
+        }
+
+        #[dialog_common::test]
+        fn it_prefers_an_attachment_over_the_global_selection() {
+            let (_tmp, store) = store();
+            store.save(&attached_registry()).expect("save");
+
+            let resolved = store
+                .resolve(None, None, Some(Path::new("/proj/sub/deep")))
+                .expect("attached");
+            assert_eq!(resolved.name, "a");
+            assert_eq!(resolved.source, Source::Attached(PathBuf::from("/proj")));
+        }
+
+        #[dialog_common::test]
+        fn it_takes_the_deepest_attachment() {
+            let (_tmp, store) = store();
+            let mut registry = attached_registry();
+            registry
+                .attachments
+                .insert(PathBuf::from("/proj/sub"), "b".to_owned());
+            store.save(&registry).expect("save");
+
+            let resolved = store
+                .resolve(None, None, Some(Path::new("/proj/sub/deep")))
+                .expect("attached");
+            assert_eq!(resolved.name, "b");
+            assert_eq!(
+                resolved.source,
+                Source::Attached(PathBuf::from("/proj/sub"))
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_falls_back_to_the_global_selection_outside_any_attachment() {
+            let (_tmp, store) = store();
+            store.save(&attached_registry()).expect("save");
+
+            let resolved = store
+                .resolve(None, None, Some(Path::new("/elsewhere")))
+                .expect("global");
+            assert_eq!(resolved.name, "b");
+            assert_eq!(resolved.source, Source::Global);
+        }
+
+        #[dialog_common::test]
+        fn it_prefers_the_environment_over_an_attachment() {
+            let (_tmp, store) = store();
+            store.save(&attached_registry()).expect("save");
+
+            let resolved = store
+                .resolve(None, Some("b"), Some(Path::new("/proj")))
+                .expect("env");
+            assert_eq!(resolved.name, "b");
+            assert_eq!(resolved.source, Source::Env);
+        }
+
+        #[dialog_common::test]
+        fn it_prefers_the_flag_over_an_attachment() {
+            let (_tmp, store) = store();
+            store.save(&attached_registry()).expect("save");
+
+            let resolved = store
+                .resolve(Some("b"), None, Some(Path::new("/proj")))
+                .expect("flag");
+            assert_eq!(resolved.name, "b");
+            assert_eq!(resolved.source, Source::Flag);
         }
     }
 

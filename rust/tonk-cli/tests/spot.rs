@@ -22,7 +22,7 @@ mod when_creating_a_spot {
         assert_eq!(outcome.site, store.canonical_site("garden").canonicalize()?);
 
         // Registered and selected: a bare resolve now finds it.
-        let resolved = store.resolve(None, None)?;
+        let resolved = store.resolve(None, None, None)?;
         assert_eq!(resolved.name, "garden");
         assert_eq!(resolved.site, outcome.site);
 
@@ -112,7 +112,7 @@ mod when_selecting_and_listing {
         assert_eq!(selected.name, "a");
         assert_eq!(store.load()?.current.as_deref(), Some("a"));
 
-        let listing = spot::listing(&store, None, None)?;
+        let listing = spot::listing(&store, None, None, None)?;
         assert_eq!(
             listing
                 .rows

@@ -1047,7 +1047,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             let env = std::env::var(tonk_cli::spot::SPOT_ENV)
                 .ok()
                 .filter(|value| !value.is_empty());
-            match tonk_cli::spot::listing(&store, flag, env.as_deref()) {
+            match tonk_cli::spot::listing(&store, flag, env.as_deref(), None) {
                 Ok(listing) => {
                     if listing.rows.is_empty() {
                         println!("(no spots registered; create one with `tonk spot new <name>`)");
@@ -2092,7 +2092,7 @@ async fn open_selected(
     let env = std::env::var(tonk_cli::spot::SPOT_ENV)
         .ok()
         .filter(|value| !value.is_empty());
-    let resolved = match store.resolve(flag, env.as_deref()) {
+    let resolved = match store.resolve(flag, env.as_deref(), None) {
         Ok(resolved) => resolved,
         Err(err) => return Err(print_error(err.to_string())),
     };
