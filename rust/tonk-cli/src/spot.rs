@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! tonk/
-//!   spots.json      registry: name → site path, plus `current`
+//!   spots.json      registry: name → site path, plus `current` and
+//!                   directory attachments
 //!   spots/<name>/   canonical site dirs
 //! ```
 //!
@@ -57,6 +58,14 @@ pub struct Registry {
     /// Name → entry. Paths inside are absolute and expanded.
     #[serde(default)]
     pub spots: BTreeMap<String, SpotEntry>,
+    /// Directories bound to a spot, keyed by canonicalized absolute
+    /// path. Consulted between `TONK_SPOT` and `current`, so a
+    /// session that works out of a directory holds its own spot
+    /// without repeating itself on every invocation. A top-level map
+    /// rather than a list inside each entry: a key cannot repeat, so
+    /// "one directory, one spot" is structural rather than enforced.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attachments: BTreeMap<PathBuf, String>,
 }
 
 /// One registered spot.
@@ -122,6 +131,18 @@ pub enum SpotError {
         /// Every registered name, for the error hint.
         available: Vec<String>,
     },
+    /// `spot detach` against a directory with no attachment of its
+    /// own. Matching is exact on purpose — unbinding a whole project
+    /// because someone typed `detach` three levels down inside it is
+    /// not a recoverable surprise — so the ancestor that *is*
+    /// attached goes in the message instead.
+    #[error("no attachment at {directory}{}", detach_hint(.ancestor))]
+    NotAttached {
+        /// The directory that was asked about.
+        directory: PathBuf,
+        /// The nearest attached ancestor, for the error hint.
+        ancestor: Option<(PathBuf, String)>,
+    },
     /// `spot new` against a name that already exists. Re-pointing
     /// is an explicit `rm` + `new`, never an overwrite.
     #[error("spot '{0}' already exists; run `tonk spot rm {0}` first to re-point it")]
@@ -158,6 +179,17 @@ fn unknown_hint(available: &[String]) -> String {
         "; none registered (create one with `tonk spot new <name>`)".to_string()
     } else {
         format!("; registered: {}", available.join(", "))
+    }
+}
+
+/// Hint suffix for [`SpotError::NotAttached`]: name the ancestor
+/// that is attached, so the fix is a `cd` away.
+fn detach_hint(ancestor: &Option<(PathBuf, String)>) -> String {
+    match ancestor {
+        Some((directory, name)) => {
+            format!("; {} is attached to {name}", directory.display())
+        }
+        None => String::new(),
     }
 }
 
@@ -290,6 +322,32 @@ pub fn validate_name(name: &str) -> Result<(), SpotError> {
     }
 }
 
+/// Canonicalize a path for use as an attachment key, falling back to
+/// the path as given when the filesystem refuses (most often: the
+/// directory has been deleted). A key that cannot be canonicalized
+/// simply never matches a canonicalized cwd, which is the right
+/// outcome for a directory that no longer exists — the attachment
+/// tier is skipped and resolution falls through.
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The nearest attachment at or above `cwd`: start at the directory
+/// itself and climb to the root, taking the first hit, so a nested
+/// directory overrides its parent.
+fn attached(registry: &Registry, cwd: &Path) -> Option<(PathBuf, String)> {
+    if registry.attachments.is_empty() {
+        return None;
+    }
+    let cwd = canonical(cwd);
+    cwd.ancestors().find_map(|dir| {
+        registry
+            .attachments
+            .get_key_value(dir)
+            .map(|(path, name)| (path.clone(), name.clone()))
+    })
+}
+
 /// Outcome of [`create`]: the registered spot and the DID of the
 /// repository backing it.
 #[derive(Debug, Clone)]
@@ -311,6 +369,9 @@ pub struct RemoveOutcome {
     pub site: PathBuf,
     /// Whether the site directory was deleted from disk.
     pub deleted: bool,
+    /// Directories that were attached to this spot and are no longer
+    /// bound to anything.
+    pub detached: Vec<PathBuf>,
 }
 
 /// Rows for `tonk spot list` plus the resolved current selection
@@ -385,6 +446,70 @@ pub fn select(store: &SpotStore, name: &str) -> Result<Resolved, SpotError> {
     Ok(resolved)
 }
 
+/// Outcome of [`attach`].
+#[derive(Debug, Clone)]
+pub struct AttachOutcome {
+    /// The canonicalized directory now bound.
+    pub directory: PathBuf,
+    /// The spot it resolves to.
+    pub name: String,
+    /// The spot it was bound to before, when it was already attached.
+    pub previous: Option<String>,
+}
+
+/// Outcome of [`detach`].
+#[derive(Debug, Clone)]
+pub struct DetachOutcome {
+    /// The directory that is no longer bound.
+    pub directory: PathBuf,
+    /// The spot it used to resolve to.
+    pub name: String,
+}
+
+/// Bind `directory` to `name`, leaving the global `current` alone.
+/// Re-attaching an already-bound directory overwrites and reports
+/// what it replaced: unlike `spot new`, nothing is destroyed, so
+/// there is no reason to demand a detach first.
+pub fn attach(store: &SpotStore, name: &str, directory: &Path) -> Result<AttachOutcome, SpotError> {
+    let mut registry = store.load()?;
+    if !registry.spots.contains_key(name) {
+        return Err(SpotError::Unknown {
+            name: name.to_owned(),
+            available: registry.spots.keys().cloned().collect(),
+        });
+    }
+    let directory = canonical(directory);
+    let previous = registry
+        .attachments
+        .insert(directory.clone(), name.to_owned());
+    store.save(&registry)?;
+    Ok(AttachOutcome {
+        directory,
+        name: name.to_owned(),
+        previous,
+    })
+}
+
+/// Unbind `directory`. Exact match only — see
+/// [`SpotError::NotAttached`].
+pub fn detach(store: &SpotStore, directory: &Path) -> Result<DetachOutcome, SpotError> {
+    let mut registry = store.load()?;
+    let key = canonical(directory);
+    let Some(name) = registry.attachments.remove(&key) else {
+        return Err(SpotError::NotAttached {
+            directory: key.clone(),
+            // The exact lookup just missed, so any hit here is a
+            // strict ancestor.
+            ancestor: attached(&registry, &key),
+        });
+    };
+    store.save(&registry)?;
+    Ok(DetachOutcome {
+        directory: key,
+        name,
+    })
+}
+
 /// Everything `tonk spot list` needs in one read: the rows plus
 /// what a bare command would currently resolve to (honouring the
 /// same `flag`/`env` precedence, so `tonk --spot x spot list`
@@ -421,6 +546,18 @@ pub fn remove(store: &SpotStore, name: &str, delete: bool) -> Result<RemoveOutco
     if registry.current.as_deref() == Some(name) {
         registry.current = None;
     }
+    // An attachment naming an unregistered spot would resolve to a
+    // bare "unknown spot" on the next command, so drop them with the
+    // entry — the same cascade `current` gets.
+    let detached: Vec<PathBuf> = registry
+        .attachments
+        .iter()
+        .filter(|(_, spot)| spot.as_str() == name)
+        .map(|(directory, _)| directory.clone())
+        .collect();
+    for directory in &detached {
+        registry.attachments.remove(directory);
+    }
     store.save(&registry)?;
     let deleted = if delete {
         std::fs::remove_dir_all(&entry.site).map_err(|e| {
@@ -437,6 +574,7 @@ pub fn remove(store: &SpotStore, name: &str, delete: bool) -> Result<RemoveOutco
         name: name.to_owned(),
         site: entry.site,
         deleted,
+        detached,
     })
 }
 
@@ -464,6 +602,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            attachments: BTreeMap::new(),
         }
     }
 
@@ -558,6 +697,86 @@ mod tests {
                 .expect("save");
             let err = store.resolve(Some("nope"), None).expect_err("unknown");
             assert!(err.to_string().contains("registered: a"), "{err}");
+        }
+    }
+
+    mod attaching {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_attaches_a_directory_and_reports_the_previous_binding() {
+            let (_tmp, store) = store();
+            store
+                .save(&registry_with(&[("a", "/s/a"), ("b", "/s/b")], None))
+                .expect("save");
+
+            let first = attach(&store, "a", Path::new("/proj")).expect("attach");
+            assert_eq!(first.name, "a");
+            assert_eq!(first.previous, None);
+            assert_eq!(first.directory, PathBuf::from("/proj"));
+
+            let second = attach(&store, "b", Path::new("/proj")).expect("re-attach");
+            assert_eq!(second.previous.as_deref(), Some("a"));
+            assert_eq!(
+                store
+                    .load()
+                    .expect("load")
+                    .attachments
+                    .get(Path::new("/proj")),
+                Some(&"b".to_owned())
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_refuses_to_attach_an_unknown_spot() {
+            let (_tmp, store) = store();
+            store
+                .save(&registry_with(&[("a", "/s/a")], None))
+                .expect("save");
+
+            let err = attach(&store, "nope", Path::new("/proj")).expect_err("unknown");
+            assert!(matches!(err, SpotError::Unknown { .. }), "{err}");
+            assert!(
+                store.load().expect("load").attachments.is_empty(),
+                "a failed attach must not write"
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_detaches_only_an_exact_match_and_names_the_ancestor() {
+            let (_tmp, store) = store();
+            store
+                .save(&registry_with(&[("a", "/s/a")], None))
+                .expect("save");
+            attach(&store, "a", Path::new("/proj")).expect("attach");
+
+            let err = detach(&store, Path::new("/proj/sub")).expect_err("not attached here");
+            assert!(err.to_string().contains("/proj is attached to a"), "{err}");
+            assert!(
+                !store.load().expect("load").attachments.is_empty(),
+                "a subdirectory detach must not unbind the parent"
+            );
+
+            let outcome = detach(&store, Path::new("/proj")).expect("detach");
+            assert_eq!(outcome.name, "a");
+            assert!(store.load().expect("load").attachments.is_empty());
+        }
+
+        #[dialog_common::test]
+        fn it_prunes_attachments_when_the_spot_is_removed() {
+            let (_tmp, store) = store();
+            store
+                .save(&registry_with(&[("a", "/s/a"), ("b", "/s/b")], None))
+                .expect("save");
+            attach(&store, "a", Path::new("/proj")).expect("attach a");
+            attach(&store, "b", Path::new("/other")).expect("attach b");
+
+            let outcome = remove(&store, "a", false).expect("remove");
+            assert_eq!(outcome.detached, vec![PathBuf::from("/proj")]);
+
+            let attachments = store.load().expect("load").attachments;
+            assert_eq!(attachments.get(Path::new("/other")), Some(&"b".to_owned()));
+            assert!(!attachments.contains_key(Path::new("/proj")));
         }
     }
 
