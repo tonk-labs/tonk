@@ -516,6 +516,10 @@ class Grid implements TableGrid {
     this.#readOnly = readOnly;
     if (readOnly) this.#closeEditor();
     this.#fx.disabled = readOnly;
+    // The tab strip carries readonly-dependent affordances (the
+    // add-sheet button's disabled state, the active tab's delete ×),
+    // and nothing else repaints it until the next data refresh.
+    this.#paintTabs();
   }
 
   focus(): void {
@@ -564,6 +568,12 @@ class Grid implements TableGrid {
 
   addSheet(name?: string): void {
     this.#addSheetGesture(name);
+  }
+
+  deleteSheet(sheetName?: string): void {
+    const engineSheet = this.#sheetIndexByName(sheetName);
+    if (engineSheet === null) return;
+    this.#deleteSheetGesture(engineSheet);
   }
 
   // --- Sizing ---------------------------------------------------------
@@ -1117,6 +1127,25 @@ class Grid implements TableGrid {
       if (entry.engineIndex === selected) {
         tab.classList.add("active");
         tab.part.add("active");
+        // Deletable: standalone documents with somewhere left to go.
+        // Claims mode has no delete-sheet command yet (the store rows
+        // would just resurrect the sheet), and readonly locks every
+        // mutation affordance. A span, not a nested button — buttons
+        // must not contain buttons.
+        if (this.#mode.kind === "standalone" && !this.#readOnly && strip.length > 1) {
+          const x = document.createElement("span");
+          x.className = "tab-x";
+          x.setAttribute("part", "tab-delete");
+          x.setAttribute("role", "button");
+          x.setAttribute("aria-label", `Delete sheet ${entry.name}`);
+          x.title = "Delete sheet";
+          x.textContent = "×";
+          x.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.#confirmDeleteTab(tab, entry.engineIndex, entry.name);
+          });
+          tab.append(x);
+        }
       }
       tab.addEventListener("click", () => {
         if (this.#model.getSelectedSheet() === entry.engineIndex) return;
@@ -1162,6 +1191,82 @@ class Grid implements TableGrid {
     } else {
       this.#onChange?.();
     }
+    this.#refresh();
+  }
+
+  /** Swap the active tab for an inline delete confirmation — in-page,
+   *  because sealed guests have no `window.confirm`, and required
+   *  because sheet deletion is NOT undoable (mirroring desktop
+   *  spreadsheets): a stray click must never be enough. Escape,
+   *  clicking "keep", or focus leaving the pair cancels. */
+  #confirmDeleteTab(
+    tab: HTMLButtonElement,
+    engineIndex: number,
+    name: string,
+  ): void {
+    if (this.#readOnly) return;
+    const box = document.createElement("span");
+    box.className = "confirm";
+    box.setAttribute("part", "sheet-confirm");
+    const label = document.createElement("span");
+    label.textContent = `delete "${name}"?`;
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "confirm-yes";
+    yes.setAttribute("part", "sheet-confirm-delete");
+    yes.textContent = "delete";
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "confirm-no";
+    no.setAttribute("part", "sheet-confirm-keep");
+    no.textContent = "keep";
+    box.append(label, yes, no);
+    tab.replaceWith(box);
+    // Land on "keep" so a reflexive Enter is safe.
+    no.focus();
+    let done = false;
+    const finish = (commit: boolean) => {
+      if (done) return;
+      done = true;
+      if (commit) this.#deleteSheetGesture(engineIndex);
+      else this.#paintTabs();
+      this.#scroller.focus();
+    };
+    yes.addEventListener("click", () => finish(true));
+    no.addEventListener("click", () => finish(false));
+    box.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") finish(false);
+    });
+    box.addEventListener("focusout", (e) => {
+      // Only when focus leaves the pair entirely (mirrors rename's
+      // blur-cancels; moving between keep/delete stays open).
+      const to = e.relatedTarget as Node | null;
+      if (to && box.contains(to)) return;
+      finish(false);
+    });
+  }
+
+  /** Delete an engine sheet: standalone only (see api.ts), never the
+   *  last one. Selection moves to the nearest surviving neighbor. */
+  #deleteSheetGesture(engineIndex: number): void {
+    if (this.#readOnly || this.#mode.kind !== "standalone") return;
+    const props = this.#model.getWorksheetsProperties();
+    if (props.length <= 1) return;
+    this.#closeEditor();
+    try {
+      this.#model.deleteSheet(engineIndex);
+    } catch (err) {
+      console.warn("[tonk-table] delete sheet rejected:", err);
+      this.#paintTabs();
+      return;
+    }
+    try {
+      this.#model.setSelectedSheet(Math.min(engineIndex, props.length - 2));
+    } catch {
+      // The engine's own post-delete selection is fine.
+    }
+    this.#onChange?.();
     this.#refresh();
   }
 
@@ -1729,5 +1834,38 @@ const GRID_STYLESHEET = `
     color: inherit;
     outline: none;
     inline-size: 8em;
+  }
+  .tab .tab-x {
+    display: inline-block;
+    margin-inline-start: 8px;
+    padding: 0 2px;
+    color: var(--tonk-table-fg-muted);
+    opacity: 0.7;
+  }
+  .tab .tab-x:hover { color: var(--tonk-table-error); opacity: 1; }
+  .tabs .confirm {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 0.85em;
+    color: var(--tonk-table-fg);
+    background: var(--tonk-table-bg);
+    border-inline-end: 1px solid var(--tonk-table-border);
+    white-space: nowrap;
+  }
+  .tabs .confirm button {
+    border: 1px solid var(--tonk-table-border);
+    border-radius: 4px;
+    padding: 1px 8px;
+    font: inherit;
+    font-size: 0.9em;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+  .tabs .confirm .confirm-yes {
+    color: var(--tonk-table-error);
+    border-color: var(--tonk-table-error);
   }
 `;
