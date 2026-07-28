@@ -16,7 +16,7 @@ required-features = ["helpers"]
 
 [dependencies]
 # Cloudflare Workers
-worker = { workspace = true, features = ["d1"] }
+worker = { workspace = true }
 worker-macros = { workspace = true }
 
 # S3 presigning with UCAN support
@@ -30,6 +30,7 @@ dialog-effects = { workspace = true }
 dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+tonk-identity = { workspace = true }
 
 # Cryptography
 blake3 = { workspace = true }

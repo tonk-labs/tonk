@@ -87,7 +87,7 @@ async fn screen_credentials(
     ctx: &RouteContext<()>,
 ) -> std::result::Result<(), ServiceError> {
     use crate::expiry::{WindowVerdict, check_window};
-    use crate::revocation::{self, RevocationVerdict, d1::D1RevocationRegistry};
+    use crate::revocation::{self, SetVerdict, r2::R2RevocationSource};
 
     let presented = match revocation::collect_presented(body_bytes) {
         Ok(presented) => presented,
@@ -102,7 +102,7 @@ async fn screen_credentials(
     };
 
     // The window screen needs no registry, so it runs first: an expired
-    // chain is refused without spending a D1 query on it.
+    // chain is refused without spending an R2 listing on it.
     let now_ms = Date::now().as_millis();
     match check_window(&presented, now_ms / 1_000) {
         WindowVerdict::Valid => {}
@@ -122,27 +122,27 @@ async fn screen_credentials(
         }
     }
 
-    let registry = match ctx.d1("ACCOUNTS_DB") {
-        Ok(db) => D1RevocationRegistry::new(db),
+    let registry = match ctx.bucket("REVOCATIONS") {
+        Ok(bucket) => R2RevocationSource::new(bucket),
         Err(err) => {
-            console_error!("revocation screen unavailable, no ACCOUNTS_DB binding: {err}");
+            console_error!("revocation screen unavailable, no REVOCATIONS binding: {err}");
             return Err(unavailable());
         }
     };
     match revocation::assess(&registry, &presented, now_ms).await {
-        RevocationVerdict::Allowed => Ok(()),
-        RevocationVerdict::AllowedStale(reason) => {
+        SetVerdict::Allowed => Ok(()),
+        SetVerdict::AllowedStale(reason) => {
             console_error!("revocation registry unreachable, serving cached verdicts: {reason}");
             Ok(())
         }
-        RevocationVerdict::Revoked => {
+        SetVerdict::Revoked => {
             worker::console_log!("presign rejected: revoked credential present");
             Err(ServiceError::new(
                 ErrorCode::DeviceRevoked,
                 "a credential in the presented chain has been revoked",
             ))
         }
-        RevocationVerdict::Unavailable(reason) => {
+        SetVerdict::Unavailable(reason) => {
             console_error!("presign refused, revocation registry unreachable: {reason}");
             Err(unavailable())
         }
