@@ -46,8 +46,11 @@ use js_sys::{Function, Object, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlElement, MutationObserver, MutationObserverInit, PointerEvent, window};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{
+    Element, HtmlElement, MutationObserver, MutationObserverInit, PointerEvent, Request,
+    RequestInit, Response, window,
+};
 
 // web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
 // features we have, so we call them via js_sys::Function from the global.
@@ -162,6 +165,7 @@ impl CustomElement for TonkFab {
             attach_gestures(this);
             attach_create_space_form(this);
             attach_profile_name_commit(this);
+            attach_membership(this);
             preload_menu_widths(this);
             attach_resize(this);
             attach_strip_scroll(this);
@@ -199,6 +203,64 @@ impl CustomElement for TonkFab {
         _new: Option<String>,
     ) {
     }
+}
+
+/// Show a guest-only durable-join action and promote through the worker.
+fn attach_membership(host: &HtmlElement) {
+    let Some(space) = host.get_attribute("space") else {
+        return;
+    };
+    let Ok(Some(button)) = host.query_selector(".fab__join") else {
+        return;
+    };
+    let endpoint = format!("/api/repository/{space}/membership");
+    let check_button = button.clone();
+    let check_endpoint = endpoint.clone();
+    spawn_local(async move {
+        let Some(window) = window() else { return };
+        let Ok(value) = JsFuture::from(window.fetch_with_str(&check_endpoint)).await else {
+            return;
+        };
+        let Ok(response) = value.dyn_into::<Response>() else {
+            return;
+        };
+        let Ok(json) = response.json() else { return };
+        let Ok(value) = JsFuture::from(json).await else {
+            return;
+        };
+        let guest = Reflect::get(&value, &"status".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .is_some_and(|status| status == "guest");
+        if guest {
+            let _ = check_button.remove_attribute("hidden");
+        }
+    });
+
+    let action_button = button.clone();
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        let endpoint = endpoint.clone();
+        let button = action_button.clone();
+        spawn_local(async move {
+            let Some(window) = window() else { return };
+            let init = RequestInit::new();
+            init.set_method("POST");
+            let Ok(request) = Request::new_with_str_and_init(&endpoint, &init) else {
+                return;
+            };
+            let Ok(value) = JsFuture::from(window.fetch_with_request(&request)).await else {
+                return;
+            };
+            let Ok(response) = value.dyn_into::<Response>() else {
+                return;
+            };
+            if response.ok() {
+                let _ = button.set_attribute("hidden", "");
+            }
+        });
+    });
+    let _ = button.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+    closure.forget();
 }
 
 /// The click-away curtain (`.fab__scrim`) and the `.fab__tele` telescope

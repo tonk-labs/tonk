@@ -29,7 +29,7 @@
 
 use ::axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
 };
 use axum_wasm_macros::wasm_compat;
@@ -323,6 +323,7 @@ pub async fn membership(
 pub async fn join_guest(
     State(state): State<AppState>,
     Path(repo): Path<String>,
+    request: Request,
 ) -> Result<StatusCode, TonkWorkerError> {
     let tonk = state.write().await;
     let repository = tonk
@@ -335,8 +336,18 @@ pub async fn join_guest(
     let url = guest_url(&tonk, &repository.did())
         .await?
         .ok_or_else(|| TonkWorkerError::Conflict("this replica is already durable".to_string()))?;
-    claim_invite(&tonk, &url).await?;
-    Ok(StatusCode::NO_CONTENT)
+    match claim_invite(&tonk, &url).await {
+        Ok(_) => Ok(StatusCode::NO_CONTENT),
+        Err(TonkWorkerError::RootRequired) => {
+            let client = request.extensions().get::<crate::router::ClientId>();
+            crate::router::navigate::notify_identity_required(
+                client,
+                tonk_worker_api::IdentityIntent::DurableJoin { url },
+            );
+            Err(TonkWorkerError::RootRequired)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Parse + claim an invite URL and ensure a local replica exists.

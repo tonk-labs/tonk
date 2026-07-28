@@ -117,6 +117,7 @@ pub fn fab_html(space_did: &str) -> String {
       </div>
       <div class="fab__tele fab__tele--account">
         <span class="fab__seg fab__account">
+          <button type="button" class="fab__join" hidden>Join this spot</button>
           <span class="fab__name"><ui-profile-name></ui-profile-name></span>
           <a class="fab__account-link" href="/account" aria-label="Open account settings"><wa-icon name="user"></wa-icon></a>
         </span>
