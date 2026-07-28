@@ -35,8 +35,9 @@ use tonk_cli::{ExitCode, account, guide, identity, schema, site};
     after_help = "The loop: orient, define concepts, assert facts, give them a view, invite.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   invite · join · push · pull · remote\n  setup    spot · use · blob · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
 )]
 struct Cli {
-    /// Operate on this spot instead of the selected one.
-    /// Precedence: --spot > TONK_SPOT > `tonk use` selection.
+    /// Operate on this spot instead of the active directory binding.
+    /// Precedence: --spot > TONK_SPOT > `tonk use` in the nearest
+    /// ancestor directory.
     #[arg(long, global = true, value_name = "NAME")]
     spot: Option<String>,
 
@@ -294,11 +295,11 @@ enum Command {
     },
 
     // -- setup --------------------------------------------------------
-    /// Select the current spot (used by every command from anywhere)
+    /// Use a spot in this directory and its descendants
     ///
-    /// The selection is global to this machine. Concurrent sessions
-    /// (agents, CI) should pin their spot per-process with --spot or
-    /// TONK_SPOT instead of relying on it.
+    /// Stores only a pointer in the central registry; spot data stays
+    /// in its central site directory. A nested binding overrides this
+    /// one. Pin one invocation with --spot or TONK_SPOT instead.
     #[command(after_help = "Examples:\n  tonk use garden")]
     Use {
         /// A registered spot name (see `tonk spot list`).
@@ -528,7 +529,7 @@ enum RemoteCommand {
 
 #[derive(Subcommand, Debug)]
 enum SpotCommand {
-    /// Create (or adopt) a spot, register it, and select it
+    /// Create (or adopt) a spot, register it, and use it here
     ///
     /// The site lands in the canonical store
     /// (`~/Library/Application Support/tonk/spots/<name>` on macOS)
@@ -548,7 +549,7 @@ enum SpotCommand {
         site: Option<PathBuf>,
     },
 
-    /// List registered spots and the current selection
+    /// List registered spots, directory bindings, and what is active here
     #[command(after_help = "Examples:\n  tonk spot list")]
     List,
 
@@ -561,6 +562,20 @@ enum SpotCommand {
         /// Also delete the site directory from disk.
         #[arg(long)]
         delete: bool,
+    },
+
+    /// Unbind a directory from its spot (see `tonk use`)
+    ///
+    /// Matches exactly: run from the directory that was bound,
+    /// not a subdirectory of it.
+    #[command(after_help = "Examples:\n  tonk spot unbind\n  tonk spot unbind ~/old-project")]
+    Unbind {
+        /// Directory to unbind. Default: the current directory. Pass
+        /// an absolute path to clear an entry whose directory no
+        /// longer exists — a vanished directory can't canonicalize,
+        /// so a relative path never matches it.
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
     },
 }
 
@@ -736,6 +751,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 SpotCommand::New { .. } => "new",
                 SpotCommand::List => "list",
                 SpotCommand::Rm { .. } => "rm",
+                SpotCommand::Unbind { .. } => "unbind",
             }),
         ),
         Command::Identity { .. } => ("identity", None),
@@ -799,6 +815,31 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     }
 }
 
+/// Whether a command opens the active spot and should name it again
+/// if the operation fails.
+fn uses_active_spot(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Eval(_)
+            | Command::Schema { .. }
+            | Command::Query { .. }
+            | Command::Assert { .. }
+            | Command::Retract { .. }
+            | Command::Export { .. }
+            | Command::Render { .. }
+            | Command::Import { .. }
+            | Command::Push
+            | Command::Pull
+            | Command::Status
+            | Command::Invite { .. }
+            | Command::Remote { .. }
+            | Command::Blob { .. }
+            | Command::Concept { .. }
+            | Command::View { .. }
+            | Command::Home { .. }
+    )
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
@@ -830,9 +871,10 @@ async fn main() {
     let started = std::time::Instant::now();
     // `cli.command` is moved by the dispatch below, so ask now.
     let is_update = matches!(cli.command, Command::Update { .. });
+    let report_active_spot = uses_active_spot(&cli.command);
     let spot = cli.spot;
     let exit = match cli.command {
-        Command::Use { name } => use_op(name).await,
+        Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
@@ -866,7 +908,7 @@ async fn main() {
             no_remote,
             no_shorten,
         } => mint_invite(base_url, remote, no_remote, no_shorten, spot.as_deref()).await,
-        Command::Join { url, name } => claim_invite(url, name).await,
+        Command::Join { url, name } => claim_invite(url, name, spot.as_deref()).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
         Command::Concept { command } => concept_op(command, spot.as_deref()).await,
@@ -878,6 +920,9 @@ async fn main() {
             enable_check,
         } => update(disable_check, enable_check).await,
     };
+    if exit != ExitCode::Success && report_active_spot {
+        print_active_spot_context(spot.as_deref());
+    }
 
     let duration = started.elapsed();
 
@@ -1003,19 +1048,27 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-/// `tonk use` — set the global current spot.
-async fn use_op(name: String) -> ExitCode {
+/// `tonk use` — bind this directory to a registered spot.
+async fn use_op(name: String, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
     };
-    match tonk_cli::spot::select(&store, &name) {
-        Ok(resolved) => {
+    let Some(cwd) = working_directory() else {
+        return print_error("could not read the current directory".to_owned());
+    };
+    match tonk_cli::spot::bind(&store, &name, &cwd) {
+        Ok(outcome) => {
+            let was = match &outcome.previous {
+                Some(previous) if previous != &outcome.name => format!(" (was {previous})"),
+                _ => String::new(),
+            };
             println!(
-                "current spot: {name} ({site})",
-                name = resolved.name,
-                site = resolved.site.display(),
+                "binding: {name}{was}\ndirectory: {directory}",
+                name = outcome.name,
+                directory = outcome.directory.display(),
             );
+            print_active_resolution(&store, flag, Some(&cwd));
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
@@ -1030,14 +1083,24 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
     };
     match command {
         SpotCommand::New { name, site } => {
-            match tonk_cli::spot::create(&store, &name, site.as_deref(), site::default_config())
-                .await
+            let Some(cwd) = working_directory() else {
+                return print_error("could not read the current directory".to_owned());
+            };
+            match tonk_cli::spot::create(
+                &store,
+                &name,
+                site.as_deref(),
+                Some(&cwd),
+                site::default_config(),
+            )
+            .await
             {
                 Ok(outcome) => {
                     println!("Registered spot '{}'", outcome.name);
                     println!("site: {}", outcome.site.display());
                     println!("DID: {}", outcome.did);
-                    println!("current spot: {}", outcome.name);
+                    println!("binding: {}", cwd.display());
+                    print_active_resolution(&store, flag, Some(&cwd));
                     ExitCode::Success
                 }
                 Err(err) => print_error(err.to_string()),
@@ -1047,27 +1110,35 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             let env = std::env::var(tonk_cli::spot::SPOT_ENV)
                 .ok()
                 .filter(|value| !value.is_empty());
-            match tonk_cli::spot::listing(&store, flag, env.as_deref()) {
+            let cwd = working_directory();
+            match tonk_cli::spot::listing(&store, flag, env.as_deref(), cwd.as_deref()) {
                 Ok(listing) => {
                     if listing.rows.is_empty() {
                         println!("(no spots registered; create one with `tonk spot new <name>`)");
                         return ExitCode::Success;
                     }
-                    let current = listing.current.as_ref().map(|c| c.name.as_str());
+                    let active = listing.active.as_ref().map(|c| c.name.as_str());
                     for (name, site) in &listing.rows {
-                        let marker = if Some(name.as_str()) == current {
+                        let marker = if Some(name.as_str()) == active {
                             '*'
                         } else {
                             ' '
                         };
                         println!("{marker} {name}\t{site}", site = site.display());
                     }
-                    if let Some(resolved) = &listing.current {
+                    if let Some(resolved) = &listing.active {
                         println!(
-                            "current: {name} ({source})",
+                            "active here: {name} ({source})",
                             name = resolved.name,
                             source = resolved.source,
                         );
+                    }
+                    if !listing.bindings.is_empty() {
+                        println!();
+                        println!("directories:");
+                        for (directory, name) in &listing.bindings {
+                            println!("  {directory}\t{name}", directory = directory.display());
+                        }
                     }
                     ExitCode::Success
                 }
@@ -1082,10 +1153,30 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 } else {
                     println!("site kept at {}", outcome.site.display());
                 }
+                for directory in &outcome.unbound {
+                    println!("unbound {}", directory.display());
+                }
                 ExitCode::Success
             }
             Err(err) => print_error(err.to_string()),
         },
+        SpotCommand::Unbind { path } => {
+            let directory = match path.or_else(working_directory) {
+                Some(directory) => directory,
+                None => return print_error("could not read the current directory".to_owned()),
+            };
+            match tonk_cli::spot::unbind(&store, &directory) {
+                Ok(outcome) => {
+                    println!(
+                        "unbound {directory} from {name}",
+                        directory = outcome.directory.display(),
+                        name = outcome.name,
+                    );
+                    ExitCode::Success
+                }
+                Err(err) => print_error(err.to_string()),
+            }
+        }
     }
 }
 
@@ -1619,7 +1710,7 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 }
 
 /// `tonk join` — claim an invite into a fresh canonical spot:
-/// site at `spots/<name>/`, registered and selected on success.
+/// site at `spots/<name>/`, registered and bound here on success.
 /// The early registry load below is only a cheap fail-fast
 /// duplicate-name check; the invite claim is a network operation
 /// that can take seconds, so registration itself happens only
@@ -1629,13 +1720,17 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 /// A failed join never leaves a dangling registry entry (a
 /// partial site dir may remain; re-running with the same name
 /// reports it).
-async fn claim_invite(url: String, name: String) -> ExitCode {
+async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode {
     if let Err(err) = tonk_cli::spot::validate_name(&name) {
         return print_error(err.to_string());
     }
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
+    };
+    let cwd = match working_directory().and_then(|path| path.canonicalize().ok()) {
+        Some(cwd) => cwd,
+        None => return print_error("could not read the current directory".to_owned()),
     };
     let registry = match store.load() {
         Ok(registry) => registry,
@@ -1679,7 +1774,7 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
                 name.clone(),
                 tonk_cli::spot::SpotEntry { site: root.clone() },
             );
-            registry.current = Some(name.clone());
+            registry.bindings.insert(cwd.clone(), name.clone());
             if let Err(err) = store.save(&registry) {
                 return print_error(format!(
                     "joined, but registering spot '{name}' failed: {err}\n\
@@ -1687,7 +1782,8 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
                     root = root.display(),
                 ));
             }
-            print_claim_outcome(&name, &root, &outcome);
+            print_claim_outcome(&name, &root, &cwd, &outcome);
+            print_active_resolution(&store, flag, Some(&cwd));
             ExitCode::Success
         }
         Err(err) => {
@@ -1697,7 +1793,12 @@ async fn claim_invite(url: String, name: String) -> ExitCode {
     }
 }
 
-fn print_claim_outcome(name: &str, root: &std::path::Path, outcome: &ClaimOutcome) {
+fn print_claim_outcome(
+    name: &str,
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    outcome: &ClaimOutcome,
+) {
     println!("Joined spot '{name}' ({})", root.display());
     println!("subject: {}", outcome.subject);
     if let Some(remote) = &outcome.auto_configured_remote
@@ -1710,7 +1811,7 @@ fn print_claim_outcome(name: &str, root: &std::path::Path, outcome: &ClaimOutcom
             println!("synced:  no (run `tonk pull` before making changes)");
         }
     }
-    println!("current spot: {name}");
+    println!("binding: {}", directory.display());
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
@@ -2078,10 +2179,63 @@ fn print_error(message: impl Into<String>) -> ExitCode {
     ExitCode::IoError
 }
 
-/// Resolve the selected spot (--spot > TONK_SPOT > `tonk use`) and
-/// open its site. Every failure path names the spot and the
-/// selection source so a wrong-spot mistake is visible in the
-/// error itself. The cwd is never consulted.
+/// The process's working directory, used only as a key into the
+/// binding map. A cwd the OS refuses to report (deleted out from
+/// under the process) is not fatal when --spot or TONK_SPOT names
+/// the active spot.
+fn working_directory() -> Option<PathBuf> {
+    std::env::current_dir().ok()
+}
+
+fn spot_from_environment() -> Option<String> {
+    std::env::var(tonk_cli::spot::SPOT_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// Report the spot that would actually answer a data command after a
+/// binding write, including any flag or environment override.
+fn print_active_resolution(
+    store: &tonk_cli::spot::SpotStore,
+    flag: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) {
+    let env = spot_from_environment();
+    match store.resolve(flag, env.as_deref(), cwd) {
+        Ok(resolved) => println!(
+            "active spot: {name} ({source})\nsite: {site}",
+            name = resolved.name,
+            source = resolved.source,
+            site = resolved.site.display(),
+        ),
+        Err(err) => {
+            eprintln!("warning: binding saved, but the active spot does not resolve: {err}")
+        }
+    }
+}
+
+/// Print stable local context after a spot-scoped command fails. This
+/// deliberately does not fetch sync state while handling another
+/// error.
+fn print_active_spot_context(flag: Option<&str>) {
+    let Ok(store) = tonk_cli::spot::SpotStore::open() else {
+        return;
+    };
+    let env = spot_from_environment();
+    let cwd = working_directory();
+    if let Ok(resolved) = store.resolve(flag, env.as_deref(), cwd.as_deref()) {
+        eprintln!(
+            "active spot: {name} ({source})\nsite: {site}",
+            name = resolved.name,
+            source = resolved.source,
+            site = resolved.site.display(),
+        );
+    }
+}
+
+/// Resolve the active spot (--spot > TONK_SPOT > nearest directory
+/// binding) and open its site. The cwd is passed in only as a key
+/// into the binding map — it never locates site data.
 async fn open_selected(
     flag: Option<&str>,
 ) -> Result<(tonk_cli::spot::Resolved, site::TonkSite), ExitCode> {
@@ -2092,17 +2246,15 @@ async fn open_selected(
     let env = std::env::var(tonk_cli::spot::SPOT_ENV)
         .ok()
         .filter(|value| !value.is_empty());
-    let resolved = match store.resolve(flag, env.as_deref()) {
+    let cwd = working_directory();
+    let resolved = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
         Ok(resolved) => resolved,
         Err(err) => return Err(print_error(err.to_string())),
     };
     match site::TonkSite::open(&resolved.site).await {
         Ok(site) => Ok((resolved, site)),
         Err(err) => Err(print_error(format!(
-            "spot '{name}' (via {source}, site {site}): {err:#}",
-            name = resolved.name,
-            source = resolved.source,
-            site = resolved.site.display(),
+            "could not open the active spot: {err:#}"
         ))),
     }
 }

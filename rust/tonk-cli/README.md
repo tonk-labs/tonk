@@ -16,7 +16,7 @@ drive the same code paths as the binary.
 ```sh
 # Create a spot (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
 tonk spot new garden
-# Later, from anywhere:
+# Use an existing spot in another project directory:
 tonk use garden
 
 # Evaluate a notation document: inline, from a file, or piped.
@@ -88,9 +88,13 @@ entry points at a **site**: the working directory holding the actual dialog
 repository (`main`, opened on the `main` branch — multi-branch and multi-repo
 workflows are intentionally not exposed). Sites live canonically under
 `spots/<name>/`, or anywhere you like via `tonk spot new --site <path>`.
-Commands resolve which spot to use as `--spot` > `TONK_SPOT` > the `tonk use`
-selection, then open its site. `spots.json` is plain JSON, so any application
-can read the registry without going through the CLI.
+Commands resolve which spot to use as `--spot` > `TONK_SPOT` > the nearest
+directory bound by `tonk use <name>`, then open its central site. There is no
+machine-global fallback. Parallel sessions in separate directories therefore
+hold their own spot without repeating a flag. The directory is only a key into
+the registry — no site data or pointer file is stored there. `tonk spot unbind`
+removes an exact binding. `spots.json` is plain JSON, so any application can
+read the registry without going through the CLI.
 
 To adopt an existing `.tonk/` directory (from a pre-spots checkout, or
 somewhere you keep data outside the canonical store) as a spot, point
