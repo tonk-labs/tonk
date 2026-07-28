@@ -1078,7 +1078,7 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, spot: Option<&str
             if json {
                 return print_error("`--json` reads a claim and cannot be combined with `set`");
             }
-            let markdown = if path == PathBuf::from("-") {
+            let markdown = if path.as_os_str() == "-" {
                 let mut markdown = String::new();
                 if let Err(err) = std::io::stdin().read_to_string(&mut markdown) {
                     return print_error(format!("could not read AGENTS.md from stdin: {err}"));
