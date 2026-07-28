@@ -99,6 +99,10 @@ nix develop -c bench/bin/bench handoff --scripted --pairs 3 \
 # Approved pilot: exactly three A/control-B/treatment-B pairs, nine episodes.
 nix develop -c bench/bin/bench handoff --pairs 3 \
   --variant claim-handoff-pilot
+
+# Approved confirmation: exactly ten pairs, thirty episodes.
+nix develop -c bench/bin/bench handoff --pairs 10 \
+  --variant claim-handoff-confirmation
 ```
 
 #### Pilot result
@@ -121,6 +125,28 @@ This advances the treatment but does not establish significance. With three
 pairs, all favoring treatment, the smallest possible one-sided paired
 sign/randomization result is `p = 0.125`. Run at least ten pairs for
 confirmation.
+
+#### Confirmation decision rule
+
+The ten-pair confirmation was approved after the pilot and before any
+confirmation episode ran. Do not replace failed episodes or change prompts,
+fixtures, model, metrics, or verification rules during the batch.
+
+The treatment confirms only when all of these hold:
+
+1. All ten A episodes pass the task, claim-identity, revision, retention, and
+   hygiene checks, and every B spot remains unchanged.
+2. At least nine treatment B episodes return the exact opaque owner label, and
+   treatment exact-answer success is no worse than control.
+3. At least eight pairs have exact answers in both arms and can be compared for
+   efficiency.
+4. Among those jointly successful pairs, treatment reduces median total actions
+   by at least 25%.
+5. A one-sided exact paired sign-flip test on the mean
+   `control actions - treatment actions` difference reports `p < 0.05`.
+
+Wall time, Tonk calls, orientation calls, and tokens are secondary explanatory
+metrics. Report all episodes and protocol deviations even if the gate fails.
 
 The raw pass also exposed two reporting defects, corrected before aggregation:
 Codex `file_change` events were absent from `tool_calls`, and a quoted `rg`

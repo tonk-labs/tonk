@@ -15,7 +15,9 @@ SCENARIO="$ROOT/bench/scenarios/agents-handoff"
 PAIRS=3
 SCRIPTED=0
 VARIANT="claim-handoff-pilot"
-APPROVED_EPISODES=9
+# The pilot used 9 episodes. The 10-pair confirmation budget was approved on
+# 2026-07-28; keep this hard cap so a typo cannot launch replacement episodes.
+APPROVED_EPISODES=30
 
 while [ $# -gt 0 ]; do
   case "$1" in

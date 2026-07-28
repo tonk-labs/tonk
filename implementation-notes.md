@@ -215,3 +215,16 @@ Episode exit files are also written before metrics are computed. One A agent
 ignored the prompt's no-filesystem-search instruction and read global Codex
 memory, causing extra work and repeated commands; the opaque convention was not
 present there, so retention and B-arm isolation remain valid.
+
+### Handoff confirmation protocol
+
+Fresh approval on 2026-07-28 raised the hard external budget from nine pilot
+episodes to thirty confirmation episodes: ten independent
+A/control-B/treatment-B pairs with no replacements. The decision rule was
+frozen before launch in `bench/EXPERIMENTS.md`.
+
+Correctness and claim hygiene remain guardrails. The confirmatory performance
+statistic is the one-sided exact paired sign-flip test on mean total-action
+savings among pairs where both B answers are exact. No treatment, prompt,
+fixture, model, verifier, or metric change is permitted once the confirmation
+batch begins.
