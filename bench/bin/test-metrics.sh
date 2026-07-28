@@ -2,7 +2,7 @@
 # Fast regression check for the trajectory classifier. No agent or stack.
 set -euo pipefail
 
-ROOT="${ROOT:?}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tonk-metrics-test.XXXXXX")"
 trap 'rm -rf "$RUN_DIR"' EXIT
 
