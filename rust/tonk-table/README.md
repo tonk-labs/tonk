@@ -121,8 +121,12 @@ Events:
   Parsing is done element-side — the engine's `pasteCsvText` splits
   on tabs only, which the tests pin.
 - Sheets: tabs along the bottom — click to switch, `+` to add,
-  double-click to rename inline (no `window.prompt`; sealed guests
-  don't have it).
+  double-click to rename inline, `×` on the active tab to delete it
+  behind an inline confirmation (all in-page: sealed guests have no
+  `window.prompt`/`confirm`, and sheet deletion is not undoable, so a
+  stray click must never be enough). Deletion is standalone-mode only
+  until the claims schema grows a delete-sheet command, and the last
+  sheet can't be deleted.
 - `Mod-z` / `Shift-Mod-z` / `Mod-y` undo/redo through the engine.
 
 ## Content protocol
@@ -164,7 +168,8 @@ Three layers, weakest to strongest — the whole look is overridable:
    `formula-input`, `body`, `grid`, `corner`, `column-header`,
    `row-header`, `row`, `cell` (state tokens `number` / `error` /
    `selected` / `range`), `tab-strip`, `tab` (token `active`),
-   `add-sheet`, `cell-editor`, `sheet-rename`.
+   `tab-delete`, `add-sheet`, `cell-editor`, `sheet-rename`,
+   `sheet-confirm`, `sheet-confirm-delete`, `sheet-confirm-keep`.
 3. **User stylesheets** — any `<style>` child of `<tonk-table>` is
    adopted into the shadow root, cascading LAST (it wins over the
    built-in sheets at equal specificity), for rules parts can't
