@@ -344,11 +344,16 @@ pub(crate) async fn mount_replica(
     Ok((key, repository))
 }
 
+fn membership_has_name(names: &[MemberName], membership: &Membership) -> bool {
+    names.iter().any(|name| name.this == *membership.this())
+}
+
 /// Record the roster facts for a claimed invite on the repo's content
 /// branch: the invitation itself (idempotent when the minter already
 /// wrote it; self-healing when the invite predates invitation
 /// records), the claimer's membership stamped with the `member` role,
-/// and — first-wins — the `InvitedVia` provenance stamp.
+/// their name when the membership is unnamed, and — first-wins — the
+/// `InvitedVia` provenance stamp.
 ///
 /// The content branch (not meta) because it's the synced, shared branch:
 /// every member pulls it, so the roster converges across the space. A
@@ -423,19 +428,37 @@ where
         .map_err(|e| TonkWorkerError::Internal(format!("member-role query failed: {e:?}")))?;
     let already_roled = roles.iter().any(|r| r.this == *membership.this());
 
+    // Guard the name too: a linked device may resolve a different local
+    // display name, but a later sequential join must not overwrite an
+    // existing roster rename. This read-then-write guard is intentionally
+    // not a linearizable first-writer lock for concurrent claims.
+    let names: Vec<MemberName> = session
+        .handle()
+        .query()
+        .select(Query::<MemberName> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("member-name query failed: {e:?}")))?;
+    let already_named = membership_has_name(&names, &membership);
+
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
-    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
-    let member_name = MemberName::new(membership.this().clone(), display_name);
     let mut transaction = tonk
         .reactor
         .repository(key)
         .branch(DEFAULT_BRANCH)
         .transaction()
         .assert(invitation.clone())
-        .assert(membership.clone())
-        .assert(member_name);
+        .assert(membership.clone());
+    if !already_named {
+        let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+        transaction = transaction.assert(MemberName::new(membership.this().clone(), display_name));
+    }
     if !already_roled {
         transaction = transaction.assert(MemberRole::member(membership.this().clone()));
     }
@@ -778,6 +801,7 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
+    use super::{DEFAULT_BRANCH, membership_has_name};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -791,7 +815,7 @@ mod tests {
     use dialog_varsig::Principal as _;
     use tonk_invite::{Invite, InviteAudience};
     use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{Invitation, MemberRole};
+    use tonk_schema::{Invitation, MemberName, MemberRole, Membership};
 
     use crate::router::api_router_with_state;
     use crate::router::repository::build_repository_info;
@@ -962,6 +986,71 @@ mod tests {
             Some(expected.inviter.0.to_string().as_str()),
             "claimer records the invitation's inviter as provenance",
         );
+    }
+
+    /// A second claim against the same subject (Renewed) preserves a
+    /// name already chosen for the membership instead of replacing it
+    /// with the joining device's local display name.
+    #[dialog_common::test]
+    async fn it_does_not_overwrite_an_existing_name_on_a_renewed_join() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url_a, key) = handcrafted_invite_url(60, 61).await;
+        let (url_b, _) = handcrafted_invite_url(60, 62).await;
+
+        assert_eq!(post_join(&app, &url_a).await, StatusCode::CREATED);
+
+        let profile_entity = state.read().await.profile.did().this();
+        let membership_entity = content_memberships(&state, &key)
+            .await
+            .into_iter()
+            .find(|m| m.member.0 == profile_entity)
+            .expect("claimer membership present")
+            .this()
+            .clone();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch(DEFAULT_BRANCH)
+                .transaction()
+                .assert(MemberName::new(
+                    membership_entity.clone(),
+                    "Chosen Name".to_string(),
+                ))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .expect("existing name commits");
+        }
+
+        assert_eq!(post_join(&app, &url_b).await, StatusCode::OK);
+
+        let names = crate::router::tests::content_member_names(&state, &key).await;
+        assert_eq!(
+            names
+                .iter()
+                .find(|name| name.this == membership_entity)
+                .map(|name| name.name.0.as_str()),
+            Some("Chosen Name"),
+            "renewed join preserves the existing member name",
+        );
+    }
+
+    /// The name guard is a local read followed by a local write, not a
+    /// linearizable first-writer lock: two replicas reading the same empty
+    /// base both decide that they may stamp a name.
+    #[dialog_common::test]
+    async fn it_allows_concurrent_snapshots_to_both_choose_to_name_a_membership() {
+        let member = Ed25519Signer::import(&[63u8; 32]).await.unwrap().did();
+        let repository = Ed25519Signer::import(&[64u8; 32]).await.unwrap().did();
+        let membership = Membership::new(member, repository);
+        let empty_base: Vec<MemberName> = Vec::new();
+
+        let first_replica_should_name = !membership_has_name(&empty_base, &membership);
+        let second_replica_should_name = !membership_has_name(&empty_base, &membership);
+
+        assert!(first_replica_should_name);
+        assert!(second_replica_should_name);
     }
 
     /// A second claim against the same subject (Renewed) records the

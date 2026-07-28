@@ -153,10 +153,13 @@ task.md/rubric.md are frozen.
   `$BENCH_URL/ucan/`.
 
 **Spot pinning** — the CLI resolves a spot by `--spot`, then `TONK_SPOT`, then
-the `tonk use` selection, and *never* consults the cwd. So `cd`-ing into the
-site directory does nothing, and an unpinned `tonk` call succeeds against
-whatever spot the developer happens to have selected globally — silently, and
-against the wrong repo. `run.sh` therefore exports both:
+a directory attachment (`tonk use <name> --here`), then the `tonk use`
+selection. `cd`-ing into the site directory does nothing on its own — only an
+explicit attachment makes a directory mean anything — and an unpinned `tonk`
+call succeeds against whatever spot the developer happens to have selected
+globally, silently, against the wrong repo. `TONK_SPOT` outranks attachments
+precisely so the harness stays authoritative over whatever the developer has
+bound locally. `run.sh` therefore exports both:
 
 - `TONK_SPOTS_STATE="$RUN_DIR/spots-state"` — the registry and its canonical
   `spots/` root, so runs never see each other or the developer's own spots.

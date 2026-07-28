@@ -112,6 +112,13 @@ export interface TableGrid {
   ): { content: string; value: string } | null;
   /** Append a sheet (engine-named `SheetN` unless `name` given). */
   addSheet(name?: string): void;
+  /** Delete the active (or named) sheet. Standalone mode only — the
+   *  claims schema has no delete-sheet command yet, and removing an
+   *  engine sheet there would desync the claim mappings (the store
+   *  rows would just resurrect it). Refuses to delete the last
+   *  sheet. Not undoable (mirroring desktop spreadsheets), which is
+   *  why the tab UI confirms first. */
+  deleteSheet(sheetName?: string): void;
 
   // --- Sizing (persisted as `table/column` / `table/row` claims in
   //     claims mode) ---------------------------------------------------

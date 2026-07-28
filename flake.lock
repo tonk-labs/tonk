@@ -87,11 +87,11 @@
     },
     "nixpkgs-chromedriver": {
       "locked": {
-        "lastModified": 1780531915,
-        "narHash": "sha256-1A1ciKeRhy4Nr4gv/SK0zzmUKdXGr9Gke/ujBGs4YeU=",
+        "lastModified": 1785251445,
+        "narHash": "sha256-hzAykM03D1MQw6cOUPmM9TLSpxgfGwYc43RfvvIPwJs=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "19c56ae874977658f33ab06c04520b1848c3e4b7",
+        "rev": "4c11dbad74b3939056d84906c6cf3131e73d451a",
         "type": "github"
       },
       "original": {
