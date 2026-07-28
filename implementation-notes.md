@@ -66,6 +66,10 @@ held-out agent trajectories without reducing task correctness.
 - Subcommand matching initially scanned the full shell command, including eval
   source. A field named `status` could therefore misclassify an eval as
   orientation. Matching is now anchored to the actual token after `tonk`.
+- The first real episode exposed two harness edge cases without losing its
+  evidence: `query --help` was counted as a data read, and a quoted jq fallback
+  stopped Markdown reporting. Help requests now count as orientation, and the
+  completed episode can be re-reported from its preserved artifacts.
 - First-use episodes run with a fresh home/profile under the run directory.
   Runner authentication remains available, but the developer's Tonk profile is
   outside the episode sandbox.

@@ -18,13 +18,13 @@ EXPERIMENT_FILE="$RUN_DIR/experiment.json"
     echo "## Scores"
     echo
     jq -r '"- outcome: \(.judge.outcome)/10",
-           "- execution verified: \(.verifier.passed // \"n/a\")",
+           "- execution verified: \(.verifier.passed // "n/a")",
            "- wall: \(.wall_seconds)s, turns: \(.num_turns), tool calls: \(.tool_calls)",
            "- failed tool results: \(.failed_tool_results), repeated commands: \(.repeated_commands | length)",
-           "- first successful tonk: command \(.journey.cmds_before_first_success // \"?\") — \(.journey.first_success // \"not reached\")",
-           "- first live read: command \(.journey.cmds_before_first_read // \"?\") — \(.journey.first_read // \"not reached\")",
-           "- first data read: command \(.journey.cmds_before_first_data_read // \"?\") — \(.journey.first_data_read // \"not reached\")",
-           "- first content write: command \(.journey.cmds_before_first_write // \"?\") — \(.journey.first_write // \"not reached\")",
+           "- first successful tonk: command \(.journey.cmds_before_first_success // "?") — \(.journey.first_success // "not reached")",
+           "- first live read: command \(.journey.cmds_before_first_read // "?") — \(.journey.first_read // "not reached")",
+           "- first data read: command \(.journey.cmds_before_first_data_read // "?") — \(.journey.first_data_read // "not reached")",
+           "- first content write: command \(.journey.cmds_before_first_write // "?") — \(.journey.first_write // "not reached")",
            "- tonk calls: \(.journey.tonk_calls), failed: \(.journey.failed_tonk_calls), orientation: \(.journey.orientation_calls)",
            "- tokens out: \(.tokens.output)"' "$RUN_DIR/scores.json"
     echo

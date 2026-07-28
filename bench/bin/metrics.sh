@@ -86,20 +86,26 @@ JOURNEY_DEF='
     );
   def is_bare_tonk:
     is_tonk and test("(tonk|@tonk/cli)([[:space:]]+--spot[[:space:]]+[^[:space:]]+)?[^A-Za-z0-9_.-]*$");
+  def requests_help:
+    is_tonk and has_subcommand(
+      "--help|help"
+      + "|[^[:space:]]+[[:space:]]+(-h|--help)"
+      + "|[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+(-h|--help)"
+    );
   def is_orientation:
     is_bare_tonk
-    or (is_tonk and has_subcommand("context|guide|schema|status|concept[[:space:]]+ls|view[[:space:]]+ls|--help"));
+    or requests_help
+    or (is_tonk and has_subcommand("context|guide|schema|status|concept[[:space:]]+ls|view[[:space:]]+ls"));
   def is_live_read:
     is_tonk and (
-      has_subcommand("context|schema|query|render|status|concept[[:space:]]+ls|view[[:space:]]+ls")
-      or is_bare_tonk
-      or (
-        has_subcommand("assert")
-        and test("(tonk|@tonk/cli).*--help")
+      (
+        has_subcommand("context|schema|query|render|status|concept[[:space:]]+ls|view[[:space:]]+ls")
+        and (requests_help | not)
       )
+      or is_bare_tonk
     );
   def is_direct_data_read:
-    is_tonk and has_subcommand("query|render");
+    is_tonk and has_subcommand("query|render") and (requests_help | not);
   def is_eval:
     is_tonk and has_subcommand("eval");
   def is_explicit_content_write:
