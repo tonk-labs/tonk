@@ -136,6 +136,25 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
+    mint_for(site, base_url, remote_url, None).await
+}
+
+/// Mint a seed-free invite targeted to an exact recipient root DID.
+pub async fn mint_targeted(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    recipient_root: &str,
+) -> Result<InviteOutcome, InviteError> {
+    mint_for(site, base_url, remote_url, Some(recipient_root)).await
+}
+
+async fn mint_for(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    recipient_root: Option<&str>,
+) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
     // `tonk spot new` committed before any upstream existed. No-op
@@ -158,8 +177,17 @@ pub async fn mint(
             .map_err(|e| InviteError::Io(format!("push before invite failed: {e}")))?;
     }
 
-    let (signer, seed) = generate_ephemeral().await?;
-    let audience = signer.did();
+    let (audience, invite_audience) = match recipient_root {
+        Some(root) => (
+            root.parse()
+                .map_err(|error| InviteError::Io(format!("invalid recipient root DID: {error}")))?,
+            InviteAudience::Scoped,
+        ),
+        None => {
+            let (signer, seed) = generate_ephemeral().await?;
+            (signer.did(), InviteAudience::Open { seed })
+        }
+    };
 
     let delegation: UcanDelegation = site
         .profile
@@ -178,13 +206,20 @@ pub async fn mint(
         None => None,
     };
 
-    let invite = Invite::new(
-        delegation.into_chain(),
-        InviteAudience::Open { seed },
-        parsed_remote,
-    )
-    .await
-    .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?;
+    let relay = parsed_remote.as_ref().map(|remote| {
+        if remote
+            .host_str()
+            .is_some_and(|host| host.starts_with("staging."))
+        {
+            Url::parse("https://accounts-staging.tonk.xyz/revocations").unwrap()
+        } else {
+            Url::parse("https://accounts.tonk.xyz/revocations").unwrap()
+        }
+    });
+    let invite = Invite::new(delegation.into_chain(), invite_audience, parsed_remote)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
+        .with_revocation_url(relay);
 
     let url = invite
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))

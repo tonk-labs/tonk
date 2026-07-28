@@ -286,6 +286,10 @@ enum Command {
         #[arg(long)]
         no_remote: bool,
 
+        /// Mint a seed-free invite for this exact recipient root DID.
+        #[arg(long, value_name = "DID")]
+        recipient_root: Option<String>,
+
         /// Print the long invite URL instead of shortening it.
         /// Shortening is a live PUT to the link's own origin, so
         /// this is the way to mint offline, against a deployment
@@ -961,8 +965,19 @@ async fn main() {
             base_url,
             remote,
             no_remote,
+            recipient_root,
             no_shorten,
-        } => mint_invite(base_url, remote, no_remote, no_shorten, spot.as_deref()).await,
+        } => {
+            mint_invite(
+                base_url,
+                remote,
+                no_remote,
+                recipient_root,
+                no_shorten,
+                spot.as_deref(),
+            )
+            .await
+        }
         Command::Join { url, name } => claim_invite(url, name, spot.as_deref()).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
@@ -1819,6 +1834,7 @@ async fn mint_invite(
     base_url: Option<String>,
     remote_name: Option<String>,
     no_remote: bool,
+    recipient_root: Option<String>,
     no_shorten: bool,
     spot: Option<&str>,
 ) -> ExitCode {
@@ -1895,7 +1911,14 @@ async fn mint_invite(
 
     let remote_url = embedded.map(|record| record.endpoint);
 
-    match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
+    let minted = match recipient_root {
+        Some(root) => {
+            invite::mint_targeted(&site, Some(&base_url), remote_url.as_deref(), &root).await
+        }
+        None => invite::mint(&site, Some(&base_url), remote_url.as_deref()).await,
+    };
+
+    match minted {
         Ok(mut outcome) => {
             // Shorten against the link's own origin; the long URL is
             // fully functional, so an unreachable shortcut service
