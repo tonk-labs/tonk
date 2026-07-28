@@ -126,9 +126,10 @@ write_b_prompt() {
 
 write_scripted_metrics() {
   local destination="$1"
-  jq -n '{
+  local status="$2"
+  jq -n --argjson episode_exit "$status" '{
     wall_seconds: 0,
-    episode_exit: 0,
+    episode_exit: $episode_exit,
     num_turns: 0,
     tokens: {input: 0, output: 0, cache_read: 0},
     tool_calls: 0,
@@ -207,7 +208,6 @@ run_episode() {
       *) echo "handoff: unknown scripted role $role" >&2; status=2 ;;
     esac
     date +%s > "$episode_dir/episode-end"
-    write_scripted_metrics "$episode_dir/metrics.json"
   else
     episodes_run=$((episodes_run + 1))
     if [ "$episodes_run" -gt "$APPROVED_EPISODES" ]; then
@@ -230,10 +230,14 @@ run_episode() {
       export CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"
       "$ROOT/bench/bin/episode.sh"
     ) || status=$?
-    RUN_DIR="$episode_dir" "$ROOT/bench/bin/metrics.sh" >/dev/null
   fi
   jq -n --argjson episode_exit "$status" '{episode_exit: $episode_exit}' \
     > "$episode_dir/episode-exit.json"
+  if [ "$SCRIPTED" = 1 ]; then
+    write_scripted_metrics "$episode_dir/metrics.json" "$status"
+  else
+    RUN_DIR="$episode_dir" "$ROOT/bench/bin/metrics.sh" >/dev/null
+  fi
   return 0
 }
 
@@ -474,16 +478,24 @@ jq -s '
     treatment_successes: [.[] | select(.treatment.passed)] | length,
     control: {
       median_tool_calls: ([.[].control.metrics.tool_calls] | median),
+      median_bash_calls: ([.[].control.metrics.bash_calls] | median),
+      median_tonk_calls: ([.[].control.metrics.journey.tonk_calls] | median),
       median_orientation_calls: ([.[].control.metrics.journey.orientation_calls] | median),
       median_wall_seconds: ([.[].control.metrics.wall_seconds] | median),
+      median_input_tokens: ([.[].control.metrics.tokens.input] | median),
       median_output_tokens: ([.[].control.metrics.tokens.output] | median)
     },
     treatment: {
       median_tool_calls: ([.[].treatment.metrics.tool_calls] | median),
+      median_bash_calls: ([.[].treatment.metrics.bash_calls] | median),
+      median_tonk_calls: ([.[].treatment.metrics.journey.tonk_calls] | median),
       median_orientation_calls: ([.[].treatment.metrics.journey.orientation_calls] | median),
       median_wall_seconds: ([.[].treatment.metrics.wall_seconds] | median),
+      median_input_tokens: ([.[].treatment.metrics.tokens.input] | median),
       median_output_tokens: ([.[].treatment.metrics.tokens.output] | median)
-    }
+    },
+    paired_tool_call_deltas: [.[] | .control.metrics.tool_calls - .treatment.metrics.tool_calls],
+    paired_wall_second_deltas: [.[] | .control.metrics.wall_seconds - .treatment.metrics.wall_seconds]
   }
   | .advance = (
       .a_retention_passes == .pairs

@@ -77,7 +77,7 @@ JOURNEY_DEF='
   # paths, env assignments, or `npx --yes @tonk/cli`). Match an executable in
   # command position: a docs search containing the word "tonk" is not a call.
   def is_tonk:
-    test("(^|[;&|][[:space:]]*|-[A-Za-z]*c[A-Za-z]*[[:space:]]+[\u0027\"]?)(env[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(([^[:space:]\u0027\";&|]+/)?tonk|npx([[:space:]]+--yes)?[[:space:]]+@tonk/cli)([[:space:]\u0027\";&|]|$)");
+    test("(^|[;&][[:space:]]*|[|][|]?[[:space:]]+|-[A-Za-z]*c[A-Za-z]*[[:space:]]+[\u0027\"]?)(env[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(([^[:space:]\u0027\";&|]+/)?tonk|npx([[:space:]]+--yes)?[[:space:]]+@tonk/cli)([[:space:]\u0027\";&|]|$)");
   def has_subcommand($pattern):
     test(
       "(tonk|@tonk/cli)"
@@ -185,7 +185,9 @@ if [ "$first_type" = "thread.started" ]; then
   jq -s \
     --argjson wall "$wall" \
     --argjson exit_code "$exit_code" "$JOURNEY_DEF"'
-    ([.[] | select(.type == "item.completed") | .item | select(.type == "command_execution")]) as $execs |
+    ([.[] | select(.type == "item.completed") | .item
+      | select(.type == "command_execution" or .type == "file_change")]) as $tools |
+    ([$tools[] | select(.type == "command_execution")]) as $execs |
     ([$execs[] | {
       command,
       ok: (.status == "completed" and ((.exit_code // 0) == 0)),
@@ -203,7 +205,7 @@ if [ "$first_type" = "thread.started" ]; then
         output:             (if ($usages|length) > 0 then ($usages | map(.output_tokens // 0) | add) else null end),
         cache_read:         (if ($usages|length) > 0 then ($usages | map(.cached_input_tokens // 0) | add) else null end)
       },
-      tool_calls:           ($execs | length),
+      tool_calls:           ($tools | length),
       bash_calls:           ($execs | length),
       failed_tool_results:  ([$execs[] | select(.status == "failed" or ((.exit_code // 0) != 0))] | length),
       repeated_commands:    ($cmds | group_by(.) | map(select(length > 1) | {command: .[0], times: length})),
