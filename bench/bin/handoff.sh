@@ -313,7 +313,10 @@ verify_b() {
   local owner_label="$2"
   local revision_before="$3"
   local revision_after="$4"
+  local frozen_site="$5"
+  local site_dir="$6"
   local answer_passed=false
+  local site_unchanged=false
   if [ -f "$episode_dir/cwd/answer.txt" ]; then
     answer_passed="$(
       jq -Rs --arg expected "$owner_label" \
@@ -321,22 +324,28 @@ verify_b() {
         "$episode_dir/cwd/answer.txt"
     )"
   fi
+  if diff -qr "$frozen_site" "$site_dir" >/dev/null; then
+    site_unchanged=true
+  fi
   jq -n \
     --slurpfile exit "$episode_dir/episode-exit.json" \
     --argjson answer_passed "$answer_passed" \
+    --argjson site_unchanged "$site_unchanged" \
     --arg revision_before "$revision_before" \
     --arg revision_after "$revision_after" '
     {
       episode_exit: $exit[0].episode_exit,
       answer_passed: $answer_passed,
-      branch_unchanged: $revision_before == $revision_after,
+      claim_revision_unchanged: $revision_before == $revision_after,
+      site_unchanged: $site_unchanged,
       revision_before: $revision_before,
       revision_after: $revision_after
     }
     | .passed = (
         .episode_exit == 0
         and .answer_passed
-        and .branch_unchanged
+        and .claim_revision_unchanged
+        and .site_unchanged
       )
   ' > "$episode_dir/verify.json"
 }
@@ -433,7 +442,7 @@ for pair_index in $(seq 1 "$PAIRS"); do
       run_tonk "$arm_home" "$arm_state" agents --json | jq -r '.revision'
     )"
     verify_b "$PAIR_DIR/$arm" "$owner_label" \
-      "$revision_before" "$revision_after"
+      "$revision_before" "$revision_after" "$ORIGIN_SITE" "$arm_site"
   done
 
   jq -n \
