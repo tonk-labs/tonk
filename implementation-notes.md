@@ -175,3 +175,10 @@ share the post-A spot, but only treatment gets the updated pre-launch
 projection. Control keeps the old projection and can still discover the current
 claim through the CLI. This isolates automatic orientation from access to the
 underlying data and costs nine external episodes before any confirmation run.
+
+The handoff harness had two dry-run-only corrections before external episodes:
+the typed `tonk query --json` verb returns a top-level result array rather than
+an evaluator envelope, and the retention predicate initially matched `owner`
+but not the fixture's `owned`. No model call occurred before all three scripted
+pairs passed. The final dry path also opens each copied B spot under B's fresh
+profile, so profile/delegation setup is exercised before the paid run.

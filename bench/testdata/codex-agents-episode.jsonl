@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"agents-test"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc 'tonk agents --json'","aggregated_output":"{\"source\":\"dialog-claim\",\"attribute\":\"xyz.tonk.repo/agents\"}","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc 'tonk agents set AGENTS.md'","aggregated_output":"asserted AGENTS.md claim","exit_code":0,"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}

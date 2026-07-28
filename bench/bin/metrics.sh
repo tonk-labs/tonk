@@ -86,6 +86,10 @@ JOURNEY_DEF='
     );
   def is_bare_tonk:
     is_tonk and test("(tonk|@tonk/cli)([[:space:]]+--spot[[:space:]]+[^[:space:]]+)?[^A-Za-z0-9_.-]*$");
+  def is_agents_set:
+    is_tonk and has_subcommand("agents[[:space:]]+set");
+  def is_agents_read:
+    is_tonk and has_subcommand("agents") and (is_agents_set | not);
   def requests_help:
     is_tonk and has_subcommand(
       "--help|help"
@@ -95,6 +99,7 @@ JOURNEY_DEF='
   def is_orientation:
     is_bare_tonk
     or requests_help
+    or is_agents_read
     or (is_tonk and has_subcommand("context|guide|schema|status|concept[[:space:]]+ls|view[[:space:]]+ls"));
   def is_live_read:
     is_tonk and (
@@ -102,6 +107,7 @@ JOURNEY_DEF='
         has_subcommand("context|schema|query|render|status|concept[[:space:]]+ls|view[[:space:]]+ls")
         and (requests_help | not)
       )
+      or is_agents_read
       or is_bare_tonk
     );
   def is_direct_data_read:
@@ -110,7 +116,7 @@ JOURNEY_DEF='
     is_tonk and has_subcommand("eval");
   def is_explicit_content_write:
     is_tonk
-    and has_subcommand("concept[[:space:]]+add|view[[:space:]]+add|assert|retract|home|import|join")
+    and has_subcommand("concept[[:space:]]+add|view[[:space:]]+add|agents[[:space:]]+set|assert|retract|home|import|join")
     and (test("--help|--dry-run") | not);
   def revision_changed:
     (

@@ -91,6 +91,16 @@ only if all three A claims pass the retention/hygiene verifier, every treatment
 B succeeds, and treatment does not use more median tool calls than control. A
 confirmation requires at least ten pairs and randomized B-arm order.
 
+```sh
+# Harness mechanics only; no model calls.
+nix develop -c bench/bin/bench handoff --scripted --pairs 3 \
+  --variant claim-handoff-mechanics
+
+# Approved pilot: exactly three A/control-B/treatment-B pairs, nine episodes.
+nix develop -c bench/bin/bench handoff --pairs 3 \
+  --variant claim-handoff-pilot
+```
+
 ## Pre-registered decision rule
 
 Primary metric: shell-command index before the first successful Tonk content

@@ -21,4 +21,16 @@ jq -e '
   and .journey.class_counts == {"orient": 2, "other": 1, "read": 2, "write": 2}
 ' "$RUN_DIR/metrics.json" >/dev/null
 
+cp "$ROOT/bench/testdata/codex-agents-episode.jsonl" "$RUN_DIR/episode.jsonl"
+"$ROOT/bench/bin/metrics.sh" >/dev/null
+
+jq -e '
+  .journey.cmds_before_first_read == 0
+  and .journey.cmds_before_first_data_read == null
+  and .journey.cmds_before_first_write == 1
+  and .journey.tonk_calls == 2
+  and .journey.orientation_calls == 1
+  and .journey.class_counts == {"orient": 1, "write": 1}
+' "$RUN_DIR/metrics.json" >/dev/null
+
 echo "metrics: trajectory classifier passed" >&2

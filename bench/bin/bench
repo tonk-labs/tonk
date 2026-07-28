@@ -5,8 +5,9 @@ export ROOT
 cmd="${1:-}"; shift || true
 case "$cmd" in
   run)      exec "$ROOT/bench/bin/run.sh" "$@" ;;
+  handoff)  exec "$ROOT/bench/bin/handoff.sh" "$@" ;;
   report)   exec "$ROOT/bench/bin/report.sh" "$@" ;;
   compare)  exec python3 "$ROOT/bench/bin/compare.py" "$@" ;;
   baseline) exec "$ROOT/bench/bin/baseline.sh" "$@" ;;
-  *) echo "usage: bench {run <scenario> [--scripted] [--runs N] [--variant NAME] [--spot-agents]|report [N]|compare <scenario> <baseline> <treatment>|baseline <scenario> <run-dir>}" >&2; exit 2 ;;
+  *) echo "usage: bench {run <scenario> [--scripted] [--runs N] [--variant NAME] [--spot-agents]|handoff [--scripted] [--pairs N] [--variant NAME]|report [N]|compare <scenario> <baseline> <treatment>|baseline <scenario> <run-dir>}" >&2; exit 2 ;;
 esac
