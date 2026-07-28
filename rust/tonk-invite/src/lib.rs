@@ -33,7 +33,12 @@ pub mod shortcut;
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::{Scope, UcanProof};
-use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
+use dialog_ucan_core::{
+    DelegationBuilder, DelegationChain,
+    subject::Subject as UcanSubject,
+    time::Timestamp,
+    time::timestamp::{Duration, SystemTime},
+};
 use dialog_varsig::{Did, Principal};
 use url::Url;
 
@@ -45,6 +50,12 @@ use url::Url;
 /// lookup key, so a link already minted against another host keeps
 /// redeeming for as long as that host stays up.
 pub const DEFAULT_BASE_URL: &str = "https://tonk.spot/join";
+
+/// Lifetime of the authority installed by [`Invite::visit`].
+///
+/// A visit is intentionally useful long enough to inspect a shared space but
+/// cannot become a permanent identity or membership grant by accident.
+pub const VISIT_TTL_SECONDS: u64 = 60 * 60;
 
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
@@ -308,6 +319,35 @@ impl Invite {
     /// [`UcanProof::claim`]: dialog_ucan::UcanProof
     /// [`UcanAuthorization::delegate`]: dialog_ucan::UcanAuthorization
     pub async fn claim(self, audience: &Did) -> Result<ClaimedInvite> {
+        self.redelegate(audience, None).await
+    }
+
+    /// Visit an audience-open invite with bounded, session authority.
+    ///
+    /// Unlike [`Invite::claim`], the redelegation expires after
+    /// [`VISIT_TTL_SECONDS`]. Callers should target an ephemeral session DID,
+    /// not a durable root DID. Visiting never creates membership by itself;
+    /// an explicit later claim to the user's root is the durable join.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for audience-scoped invites (which cannot safely be
+    /// retargeted to a guest session), invalid clocks, or failed delegation.
+    pub async fn visit(self, session: &Did) -> Result<ClaimedInvite> {
+        anyhow::ensure!(
+            matches!(&self.audience, InviteAudience::Open { .. }),
+            "audience-scoped invites cannot be opened as a guest"
+        );
+        let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(VISIT_TTL_SECONDS))
+            .map_err(|error| anyhow::anyhow!("visit expiration out of range: {error}"))?;
+        self.redelegate(session, Some(expiration)).await
+    }
+
+    async fn redelegate(
+        self,
+        audience: &Did,
+        expiration: Option<Timestamp>,
+    ) -> Result<ClaimedInvite> {
         let signer = self.signer().await?;
         let remote_url = self.remote_url.clone();
 
@@ -319,11 +359,15 @@ impl Invite {
                     .cloned()
                     .map(UcanSubject::Specific)
                     .unwrap_or(UcanSubject::Any);
-                let delegation = DelegationBuilder::new()
+                let mut builder = DelegationBuilder::new()
                     .issuer(ephemeral)
                     .audience(audience)
                     .subject(subject)
-                    .command(vec![])
+                    .command(vec![]);
+                if let Some(expiration) = expiration {
+                    builder = builder.expiration(expiration);
+                }
+                let delegation = builder
                     .try_build()
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to build redelegation: {e}"))?;
@@ -624,6 +668,44 @@ mod tests {
         assert_eq!(claimed.chain.proof_cids().len(), 3);
         assert_eq!(*claimed.chain.audience(), redeemer);
         assert_eq!(*claimed.subject(), subject);
+    }
+
+    #[dialog_common::test]
+    async fn it_visits_with_bounded_session_authority_without_changing_the_invite() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let ephemeral_did = signer(&EPHEMERAL_SEED).await.did();
+        let session = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain(&ISSUER_SEED, &ephemeral_did, &subject).await;
+        let invite = Invite::new(
+            chain,
+            InviteAudience::Open {
+                seed: EPHEMERAL_SEED,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let visited = invite.visit(&session).await.unwrap();
+
+        assert_eq!(*visited.chain.audience(), session);
+        assert_eq!(*visited.subject(), subject);
+        let expiration = visited.chain.expiration().expect("visit must expire");
+        assert!(expiration.to_unix() > Timestamp::now().to_unix());
+        assert!(expiration.to_unix() <= Timestamp::now().to_unix() + VISIT_TTL_SECONDS);
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_turn_a_scoped_invite_into_a_guest_visit() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
+
+        let error = invite.visit(&audience).await.unwrap_err();
+        assert!(error.to_string().contains("cannot be opened as a guest"));
     }
 
     #[dialog_common::test]
