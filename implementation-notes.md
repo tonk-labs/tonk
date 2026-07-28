@@ -125,25 +125,46 @@ experiment's isolated agent profile. The broken browser task route is also
 real, but it predates and is independent of CLI orientation. Both should be
 tested separately.
 
-## Treatment 2 hypothesis: spot-local AGENTS.md
+## Treatment 2 hypothesis: claim-backed spot AGENTS.md
 
 Current Codex discovery is root-to-cwd only and happens once per run. That
-invalidates the naive general form:
+means a filesystem file cannot be the durable object:
 
 - canonical spots live under Application Support, where agents rarely start;
 - an adopted `project/.tonk/AGENTS.md` is a child of the project cwd and is not
   discovered;
 - cwd does not select a Tonk spot, so one project can use several spots and one
   static project file cannot safely claim which is active;
-- local filesystem memory does not travel with synced spot data;
-- synced collaborator-authored instructions would be a prompt-injection
-  boundary.
+- a local file does not travel with synced spot data.
 
-The first experiment is therefore labeled as a best case. It places a trusted
-fixture in the episode cwd and tests whether direct spot-specific examples
-remove the remaining context call. It does not ship spot file generation.
+The durable object is instead a cardinality-one Dialog claim on the same stable
+repository subject DID used by `tonk/repository`. The standard-library concept
+is `tonk/agents`; its Markdown attribute is `xyz.tonk.repo/agents`. `TONK_SPOT`
+selects the repository carrying the claim, independent of cwd.
 
-Durable memory needs a later two-episode handoff test and an explicit trust
-model. The safe default is to separate locally trusted agent instructions from
-shared spot data; shared context can be displayed as data, but must not silently
-be promoted into instructions.
+`tonk agents` exports the raw Markdown, `tonk agents --json` exposes its subject
+and observed revision, and `tonk agents set` imports a file or stdin. `tonk
+context` includes the same claim with source and revision. The first experiment
+asserts a trusted fixture, reads it back, verifies the subject, and only then
+projects it into the episode cwd for Codex.
+
+This corrects the earlier filesystem-first prototype. The projection is an
+adapter, never authority. A real launcher must not silently overwrite unimported
+local edits, and automatic loading is a trust boundary because any authorized
+spot writer can change the claim. Cardinality one also means concurrent
+whole-document updates can overwrite each other; a revision precondition or
+merge flow is required before general multi-agent editing.
+
+Durable memory still needs a two-episode handoff test: one agent records a
+bounded durable fact in the claim, then a fresh agent receives a newly generated
+projection and must use it. The current external episode budget is exhausted,
+so only mechanical claim round-trips run until a new episode budget is approved.
+
+### Mechanical result
+
+The scripted `claim-agents-mechanics` run asserted the fixture on the repository
+DID, read it back with source and revision metadata, produced a byte-identical
+projection, and passed the unchanged two-task execution verifier. A focused sync
+test also queried the typed `RepositoryAgents` claim from the upstream branch,
+confirming the Markdown travels as content-branch data rather than checkout
+state. No external agent episode was consumed.

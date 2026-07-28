@@ -119,6 +119,9 @@ mod when_evaluating_with_an_upstream {
 
 mod when_asserting_with_an_upstream {
     use super::*;
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_cli::agents;
+    use tonk_schema::RepositoryAgents;
 
     #[dialog_common::test]
     async fn it_auto_pushes_an_assert_to_the_upstream() -> Result<()> {
@@ -146,6 +149,36 @@ mod when_asserting_with_an_upstream {
             before, after,
             "a committing assert must push to the upstream like eval does"
         );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_carries_agent_context_on_the_synced_content_branch() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        let expected = "# Shared spot context\n";
+
+        let stored = agents::set(&test.site, expected, true).await?;
+        let upstream = test
+            .site
+            .repository
+            .branch("upstream")
+            .open()
+            .perform(&test.site.operator)
+            .await?;
+        let claims: Vec<RepositoryAgents> = upstream
+            .query()
+            .select(Query::<RepositoryAgents> {
+                this: Term::var("this"),
+                agents: Term::var("agents"),
+            })
+            .perform(&test.site.operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].this.to_string(), stored.entity);
+        assert_eq!(claims[0].agents.0, expected);
         Ok(())
     }
 }

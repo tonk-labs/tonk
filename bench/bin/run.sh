@@ -40,8 +40,10 @@ done
 export BENCH_SPOT_AGENTS="$SPOT_AGENTS"
 if [ "$SPOT_AGENTS" = 1 ]; then
   SPOT_AGENTS_JSON=true
+  SPOT_AGENTS_SOURCE=dialog-claim
 else
   SPOT_AGENTS_JSON=false
+  SPOT_AGENTS_SOURCE=none
 fi
 
 if [[ ! "$BENCH_VARIANT" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -121,6 +123,7 @@ for i in $(seq 1 "$RUNS"); do
     --arg revision "$revision" \
     --arg runner "${EPISODE_RUNNER:-claude}" \
     --arg model "$effective_model" \
+    --arg spot_agents_source "$SPOT_AGENTS_SOURCE" \
     --argjson spot_agents "$SPOT_AGENTS_JSON" \
     --argjson dirty "$dirty" \
     '{
@@ -130,7 +133,8 @@ for i in $(seq 1 "$RUNS"); do
       dirty: $dirty,
       runner: $runner,
       model: $model,
-      spot_agents: $spot_agents
+      spot_agents: $spot_agents,
+      spot_agents_source: $spot_agents_source
     }' > "$RUN_DIR/experiment.json"
   if [ -x "$SCENARIO/prepare.sh" ]; then
     "$SCENARIO/prepare.sh"

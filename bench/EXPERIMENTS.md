@@ -32,10 +32,14 @@ finish both arms close together and record the timing limitation.
 
 ## Trusted spot AGENTS.md pilot
 
-`--spot-agents` installs a trusted, scenario-owned `AGENTS.md` in the episode's
-working directory and records that exposure in `experiment.json`. It is a
-best-case test of whether automatically loaded spot-specific examples remove
-the remaining context call:
+`--spot-agents` asserts scenario-owned Markdown as a Dialog claim on the spot's
+repository subject DID. The harness reads the claim back, verifies its entity,
+and projects it into the episode cwd as `AGENTS.md` before launch. The claim is
+the source of truth; the file is a runtime adapter. Both exposure and source are
+recorded in `experiment.json`.
+
+This is a best-case test of whether automatically loaded spot-specific examples
+remove the remaining context call:
 
 ```sh
 nix develop -c bench/bin/bench run first-use --runs 3 \
@@ -46,17 +50,21 @@ Compare it to the graduated `workflow-context-pilot` arm. The expected direct
 trajectory is `query -> assert`, so the primary metric can improve from two
 commands before the write to one.
 
-This pilot does not establish that an `AGENTS.md` inside every real spot is
-discoverable. Codex searches from the project root down to its current working
-directory, not into child directories. A file at `project/.tonk/AGENTS.md`
-therefore does not load when the agent starts at `project/`. It also does not
-test cross-device memory or untrusted collaboration: remotely supplied text
-must never become automatic agent instructions without an explicit trust
-decision.
+This pilot validates pre-launch projection, not automatic placement in every
+runtime. Codex searches from the project root down to its current working
+directory, not into child directories, so a launcher must project the selected
+spot's claim into a path Codex will read. Cwd still does not select the spot.
+
+The fixture is trusted. In collaboration, an authorized spot writer can change
+the claim, so automatic instruction loading needs an explicit trust decision
+and must show the repository subject and revision. A projection must also avoid
+silently overwriting unimported local edits.
 
 A later durable-memory experiment must use two episodes: one agent records a
-bounded durable fact, then a fresh agent uses that fact. Score both correct
-retention and the absence of secrets, transient status, or instruction drift.
+bounded durable fact with `tonk agents set`, then the harness projects the new
+claim for a fresh agent using the same spot. Score correct retention, entity and
+revision continuity, and the absence of secrets, transient status, instruction
+drift, or lost concurrent edits.
 
 ## Pre-registered decision rule
 

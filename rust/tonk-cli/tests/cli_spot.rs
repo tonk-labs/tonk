@@ -228,6 +228,64 @@ mod when_resolving_with_precedence {
     }
 }
 
+mod when_using_spot_agent_context {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_explains_how_to_create_a_missing_claim() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+
+        let output = run(state.path(), &["agents"], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("no AGENTS.md claim"), "{stderr}");
+        assert!(stderr.contains("tonk agents set AGENTS.md"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_round_trips_the_repository_claim_as_raw_markdown_and_json() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[]);
+        let source = state.path().join("source.md");
+        let expected = "# Demo spot\n\n1. Run `tonk query task --json`.\n";
+        std::fs::write(&source, expected).expect("write source");
+
+        let output = run(
+            state.path(),
+            &["agents", "set", source.to_str().expect("utf-8 path")],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let receipt = stdout_of(&output);
+        assert!(receipt.contains("asserted AGENTS.md claim"), "{receipt}");
+        assert!(receipt.contains("entity: did:key:"), "{receipt}");
+        assert!(receipt.contains("revision:"), "{receipt}");
+
+        let output = run(state.path(), &["agents"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(stdout_of(&output), expected);
+
+        let output = run(state.path(), &["agents", "--json"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("valid claim JSON");
+        assert_eq!(value["source"], "dialog-claim");
+        assert_eq!(value["attribute"], "xyz.tonk.repo/agents");
+        assert_eq!(value["markdown"], expected);
+        assert!(
+            value["entity"]
+                .as_str()
+                .is_some_and(|entity| entity.starts_with("did:key:"))
+        );
+        assert!(
+            value["revision"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+}
+
 mod when_joining {
     use super::*;
 

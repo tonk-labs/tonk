@@ -7,7 +7,7 @@
 //! `guide`, `schema`, `migrate`) are read-only or one-shot setup
 //! helpers.
 
-use std::io::{IsTerminal as _, Write as _};
+use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -24,7 +24,7 @@ use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views::{self, ViewSummary};
-use tonk_cli::{ExitCode, account, context, guide, identity, schema, site};
+use tonk_cli::{ExitCode, account, agents, context, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -55,6 +55,22 @@ enum Command {
         /// Emit the versioned tonk.context.v1 contract.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Read or update the AGENTS.md claim carried by this spot
+    ///
+    /// With no subcommand, writes the raw Markdown to stdout so it can be
+    /// projected with `tonk agents > AGENTS.md`. The claim on the repository
+    /// subject DID remains the source of truth.
+    #[command(
+        after_help = "Examples:\n  tonk agents\n  tonk agents --json\n  tonk agents > AGENTS.md\n  tonk agents set AGENTS.md\n  tonk agents set - < AGENTS.md"
+    )]
+    Agents {
+        /// Include the repository subject and observed revision.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<AgentsCommand>,
     },
 
     /// Print the built-in agent reference (the index, or one topic)
@@ -425,6 +441,19 @@ enum Command {
 }
 
 #[derive(Subcommand, Debug)]
+enum AgentsCommand {
+    /// Assert a Markdown document on the selected spot's repository subject
+    Set {
+        /// Markdown file to assert, or `-` for stdin.
+        #[arg(value_name = "PATH", default_value = "AGENTS.md")]
+        path: PathBuf,
+        /// Skip automatic pull-before and push-after.
+        #[arg(long)]
+        no_sync: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum AccountCommand {
     /// Show whether this native profile is linked to an account
     Status,
@@ -741,6 +770,12 @@ enum TelemetryAction {
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
         Command::Context { .. } => ("context", None),
+        Command::Agents { command, .. } => (
+            "agents",
+            command.as_ref().map(|command| match command {
+                AgentsCommand::Set { .. } => "set",
+            }),
+        ),
         Command::Use { .. } => ("use", None),
         Command::Spot { command } => (
             "spot",
@@ -846,6 +881,7 @@ async fn main() {
     let spot = cli.spot;
     let exit = match command {
         Command::Context { json } => context_op(json, spot.as_deref()).await,
+        Command::Agents { json, command } => agents_op(json, command, spot.as_deref()).await,
         Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
@@ -956,6 +992,71 @@ async fn context_op(json: bool, spot: Option<&str>) -> ExitCode {
         return print_error(format!("failed to write stdout: {err}"));
     }
     ExitCode::Success
+}
+
+/// `tonk agents` — read or update claim-backed spot instructions.
+async fn agents_op(json: bool, command: Option<AgentsCommand>, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    match command {
+        None => {
+            let claim = match agents::get(&site).await {
+                Ok(Some(claim)) => claim,
+                Ok(None) => {
+                    return print_error(
+                        "this spot has no AGENTS.md claim\ncreate one: tonk agents set AGENTS.md",
+                    );
+                }
+                Err(err) => return print_error(format!("could not read AGENTS.md claim: {err:#}")),
+            };
+            let rendered = if json {
+                match serde_json::to_string_pretty(&claim) {
+                    Ok(json) => format!("{json}\n"),
+                    Err(err) => {
+                        return print_error(format!("could not encode AGENTS.md JSON: {err}"));
+                    }
+                }
+            } else {
+                claim.markdown
+            };
+            let mut stdout = std::io::stdout().lock();
+            if let Err(err) = stdout.write_all(rendered.as_bytes()) {
+                return print_error(format!("failed to write stdout: {err}"));
+            }
+            ExitCode::Success
+        }
+        Some(AgentsCommand::Set { path, no_sync }) => {
+            if json {
+                return print_error("`--json` reads a claim and cannot be combined with `set`");
+            }
+            let markdown = if path == PathBuf::from("-") {
+                let mut markdown = String::new();
+                if let Err(err) = std::io::stdin().read_to_string(&mut markdown) {
+                    return print_error(format!("could not read AGENTS.md from stdin: {err}"));
+                }
+                markdown
+            } else {
+                match std::fs::read_to_string(&path) {
+                    Ok(markdown) => markdown,
+                    Err(err) => {
+                        return print_error(format!("could not read {}: {err}", path.display()));
+                    }
+                }
+            };
+            match agents::set(&site, &markdown, auto_sync::enabled(no_sync)).await {
+                Ok(claim) => {
+                    println!(
+                        "asserted AGENTS.md claim\nsource: {} {}\nentity: {}\nrevision: {}\nnext: tonk agents --json",
+                        claim.source, claim.attribute, claim.entity, claim.revision
+                    );
+                    ExitCode::Success
+                }
+                Err(err) => print_error(format!("could not assert AGENTS.md claim: {err:#}")),
+            }
+        }
+    }
 }
 
 async fn account_op(command: AccountCommand) -> ExitCode {

@@ -73,6 +73,10 @@ path = "tests/cli_spot.rs"
 name = "context"
 path = "tests/context.rs"
 
+[[test]]
+name = "agents"
+path = "tests/agents.rs"
+
 [features]
 integration-tests = []
 

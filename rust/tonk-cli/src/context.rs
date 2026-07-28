@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::agents::{self, SpotAgents};
 use crate::schema::{self, FieldSummary};
 use crate::site::TonkSite;
 use crate::spot::Resolved;
@@ -26,6 +27,8 @@ pub struct ContextReport {
     pub schema_version: &'static str,
     /// Exact selected store.
     pub spot: SpotContext,
+    /// Synced spot-specific agent context, when asserted.
+    pub agents: Option<SpotAgents>,
     /// User/application concepts with command-shaped examples.
     pub concepts: Vec<ConceptContext>,
     /// Commands for an empty application vocabulary.
@@ -106,8 +109,16 @@ impl From<FieldSummary> for FieldContext {
 
 /// Read the selected spot and derive direct workflows from its live schema.
 pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextReport> {
-    let concepts = schema::list_concepts(site)
-        .await?
+    let live_concepts = schema::list_concepts(site).await?;
+    let agents_declared = live_concepts
+        .iter()
+        .any(|concept| concept.name == agents::CONCEPT_NAME);
+    let spot_agents = if agents_declared {
+        agents::get_declared(site).await?
+    } else {
+        None
+    };
+    let concepts = live_concepts
         .into_iter()
         .filter(|concept| {
             concept.name != "command"
@@ -188,6 +199,7 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
             branch: "main",
             cwd_selects_spot: false,
         },
+        agents: spot_agents,
         concepts,
         empty_spot_workflow: vec![
             WorkflowStep {
@@ -239,6 +251,16 @@ impl ContextReport {
         );
         let _ = writeln!(out, "site: `{}`", self.spot.site);
         out.push_str("Changing cwd does not change the selected Tonk data.\n");
+
+        if let Some(agents) = &self.agents {
+            let _ = writeln!(
+                out,
+                "\n## Spot AGENTS.md\nsource: `{}` `{}` on `{}` at `{}`\n",
+                agents.source, agents.attribute, agents.entity, agents.revision
+            );
+            out.push_str(agents.markdown.trim_end());
+            out.push('\n');
+        }
 
         if self.concepts.is_empty() {
             out.push_str("\n## Build a first visible model\n");

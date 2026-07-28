@@ -10,6 +10,7 @@
 //! - [`site`] — repo+branch open/init; resolved via the spot registry.
 //! - [`spot`] — spot registry: named spots, canonical storage, selection.
 //! - [`identity`] — local profile management.
+//! - [`agents`] — claim-backed spot context and `AGENTS.md` projection data.
 //! - [`authoring`] — pure notation builders (concept, view, and the
 //!   space-home recipe) consumed by the noun-first authoring verbs.
 //! - [`data`] — pure notation builders (value rendering + doc
@@ -29,6 +30,7 @@
 //! - [`update`] — self-update: `tonk update` plus the release check.
 
 pub mod account;
+pub mod agents;
 pub mod authoring;
 pub mod auto_sync;
 pub mod blob;
