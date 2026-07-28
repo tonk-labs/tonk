@@ -192,9 +192,7 @@ pub async fn assess_with<S: RevocationSource>(
             Ok(verified) => verified,
             Err(error) => return failed_verdict(snapshot, cids, now_ms, error.to_string()),
         };
-        if verified.target_cid.to_string() != key_target
-            || verified.artifact_cid.to_string() != key_artifact
-        {
+        if verified.target_cid != key_target || verified.artifact_cid != key_artifact {
             return failed_verdict(
                 snapshot,
                 cids,
@@ -290,7 +288,7 @@ mod tests {
         let mut snapshot = RevocationSnapshot::default();
         snapshot.revoked.insert("old".into());
         assert_eq!(
-            assess_with(&mut snapshot, &source, &[target.clone()], 1).await,
+            assess_with(&mut snapshot, &source, std::slice::from_ref(&target), 1).await,
             SetVerdict::Revoked
         );
         assert!(snapshot.revoked.contains("old"));
