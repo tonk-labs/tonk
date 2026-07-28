@@ -109,6 +109,39 @@ mod when_nothing_is_registered {
     use super::*;
 
     #[dialog_common::test]
+    fn bare_tonk_attempts_live_context_instead_of_static_help() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let output = run(state.path(), &[], &[]);
+        assert!(!output.status.success());
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("no spots registered"), "{stderr}");
+        assert!(!stderr.contains("Usage: tonk"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn generic_assert_help_is_available_without_a_spot() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let output = run(state.path(), &["assert", "--help"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("query <CONCEPT> --json"), "{stdout}");
+        assert!(
+            stdout.contains("assert task <ENTITY> --done true"),
+            "{stdout}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn root_help_leads_with_a_direct_workflow() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let output = run(state.path(), &["--help"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("tonk context"), "{stdout}");
+        assert!(stdout.contains("tonk query <CONCEPT> --json"), "{stdout}");
+    }
+
+    #[dialog_common::test]
     fn it_errors_with_spot_new_hint_when_nothing_registered() {
         let state = tempfile::tempdir().expect("tempdir");
         let output = run(state.path(), &["status"], &[]);
@@ -165,6 +198,19 @@ mod when_resolving_with_precedence {
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(stderr.contains("spot 'b' (via global"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn bare_use_reports_the_effective_selection() {
+        let state = tempfile::tempdir().expect("tempdir");
+        two_spot_registry(state.path());
+
+        let output = run(state.path(), &["use"], &[("TONK_SPOT", "a")]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("current spot: a"), "{stdout}");
+        assert!(stdout.contains("selected via: env"), "{stdout}");
+        assert!(stdout.contains("next: tonk context"), "{stdout}");
     }
 
     #[dialog_common::test]

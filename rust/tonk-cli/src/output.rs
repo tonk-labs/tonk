@@ -201,6 +201,69 @@ fn quote_string(s: &str) -> String {
     out
 }
 
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Render a pure data read without transaction-envelope noise.
+///
+/// Notation returns re-submittable instances plus an explicit count. JSON is
+/// a bare array with `this` alongside the concept fields.
+pub fn render_results(response: &EvaluateResponse, format: Format, label: &str) -> Result<String> {
+    let results: Vec<&QueryResult> = response
+        .matches_after
+        .iter()
+        .filter(|block| block.label == label)
+        .flat_map(|block| block.results.iter())
+        .collect();
+
+    match format {
+        Format::Notation => {
+            let mut out = String::new();
+            for result in &results {
+                render_one(&mut out, label, result);
+            }
+            let distinct: std::collections::HashSet<&str> =
+                results.iter().map(|result| result.this.as_str()).collect();
+            let (instances, rows) = (distinct.len(), results.len());
+            if instances == rows {
+                let _ = writeln!(
+                    out,
+                    "# {instances} {label} instance{s}",
+                    s = plural(instances)
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "# {instances} {label} instance{s} ({rows} rows; many-valued fields repeat rows)",
+                    s = plural(instances)
+                );
+            }
+            Ok(out)
+        }
+        Format::Json => {
+            let instances: Vec<serde_json::Value> = results
+                .iter()
+                .map(|result| {
+                    let mut object = serde_json::Map::new();
+                    object.insert(
+                        "this".into(),
+                        serde_json::Value::String(result.this.clone()),
+                    );
+                    for (field, value) in &result.fields {
+                        object.insert(field.clone(), value.clone());
+                    }
+                    serde_json::Value::Object(object)
+                })
+                .collect();
+            let mut rendered =
+                serde_json::to_string_pretty(&instances).context("JSON serialization failed")?;
+            rendered.push('\n');
+            Ok(rendered)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- //
 // JSON renderer                                                    //
 // ---------------------------------------------------------------- //

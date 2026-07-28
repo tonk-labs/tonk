@@ -76,3 +76,30 @@ held-out agent trajectories without reducing task correctness.
 - First-use episodes run with a fresh home/profile under the run directory.
   Runner authentication remains available, but the developer's Tonk profile is
   outside the episode sandbox.
+
+## Treatment 1: workflow-first live context
+
+The ten-run baseline passed the verifier in every episode, with first-write
+indices `12, 13, 11, 14, 10, 8, 9, 8, 6, 9` (median `9.5`). Every episode
+spent most pre-write calls on orientation. Repeated failures were a guessed
+`tonk context`, bare `tonk use`, and bare `tonk assert --help`; agents also
+re-read after writes because assert printed stale pre-commit matches.
+
+The first treatment therefore combines:
+
+- bare `tonk` / `tonk context` as a bounded live workflow card;
+- top-level help that shows `query -> assert -> query`, not a conceptual loop;
+- generic and schema-derived assert help that both succeed;
+- bare `tonk use` as transparent selection inspection;
+- data reads without transaction-envelope noise;
+- an assert response that performs a fresh read and prints current state.
+
+The prototype context's mental-model essay and view inventory were rejected
+for this treatment. The experiment says examples and executable flows are the
+scarce resource. Existing guides remain available for compatibility but are no
+longer the first-use recommendation; deleting or replacing them needs its own
+transfer experiment.
+
+Spot-local `AGENTS.md` is also held out of this treatment. It is a separate
+hypothesis about automatic orientation and durable spot memory, so combining it
+now would make any measured gain impossible to attribute.

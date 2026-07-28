@@ -32,6 +32,7 @@ pub mod account;
 pub mod authoring;
 pub mod auto_sync;
 pub mod blob;
+pub mod context;
 pub mod data;
 pub mod data_ops;
 pub mod eval;

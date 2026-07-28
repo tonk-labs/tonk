@@ -24,15 +24,15 @@ use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views::{self, ViewSummary};
-use tonk_cli::{ExitCode, account, guide, identity, schema, site};
+use tonk_cli::{ExitCode, account, context, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "tonk",
-    about = "Headless CLI for a datalog-flavoured, syncable fact store: define concepts, assert facts, query them, render views",
+    about = "CLI for a synced fact store: inspect live state, run explicit workflows, verify every write",
     version,
     propagate_version = true,
-    after_help = "The loop: orient, define concepts, assert facts, give them a view, invite.\n\n  orient   guide · schema · concept ls · view ls · status\n  author   concept add · view add · home\n  data     assert · query · retract\n  power    eval (asserted-notation) · render\n  collab   invite · join · push · pull · remote\n  setup    spot · use · blob · telemetry\n\nStart with `tonk guide`; every command's --help carries examples."
+    after_help = "Start with live state, not documentation:\n  tonk context\n  tonk query <CONCEPT> --json\n  tonk assert <CONCEPT> <ENTITY> --<field> <value>\n  tonk query <CONCEPT> <ENTITY> --json\n\nBare `tonk` runs `tonk context`. Use `tonk help <COMMAND>` for more workflows."
 )]
 struct Cli {
     /// Operate on this spot instead of the selected one.
@@ -41,12 +41,22 @@ struct Cli {
     spot: Option<String>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
     // -- orient -------------------------------------------------------
+    /// Print live concepts and direct read-update-verify workflows
+    ///
+    /// Read-only. This is also what bare `tonk` runs.
+    #[command(after_help = "Examples:\n  tonk\n  tonk context\n  tonk context --json")]
+    Context {
+        /// Emit the versioned tonk.context.v1 contract.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Print the built-in agent reference (the index, or one topic)
     ///
     /// With no topic, prints a one-screen index; `tonk guide <topic>`
@@ -136,12 +146,13 @@ enum Command {
     // `clap::Command` and renders its help instead.
     #[command(
         disable_help_flag = true,
-        after_help = "Examples:\n  tonk assert task --title \"Write the plan\" --done false\n  tonk assert task <entity> --done true\n  tonk assert task --help"
+        after_help = "Safe to re-run: identical fields are a no-op.\n\nExamples:\n  tonk assert task --title \"Write the plan\" --done false\n  tonk assert task <ENTITY> --done true\n  tonk assert task --help"
     )]
     Assert {
-        /// Name of the concept to assert against.
-        #[arg(value_name = "CONCEPT")]
-        concept: String,
+        /// Name of the concept to assert against. Omit it with
+        /// `--help` to see the generic update workflow.
+        #[arg(value_name = "CONCEPT", allow_hyphen_values = true)]
+        concept: Option<String>,
         /// Optional entity (a leading non-flag token selects the
         /// supersede form) followed by schema-derived `--field
         /// value` flags, captured raw (including a bare `--help`)
@@ -299,11 +310,11 @@ enum Command {
     /// The selection is global to this machine. Concurrent sessions
     /// (agents, CI) should pin their spot per-process with --spot or
     /// TONK_SPOT instead of relying on it.
-    #[command(after_help = "Examples:\n  tonk use garden")]
+    #[command(after_help = "Examples:\n  tonk use\n  tonk use garden")]
     Use {
-        /// A registered spot name (see `tonk spot list`).
+        /// A registered spot name. Omit it to inspect the current selection.
         #[arg(value_name = "NAME")]
-        name: String,
+        name: Option<String>,
     },
 
     /// Manage spots: named, centrally registered fact stores
@@ -729,6 +740,7 @@ enum TelemetryAction {
 /// (never argument values) are ever reported.
 fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     match command {
+        Command::Context { .. } => ("context", None),
         Command::Use { .. } => ("use", None),
         Command::Spot { command } => (
             "spot",
@@ -802,17 +814,18 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
+    let command = cli.command.unwrap_or(Command::Context { json: false });
 
     // The telemetry subcommand itself is never tracked — toggling
     // must not race its own event, and opt-out should be silent.
-    let mut recorder = match &cli.command {
+    let mut recorder = match &command {
         Command::Telemetry { .. } => None,
         command => {
             let (name, subcommand) = descriptor(command);
             tonk_cli::telemetry::begin(name, subcommand).await
         }
     };
-    if let (Some(recorder), Command::Eval(args)) = (recorder.as_mut(), &cli.command) {
+    if let (Some(recorder), Command::Eval(args)) = (recorder.as_mut(), &command) {
         recorder.property(
             "source",
             match (&args.command, &args.path) {
@@ -828,11 +841,12 @@ async fn main() {
     }
 
     let started = std::time::Instant::now();
-    // `cli.command` is moved by the dispatch below, so ask now.
-    let is_update = matches!(cli.command, Command::Update { .. });
+    // `command` is moved by the dispatch below, so ask now.
+    let is_update = matches!(&command, Command::Update { .. });
     let spot = cli.spot;
-    let exit = match cli.command {
-        Command::Use { name } => use_op(name).await,
+    let exit = match command {
+        Command::Context { json } => context_op(json, spot.as_deref()).await,
+        Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
@@ -919,6 +933,31 @@ async fn identity(reset: bool) -> ExitCode {
     }
 }
 
+/// `tonk context` (and bare `tonk`) — one bounded, read-only workflow card.
+async fn context_op(json: bool, spot: Option<&str>) -> ExitCode {
+    let (resolved, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let report = match context::inspect(&resolved, &site).await {
+        Ok(report) => report,
+        Err(err) => return print_error(format!("could not build live context: {err:#}")),
+    };
+    let rendered = if json {
+        match report.render_json() {
+            Ok(rendered) => rendered,
+            Err(err) => return print_error(format!("could not encode context JSON: {err}")),
+        }
+    } else {
+        report.render_markdown()
+    };
+    let mut stdout = std::io::stdout().lock();
+    if let Err(err) = stdout.write_all(rendered.as_bytes()) {
+        return print_error(format!("failed to write stdout: {err}"));
+    }
+    ExitCode::Success
+}
+
 async fn account_op(command: AccountCommand) -> ExitCode {
     let profile = match identity::open().await {
         Ok(profile) => profile,
@@ -1003,22 +1042,51 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     }
 }
 
-/// `tonk use` — set the global current spot.
-async fn use_op(name: String) -> ExitCode {
+/// `tonk use [name]` — inspect or change the selected spot.
+async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
         Err(err) => return print_error(err.to_string()),
     };
-    match tonk_cli::spot::select(&store, &name) {
-        Ok(resolved) => {
-            println!(
-                "current spot: {name} ({site})",
-                name = resolved.name,
-                site = resolved.site.display(),
-            );
+    match name {
+        Some(name) => match tonk_cli::spot::select(&store, &name) {
+            Ok(resolved) => {
+                println!(
+                    "current spot: {name} ({site})",
+                    name = resolved.name,
+                    site = resolved.site.display(),
+                );
+                println!("next: tonk context");
+                ExitCode::Success
+            }
+            Err(err) => print_error(err.to_string()),
+        },
+        None => {
+            let env = std::env::var(tonk_cli::spot::SPOT_ENV)
+                .ok()
+                .filter(|value| !value.is_empty());
+            let listing = match tonk_cli::spot::listing(&store, flag, env.as_deref()) {
+                Ok(listing) => listing,
+                Err(err) => return print_error(err.to_string()),
+            };
+            match listing.current {
+                Some(current) => println!(
+                    "current spot: {} ({})\nselected via: {}",
+                    current.name,
+                    current.site.display(),
+                    current.source
+                ),
+                None => println!("current spot: (none)"),
+            }
+            if !listing.rows.is_empty() {
+                println!("registered:");
+                for (registered, site) in listing.rows {
+                    println!("  {registered}\t{}", site.display());
+                }
+            }
+            println!("next: tonk context");
             ExitCode::Success
         }
-        Err(err) => print_error(err.to_string()),
     }
 }
 
@@ -1711,6 +1779,7 @@ fn print_claim_outcome(name: &str, root: &std::path::Path, outcome: &ClaimOutcom
         }
     }
     println!("current spot: {name}");
+    println!("next: tonk context");
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
@@ -1809,13 +1878,49 @@ async fn get_op(concept: String, entity: String, json: bool, spot: Option<&str>)
     }
 }
 
+/// Generic workflow for `tonk assert` before a live concept supplies fields.
+const ASSERT_USAGE: &str = "\
+Write facts: create an instance, or update fields on an existing entity.
+
+Workflow:
+  1. tonk query <CONCEPT> --json
+  2. tonk assert <CONCEPT> <ENTITY> --<field> <value>
+  3. tonk query <CONCEPT> <ENTITY> --json
+
+Create:
+  tonk assert <CONCEPT> --<required-field> <value> ...
+
+See the live typed flags:
+  tonk assert <CONCEPT> --help
+
+Example:
+  tonk query task --json
+  tonk assert task <ENTITY> --done true
+  tonk query task <ENTITY> --json
+";
+
 /// Split `rest` into the optional entity and the flag argv, then
 /// assert via [`data_ops::assert_op`]. A leading non-flag token is
 /// always the entity (the supersede form) — an entity reference
 /// never starts with `-`, and flag values always follow their
 /// flag, so the first token is either a flag or the entity. Same
 /// dynamic-flag / `--help` handling as the old `add`/`set`.
-async fn assert_cmd(concept: String, rest: Vec<String>, spot: Option<&str>) -> ExitCode {
+async fn assert_cmd(concept: Option<String>, rest: Vec<String>, spot: Option<&str>) -> ExitCode {
+    let concept = match concept.as_deref() {
+        Some("--help") | Some("-h") => {
+            print!("{ASSERT_USAGE}");
+            return ExitCode::Success;
+        }
+        Some(name) if name.starts_with('-') => {
+            eprintln!("error: expected a concept name, got '{name}'\n\n{ASSERT_USAGE}");
+            return ExitCode::AnalyzeError;
+        }
+        Some(name) => name.to_owned(),
+        None => {
+            eprintln!("error: missing <CONCEPT>\n\n{ASSERT_USAGE}");
+            return ExitCode::AnalyzeError;
+        }
+    };
     let (entity, argv) = match rest.split_first() {
         Some((first, tail)) if !first.starts_with('-') => (Some(first.clone()), tail.to_vec()),
         _ => (None, rest),

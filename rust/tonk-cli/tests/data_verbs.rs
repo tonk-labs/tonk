@@ -236,13 +236,16 @@ mod when_superseding_and_retracting {
         // by name across separate eval calls.
         test.eval_inline("task!: &t1\n  title: \"old\"\n  done: false\n")
             .await?;
-        tonk_cli::data_ops::assert_op(
+        let updated = tonk_cli::data_ops::assert_op(
             &test.site,
             "task",
             Some("t1"),
             &["--title".into(), "new".into()],
         )
         .await?;
+        assert!(updated.contains("current state:"), "{updated}");
+        assert!(updated.contains("title: \"new\""), "{updated}");
+        assert!(!updated.contains("title: \"old\""), "{updated}");
         let out = tonk_cli::data_ops::get(&test.site, "task", "t1", false).await?;
         assert!(
             out.contains("new") && !out.contains("old"),
