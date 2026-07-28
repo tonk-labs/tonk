@@ -49,7 +49,7 @@ fn run(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
         .expect("tonk binary runs")
 }
 
-/// Same isolation as [`tonk_cmd`], run *from* `cwd`. The attachment
+/// Same isolation as [`tonk_cmd`], run *from* `cwd`. The binding
 /// tier keys off the working directory, so these have to control it
 /// rather than inherit the test runner's.
 fn run_in(state_dir: &Path, cwd: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
@@ -129,17 +129,17 @@ mod when_nothing_is_registered {
     }
 }
 
-mod when_asking_for_detach_help {
+mod when_asking_for_unbind_help {
     use super::*;
 
-    /// Clearing a dead attachment (a directory that no longer
+    /// Clearing a dead binding (a directory that no longer
     /// exists) is `PATH`'s whole reason for being — canonicalization
     /// means only an absolute path can still match a vanished
     /// directory, so the help text has to say so.
     #[dialog_common::test]
     fn it_says_the_path_must_be_absolute() {
         let state = tempfile::tempdir().expect("tempdir");
-        let output = run(state.path(), &["spot", "detach", "--help"], &[]);
+        let output = run(state.path(), &["spot", "unbind", "--help"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(stdout.contains("absolute"), "{stdout}");
@@ -158,7 +158,7 @@ mod when_resolving_with_precedence {
     }
 
     #[dialog_common::test]
-    fn it_prefers_the_flag_over_env_and_global() {
+    fn it_prefers_the_flag_over_env() {
         let state = tempfile::tempdir().expect("tempdir");
         two_spot_registry(state.path());
 
@@ -169,7 +169,7 @@ mod when_resolving_with_precedence {
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'a' (via flag"), "{stderr}");
+        assert!(stderr.contains("active spot: a (flag)"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -180,18 +180,21 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'a' (via env"), "{stderr}");
+        assert!(stderr.contains("active spot: a (env)"), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn it_treats_an_empty_tonk_spot_as_unset() {
+    fn it_does_not_fall_back_to_the_legacy_global_selection() {
         let state = tempfile::tempdir().expect("tempdir");
         two_spot_registry(state.path());
 
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'b' (via global"), "{stderr}");
+        assert!(
+            stderr.contains("no spot active for this directory"),
+            "{stderr}"
+        );
     }
 
     #[dialog_common::test]
@@ -523,11 +526,11 @@ mod when_minting_against_a_live_remote {
     }
 }
 
-mod when_a_directory_is_attached {
+mod when_a_directory_is_bound {
     use super::*;
 
-    /// Two registered spots with `b` selected globally, plus a real
-    /// `work/nested/` tree to attach and run from. Site paths need
+    /// Two registered spots plus a real `work/nested/` tree to bind
+    /// and run from. Site paths need
     /// not hold a repo: resolution and its error text are what is
     /// under test, not site opening.
     fn fixture(state: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -553,133 +556,141 @@ mod when_a_directory_is_attached {
             .to_string()
     }
 
-    fn attach(state: &Path, cwd: &Path, name: &str) {
-        let output = run_in(state, cwd, &["use", name, "--here"], &[]);
+    fn bind(state: &Path, cwd: &Path, name: &str) {
+        let output = run_in(state, cwd, &["use", name], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
     }
 
     #[dialog_common::test]
-    fn it_resolves_the_attachment_from_a_subdirectory() {
+    fn it_resolves_the_binding_from_a_subdirectory() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
         let output = run_in(state.path(), &nested, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'a' (via attached"), "{stderr}");
+        assert!(stderr.contains("active spot: a (directory"), "{stderr}");
         assert!(stderr.contains(&shown(&work)), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn it_leaves_the_global_selection_alone() {
+    fn it_has_no_selection_outside_a_binding() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
         let elsewhere = state.path().join("elsewhere");
         std::fs::create_dir_all(&elsewhere).expect("mkdir elsewhere");
         let output = run_in(state.path(), &elsewhere, &["spot", "list"], &[]);
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current: b (global)"), "{stdout}");
+        assert!(!stdout.contains("active here:"), "{stdout}");
     }
 
     #[dialog_common::test]
-    fn it_prefers_tonk_spot_over_an_attachment() {
+    fn it_prefers_tonk_spot_over_a_binding() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
         let output = run_in(state.path(), &nested, &["status"], &[("TONK_SPOT", "b")]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'b' (via env"), "{stderr}");
+        assert!(stderr.contains("active spot: b (env)"), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn it_takes_the_deepest_attachment() {
+    fn use_reports_a_process_override_separately_from_the_binding() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+
+        let output = run_in(state.path(), &work, &["use", "a"], &[("TONK_SPOT", "b")]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("binding: a"), "{stdout}");
+        assert!(stdout.contains("active spot: b (env)"), "{stdout}");
+    }
+
+    #[dialog_common::test]
+    fn it_takes_the_deepest_binding() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
-        attach(state.path(), &nested, "b");
+        bind(state.path(), &work, "a");
+        bind(state.path(), &nested, "b");
 
         let output = run_in(state.path(), &nested, &["status"], &[]);
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'b' (via attached"), "{stderr}");
+        assert!(stderr.contains("active spot: b (directory"), "{stderr}");
     }
 
     #[dialog_common::test]
-    fn it_lists_attachments() {
+    fn it_lists_bindings() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
         let output = run_in(state.path(), state.path(), &["spot", "list"], &[]);
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("attached:"), "{stdout}");
+        assert!(stdout.contains("directories:"), "{stdout}");
         assert!(stdout.contains(&shown(&work)), "{stdout}");
     }
 
     #[dialog_common::test]
-    fn it_refuses_to_detach_from_a_subdirectory() {
+    fn it_refuses_to_unbind_from_a_subdirectory() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
-        let refused = run_in(state.path(), &nested, &["spot", "detach"], &[]);
+        let refused = run_in(state.path(), &nested, &["spot", "unbind"], &[]);
         assert!(!refused.status.success());
         let stderr = stderr_of(&refused);
-        assert!(stderr.contains("is attached to a"), "{stderr}");
+        assert!(stderr.contains("is bound to a"), "{stderr}");
 
-        let detached = run_in(state.path(), &work, &["spot", "detach"], &[]);
-        assert!(detached.status.success(), "{}", stderr_of(&detached));
+        let unbound = run_in(state.path(), &work, &["spot", "unbind"], &[]);
+        assert!(unbound.status.success(), "{}", stderr_of(&unbound));
 
         let output = run_in(state.path(), &nested, &["status"], &[]);
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("spot 'b' (via global"), "{stderr}");
+        assert!(
+            stderr.contains("no spot active for this directory"),
+            "{stderr}"
+        );
     }
 
     #[dialog_common::test]
     fn it_reports_the_previous_binding_on_reattach() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
-        let output = run_in(state.path(), &work, &["use", "b", "--here"], &[]);
-        assert!(output.status.success(), "{}", stderr_of(&output));
-        let stdout = stdout_of(&output);
-        assert!(stdout.contains("to b (was a)"), "{stdout}");
-    }
-
-    #[dialog_common::test]
-    fn it_warns_that_an_attachment_still_outranks_a_fresh_use() {
-        let state = tempfile::tempdir().expect("tempdir");
-        let (work, _nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
-
-        // `b` is confirmed as current, but `work` is still attached
-        // to `a`, which outranks `current` — so every bare command
-        // run from here keeps landing on `a`, not `b`.
         let output = run_in(state.path(), &work, &["use", "b"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("current spot: b"), "{stdout}");
-        let stderr = stderr_of(&output);
-        assert!(
-            stderr.contains("warning:") && stderr.contains("resolve to 'a'"),
-            "{stderr}"
-        );
-        assert!(stderr.contains(&shown(&work)), "{stderr}");
-        assert!(stderr.contains("spot detach"), "{stderr}");
+        assert!(stdout.contains("binding: b (was a)"), "{stdout}");
+        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
     }
 
-    /// The companion to the warning test above: without an
-    /// attachment on the cwd, `use` must stay silent. This is what
-    /// keeps the warning test honest — a naive implementation that
-    /// always prints on `use` would pass the first test too.
     #[dialog_common::test]
-    fn it_prints_no_shadow_warning_without_an_attachment() {
+    fn it_rebinds_the_directory_immediately() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let (work, _nested) = fixture(state.path());
+        bind(state.path(), &work, "a");
+
+        // `use` rewrites this directory's one binding.
+        let output = run_in(state.path(), &work, &["use", "b"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("binding: b (was a)"), "{stdout}");
+        assert!(stdout.contains("active spot: b (directory"), "{stdout}");
+
+        let status = run_in(state.path(), &work, &["status"], &[]);
+        let stderr = stderr_of(&status);
+        assert!(stderr.contains("active spot: b (directory"), "{stderr}");
+    }
+
+    #[dialog_common::test]
+    fn it_binds_without_a_shadow_warning() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
 
@@ -690,10 +701,10 @@ mod when_a_directory_is_attached {
     }
 
     #[dialog_common::test]
-    fn it_warns_after_spot_new_too() {
+    fn spot_new_rebinds_the_invocation_directory() {
         let state = tempfile::tempdir().expect("tempdir");
         let (work, _nested) = fixture(state.path());
-        attach(state.path(), &work, "a");
+        bind(state.path(), &work, "a");
 
         let site = state.path().join("site-c");
         let site = site.to_str().expect("utf-8 site path");
@@ -704,24 +715,26 @@ mod when_a_directory_is_attached {
             &[],
         );
         assert!(output.status.success(), "{}", stderr_of(&output));
-        let stderr = stderr_of(&output);
-        assert!(
-            stderr.contains("warning:") && stderr.contains("resolve to 'a'"),
-            "{stderr}"
-        );
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("active spot: c (directory"), "{stdout}");
+
+        let status = run_in(state.path(), &work, &["status"], &[]);
+        assert!(status.status.success(), "{}", stderr_of(&status));
+        let stdout = stdout_of(&status);
+        assert!(stdout.contains("spot: c (directory"), "{stdout}");
     }
 }
 
-mod when_an_attachment_is_orphaned {
+mod when_a_binding_is_orphaned {
     use super::*;
 
-    /// A directory attached to a name that isn't registered — the
+    /// A directory bound to a name that isn't registered — the
     /// hand-edited-`spots.json` scenario `spot rm`'s own pruning
     /// normally prevents. The resulting error must say the name came
-    /// from the attachment and point at `spot detach`, not read as
+    /// from the binding and point at `spot unbind`, not read as
     /// an unexplained `unknown spot`.
     #[dialog_common::test]
-    fn it_blames_the_attachment_in_the_unknown_spot_error() {
+    fn it_blames_the_binding_in_the_unknown_spot_error() {
         let state = tempfile::tempdir().expect("tempdir");
         let b = state.path().join("site-b");
         std::fs::create_dir_all(&b).expect("mkdir b");
@@ -731,7 +744,7 @@ mod when_an_attachment_is_orphaned {
 
         let json = format!(
             "{{\"current\":\"b\",\"spots\":{{\"b\":{{\"site\":{site:?}}}}},\
-             \"attachments\":{{{dir:?}:\"a\"}}}}",
+             \"bindings\":{{{dir:?}:\"a\"}}}}",
             site = b.display().to_string(),
             dir = work_canon.display().to_string(),
         );
@@ -745,6 +758,6 @@ mod when_an_attachment_is_orphaned {
             stderr.contains(&work_canon.display().to_string()),
             "{stderr}"
         );
-        assert!(stderr.contains("spot detach"), "{stderr}");
+        assert!(stderr.contains("spot unbind"), "{stderr}");
     }
 }

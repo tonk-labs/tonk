@@ -1,5 +1,10 @@
 # CLI Spot Directory Attachments Implementation Plan
 
+> Superseded on 2026-07-28 by the directory-binding revision in
+> `../specs/2026-07-27-cli-spot-attachments-design.md`. This file
+> records the original implementation sequence; its global `current`,
+> `--here`, attachment, and detach semantics are no longer current.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a shell tab or an agent bind a directory to a tonk spot once, so every later command run from that directory resolves to it without `--spot` or `TONK_SPOT`.

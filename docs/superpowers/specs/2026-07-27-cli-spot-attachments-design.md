@@ -1,194 +1,165 @@
-# CLI directory attachments for spot selection
+# CLI directory bindings for spot selection
 
 **Date:** 2026-07-27
-**Status:** approved design, pending implementation
+**Revised:** 2026-07-28
+**Status:** implemented on `feat/cli-sessions`
 **Branch:** `feat/cli-sessions`
 
 ## Problem
 
-Spot selection resolves `--spot` > `TONK_SPOT` > the registry's
-`current` (`rust/tonk-cli/src/spot.rs`). Anyone driving more than one
-spot at a time has no comfortable option:
+A machine-global active spot cannot represent two terminal tabs or
+agents working concurrently. Requiring every invocation to repeat
+`--spot` or `TONK_SPOT` is safe but awkward. A fresh process already
+has one stable piece of context: its working directory.
 
-- **Terminal tabs.** `export TONK_SPOT=x` per tab works, but has to be
-  remembered on every new tab, and nothing on screen says which spot
-  the tab is pinned to.
-- **Agents with a fresh shell per command.** `export` cannot persist —
-  every single invocation has to carry `--spot x` or an inline env
-  prefix.
-- **Parallel agents in separate directories.** `tonk use` is the only
-  persistent selection and it is machine-global, so concurrent
-  sessions clobber each other.
+Tonk needs a persistent directory-scoped choice without moving or
+copying spot data into that directory.
 
-The gap is a *persistent* selection, narrower than machine-global,
-keyed on something a freshly spawned process can re-derive without
-being told. The working directory is the one key all three shapes
-already have.
+## Model
 
-## Design
-
-A central map from directory to spot name, consulted as a new
-resolution tier. The directory is a lookup key into the registry and
-nothing more — it never locates data and never creates anything.
-
-This is not the `git worktree` model, where the directory *is* the
-working copy. It is the relationship pipenv and poetry have with
-virtualenvs: the resource lives centrally and stays managed, and the
-project directory is a pointer at it that costs nothing to lose.
-
-### Storage
-
-`spots.json` gains one field beside `current`:
+A spot remains a named entry whose site data lives in the central Tonk
+store. The registry also holds directory bindings:
 
 ```json
 {
-  "current": "garden",
-  "attachments": {
+  "bindings": {
     "/Users/jack/tonk/tonk": "dev",
     "/Users/jack/notes": "garden"
   },
   "spots": {
-    "dev": { "site": "/Users/jack/Library/Application Support/tonk/spots/dev" }
+    "dev": {
+      "site": "/Users/jack/Library/Application Support/tonk/spots/dev"
+    },
+    "garden": {
+      "site": "/Users/jack/Library/Application Support/tonk/spots/garden"
+    }
   }
 }
 ```
 
-`#[serde(default)]` so existing registries load unchanged, written
-through the existing temp-file-plus-rename path. Keys are
-canonicalized absolute paths, so `/tmp` and `/private/tmp` are the
-same entry.
+The directory is only a canonical path key into `spots.json`. No Tonk
+data or pointer file is written into the working directory.
 
-It lives in `spots.json` rather than a file of its own because it is
-selection state over the registry, exactly like `current`: one load,
-and no way for the two to drift.
+This borrows the useful part of Git worktrees: a durable association
+between a central repository and a directory, explicit listing, and
+path-based context. It does not call the directory a worktree because
+Tonk does not create a working copy there.
 
-It is a top-level map rather than a list inside each `SpotEntry`
-because that layout makes "one directory, one spot" structural — a
-key cannot repeat. Nested under spots, two entries could both claim a
-directory and resolution would tie-break on `BTreeMap` iteration
-order, succeeding at the wrong answer silently. The invariant the
-nested layout would have made free — no attachment without a spot —
-costs one `retain` in `remove()`, the same cascade already written
-there for `current`.
+The top-level `path → spot` map makes “one directory, one spot”
+structural. A nested map under each spot could let two spots claim the
+same path and require a hidden tie-break.
 
-`SpotEntry` therefore stays `{ site }`, which is what applications
-reading `spots.json` resolve paths from.
+Old `attachments` maps deserialize as `bindings`. The old `current`
+field is accepted only as migration input, is never consulted, and is
+dropped on the next registry write.
 
-### Resolution
+## Resolution
 
-```
---spot  >  TONK_SPOT  >  attachment (nearest ancestor of cwd)  >  current
+```text
+--spot > TONK_SPOT > nearest bound ancestor of cwd
 ```
 
-The walk starts at the cwd itself and climbs to the root; the first
-hit wins, so a nested directory overrides its parent (`.gitignore`
-semantics).
+There is no global fallback.
 
-`TONK_SPOT` stays above attachments deliberately: a harness that
-pinned a process must not be overridden by whatever directory it
-happened to launch in, and bench/CI already depend on that.
+The walk starts at the cwd and climbs to the root. The first binding
+wins, so a nested project can override its parent. `TONK_SPOT` stays
+above directory bindings because an explicitly pinned process must not
+depend on where its harness launched it.
 
-`SpotStore::resolve` takes the cwd as a parameter
-(`resolve(flag, env, cwd)`) rather than calling `current_dir()`
-itself, matching how `flag` and `env` are already passed in — tests
-stay pure and never touch process-global state.
+`SpotStore::resolve(flag, env, cwd)` receives the cwd rather than
+reading process state. Tests can therefore exercise resolution without
+mutating the process environment or working directory.
 
-`Source` gains `Attached(PathBuf)`, so every existing readout stays
-honest about which tier answered: `tonk status` prints
-`spot: dev (attached /Users/jack/tonk/tonk)`, and `tonk spot list`
-marks the same. `Source` drops `Copy` for `Clone`.
+`Source::Directory(PathBuf)` carries the exact binding that won.
+Human and agent-facing output can report `directory /path` rather than
+an unexplained active name.
 
-### Commands
+## Commands
 
-- **`tonk use <name> --here`** — bind `$PWD` (canonicalized) to
-  `<name>`; the global `current` is untouched. An unknown name reuses
-  `SpotError::Unknown`. Re-attaching an already-bound directory
-  overwrites and reports it (`attached /Users/jack/notes to garden
-  (was dev)`) — unlike `spot new`, nothing is being destroyed, so no
-  `rm`-first dance.
-- **`tonk spot detach [PATH]`** — remove the attachment for `PATH`,
-  defaulting to `$PWD`, matching **exactly** rather than by ancestor.
-  Typing `detach` three levels inside an attached project must not
-  silently unbind the project; it reports instead: `no attachment at
-  <cwd>; /Users/jack/notes is attached to garden`. The optional
-  `PATH` is also how an entry whose directory no longer exists gets
-  cleared, since there is no way to `cd` there.
-- **`tonk spot list`** — appends a tab-separated `attached:` block
-  when the map is non-empty.
-- **`tonk status`** — unchanged; the new `Source` variant carries it.
+- **`tonk use <name>`** binds `$PWD` to an existing spot. Rebinding
+  replaces the old spot and reports it. There is no `--here`; local is
+  the only persistent meaning.
+- **`tonk spot new <name>`** creates or adopts the central site and
+  binds the invocation directory on success.
+- **`tonk join ... --name <name>`** registers the claimed central site
+  and binds the invocation directory on success.
+- **`tonk spot unbind [PATH]`** removes the exact binding for `PATH`,
+  defaulting to `$PWD`. It refuses to unbind an ancestor implicitly and
+  names the bound ancestor in the error.
+- **`tonk spot list`** marks the spot active for this invocation,
+  reports its source, and lists every directory binding.
+- **`tonk status`** begins with the active spot and source.
 
-`SpotError::NoSelection` becomes: `no spot selected; run 'tonk use
-<name>', add --here to bind this directory, pass --spot, or set
-TONK_SPOT`.
+`--spot` and `TONK_SPOT` remain ephemeral overrides. They do not rewrite
+directory bindings.
 
-### Edge cases
+## Naming
 
-- Canonicalize on write and on read; when canonicalization fails
-  (vanished directory) fall back to the raw path, which simply never
-  matches and drops resolution to the next tier.
-- `spot rm` prunes the removed spot's attachments alongside clearing
-  `current`.
-- An attachment at `/` is legal and matches everywhere. Not
-  special-cased.
-- `spot new` and `join` do not auto-attach. Binding a directory stays
-  an explicit act.
-- An orphaned attachment (hand-edited file naming an unregistered
-  spot) hits the existing `SpotError::Unknown`, which lists what is
-  registered and, when the name came from an attachment, names the
-  directory and points at `tonk spot detach` — otherwise the error
-  reads as coming from nowhere.
-- `tonk use <name>` (no `--here`), `tonk spot new`, and `tonk join`
-  all set the global `current`, but an attachment ranks above it — so
-  running any of them from a directory attached to a *different*
-  spot confirms a selection the very next command will not honour.
-  This is the scenario the tier was built for (an agent binds a
-  worktree with `--here`, a human `cd`s in and runs `tonk use
-  garden`), so it is not treated as a footgun to leave alone: after a
-  successful `select` / `create` / `join`, each command resolves once
-  more against the real cwd, and if that still lands on
-  `Source::Attached` naming a spot other than the one just picked, it
-  warns on stderr (`warning: commands here still resolve to '<name>'
-  (attached <dir>); run \`tonk spot detach\` to drop it`), leaving the
-  stdout confirmation alone. Silent whenever there is no attachment or
-  the attachment already agrees.
-- The registry preserves fields it does not recognise, so a writer
-  that predates a field cannot silently drop it.
+`use` is the intent-level verb: “use garden here.” The implementation
+and documentation call the relationship a directory binding.
 
-### Testing
+Rejected primary verbs:
 
-Unit tests in `spot.rs`, cwd passed in so nothing is process-global:
-deepest ancestor wins, an unattached cwd falls through to `current`,
-`TONK_SPOT` beats an attachment, `--spot` beats both, `rm` prunes,
-re-attach reports the previous binding, detach matches exactly.
+- `worktree add`: implies Tonk copies data into the directory.
+- `mount`: implies the path exposes a filesystem.
+- `attach` or `bind`: mechanically precise, but weaker everyday
+  language for the common action.
 
-Integration in `tests/cli_spot.rs`: the isolated-binary harness gains
-a `current_dir`; two spots and two directories, `tonk status` from a
-subdirectory of each resolves differently, and `TONK_SPOT` overrides
-both.
+`tonk spot unbind` is an administrative command, so the precise
+mechanical term fits there.
 
-Each file keeps its existing test style.
+## Visibility and errors
 
-### Documentation
+Successful `use` output names the active spot, canonical directory,
+and central site. `spot list` says `active here`, not `current`.
 
-The resolution order is stated in four places, all needing the new
-tier:
+After any spot-scoped command fails, the CLI prints a stable stderr
+footer when resolution succeeded:
 
-- `rust/tonk-cli/src/spot.rs` module header
-- `rust/tonk-cli/README.md`
-- `rust/tonk-cli/src/guide-index.md` — the agent-facing one; it should
-  recommend `--here` for a directory-scoped agent while keeping
-  "automation pins `TONK_SPOT`"
-- root `README.md`
+```text
+active spot: garden (directory /Users/jack/notes)
+site: /Users/jack/Library/Application Support/tonk/spots/garden
+```
 
-Plus the `--spot` and `use` help strings in `bin/tonk.rs`.
+The footer is unconditional. Agent detection is unreliable, and the
+same context helps humans and scripts. It does not fetch remote sync
+state while handling an unrelated error; `tonk status` remains the
+explicit sync-state command.
 
-## Out of scope / follow-ups
+When no override or binding resolves, the error names the local fix:
 
-- `tonk env <spot>` / `tonk shell <spot>` for pinning a tab by
-  environment instead of by directory.
-- Terminal- or process-keyed sessions (tty, ancestor pid). Considered
-  and set aside: it survives `cd`, but needs process introspection,
-  pid-reuse handling, liveness pruning, and an anchor rule for
-  ttyless agents, and leaves state that cannot be explained without
-  naming a pid.
-- Auto-attach on `spot new` / `join`.
+```text
+no spot active for this directory; run `tonk use <name>`, pass --spot, or set TONK_SPOT
+```
+
+## Edge cases
+
+- Paths canonicalize on write and lookup. A vanished path falls back
+  to its raw absolute spelling so `spot unbind /old/path` can remove
+  it.
+- A binding at `/` is legal and applies everywhere unless a deeper
+  binding wins.
+- `spot rm` removes every binding naming the removed spot.
+- An orphaned hand-written binding reports its path and points to
+  `tonk spot unbind`.
+- Unknown registry fields still survive writes. Only the deliberately
+  retired `current` field is consumed and dropped.
+
+## Tests
+
+Unit coverage includes precedence, nearest-ancestor resolution,
+no-global-fallback migration, rebind reporting, exact unbind, orphan
+errors, and binding pruning.
+
+CLI coverage uses isolated registries and real subprocess cwd values.
+It verifies separate directory contexts, flag and environment
+overrides, active-spot error context, `spot new` rebinding, list output,
+and exact unbind behavior.
+
+## Follow-ups
+
+- A local-only `tonk context --json` can expose the same resolution in
+  a versioned agent contract without making error strings an API.
+- `tonk spot prune` could remove bindings whose directories no longer
+  exist, matching Git worktree maintenance without adopting its data
+  model.

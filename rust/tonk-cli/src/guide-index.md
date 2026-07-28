@@ -32,14 +32,12 @@ quote every string literal (`name: "alice"`, not `name: alice`).
 Commands run against the selected *spot* (a named fact store). The
 cwd never locates site data — it's only a possible key into the
 registry. Resolution order: `--spot <name>` > `TONK_SPOT` env > a
-directory attachment > `tonk use <name>` selection. In automation,
-pin the spot per-process (`TONK_SPOT=x tonk ...` or `--spot x`) —
-never rely on bare `tonk use`, which is shared global state another
-session can change. An agent that works out of one directory can
-instead bind it once with `tonk use <name> --here` and drop the flag
-afterwards; `tonk spot detach` unbinds it, matching the directory
-exactly rather than by ancestor. `tonk spot list` shows what's
-registered, what's attached, and what is current.
+binding created by `tonk use <name>`. There is no global fallback.
+In automation, pin the spot per-process (`TONK_SPOT=x tonk ...` or
+`--spot x`), or bind a dedicated working directory once with `tonk
+use <name>`. `tonk spot unbind` removes an exact binding. `tonk spot
+list` shows what is registered, every bound directory, and what is
+active for this invocation.
 
 ## The loop
 
