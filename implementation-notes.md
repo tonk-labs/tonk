@@ -182,3 +182,36 @@ an evaluator envelope, and the retention predicate initially matched `owner`
 but not the fixture's `owned`. No model call occurred before all three scripted
 pairs passed. The final dry path also opens each copied B spot under B's fresh
 profile, so profile/delegation setup is exercised before the paid run.
+
+### Handoff pilot result
+
+The approved nine-episode pilot completed at
+`bench/runs/20260728-144336-agents-handoff-claim-handoff-pilot`.
+
+All three episode-A agents updated the repository-DID claim with the exact
+opaque owner convention, preserved the unrelated workflows, omitted one-off
+completion state and secrets, and completed the task correctly. All six fresh
+episode-B agents returned the exact owner label and left their copied post-A
+spots unchanged.
+
+Corrected paired medians:
+
+- total actions: control `5`, projected claim `2` (`60%` lower);
+- Tonk calls: `4` vs `1` (`75%` lower);
+- orientation calls: `2` vs `1` (`50%` lower);
+- wall time: `29s` vs `19s` (`34.5%` lower);
+- input tokens: `105142` vs `61566` (`41.4%` lower);
+- output tokens: `921` vs `632` (`31.4%` lower).
+
+Every pair saved exactly three actions; paired wall-time savings were `12s`,
+`6s`, and `8s`. This passes the pilot gate but cannot pass a significance gate:
+three same-direction pairs imply a minimum one-sided exact sign/randomization
+`p = 0.125`. Confirmation needs at least ten pairs.
+
+Two metrics defects were corrected and the preserved transcripts re-reported:
+Codex `file_change` events now count as tool actions, and a quoted `rg` pattern
+containing `|tonk ...` no longer looks like a shell-position Tonk executable.
+Episode exit files are also written before metrics are computed. One A agent
+ignored the prompt's no-filesystem-search instruction and read global Codex
+memory, causing extra work and repeated commands; the opaque convention was not
+present there, so retention and B-arm isolation remain valid.

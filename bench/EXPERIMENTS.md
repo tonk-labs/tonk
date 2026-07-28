@@ -101,6 +101,32 @@ nix develop -c bench/bin/bench handoff --pairs 3 \
   --variant claim-handoff-pilot
 ```
 
+#### Pilot result
+
+The three-pair `claim-handoff-pilot` passed every exact verifier:
+
+- all three A agents completed the task, changed the claim revision on the
+  repository DID, retained the opaque owner convention, and passed the hygiene
+  checks;
+- all three treatment and all three control B agents returned the exact label;
+- no B agent changed its copied post-A spot.
+
+Treatment reduced median total actions from `5` to `2` (`60%`), Tonk calls from
+`4` to `1` (`75%`), orientation calls from `2` to `1` (`50%`), wall time from
+`29s` to `19s` (`34.5%`), input tokens from `105142` to `61566` (`41.4%`), and
+output tokens from `921` to `632` (`31.4%`). Every pair favored treatment by
+exactly three actions and by `6–12s`.
+
+This advances the treatment but does not establish significance. With three
+pairs, all favoring treatment, the smallest possible one-sided paired
+sign/randomization result is `p = 0.125`. Run at least ten pairs for
+confirmation.
+
+The raw pass also exposed two reporting defects, corrected before aggregation:
+Codex `file_change` events were absent from `tool_calls`, and a quoted `rg`
+pattern containing `|tonk ...` was mistaken for a shell pipeline. Metrics were
+recomputed from the preserved transcripts after both regressions were added.
+
 ## Pre-registered decision rule
 
 Primary metric: shell-command index before the first successful Tonk content
