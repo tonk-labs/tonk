@@ -294,13 +294,6 @@ pub struct DeviceRow {
     pub delegation_cid: String,
 }
 
-fn revoke_target_guard(own_did: &str, target_did: &str) -> Result<()> {
-    if own_did == target_did {
-        bail!("refusing to revoke the device you are using");
-    }
-    Ok(())
-}
-
 async fn linked_chain(profile: &Profile) -> Result<DelegationChain> {
     stored_provider(profile)
         .await?
@@ -387,19 +380,46 @@ pub enum RevokeOutcome {
     AlreadyRevoked,
 }
 
-/// Revoke another of the account's devices, by way of a browser
-/// ceremony.
-///
-/// The CLI cannot do this alone. Cutting off another device takes a
-/// root-signed revocation, the root key is derived from the passkey, and
-/// a passkey needs a browser — so the CLI hands off, then watches the
-/// registry until the device it named comes back revoked.
+/// Revoke a device. The current device self-signs immediately; another device
+/// requires the browser/passkey ceremony, then the CLI watches projection.
 pub async fn revoke(
     profile: &Profile,
     options: &RevokeOptions,
     did: &str,
 ) -> Result<RevokeOutcome> {
-    revoke_target_guard(profile.did().as_ref(), did)?;
+    if profile.did().as_ref() == did {
+        let link = linked_chain(profile).await?;
+        let target = link.proof_cids()[0];
+        let artifact = tonk_identity::revocation::mint_self_revocation(
+            profile.signer().signer().clone(),
+            &link,
+            &target,
+        )
+        .await
+        .context("failed to sign self-revocation")?;
+        let arguments = [
+            (
+                "did".to_owned(),
+                dialog_ucan_core::promise::Promised::String(did.to_string()),
+            ),
+            (
+                "revocation".to_owned(),
+                dialog_ucan_core::promise::Promised::String(hex::encode(artifact)),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let body = tonk_identity::request::build_device_invocation(
+            profile.signer().signer().clone(),
+            &link,
+            vec!["account".into(), "device".into(), "revoke".into()],
+            arguments,
+        )
+        .await
+        .context("failed to build self-revoke request")?;
+        post_invocation(&options.service_url, "devices/revoke", body).await?;
+        return Ok(RevokeOutcome::Revoked);
+    }
 
     let rows = devices(profile, &options.service_url).await?;
     let target = rows
@@ -489,12 +509,6 @@ mod tests {
     }
 
     #[test]
-    fn it_refuses_to_revoke_the_device_in_hand() {
-        assert!(revoke_target_guard("did:key:zSelf", "did:key:zSelf").is_err());
-        assert!(revoke_target_guard("did:key:zSelf", "did:key:zOther").is_ok());
-    }
-
-    #[test]
     fn it_keeps_the_bearer_secret_in_the_fragment() {
         assert_eq!(
             handoff_url("https://tonk.spot/account/link", "secret"),
@@ -519,11 +533,5 @@ mod tests {
         .unwrap();
         assert_eq!(rows[0].did, "did:key:z1");
         assert_eq!(rows[0].created_at, 1_753_300_000);
-    }
-
-    #[test]
-    fn it_refuses_to_revoke_the_own_device_did() {
-        assert!(revoke_target_guard("did:key:same", "did:key:same").is_err());
-        assert!(revoke_target_guard("did:key:same", "did:key:other").is_ok());
     }
 }

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::{DelegationChain, promise::Promised};
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -84,39 +84,46 @@ pub async fn list(
     Ok(Json(fetch_devices(&state, &link, &service).await?))
 }
 
-/// Revoke another of the account's devices, then return the fresh list.
-///
-/// Revoking the requesting device is refused: cutting a device off is an
-/// action taken *about* a lost or untrusted device from a surviving one.
-/// The local analogue on this device is unlink (sign out).
+async fn self_revocation(
+    state: &TonkState,
+    link: &DelegationChain,
+) -> Result<String, TonkWorkerError> {
+    let target = link.proof_cids()[0];
+    Ok(hex::encode(
+        tonk_identity::revocation::mint_self_revocation(
+            state.profile.signer().signer().clone(),
+            link,
+            &target,
+        )
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("build self-revocation: {error}")))?,
+    ))
+}
+
+/// Revoke a device, using device-signed self-revocation for the caller or a
+/// passkey/root-signed artifact for another device.
 #[wasm_compat]
 pub async fn revoke(
     State(state): State<AppState>,
     Json(request): Json<RevokeDeviceRequest>,
 ) -> Result<Json<Vec<AccountDevice>>, TonkWorkerError> {
     let state = state.read().await;
-    if request.did == state.profile.did().to_string() {
-        return Err(TonkWorkerError::Conflict(
-            "cannot revoke the device you are using; sign out instead".to_string(),
-        ));
-    }
-    // Checked before the account link and service are resolved: this is
-    // a property of the request itself, and a caller who sent no
-    // revocation should hear that rather than whichever lookup happened
-    // to fail first.
-    if request.revocation.is_empty() {
-        return Err(TonkWorkerError::Conflict(
-            "revoking another device needs a passkey-signed revocation".to_string(),
-        ));
-    }
+    let own = request.did == state.profile.did().to_string();
     let (link, service) = linked_service(&state).await?;
+    let revocation = if own {
+        self_revocation(&state, &link).await?
+    } else {
+        if request.revocation.is_empty() {
+            return Err(TonkWorkerError::Conflict(
+                "revoking another device needs a passkey-signed revocation".to_string(),
+            ));
+        }
+        request.revocation
+    };
     let device = state.profile.signer().signer().clone();
     let arguments = [
         ("did".to_owned(), Promised::String(request.did)),
-        (
-            "revocation".to_owned(),
-            Promised::String(request.revocation),
-        ),
+        ("revocation".to_owned(), Promised::String(revocation)),
     ]
     .into_iter()
     .collect();
@@ -159,7 +166,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_refuses_to_revoke_the_requesting_device() {
+    async fn it_self_revokes_without_a_passkey_artifact() {
         let state = Arc::new(RwLock::new(test_state().await));
         let device_did = state.read().await.profile.did();
         let request =
@@ -170,17 +177,11 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert!(matches!(
-            revoke(
-                State(state),
-                Json(RevokeDeviceRequest {
-                    did: device_did.to_string(),
-                    revocation: "beef".to_string(),
-                })
-            )
-            .await,
-            Err(TonkWorkerError::Conflict(_))
-        ));
+        let tonk = state.read().await;
+        let link = crate::router::account::account_link(&tonk).await.unwrap();
+        let artifact = hex::decode(self_revocation(&tonk, &link).await.unwrap()).unwrap();
+        let verified = tonk_identity::revocation::verify(&artifact).await.unwrap();
+        assert_eq!(verified.target_cid, link.proof_cids()[0].to_string());
     }
 
     #[dialog_common::test]

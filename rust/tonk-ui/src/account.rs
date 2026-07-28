@@ -286,7 +286,7 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         let _ = item.append_child(&name);
         let _ = item.append_child(&meta);
 
-        if device.status == "active" && !device.this_device {
+        if device.status == "active" {
             let Ok(button) = document.create_element("button") else {
                 continue;
             };
@@ -295,6 +295,9 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
             let _ = button.set_attribute("data-revoke", &device.did);
             let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
             let _ = button.set_attribute("data-delegation-hex", &device.delegation_hex);
+            if device.this_device {
+                let _ = button.set_attribute("data-self-revoke", "true");
+            }
             button.set_text_content(Some("Revoke"));
             let _ = item.append_child(&button);
         }
@@ -359,6 +362,7 @@ fn load_devices(host: HtmlElement) {
                             device.did.clone(),
                             device.delegation_cid.clone(),
                             device.delegation_hex.clone(),
+                            device.this_device,
                         ),
                         None => show_error(
                             &host,
@@ -836,7 +840,14 @@ fn bind(host: &HtmlElement) {
             let delegation_hex = target
                 .get_attribute("data-delegation-hex")
                 .unwrap_or_default();
-            begin_revoke(host_for_revoke.clone(), did, delegation_cid, delegation_hex);
+            let self_revoke = target.get_attribute("data-self-revoke").is_some();
+            begin_revoke(
+                host_for_revoke.clone(),
+                did,
+                delegation_cid,
+                delegation_hex,
+                self_revoke,
+            );
         });
         let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
         closure.forget();
@@ -849,36 +860,53 @@ fn bind(host: &HtmlElement) {
 /// behind the passkey — so the ceremony runs here, in the page, and the
 /// signed revocation travels with the request. Shared by the device
 /// list's button and the CLI's `?revoke=` handoff.
-fn begin_revoke(host: HtmlElement, did: String, delegation_cid: String, delegation_hex: String) {
+fn begin_revoke(
+    host: HtmlElement,
+    did: String,
+    delegation_cid: String,
+    delegation_hex: String,
+    self_revoke: bool,
+) {
+    let message = if self_revoke {
+        "Revoke this device? This permanently withdraws its remote access. Returning requires provisioning a new device grant."
+    } else {
+        "Revoke this device? This permanently withdraws its root grant and remote access. Returning requires provisioning a new device grant.\n\nYou will be asked for your passkey to authorize this."
+    };
     let confirmed = window()
-        .map(|window| {
-            window
-                .confirm_with_message(
-                    "Revoke this device? This permanently withdraws its root grant and remote access. Returning requires provisioning a new device grant.\n\nYou will be asked for your passkey to authorize this.",
-                )
-                .unwrap_or(false)
-        })
+        .map(|window| window.confirm_with_message(message).unwrap_or(false))
         .unwrap_or(false);
     if !confirmed {
         return;
     }
     clear_error(&host);
-    set_busy(&host, true, "Waiting for your passkey…");
+    set_busy(
+        &host,
+        true,
+        if self_revoke {
+            "Revoking this device…"
+        } else {
+            "Waiting for your passkey…"
+        },
+    );
     spawn_local(async move {
-        let signed: Result<RevocationOutput, String> = identity_call(
-            "signRevocation",
-            &serde_json::json!({
-                "delegationCid": delegation_cid,
-                "pathHex": delegation_hex,
-            }),
-        )
-        .await;
-        let revocation_hex = match signed {
-            Ok(output) => output.revocation_hex,
-            Err(error) => {
-                set_busy(&host, false, "");
-                show_error(&host, error);
-                return;
+        let revocation_hex = if self_revoke {
+            String::new()
+        } else {
+            let signed: Result<RevocationOutput, String> = identity_call(
+                "signRevocation",
+                &serde_json::json!({
+                    "delegationCid": delegation_cid,
+                    "pathHex": delegation_hex,
+                }),
+            )
+            .await;
+            match signed {
+                Ok(output) => output.revocation_hex,
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
+                    return;
+                }
             }
         };
         set_busy(&host, true, "Revoking device…");
@@ -1084,18 +1112,23 @@ mod tests {
         assert!(text.contains("This browser"));
         assert!(text.contains("this device"));
         assert!(text.contains("revoked"));
-        // Only the active, non-self row gets a revoke button.
+        // Both active rows can revoke: self-revocation is device-signed.
         assert_eq!(
             list.query_selector_all("button[data-revoke]")
                 .unwrap()
                 .length(),
-            1
+            2
+        );
+        assert!(
+            list.query_selector("button[data-self-revoke]")
+                .unwrap()
+                .is_some()
         );
 
-        // The ceremony signs a revocation of a named delegation, so the
-        // button has to carry the CID as well as the DID.
+        // Another-device ceremony signs a revocation of a named delegation,
+        // so its button carries the CID as well as the DID.
         let button = list
-            .query_selector("button[data-revoke]")
+            .query_selector("button[data-revoke=\"did:key:zPhone\"]")
             .unwrap()
             .expect("the active, non-self row has a revoke button");
         assert_eq!(
