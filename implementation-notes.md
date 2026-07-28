@@ -70,6 +70,9 @@ held-out agent trajectories without reducing task correctness.
   evidence: `query --help` was counted as a data read, and a quoted jq fallback
   stopped Markdown reporting. Help requests now count as orientation, and the
   completed episode can be re-reported from its preserved artifacts.
+- One baseline agent used JSON-formatted eval output. The classifier initially
+  understood only notation envelopes, so it missed a verified write. JSON eval
+  commits now count as writes when `commits.claims` is nonzero.
 - First-use episodes run with a fresh home/profile under the run directory.
   Runner authentication remains available, but the developer's Tonk profile is
   outside the episode sandbox.

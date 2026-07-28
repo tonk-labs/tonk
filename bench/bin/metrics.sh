@@ -113,10 +113,15 @@ JOURNEY_DEF='
     and has_subcommand("concept[[:space:]]+add|view[[:space:]]+add|assert|retract|home|import|join")
     and (test("--help|--dry-run") | not);
   def revision_changed:
-    try (
-      capture("(?s)revision-before:[[:space:]]+[\u0027\"]?(?<before>#[^\u0027\"\\n]+)[\u0027\"]?.*revision-after:[[:space:]]+[\u0027\"]?(?<after>#[^\u0027\"\\n]+)")
-      | .before != .after
-    ) catch false;
+    (
+      (
+        try (
+          capture("(?s)revision-before:[[:space:]]+[\u0027\"]?(?<before>#[^\u0027\"\\n]+)[\u0027\"]?.*revision-after:[[:space:]]+[\u0027\"]?(?<after>#[^\u0027\"\\n]+)")
+          | .before != .after
+        ) catch false
+      ) // false
+    )
+    or test("\"claims\"[[:space:]]*:[[:space:]]*[1-9][0-9]*");
   def row_is_content_write:
     (.command | is_explicit_content_write)
     or (
