@@ -103,3 +103,47 @@ transfer experiment.
 Spot-local `AGENTS.md` is also held out of this treatment. It is a separate
 hypothesis about automatic orientation and durable spot memory, so combining it
 now would make any measured gain impossible to attribute.
+
+### Result
+
+The ten-run treatment passed the verifier in every episode. First-write indices
+were `2, 3, 2, 3, 3, 2, 2, 2, 3, 2` (median `2.0`), with zero failed Tonk
+calls. Against the baseline median of `9.5`, this is a `78.9%` improvement with
+a bootstrap 95% interval of `[66.7%, 83.3%]`, Cliff improvement `1.000`, and an
+exact one-sided permutation `p = 0.000568`. Mean judge outcome moved from
+`9.50` to `9.10`; success stayed at `100%`. Every pre-registered gate passed,
+so this treatment graduates.
+
+Several judges claimed the agent trusted a silent write. Raw episode JSONL
+shows otherwise: `tonk assert` returned `current state:` with the intended
+entity and `done: true`. One judge later recognized that echo explicitly. This
+is a judge-observability limitation, not a reason to add another verification
+command.
+
+The repeated auto-sync authorization warning is real but induced by the
+experiment's isolated agent profile. The broken browser task route is also
+real, but it predates and is independent of CLI orientation. Both should be
+tested separately.
+
+## Treatment 2 hypothesis: spot-local AGENTS.md
+
+Current Codex discovery is root-to-cwd only and happens once per run. That
+invalidates the naive general form:
+
+- canonical spots live under Application Support, where agents rarely start;
+- an adopted `project/.tonk/AGENTS.md` is a child of the project cwd and is not
+  discovered;
+- cwd does not select a Tonk spot, so one project can use several spots and one
+  static project file cannot safely claim which is active;
+- local filesystem memory does not travel with synced spot data;
+- synced collaborator-authored instructions would be a prompt-injection
+  boundary.
+
+The first experiment is therefore labeled as a best case. It places a trusted
+fixture in the episode cwd and tests whether direct spot-specific examples
+remove the remaining context call. It does not ship spot file generation.
+
+Durable memory needs a later two-episode handoff test and an explicit trust
+model. The safe default is to separate locally trusted agent instructions from
+shared spot data; shared context can be displayed as data, but must not silently
+be promoted into instructions.

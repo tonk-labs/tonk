@@ -22,17 +22,27 @@ export TONK_NO_UPDATE_CHECK=1
 # trip entirely.
 export TONK_NO_SHORTEN=1
 
-SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N] [--variant NAME]}"; shift
-SCRIPTED=0; RUNS=1; BENCH_VARIANT="${BENCH_VARIANT:-unlabelled}"
+SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N] [--variant NAME] [--spot-agents]}"; shift
+SCRIPTED=0
+RUNS=1
+SPOT_AGENTS=0
+BENCH_VARIANT="${BENCH_VARIANT:-unlabelled}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --scripted) SCRIPTED=1 ;;
     --runs) RUNS="$2"; shift ;;
     --variant) BENCH_VARIANT="$2"; shift ;;
+    --spot-agents) SPOT_AGENTS=1 ;;
     *) echo "unknown flag $1" >&2; exit 2 ;;
   esac
   shift
 done
+export BENCH_SPOT_AGENTS="$SPOT_AGENTS"
+if [ "$SPOT_AGENTS" = 1 ]; then
+  SPOT_AGENTS_JSON=true
+else
+  SPOT_AGENTS_JSON=false
+fi
 
 if [[ ! "$BENCH_VARIANT" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "invalid variant '$BENCH_VARIANT': use letters, digits, dot, underscore, or hyphen" >&2
@@ -111,6 +121,7 @@ for i in $(seq 1 "$RUNS"); do
     --arg revision "$revision" \
     --arg runner "${EPISODE_RUNNER:-claude}" \
     --arg model "$effective_model" \
+    --argjson spot_agents "$SPOT_AGENTS_JSON" \
     --argjson dirty "$dirty" \
     '{
       variant: $variant,
@@ -118,7 +129,8 @@ for i in $(seq 1 "$RUNS"); do
       revision: $revision,
       dirty: $dirty,
       runner: $runner,
-      model: $model
+      model: $model,
+      spot_agents: $spot_agents
     }' > "$RUN_DIR/experiment.json"
   if [ -x "$SCENARIO/prepare.sh" ]; then
     "$SCENARIO/prepare.sh"

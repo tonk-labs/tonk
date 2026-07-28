@@ -30,6 +30,34 @@ nix develop -c bench/bin/bench compare first-use baseline treatment
 Keep the runner and model fixed. If confirmation runs cannot be interleaved,
 finish both arms close together and record the timing limitation.
 
+## Trusted spot AGENTS.md pilot
+
+`--spot-agents` installs a trusted, scenario-owned `AGENTS.md` in the episode's
+working directory and records that exposure in `experiment.json`. It is a
+best-case test of whether automatically loaded spot-specific examples remove
+the remaining context call:
+
+```sh
+nix develop -c bench/bin/bench run first-use --runs 3 \
+  --variant spot-agents-pilot --spot-agents
+```
+
+Compare it to the graduated `workflow-context-pilot` arm. The expected direct
+trajectory is `query -> assert`, so the primary metric can improve from two
+commands before the write to one.
+
+This pilot does not establish that an `AGENTS.md` inside every real spot is
+discoverable. Codex searches from the project root down to its current working
+directory, not into child directories. A file at `project/.tonk/AGENTS.md`
+therefore does not load when the agent starts at `project/`. It also does not
+test cross-device memory or untrusted collaboration: remotely supplied text
+must never become automatic agent instructions without an explicit trust
+decision.
+
+A later durable-memory experiment must use two episodes: one agent records a
+bounded durable fact, then a fresh agent uses that fact. Score both correct
+retention and the absence of secrets, transient status, or instruction drift.
+
 ## Pre-registered decision rule
 
 Primary metric: shell-command index before the first successful Tonk content

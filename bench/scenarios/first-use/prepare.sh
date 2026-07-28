@@ -26,4 +26,10 @@ task!: &book-venue
   --template '<div class="task"><b>{title}</b><span>done: {done}</span></div>'
 
 "$TONK" home task
+
+if [ "${BENCH_SPOT_AGENTS:-0}" = 1 ]; then
+  cp "$SCENARIO/spot-AGENTS.md" "$RUN_DIR/site/AGENTS.md"
+  echo "prepare: installed trusted spot AGENTS.md fixture" >&2
+fi
+
 echo "prepare: seeded first-use task list" >&2
