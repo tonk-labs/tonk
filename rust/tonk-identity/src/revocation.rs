@@ -256,6 +256,17 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         RevocationAuthority::Delegated
     };
 
+    let canonical_bytes = chain.to_bytes().map_err(|err| {
+        VerifyError::Malformed(format!(
+            "failed to canonicalize invocation container: {err}"
+        ))
+    })?;
+    if canonical_bytes != bytes {
+        return Err(VerifyError::Malformed(
+            "invocation container is not canonical".to_string(),
+        ));
+    }
+
     let target_expires_at = path
         .proofs()
         .nth(target_index)

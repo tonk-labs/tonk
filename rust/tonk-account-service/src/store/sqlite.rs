@@ -10,7 +10,8 @@ use super::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest,
     NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE,
+    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -238,6 +239,21 @@ impl Store for SqliteStore {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(UPDATE_DEVICE_REVOKE, params![account_id, device_did])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn revoke_device_by_cid(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(
+                UPDATE_DEVICE_REVOKE_BY_CID,
+                params![account_id, delegation_cid],
+            )
             .map_err(map_err)?;
         Ok(changed > 0)
     }

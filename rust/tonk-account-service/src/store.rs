@@ -186,9 +186,15 @@ pub trait Store {
     /// Look up a device by its DID.
     async fn device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError>;
 
-    /// Mark a device as revoked. Returns `false` if no matching device
-    /// was found.
+    /// Mark a device as revoked by DID. Returns `false` if no match was found.
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError>;
+
+    /// Project a verified revocation onto the row matching its delegation CID.
+    async fn revoke_device_by_cid(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError>;
 
     /// Create a pending CLI browser handoff.
     async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError>;
@@ -261,6 +267,10 @@ pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegatio
 /// SQL: mark a device as revoked.
 pub const UPDATE_DEVICE_REVOKE: &str =
     "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2";
+
+/// SQL: project revocation by the exact registered delegation CID.
+pub const UPDATE_DEVICE_REVOKE_BY_CID: &str =
+    "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND delegation_cid = ?2";
 
 /// SQL: create a pending browser handoff.
 pub const INSERT_LINK: &str = "INSERT INTO link_requests \

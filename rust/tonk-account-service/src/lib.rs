@@ -18,6 +18,7 @@ pub mod error;
 mod handlers;
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod helpers;
+pub mod revocations;
 pub mod store;
 
 /// Worker entrypoint: the full HTTP surface, backed by D1, R2, and
@@ -32,6 +33,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/codes", handlers::codes::handle_options)
         .post_async("/accounts", handlers::accounts::handle)
         .options_async("/accounts", handlers::accounts::handle_options)
+        .post_async("/revocations", handlers::revocations::handle)
+        .options_async("/revocations", handlers::revocations::handle_options)
         .post_async("/devices/list", handlers::devices::handle_list)
         .options_async("/devices/list", handlers::devices::handle_options)
         .post_async("/devices/register", handlers::devices::handle_register)
@@ -40,11 +43,6 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/devices/link", handlers::devices::handle_options)
         .post_async("/devices/revoke", handlers::devices::handle_revoke)
         .options_async("/devices/revoke", handlers::devices::handle_options)
-        .post_async(
-            "/devices/revocations",
-            handlers::devices::handle_revocations,
-        )
-        .options_async("/devices/revocations", handlers::devices::handle_options)
         .post_async("/links", handlers::links::handle_create)
         .options_async("/links", handlers::links::handle_options)
         .post_async("/links/resolve", handlers::links::handle_resolve)

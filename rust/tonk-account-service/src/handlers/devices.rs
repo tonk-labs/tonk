@@ -1,6 +1,4 @@
-//! `POST /devices/{list,register,revoke,revocations}`: the device
-//! registry, over
-//! UCAN-authorized invocation containers.
+//! `POST /devices/{list,register,revoke}` over UCAN-authorized invocations.
 
 use serde::Serialize;
 use worker::*;
@@ -9,9 +7,10 @@ use crate::auth::{
     authorize, authorize_root, optional_revocation, required_string, string_argument,
 };
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
-use crate::core::revocation::list_revocations;
 use crate::error::{ErrorCode, ServiceError};
-use crate::handlers::{build_chains, build_store, ceremony_error, read_body, with_cors_headers};
+use crate::handlers::{
+    build_revocations, build_store, ceremony_error, read_body, with_cors_headers,
+};
 use crate::store::Store;
 
 /// A device row as serialized to API callers.
@@ -174,67 +173,38 @@ async fn handle_revoke_inner(
     ctx: &RouteContext<()>,
 ) -> std::result::Result<Response, ServiceError> {
     let store = build_store(ctx)?;
-    let chains = build_chains(ctx)?;
+    let revocations = build_revocations(ctx)?;
     let body = read_body(req).await?;
     let caller = authorize(&store, &body, &["account", "device", "revoke"])
         .await
         .map_err(ceremony_error)?;
 
     let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
-    let revocation = optional_revocation(&caller).map_err(ceremony_error)?;
-    let attestation = revoke_device(
+    let revocation = optional_revocation(&caller)
+        .map_err(ceremony_error)?
+        .ok_or_else(|| {
+            ServiceError::new(
+                ErrorCode::InvalidArgument,
+                "a signed revocation artifact is required",
+            )
+        })?;
+    let outcome = revoke_device(
         &store,
-        &chains,
+        &revocations,
         &caller.account,
         &caller.device.device_did,
         &device_did,
-        revocation.as_deref(),
+        &revocation,
     )
     .await
     .map_err(ceremony_error)?;
 
-    Response::from_json(
-        &serde_json::json!({ "attestation": attestation.map(|level| level.as_str()) }),
-    )
+    Response::from_json(&serde_json::json!({
+        "attestation": outcome.attestation.as_str(),
+        "projection": outcome.projection.as_str(),
+        "targetCid": outcome.target_cid,
+        "artifactCid": outcome.artifact_cid,
+        "stored": outcome.stored,
+    }))
     .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
-}
-
-/// `POST /devices/revocations` → list this account's signed revocations.
-pub async fn handle_revocations(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let response = match handle_revocations_inner(&mut req, &ctx).await {
-        Ok(response) => response,
-        Err(err) => err.to_response()?,
-    };
-    Ok(with_cors_headers(response))
-}
-
-async fn handle_revocations_inner(
-    req: &mut Request,
-    ctx: &RouteContext<()>,
-) -> std::result::Result<Response, ServiceError> {
-    let store = build_store(ctx)?;
-    let chains = build_chains(ctx)?;
-    let body = read_body(req).await?;
-    let caller = authorize(&store, &body, &["account", "device", "revocations"])
-        .await
-        .map_err(ceremony_error)?;
-
-    let stored = list_revocations(&chains, &caller.account)
-        .await
-        .map_err(ceremony_error)?;
-
-    let revocations: Vec<serde_json::Value> = stored
-        .into_iter()
-        .map(|item| {
-            serde_json::json!({
-                "key": item.key,
-                "attestation": item.attestation,
-                "revocation": item.revocation_hex,
-            })
-        })
-        .collect();
-
-    Response::from_json(&serde_json::json!({ "revocations": revocations })).map_err(|err| {
-        ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
-    })
 }

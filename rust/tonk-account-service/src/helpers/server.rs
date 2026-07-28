@@ -14,7 +14,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    ACCESS_CONTROL_EXPOSE_HEADERS, CONTENT_TYPE,
+    ACCESS_CONTROL_EXPOSE_HEADERS, CONTENT_LENGTH, CONTENT_TYPE,
 };
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
@@ -31,17 +31,19 @@ use crate::core::backup::{get_chain, list_chains, put_chain};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
 use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
-use crate::core::revocation::list_revocations;
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
+use crate::revocations::{MemoryRevocationStore, PublishError, publish};
 use crate::store::Store;
 use crate::store::sqlite::SqliteStore;
+use tonk_identity::revocation::VerifyError;
 
 /// The backends a running [`AccountServer`] routes requests onto.
 struct Backends {
     store: SqliteStore,
     chains: MemoryChainStore,
+    revocations: MemoryRevocationStore,
     emails: Arc<CapturedEmail>,
 }
 
@@ -67,6 +69,7 @@ impl AccountServer {
         let backends = Arc::new(Backends {
             store: SqliteStore::in_memory().expect("in-memory sqlite store"),
             chains: MemoryChainStore::default(),
+            revocations: MemoryRevocationStore::default(),
             emails: emails.clone(),
         });
 
@@ -132,11 +135,11 @@ async fn handle_request(
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
+        (Method::POST, "/revocations") => revocations_route(req, &backends).await,
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
-        (Method::POST, "/devices/revocations") => devices_revocations_route(req, &backends).await,
         (Method::POST, "/links") => links_create_route(req, &backends).await,
         (Method::POST, "/links/resolve") => links_resolve_route(req, &backends).await,
         (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
@@ -340,6 +343,66 @@ async fn devices_register_route(
     Ok(json_response(StatusCode::OK, &serde_json::json!({})))
 }
 
+/// `POST /revocations` → publish a self-certifying immutable artifact.
+async fn revocations_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    const MAX_BYTES: usize = 64 * 1024;
+    let content_type = req
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if content_type.split(';').next() != Some("application/cbor") {
+        return Err(ServiceError::new(
+            ErrorCode::InvalidArgument,
+            "Content-Type must be application/cbor",
+        ));
+    }
+    if req
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > MAX_BYTES)
+    {
+        return Err(ServiceError::new(
+            ErrorCode::InvalidArgument,
+            "revocation artifact exceeds 64 KiB",
+        ));
+    }
+    let bytes = body_bytes(req).await?;
+    if bytes.len() > MAX_BYTES {
+        return Err(ServiceError::new(
+            ErrorCode::InvalidArgument,
+            "revocation artifact exceeds 64 KiB",
+        ));
+    }
+    let outcome = publish(&backends.revocations, &bytes)
+        .await
+        .map_err(|error| match error {
+            PublishError::Verification(VerifyError::Malformed(message)) => {
+                ServiceError::new(ErrorCode::InvalidArgument, message)
+            }
+            PublishError::Verification(VerifyError::Unauthorized(message)) => {
+                ServiceError::new(ErrorCode::Forbidden, message)
+            }
+            PublishError::Store(error) => {
+                eprintln!("revocation publication failed: {error}");
+                ServiceError::new(ErrorCode::InternalError, "internal error")
+            }
+        })?;
+    Ok(json_response(
+        StatusCode::ACCEPTED,
+        &serde_json::json!({
+            "targetCid": outcome.verified.target_cid,
+            "artifactCid": outcome.verified.artifact_cid,
+            "stored": outcome.stored,
+        }),
+    ))
+}
+
 /// `POST /devices/revoke` → revoke a device under an account.
 async fn devices_revoke_route(
     req: Request<Incoming>,
@@ -351,56 +414,34 @@ async fn devices_revoke_route(
         .map_err(ceremony_error)?;
 
     let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
-    let revocation = optional_revocation(&caller).map_err(ceremony_error)?;
-    let attestation = revoke_device(
+    let revocation = optional_revocation(&caller)
+        .map_err(ceremony_error)?
+        .ok_or_else(|| {
+            ServiceError::new(
+                ErrorCode::InvalidArgument,
+                "a signed revocation artifact is required",
+            )
+        })?;
+    let outcome = revoke_device(
         &backends.store,
-        &backends.chains,
+        &backends.revocations,
         &caller.account,
         &caller.device.device_did,
         &device_did,
-        revocation.as_deref(),
+        &revocation,
     )
     .await
     .map_err(ceremony_error)?;
 
     Ok(json_response(
         StatusCode::OK,
-        &serde_json::json!({ "attestation": attestation.map(|level| level.as_str()) }),
-    ))
-}
-
-/// `POST /devices/revocations` → list this account's signed revocations.
-async fn devices_revocations_route(
-    req: Request<Incoming>,
-    backends: &Backends,
-) -> Result<Response<Full<Bytes>>, ServiceError> {
-    let body = body_bytes(req).await?;
-    let caller = authorize(
-        &backends.store,
-        &body,
-        &["account", "device", "revocations"],
-    )
-    .await
-    .map_err(ceremony_error)?;
-
-    let stored = list_revocations(&backends.chains, &caller.account)
-        .await
-        .map_err(ceremony_error)?;
-
-    let revocations: Vec<serde_json::Value> = stored
-        .into_iter()
-        .map(|item| {
-            serde_json::json!({
-                "key": item.key,
-                "attestation": item.attestation,
-                "revocation": item.revocation_hex,
-            })
-        })
-        .collect();
-
-    Ok(json_response(
-        StatusCode::OK,
-        &serde_json::json!({ "revocations": revocations }),
+        &serde_json::json!({
+            "attestation": outcome.attestation.as_str(),
+            "projection": outcome.projection.as_str(),
+            "targetCid": outcome.target_cid,
+            "artifactCid": outcome.artifact_cid,
+            "stored": outcome.stored,
+        }),
     ))
 }
 

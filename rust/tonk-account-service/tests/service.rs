@@ -172,26 +172,23 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 200);
     let revoked: serde_json::Value = response.json().await.unwrap();
     assert_eq!(revoked["attestation"], "root");
+    assert_eq!(revoked["projection"], "updated");
+    assert_eq!(revoked["targetCid"], second_grant_cid);
 
-    // POST /devices/revocations -> the artifact is retrievable and
-    // carries its attestation level.
-    let body = container(
-        vec!["account".into(), "device".into(), "revocations".into()],
-        BTreeMap::new(),
-    )
-    .await;
+    // The unauthenticated global endpoint verifies the same artifact and
+    // treats an identical publication as idempotent.
     let response = client
-        .post(format!("{base}/devices/revocations"))
-        .body(body)
+        .post(format!("{base}/revocations"))
+        .header("Content-Type", "application/cbor")
+        .body(revocation.clone())
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let listed: serde_json::Value = response.json().await.unwrap();
-    let listed = listed["revocations"].as_array().unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0]["attestation"], "root");
-    assert_eq!(listed[0]["revocation"], hex::encode(&revocation));
+    assert_eq!(response.status(), 202);
+    let published: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(published["targetCid"], second_grant_cid);
+    assert_eq!(published["artifactCid"], revoked["artifactCid"]);
+    assert_eq!(published["stored"], false);
 
     let body = container(
         vec!["account".into(), "device".into(), "list".into()],
