@@ -30,6 +30,8 @@ pub(crate) mod account_devices;
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+mod revoke_invite;
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
@@ -193,7 +195,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
+        .route("/api/profile/visit", post(join::visit))
         .route("/api/profile/join", post(join::join))
+        .route(
+            "/api/repository/{repo}/membership",
+            get(join::membership).post(join::join_guest),
+        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
@@ -210,6 +217,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/invite",
             post(create_invite::create_invite),
+        )
+        .route(
+            "/api/repository/{repo}/invites/{target_cid}/revoke",
+            post(revoke_invite::revoke),
         )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
@@ -514,6 +525,8 @@ pub mod tests {
                 subject: Term::var("subject"),
                 inviter: Term::var("inviter"),
                 audience: Term::var("audience"),
+                target_cid: Term::var("target_cid"),
+                path_hex: Term::var("path_hex"),
             })
             .perform(&tonk.operator)
             .try_vec()

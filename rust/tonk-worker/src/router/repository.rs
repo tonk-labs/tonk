@@ -3491,6 +3491,8 @@ where
                     subject: Term::from(repository.did().this()),
                     inviter: Term::var("inviter"),
                     audience: Term::var("audience"),
+                    target_cid: Term::var("target_cid"),
+                    path_hex: Term::var("path_hex"),
                 })
                 .perform(&tonk.operator)
                 .try_vec()

@@ -47,21 +47,26 @@ pub struct CreateInviteRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<Url>,
 
-    /// Recipient DID for an audience-scoped invite. Absent → open invite.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audience: Option<Did>,
+    /// Recipient root DID for a targeted invite. Absent → open invite.
+    #[serde(
+        default,
+        rename = "recipientRoot",
+        alias = "audience",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub recipient_root: Option<Did>,
 }
 
 /// Response body of `POST /api/repository/:repo/invite`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CreateInviteResponse {
-    /// Only `audience` can claim.
+    /// Only `recipient_root` can claim.
     Scoped {
         /// Minted invite URL.
         url: Url,
-        /// Echo of the requested recipient DID.
-        audience: Did,
+        /// Echo of the requested recipient root DID.
+        recipient_root: Did,
     },
     /// Anyone with the URL can claim.
     Open {
@@ -161,7 +166,7 @@ pub async fn create_invite(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", repo_name, e))
         })?;
 
-    let (audience_did, audience) = match request.audience {
+    let (audience_did, audience) = match request.recipient_root {
         Some(did) => (did, InviteAudience::Scoped),
         None => {
             let (signer, seed) = generate_ephemeral().await?;
@@ -189,9 +194,19 @@ pub async fn create_invite(
         }
     };
 
+    let revocation_url = if remote_url
+        .host_str()
+        .is_some_and(|host| host.starts_with("staging."))
+    {
+        Url::parse("https://accounts-staging.tonk.xyz/revocations")
+    } else {
+        Url::parse("https://accounts.tonk.xyz/revocations")
+    }
+    .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
     let invite = Invite::new(delegation.into_chain(), audience, Some(remote_url))
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?
+        .with_revocation_url(Some(revocation_url));
 
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so
@@ -255,7 +270,7 @@ pub async fn create_invite(
         InviteAudience::Open { .. } => CreateInviteResponse::Open { url },
         InviteAudience::Scoped => CreateInviteResponse::Scoped {
             url,
-            audience: audience_did,
+            recipient_root: audience_did,
         },
     };
     Ok(Json(response))

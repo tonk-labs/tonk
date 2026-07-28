@@ -27,10 +27,15 @@
 //! `Replica.this` (`hash(profile, subject)`) and the sigil glyph
 //! stable everyone-side.
 
-use ::axum::{Json, extract::State, http::StatusCode};
+use ::axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Verifier};
+use dialog_effects::credential::CredentialError;
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
@@ -41,7 +46,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_invite::Invite;
+use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::{
     Invitation, InvitedVia, MemberName, MemberRole, Membership, Replica, prelude::DidExt as _,
 };
@@ -103,7 +108,36 @@ pub enum JoinResponse {
     },
 }
 
-/// Redeem an invite URL.
+/// Visit an audience-open invite without creating durable membership.
+#[wasm_compat]
+pub async fn visit(
+    State(state): State<AppState>,
+    Json(body): Json<JoinRequest>,
+) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
+    let tonk = state.write().await;
+    let outcome = visit_invite(&tonk, &body.url).await?;
+    let repository = tonk
+        .profile
+        .repository(outcome.key.as_str())
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to load visited replica: {error}"))
+        })?;
+    let info = build_repository_info(&tonk, &outcome.key, &repository).await;
+    let (status, response) = if outcome.renewed {
+        (StatusCode::OK, JoinResponse::Renewed { repository: info })
+    } else {
+        (
+            StatusCode::CREATED,
+            JoinResponse::Joined { repository: info },
+        )
+    };
+    Ok((status, Json(response)))
+}
+
+/// Redeem an invite URL durably to the local root.
 #[wasm_compat]
 pub async fn join(
     State(state): State<AppState>,
@@ -148,6 +182,161 @@ pub(crate) struct JoinOutcome {
     /// `true` when a replica already existed (renewed access, no new
     /// replica); `false` when a fresh replica was created.
     pub renewed: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GuestRecord {
+    version: u8,
+    url: String,
+}
+
+fn guest_site(subject: &Did) -> String {
+    format!("tonk-guest-invite-v1:{}", subject.repo_key())
+}
+
+/// Parse + visit an open invite with bounded operator authority.
+pub(crate) async fn visit_invite(
+    tonk: &TonkState,
+    url: &str,
+) -> Result<JoinOutcome, TonkWorkerError> {
+    let invite = Invite::parse_url(url)
+        .await
+        .map_err(|error| TonkWorkerError::Router(format!("invalid invite: {error}")))?;
+    if !matches!(&invite.audience, InviteAudience::Open { .. }) {
+        return Err(TonkWorkerError::Router(
+            "targeted invites cannot be opened as a guest".to_string(),
+        ));
+    }
+    let claimed = invite
+        .visit(&tonk.operator.did())
+        .await
+        .map_err(|error| TonkWorkerError::Router(format!("invalid invite: {error}")))?;
+    let subject = claimed.subject().clone();
+    let remote_url = claimed.remote_url.clone();
+    tonk.profile
+        .access()
+        .save(UcanDelegation(claimed.chain))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to save guest authority: {error}"))
+        })?;
+    let key = subject.repo_key().to_owned();
+    let renewed = find_replica_for_subject(tonk, &subject).await?;
+    if !renewed {
+        mount_replica(tonk, &subject, remote_url.as_ref().map(url::Url::as_str)).await?;
+        mark_replica_initialized(tonk, &subject).await?;
+    }
+    let record = serde_json::to_vec(&GuestRecord {
+        version: 1,
+        url: url.to_string(),
+    })
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to serialize guest record: {error}"))
+    })?;
+    tonk.profile
+        .credential()
+        .site(guest_site(&subject))
+        .save(record)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to save guest record: {error}"))
+        })?;
+    Ok(JoinOutcome {
+        key,
+        subject,
+        renewed,
+    })
+}
+
+/// Load a locally retained guest URL for explicit durable acceptance.
+async fn clear_guest(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
+    tonk.profile
+        .credential()
+        .site(guest_site(subject))
+        .save(Vec::<u8>::new())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to clear guest record: {error}"))
+        })
+}
+
+async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, TonkWorkerError> {
+    let bytes = match tonk
+        .profile
+        .credential()
+        .site(guest_site(subject))
+        .load::<Vec<u8>>()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(CredentialError::NotFound(_)) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load guest record: {error}"
+            )));
+        }
+    };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let record: GuestRecord = serde_json::from_slice(&bytes).map_err(|error| {
+        TonkWorkerError::Internal(format!("stored guest record is invalid: {error}"))
+    })?;
+    Ok(Some(record.url))
+}
+
+/// Active local membership mode for one mounted repository.
+#[derive(Debug, Serialize)]
+pub struct MembershipResponse {
+    /// `guest` while only bounded invite authority is installed, otherwise `durable`.
+    pub status: &'static str,
+}
+
+/// Report whether this local replica is a guest visit or durable root member.
+#[wasm_compat]
+pub async fn membership(
+    State(state): State<AppState>,
+    Path(repo): Path<String>,
+) -> Result<Json<MembershipResponse>, TonkWorkerError> {
+    let tonk = state.read().await;
+    let repository = tonk
+        .profile
+        .repository(&repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
+    let status = if guest_url(&tonk, &repository.did()).await?.is_some() {
+        "guest"
+    } else {
+        "durable"
+    };
+    Ok(Json(MembershipResponse { status }))
+}
+
+/// Explicitly promote a locally visited guest using its retained invite URL.
+#[wasm_compat]
+pub async fn join_guest(
+    State(state): State<AppState>,
+    Path(repo): Path<String>,
+) -> Result<StatusCode, TonkWorkerError> {
+    let tonk = state.write().await;
+    let repository = tonk
+        .profile
+        .repository(&repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
+    let url = guest_url(&tonk, &repository.did())
+        .await?
+        .ok_or_else(|| TonkWorkerError::Conflict("this replica is already durable".to_string()))?;
+    claim_invite(&tonk, &url).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Parse + claim an invite URL and ensure a local replica exists.
@@ -233,6 +422,7 @@ pub(crate) async fn claim_invite(
                 ))
             })?;
         record_claim_on_content(tonk, &repository, &key, &invitation, &member).await?;
+        clear_guest(tonk, &subject).await?;
         return Ok(JoinOutcome {
             key,
             subject,
@@ -261,6 +451,7 @@ pub(crate) async fn claim_invite(
     // triggers — so flip it straight to `initialized`, otherwise its Hub
     // card is stuck on "Installing…" forever.
     mark_replica_initialized(tonk, &subject).await?;
+    clear_guest(tonk, &subject).await?;
 
     log!("Joined invite for subject {subject} as local replica (key {key})");
 
@@ -643,7 +834,15 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     // so re-encode them; `hash` keeps its leading `#`.
     let url = build_invite_url(&command);
 
-    match claim_invite(&tonk, &url).await {
+    let open = Invite::parse_url(&url)
+        .await
+        .is_ok_and(|invite| matches!(invite.audience, InviteAudience::Open { .. }));
+    let result = if open {
+        visit_invite(&tonk, &url).await
+    } else {
+        claim_invite(&tonk, &url).await
+    };
+    match result {
         Ok(outcome) => {
             // Success: the durable replica is recorded + initialized. But a
             // *freshly* joined replica has an empty content branch — unlike a
@@ -678,6 +877,12 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
                 outcome.key
+            );
+        }
+        Err(TonkWorkerError::RootRequired) => {
+            crate::router::navigate::notify_identity_required(
+                env.client(),
+                tonk_worker_api::IdentityIntent::DurableJoin { url },
             );
         }
         Err(error) => {

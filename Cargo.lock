@@ -4759,6 +4759,7 @@ dependencies = [
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
+ "hex",
  "indexmap",
  "lsp-types",
  "parking_lot",

@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_ucan_core::DelegationChain;
 use serde::Serialize;
 
-use crate::domain::invitation::{Audience, Inviter, Subject};
+use crate::domain::invitation::{Audience, Inviter, PathHex, Subject, TargetCid};
 use crate::prelude::*;
 
 /// An invitation — the durable record of a minted invite to a
@@ -39,6 +39,10 @@ pub struct Invitation {
     /// The chain's tail audience: the ephemeral key DID for open
     /// invites, the recipient DID for scoped ones.
     pub audience: Audience,
+    /// Canonical CID of the invitation delegation that closes this route.
+    pub target_cid: TargetCid,
+    /// Exact public delegation path through the target, hex encoded.
+    pub path_hex: PathHex,
 }
 
 /// Hash input for [`Invitation::this`]. Single-variant enum tags the
@@ -78,6 +82,7 @@ impl Invitation {
         // hash input human-inspectable and independent of `Cid`'s
         // serde representation.
         let delegation = leaf_cid.to_string();
+        let path_hex = hex::encode(chain.to_bytes().ok()?);
         Some(Self {
             this: Entity::of(&This::Invitation {
                 delegation: &delegation,
@@ -85,6 +90,8 @@ impl Invitation {
             subject: Subject(subject.this()),
             inviter: Inviter(inviter.this()),
             audience: Audience(audience.this()),
+            target_cid: TargetCid(delegation),
+            path_hex: PathHex(path_hex),
         })
     }
 

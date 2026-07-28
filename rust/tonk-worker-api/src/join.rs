@@ -41,3 +41,16 @@ pub enum JoinResponse {
         repository: RepositoryInfo,
     },
 }
+
+/// Guest visit uses the same secret-bearing request shape as durable join.
+pub type VisitRequest = JoinRequest;
+
+/// Guest visit returns the same mounted-replica outcome shape as durable join.
+pub type VisitResponse = JoinResponse;
+
+/// Active local membership mode for a mounted repository.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MembershipResponse {
+    /// `guest` or `durable`.
+    pub status: String,
+}

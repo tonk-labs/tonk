@@ -97,6 +97,8 @@ pub struct Invite {
     pub audience: InviteAudience,
     /// Access service URL for sync, if the inviter attached one.
     pub remote_url: Option<Url>,
+    /// Provider-independent relay that accepts raw signed revocation artifacts.
+    pub revocation_url: Option<Url>,
 }
 
 impl Invite {
@@ -143,7 +145,15 @@ impl Invite {
             chain,
             audience,
             remote_url,
+            revocation_url: None,
         })
+    }
+
+    /// Attach an explicit revocation relay URL as executor configuration.
+    #[must_use]
+    pub fn with_revocation_url(mut self, revocation_url: Option<Url>) -> Self {
+        self.revocation_url = revocation_url;
+        self
     }
 
     /// Repo subject DID. Guaranteed specific by construction.
@@ -175,6 +185,7 @@ impl Invite {
 
         let mut access: Option<String> = None;
         let mut remote_url: Option<Url> = None;
+        let mut revocation_url: Option<Url> = None;
         for (key, value) in parsed.query_pairs() {
             match key.as_ref() {
                 "access" => access = Some(value.into_owned()),
@@ -182,6 +193,11 @@ impl Invite {
                     let r = Url::parse(&value)
                         .context("invite `remote` parameter is not a valid URL")?;
                     remote_url = Some(r);
+                }
+                "revocation" => {
+                    let relay = Url::parse(&value)
+                        .context("invite `revocation` parameter is not a valid URL")?;
+                    revocation_url = Some(relay);
                 }
                 _ => {}
             }
@@ -216,7 +232,9 @@ impl Invite {
             None => InviteAudience::Scoped,
         };
 
-        Self::new(chain, audience, remote_url).await
+        Ok(Self::new(chain, audience, remote_url)
+            .await?
+            .with_revocation_url(revocation_url))
     }
 
     /// Serialize the invite as a URL rooted at `base_url`.
@@ -250,6 +268,9 @@ impl Invite {
             pairs.append_pair("access", &access);
             if let Some(remote) = &self.remote_url {
                 pairs.append_pair("remote", remote.as_str());
+            }
+            if let Some(relay) = &self.revocation_url {
+                pairs.append_pair("revocation", relay.as_str());
             }
         }
 
@@ -350,6 +371,7 @@ impl Invite {
     ) -> Result<ClaimedInvite> {
         let signer = self.signer().await?;
         let remote_url = self.remote_url.clone();
+        let revocation_url = self.revocation_url.clone();
 
         let chain = match signer {
             Some(ephemeral) => {
@@ -389,7 +411,11 @@ impl Invite {
             }
         };
 
-        Ok(ClaimedInvite { chain, remote_url })
+        Ok(ClaimedInvite {
+            chain,
+            remote_url,
+            revocation_url,
+        })
     }
 }
 
@@ -422,6 +448,8 @@ pub struct ClaimedInvite {
     pub chain: DelegationChain,
     /// Access service URL for sync, if the invite included one.
     pub remote_url: Option<Url>,
+    /// Revocation submission relay, if the invite included one.
+    pub revocation_url: Option<Url>,
 }
 
 impl ClaimedInvite {
@@ -583,6 +611,38 @@ mod tests {
             InviteAudience::Scoped => panic!("expected open audience"),
         }
         assert!(decoded.remote_url.is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_round_trips_the_revocation_submission_url() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
+        let relay = Url::parse("https://accounts.example/revocations").unwrap();
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap()
+            .with_revocation_url(Some(relay.clone()));
+
+        let decoded = Invite::parse_url(&invite.to_url(DEFAULT_BASE_URL).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(decoded.revocation_url, Some(relay));
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_existing_invites_without_relay_metadata_parseable() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
+
+        let decoded = Invite::parse_url(&invite.to_url(DEFAULT_BASE_URL).unwrap())
+            .await
+            .unwrap();
+        assert!(decoded.revocation_url.is_none());
     }
 
     #[dialog_common::test]

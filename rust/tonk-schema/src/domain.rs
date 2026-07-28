@@ -747,6 +747,14 @@ pub mod invitation {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation")]
     pub struct Audience(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation")]
+    pub struct TargetCid(pub String);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation")]
+    pub struct PathHex(pub String);
 }
 
 /// Attributes that live on [`Remote`] entities only.

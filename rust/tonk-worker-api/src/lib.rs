@@ -33,7 +33,7 @@ pub use identity::{
     CreateSpaceRequest, CreateSpaceResponse, IdentityIntent, IdentityRequired, RootStatus,
     SaveRootRequest,
 };
-pub use join::{JoinRequest, JoinResponse};
+pub use join::{JoinRequest, JoinResponse, MembershipResponse, VisitRequest, VisitResponse};
 pub use profile::{ProfileInfo, SpaceEntry};
 pub use query::Query;
 pub use repository::{
