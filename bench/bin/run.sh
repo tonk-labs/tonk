@@ -22,16 +22,22 @@ export TONK_NO_UPDATE_CHECK=1
 # trip entirely.
 export TONK_NO_SHORTEN=1
 
-SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N]}"; shift
-SCRIPTED=0; RUNS=1
+SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N] [--variant NAME]}"; shift
+SCRIPTED=0; RUNS=1; BENCH_VARIANT="${BENCH_VARIANT:-unlabelled}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --scripted) SCRIPTED=1 ;;
     --runs) RUNS="$2"; shift ;;
+    --variant) BENCH_VARIANT="$2"; shift ;;
     *) echo "unknown flag $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+if [[ ! "$BENCH_VARIANT" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "invalid variant '$BENCH_VARIANT': use letters, digits, dot, underscore, or hyphen" >&2
+  exit 2
+fi
 
 SCENARIO="$ROOT/bench/scenarios/$SCENARIO_NAME"
 [ -d "$SCENARIO" ] || { echo "no scenario $SCENARIO_NAME" >&2; exit 2; }
@@ -42,9 +48,9 @@ cleanup() {
 }
 
 for i in $(seq 1 "$RUNS"); do
-  RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-${i}-$SCENARIO_NAME"
-  unset EPISODE_DIR EPISODE_BIN EPISODE_PATH_SANDBOX EPISODE_RUNNER EPISODE_SANDBOX \
-        EPISODE_SPOT EPISODE_SPOTS_STATE
+  RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-${i}-$SCENARIO_NAME-$BENCH_VARIANT"
+  unset EPISODE_DIR EPISODE_BIN EPISODE_HOME EPISODE_PATH_SANDBOX EPISODE_RUNNER \
+        EPISODE_SANDBOX EPISODE_SPOT EPISODE_SPOTS_STATE
   mkdir -p "$RUN_DIR"
   export RUN_DIR SCENARIO SCENARIO_NAME
   export BENCH_PORT="${BENCH_PORT:-8787}"
@@ -88,6 +94,32 @@ for i in $(seq 1 "$RUNS"); do
     . "$SCENARIO/scenario.env"
     set +a
   fi
+  revision="$(git -C "$ROOT" rev-parse HEAD)"
+  if [ -n "$(git -C "$ROOT" status --short)" ]; then
+    dirty=true
+  else
+    dirty=false
+  fi
+  case "${EPISODE_RUNNER:-claude}" in
+    codex) effective_model="${CODEX_MODEL:-gpt-5.5}" ;;
+    claude) effective_model="claude-cli-default" ;;
+    *) effective_model="unknown" ;;
+  esac
+  jq -n \
+    --arg variant "$BENCH_VARIANT" \
+    --arg scenario "$SCENARIO_NAME" \
+    --arg revision "$revision" \
+    --arg runner "${EPISODE_RUNNER:-claude}" \
+    --arg model "$effective_model" \
+    --argjson dirty "$dirty" \
+    '{
+      variant: $variant,
+      scenario: $scenario,
+      revision: $revision,
+      dirty: $dirty,
+      runner: $runner,
+      model: $model
+    }' > "$RUN_DIR/experiment.json"
   if [ -x "$SCENARIO/prepare.sh" ]; then
     "$SCENARIO/prepare.sh"
   fi
@@ -103,6 +135,15 @@ for i in $(seq 1 "$RUNS"); do
     "$ROOT/bench/bin/episode.sh" || episode_status=$?
   fi
   echo "{\"episode_exit\": $episode_status}" > "$RUN_DIR/episode-exit.json"
+
+  verifier_status=0
+  if [ -x "$SCENARIO/verify.sh" ]; then
+    TONK="$ROOT/target/release/tonk" "$SCENARIO/verify.sh" > "$RUN_DIR/verify.json" \
+      || verifier_status=$?
+  else
+    jq -n '{available: false, passed: null}' > "$RUN_DIR/verify.json"
+  fi
+  echo "{\"verifier_exit\": $verifier_status}" > "$RUN_DIR/verifier-exit.json"
 
   "$ROOT/bench/bin/browser.sh" start
   bridge_status=0

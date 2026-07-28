@@ -67,6 +67,7 @@ $([ -f "$RUN_DIR/shots/reference.png" ] && echo "reference.png is the original a
 Transcript: $RUN_DIR/episode-summary.txt
 $([ -s "$RUN_DIR/interview.log" ] && echo "Interview transcript (the agent's questions to the simulated user, and the replies): $RUN_DIR/interview.log — read it with the Read tool; interview quality is judged from it." || true)
 Mechanical metrics (context only, do not recompute): $RUN_DIR/metrics.json
+Execution verifier (ground truth for structured final state): $RUN_DIR/verify.json
 
 Respond with ONLY a JSON object, no markdown fences, matching:
 {
@@ -112,7 +113,8 @@ if ! printf '%s' "$out" | valid; then
 fi
 printf '%s\n' "$out" | jq . > "$RUN_DIR/judge.json"
 
-jq -s '.[0] * {judge: .[1]}' "$RUN_DIR/metrics.json" "$RUN_DIR/judge.json" \
+jq -s '.[0] * {judge: .[1]} * {verifier: .[2]}' \
+  "$RUN_DIR/metrics.json" "$RUN_DIR/judge.json" "$RUN_DIR/verify.json" \
   | jq --arg scenario "$SCENARIO_NAME" --arg run "$(basename "$RUN_DIR")" \
        '{scenario: $scenario, run: $run} + .' \
   > "$RUN_DIR/scores.json"

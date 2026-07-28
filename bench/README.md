@@ -19,6 +19,10 @@ from-scratch`) that fixes the highest-leverage problem each iteration.
 | `artifact-conversion` | `scenarios/artifact-conversion/task.md` | Agent converts a fixture HTML/JS artifact into tonk concepts+views; judged against `reference.png` |
 | `from-scratch` | `scenarios/from-scratch/task.md` | Agent builds a habit tracker from nothing through tonk |
 | `wiki-conversion` | `scenarios/wiki-conversion/task.md` | Agent converts the Grove wiki (page tree, block canvas, wikilinks, comments) into tonk concepts+views+components; judged against `reference.png` |
+| `first-use` | `scenarios/first-use/task.md` | No CLI hints: measure the first successful live read and precise write |
+| `targeted-edit` | `scenarios/targeted-edit/task.md` | Returning agent makes one precise change to seeded data |
+| `interview-build` | `scenarios/interview-build/task.md` | Agent interviews a simulated user, then builds the result |
+| `cold-onboard` | live invite prompt | Agent installs via npx, joins, orients, and builds |
 
 ### Baseline measurements (2026-06-10)
 
@@ -106,18 +110,23 @@ nix develop -c bench/bin/bench run <scenario>
 nix develop -c bench/bin/bench run smoke --scripted
 
 # Multiple runs (for variance on a specific change)
-nix develop -c bench/bin/bench run <scenario> --runs N
+nix develop -c bench/bin/bench run <scenario> --runs N --variant <name>
 
 # Trend over the last N runs (default 10)
 nix develop -c bench/bin/bench report [N]
+
+# Compare two frozen experiment arms
+nix develop -c bench/bin/bench compare <scenario> <baseline> <treatment>
 
 # Promote a run's screenshots to baselines for future visual diff
 nix develop -c bench/bin/bench baseline <scenario> <run-dir>
 ```
 
-Run artifacts land in `bench/runs/<timestamp>-<n>-<scenario>/` (gitignored):
-`episode.jsonl`, `shots/`, `metrics.json`, `judge.json`, `scores.json`,
-`report.md`, `visual-diff.json`.
+Run artifacts land in
+`bench/runs/<timestamp>-<n>-<scenario>-<variant>/` (gitignored):
+`experiment.json`, `episode.jsonl`, `shots/`, `metrics.json`, `judge.json`,
+`scores.json`, `report.md`, and `visual-diff.json`. The experiment protocol and
+graduation gate live in [`EXPERIMENTS.md`](EXPERIMENTS.md).
 
 ### Improvement loop
 
@@ -188,11 +197,14 @@ baselines in `bench/baselines/<scenario>/`. Informational; never failing — a
 diff may be the improvement you just made.
 
 **Metrics** — computed by `metrics.sh` from the transcript via `jq`:
-wall-clock, tokens, tool calls, failed tool results, repeated commands. Never
-from the judge.
+wall-clock, tokens, tool calls, failed tool results, repeated commands, and the
+command index of the first successful Tonk call, live-state read, instance-data
+read, and content write. It also counts Tonk failures, orientation calls,
+dry-runs, and broad command classes. Never from the judge.
 
 **Index** — `bench/runs/index.jsonl`, one line per run with key metrics.
-`bench report` reads it for trend display.
+`bench report` reads it for trend display; `bench compare` applies the
+pre-registered significance and correctness gate to two labelled variants.
 
 ## Requirements
 
