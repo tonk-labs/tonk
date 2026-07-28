@@ -357,10 +357,12 @@ pub async fn claim(
         ));
     }
     let member = local_root
-        .map(|root| root.root_did.parse())
-        .transpose()
-        .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?
-        .unwrap_or_else(|| profile.did());
+        .ok_or_else(|| {
+            InviteError::Io("local root provisioning did not produce a record".to_string())
+        })?
+        .root_did
+        .parse()
+        .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?;
     let claimed = invite
         .claim(&member)
         .await

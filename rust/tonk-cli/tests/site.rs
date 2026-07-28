@@ -425,6 +425,8 @@ mod when_recording_roster_facts {
                 subject: Term::var("subject"),
                 inviter: Term::var("inviter"),
                 audience: Term::var("audience"),
+                target_cid: Term::var("target_cid"),
+                path_hex: Term::var("path_hex"),
             })
             .perform(&inviter.site.operator)
             .try_vec()
@@ -459,7 +461,16 @@ mod when_recording_roster_facts {
             .try_vec()
             .await?;
         assert_eq!(memberships.len(), 1);
-        assert_eq!(memberships[0].member.0, joined.profile.did().this());
+        let root_bytes = joined
+            .profile
+            .credential()
+            .site(tonk_cli::identity::LOCAL_ROOT_SITE)
+            .load::<Vec<u8>>()
+            .perform(&joined.operator)
+            .await?;
+        let root: tonk_cli::identity::LocalRoot = serde_json::from_slice(&root_bytes)?;
+        let root_did: dialog_varsig::Did = root.root_did.parse()?;
+        assert_eq!(memberships[0].member.0, root_did.this());
 
         let stamps: Vec<InvitedVia> = claimer_meta
             .query()
