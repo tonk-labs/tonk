@@ -376,11 +376,10 @@ async fn revoke_this_device(state: &AppState) -> SelfRevocation {
     let Some(service) = crate::router::account_backup::account_service_url() else {
         return SelfRevocation::NothingToRecord;
     };
-    let root_did = link.issuer().clone();
+    let target = link.proof_cids()[0];
 
     let revocation =
-        match tonk_identity::revocation::mint_self_revocation(device.clone(), &link, &root_did)
-            .await
+        match tonk_identity::revocation::mint_self_revocation(device.clone(), &link, &target).await
         {
             Ok(bytes) => bytes,
             Err(error) => {

@@ -215,12 +215,13 @@ mod tests {
         register_device(store, account, &device_did, "phone", &delegation_hex, 200)
             .await
             .unwrap();
-        let device = store.device_by_did(&device_did).await.unwrap().unwrap();
+        let grant_bytes = hex::decode(&delegation_hex).unwrap();
+        let grant = dialog_ucan_core::DelegationChain::try_from(grant_bytes.as_slice()).unwrap();
         let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
             .await
             .unwrap();
         let revocation =
-            tonk_identity::revocation::mint_root_revocation(root, &device.delegation_cid)
+            tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
                 .await
                 .unwrap();
         (device_did, revocation)
@@ -324,7 +325,7 @@ mod tests {
         .unwrap();
 
         let self_signed =
-            tonk_identity::revocation::mint_self_revocation(device, &grant, &root.did())
+            tonk_identity::revocation::mint_self_revocation(device, &grant, &grant.proof_cids()[0])
                 .await
                 .unwrap();
 
@@ -373,7 +374,7 @@ mod tests {
         .await
         .unwrap();
         let self_signed =
-            tonk_identity::revocation::mint_self_revocation(device, &grant, &root.did())
+            tonk_identity::revocation::mint_self_revocation(device, &grant, &grant.proof_cids()[0])
                 .await
                 .unwrap();
 
@@ -425,14 +426,7 @@ mod tests {
         let chains = MemoryChainStore::default();
         let account = seeded_account(&store).await;
         let (device_did, _) = registered_with_revocation(&store, &account).await;
-        let foreign = tonk_identity::derive::derive_root_signer(&FOREIGN_ROOT_PRF)
-            .await
-            .unwrap();
-        let device = store.device_by_did(&device_did).await.unwrap().unwrap();
-        let forged =
-            tonk_identity::revocation::mint_root_revocation(foreign, &device.delegation_cid)
-                .await
-                .unwrap();
+        let forged = b"not a revocation".to_vec();
 
         let result = revoke_device(
             &store,
@@ -444,7 +438,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(CeremonyError::Forbidden(_))));
+        assert!(matches!(result, Err(CeremonyError::Invalid(_))));
         let views = list_devices(&store, &account).await.unwrap();
         assert_eq!(
             views[0].status, "active",

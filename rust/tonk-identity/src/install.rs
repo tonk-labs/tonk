@@ -61,18 +61,40 @@ fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
         .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
 }
 
-/// `signRevocation({ delegationCid })` → `{ revocationHex }`.
+/// `signRevocation({ delegationCid, pathHex })` → `{ revocationHex }`.
 ///
-/// Prompts for the passkey, derives the root, and signs a revocation of
-/// the named delegation. The caller sends the hex on as an argument to
-/// its own device-signed revoke request.
+/// Parses the public witness before prompting, derives the root, and signs
+/// only when that root issued a delegation in the target's path prefix.
 async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     let delegation_cid = string_property(&input, "delegationCid")?;
+    let target = delegation_cid
+        .parse::<ipld_core::cid::Cid>()
+        .map_err(|error| JsValue::from_str(&format!("invalid delegationCid: {error}")))?;
+    if target.to_string() != delegation_cid {
+        return Err(JsValue::from_str("delegationCid must be canonical"));
+    }
+    let path_hex = string_property(&input, "pathHex")?;
+    let path_bytes = hex::decode(path_hex)
+        .map_err(|error| JsValue::from_str(&format!("invalid pathHex: {error}")))?;
+    let path = dialog_ucan_core::DelegationChain::try_from(path_bytes.as_slice())
+        .map_err(|error| JsValue::from_str(&format!("invalid revocation path: {error}")))?;
+    if path
+        .proof_cids()
+        .iter()
+        .filter(|cid| **cid == target)
+        .count()
+        != 1
+    {
+        return Err(JsValue::from_str(
+            "revocation path must contain delegationCid exactly once",
+        ));
+    }
+
     let prf = crate::passkey::prf_output().await.map_err(js_error)?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let revocation_hex = crate::ceremony::sign_revocation(root, &delegation_cid)
+    let revocation_hex = crate::ceremony::sign_revocation(root, &path, &target)
         .await
         .map_err(js_error)?;
     let result = Object::new();

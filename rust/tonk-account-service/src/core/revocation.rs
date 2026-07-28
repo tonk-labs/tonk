@@ -11,10 +11,7 @@
 //! namespace, and again at every consumer — a consumer that trusts this
 //! service has gained nothing over trusting the registry.
 
-use dialog_credentials::Ed25519KeyResolver;
-use dialog_ucan_core::InvocationChain;
-use dialog_ucan_core::promise::Promised;
-use dialog_varsig::algorithm::eddsa::Ed25519Signature;
+use tonk_identity::revocation::{RevocationAuthority, VerifyError};
 
 use crate::chains::ChainStore;
 use crate::core::CeremonyError;
@@ -24,12 +21,6 @@ use crate::store::{Account, Device};
 /// The key prefix revocations live under, keeping them enumerable
 /// separately from delegation chain backups in the same namespace.
 pub const REVOCATION_PREFIX: &str = "revocations/";
-
-/// The command a revocation invokes.
-const REVOKE_COMMAND: [&str; 2] = ["ucan", "revoke"];
-
-/// The argument naming the withdrawn delegation.
-const REVOKE_ARGUMENT: &str = "revoke";
 
 /// Which authority signed a revocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,42 +53,26 @@ pub async fn check_revocation(
     root_did: &str,
     target: &Device,
 ) -> Result<Attestation, CeremonyError> {
-    let chain = InvocationChain::<Ed25519Signature>::try_from(bytes)
-        .map_err(|err| CeremonyError::Invalid(format!("bad revocation container: {err}")))?;
+    let verified = tonk_identity::revocation::verify(bytes)
+        .await
+        .map_err(|error| match error {
+            VerifyError::Malformed(message) => CeremonyError::Invalid(message),
+            VerifyError::Unauthorized(message) => CeremonyError::Unauthorized(message),
+        })?;
 
-    chain.verify(&Ed25519KeyResolver).await.map_err(|err| {
-        CeremonyError::Unauthorized(format!("revocation failed to verify: {err}"))
-    })?;
-
-    let command: Vec<&str> = chain.command().0.iter().map(String::as_str).collect();
-    if command.as_slice() != REVOKE_COMMAND {
-        return Err(CeremonyError::Invalid(format!(
-            "expected a {REVOKE_COMMAND:?} invocation, got {command:?}"
-        )));
-    }
-
-    if chain.subject().to_string() != root_did {
-        return Err(CeremonyError::Forbidden(
-            "revocation subject is not this account's root".to_string(),
-        ));
-    }
-
-    let Some(Promised::String(named)) = chain.arguments().get(REVOKE_ARGUMENT) else {
-        return Err(CeremonyError::Invalid(
-            "revocation must name the delegation it withdraws".to_string(),
-        ));
-    };
-    if named != &target.delegation_cid {
+    if verified.target_cid != target.delegation_cid {
         return Err(CeremonyError::Invalid(
             "revocation names a delegation other than the target device's".to_string(),
         ));
     }
-
-    let issuer = chain.issuer().to_string();
-    if issuer == root_did {
+    if verified.issuer.to_string() == root_did
+        && verified.authority == RevocationAuthority::PathIssuer
+    {
         return Ok(Attestation::Root);
     }
-    if issuer == target.device_did {
+    if verified.issuer.to_string() == target.device_did
+        && verified.authority == RevocationAuthority::Delegated
+    {
         return Ok(Attestation::Device);
     }
     Err(CeremonyError::Forbidden(
@@ -212,8 +187,8 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_accepts_a_root_signed_revocation() {
-        let (root, _, _, row) = fixture(ROOT_PRF, DEVICE_SEED).await;
-        let bytes = mint_root_revocation(root.clone(), &row.delegation_cid)
+        let (root, _, grant, row) = fixture(ROOT_PRF, DEVICE_SEED).await;
+        let bytes = mint_root_revocation(root.clone(), &grant, &grant.proof_cids()[0])
             .await
             .unwrap();
 
@@ -227,7 +202,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_accepts_a_device_revoking_itself() {
         let (root, device, grant, row) = fixture(ROOT_PRF, DEVICE_SEED).await;
-        let bytes = mint_self_revocation(device, &grant, &root.did())
+        let bytes = mint_self_revocation(device, &grant, &grant.proof_cids()[0])
             .await
             .unwrap();
 
@@ -242,7 +217,7 @@ mod tests {
     async fn it_rejects_a_device_revoking_another_device() {
         let (root, device, grant, _) = fixture(ROOT_PRF, DEVICE_SEED).await;
         let (_, _, _, other_row) = fixture(ROOT_PRF, OTHER_SEED).await;
-        let bytes = mint_self_revocation(device, &grant, &root.did())
+        let bytes = mint_self_revocation(device, &grant, &grant.proof_cids()[0])
             .await
             .unwrap();
 
@@ -257,8 +232,8 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_a_revocation_from_a_foreign_root() {
         let (_, _, _, row) = fixture(ROOT_PRF, DEVICE_SEED).await;
-        let (foreign, _, _, _) = fixture(FOREIGN_PRF, OTHER_SEED).await;
-        let bytes = mint_root_revocation(foreign, &row.delegation_cid)
+        let (foreign, _, foreign_grant, _) = fixture(FOREIGN_PRF, OTHER_SEED).await;
+        let bytes = mint_root_revocation(foreign, &foreign_grant, &foreign_grant.proof_cids()[0])
             .await
             .unwrap();
 
@@ -267,14 +242,14 @@ mod tests {
             .unwrap();
         let result = check_revocation(&bytes, root_did(&root).as_str(), &row).await;
 
-        assert!(matches!(result, Err(CeremonyError::Forbidden(_))));
+        assert!(matches!(result, Err(CeremonyError::Invalid(_))));
     }
 
     #[dialog_common::test]
     async fn it_rejects_a_revocation_naming_the_wrong_delegation() {
         let (root, _, _, row) = fixture(ROOT_PRF, DEVICE_SEED).await;
-        let (_, _, _, other_row) = fixture(ROOT_PRF, OTHER_SEED).await;
-        let bytes = mint_root_revocation(root.clone(), &other_row.delegation_cid)
+        let (_, _, other_grant, _) = fixture(ROOT_PRF, OTHER_SEED).await;
+        let bytes = mint_root_revocation(root.clone(), &other_grant, &other_grant.proof_cids()[0])
             .await
             .unwrap();
 

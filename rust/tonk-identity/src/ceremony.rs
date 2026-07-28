@@ -11,8 +11,9 @@ use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
+use ipld_core::cid::Cid;
 
 use crate::delegation::mint_device_delegation;
 
@@ -71,19 +72,17 @@ async fn build(
     })
 }
 
-/// Sign a revocation of `delegation_cid` with the passkey-derived root.
+/// Sign a witnessed revocation with the passkey-derived root.
 ///
-/// Unlike the other ceremonies this returns no delegation and no
-/// service invocation: the revocation travels as an argument inside a
-/// device-signed request, because the service still authorizes the call
-/// by device while the artifact carries the authority to revoke.
-///
-/// This is the ceremony behind revoking a device other than the one in
-/// your hand. Requiring it is what stops a stolen device from locking
-/// out its siblings — a device holds only its grant, and a grant cannot
-/// produce a root signature.
-pub async fn sign_revocation(root: Ed25519Signer, delegation_cid: &str) -> Result<String> {
-    let bytes = crate::revocation::mint_root_revocation(root, delegation_cid)
+/// The root must be an issuer in the path prefix through the target. The
+/// resulting artifact carries the exact signed path and can be verified
+/// without an account provider.
+pub async fn sign_revocation(
+    root: Ed25519Signer,
+    path: &DelegationChain,
+    target: &Cid,
+) -> Result<String> {
+    let bytes = crate::revocation::mint_root_revocation(root, path, target)
         .await
         .context("failed to sign the revocation")?;
     Ok(hex::encode(bytes))

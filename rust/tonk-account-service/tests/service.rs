@@ -90,6 +90,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     let ceremony = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
         .await
         .unwrap();
+    let second_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
+    let second_grant =
+        dialog_ucan_core::DelegationChain::try_from(second_grant_bytes.as_slice()).unwrap();
     let response = client
         .post(format!("{base}/devices/link"))
         .body(hex::decode(ceremony.invocation_hex).unwrap())
@@ -136,12 +139,17 @@ async fn it_drives_the_full_ceremony_over_http() {
     // Cross-device revocation needs root attestation; a device-signed
     // artifact only ever names its own grant.
     let second_grant_cid = devices[1]["delegationCid"].as_str().unwrap().to_string();
+    assert_eq!(second_grant_cid, second_grant.proof_cids()[0].to_string());
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
-    let revocation = tonk_identity::revocation::mint_root_revocation(root, &second_grant_cid)
-        .await
-        .unwrap();
+    let revocation = tonk_identity::revocation::mint_root_revocation(
+        root,
+        &second_grant,
+        &second_grant.proof_cids()[0],
+    )
+    .await
+    .unwrap();
     let body = container(
         vec!["account".into(), "device".into(), "revoke".into()],
         [

@@ -21,6 +21,7 @@ worker-macros = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+tonk-identity = { workspace = true }
 
 blake3 = { workspace = true }
 hex = { workspace = true }
@@ -60,7 +61,6 @@ anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
 reqwest = { workspace = true }
-tonk-identity = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
