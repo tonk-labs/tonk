@@ -84,14 +84,19 @@ fn current_rp_id() -> Option<&'static str> {
 
 /// Registration options: a discoverable, user-verified credential on
 /// this origin, with PRF requested up front.
-fn creation_options(user_name: &str) -> Result<PublicKeyCredentialCreationOptions> {
+fn creation_options() -> Result<PublicKeyCredentialCreationOptions> {
     let mut challenge = rand::random::<[u8; 32]>();
     let rp = PublicKeyCredentialRpEntity::new("tonk");
     if let Some(id) = current_rp_id() {
         rp.set_id(id);
     }
-    let mut user_id = rand::random::<[u8; 16]>();
-    let user = PublicKeyCredentialUserEntity::new_with_u8_slice(user_name, user_name, &mut user_id);
+    let mut user_id = rand::random::<[u8; 32]>();
+    let opaque_name = hex::encode(rand::random::<[u8; 16]>());
+    let user = PublicKeyCredentialUserEntity::new_with_u8_slice(
+        &opaque_name,
+        "Tonk identity",
+        &mut user_id,
+    );
     let params = Array::new();
     for algorithm in COSE_ALGORITHMS {
         params.push(
@@ -130,9 +135,9 @@ fn extract_prf(credential: &PublicKeyCredential) -> Option<Zeroizing<[u8; 32]>> 
 
 /// Create the account passkey on this origin. One biometric prompt;
 /// must be called during a user gesture.
-pub async fn create_passkey(user_name: &str) -> Result<PasskeyCredential> {
+pub async fn create_passkey() -> Result<PasskeyCredential> {
     let creation = CredentialCreationOptions::new();
-    creation.set_public_key(&creation_options(user_name)?);
+    creation.set_public_key(&creation_options()?);
     let promise = credentials()?
         .create_with_options(&creation)
         .map_err(|e| ceremony_error("credentials.create was rejected", e))?;
@@ -148,7 +153,7 @@ pub async fn create_passkey(user_name: &str) -> Result<PasskeyCredential> {
 
 /// Evaluate the passkey's PRF via a discoverable-credential assertion.
 /// One biometric prompt; must be called during a user gesture.
-pub async fn prf_output() -> Result<Zeroizing<[u8; 32]>> {
+pub async fn evaluate_passkey() -> Result<PasskeyCredential> {
     let mut challenge = rand::random::<[u8; 32]>();
     let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
     options.set_user_verification(UserVerificationRequirement::Required);
@@ -166,9 +171,22 @@ pub async fn prf_output() -> Result<Zeroizing<[u8; 32]>> {
         .map_err(|e| ceremony_error("passkey assertion failed", e))?
         .dyn_into()
         .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
-    extract_prf(&credential).ok_or_else(|| {
+    let id = Uint8Array::new(&credential.raw_id()).to_vec();
+    let prf_output = extract_prf(&credential).ok_or_else(|| {
         anyhow!("the authenticator returned no PRF output; this platform cannot derive a root key")
+    })?;
+    Ok(PasskeyCredential {
+        id,
+        prf_output: Some(prf_output),
     })
+}
+
+/// Evaluate and return only the PRF output.
+pub async fn prf_output() -> Result<Zeroizing<[u8; 32]>> {
+    evaluate_passkey()
+        .await?
+        .prf_output
+        .ok_or_else(|| anyhow!("the authenticator returned no PRF output"))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -190,12 +208,41 @@ mod tests {
 
     #[dialog_common::test]
     fn it_requires_a_discoverable_user_verified_credential() {
-        let options = creation_options("tester").unwrap();
+        let options = creation_options().unwrap();
         let selection = Reflect::get(&options, &"authenticatorSelection".into()).unwrap();
         let resident = Reflect::get(&selection, &"residentKey".into()).unwrap();
         assert_eq!(resident.as_string().as_deref(), Some("required"));
         let verification = Reflect::get(&selection, &"userVerification".into()).unwrap();
         assert_eq!(verification.as_string().as_deref(), Some("required"));
+    }
+
+    #[dialog_common::test]
+    fn it_uses_opaque_provider_neutral_user_entities() {
+        let first = creation_options().unwrap();
+        let second = creation_options().unwrap();
+        let first_user = Reflect::get(&first, &"user".into()).unwrap();
+        let second_user = Reflect::get(&second, &"user".into()).unwrap();
+        let first_name = Reflect::get(&first_user, &"name".into())
+            .unwrap()
+            .as_string()
+            .unwrap();
+        let second_name = Reflect::get(&second_user, &"name".into())
+            .unwrap()
+            .as_string()
+            .unwrap();
+        assert_ne!(first_name, second_name);
+        assert!(!first_name.contains('@'));
+        assert_eq!(
+            Reflect::get(&first_user, &"displayName".into())
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("Tonk identity")
+        );
+        assert_ne!(
+            Uint8Array::new(&Reflect::get(&first_user, &"id".into()).unwrap()).to_vec(),
+            Uint8Array::new(&Reflect::get(&second_user, &"id".into()).unwrap()).to_vec()
+        );
     }
 
     #[dialog_common::test]
@@ -217,7 +264,7 @@ mod tests {
     fn it_leaves_the_rp_id_unset_off_apex() {
         // wasm tests run on a localhost origin, which is off-apex, so the
         // creation options must carry no id and requests no rpId.
-        let options = creation_options("tester").unwrap();
+        let options = creation_options().unwrap();
         let rp = Reflect::get(&options, &"rp".into()).unwrap();
         assert!(
             Reflect::get(&rp, &"id".into()).unwrap().is_undefined(),

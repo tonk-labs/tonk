@@ -25,11 +25,8 @@ fn js_error(error: anyhow::Error) -> JsValue {
     JsValue::from_str(&format!("{error:#}"))
 }
 
-async fn create(name: JsValue) -> Result<JsValue, JsValue> {
-    let name = name.as_string().unwrap_or_else(|| "tonk".to_owned());
-    let created = crate::passkey::create_passkey(&name)
-        .await
-        .map_err(js_error)?;
+async fn create() -> Result<JsValue, JsValue> {
+    let created = crate::passkey::create_passkey().await.map_err(js_error)?;
     let result = Object::new();
     Reflect::set(
         &result,
@@ -102,6 +99,50 @@ async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
+fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsValue> {
+    let result = Object::new();
+    Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
+    Reflect::set(&result, &"deviceDid".into(), &ceremony.device_did.into())?;
+    Reflect::set(
+        &result,
+        &"credentialId".into(),
+        &ceremony.credential_id.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"delegationCid".into(),
+        &ceremony.delegation_cid.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"delegationHex".into(),
+        &ceremony.delegation_hex.into(),
+    )?;
+    Ok(result.into())
+}
+
+async fn create_root(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    root_result(
+        crate::ceremony::create_root(device_did)
+            .await
+            .map_err(js_error)?,
+    )
+}
+
+async fn evaluate_root(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    root_result(
+        crate::ceremony::evaluate_root(device_did)
+            .await
+            .map_err(js_error)?,
+    )
+}
+
 fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue, JsValue> {
     let result = Object::new();
     Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
@@ -126,14 +167,7 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let user_name = Reflect::get(&input, &"userName".into())?
-        .as_string()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| email.clone());
-
-    let created = crate::passkey::create_passkey(&user_name)
-        .await
-        .map_err(js_error)?;
+    let created = crate::passkey::create_passkey().await.map_err(js_error)?;
     let credential_id = hex::encode(&created.id);
     let prf_at_create = created.prf_output.is_some();
     let prf = match created.prf_output {
@@ -198,15 +232,33 @@ pub fn install() {
     };
     let identity = Object::new();
 
-    let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|name: JsValue| {
-        future_to_promise(create(name))
-    });
+    let create_passkey = Closure::<dyn FnMut() -> Promise>::new(|| future_to_promise(create()));
     let _ = Reflect::set(
         &identity,
         &"createPasskey".into(),
         create_passkey.as_ref().unchecked_ref(),
     );
     create_passkey.forget();
+
+    let create_root = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_root(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createRoot".into(),
+        create_root.as_ref().unchecked_ref(),
+    );
+    create_root.forget();
+
+    let evaluate_root = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(evaluate_root(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"evaluateRoot".into(),
+        evaluate_root.as_ref().unchecked_ref(),
+    );
+    evaluate_root.forget();
 
     let derive = Closure::<dyn FnMut() -> Promise>::new(|| future_to_promise(derive_root_did()));
     let _ = Reflect::set(
@@ -273,6 +325,8 @@ mod tests {
         let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
         for name in [
             "createPasskey",
+            "createRoot",
+            "evaluateRoot",
             "deriveRootDid",
             "createAccount",
             "linkDevice",

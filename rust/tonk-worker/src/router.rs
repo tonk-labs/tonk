@@ -55,6 +55,8 @@ pub use tonk_schema::SyncState;
 mod identify;
 pub use identify::IdentifyResponse;
 
+pub(crate) mod identity;
+
 pub mod lsp;
 pub use lsp::LspHub;
 
@@ -144,6 +146,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        .route(
+            "/api/identity/root",
+            get(identity::get).post(identity::save),
+        )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/link", post(account::link))
         .route("/api/account/devices", get(account_devices::list))

@@ -30,6 +30,69 @@ pub struct AccountCeremony {
     pub invocation_hex: String,
 }
 
+/// Output of a provider-neutral local-root ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootCeremony {
+    /// Passkey-derived root DID.
+    pub root_did: String,
+    /// Device receiving the stable grant.
+    pub device_did: String,
+    /// Opaque WebAuthn credential identifier.
+    pub credential_id: String,
+    /// CID of the root → device delegation.
+    pub delegation_cid: String,
+    /// Exact hex-encoded root → device delegation bytes.
+    pub delegation_hex: String,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn root_ceremony(
+    root: Ed25519Signer,
+    credential_id: String,
+    device_did: dialog_varsig::Did,
+) -> Result<RootCeremony> {
+    let root_did = root.did().to_string();
+    let delegation = mint_device_delegation(root, &device_did).await?;
+    let delegation_cid = delegation.proof_cids()[0].to_string();
+    let delegation_hex = hex::encode(
+        delegation
+            .to_bytes()
+            .context("failed to serialize root to device delegation")?,
+    );
+    Ok(RootCeremony {
+        root_did,
+        device_did: device_did.to_string(),
+        credential_id,
+        delegation_cid,
+        delegation_hex,
+    })
+}
+
+/// Create a provider-neutral passkey root and delegate it to `device_did`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn create_root(device_did: dialog_varsig::Did) -> Result<RootCeremony> {
+    let created = crate::passkey::create_passkey().await?;
+    let credential_id = hex::encode(created.id);
+    let prf = match created.prf_output {
+        Some(output) => output,
+        None => crate::passkey::prf_output().await?,
+    };
+    let root = crate::derive::derive_root_signer(&prf).await?;
+    root_ceremony(root, credential_id, device_did).await
+}
+
+/// Evaluate an existing discoverable passkey and delegate its root to `device_did`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_root(device_did: dialog_varsig::Did) -> Result<RootCeremony> {
+    let evaluated = crate::passkey::evaluate_passkey().await?;
+    let credential_id = hex::encode(evaluated.id);
+    let prf = evaluated
+        .prf_output
+        .context("the authenticator returned no PRF output")?;
+    let root = crate::derive::derive_root_signer(&prf).await?;
+    root_ceremony(root, credential_id, device_did).await
+}
+
 fn strings(values: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, Promised> {
     values
         .into_iter()

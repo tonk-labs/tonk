@@ -21,41 +21,12 @@ async fn validate_link(
 ) -> Result<(DelegationChain, Vec<u8>), TonkWorkerError> {
     let bytes = hex::decode(&request.delegation_hex)
         .map_err(|error| TonkWorkerError::Router(format!("invalid delegation hex: {error}")))?;
-    let chain = DelegationChain::try_from(bytes.as_slice())
-        .map_err(|error| TonkWorkerError::Router(format!("invalid account delegation: {error}")))?;
-
-    if chain.proof_cids().len() != 1 {
-        return Err(TonkWorkerError::Router(
-            "account delegation must contain exactly one proof".to_string(),
-        ));
-    }
+    let chain = super::identity::validate_grant(bytes.clone(), device_did).await?;
     if chain.issuer().to_string() != request.root_did {
         return Err(TonkWorkerError::Forbidden(
             "delegation issuer does not match rootDid".to_string(),
         ));
     }
-    if chain.audience() != device_did {
-        return Err(TonkWorkerError::Forbidden(
-            "delegation audience is not the current profile".to_string(),
-        ));
-    }
-    if chain.subject().is_some() {
-        return Err(TonkWorkerError::Router(
-            "account delegation must be subject-open".to_string(),
-        ));
-    }
-
-    let proof = chain
-        .proofs()
-        .next()
-        .expect("a one-proof chain contains one proof");
-    proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Forbidden(format!("invalid account delegation signature: {error}"))
-        })?;
-
     Ok((chain, bytes))
 }
 

@@ -2,8 +2,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
-    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SignOutResponse,
-    SyncResponse, SyncStatusResponse,
+    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, RootStatus,
+    SaveRootRequest, SignOutResponse, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -434,6 +434,43 @@ pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
         .map_err(into_api_error)?;
 
     response.json().await.map_err(into_api_error)
+}
+
+/// Return the current profile's provider-neutral local root state.
+pub async fn root_status() -> Result<RootStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/identity/root", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    response.json().await.map_err(into_api_error)
+}
+
+/// Persist a verified local root ceremony result.
+pub async fn save_root(
+    credential_id: String,
+    delegation_hex: String,
+) -> Result<RootStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/identity/root", origin()))
+        .json(&SaveRootRequest {
+            credential_id,
+            delegation_hex,
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/identity/root returned {status}: {text}"
+        )))
+    }
 }
 
 /// Return the current profile's persisted account-link state.

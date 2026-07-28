@@ -19,6 +19,10 @@ pub mod analytics;
 /// Error types for the Tonk UI.
 pub mod error;
 
+/// Top-document local identity provisioning gate.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod identity_gate;
+
 /// Test helpers for integration testing.
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;
