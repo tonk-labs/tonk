@@ -56,6 +56,7 @@ pub async fn create_account<S: Store>(
             &NewDevice {
                 device_did: request.device_did.clone(),
                 delegation_cid,
+                delegation_hex: request.delegation_hex.clone(),
                 name: request.device_name.clone(),
             },
             now,
@@ -256,6 +257,7 @@ mod tests {
                 account_id: other_id,
                 device_did: device_did.clone(),
                 delegation_cid: "bafyStolen".into(),
+                delegation_hex: "beef".into(),
                 name: "attacker".into(),
                 status: DeviceStatus::Active,
                 created_at: 1,

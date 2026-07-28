@@ -11,6 +11,7 @@ CREATE TABLE devices (
     account_id INTEGER NOT NULL REFERENCES accounts(id),
     device_did TEXT NOT NULL UNIQUE,
     delegation_cid TEXT NOT NULL,
+    delegation_hex TEXT NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     created_at INTEGER NOT NULL

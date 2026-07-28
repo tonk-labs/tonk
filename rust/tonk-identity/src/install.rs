@@ -167,29 +167,41 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let created = crate::passkey::create_passkey().await.map_err(js_error)?;
-    let credential_id = hex::encode(&created.id);
-    let prf_at_create = created.prf_output.is_some();
-    let prf = match created.prf_output {
-        Some(output) => output,
-        None => crate::passkey::prf_output().await.map_err(js_error)?,
-    };
+    let expected_root = string_property(&input, "rootDid")?;
+    let credential_id = string_property(&input, "credentialId")?;
+    let delegation_hex = string_property(&input, "delegationHex")?;
+    let evaluated = crate::passkey::evaluate_passkey().await.map_err(js_error)?;
+    if hex::encode(evaluated.id) != credential_id {
+        return Err(JsValue::from_str(
+            "the evaluated passkey does not match credentialId",
+        ));
+    }
+    let prf = evaluated
+        .prf_output
+        .ok_or_else(|| JsValue::from_str("the authenticator returned no PRF output"))?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let ceremony = crate::ceremony::create_account(
-        root,
-        email,
-        code,
-        credential_id.clone(),
-        device_did,
-        device_name,
-    )
-    .await
-    .map_err(js_error)?;
-    let result = ceremony_result(ceremony)?;
+    use dialog_varsig::Principal as _;
+    if root.did().to_string() != expected_root {
+        return Err(JsValue::from_str(
+            "the evaluated passkey does not match rootDid",
+        ));
+    }
+    let result = ceremony_result(
+        crate::ceremony::create_account(
+            root,
+            email,
+            code,
+            credential_id.clone(),
+            device_did,
+            device_name,
+            delegation_hex,
+        )
+        .await
+        .map_err(js_error)?,
+    )?;
     Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
-    Reflect::set(&result, &"prfAtCreate".into(), &prf_at_create.into())?;
     Ok(result)
 }
 
@@ -198,14 +210,21 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let evaluated = crate::passkey::evaluate_passkey().await.map_err(js_error)?;
+    let credential_id = hex::encode(evaluated.id);
+    let prf = evaluated
+        .prf_output
+        .ok_or_else(|| JsValue::from_str("the authenticator returned no PRF output"))?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let ceremony = crate::ceremony::link_device(root, device_did, device_name)
-        .await
-        .map_err(js_error)?;
-    ceremony_result(ceremony)
+    let result = ceremony_result(
+        crate::ceremony::link_device(root, device_did, device_name)
+            .await
+            .map_err(js_error)?,
+    )?;
+    Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
+    Ok(result)
 }
 
 async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {

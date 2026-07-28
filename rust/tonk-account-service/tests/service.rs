@@ -59,6 +59,10 @@ async fn it_drives_the_full_ceremony_over_http() {
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
     let device_did = device.did().to_string();
+    let first_grant =
+        tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
     let ceremony = tonk_identity::ceremony::create_account(
         root,
         "person@example.com".into(),
@@ -66,6 +70,7 @@ async fn it_drives_the_full_ceremony_over_http() {
         "cred-1".into(),
         device.did(),
         "laptop".into(),
+        hex::encode(first_grant.to_bytes().unwrap()),
     )
     .await
     .unwrap();
@@ -125,7 +130,14 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     // The worker and CLI parse exactly these keys; renaming one is a
     // breaking wire change.
-    for key in ["did", "name", "status", "delegationCid", "createdAt"] {
+    for key in [
+        "did",
+        "name",
+        "status",
+        "delegationCid",
+        "delegationHex",
+        "createdAt",
+    ] {
         assert!(
             devices[0].get(key).is_some(),
             "device list row is missing `{key}`"
@@ -133,6 +145,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     }
     assert!(devices[0].get("created_at").is_none());
     assert!(devices[0].get("delegation_cid").is_none());
+    assert_eq!(devices[1]["delegationHex"], ceremony.delegation_hex);
 
     // POST /devices/revoke -> the first device cuts off the second,
     // carrying a root-signed revocation of the second device's grant.

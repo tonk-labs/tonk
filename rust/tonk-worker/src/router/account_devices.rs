@@ -25,6 +25,7 @@ struct ServiceDevice {
     status: String,
     created_at: u64,
     delegation_cid: String,
+    delegation_hex: String,
 }
 
 /// Resolve the stored link and service URL, or explain what's missing.
@@ -68,6 +69,7 @@ async fn fetch_devices(
             status: row.status,
             created_at: row.created_at,
             delegation_cid: row.delegation_cid,
+            delegation_hex: row.delegation_hex,
         })
         .collect())
 }

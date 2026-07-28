@@ -3,7 +3,7 @@ use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
     JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, RootStatus,
-    SaveRootRequest, SignOutResponse, SyncResponse, SyncStatusResponse,
+    SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -486,14 +486,18 @@ pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
 
 /// Persist a verified account-root delegation in the local profile.
 pub async fn save_account_link(
+    provider: String,
     root_did: String,
+    credential_id: String,
     delegation_hex: String,
 ) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
-        .post(format!("{}/api/account/link", origin()))
+        .post(format!("{}/api/account/attach", origin()))
         .json(&AccountLinkRequest {
+            provider,
             root_did,
+            credential_id,
             delegation_hex,
         })
         .send()
@@ -505,7 +509,7 @@ pub async fn save_account_link(
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
-            "POST /api/account/link returned {status}: {text}"
+            "POST /api/account/attach returned {status}: {text}"
         )))
     }
 }
@@ -554,7 +558,7 @@ pub async fn revoke_account_device(
 
 /// Sign out on this device: revoke it in the registry (best-effort,
 /// reported in the response) and rotate onto a fresh key.
-pub async fn unlink_account() -> Result<SignOutResponse, TonkUiError> {
+pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .delete(format!("{}/api/account", origin()))

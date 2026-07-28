@@ -59,14 +59,15 @@ fn map_err(err: rusqlite::Error) -> StoreError {
 
 /// A device row as read straight off a `devices` query, before the
 /// status column is parsed.
-type DeviceRow = (i64, String, String, String, String, i64);
+type DeviceRow = (i64, String, String, String, String, String, i64);
 
 fn device_from_row(row: DeviceRow) -> Result<Device, StoreError> {
-    let (account_id, device_did, delegation_cid, name, status, created_at) = row;
+    let (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) = row;
     Ok(Device {
         account_id,
         device_did,
         delegation_cid,
+        delegation_hex,
         name,
         status: DeviceStatus::parse(&status)?,
         created_at: created_at as u64,
@@ -155,6 +156,7 @@ impl Store for SqliteStore {
                 account_id,
                 device.device_did,
                 device.delegation_cid,
+                device.delegation_hex,
                 device.name,
                 DeviceStatus::Active.as_str(),
                 created_at as i64,
@@ -188,6 +190,7 @@ impl Store for SqliteStore {
                 device.account_id,
                 device.device_did,
                 device.delegation_cid,
+                device.delegation_hex,
                 device.name,
                 device.status.as_str(),
                 device.created_at as i64,
@@ -209,6 +212,7 @@ impl Store for SqliteStore {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             })
             .map_err(map_err)?
@@ -228,6 +232,7 @@ impl Store for SqliteStore {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             })
             .optional()
@@ -307,6 +312,7 @@ impl Store for SqliteStore {
                     device.account_id,
                     device.device_did,
                     device.delegation_cid,
+                    device.delegation_hex,
                     device.name,
                     device.status.as_str(),
                     device.created_at as i64,
@@ -373,6 +379,7 @@ mod tests {
             account_id: id,
             device_did: "did:key:zDev".into(),
             delegation_cid: "bafyCid".into(),
+            delegation_hex: "beef".into(),
             name: "laptop".into(),
             status: DeviceStatus::Active,
             created_at: 2,
@@ -428,6 +435,7 @@ mod tests {
             account_id: 999,
             device_did: "did:key:zOrphan".into(),
             delegation_cid: "bafyCid".into(),
+            delegation_hex: "beef".into(),
             name: "ghost".into(),
             status: DeviceStatus::Active,
             created_at: 1,

@@ -25,8 +25,6 @@ pub(crate) mod restore;
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 
-pub(crate) mod migrate;
-
 pub(crate) mod account_devices;
 
 mod create_invite;
@@ -151,7 +149,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(identity::get).post(identity::save),
         )
         .route("/api/account", get(account::get).delete(account::unlink))
-        .route("/api/account/link", post(account::link))
+        .route("/api/account/attach", post(account::link))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))

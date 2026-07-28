@@ -1172,23 +1172,13 @@ mod tests {
     async fn it_keys_membership_on_the_root_did_for_an_account_holder() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
 
-        // Link this profile to an account root.
-        let device_did = state.read().await.profile.did();
-        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
-            .await
-            .unwrap();
-        let root_did = root.did();
-        let delegation = tonk_identity::delegation::mint_device_delegation(root, &device_did)
-            .await
-            .unwrap();
-        let request = tonk_worker_api::AccountLinkRequest {
-            root_did: root_did.to_string(),
-            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        let (root_did, device_did) = {
+            let state = state.read().await;
+            (
+                crate::router::identity::root_did(&state).await.unwrap(),
+                state.profile.did(),
+            )
         };
-        let _ =
-            crate::router::account::link(axum::extract::State(state.clone()), axum::Json(request))
-                .await
-                .unwrap();
 
         // Join an invite.
         let (url, key) = handcrafted_invite_url(50, 51).await;

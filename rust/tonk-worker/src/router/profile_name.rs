@@ -376,11 +376,9 @@ mod tests {
     /// row.
     #[dialog_common::test]
     async fn it_rekeys_the_roster_name_to_the_root_and_retracts_the_device_row() {
-        use axum::Json;
         use axum::body::Body;
-        use axum::extract::State;
         use axum::http::{Request, StatusCode};
-        use dialog_varsig::{Did, Principal};
+        use dialog_varsig::Did;
         use tower::ServiceExt;
 
         let (app, state, _lsp) =
@@ -408,22 +406,13 @@ mod tests {
         let key = info.name;
         let device_did = state.read().await.profile.did();
 
-        // Link the device to a root after the space already exists —
-        // exactly the order the bug depends on.
-        let root = tonk_identity::derive::derive_root_signer(&[42u8; 32])
-            .await
-            .unwrap();
-        let root_did_str = root.did().to_string();
-        let delegation = tonk_identity::delegation::mint_device_delegation(root, &device_did)
-            .await
-            .unwrap();
-        let link_request = tonk_worker_api::AccountLinkRequest {
-            root_did: root_did_str.clone(),
-            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        let root_did_str = {
+            let tonk = state.read().await;
+            crate::router::identity::root_did(&tonk)
+                .await
+                .unwrap()
+                .to_string()
         };
-        let _ = crate::router::account::link(State(state.clone()), Json(link_request))
-            .await
-            .unwrap();
 
         let tonk = state.read().await;
         restamp_member_name(&tonk, &key, "brave-lynx")

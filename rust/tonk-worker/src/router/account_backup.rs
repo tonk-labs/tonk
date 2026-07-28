@@ -5,7 +5,7 @@
 
 use dialog_credentials::Ed25519Signer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use dialog_repository::Repository;
+use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::promise::Promised;
 use tonk_common::log;
@@ -301,18 +301,27 @@ pub(crate) async fn back_up_claim(
     dispatch_backup(tonk, "claim", chain.clone(), remote_url.map(str::to_owned)).await;
 }
 
-/// Back up a re-anchored space's delegation to the account service. Used
-/// by roster migration: a claimed space's held capability re-delegated
-/// from the device to the account root, composing `space -> eph -> device
-/// -> root`. Best-effort: any failure logs and is swallowed, same as
-/// [`back_up_claim`].
-///
-/// Only called from the wasm worker's roster-migration sweep today, so
-/// this is worker-only rather than carrying dead code on native, mirroring
-/// [`back_up_owned_space`].
+/// Back up every existing owned root prefix after provider attachment.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn back_up_reanchored(tonk: &TonkState, chain: DelegationChain, remote_url: &str) {
-    dispatch_backup(tonk, "reanchor", chain, Some(remote_url.to_owned())).await;
+pub(crate) async fn back_up_existing_spaces(tonk: &TonkState) {
+    for key in crate::router::profile_name::profile_space_keys(tonk).await {
+        let repository = match tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(repository) => repository,
+            Err(_) => continue,
+        };
+        let remote = match crate::router::create_invite::resolve_remote_url(tonk, &repository).await
+        {
+            Ok(crate::router::create_invite::RemoteRequirement::Ready(remote)) => remote,
+            _ => continue,
+        };
+        back_up_owned_space(tonk, &repository, remote.as_str()).await;
+    }
 }
 
 /// Back up a created space's `space -> root` delegation so another of the

@@ -17,6 +17,8 @@ pub struct DeviceView {
     pub status: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Exact public delegation path bytes, hex-encoded.
+    pub delegation_hex: String,
     /// Creation time, as a unix timestamp in seconds.
     pub created_at: u64,
 }
@@ -28,6 +30,7 @@ impl From<Device> for DeviceView {
             name: device.name,
             status: device.status.as_str().to_string(),
             delegation_cid: device.delegation_cid,
+            delegation_hex: device.delegation_hex,
             created_at: device.created_at,
         }
     }
@@ -58,6 +61,7 @@ pub async fn register_device<S: Store>(
             account_id: account.id,
             device_did: device_did.to_string(),
             delegation_cid,
+            delegation_hex: delegation_hex.to_string(),
             name: device_name.to_string(),
             status: DeviceStatus::Active,
             created_at: now,
@@ -266,6 +270,7 @@ mod tests {
             account_id: account.id,
             device_did: device_signer.did().to_string(),
             delegation_cid: grant.proof_cids()[0].to_string(),
+            delegation_hex: hex::encode(grant.to_bytes().unwrap()),
             name: "phone".into(),
             status: DeviceStatus::Active,
             created_at: 2,

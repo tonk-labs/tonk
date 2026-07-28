@@ -22,6 +22,9 @@ struct CreateInput {
     code: String,
     device_did: String,
     device_name: String,
+    root_did: String,
+    credential_id: String,
+    delegation_hex: String,
 }
 
 #[derive(Serialize)]
@@ -43,8 +46,18 @@ struct HandoffInput {
 #[serde(rename_all = "camelCase")]
 struct CeremonyOutput {
     root_did: String,
+    credential_id: String,
     delegation_hex: String,
     invocation_hex: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RootOutput {
+    root_did: String,
+    device_did: String,
+    credential_id: String,
+    delegation_hex: String,
 }
 
 /// What `window.tonkIdentity.signRevocation` hands back: the
@@ -281,6 +294,7 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
             let _ = button.set_attribute("class", "account__button account__button--quiet");
             let _ = button.set_attribute("data-revoke", &device.did);
             let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
+            let _ = button.set_attribute("data-delegation-hex", &device.delegation_hex);
             button.set_text_content(Some("Revoke"));
             let _ = item.append_child(&button);
         }
@@ -344,6 +358,7 @@ fn load_devices(host: HtmlElement) {
                             host.clone(),
                             device.did.clone(),
                             device.delegation_cid.clone(),
+                            device.delegation_hex.clone(),
                         ),
                         None => show_error(
                             &host,
@@ -398,7 +413,7 @@ fn load_status(host: HtmlElement) {
     spawn_local(async move {
         match crate::api::account_status().await {
             Ok(status) => {
-                let linked = matches!(status, AccountStatus::Linked { .. });
+                let linked = matches!(status, AccountStatus::Registered { .. });
                 match landing(linked, revoke_target_from_url().is_some()) {
                     Landing::Devices => load_devices(host),
                     Landing::Success => show_success(&host),
@@ -507,10 +522,29 @@ async fn identity_call<T: Serialize, O: serde::de::DeserializeOwned>(
     serde_wasm_bindgen::from_value(output).map_err(|error| error.to_string())
 }
 
-async fn persist(ceremony: &CeremonyOutput) -> Result<(), String> {
-    crate::api::save_account_link(ceremony.root_did.clone(), ceremony.delegation_hex.clone())
+async fn persist(provider: &str, ceremony: &CeremonyOutput) -> Result<(), String> {
+    match crate::api::root_status()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+    {
+        tonk_worker_api::RootStatus::Missing { .. } => {
+            crate::api::save_root(
+                ceremony.credential_id.clone(),
+                ceremony.delegation_hex.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+        tonk_worker_api::RootStatus::Ready { .. } => {}
+    }
+    crate::api::save_account_link(
+        provider.to_string(),
+        ceremony.root_did.clone(),
+        ceremony.credential_id.clone(),
+        ceremony.delegation_hex.clone(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -519,10 +553,11 @@ async fn complete_remote(
     path: &str,
     ceremony: CeremonyOutput,
 ) -> Result<(), String> {
-    crate::api::submit_account_ceremony(&service(host)?, path, &ceremony.invocation_hex)
+    let provider = service(host)?;
+    crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
         .await
         .map_err(|error| error.to_string())?;
-    if let Err(error) = persist(&ceremony).await {
+    if let Err(error) = persist(&provider, &ceremony).await {
         web_sys::console::error_1(
             &format!("failed to save the accepted account link: {error}").into(),
         );
@@ -622,10 +657,37 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let device_did = crate::api::identify()
+                let status = crate::api::root_status()
                     .await
-                    .map_err(|error| error.to_string())?
-                    .did;
+                    .map_err(|error| error.to_string())?;
+                let (root_did, device_did, credential_id, delegation_hex) = match status {
+                    tonk_worker_api::RootStatus::Ready {
+                        root_did,
+                        device_did,
+                        credential_id,
+                        delegation_hex,
+                        ..
+                    } => (root_did, device_did, credential_id, delegation_hex),
+                    tonk_worker_api::RootStatus::Missing { device_did } => {
+                        let created: RootOutput = identity_call(
+                            "createRoot",
+                            &serde_json::json!({ "deviceDid": device_did }),
+                        )
+                        .await?;
+                        crate::api::save_root(
+                            created.credential_id.clone(),
+                            created.delegation_hex.clone(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                        (
+                            created.root_did,
+                            created.device_did,
+                            created.credential_id,
+                            created.delegation_hex,
+                        )
+                    }
+                };
                 let ceremony = identity_call(
                     "createAccount",
                     &CreateInput {
@@ -633,6 +695,9 @@ fn bind(host: &HtmlElement) {
                         code,
                         device_did,
                         device_name,
+                        root_did,
+                        credential_id,
+                        delegation_hex,
                     },
                 )
                 .await?;
@@ -727,10 +792,7 @@ fn bind(host: &HtmlElement) {
             .map(|window| {
                 window
                     .confirm_with_message(
-                        "Sign out and revoke this device? This browser starts over with a \
-                         new device identity, so logging back in needs your passkey. Your \
-                         spaces come back from your account — anything you never turned on \
-                         sync for does not.",
+                        "Disconnect account services on this device? Your local identity and space authority remain available.",
                     )
                     .unwrap_or(false)
             })
@@ -741,31 +803,13 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Signing out…");
         spawn_local(async move {
             match crate::api::unlink_account().await {
-                // Everything on screen belongs to the profile that just
-                // got replaced, down to the spaces in the sidebar, so
-                // reload rather than trying to reconcile it in place.
-                Ok(response) => {
-                    // The registry half of sign-out is best-effort; if
-                    // it failed, say so before the reload wipes the
-                    // page — finishing the revocation now falls to the
-                    // user's other devices.
-                    if let Some(warning) = response.warning
-                        && let Some(window) = window()
-                    {
-                        let _ = window.alert_with_message(&format!(
-                            "Signed out on this device, but the account registry could \
-                             not record it ({warning}). This device may still show as \
-                             active — revoke it from another device's account page."
-                        ));
+                Ok(_) => match window().map(|window| window.location().reload()) {
+                    Some(Ok(())) => {}
+                    _ => {
+                        set_busy(&host, false, "");
+                        set_mode(&host, "choice");
                     }
-                    match window().map(|window| window.location().reload()) {
-                        Some(Ok(())) => {}
-                        _ => {
-                            set_busy(&host, false, "");
-                            set_mode(&host, "choice");
-                        }
-                    }
-                }
+                },
                 Err(error) => {
                     set_busy(&host, false, "");
                     show_error(&host, error.to_string());
@@ -789,7 +833,10 @@ fn bind(host: &HtmlElement) {
             let delegation_cid = target
                 .get_attribute("data-delegation-cid")
                 .unwrap_or_default();
-            begin_revoke(host_for_revoke.clone(), did, delegation_cid);
+            let delegation_hex = target
+                .get_attribute("data-delegation-hex")
+                .unwrap_or_default();
+            begin_revoke(host_for_revoke.clone(), did, delegation_cid, delegation_hex);
         });
         let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
         closure.forget();
@@ -802,16 +849,12 @@ fn bind(host: &HtmlElement) {
 /// behind the passkey — so the ceremony runs here, in the page, and the
 /// signed revocation travels with the request. Shared by the device
 /// list's button and the CLI's `?revoke=` handoff.
-fn begin_revoke(host: HtmlElement, did: String, delegation_cid: String) {
+fn begin_revoke(host: HtmlElement, did: String, delegation_cid: String, delegation_hex: String) {
     let confirmed = window()
         .map(|window| {
             window
                 .confirm_with_message(
-                    "Revoke this device? This is permanent for that device: it loses \
-                     account and sync access immediately, and coming back means linking \
-                     again as a new device. Spaces it joined before it was linked may \
-                     need a fresh invite.\n\nYou will be asked for your passkey to \
-                     authorize this.",
+                    "Revoke this device? This permanently withdraws its root grant and remote access. Returning requires provisioning a new device grant.\n\nYou will be asked for your passkey to authorize this.",
                 )
                 .unwrap_or(false)
         })
@@ -824,7 +867,10 @@ fn begin_revoke(host: HtmlElement, did: String, delegation_cid: String) {
     spawn_local(async move {
         let signed: Result<RevocationOutput, String> = identity_call(
             "signRevocation",
-            &serde_json::json!({ "delegationCid": delegation_cid }),
+            &serde_json::json!({
+                "delegationCid": delegation_cid,
+                "pathHex": delegation_hex,
+            }),
         )
         .await;
         let revocation_hex = match signed {
@@ -1001,6 +1047,7 @@ mod tests {
             tonk_worker_api::AccountDevice {
                 did: "did:key:zThis".into(),
                 delegation_cid: "bafythis".into(),
+                delegation_hex: "beef".into(),
                 name: "This browser".into(),
                 status: "active".into(),
                 created_at: 1_753_300_000,
@@ -1009,6 +1056,7 @@ mod tests {
             tonk_worker_api::AccountDevice {
                 did: "did:key:zOther".into(),
                 delegation_cid: "bafyother".into(),
+                delegation_hex: "beef".into(),
                 name: "Old laptop".into(),
                 status: "revoked".into(),
                 created_at: 1_753_200_000,
@@ -1017,6 +1065,7 @@ mod tests {
             tonk_worker_api::AccountDevice {
                 did: "did:key:zPhone".into(),
                 delegation_cid: "bafyphone".into(),
+                delegation_hex: "beef".into(),
                 name: "Phone".into(),
                 status: "active".into(),
                 created_at: 1_753_100_000,

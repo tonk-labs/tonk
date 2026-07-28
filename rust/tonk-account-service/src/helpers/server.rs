@@ -188,6 +188,7 @@ struct DeviceJson {
     name: String,
     status: String,
     delegation_cid: String,
+    delegation_hex: String,
     created_at: u64,
 }
 
@@ -198,6 +199,7 @@ impl From<DeviceView> for DeviceJson {
             name: view.name,
             status: view.status,
             delegation_cid: view.delegation_cid,
+            delegation_hex: view.delegation_hex,
             created_at: view.created_at,
         }
     }

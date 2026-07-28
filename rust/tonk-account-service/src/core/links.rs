@@ -138,6 +138,7 @@ pub async fn complete_link<S: Store>(
                 account_id: account.id,
                 device_did: device_did.to_string(),
                 delegation_cid,
+                delegation_hex: delegation_hex.to_string(),
                 name: device_name.to_string(),
                 status: DeviceStatus::Active,
                 created_at: now,

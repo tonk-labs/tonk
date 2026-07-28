@@ -31,6 +31,8 @@ pub struct Device {
     pub device_did: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Exact public delegation path bytes, hex-encoded.
+    pub delegation_hex: String,
     /// Human-readable device name.
     pub name: String,
     /// Whether the device is currently active or has been revoked.
@@ -49,6 +51,8 @@ pub struct NewDevice {
     pub device_did: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Exact public delegation path bytes, hex-encoded.
+    pub delegation_hex: String,
     /// Human-readable device name.
     pub name: String,
 }
@@ -244,8 +248,8 @@ pub const SELECT_ACCOUNT_BY_ROOT: &str =
     "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE root_did = ?1";
 
 /// SQL: register a device under an account.
-pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 /// SQL: register a device under the account just created by a preceding
 /// `INSERT_ACCOUNT` statement in the same batch/transaction on this
@@ -253,15 +257,15 @@ pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, de
 /// [`Store::create_account_with_device`]'s D1 batch, where the new
 /// account's id is not otherwise known until the batch commits. Always
 /// registers the device as `active`.
-pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
-     VALUES (last_insert_rowid(), ?1, ?2, ?3, 'active', ?4)";
+pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
+     VALUES (last_insert_rowid(), ?1, ?2, ?3, ?4, 'active', ?5)";
 
 /// SQL: list the devices registered under an account.
-pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \
+pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, delegation_hex, name, status, created_at \
      FROM devices WHERE account_id = ?1";
 
 /// SQL: look up a device by its DID.
-pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \
+pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegation_cid, delegation_hex, name, status, created_at \
      FROM devices WHERE device_did = ?1";
 
 /// SQL: mark a device as revoked.
@@ -283,9 +287,9 @@ pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, deleg
 
 /// SQL: insert a handoff device only while its request is pending and live.
 pub const INSERT_DEVICE_FOR_LINK: &str = "INSERT INTO devices \
-    (account_id, device_did, delegation_cid, name, status, created_at) \
-    SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE EXISTS (SELECT 1 FROM link_requests \
-    WHERE token_hash = ?7 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?8)";
+    (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM link_requests \
+    WHERE token_hash = ?8 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?9)";
 
 /// SQL: attach the delegation to a live, still-pending handoff.
 pub const COMPLETE_LINK: &str = "UPDATE link_requests SET delegation_hex = ?1 \

@@ -67,10 +67,10 @@
 
   <section id="account-devices" class="account__panel" hidden>
     <h2>Your devices</h2>
-    <p class="account__hint">Revoking a device cuts off its sync access. Spaces that device joined before it was linked may need a fresh invite afterwards.</p>
+    <p class="account__hint">Revoking a device permanently cuts off authority through that device grant. Disconnecting account services leaves local space authority unchanged.</p>
     <ul id="account-device-list" class="account__devices"></ul>
     <div class="account__actions">
-      <button id="account-unlink" class="account__button account__button--quiet" type="button">Sign out and revoke this device</button>
+      <button id="account-unlink" class="account__button account__button--quiet" type="button">Disconnect account services on this device</button>
       <button id="account-devices-back" class="account__button account__button--secondary" type="button">Back</button>
     </div>
   </section>

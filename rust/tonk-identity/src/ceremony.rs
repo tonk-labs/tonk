@@ -151,7 +151,7 @@ pub async fn sign_revocation(
     Ok(hex::encode(bytes))
 }
 
-/// Build the root-signed account-creation request and first-device delegation.
+/// Build account creation around an existing stable local-root grant.
 pub async fn create_account(
     root: Ed25519Signer,
     email: String,
@@ -159,14 +159,15 @@ pub async fn create_account(
     credential_id: String,
     device_did: dialog_varsig::Did,
     device_name: String,
+    delegation_hex: String,
 ) -> Result<AccountCeremony> {
     let device_did_string = device_did.to_string();
-    let delegation = mint_device_delegation(root.clone(), &device_did).await?;
-    let delegation_hex = hex::encode(
-        delegation
-            .to_bytes()
-            .context("failed to serialize root to device delegation")?,
-    );
+    let bytes = hex::decode(&delegation_hex).context("invalid existing delegation hex")?;
+    let delegation = DelegationChain::try_from(bytes.as_slice())
+        .context("invalid existing root to device delegation")?;
+    if delegation.issuer() != &root.did() || delegation.audience() != &device_did {
+        anyhow::bail!("existing delegation does not match the evaluated root and device");
+    }
     build(
         root,
         vec!["account".into(), "create".into()],
@@ -255,6 +256,10 @@ mod tests {
     async fn it_binds_account_creation_fields_to_the_root_signature() {
         let (root, device) = fixture().await;
         let expected_root = root.did();
+        let delegation = crate::delegation::mint_device_delegation(root.clone(), &device)
+            .await
+            .unwrap();
+        let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
         let output = create_account(
             root,
             "a@x.com".into(),
@@ -262,6 +267,7 @@ mod tests {
             "credential".into(),
             device.clone(),
             "laptop".into(),
+            delegation_hex,
         )
         .await
         .unwrap();
