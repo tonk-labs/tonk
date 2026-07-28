@@ -313,8 +313,21 @@ pub async fn claim(
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?;
 
+    let local_root = crate::identity::local_root_with_operator(&profile, &operator)
+        .await
+        .map_err(|e| InviteError::Io(e.to_string()))?;
+    if config.require_root && local_root.is_none() {
+        return Err(InviteError::Io(
+            "A local passkey root is required; run `tonk identity link`".to_string(),
+        ));
+    }
+    let member = local_root
+        .map(|root| root.root_did.parse())
+        .transpose()
+        .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?
+        .unwrap_or_else(|| profile.did());
     let claimed = invite
-        .claim(&profile.did())
+        .claim(&member)
         .await
         .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
 
@@ -366,9 +379,9 @@ pub async fn claim(
     // did this member first get in", and that is meaningless when the
     // inviter is the claimer.
     use tonk_schema::prelude::DidExt as _;
-    let membership = Membership::new(joined.profile.did(), subject.clone());
+    let membership = Membership::new(member.clone(), subject.clone());
     let invitation_entity = invitation.this().clone();
-    let self_invite = invitation.inviter.0 == joined.profile.did().this();
+    let self_invite = invitation.inviter.0 == member.this();
     let meta = joined
         .repository
         .branch(META_BRANCH)

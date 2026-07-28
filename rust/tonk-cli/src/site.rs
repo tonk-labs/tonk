@@ -21,6 +21,8 @@ use dialog_operator::{Operator, Profile};
 use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_ucan_core::time::Timestamp;
+use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 
 /// The standard-library notation document seeded into a freshly
 /// created repository: the built-in concepts, views, commands, and
@@ -176,7 +178,7 @@ impl TonkSite {
         {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(&profile, &operator)
+                bootstrap_repository(&profile, &operator, config.require_root)
                     .await
                     .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
@@ -249,6 +251,7 @@ impl TonkSite {
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
+    require_root: bool,
 ) -> Result<Repository> {
     let signer_repo = profile
         .repository(REPO_NAME)
@@ -257,10 +260,19 @@ async fn bootstrap_repository(
         .await
         .context("failed to create repository")?;
 
+    let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
+    if require_root && local_root.is_none() {
+        anyhow::bail!("A local passkey root is required; run `tonk identity link`");
+    }
+    let durable_did = local_root
+        .map(|root| root.root_did.parse())
+        .transpose()
+        .context("stored root DID is invalid")?
+        .unwrap_or_else(|| profile.did());
     let delegation = signer_repo
         .access()
         .claim(&signer_repo)
-        .delegate(profile.did())
+        .delegate(durable_did)
         .perform(operator)
         .await
         .context("failed to mint repo→profile delegation")?;
@@ -292,6 +304,9 @@ pub struct SiteConfig {
     /// is the platform default; tests pick `Directory::At(...)`
     /// to redirect onto a temp dir.
     pub profile_directory: Directory,
+    /// Whether creating a new space must have a provider-neutral local root.
+    /// Production enables this; legacy-isolation test fixtures disable it.
+    pub require_root: bool,
 }
 
 impl SiteConfig {
@@ -302,6 +317,7 @@ impl SiteConfig {
         Self {
             profile_name: name.into(),
             profile_directory: Directory::Profile,
+            require_root: false,
         }
     }
 }
@@ -315,6 +331,7 @@ pub fn default_config() -> SiteConfig {
     SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
+        require_root: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
     }
 }
 
@@ -347,11 +364,28 @@ pub(crate) async fn build_profile_and_operator(
 
     let operator = profile
         .derive(OPERATOR_CONTEXT)
-        .allow(Subject::any())
         .base(Directory::At(root_str))
         .build(storage)
         .await
         .context("failed to build operator")?;
+    let expiration = Timestamp::new(
+        SystemTime::now() + Duration::from_secs(tonk_identity::session::SESSION_TTL_SECONDS),
+    )
+    .context("native session expiration is out of range")?;
+    let session = profile
+        .access()
+        .claim(Subject::any())
+        .expires(expiration)
+        .delegate(operator.did())
+        .perform(&operator)
+        .await
+        .context("failed to mint the native signing session")?;
+    profile
+        .access()
+        .save(session)
+        .perform(&operator)
+        .await
+        .context("failed to save the native signing session")?;
 
     Ok((profile, operator))
 }

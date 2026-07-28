@@ -519,10 +519,7 @@ async fn links_consume_route(
         .await
         .map_err(ceremony_error)?
     {
-        Some(delegation_hex) => Ok(json_response(
-            StatusCode::OK,
-            &serde_json::json!({ "delegationHex": delegation_hex }),
-        )),
+        Some(consumed) => Ok(json_response(StatusCode::OK, &consumed)),
         None => Ok(json_response(
             StatusCode::ACCEPTED,
             &serde_json::json!({ "pending": true }),

@@ -347,13 +347,16 @@ enum Command {
     /// ever, mostly when debugging delegation.
     #[command(
         hide = true,
-        after_help = "Examples:\n  tonk identity\n  tonk identity --reset"
+        after_help = "Examples:\n  tonk identity\n  tonk identity --root '{\"credentialId\":\"…\",\"delegationHex\":\"…\"}'\n  tonk identity --reset"
     )]
     Identity {
         /// Wipe the on-disk profile and create a new one. This removes
         /// access to existing repos without re-delegation.
         #[arg(long)]
         reset: bool,
+        /// Paste provider-neutral browser handoff JSON for this device.
+        #[arg(long, value_name = "JSON")]
+        root: Option<String>,
     },
 
     /// Link this machine's profile to a Tonk account
@@ -928,7 +931,7 @@ async fn main() {
         Command::Agents { json, command } => agents_op(json, command, spot.as_deref()).await,
         Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
-        Command::Identity { reset } => identity(reset).await,
+        Command::Identity { reset, root } => identity(reset, root).await,
         Command::Account { command } => account_op(command).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
@@ -1001,7 +1004,10 @@ async fn main() {
     std::process::exit(exit.into_raw());
 }
 
-async fn identity(reset: bool) -> ExitCode {
+async fn identity(reset: bool, root: Option<String>) -> ExitCode {
+    if reset && root.is_some() {
+        return print_error("--reset and --root cannot be used together".to_string());
+    }
     let result = if reset {
         identity::reset().await
     } else {
@@ -1009,7 +1015,33 @@ async fn identity(reset: bool) -> ExitCode {
     };
     match result {
         Ok(profile) => {
-            println!("did: {}", profile.did());
+            if let Some(json) = root {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct RootInput {
+                    credential_id: String,
+                    delegation_hex: String,
+                }
+                let input: RootInput = match serde_json::from_str(&json) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        return print_error(format!("invalid root handoff JSON: {error}"));
+                    }
+                };
+                match identity::save_local_root(&profile, input.credential_id, input.delegation_hex)
+                    .await
+                {
+                    Ok(root) => println!("root: {}\ndevice: {}", root.root_did, profile.did()),
+                    Err(error) => return print_error(error.to_string()),
+                }
+            } else {
+                println!("device: {}", profile.did());
+                match identity::local_root(&profile).await {
+                    Ok(Some(root)) => println!("root: {}", root.root_did),
+                    Ok(None) => println!("root: missing"),
+                    Err(error) => return print_error(error.to_string()),
+                }
+            }
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
@@ -1113,15 +1145,23 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     };
     match command {
         AccountCommand::Status => match account::status(&profile).await {
-            Ok(account::AccountStatus::Unlinked { device_did }) => {
-                println!("unlinked\ndevice: {device_did}");
+            Ok(account::AccountStatus::MissingRoot { device_did }) => {
+                println!("root: missing\nprovider: none\ndevice: {device_did}");
                 ExitCode::Success
             }
-            Ok(account::AccountStatus::Linked {
+            Ok(account::AccountStatus::Unregistered {
                 root_did,
                 device_did,
             }) => {
-                println!("linked\nroot: {root_did}\ndevice: {device_did}");
+                println!("root: {root_did}\nprovider: none\ndevice: {device_did}");
+                ExitCode::Success
+            }
+            Ok(account::AccountStatus::Registered {
+                root_did,
+                device_did,
+                provider,
+            }) => {
+                println!("root: {root_did}\nprovider: {provider}\ndevice: {device_did}");
                 ExitCode::Success
             }
             Err(error) => print_error(error.to_string()),

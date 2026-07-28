@@ -36,6 +36,9 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         .env("TONK_NO_UPDATE_CHECK", "1")
         .env("TONK_UPDATE_STATE", state_dir)
         .env("HOME", state_dir)
+        // These fixtures exercise remote selection, not identity provisioning.
+        // Production omits this explicit unsafe compatibility override.
+        .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
         .env_remove("TONK_SPOT");
     for (key, value) in extra_env {
         cmd.env(key, value);
