@@ -446,7 +446,7 @@ where
     let already_named = membership_has_name(&names, &membership);
 
     // A member claiming their own invite is not provenance.
-    let self_invite = invitation.inviter.0 == tonk.profile.did().this();
+    let self_invite = invitation.inviter.0 == member.this();
 
     let mut transaction = tonk
         .reactor
