@@ -80,19 +80,18 @@ pub(crate) async fn account_link(tonk: &crate::worker::TonkState) -> Option<Dele
 /// The account root DID for this profile, or `None` when unlinked. A
 /// linked device knows its root without holding the root key: the
 /// `root → device` delegation names the root as issuer.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn account_root_did(
     tonk: &crate::worker::TonkState,
 ) -> Option<dialog_varsig::Did> {
     account_link(tonk).await.map(|chain| chain.issuer().clone())
 }
 
-/// The DID roster writes and invite claims key on: the account root when
-/// linked, otherwise this device's own DID.
-pub(crate) async fn member_did(tonk: &crate::worker::TonkState) -> dialog_varsig::Did {
-    match account_root_did(tonk).await {
-        Some(root) => root,
-        None => tonk.profile.did(),
-    }
+/// The local root DID used for every durable membership operation.
+pub(crate) async fn member_did(
+    tonk: &crate::worker::TonkState,
+) -> Result<dialog_varsig::Did, TonkWorkerError> {
+    super::identity::root_did(tonk).await
 }
 
 /// Return the current profile's local account-link state.
@@ -506,12 +505,12 @@ mod tests {
     async fn it_resolves_the_member_did_to_the_root_when_linked() {
         let state = Arc::new(RwLock::new(test_state().await));
         let device_did = state.read().await.profile.did();
-        let request = request_for(&[7u8; 32], device_did.clone()).await;
+        let request = request_for(&[42u8; 32], device_did.clone()).await;
         let expected_root = request.root_did.clone();
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
 
         let tonk = state.read().await;
-        assert_eq!(member_did(&tonk).await.to_string(), expected_root);
+        assert_eq!(member_did(&tonk).await.unwrap().to_string(), expected_root);
         assert_eq!(
             account_root_did(&tonk).await.map(|did| did.to_string()),
             Some(expected_root),
@@ -519,11 +518,13 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_resolves_the_member_did_to_the_device_when_unlinked() {
+    async fn it_requires_a_local_root_for_the_member_did() {
         let state = Arc::new(RwLock::new(test_state().await));
         let tonk = state.read().await;
-        let device_did = tonk.profile.did();
-        assert_eq!(member_did(&tonk).await, device_did);
+        assert!(matches!(
+            member_did(&tonk).await,
+            Err(TonkWorkerError::RootRequired)
+        ));
         assert!(account_root_did(&tonk).await.is_none());
     }
 

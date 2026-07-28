@@ -42,6 +42,24 @@ pub struct SaveRootRequest {
     pub delegation_hex: String,
 }
 
+/// Request to create a durable space through the local root.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSpaceRequest {
+    /// Space display name.
+    pub name: String,
+    /// Optional sync remote URL.
+    pub remote: Option<String>,
+    /// Optional template name.
+    pub template: Option<String>,
+}
+
+/// Created space routing key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSpaceResponse {
+    /// DID-derived repository routing key.
+    pub key: String,
+}
+
 /// Deferred durable operation that requires a local root.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(

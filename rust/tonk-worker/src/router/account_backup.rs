@@ -6,8 +6,6 @@
 use dialog_credentials::Ed25519Signer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_repository::Repository;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::promise::Promised;
 use tonk_common::log;
@@ -343,38 +341,8 @@ async fn try_back_up_owned_space(
     repository: &Repository,
     remote_url: &str,
 ) -> Result<(), TonkWorkerError> {
-    // A repository loaded via `.load()` carries a verifier-only credential
-    // for a space this profile only joined; only a space this profile
-    // created still holds its signing key and can mint a delegation from
-    // it directly.
-    let Some(access) = repository.try_access() else {
-        return Ok(());
-    };
-    // No account linked: nothing to escrow the delegation under.
-    let Some(root_did) = crate::router::account::account_root_did(tonk).await else {
-        return Ok(());
-    };
-
-    // One-hop, subject-specific delegation: issuer = the space itself,
-    // subject = the space DID, audience = the account root. Never
-    // `Subject::Any` — a restoring device must only ever recover the one
-    // space this chain names.
-    let delegation: UcanDelegation = access
-        .claim(repository)
-        .delegate(root_did)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to mint space->root delegation: {e}"))
-        })?;
-
-    dispatch_backup(
-        tonk,
-        "created-space",
-        delegation.into_chain(),
-        Some(remote_url.to_owned()),
-    )
-    .await;
+    let prefix = crate::router::repository::space_root_prefix(tonk, &repository.did()).await?;
+    dispatch_backup(tonk, "created-space", prefix, Some(remote_url.to_owned())).await;
     Ok(())
 }
 

@@ -74,7 +74,9 @@ pub(crate) async fn migrate_space_roster(
     tonk: &TonkState,
     key: &str,
 ) -> Result<bool, RepositoryError> {
-    let member = account::member_did(tonk).await;
+    let Ok(member) = account::member_did(tonk).await else {
+        return Ok(false);
+    };
     let device = tonk.profile.did();
     // Unlinked: no root to migrate to. (member_did == device DID.)
     if member == device {

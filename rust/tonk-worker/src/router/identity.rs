@@ -107,7 +107,7 @@ async fn load_record(state: &TonkState) -> Result<Option<LocalRootRecord>, TonkW
 pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorkerError> {
     let record = load_record(state)
         .await?
-        .ok_or_else(|| TonkWorkerError::Conflict("a local passkey root is required".to_string()))?;
+        .ok_or(TonkWorkerError::RootRequired)?;
     let device_did = state.profile.did();
     let delegation = validate_grant(record.delegation.clone(), &device_did).await?;
     Ok(LocalRoot {
@@ -147,18 +147,15 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, Tonk
     }
 }
 
-/// `POST /api/identity/root`.
-#[wasm_compat]
-pub async fn save(
-    State(state): State<AppState>,
-    Json(request): Json<SaveRootRequest>,
-) -> Result<Json<RootStatus>, TonkWorkerError> {
+pub(crate) async fn persist_root(
+    state: &TonkState,
+    request: SaveRootRequest,
+) -> Result<RootStatus, TonkWorkerError> {
     if request.credential_id.is_empty() {
         return Err(TonkWorkerError::Router(
             "credentialId must not be empty".to_string(),
         ));
     }
-    let state = state.read().await;
     let bytes = hex::decode(&request.delegation_hex)
         .map_err(|error| TonkWorkerError::Router(format!("invalid delegation hex: {error}")))?;
     let chain = validate_grant(bytes.clone(), &state.profile.did()).await?;
@@ -173,7 +170,7 @@ pub async fn save(
                 "a different local root is already persisted".to_string(),
             ));
         }
-        return Ok(Json(status(local_root(&state).await?)));
+        return Ok(status(local_root(state).await?));
     }
 
     state
@@ -199,13 +196,23 @@ pub async fn save(
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))
         })?;
 
-    Ok(Json(status(LocalRoot {
+    Ok(status(LocalRoot {
         root_did: chain.issuer().clone(),
         device_did: state.profile.did(),
         credential_id: record.credential_id,
         delegation: chain,
         bytes,
-    })))
+    }))
+}
+
+/// `POST /api/identity/root`.
+#[wasm_compat]
+pub async fn save(
+    State(state): State<AppState>,
+    Json(request): Json<SaveRootRequest>,
+) -> Result<Json<RootStatus>, TonkWorkerError> {
+    let state = state.read().await;
+    Ok(Json(persist_root(&state, request).await?))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -217,7 +224,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    use crate::router::tests::test_state;
+    use crate::router::tests::test_state_without_root;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -240,14 +247,14 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reports_a_missing_local_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
         let Json(result) = get(State(state)).await.unwrap();
         assert!(matches!(result, RootStatus::Missing { .. }));
     }
 
     #[dialog_common::test]
     async fn it_persists_and_reloads_a_local_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, grant) = request_for(1, &device).await;
 
@@ -259,7 +266,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_a_grant_for_another_device() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
         let other = Ed25519Signer::import(&[9u8; 32]).await.unwrap().did();
         let (request, _) = request_for(1, &other).await;
 
@@ -271,7 +278,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_replacing_a_ready_root_with_another_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (first, _) = request_for(1, &device).await;
         let (second, _) = request_for(2, &device).await;
@@ -285,7 +292,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_accepts_an_idempotent_repeat_of_the_same_record() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, _) = request_for(1, &device).await;
 

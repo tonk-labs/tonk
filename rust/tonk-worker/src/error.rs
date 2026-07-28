@@ -34,6 +34,10 @@ pub enum TonkWorkerError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    /// Durable identity must be provisioned before this operation.
+    #[error("A local passkey root is required")]
+    RootRequired,
+
     /// An analyzer rejection — preserved structurally so the
     /// editor can attach the diagnostic to the offending source
     /// span instead of rendering the message as a banner.
@@ -80,10 +84,11 @@ pub enum RepositoryError {
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
 
-    /// Any other failure during construction: a dialog-db
-    /// operation failed (create / open / commit), the meta
-    /// branch couldn't be written, delegation couldn't be
-    /// saved, etc.
+    /// Durable creation was attempted before provisioning a local root.
+    #[error("A local passkey root is required")]
+    RootRequired,
+
+    /// Any other failure during construction: a dialog-db operation failed.
     #[error("Internal repository error: {0}")]
     Internal(String),
 }
@@ -92,6 +97,7 @@ impl From<RepositoryError> for TonkWorkerError {
     fn from(error: RepositoryError) -> Self {
         match error {
             RepositoryError::InvalidConfiguration(m) => TonkWorkerError::Router(m),
+            RepositoryError::RootRequired => TonkWorkerError::RootRequired,
             RepositoryError::Internal(m) => TonkWorkerError::Internal(m),
         }
     }
@@ -106,6 +112,7 @@ impl TonkWorkerError {
             TonkWorkerError::Conflict(_) => "conflict",
             TonkWorkerError::PreconditionFailed(_) => "precondition_failed",
             TonkWorkerError::Forbidden(_) => "forbidden",
+            TonkWorkerError::RootRequired => "conflict",
             TonkWorkerError::Analyze { .. } => "analyze",
         }
     }
@@ -118,6 +125,7 @@ impl TonkWorkerError {
             | TonkWorkerError::Conflict(m)
             | TonkWorkerError::PreconditionFailed(m)
             | TonkWorkerError::Forbidden(m) => m.clone(),
+            TonkWorkerError::RootRequired => "a local passkey root is required".to_string(),
             TonkWorkerError::Analyze { message, .. } => message.clone(),
         }
     }
@@ -149,12 +157,13 @@ impl IntoResponse for TonkWorkerError {
             TonkWorkerError::NotFound(_) => StatusCode::NOT_FOUND,
             TonkWorkerError::Router(_) | TonkWorkerError::Analyze { .. } => StatusCode::BAD_REQUEST,
             TonkWorkerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            TonkWorkerError::Conflict(_) => StatusCode::CONFLICT,
+            TonkWorkerError::Conflict(_) | TonkWorkerError::RootRequired => StatusCode::CONFLICT,
             TonkWorkerError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             TonkWorkerError::Forbidden(_) => StatusCode::FORBIDDEN,
         };
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
+            TonkWorkerError::RootRequired => (Some("ROOT_REQUIRED".to_string()), None),
             _ => (None, None),
         };
         let body = ErrorBody {

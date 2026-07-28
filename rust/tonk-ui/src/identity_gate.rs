@@ -58,35 +58,43 @@ async fn replay(intent: IdentityIntent) -> Result<(), String> {
         .and_then(|window| window.location().origin().ok())
         .ok_or_else(|| "window origin is unavailable".to_string())?;
     let client = reqwest::Client::new();
-    let response = match intent {
+    match intent {
         IdentityIntent::CreateSpace {
             name,
             remote,
             template,
         } => {
-            client
+            let response = client
                 .post(format!("{origin}/api/spaces"))
-                .json(&serde_json::json!({
-                    "name": name,
-                    "remote": remote,
-                    "template": template,
-                }))
+                .json(&tonk_worker_api::CreateSpaceRequest {
+                    name,
+                    remote,
+                    template,
+                })
                 .send()
                 .await
+                .map_err(|error| error.to_string())?;
+            if !response.status().is_success() {
+                return Err(format!("operation failed with {}", response.status()));
+            }
+            let created: tonk_worker_api::CreateSpaceResponse =
+                response.json().await.map_err(|error| error.to_string())?;
+            tonk_host::navigate_to(&format!("/space/{}", created.key));
+            Ok(())
         }
         IdentityIntent::DurableJoin { url } => {
-            client
+            let response = client
                 .post(format!("{origin}/api/profile/join"))
                 .json(&tonk_worker_api::JoinRequest { url })
                 .send()
                 .await
+                .map_err(|error| error.to_string())?;
+            if response.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("operation failed with {}", response.status()))
+            }
         }
-    }
-    .map_err(|error| error.to_string())?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("operation failed with {}", response.status()))
     }
 }
 

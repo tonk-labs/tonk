@@ -231,7 +231,12 @@ pub(crate) async fn restamp_member_name(
         .map_err(|e| RepositoryError::Internal(format!("acquire content branch '{key}': {e}")))?;
     let repo_did = session.handle().of().clone();
 
-    let member = crate::router::account::member_did(tonk).await;
+    let member = crate::router::account::member_did(tonk)
+        .await
+        .map_err(|error| match error {
+            crate::TonkWorkerError::RootRequired => RepositoryError::RootRequired,
+            error => RepositoryError::Internal(error.to_string()),
+        })?;
     let membership = Membership::new(member.clone(), repo_did.clone());
 
     let mut txn = tonk

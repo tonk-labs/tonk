@@ -17,10 +17,15 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Ed25519Signer, SignerCredential};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_effects::credential::CredentialError;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
+use dialog_ucan::UcanDelegation;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -46,6 +51,8 @@ const META_BRANCH: &str = "meta";
 /// bookkeeping), so it uses `main` like any repository's default
 /// branch rather than a separate meta branch.
 const PROFILE_BRANCH: &str = "main";
+
+const SPACE_ROOT_SITE_PREFIX: &str = "tonk-space-root-v1/";
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -270,6 +277,45 @@ pub async fn put_repository(
     spawn_seed(state, display_name, key, subject, branches);
 
     Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// Create a durable root-first space through the replayable API.
+#[wasm_compat]
+pub async fn post_space(
+    State(state): State<AppState>,
+    Json(request): Json<tonk_worker_api::CreateSpaceRequest>,
+) -> Result<(StatusCode, Json<tonk_worker_api::CreateSpaceResponse>), TonkWorkerError> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err(TonkWorkerError::Router(
+            "space name must not be empty".to_string(),
+        ));
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let key = create_space_inner(&state, name, request.template.as_deref()).await?;
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let key = {
+        let configuration =
+            RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
+        let tonk = state.write().await;
+        create_repository(&tonk, name, &configuration)
+            .await?
+            .did()
+            .repo_key()
+            .to_owned()
+    };
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(remote) = request.remote.filter(|remote| !remote.trim().is_empty()) {
+        enable_sync_inner(&state, &key, &remote).await?;
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(tonk_worker_api::CreateSpaceResponse { key }),
+    ))
 }
 
 /// The form-event attribute carrying the optional sync URL — the
@@ -569,6 +615,29 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             } else {
                 name
             };
+            let root = {
+                let tonk = env.state().read().await;
+                super::identity::local_root(&tonk).await
+            };
+            match root {
+                Ok(_) => {}
+                Err(TonkWorkerError::RootRequired) => {
+                    crate::router::navigate::notify_identity_required(
+                        env.client(),
+                        tonk_worker_api::IdentityIntent::CreateSpace {
+                            name,
+                            remote,
+                            template,
+                        },
+                    );
+                    return;
+                }
+                Err(error) => {
+                    log!("CreateSpace local root is unreadable: {error}");
+                    return;
+                }
+            }
+
             log!("command CreateSpace name={} remote={:?}", name, remote);
 
             // 1. Always create local-only first, so the space appears
@@ -2378,6 +2447,16 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
+    let local_root = match super::identity::local_root(tonk).await {
+        Ok(root) => root,
+        Err(TonkWorkerError::RootRequired) => return Err(RepositoryError::RootRequired),
+        Err(error) => {
+            return Err(RepositoryError::Internal(format!(
+                "failed to load local root: {error}"
+            )));
+        }
+    };
+
     // 1. Generate the repository's credential up front so its
     // `did:key` is its stable identity. The repository's routing
     // and storage key is that DID's suffix (`did.repo_key()`); the
@@ -2403,28 +2482,38 @@ pub async fn create_repository(
         })?;
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate repo access to the profile. A freshly created
-    // repository always has a signer credential, so `.access()`
-    // is available directly. Splitting this delegation from
-    // creation would leave the repo half-initialised if the save
-    // fails; commit it immediately so the caller sees a clean
-    // success or a clean failure.
+    // 2. Delegate subject-specific authority to the stable local root.
     let delegation = repository
         .access()
         .claim(&repository)
-        .delegate(tonk.profile.did())
+        .delegate(local_root.root_did.clone())
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             RepositoryError::Internal(format!("Failed to delegate repo access to profile: {}", e))
         })?;
 
+    let prefix = delegation.into_chain();
     tonk.profile
         .access()
-        .save(delegation)
+        .save(UcanDelegation(prefix.clone()))
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to save repo delegation: {}", e)))?;
+    let prefix_bytes = prefix.to_bytes().map_err(|error| {
+        RepositoryError::Internal(format!(
+            "Failed to serialize space root delegation: {error}"
+        ))
+    })?;
+    tonk.profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", repository.did()))
+        .save(prefix_bytes)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("Failed to persist space root delegation: {error}"))
+        })?;
 
     // 3-7. Wire up the meta branch and register the replica. The
     // replica is a name-less membership index; its identity (`subject`)
@@ -2442,6 +2531,32 @@ pub async fn create_repository(
     .await?;
 
     Ok(repository)
+}
+
+/// Load the exact provider-neutral `space → root` prefix persisted at creation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn space_root_prefix(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let bytes = tonk
+        .profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+        .load::<Vec<u8>>()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| match error {
+            CredentialError::NotFound(_) => TonkWorkerError::NotFound(
+                "space root delegation is not persisted on this device".to_string(),
+            ),
+            error => {
+                TonkWorkerError::Internal(format!("failed to load space root delegation: {error}"))
+            }
+        })?;
+    DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
+        TonkWorkerError::Internal(format!("stored space root delegation is invalid: {error}"))
+    })
 }
 
 /// Lay down the meta-branch facts and profile-side index for an
@@ -2711,7 +2826,12 @@ where
     // name their profile was opened under. Keyed on the account root
     // when this profile is linked, so a founder/member row converges
     // across every device on the same account.
-    let member = crate::router::account::member_did(tonk).await;
+    let member = crate::router::account::member_did(tonk)
+        .await
+        .map_err(|error| match error {
+            TonkWorkerError::RootRequired => RepositoryError::RootRequired,
+            error => RepositoryError::Internal(error.to_string()),
+        })?;
     let membership = Membership::new(member, repository.did());
     let role = if role_uri == MemberRole::FOUNDER {
         MemberRole::founder(membership.this().clone())
@@ -3410,13 +3530,16 @@ where
         })
         .collect();
 
-    let self_entity = crate::router::account::member_did(tonk).await.this();
+    let self_entity = crate::router::account::member_did(tonk)
+        .await
+        .ok()
+        .map(|member| member.this());
     let mut members: Vec<MemberInfo> = memberships
         .iter()
         .map(|m| MemberInfo {
             did: m.member.0.to_string(),
             name: names_by_membership.get(&m.this).cloned(),
-            is_self: m.member.0 == self_entity,
+            is_self: self_entity.as_ref() == Some(&m.member.0),
             invited_by: inviter_by_membership.get(&m.this).cloned(),
         })
         .collect();

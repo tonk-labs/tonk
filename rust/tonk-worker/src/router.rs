@@ -201,6 +201,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(migration::repo_vs_profile),
         )
         // Repository lifecycle
+        .route("/api/spaces", post(repository::post_space))
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),
@@ -358,6 +359,7 @@ pub mod tests {
 
     use dialog_credentials::Ed25519Signer;
     use dialog_operator::Profile;
+    use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
     use dialog_varsig::Principal as _;
@@ -397,7 +399,7 @@ pub mod tests {
     /// run N+1's third test, reviving the order dependence in cross-run
     /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
     /// that today; the [`session_nonce`] makes it unconditional.
-    pub async fn test_state() -> TonkState {
+    pub async fn test_state_without_root() -> TonkState {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let profile_name = format!(
@@ -431,6 +433,25 @@ pub mod tests {
             commands: super::command_registry(),
             clients: Default::default(),
         }
+    }
+
+    /// Create an isolated test state with a stable local root grant.
+    pub async fn test_state() -> TonkState {
+        let state = test_state_without_root().await;
+        let root = Ed25519Signer::import(&[42u8; 32]).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
+            .await
+            .unwrap();
+        super::identity::persist_root(
+            &state,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "test-credential".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+        state
     }
 
     /// Query all `Membership` rows on `repo`'s content branch.
@@ -633,6 +654,72 @@ pub mod tests {
             .unwrap();
         let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
         info.name
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_space_creation_without_a_local_root() {
+        let state = test_state_without_root().await;
+        let (app, _lsp) = api_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spaces")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"Notes","remote":null,"template":null}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["error"]["code"], "ROOT_REQUIRED");
+    }
+
+    #[dialog_common::test]
+    async fn it_presents_space_root_device_and_session_cids_for_proof() {
+        use dialog_capability::Subject;
+
+        let state = test_state().await;
+        let root = super::identity::local_root(&state).await.unwrap();
+        let grant_cid = root.delegation.proof_cids()[0];
+        let (app, state, _lsp) = super::api_router_with_state(state);
+        let first = put_repo(&app, "First").await;
+        let second = put_repo(&app, "Second").await;
+        let tonk = state.read().await;
+
+        for key in [first, second] {
+            let repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let proof = tonk
+                .profile
+                .access()
+                .prove(Subject::from(repository.did()))
+                .audience(&tonk.operator)
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let cids: Vec<_> = proof.proofs.iter().map(|proof| proof.0.to_cid()).collect();
+            assert_eq!(cids.len(), 3);
+            assert_eq!(cids[1], grant_cid);
+            assert_eq!(proof.proofs[0].0.audience(), root.delegation.issuer());
+            assert_eq!(proof.proofs[1].0.audience(), &tonk.profile.did());
+            assert_eq!(proof.proofs[2].0.issuer(), &tonk.profile.did());
+            let stored = super::repository::space_root_prefix(&tonk, &repository.did())
+                .await
+                .unwrap();
+            assert_eq!(stored.proof_cids()[0], cids[0]);
+        }
     }
 
     #[dialog_common::test]

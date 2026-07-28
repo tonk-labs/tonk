@@ -174,7 +174,7 @@ pub(crate) async fn claim_invite(
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
 
-    let member = crate::router::account::member_did(tonk).await;
+    let member = crate::router::account::member_did(tonk).await?;
     let claimed = invite
         .claim(&member)
         .await

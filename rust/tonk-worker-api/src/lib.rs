@@ -31,7 +31,10 @@ pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
-pub use identity::{IdentityIntent, IdentityRequired, RootStatus, SaveRootRequest};
+pub use identity::{
+    CreateSpaceRequest, CreateSpaceResponse, IdentityIntent, IdentityRequired, RootStatus,
+    SaveRootRequest,
+};
 pub use join::{JoinRequest, JoinResponse};
 pub use profile::{ProfileInfo, SpaceEntry};
 pub use query::Query;
