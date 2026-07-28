@@ -164,7 +164,7 @@ pub(crate) async fn persist_root(
         credential_id: request.credential_id,
         delegation: bytes.clone(),
     };
-    if let Some(existing) = load_record(&state).await? {
+    if let Some(existing) = load_record(state).await? {
         if existing != record {
             return Err(TonkWorkerError::Conflict(
                 "a different local root is already persisted".to_string(),

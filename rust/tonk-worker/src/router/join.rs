@@ -339,11 +339,16 @@ pub async fn join_guest(
     match claim_invite(&tonk, &url).await {
         Ok(_) => Ok(StatusCode::NO_CONTENT),
         Err(TonkWorkerError::RootRequired) => {
-            let client = request.extensions().get::<crate::router::ClientId>();
-            crate::router::navigate::notify_identity_required(
-                client,
-                tonk_worker_api::IdentityIntent::DurableJoin { url },
-            );
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                let client = request.extensions().get::<crate::router::ClientId>();
+                crate::router::navigate::notify_identity_required(
+                    client,
+                    tonk_worker_api::IdentityIntent::DurableJoin { url },
+                );
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = (request, url);
             Err(TonkWorkerError::RootRequired)
         }
         Err(error) => Err(error),
