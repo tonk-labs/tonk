@@ -228,3 +228,51 @@ statistic is the one-sided exact paired sign-flip test on mean total-action
 savings among pairs where both B answers are exact. No treatment, prompt,
 fixture, model, verifier, or metric change is permitted once the confirmation
 batch begins.
+
+### Handoff confirmation result
+
+The approved batch completed at
+`bench/runs/20260728-150040-agents-handoff-claim-handoff-confirmation`.
+Its experiment metadata records clean revision
+`c283e2fe7b9fbb905dadb94ea8b98f9dfa844717`, model `gpt-5.5`, ten planned
+pairs, and an approved hard cap of thirty episodes. Exactly thirty episode exit
+files exist and all record exit zero; no replacement episode ran.
+
+All ten A verifiers and all twenty B verifiers passed. Every A claim retained
+the opaque convention on the repository DID without task status or secrets.
+Every B answer was exact and every B agent-context claim revision remained
+unchanged; the later full-site audit is recorded below.
+
+Control versus projected-claim medians were:
+
+- total actions `4.5` vs `2`;
+- shell commands `3.5` vs `1`;
+- Tonk calls `3` vs `1`;
+- orientation calls `2` vs `1`;
+- wall time `35s` vs `17s`;
+- input tokens `113512` vs `61074`;
+- output tokens `988.5` vs `469.5`.
+
+Numeric-pair action savings were `[4, 2, 3, 1, 3, 3, 1, 5, 4, 0]`. The mean
+paired saving was `2.6`; enumerating all `1024` sign assignments found two at
+least as large as the observed sum, for one-sided `p = 0.001953125`. The median
+action reduction was `55.6%`, so every pre-registered confirmation gate passed.
+
+Raw trajectories show four treatment agents wrote the answer without a Tonk
+call and six re-read the claim once. Control agents needed between one and four
+Tonk calls. Pair ten tied at two actions because both arms made one orientation
+call. Treatment wall time was slower by two and three seconds in pairs four and
+seven, but the wall median still fell by `51.4%`.
+
+The initial command attempt stopped before batch creation because the sandbox
+made Nix's fetcher cache read-only. The identical committed command then ran
+with normal Nix cache access. There was no in-batch protocol deviation.
+Randomized B order was imbalanced at seven treatment-first versus three
+control-first pairs; report this when generalizing the result.
+
+The raw audit caught a misleading verifier name: `branch_unchanged` compared
+only the before/after `tonk agents --json` claim revision. A bytewise recursive
+comparison of every control and treatment site against its frozen post-A origin
+found all twenty identical, so the confirmation guardrail still passes. The
+harness now records separate `claim_revision_unchanged` and `site_unchanged`
+checks and requires both.

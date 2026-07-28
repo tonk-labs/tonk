@@ -148,6 +148,43 @@ The treatment confirms only when all of these hold:
 Wall time, Tonk calls, orientation calls, and tokens are secondary explanatory
 metrics. Report all episodes and protocol deviations even if the gate fails.
 
+#### Confirmation result
+
+The clean-revision `claim-handoff-confirmation` batch ran exactly thirty
+episodes with no replacements. All ten A episodes passed every task, claim,
+revision, retention, and hygiene check. All ten control B and all ten treatment
+B episodes returned the exact opaque label, and every copied B spot remained
+unchanged.
+
+In numeric pair order, total-action savings were
+`[4, 2, 3, 1, 3, 3, 1, 5, 4, 0]`: nine pairs favored treatment and one tied.
+Median actions fell from `4.5` to `2` (`55.6%`), with mean paired savings of
+`2.6` actions. The pre-registered one-sided exact paired sign-flip test has two
+equally or more extreme assignments out of `1024`, so `p = 0.001953125`.
+Every confirmation gate passes.
+
+Secondary medians also favored treatment:
+
+- shell commands: `3.5` to `1` (`71.4%` lower);
+- Tonk calls: `3` to `1` (`66.7%` lower);
+- orientation calls: `2` to `1` (`50%` lower);
+- wall time: `35s` to `17s` (`51.4%` lower);
+- input tokens: `113512` to `61074` (`46.2%` lower);
+- output tokens: `988.5` to `469.5` (`52.5%` lower).
+
+Four treatment agents answered directly from the loaded projection; six
+re-read the live claim once. The tied pair used one orientation call in each
+arm. Wall time favored treatment in eight pairs and control in two, so the
+action result is stronger than the timing result. Randomization produced seven
+treatment-first and three control-first pairs; this imbalance is a limitation,
+not a protocol deviation.
+
+The confirmation audit also found that the original B verifier's
+`branch_unchanged` field compared only the agent-context claim revision. A
+post-run bytewise comparison proved all twenty B site trees identical to their
+frozen post-A origins, so the result still satisfies the guardrail. The harness
+now checks both the claim revision and the complete site tree automatically.
+
 The raw pass also exposed two reporting defects, corrected before aggregation:
 Codex `file_change` events were absent from `tool_calls`, and a quoted `rg`
 pattern containing `|tonk ...` was mistaken for a shell pipeline. Metrics were
