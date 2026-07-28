@@ -168,3 +168,10 @@ projection, and passed the unchanged two-task execution verifier. A focused sync
 test also queried the typed `RepositoryAgents` claim from the upstream branch,
 confirming the Markdown travels as content-branch data rather than checkout
 state. No external agent episode was consumed.
+
+The pre-registered handoff pilot uses three pairs. Episode A writes an opaque
+spot convention into the claim; fresh treatment and control episode-B agents
+share the post-A spot, but only treatment gets the updated pre-launch
+projection. Control keeps the old projection and can still discover the current
+claim through the CLI. This isolates automatic orientation from access to the
+underlying data and costs nine external episodes before any confirmation run.

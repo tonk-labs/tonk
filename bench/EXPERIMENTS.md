@@ -66,6 +66,31 @@ claim for a fresh agent using the same spot. Score correct retention, entity and
 revision continuity, and the absence of secrets, transient status, instruction
 drift, or lost concurrent edits.
 
+### Two-episode handoff pilot
+
+Use three independent paired runs. Each pair costs three external episodes:
+
+1. Episode A receives a normal spot task plus one durable, unguessable
+   convention: future security-review tasks are owned by a scenario-generated
+   opaque team label. It must complete the task and preserve the convention for
+   future agents.
+2. Verify the task separately, then verify that the live `tonk agents --json`
+   revision changed, still maps the repository DID, contains the exact
+   convention, and does not contain the completed task's status, credentials,
+   invite links, or unrelated prompt text.
+3. Start two fresh episode-B agents against the same read-only post-A spot. The
+   treatment cwd receives a projection of the live updated claim; the control
+   cwd receives the frozen pre-A projection. Randomize their order.
+4. Ask each B agent to write only the opaque owner label to `answer.txt`. The
+   control may still discover the live claim through `tonk context` or `tonk
+   agents`; it is not denied access to spot data.
+
+The primary outcome is exact answer success. Among successes, compare tool
+calls, Tonk orientation calls, output tokens, and wall time. The pilot advances
+only if all three A claims pass the retention/hygiene verifier, every treatment
+B succeeds, and treatment does not use more median tool calls than control. A
+confirmation requires at least ten pairs and randomized B-arm order.
+
 ## Pre-registered decision rule
 
 Primary metric: shell-command index before the first successful Tonk content
