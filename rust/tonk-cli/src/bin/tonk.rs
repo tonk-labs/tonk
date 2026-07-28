@@ -354,6 +354,9 @@ enum Command {
         after_help = "Examples:\n  tonk identity\n  tonk identity --root '{\"credentialId\":\"…\",\"delegationHex\":\"…\"}'\n  tonk identity --reset"
     )]
     Identity {
+        /// Optional identity action (`link` opens a provider-free browser handoff).
+        #[arg(value_enum)]
+        action: Option<IdentityAction>,
         /// Wipe the on-disk profile and create a new one. This removes
         /// access to existing repos without re-delegation.
         #[arg(long)]
@@ -361,6 +364,16 @@ enum Command {
         /// Paste provider-neutral browser handoff JSON for this device.
         #[arg(long, value_name = "JSON")]
         root: Option<String>,
+        /// Print the handoff URL without asking the OS to open it.
+        #[arg(long)]
+        no_open: bool,
+        /// Top-document provider-free identity handoff route.
+        #[arg(
+            long,
+            default_value = "https://tonk.spot/identity/link",
+            value_name = "URL"
+        )]
+        link_url: String,
     },
 
     /// Link this machine's profile to a Tonk account
@@ -446,6 +459,12 @@ enum Command {
         #[arg(long)]
         enable_check: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum IdentityAction {
+    /// Open a provider-free browser ceremony for this CLI device.
+    Link,
 }
 
 #[derive(Subcommand, Debug)]
@@ -935,7 +954,13 @@ async fn main() {
         Command::Agents { json, command } => agents_op(json, command, spot.as_deref()).await,
         Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
-        Command::Identity { reset, root } => identity(reset, root).await,
+        Command::Identity {
+            action,
+            reset,
+            root,
+            no_open,
+            link_url,
+        } => identity(action, reset, root, no_open, &link_url).await,
         Command::Account { command } => account_op(command).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
@@ -1019,9 +1044,15 @@ async fn main() {
     std::process::exit(exit.into_raw());
 }
 
-async fn identity(reset: bool, root: Option<String>) -> ExitCode {
-    if reset && root.is_some() {
-        return print_error("--reset and --root cannot be used together".to_string());
+async fn identity(
+    action: Option<IdentityAction>,
+    reset: bool,
+    root: Option<String>,
+    no_open: bool,
+    link_url: &str,
+) -> ExitCode {
+    if reset && (root.is_some() || action.is_some()) {
+        return print_error("--reset cannot be combined with linking".to_string());
     }
     let result = if reset {
         identity::reset().await
@@ -1030,6 +1061,29 @@ async fn identity(reset: bool, root: Option<String>) -> ExitCode {
     };
     match result {
         Ok(profile) => {
+            if matches!(action, Some(IdentityAction::Link)) && root.is_none() {
+                use rand::RngCore as _;
+                let mut challenge = [0u8; 16];
+                rand::rng().fill_bytes(&mut challenge);
+                let mut url = match url::Url::parse(link_url) {
+                    Ok(url) => url,
+                    Err(error) => {
+                        return print_error(format!("invalid identity link URL: {error}"));
+                    }
+                };
+                let fragment = url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("deviceDid", profile.did().as_ref())
+                    .append_pair("challenge", &hex::encode(challenge))
+                    .finish();
+                url.set_fragment(Some(&fragment));
+                println!(
+                    "Open this URL to create or use a local root:\n{url}\n\nThen run `tonk identity link --root '<response>'`."
+                );
+                if !no_open && webbrowser::open(url.as_str()).is_err() {
+                    eprintln!("Could not open a browser; use the URL above.");
+                }
+                return ExitCode::Success;
+            }
             if let Some(json) = root {
                 #[derive(serde::Deserialize)]
                 #[serde(rename_all = "camelCase")]
