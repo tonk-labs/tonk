@@ -881,14 +881,11 @@ tonk-share[data-share-state="failed"] .fab__share-trigger {
 .fab__share.is-open .fab__share-menu { display: flex; }
 
 tonk-invitations,
-.fab__target-invite,
 .fab__invitation-list {
   display: grid;
   gap: 8px;
 }
 
-.fab__target-invite input,
-.fab__target-invite button,
 .fab__invitation-list button {
   min-height: 40px;
 }

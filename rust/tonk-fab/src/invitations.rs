@@ -1,21 +1,23 @@
-//! Targeted invitation minting, listing, and revocation controls.
+//! Invitation listing and revocation controls.
+//!
+//! Minting is not here. The bar mints one kind of invitation — the open link
+//! behind the share control (`crate::share`) — and revocation is what this
+//! panel is for: every invitation this spot has issued, with a Revoke action
+//! on the active ones. Minting to a named root DID reached the worker and the
+//! CLI first; the browser control for it is deferred rather than shipped
+//! half-designed, so nothing here asks for a pasted DID.
 
 use custom_elements::CustomElement;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Event, HtmlElement, HtmlInputElement, window};
+use web_sys::{Event, HtmlElement, window};
 
-use tonk_worker_api::{
-    CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
-    RevokeInvitationAcknowledgement,
-};
+use tonk_worker_api::{InvitationKind, InvitationSummary, RevokeInvitationAcknowledgement};
 
-use crate::logic::{create_invitation_endpoint, invitations_endpoint, revoke_invitation_endpoint};
-use crate::share::{PendingClipboard, open_deferred_clipboard_write};
+use crate::logic::{invitations_endpoint, revoke_invitation_endpoint};
 
 #[derive(Default)]
 pub(crate) struct TonkInvitations {
-    submit: Option<Closure<dyn FnMut(Event)>>,
     click: Option<Closure<dyn FnMut(Event)>>,
 }
 
@@ -30,32 +32,12 @@ impl CustomElement for TonkInvitations {
 
     fn inject_children(&mut self, this: &HtmlElement) {
         this.set_inner_html(
-            r#"<form class="fab__target-invite">
-  <label>Invite identity
-    <input name="recipientRoot" type="text" placeholder="did:key:…" autocomplete="off">
-  </label>
-  <button type="submit">Invite identity</button>
-</form>
-<p class="fab__invitation-status" role="status" aria-live="polite"></p>
+            r#"<p class="fab__invitation-status" role="status" aria-live="polite"></p>
 <ul class="fab__invitation-list"></ul>"#,
         );
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let submit_host = this.clone();
-        let submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
-            event.prevent_default();
-            // Spend transient user activation now. The clipboard holds this
-            // promise-backed write open until the HTTP mint returns its URL.
-            let clipboard = open_deferred_clipboard_write().ok();
-            mint_targeted(submit_host.clone(), clipboard);
-        });
-        if let Ok(Some(form)) = this.query_selector(".fab__target-invite") {
-            let _ =
-                form.add_event_listener_with_callback("submit", submit.as_ref().unchecked_ref());
-        }
-        self.submit = Some(submit);
-
         let click_host = this.clone();
         let click = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
             let Some(target) = event
@@ -90,7 +72,6 @@ impl CustomElement for TonkInvitations {
             let _ =
                 this.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
         }
-        self.submit = None;
     }
 }
 
@@ -127,85 +108,6 @@ fn refresh(host: HtmlElement) {
                 }
             }
             _ => status(&host, "Invitation list is unavailable."),
-        }
-    });
-}
-
-fn mint_targeted(host: HtmlElement, clipboard: Option<PendingClipboard>) {
-    let Some(space) = host.get_attribute("space") else {
-        return;
-    };
-    let Ok(path) = create_invitation_endpoint(&space) else {
-        return;
-    };
-    let Some(origin) = origin() else {
-        return;
-    };
-    let recipient: Option<HtmlInputElement> = host
-        .query_selector("[name=\"recipientRoot\"]")
-        .ok()
-        .flatten()
-        .and_then(|element| element.dyn_into().ok());
-    let Some(recipient) = recipient else {
-        return;
-    };
-    let Ok(recipient_root) = recipient.value().trim().parse() else {
-        status(&host, "Enter a valid root DID.");
-        return;
-    };
-    status(&host, "Creating invitation…");
-    spawn_local(async move {
-        let mut clipboard = clipboard;
-        let request = CreateInviteRequest {
-            base_url: format!("{origin}/join").parse().ok(),
-            recipient_root: Some(recipient_root),
-        };
-        let result = reqwest::Client::new()
-            .post(format!("{origin}{path}"))
-            .json(&request)
-            .send()
-            .await;
-        match result {
-            Ok(response) if response.status().is_success() => {
-                match response.json::<CreateInviteResponse>().await {
-                    Ok(minted) => {
-                        let copied = clipboard.take().map(|pending| {
-                            pending.resolve(minted.url().as_str());
-                        });
-                        recipient.set_value("");
-                        status(
-                            &host,
-                            if copied.is_some() {
-                                "Targeted invitation copied."
-                            } else {
-                                "Targeted invitation created, but clipboard access is unavailable."
-                            },
-                        );
-                        refresh(host);
-                    }
-                    Err(_) => {
-                        if let Some(pending) = clipboard.take() {
-                            pending.reject("invalid invitation response");
-                        }
-                        status(&host, "The invitation response was invalid.");
-                    }
-                }
-            }
-            Ok(response) => {
-                if let Some(pending) = clipboard.take() {
-                    pending.reject("invitation request failed");
-                }
-                status(
-                    &host,
-                    &format!("Could not create invitation ({}).", response.status()),
-                );
-            }
-            Err(_) => {
-                if let Some(pending) = clipboard.take() {
-                    pending.reject("invitation request failed");
-                }
-                status(&host, "Could not create invitation.");
-            }
         }
     });
 }
@@ -309,5 +211,63 @@ pub(crate) fn register() {
     };
     if elements.get("tonk-invitations").is_undefined() {
         TonkInvitations::define("tonk-invitations");
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn injected() -> HtmlElement {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("div")
+            .expect("create host")
+            .unchecked_into();
+        TonkInvitations::default().inject_children(&host);
+        host
+    }
+
+    /// Minting to a named root is deferred. Any control left behind is a live
+    /// entry point to a flow nothing else in the UI reaches — and it asks for
+    /// a pasted DID, which is not a thing to leave lying around half-wired.
+    #[dialog_common::test]
+    fn it_offers_no_targeted_minting_control() {
+        let host = injected();
+        assert!(
+            host.query_selector(".fab__target-invite")
+                .expect("query")
+                .is_none(),
+            "the panel must mint nothing",
+        );
+        assert!(
+            host.query_selector("[name=\"recipientRoot\"]")
+                .expect("query")
+                .is_none(),
+            "no recipient field survives the form",
+        );
+    }
+
+    /// The half the panel exists for. A guard, not a discovery: it passes
+    /// before the form comes out, and its job is to fail if the removal takes
+    /// the listing and revocation surface with it.
+    #[dialog_common::test]
+    fn it_keeps_the_invitation_listing_and_status() {
+        let host = injected();
+        assert!(
+            host.query_selector(".fab__invitation-list")
+                .expect("query")
+                .is_some(),
+            "invitations must still list",
+        );
+        assert!(
+            host.query_selector(".fab__invitation-status")
+                .expect("query")
+                .is_some(),
+            "the status line reports revocation outcomes",
+        );
     }
 }

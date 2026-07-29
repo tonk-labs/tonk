@@ -29,17 +29,10 @@ pub(crate) fn invitations_endpoint(space: &str) -> Result<String, &'static str> 
     ))
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn create_invitation_endpoint(space: &str) -> Result<String, &'static str> {
-    let space = space.trim();
-    if space.is_empty() || space.contains('{') || space.contains('}') {
-        return Err("repository binding is unresolved");
-    }
-    Ok(format!(
-        "/api/repository/{}/invite",
-        urlencoding::encode(space)
-    ))
-}
+// There is no `create_invitation_endpoint`: the bar mints its open link
+// through the share control's transient command, and minting to a named root
+// is a worker/CLI path with no browser control for now, so nothing here posts
+// to `/invite`.
 
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn revoke_invitation_endpoint(
@@ -55,10 +48,7 @@ pub(crate) fn revoke_invitation_endpoint(
 
 #[cfg(test)]
 mod membership_endpoint_tests {
-    use super::{
-        create_invitation_endpoint, invitations_endpoint, membership_endpoint,
-        revoke_invitation_endpoint,
-    };
+    use super::{invitations_endpoint, membership_endpoint, revoke_invitation_endpoint};
 
     #[test]
     fn it_encodes_a_repository_did_as_one_path_segment() {
@@ -80,10 +70,6 @@ mod membership_endpoint_tests {
         assert_eq!(
             invitations_endpoint("did:key:z6Mk/a").unwrap(),
             "/api/repository/did%3Akey%3Az6Mk%2Fa/invites"
-        );
-        assert_eq!(
-            create_invitation_endpoint("did:key:z6Mk/a").unwrap(),
-            "/api/repository/did%3Akey%3Az6Mk%2Fa/invite"
         );
         assert_eq!(
             revoke_invitation_endpoint("did:key:z6Mk/a", "bafy/cid").unwrap(),
