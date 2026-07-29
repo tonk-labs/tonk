@@ -15,8 +15,7 @@ use super::account_backup::account_service_url;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
-/// A device row as the account service serializes it. `delegationCid` is
-/// deliberately not modeled: the UI has no use for it.
+/// A device row as the account service serializes it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ServiceDevice {
@@ -25,7 +24,7 @@ struct ServiceDevice {
     status: String,
     created_at: u64,
     delegation_cid: String,
-    delegation_hex: String,
+    delegation_hex: Option<String>,
 }
 
 /// Resolve the stored link and service URL, or explain what's missing.

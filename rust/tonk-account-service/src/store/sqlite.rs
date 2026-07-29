@@ -37,6 +37,10 @@ impl SqliteStore {
             .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0002_link_requests.sql"))
             .map_err(map_err)?;
+        conn.execute_batch(include_str!(
+            "../../migrations/0003_device_delegation_path.sql"
+        ))
+        .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
 }
@@ -59,7 +63,7 @@ fn map_err(err: rusqlite::Error) -> StoreError {
 
 /// A device row as read straight off a `devices` query, before the
 /// status column is parsed.
-type DeviceRow = (i64, String, String, String, String, String, i64);
+type DeviceRow = (i64, String, String, Option<String>, String, String, i64);
 
 fn device_from_row(row: DeviceRow) -> Result<Device, StoreError> {
     let (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) = row;
@@ -67,7 +71,7 @@ fn device_from_row(row: DeviceRow) -> Result<Device, StoreError> {
         account_id,
         device_did,
         delegation_cid,
-        delegation_hex,
+        delegation_hex: delegation_hex.unwrap_or_default(),
         name,
         status: DeviceStatus::parse(&status)?,
         created_at: created_at as u64,
@@ -348,6 +352,9 @@ impl Store for SqliteStore {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::params;
+
+    use crate::core::devices::DeviceView;
     use crate::store::sqlite::SqliteStore;
     use crate::store::{CodeRow, Device, DeviceStatus, Store, StoreError};
 
@@ -401,6 +408,29 @@ mod tests {
             DeviceStatus::Revoked
         );
         assert!(!store.revoke_device(id, "did:key:zAbsent").await.unwrap());
+    }
+
+    #[dialog_common::test]
+    async fn it_preserves_legacy_devices_without_inventing_path_evidence() {
+        let store = SqliteStore::in_memory().unwrap();
+        let id = store
+            .create_account("legacy@x.com", "did:key:zLegacyRoot", "cred", 1)
+            .await
+            .unwrap();
+        {
+            let conn = store.0.lock().expect("store mutex poisoned");
+            conn.execute(
+                "INSERT INTO devices \
+                 (account_id, device_did, delegation_cid, name, status, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+                params![id, "did:key:zLegacyDevice", "bafyLegacy", "old laptop", 2],
+            )
+            .unwrap();
+        }
+
+        let device = store.devices(id).await.unwrap().pop().unwrap();
+        assert!(device.delegation_hex.is_empty());
+        assert_eq!(DeviceView::from(device).delegation_hex, None);
     }
 
     #[dialog_common::test]

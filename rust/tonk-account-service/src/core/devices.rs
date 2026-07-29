@@ -17,8 +17,8 @@ pub struct DeviceView {
     pub status: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
-    /// Exact public delegation path bytes, hex-encoded.
-    pub delegation_hex: String,
+    /// Exact public delegation path bytes, hex-encoded, when retained.
+    pub delegation_hex: Option<String>,
     /// Creation time, as a unix timestamp in seconds.
     pub created_at: u64,
 }
@@ -30,7 +30,7 @@ impl From<Device> for DeviceView {
             name: device.name,
             status: device.status.as_str().to_string(),
             delegation_cid: device.delegation_cid,
-            delegation_hex: device.delegation_hex,
+            delegation_hex: (!device.delegation_hex.is_empty()).then_some(device.delegation_hex),
             created_at: device.created_at,
         }
     }

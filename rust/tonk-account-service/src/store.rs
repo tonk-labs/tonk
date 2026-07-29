@@ -1,8 +1,8 @@
 //! Storage abstraction for the account service.
 //!
-//! The schema in `migrations/0001_init.sql` is the single source of
-//! truth: it is applied to Cloudflare D1 by wrangler and, natively, to
-//! an in-memory `rusqlite` connection via [`sqlite::SqliteStore`]. Both
+//! The ordered SQL files under `migrations/` are the schema's source of
+//! truth: Wrangler applies them to Cloudflare D1 and
+//! [`sqlite::SqliteStore`] applies the same sequence natively. Both
 //! backends implement [`Store`], so ceremony logic elsewhere in this
 //! crate is written once, generically over the trait.
 
@@ -31,7 +31,8 @@ pub struct Device {
     pub device_did: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
-    /// Exact public delegation path bytes, hex-encoded.
+    /// Exact public delegation path bytes, hex-encoded. Empty only for a
+    /// legacy row created before migration 0003 retained these bytes.
     pub delegation_hex: String,
     /// Human-readable device name.
     pub name: String,

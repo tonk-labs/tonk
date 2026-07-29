@@ -213,8 +213,12 @@ wrangler d1 migrations list tonk-accounts --remote -c wrangler.account.toml
 wrangler d1 migrations list tonk-accounts-staging --remote -c wrangler.account.toml --env staging
 ```
 
-Both must show `0001_init.sql` and `0002_link_requests.sql` as applied;
-apply any pending ones with the matching `d1 migrations apply` command.
+Both must show `0001_init.sql`, `0002_link_requests.sql`, and
+`0003_device_delegation_path.sql` as applied; apply any pending ones with the
+matching `d1 migrations apply` command. Migration 0003 deliberately leaves the
+new column null for legacy devices because a delegation CID cannot reconstruct
+its signed path bytes. Those rows remain visible and may self-revoke, but a
+different device cannot revoke them through the account UI until they relink.
 Confirm the rate rule exists in the Cloudflare dashboard (Security →
 WAF → Rate limiting rules) and that its path list includes `/links`.
 

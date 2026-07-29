@@ -61,8 +61,9 @@ pub struct AccountDevice {
     pub created_at: u64,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
-    /// Public path bytes needed to witness a revocation.
-    pub delegation_hex: String,
+    /// Public path bytes needed to witness a revocation. Absent for devices
+    /// registered before providers retained this evidence.
+    pub delegation_hex: Option<String>,
     /// Whether this row is the profile making the request.
     pub this_device: bool,
 }
@@ -127,7 +128,7 @@ mod tests {
             status: "active".into(),
             created_at: 1_753_300_000,
             delegation_cid: "bafycid".into(),
-            delegation_hex: "beef".into(),
+            delegation_hex: Some("beef".into()),
             this_device: true,
         })
         .unwrap();
@@ -135,6 +136,21 @@ mod tests {
         assert_eq!(json["thisDevice"], true);
         assert_eq!(json["delegationCid"], "bafycid");
         assert_eq!(json["delegationHex"], "beef");
+    }
+
+    #[dialog_common::test]
+    fn it_represents_legacy_device_path_evidence_as_absent() {
+        let json = serde_json::to_value(AccountDevice {
+            did: "did:key:legacy".into(),
+            name: "old laptop".into(),
+            status: "active".into(),
+            created_at: 1_753_300_000,
+            delegation_cid: "bafycid".into(),
+            delegation_hex: None,
+            this_device: false,
+        })
+        .unwrap();
+        assert!(json["delegationHex"].is_null());
     }
 
     #[dialog_common::test]

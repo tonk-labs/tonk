@@ -21,7 +21,7 @@ struct DeviceJson {
     name: String,
     status: String,
     delegation_cid: String,
-    delegation_hex: String,
+    delegation_hex: Option<String>,
     created_at: u64,
 }
 

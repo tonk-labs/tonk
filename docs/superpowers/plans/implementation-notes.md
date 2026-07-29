@@ -157,3 +157,11 @@ same `globalThis.fetch`, `setTimeout`, and `clearTimeout` functions dynamically
 on both targets. Production still supplies the service-worker global; the
 browser test can replace those functions to verify bytes, media type, structured
 status, and abort timeout without maintaining a second transport.
+
+The staging pre-deploy audit found that `delegation_hex` had been added to the
+already-applied `0001_init.sql`, so Wrangler reported no pending migration while
+the live `devices` table still lacked the column. The signed path cannot be
+reconstructed from its CID or from account space backups. Migration 0003
+therefore adds a nullable column: new registrations always populate it, while
+legacy rows expose absent evidence explicitly and disable only cross-device
+revocation. Self-revocation remains possible from the device's local grant.

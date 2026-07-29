@@ -209,13 +209,15 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         let mut details = format!("{} · {}", device.status, String::from(registered));
         if device.this_device {
             details.push_str(" · this device");
+        } else if device.status == "active" && device.delegation_hex.is_none() {
+            details.push_str(" · relink required to revoke");
         }
         meta.set_text_content(Some(&details));
 
         let _ = item.append_child(&name);
         let _ = item.append_child(&meta);
 
-        if device.status == "active" {
+        if device.status == "active" && (device.this_device || device.delegation_hex.is_some()) {
             let Ok(button) = document.create_element("button") else {
                 continue;
             };
@@ -223,7 +225,9 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
             let _ = button.set_attribute("class", "account__button account__button--quiet");
             let _ = button.set_attribute("data-revoke", &device.did);
             let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
-            let _ = button.set_attribute("data-delegation-hex", &device.delegation_hex);
+            if let Some(delegation_hex) = &device.delegation_hex {
+                let _ = button.set_attribute("data-delegation-hex", delegation_hex);
+            }
             if device.this_device {
                 let _ = button.set_attribute("data-self-revoke", "true");
             }
@@ -315,12 +319,19 @@ fn load_devices(host: HtmlElement) {
                         .iter()
                         .find(|device| device.did == did && device.status == "active")
                     {
-                        Some(device) => begin_revoke(
-                            host.clone(),
-                            device.did.clone(),
-                            device.delegation_cid.clone(),
-                            device.delegation_hex.clone(),
-                            device.this_device,
+                        Some(device) if device.this_device || device.delegation_hex.is_some() => {
+                            begin_revoke(
+                                host.clone(),
+                                device.did.clone(),
+                                device.delegation_cid.clone(),
+                                device.delegation_hex.clone().unwrap_or_default(),
+                                device.this_device,
+                            )
+                        }
+                        Some(_) => show_error(
+                            &host,
+                            "This device was registered before revocation evidence was retained. \
+                             Relink it before revoking it from another device.",
                         ),
                         None => show_error(
                             &host,
@@ -1025,7 +1036,7 @@ mod tests {
             tonk_worker_api::AccountDevice {
                 did: "did:key:zThis".into(),
                 delegation_cid: "bafythis".into(),
-                delegation_hex: "beef".into(),
+                delegation_hex: Some("beef".into()),
                 name: "This browser".into(),
                 status: "active".into(),
                 created_at: 1_753_300_000,
@@ -1034,7 +1045,7 @@ mod tests {
             tonk_worker_api::AccountDevice {
                 did: "did:key:zOther".into(),
                 delegation_cid: "bafyother".into(),
-                delegation_hex: "beef".into(),
+                delegation_hex: Some("beef".into()),
                 name: "Old laptop".into(),
                 status: "revoked".into(),
                 created_at: 1_753_200_000,
@@ -1043,10 +1054,19 @@ mod tests {
             tonk_worker_api::AccountDevice {
                 did: "did:key:zPhone".into(),
                 delegation_cid: "bafyphone".into(),
-                delegation_hex: "beef".into(),
+                delegation_hex: Some("beef".into()),
                 name: "Phone".into(),
                 status: "active".into(),
                 created_at: 1_753_100_000,
+                this_device: false,
+            },
+            tonk_worker_api::AccountDevice {
+                did: "did:key:zLegacy".into(),
+                delegation_cid: "bafylegacy".into(),
+                delegation_hex: None,
+                name: "Legacy tablet".into(),
+                status: "active".into(),
+                created_at: 1_753_000_000,
                 this_device: false,
             },
         ];
@@ -1057,12 +1077,15 @@ mod tests {
             .unwrap()
             .unwrap();
         let items = list.query_selector_all("li").unwrap();
-        assert_eq!(items.length(), 3);
+        assert_eq!(items.length(), 4);
         let text = list.text_content().unwrap();
         assert!(text.contains("This browser"));
         assert!(text.contains("this device"));
         assert!(text.contains("revoked"));
-        // Both active rows can revoke: self-revocation is device-signed.
+        assert!(text.contains("relink required to revoke"));
+        // Self-revocation is device-signed and the current row does not need
+        // provider path bytes. Another device needs retained path evidence;
+        // the legacy row remains visible but has no unsafe revoke action.
         assert_eq!(
             list.query_selector_all("button[data-revoke]")
                 .unwrap()
