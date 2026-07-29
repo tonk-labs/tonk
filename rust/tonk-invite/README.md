@@ -23,7 +23,9 @@ methods without touching the type.
   be specific (`Subject::Specific`); chains with `Subject::Any` are rejected,
   because an invite always scopes to a particular repository.
 - `remote` (optional): UCAN access service endpoint used for sync.
-- `revocation` (optional): executor URL accepting raw signed revocation artifacts; it grants no authority.
+- `revocation` (optional): executor URL accepting raw signed revocation
+  artifacts; it grants no authority. It is copied from explicit remote
+  metadata, never inferred from an access-service hostname.
 - `#fragment` (optional): base58 of a 32-byte Ed25519 seed.
 
 The fragment is the *audience* axis. Its presence marks the invite as
@@ -34,7 +36,8 @@ audience DID can claim. The *subject* axis (which repo) is always scoped and is
 orthogonal to this.
 
 [`DEFAULT_BASE_URL`] (`https://tonk.spot/join`) is the canonical base for
-minted links.
+generic non-browser callers. Browser mint routes use `/join` on the exact
+request origin when `baseUrl` is omitted.
 
 ## Mint and claim
 

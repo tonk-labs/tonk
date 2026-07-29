@@ -36,8 +36,9 @@ submodule per route family in [`router/`](src/router):
   branch, plus the background-sync sweep driven by the SW `sync` event.
 - **Transfer** (`transfer.rs`): CSV `export` (stream branch artifacts as
   `text/csv`) and `import` (commit CSV rows as assertions).
-- **Invite / join** (`create_invite.rs`, `join.rs`): mint invites for a repo and
-  `POST /api/profile/join` to create or renew a replica from an invite URL.
+- **Invite / join** (`create_invite.rs`, `revoke_invite.rs`, `join.rs`): mint,
+  list, and revoke invitations for a repo; visit or durably join from one full
+  invite URL.
 - **Profile** (`profile.rs`, `identify.rs`): `GET /api/identify`,
   `GET /api/profile`, and a parallel profile-as-repository surface
   (`/api/profile/branch/{branch}/{query,evaluate,transact}`) since the profile is
@@ -85,3 +86,36 @@ A view is rendered in a sandboxed iframe. Routing policy lives entirely in
 
 Everything else passes through to the network (or the shell cache, via
 stale-while-revalidate in [`cache.rs`](src/cache.rs)).
+
+## Browser contracts
+
+Browser JSON is camelCase. `POST /api/repository/{repo}/invite` accepts
+`baseUrl` and `recipientRoot`; omitted `baseUrl` becomes `/join` on the exact
+request origin. The input aliases `base_url` and `recipient_root` remain only
+for rollout compatibility and are scheduled for removal no earlier than
+2026-08-29. Unknown fields return 400.
+
+Access and revocation relays are separate explicit metadata. A remote without a
+stored revocation relay remains readable and syncable, but cannot mint a
+remotely revocable invitation. Invitation list responses contain the target
+CID, audience kind, optional recipient root, and display status only—never
+delegation bytes, relay URLs, seeds, or bearer links.
+
+Service calls use an explicit media type: UCAN invocation containers and signed
+revocation artifacts use `application/cbor`; JSON-only operations use
+`application/json`. Both native and Wasm transports use a ten-second timeout,
+bound error bodies, and preserve structured upstream status and code.
+
+Successful sync responses are 2xx with disposition `completed`, `offline`, or
+`paused`. Failures are non-2xx and carry stable codes:
+
+| HTTP | code |
+| ---: | --- |
+| 403 | `CREDENTIAL_REVOKED` |
+| 409 | `SYNC_CONFLICT` |
+| 503 | `SYNC_UNAVAILABLE` |
+| 502 | `UPSTREAM_ERROR` |
+
+Clients accept legacy `DEVICE_REVOKED` as credential revocation during the
+rollout. Revoked, conflict, unavailable, browser-offline, and paused states are
+published and rendered distinctly.
