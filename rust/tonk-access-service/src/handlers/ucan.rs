@@ -138,7 +138,7 @@ async fn screen_credentials(
         SetVerdict::Revoked => {
             worker::console_log!("presign rejected: revoked credential present");
             Err(ServiceError::new(
-                ErrorCode::DeviceRevoked,
+                ErrorCode::CredentialRevoked,
                 "a credential in the presented chain has been revoked",
             ))
         }

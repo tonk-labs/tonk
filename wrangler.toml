@@ -12,7 +12,7 @@ command = "nix build .#tonk-cloudflare-artifacts"
 directory = "./result/tonk-ui"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
-run_worker_first = ["/@", "/@/*", "/ucan", "/ucan/*"]
+run_worker_first = ["/.well-known/tonk", "/@", "/@/*", "/ucan", "/ucan/*"]
 
 [[r2_buckets]]
 binding = "BUCKET"
@@ -27,6 +27,8 @@ bucket_name = "tonk-revocations"
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
+ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
+REVOCATION_RELAY_URL = "https://accounts.tonk.xyz/revocations"
 
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
@@ -42,3 +44,5 @@ bucket_name = "tonk-revocations-staging"
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-staging"
+ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
+REVOCATION_RELAY_URL = "https://accounts-staging.tonk.xyz/revocations"

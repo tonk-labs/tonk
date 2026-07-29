@@ -440,8 +440,10 @@ async fn devices_revoke_route(
         &serde_json::json!({
             "attestation": outcome.attestation.as_str(),
             "projection": outcome.projection.as_str(),
+            "targetDid": device_did,
             "targetCid": outcome.target_cid,
             "artifactCid": outcome.artifact_cid,
+            "published": true,
             "stored": outcome.stored,
         }),
     ))

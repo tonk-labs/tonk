@@ -49,6 +49,8 @@ pub struct CreateSpaceRequest {
     pub name: String,
     /// Optional sync remote URL.
     pub remote: Option<String>,
+    /// Optional immutable-artifact relay stored beside the remote.
+    pub revocation_url: Option<String>,
     /// Optional template name.
     pub template: Option<String>,
 }
@@ -74,6 +76,8 @@ pub enum IdentityIntent {
         name: String,
         /// Optional sync remote.
         remote: Option<String>,
+        /// Optional immutable-artifact relay stored beside the remote.
+        revocation_url: Option<String>,
         /// Optional template name.
         template: Option<String>,
     },
@@ -90,11 +94,13 @@ impl fmt::Debug for IdentityIntent {
             Self::CreateSpace {
                 name,
                 remote,
+                revocation_url,
                 template,
             } => formatter
                 .debug_struct("CreateSpace")
                 .field("name", name)
                 .field("remote", remote)
+                .field("revocation_url", revocation_url)
                 .field("template", template)
                 .finish(),
             Self::DurableJoin { .. } => formatter
@@ -126,6 +132,7 @@ mod tests {
                 "kind": "createSpace",
                 "name": "Notes",
                 "remote": null,
+                "revocationUrl": null,
                 "template": null,
             }))
             .is_ok()

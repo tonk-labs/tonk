@@ -113,11 +113,27 @@ pub fn classify(local: Option<&Revision>, remote: Option<&Revision>) -> Comparis
     }
 }
 
-/// Response for sync operations.
+/// Why a successful sync operation returned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyncDisposition {
+    /// Reconciliation ran to completion.
+    #[default]
+    Completed,
+    /// Deliberately skipped because the browser is offline.
+    Offline,
+    /// Deliberately skipped because synchronization is paused.
+    Paused,
+}
+
+/// Response for successful sync operations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncResponse {
-    /// Whether the sync operation succeeded.
+    /// Compatibility field; successful responses always serialize `true`.
     pub success: bool,
+    /// Whether reconciliation completed or was deliberately skipped.
+    #[serde(default)]
+    pub disposition: SyncDisposition,
     /// Local branch revision *before* the sync ran. `None` when
     /// the branch had no commits at the start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,8 +143,8 @@ pub struct SyncResponse {
     /// before producing one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Revision>,
-    /// Error message if sync failed.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Legacy field accepted during rollout; new successful responses omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -240,6 +256,21 @@ mod tests {
         assert_eq!(SyncState::from(Comparison::Ahead), SyncState::Ahead);
         assert_eq!(SyncState::from(Comparison::Behind), SyncState::Behind);
         assert_eq!(SyncState::from(Comparison::Diverged), SyncState::Diverged);
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_success_dispositions_in_kebab_case() {
+        let response = SyncResponse {
+            success: true,
+            disposition: SyncDisposition::Offline,
+            before: None,
+            after: None,
+            error: None,
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["disposition"], "offline");
+        assert!(json.get("error").is_none());
     }
 
     #[dialog_common::test]

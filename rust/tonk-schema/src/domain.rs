@@ -209,6 +209,11 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.elements.remote")]
         pub struct Value(pub String);
+
+        /// Revocation relay read from a sibling hidden form control.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.revocation")]
+        pub struct RevocationUrl(pub String);
     }
 
     /// Attributes the `tonk:load` command carries.
@@ -336,6 +341,11 @@ pub mod command {
         #[domain("xyz.tonk.enable-sync")]
         pub struct Remote(pub String);
 
+        /// Explicit immutable-artifact relay attached beside the remote.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enable-sync")]
+        pub struct RevocationUrl(pub String);
+
         /// Present when the caller wants an invite minted once the remote is
         /// attached. Absent means attach only.
         ///
@@ -459,35 +469,16 @@ pub mod command {
         pub struct Remove(pub Entity);
     }
 
-    /// Attributes the `tonk:join` command reads from the `<tonk-page>`
-    /// `mount` event's `detail` — a flat, URL-shaped record (fields mirror
-    /// the DOM `URL` interface). The service worker can't see the `#hash`,
-    /// so `<tonk-page>` reads it page-side and delivers it (with the
-    /// `search`) in the event detail.
-    ///
-    /// The command reads the whole `search` + `hash` strings (always
-    /// present — `URL.search`/`URL.hash` are `""` when empty, never
-    /// `undefined`) rather than individual `searchParams`: a missing
-    /// optional param (e.g. `remote`) would read as `undefined` and the
-    /// event extractor aborts the command on that. The handler parses the
-    /// reassembled URL with `Invite::parse_url`, which already handles the
-    /// optional remote.
+    /// Attributes the `tonk:join` command reads from `<tonk-page>`'s
+    /// `mount` event. The page delivers the complete URL because the
+    /// service worker cannot observe its fragment.
     pub mod join {
         use super::Attribute;
 
-        /// The full query string incl. the leading `?` (faithful to
-        /// `URL.search`), from `detail.search`. Carries `access` and the
-        /// optional `remote`; the handler parses it.
+        /// Complete invite URL from `detail.href`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.detail")]
-        pub struct Search(pub String);
-
-        /// The invite's `#seed` fragment incl. the leading `#` (faithful to
-        /// `URL.hash`, the handler strips it), from `detail.hash`. The part
-        /// only the page can see.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("dom.event.detail")]
-        pub struct Hash(pub String);
+        pub struct Href(pub String);
     }
 }
 
@@ -757,6 +748,22 @@ pub mod invitation {
     pub struct PathHex(pub String);
 }
 
+/// Operational metadata attached to an [`Invitation`](crate::Invitation)
+/// without changing the backward-readable invitation record.
+pub mod invitation_execution {
+    use super::Attribute;
+
+    /// Stable audience mode: `open` or `scoped`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    pub struct Kind(pub String);
+
+    /// Explicit endpoint that accepts immutable revocation artifacts.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    pub struct RevocationUrl(pub String);
+}
+
 /// Attributes that live on [`Remote`] entities only.
 ///
 /// [`Remote`]: crate::Remote
@@ -798,4 +805,15 @@ pub mod remote {
             serde_ipld_dagcbor::from_slice(&self.0)
         }
     }
+}
+
+/// Operational metadata attached to a [`Remote`](crate::Remote) without
+/// changing the backward-readable remote record.
+pub mod remote_execution {
+    use super::Attribute;
+
+    /// Explicit endpoint that accepts immutable revocation artifacts.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.remote-execution")]
+    pub struct RevocationUrl(pub String);
 }

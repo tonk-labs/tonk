@@ -1,10 +1,10 @@
 //! Error types for the service.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use worker::Response;
 
 /// Error codes returned by the API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     // 400 Bad Request - Input validation errors
@@ -23,7 +23,7 @@ pub enum ErrorCode {
     // (`handlers::ucan::screen_revoked`); a native build never
     // constructs it even though `status_code` matches it exhaustively.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    DeviceRevoked,
+    CredentialRevoked,
 
     // 500 Internal Server Error
     InternalError,
@@ -31,7 +31,7 @@ pub enum ErrorCode {
     // 503 Service Unavailable - the revocation registry could not be
     // consulted and no cached verdict covers the request. Retryable,
     // unlike the 403s above. Same wasm-only construction as
-    // `DeviceRevoked`.
+    // `CredentialRevoked`.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     RevocationUnavailable,
 }
@@ -52,7 +52,7 @@ impl ErrorCode {
             ErrorCode::ChainInvalid
             | ErrorCode::CommandMismatch
             | ErrorCode::SubjectNotAllowed
-            | ErrorCode::DeviceRevoked => 403,
+            | ErrorCode::CredentialRevoked => 403,
 
             // 500 Internal Server Error
             ErrorCode::InternalError => 500,
@@ -64,12 +64,12 @@ impl ErrorCode {
 }
 
 /// Structured error response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ErrorDetail {
     pub code: ErrorCode,
     pub message: String,

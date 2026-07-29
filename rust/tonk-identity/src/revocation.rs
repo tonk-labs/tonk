@@ -286,9 +286,8 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
 mod tests {
     use super::*;
     use dialog_ucan_core::subject::Subject;
-    use dialog_ucan_core::time::timestamp::{Duration, Timestamp};
+    use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
     use dialog_ucan_core::{DelegationBuilder, InvocationBuilder};
-    use std::time::SystemTime;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test_configure;

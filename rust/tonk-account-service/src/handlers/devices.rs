@@ -204,8 +204,10 @@ async fn handle_revoke_inner(
     Response::from_json(&serde_json::json!({
         "attestation": outcome.attestation.as_str(),
         "projection": outcome.projection.as_str(),
+        "targetDid": device_did,
         "targetCid": outcome.target_cid,
         "artifactCid": outcome.artifact_cid,
+        "published": true,
         "stored": outcome.stored,
     }))
     .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))

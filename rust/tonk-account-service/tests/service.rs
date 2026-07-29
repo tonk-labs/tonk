@@ -186,7 +186,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     let revoked: serde_json::Value = response.json().await.unwrap();
     assert_eq!(revoked["attestation"], "root");
     assert_eq!(revoked["projection"], "updated");
+    assert_eq!(revoked["targetDid"], second_did);
     assert_eq!(revoked["targetCid"], second_grant_cid);
+    assert_eq!(revoked["published"], true);
 
     // The unauthenticated global endpoint verifies the same artifact and
     // treats an identical publication as idempotent.

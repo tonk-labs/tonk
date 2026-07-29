@@ -77,6 +77,31 @@ pub struct RevokeDeviceRequest {
     pub revocation: String,
 }
 
+/// Whether the account service's device-list projection caught up with a
+/// published revocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RevocationProjection {
+    /// The mutable device row now reflects the revocation.
+    Updated,
+    /// The immutable revocation was published, but the device row is stale.
+    Stale,
+}
+
+/// Canonical acknowledgement returned after revoking an account device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceAcknowledgement {
+    /// DID whose grant was revoked.
+    pub target_did: String,
+    /// CID of the revoked root-to-device delegation.
+    pub target_cid: String,
+    /// Whether the immutable revocation was accepted by canonical storage.
+    pub published: bool,
+    /// Best-effort state of the account-service device-list projection.
+    pub projection: RevocationProjection,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +135,20 @@ mod tests {
         assert_eq!(json["thisDevice"], true);
         assert_eq!(json["delegationCid"], "bafycid");
         assert_eq!(json["delegationHex"], "beef");
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_a_canonical_revocation_acknowledgement() {
+        let json = serde_json::to_value(RevokeDeviceAcknowledgement {
+            target_did: "did:key:device".into(),
+            target_cid: "bafycid".into(),
+            published: true,
+            projection: RevocationProjection::Stale,
+        })
+        .unwrap();
+        assert_eq!(json["targetDid"], "did:key:device");
+        assert_eq!(json["targetCid"], "bafycid");
+        assert_eq!(json["published"], true);
+        assert_eq!(json["projection"], "stale");
     }
 }

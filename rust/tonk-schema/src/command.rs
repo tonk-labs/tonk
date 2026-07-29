@@ -374,30 +374,32 @@ pub struct ShareBlocked {
 ///
 /// Asserted transiently when `<tonk-page>` fires its `mount` event on the
 /// `/join` view (`<tonk-page onmount=tonk/join>`). The element reads the
-/// page's location and delivers the parsed invite as the event `detail`;
-/// this command picks the pieces it needs out of `detail`. The
-/// `#fragment` (the seed) is the part the service worker can't see, so it
-/// must come from the page through this command.
+/// complete page URL, including the fragment the service worker cannot see,
+/// and delivers it as `detail.href`.
 ///
-/// The handler reassembles the URL from `access` + `remote` + `fragment`,
-/// parses + validates it, and claims — driving the overlay-only
+/// The handler parses and claims that URL, driving the overlay-only
 /// `tonk:join/status` (pending → failed, or retract + durable space on
 /// success).
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Join {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The full query string (incl. `?`), from `detail.search` — carries
-    /// `access` and the optional `remote`. Read whole (not per-param) so a
-    /// missing optional `remote` doesn't abort the command; the handler
-    /// reassembles + parses it.
-    pub search: crate::domain::command::join::Search,
-    /// The `#seed` fragment (incl. `#`), from `detail.hash` — page-only.
-    pub hash: crate::domain::command::join::Hash,
+    /// Complete invite URL from `detail.href`.
+    pub url: crate::domain::command::join::Href,
+}
+
+impl std::fmt::Debug for Join {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Join")
+            .field("this", &self.this)
+            .field("url", &"[redacted]")
+            .finish()
+    }
 }
 
 /// `Join` is a [`dialog_capability::Command`]; its handler lives in
-/// `tonk-worker` (reassembles + claims the invite, drives `JoinStatus`).
+/// `tonk-worker` (claims the carried invite URL and drives `JoinStatus`).
 impl Command for Join {
     type Input = Self;
     type Output = ();

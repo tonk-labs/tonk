@@ -31,6 +31,7 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 tonk-identity = { workspace = true }
+tonk-worker-api = { workspace = true }
 
 # Cryptography
 blake3 = { workspace = true }

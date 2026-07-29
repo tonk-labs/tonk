@@ -4,6 +4,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::RepositoryInfo;
 
+/// Stable terminal classification for a failed join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JoinFailureKind {
+    /// The URL is not an invite this build can read.
+    Malformed,
+    /// The invite is addressed to a different identity.
+    AudienceMismatch,
+    /// The remote refused the invite's authority.
+    Revoked,
+    /// The remote could not be reached, or could not serve the space.
+    Unavailable,
+    /// A local failure stopped the join.
+    ClaimFailed,
+}
+
+impl JoinFailureKind {
+    /// Stable value written to transient join state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::AudienceMismatch => "audience-mismatch",
+            Self::Revoked => "revoked",
+            Self::Unavailable => "unavailable",
+            Self::ClaimFailed => "claim-failed",
+        }
+    }
+
+    /// Fixed recipient-facing message.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Malformed => "This invite link is invalid.",
+            Self::AudienceMismatch => "This invite was issued to a different identity.",
+            Self::Revoked => "This invite has been revoked.",
+            Self::Unavailable => "Tonk could not reach this spot. Try again.",
+            Self::ClaimFailed => "Tonk could not join this spot.",
+        }
+    }
+
+    /// Whether retrying the same in-memory URL is useful.
+    pub const fn retryable(self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+}
+
 /// Body of `POST /api/profile/join`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JoinRequest {

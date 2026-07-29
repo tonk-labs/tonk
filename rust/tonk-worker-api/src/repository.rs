@@ -6,6 +6,7 @@ use dialog_capability::Revision;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use url::Url;
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,6 +22,13 @@ pub struct RemoteConfiguration {
     /// this repository's DID if omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<Did>,
+    /// Explicit immutable-artifact relay for invitation revocations.
+    #[serde(
+        default,
+        rename = "revocationUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub revocation_url: Option<Url>,
 }
 
 impl RemoteConfiguration {
@@ -32,6 +40,7 @@ impl RemoteConfiguration {
         Self {
             address: json!({ "Ucan": { "endpoint": endpoint.into() } }),
             subject: None,
+            revocation_url: None,
         }
     }
 
@@ -39,6 +48,12 @@ impl RemoteConfiguration {
     /// is the same as the local repository's DID.
     pub fn subject(mut self, subject: Did) -> Self {
         self.subject = Some(subject);
+        self
+    }
+
+    /// Attach the explicit immutable-artifact relay.
+    pub fn revocation_url(mut self, revocation_url: Url) -> Self {
+        self.revocation_url = Some(revocation_url);
         self
     }
 }
@@ -167,4 +182,44 @@ pub struct RepositoryInfo {
     /// The repository's members, read from the synced content branch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<MemberInfo>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_round_trips_access_and_revocation_urls_in_remote_configuration() {
+        let relay: Url = "https://artifacts.example.test/revocations/"
+            .parse()
+            .unwrap();
+        let configuration = RemoteConfiguration::ucan("https://access.example.test/ucan/")
+            .revocation_url(relay.clone());
+
+        let json = serde_json::to_value(&configuration).unwrap();
+        assert_eq!(
+            json["address"]["Ucan"]["endpoint"],
+            "https://access.example.test/ucan/"
+        );
+        assert_eq!(json["revocationUrl"], relay.as_str());
+        assert!(json.get("revocation_url").is_none());
+
+        let decoded: RemoteConfiguration = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.address, configuration.address);
+        assert_eq!(decoded.revocation_url, Some(relay));
+    }
+
+    #[test]
+    fn it_keeps_legacy_remote_configuration_readable() {
+        let decoded: RemoteConfiguration = serde_json::from_value(json!({
+            "address": {
+                "Ucan": {
+                    "endpoint": "https://access.example.test/ucan/"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(decoded.revocation_url.is_none());
+    }
 }
