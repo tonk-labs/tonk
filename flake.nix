@@ -36,6 +36,13 @@
           overlays = [
             (import rust-overlay)
             (import ./nix/esbuild.nix)
+            (
+              final: prev:
+              prev.lib.optionalAttrs prev.stdenv.isDarwin {
+                # Remove when nixpkgs remarshal passes with Python 3.14 on Darwin.
+                remarshal = final.python313Packages.remarshal;
+              }
+            )
           ];
         };
         filter = nix-filter.lib;
