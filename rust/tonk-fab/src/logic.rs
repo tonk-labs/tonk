@@ -1302,16 +1302,28 @@ mod rename_repo {
 /// `name` is always sent (the wizard's hidden input always carries the
 /// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
 /// alone — an absent `name` fact means the command never fires at all).
-/// `remote` and `template` are read directly off the transient's facts by
-/// the handler (not decoded as typed `CreateSpace` fields), so an empty
-/// value is omitted rather than sent as `""` — an omitted fact and a
-/// filtered-empty fact land the same way handler-side, but omitting mirrors
-/// what the browser's own event extractor would have done, and keeps this
-/// consistent with [`rename_repo_claim_json`].
-pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
+/// `remote`, `revocation` and `template` are read directly off the
+/// transient's facts by the handler (not decoded as typed `CreateSpace`
+/// fields), so an empty value is omitted rather than sent as `""` — an
+/// omitted fact and a filtered-empty fact land the same way handler-side,
+/// but omitting mirrors what the browser's own event extractor would have
+/// done, and keeps this consistent with [`rename_repo_claim_json`].
+///
+/// `revocation` is the relay stored beside the remote: dropping it here
+/// would attach the remote with no relay, and the omission only surfaces
+/// much later, when an invite has nowhere to publish its revocations.
+pub fn create_space_claim_json(
+    name: &str,
+    remote: &str,
+    revocation: &str,
+    template: &str,
+) -> Value {
     let mut parameters = json!({ "name": name });
     if !remote.is_empty() {
         parameters["remote"] = json!(remote);
+    }
+    if !revocation.is_empty() {
+        parameters["revocation"] = json!(revocation);
     }
     if !template.is_empty() {
         parameters["template"] = json!(template);
@@ -1325,9 +1337,10 @@ pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Valu
                     "concept": {
                         "description": "A request to create a new space from the wizard form.",
                         "with": {
-                            "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "template": { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
+                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
+                            "revocation": { "the": "dom.event.current-target.elements.revocation/value", "as": "Text" },
+                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
                         }
                     }
                 },
@@ -1343,21 +1356,39 @@ mod create_space {
 
     #[test]
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
-        let claim = create_space_claim_json("Untitled", "https://x", "wiki");
+        let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "wiki");
         let text = claim.to_string();
         // Verbatim, kebab-cased as declared — the handler matches on these.
+        // Every control is read at `/value`: the segment after the control
+        // name is the JS property the browser's extractor would have read,
+        // so a descriptive leaf resolves to `undefined` there and the
+        // handler would never see the field here.
         assert!(text.contains("dom.event.current-target.elements.name/value"));
         assert!(text.contains("dom.event.current-target.elements.remote/value"));
+        assert!(text.contains("dom.event.current-target.elements.revocation/value"));
         assert!(text.contains("dom.event.current-target.elements.template/value"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
         assert_eq!(params["remote"], "https://x");
+        assert_eq!(params["revocation"], "https://x/rev");
         assert_eq!(params["template"], "wiki");
     }
 
     #[test]
+    fn it_omits_a_blank_revocation_rather_than_sending_an_empty_string() {
+        // A deployment with no relay configured leaves the hidden input
+        // blank; the remote must still attach, just without a relay.
+        let claim = create_space_claim_json("Untitled", "https://x", "", "blank");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("revocation")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "", "blank");
+        let claim = create_space_claim_json("Untitled", "", "", "blank");
         // The descriptor's `with.remote` mapping is always present (it is
         // schema metadata) — what must be absent is the `remote` PARAMETER,
         // the thing that actually becomes a fact. Asserting on a bare
@@ -1372,7 +1403,7 @@ mod create_space {
 
     #[test]
     fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "https://x", "");
+        let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "");
         assert!(
             claim["claims"][0]["application"]["parameters"]
                 .get("template")
@@ -1805,7 +1836,7 @@ mod wire_types {
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
             rename_repo_claim_json("did:key:zX", "N").to_string(),
-            create_space_claim_json("N", "https://r", "wiki").to_string(),
+            create_space_claim_json("N", "https://r", "https://r/rev", "wiki").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
             pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),
