@@ -209,11 +209,27 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.elements.remote")]
         pub struct Value(pub String);
+    }
 
-        /// Revocation relay read from a sibling hidden form control.
+    /// The revocation relay read from the same submit event as the
+    /// remote: `event.currentTarget.elements.revocation.value` (the
+    /// hidden `<input name="revocation">` that
+    /// `<tonk-default-remote relay-field="revocation">` fills).
+    ///
+    /// Its own module so the struct can be named `Value`, like every
+    /// other control read here. The name is load-bearing: the struct
+    /// name IS the attribute's last segment, and that segment is the JS
+    /// property the event layer reads off the control. A `RevocationUrl`
+    /// here would mint `…elements.revocation/revocation-url` and send the
+    /// extractor after `form.elements.revocation.revocationUrl` —
+    /// `undefined`, which aborts the whole command (no claim, no
+    /// `preventDefault`) rather than degrading to a blank field.
+    pub mod revocation {
+        use super::Attribute;
+
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.elements.revocation")]
-        pub struct RevocationUrl(pub String);
+        pub struct Value(pub String);
     }
 
     /// Attributes the `tonk:load` command carries.

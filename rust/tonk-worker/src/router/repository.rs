@@ -338,8 +338,15 @@ pub async fn post_space(
 /// Kept in sync with those notation commands' `remote` field `the:`.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const REVOCATION_URL_ATTR: &str = "dom.event.current-target.elements.revocation/revocation-url";
+
+/// The form-event attribute carrying the optional revocation relay — the
+/// hidden `revocation` input beside `remote` on the `space/create` form.
+/// Same `/value` leaf as every other control read: the segment after the
+/// control name is the JS property the event layer reads, so a
+/// descriptive leaf (`revocation-url`) resolves to `undefined` and kills
+/// the submit.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const REVOCATION_URL_ATTR: &str = "dom.event.current-target.elements.revocation/value";
 
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
@@ -4040,6 +4047,35 @@ mod space_config_tests {
         let error = space_config("https://example.test/ucan/", Some("not a URL"))
             .expect_err("invalid relay must not be silently discarded");
         assert!(error.to_string().contains("invalid revocation relay URL"));
+    }
+}
+
+/// The create form and this handler must name one attribute per control.
+///
+/// The handler reads these raw (not through the typed `CreateSpace`
+/// decode) so an older, frozen profile descriptor still triggers it. That
+/// tolerance cuts both ways: a renamed attribute on either side doesn't
+/// fail — the fact simply never matches, the field reads as absent, and
+/// the spot is created missing the remote or the relay with nothing
+/// logged. Pin both sides against the seeded document. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod form_attribute_tests {
+    use super::{REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR};
+
+    /// The document the worker seeds onto a profile branch, embedded for
+    /// the same reason `tests/standard_library.rs` embeds it: CI runs from
+    /// a `cargo nextest archive`, which carries no sibling data files.
+    const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+
+    #[test]
+    fn it_reads_the_attributes_the_create_form_declares() {
+        for attribute in [REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR] {
+            assert!(
+                PROFILE_LIBRARY.contains(attribute),
+                "profile.yaml declares no `the: {attribute}` — the handler \
+                 would read this field as absent on every submit",
+            );
+        }
     }
 }
 
