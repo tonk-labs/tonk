@@ -1,72 +1,22 @@
 //! Top-document account creation and passkey self-link surface.
 
 use custom_elements::CustomElement;
-use js_sys::{Function, Promise, Reflect};
-use serde::{Deserialize, Serialize};
+use js_sys::Reflect;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::{JsFuture, spawn_local};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
-use tonk_worker_api::AccountStatus;
+use tonk_worker_api::{AccountStatus, RevocationProjection, RevokeDeviceAcknowledgement};
 
-const PROD: &str = "https://accounts.tonk.xyz";
-const STAGING: &str = "https://accounts-staging.tonk.xyz";
+use crate::identity_bridge::{
+    CeremonyOutput, CompleteLinkInput, CreateAccountInput, CreateRootInput, LinkDeviceInput,
+    RevocationOutput, SignRevocationInput, complete_link, create_account, create_root, link_device,
+    sign_revocation,
+};
+
 const STYLE_ID: &str = "tonk-account-styles";
 const HANDOFF: &str = "__tonkCliHandoff";
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateInput {
-    email: String,
-    code: String,
-    device_did: String,
-    device_name: String,
-    root_did: String,
-    credential_id: String,
-    delegation_hex: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LinkInput {
-    device_did: String,
-    device_name: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HandoffInput {
-    token_hash: String,
-    device_did: String,
-    device_name: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CeremonyOutput {
-    root_did: String,
-    credential_id: String,
-    delegation_hex: String,
-    invocation_hex: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RootOutput {
-    root_did: String,
-    device_did: String,
-    credential_id: String,
-    delegation_hex: String,
-}
-
-/// What `window.tonkIdentity.signRevocation` hands back: the
-/// root-signed revocation, ready to travel as a request argument.
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RevocationOutput {
-    revocation_hex: String,
-}
 
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
@@ -127,38 +77,17 @@ fn ensure_stylesheet() {
     }
 }
 
-/// The account service for a page host, or `None` if account ceremonies
-/// must not run there.
-///
-/// Refuse-by-default, not production-by-default. Ceremonies run only where
-/// the host is the pinned apex or is its own relying party by design (see
-/// `tonk_identity::passkey`), so that one user has exactly one root key per
-/// environment. Widening `_` re-opens that: `hub.tonk.xyz` serves the same
-/// production build but is a different relying party, so a ceremony there
-/// would write a second, disjoint identity into the production registry.
-fn default_service(host: &str) -> Option<&'static str> {
-    match host {
-        "tonk.spot" => Some(PROD),
-        "staging.tonk.xyz" => Some(STAGING),
-        _ => None,
-    }
-}
-
-fn service(host: &HtmlElement) -> Result<String, String> {
+async fn service(host: &HtmlElement) -> Result<String, String> {
     if let Some(attribute) = host
         .get_attribute("service")
         .filter(|value| !value.is_empty())
     {
         return Ok(attribute);
     }
-    let hostname = window()
-        .and_then(|window| window.location().hostname().ok())
-        .ok_or_else(|| "window is unavailable".to_string())?;
-    default_service(&hostname)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            format!("Accounts are not available on {hostname}. Go to https://tonk.spot/account.")
-        })
+    Ok(crate::deployment::get()
+        .await?
+        .account_service_url
+        .to_string())
 }
 
 fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
@@ -305,6 +234,35 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
     }
 }
 
+fn revocation_status(
+    acknowledgement: &RevokeDeviceAcknowledgement,
+    self_revoke: bool,
+) -> &'static str {
+    if self_revoke {
+        "This device has been revoked. Its remote authority is permanently withdrawn."
+    } else if acknowledgement.projection == RevocationProjection::Stale {
+        "Device revoked. The account device list has not caught up yet."
+    } else {
+        "Device revoked."
+    }
+}
+
+fn disable_authority_actions(host: &HtmlElement) {
+    let _ = host.set_attribute("data-authority", "revoked");
+    for selector in ["[data-revoke]", "#account-unlink"] {
+        let Ok(elements) = host.query_selector_all(selector) else {
+            continue;
+        };
+        for index in 0..elements.length() {
+            if let Some(element) = elements.item(index)
+                && let Ok(button) = element.dyn_into::<HtmlButtonElement>()
+            {
+                button.set_disabled(true);
+            }
+        }
+    }
+}
+
 /// The device DID named by a `?revoke=` deep link, if any.
 ///
 /// The CLI cannot run a passkey ceremony, so `tonk account revoke` opens
@@ -402,10 +360,6 @@ fn landing(linked: bool, revoke_target: bool) -> Landing {
 }
 
 fn load_status(host: HtmlElement) {
-    if let Err(error) = service(&host) {
-        set_mode(&host, "blocked");
-        return show_error(&host, error);
-    }
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
         .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
@@ -415,6 +369,12 @@ fn load_status(host: HtmlElement) {
     }
     set_busy(&host, true, "Checking this browser…");
     spawn_local(async move {
+        if let Err(error) = service(&host).await {
+            set_busy(&host, false, "");
+            set_mode(&host, "blocked");
+            show_error(&host, error);
+            return;
+        }
         match crate::api::account_status().await {
             Ok(status) => {
                 let linked = matches!(status, AccountStatus::Registered { .. });
@@ -466,18 +426,20 @@ fn load_handoff(host: HtmlElement) {
             .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&path)));
     }
 
-    let service_url = match service(&host) {
-        Ok(service_url) => service_url,
-        Err(error) => {
-            set_mode(&host, "handoff");
-            return show_error(&host, error);
-        }
-    };
     set_busy(&host, true, "Checking the command-line request…");
     spawn_local(async move {
+        let service_url = match service(&host).await {
+            Ok(service_url) => service_url,
+            Err(error) => {
+                set_busy(&host, false, "");
+                set_mode(&host, "handoff");
+                show_error(&host, error);
+                return;
+            }
+        };
         match crate::api::resolve_account_link(&service_url, &secret).await {
             Ok(link) => {
-                let handoff = HandoffInput {
+                let handoff = CompleteLinkInput {
                     token_hash: link.token_hash,
                     device_did: link.device_did,
                     device_name: link.device_name,
@@ -501,29 +463,6 @@ fn load_handoff(host: HtmlElement) {
             }
         }
     });
-}
-
-async fn identity_call<T: Serialize, O: serde::de::DeserializeOwned>(
-    method: &str,
-    input: &T,
-) -> Result<O, String> {
-    let window = window().ok_or_else(|| "window is unavailable".to_string())?;
-    let identity = Reflect::get(&window, &"tonkIdentity".into())
-        .map_err(|error| format!("identity API unavailable: {error:?}"))?;
-    let function: Function = Reflect::get(&identity, &method.into())
-        .map_err(|error| format!("identity method unavailable: {error:?}"))?
-        .dyn_into()
-        .map_err(|_| format!("window.tonkIdentity.{method} is not a function"))?;
-    let input = serde_wasm_bindgen::to_value(input).map_err(|error| error.to_string())?;
-    let promise: Promise = function
-        .call1(&identity, &input)
-        .map_err(|error| format!("passkey ceremony failed: {error:?}"))?
-        .dyn_into()
-        .map_err(|_| "passkey ceremony did not return a promise".to_string())?;
-    let output = JsFuture::from(promise)
-        .await
-        .map_err(|error| error.as_string().unwrap_or_else(|| format!("{error:?}")))?;
-    serde_wasm_bindgen::from_value(output).map_err(|error| error.to_string())
 }
 
 async fn persist(provider: &str, ceremony: &CeremonyOutput) -> Result<(), String> {
@@ -557,7 +496,7 @@ async fn complete_remote(
     path: &str,
     ceremony: CeremonyOutput,
 ) -> Result<(), String> {
-    let provider = service(host)?;
+    let provider = service(host).await?;
     crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
         .await
         .map_err(|error| error.to_string())?;
@@ -617,12 +556,16 @@ fn bind(host: &HtmlElement) {
             Ok(value) => value,
             Err(error) => return show_error(&host, error),
         };
-        let service_url = match service(&host) {
-            Ok(service_url) => service_url,
-            Err(error) => return show_error(&host, error),
-        };
         set_busy(&host, true, "Sending verification code…");
         spawn_local(async move {
+            let service_url = match service(&host).await {
+                Ok(service_url) => service_url,
+                Err(error) => {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
+                    return;
+                }
+            };
             match crate::api::request_account_code(&service_url, &email).await {
                 Ok(()) => {
                     set_busy(&host, false, "");
@@ -673,11 +616,9 @@ fn bind(host: &HtmlElement) {
                         ..
                     } => (root_did, device_did, credential_id, delegation_hex),
                     tonk_worker_api::RootStatus::Missing { device_did } => {
-                        let created: RootOutput = identity_call(
-                            "createRoot",
-                            &serde_json::json!({ "deviceDid": device_did }),
-                        )
-                        .await?;
+                        let created = create_root(CreateRootInput { device_did })
+                            .await
+                            .map_err(|error| error.to_string())?;
                         crate::api::save_root(
                             created.credential_id.clone(),
                             created.delegation_hex.clone(),
@@ -692,19 +633,17 @@ fn bind(host: &HtmlElement) {
                         )
                     }
                 };
-                let ceremony = identity_call(
-                    "createAccount",
-                    &CreateInput {
-                        email,
-                        code,
-                        device_did,
-                        device_name,
-                        root_did,
-                        credential_id,
-                        delegation_hex,
-                    },
-                )
-                .await?;
+                let ceremony = create_account(CreateAccountInput {
+                    email,
+                    code,
+                    device_did,
+                    device_name,
+                    root_did,
+                    credential_id,
+                    delegation_hex,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Creating your account…");
                 complete_remote(&host, "/accounts", ceremony).await
             }
@@ -729,14 +668,12 @@ fn bind(host: &HtmlElement) {
                     .await
                     .map_err(|error| error.to_string())?
                     .did;
-                let ceremony = identity_call(
-                    "linkDevice",
-                    &LinkInput {
-                        device_did,
-                        device_name,
-                    },
-                )
-                .await?;
+                let ceremony = link_device(LinkDeviceInput {
+                    device_did,
+                    device_name,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking this browser…");
                 complete_remote(&host, "/devices/link", ceremony).await
             }
@@ -752,7 +689,7 @@ fn bind(host: &HtmlElement) {
         clear_error(&host);
         let handoff = Reflect::get(host.as_ref(), &HANDOFF.into())
             .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<HandoffInput>(value).ok());
+            .and_then(|value| serde_wasm_bindgen::from_value::<CompleteLinkInput>(value).ok());
         let Some(handoff) = handoff else {
             return show_error(
                 &host,
@@ -762,10 +699,12 @@ fn bind(host: &HtmlElement) {
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let ceremony: CeremonyOutput = identity_call("completeLink", &handoff).await?;
+                let ceremony = complete_link(handoff)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking the command-line profile…");
                 crate::api::submit_account_ceremony(
-                    &service(&host)?,
+                    &service(&host).await?,
                     "/links/complete",
                     &ceremony.invocation_hex,
                 )
@@ -892,14 +831,12 @@ fn begin_revoke(
         let revocation_hex = if self_revoke {
             String::new()
         } else {
-            let signed: Result<RevocationOutput, String> = identity_call(
-                "signRevocation",
-                &serde_json::json!({
-                    "delegationCid": delegation_cid,
-                    "pathHex": delegation_hex,
-                }),
-            )
-            .await;
+            let signed: Result<RevocationOutput, String> = sign_revocation(SignRevocationInput {
+                delegation_cid,
+                path_hex: delegation_hex,
+            })
+            .await
+            .map_err(|error| error.to_string());
             match signed {
                 Ok(output) => output.revocation_hex,
                 Err(error) => {
@@ -911,9 +848,30 @@ fn begin_revoke(
         };
         set_busy(&host, true, "Revoking device…");
         match crate::api::revoke_account_device(did, revocation_hex).await {
-            Ok(devices) => {
-                set_busy(&host, false, "");
-                render_devices(&host, &devices);
+            Ok(acknowledgement) => {
+                clear_error(&host);
+                set_busy(
+                    &host,
+                    false,
+                    revocation_status(&acknowledgement, self_revoke),
+                );
+                if self_revoke {
+                    disable_authority_actions(&host);
+                    return;
+                }
+
+                // Canonical publication is already complete. Refreshing the
+                // mutable registry is deliberately best-effort and cannot
+                // turn that success into a failure.
+                match crate::api::account_devices().await {
+                    Ok(devices) => render_devices(&host, &devices),
+                    Err(error) => web_sys::console::warn_1(
+                        &format!(
+                            "device revocation published; device-list refresh failed: {error}"
+                        )
+                        .into(),
+                    ),
+                }
             }
             Err(error) => {
                 set_busy(&host, false, "");
@@ -1010,6 +968,24 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_distinguishes_publication_from_projection_and_self_revocation() {
+        let stale = RevokeDeviceAcknowledgement {
+            target_did: "did:key:device".into(),
+            target_cid: "bafycid".into(),
+            published: true,
+            projection: RevocationProjection::Stale,
+        };
+        assert_eq!(
+            revocation_status(&stale, false),
+            "Device revoked. The account device list has not caught up yet."
+        );
+        assert_eq!(
+            revocation_status(&stale, true),
+            "This device has been revoked. Its remote authority is permanently withdrawn."
+        );
+    }
+
+    #[dialog_common::test]
     fn it_switches_between_account_panels_without_reauthoring_the_dom() {
         let host = host();
         set_mode(&host, "verify");
@@ -1035,37 +1011,11 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_maps_each_environment_host_to_its_own_service() {
-        assert_eq!(default_service("tonk.spot"), Some(PROD));
-        assert_eq!(default_service("staging.tonk.xyz"), Some(STAGING));
-    }
-
-    #[dialog_common::test]
-    fn it_refuses_ceremonies_on_unmapped_hosts() {
-        // Off-apex, so it is its own relying party: a ceremony here would
-        // derive a different root key and write a second identity for the
-        // same person into the production registry.
-        assert_eq!(default_service("hub.tonk.xyz"), None);
-        // Inside the apex but not the apex origin, so also its own RP.
-        assert_eq!(default_service("staging.tonk.spot"), None);
-        assert_eq!(default_service("www.tonk.spot"), None);
-        assert_eq!(default_service("random123.tonk.spot"), None);
-        assert_eq!(default_service("localhost"), None);
-    }
-
-    #[dialog_common::test]
-    fn it_prefers_an_explicit_service_attribute_over_the_host() {
+    async fn it_prefers_an_explicit_service_attribute_over_deployment_config() {
         let host = host();
         host.set_attribute("service", "http://127.0.0.1:8787")
             .unwrap();
-        assert_eq!(service(&host).unwrap(), "http://127.0.0.1:8787");
-    }
-
-    #[dialog_common::test]
-    fn it_errors_when_the_host_has_no_mapping_and_no_attribute() {
-        // wasm tests run on a localhost origin, which is unmapped.
-        let host = host();
-        assert!(service(&host).is_err());
+        assert_eq!(service(&host).await.unwrap(), "http://127.0.0.1:8787");
     }
 
     #[dialog_common::test]

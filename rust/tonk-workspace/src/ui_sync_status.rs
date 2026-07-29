@@ -221,7 +221,8 @@ fn on_delta(host: &HtmlElement, payload: JsValue) {
 /// Render (or update) the disc: `<span class="sync sync--<state>"><span
 /// class="disc"></span></span>`. Coloring + fill/ring/pulse come from the
 /// state MODIFIER CLASS (`sync--synced` / `sync--syncing` / `sync--offline` /
-/// `sync--local` / `sync--paused`), styled in the app stylesheet — the
+/// `sync--local` / `sync--paused` / `sync--revoked` / `sync--conflict` /
+/// `sync--unavailable`), styled in the app stylesheet — the
 /// component carries no inline color. Idempotent: reuses the nodes, only
 /// swapping the modifier class, so a frame doesn't rebuild the DOM.
 fn paint(host: &HtmlElement, status: &str) {
@@ -256,8 +257,11 @@ fn modifier_class(status: &str) -> &'static str {
         "sync:pending" => "sync--syncing",
         "sync:local" => "sync--local",
         "sync:paused" => "sync--paused",
-        // "sync:offline" and anything unrecognized.
-        _ => "sync--offline",
+        "sync:revoked" => "sync--revoked",
+        "sync:conflict" => "sync--conflict",
+        "sync:unavailable" => "sync--unavailable",
+        "sync:offline" => "sync--offline",
+        _ => "sync--unknown",
     }
 }
 
@@ -303,4 +307,18 @@ fn install_reset_shim() {
         "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
     );
     let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::modifier_class;
+
+    #[dialog_common::test]
+    fn it_keeps_typed_and_unknown_failures_distinct_from_offline() {
+        assert_eq!(modifier_class("sync:revoked"), "sync--revoked");
+        assert_eq!(modifier_class("sync:conflict"), "sync--conflict");
+        assert_eq!(modifier_class("sync:unavailable"), "sync--unavailable");
+        assert_eq!(modifier_class("sync:offline"), "sync--offline");
+        assert_eq!(modifier_class("sync:future"), "sync--unknown");
+    }
 }

@@ -17,7 +17,7 @@ use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_schema::domain::remote as remote_dom;
-use tonk_schema::{Remote as RemoteConcept, Replica};
+use tonk_schema::{Remote as RemoteConcept, RemoteExecution, Replica};
 
 use crate::ExitCode;
 use crate::site::{self, TonkSite};
@@ -47,6 +47,9 @@ pub struct RemoteRecord {
     /// the meta-branch `Address` claim back into a `SiteAddress`
     /// and pulling the URL off the inner `UcanAddress`.
     pub endpoint: String,
+    /// Explicit immutable-artifact relay, absent on legacy records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_url: Option<String>,
 }
 
 /// Outcome of [`add`].
@@ -59,6 +62,8 @@ pub struct AddOutcome {
     pub subject: Did,
     /// Endpoint URL, echoed for confirmation.
     pub endpoint: String,
+    /// Explicit immutable-artifact relay, when configured.
+    pub revocation_url: Option<String>,
 }
 
 /// Outcome of [`set_upstream`].
@@ -110,6 +115,21 @@ pub async fn add(
     endpoint: &str,
     subject_override: Option<Did>,
 ) -> Result<AddOutcome, RemoteError> {
+    add_with_revocation(site, name, endpoint, subject_override, None).await
+}
+
+/// Register a remote and its explicit invitation-revocation relay atomically.
+pub async fn add_with_revocation(
+    site: &TonkSite,
+    name: &str,
+    endpoint: &str,
+    subject_override: Option<Did>,
+    revocation_url: Option<&str>,
+) -> Result<AddOutcome, RemoteError> {
+    if let Some(revocation_url) = revocation_url {
+        url::Url::parse(revocation_url)
+            .map_err(|error| RemoteError::Io(format!("invalid revocation URL: {error}")))?;
+    }
     let address = SiteAddress::from(UcanAddress::new(endpoint));
 
     // Dialog-side: provision the remote handle. This stamps a
@@ -135,9 +155,14 @@ pub async fn add(
     let replica = local_replica(site);
     let remote_concept = replica.remote(name, subject.clone(), &address);
 
-    meta.transaction()
+    let mut transaction = meta
+        .transaction()
         .assert(replica)
-        .assert(remote_concept)
+        .assert(remote_concept.clone());
+    if let Some(revocation_url) = revocation_url {
+        transaction = transaction.assert(RemoteExecution::new(&remote_concept, revocation_url));
+    }
+    transaction
         .commit()
         .perform(&site.operator)
         .await
@@ -147,6 +172,7 @@ pub async fn add(
         name: name.to_owned(),
         subject,
         endpoint: endpoint.to_owned(),
+        revocation_url: revocation_url.map(str::to_owned),
     })
 }
 
@@ -288,6 +314,16 @@ pub async fn list(site: &TonkSite) -> Result<Vec<RemoteRecord>, RemoteError> {
         .try_vec()
         .await
         .map_err(|e| RemoteError::Io(format!("remote enumeration failed: {e:?}")))?;
+    let executions: Vec<RemoteExecution> = meta
+        .query()
+        .select(Query::<RemoteExecution> {
+            this: Term::var("this"),
+            revocation_url: Term::var("revocation_url"),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RemoteError::Io(format!("remote execution enumeration failed: {e:?}")))?;
 
     let mut out: Vec<RemoteRecord> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -307,6 +343,10 @@ pub async fn list(site: &TonkSite) -> Result<Vec<RemoteRecord>, RemoteError> {
             name: row.name.0,
             subject,
             endpoint,
+            revocation_url: executions
+                .iter()
+                .find(|execution| execution.this == row.this)
+                .map(|execution| execution.revocation_url.0.clone()),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

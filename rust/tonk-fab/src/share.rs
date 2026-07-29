@@ -106,8 +106,7 @@ extern "C" {
 /// open since the click. `reject` abandons it (the browser drops the write and
 /// leaves the existing clipboard contents alone).
 struct PendingCopy {
-    resolve: Function,
-    reject: Function,
+    clipboard: PendingClipboard,
     /// The link already on screen when the click landed, if any.
     ///
     /// The invite display holds the LAST mint's link, and every subscription
@@ -118,6 +117,25 @@ struct PendingCopy {
     /// the new link is always a *different* string: we wait for one that
     /// differs from this.
     stale: Option<String>,
+}
+
+/// A clipboard write opened while user activation is still live and settled
+/// later once an asynchronous mint returns its URL.
+pub(crate) struct PendingClipboard {
+    resolve: Function,
+    reject: Function,
+}
+
+impl PendingClipboard {
+    pub(crate) fn resolve(self, text: &str) {
+        let _ = self.resolve.call1(&JsValue::NULL, &JsValue::from_str(text));
+    }
+
+    pub(crate) fn reject(self, reason: &str) {
+        let _ = self
+            .reject
+            .call1(&JsValue::NULL, &JsValue::from_str(reason));
+    }
 }
 
 /// A refusal delivered on the blocked subscription.
@@ -423,10 +441,7 @@ impl CustomElement for TonkShare {
         // Abandon a clipboard write still held open by a mint that will now
         // never land — leaving it pending would hold the clipboard hostage.
         if let Some(pending) = state.pending.take() {
-            let _ = pending.reject.call1(
-                &JsValue::NULL,
-                &JsValue::from_str("share: element detached"),
-            );
+            pending.clipboard.reject("share: element detached");
         }
     }
 }
@@ -500,8 +515,24 @@ impl TonkShare {
             }
             set_state(&host, ShareState::Copying);
             arm_timeout(&host, &state);
-            dispatch_enable_sync(&space, &remote, time);
             close_enable_sync_dialog();
+            let host_for_config = host.clone();
+            let state_for_config = Rc::clone(&state);
+            wasm_bindgen_futures::spawn_local(async move {
+                match deployment_revocation_url(&origin).await {
+                    Ok(revocation_url) => {
+                        dispatch_enable_sync(&space, &remote, Some(&revocation_url), time);
+                    }
+                    Err(error) => {
+                        warn(&format!("share: {error}"));
+                        fail_copy(
+                            &host_for_config,
+                            &state_for_config,
+                            "Could not load sharing configuration.",
+                        );
+                    }
+                }
+            });
         });
         let target: &web_sys::EventTarget = document.unchecked_ref();
         let _ =
@@ -523,8 +554,30 @@ fn dispatch_invite(space: &str, time: f64) {
 /// Dispatch the `tonk:enable-sync` claim, asking the worker to attach `remote`
 /// to this spot and — because `share` is set — mint the invite the refused
 /// click was after, as soon as the attach lands.
-fn dispatch_enable_sync(space: &str, remote: &str, time: f64) {
-    dispatch_claim(&enable_sync_claim_json(space, remote, true, time));
+fn dispatch_enable_sync(space: &str, remote: &str, revocation_url: Option<&str>, time: f64) {
+    dispatch_claim(&enable_sync_claim_json(
+        space,
+        remote,
+        revocation_url,
+        true,
+        time,
+    ));
+}
+
+async fn deployment_revocation_url(origin: &str) -> Result<String, String> {
+    let response = reqwest::Client::new()
+        .get(format!("{origin}/.well-known/tonk"))
+        .send()
+        .await
+        .map_err(|_| "deployment configuration is unavailable".to_string())?;
+    if !response.status().is_success() {
+        return Err("deployment configuration is unavailable".to_string());
+    }
+    response
+        .json::<tonk_worker_api::DeploymentConfig>()
+        .await
+        .map(|config| config.revocation_relay_url.to_string())
+        .map_err(|_| "deployment configuration is invalid".to_string())
 }
 
 /// Hand a claim to `window.tonk.transact`. A no-op wherever the bridge is not
@@ -561,6 +614,14 @@ fn open_clipboard_write(
     state: Rc<RefCell<ShareStateCell>>,
     stale: Option<String>,
 ) -> Result<(), JsValue> {
+    let clipboard = open_deferred_clipboard_write()?;
+    state.borrow_mut().pending = Some(PendingCopy { clipboard, stale });
+    Ok(())
+}
+
+/// Open a promise-backed clipboard write synchronously for an asynchronous
+/// operation to settle later.
+pub(crate) fn open_deferred_clipboard_write() -> Result<PendingClipboard, JsValue> {
     let clipboard = window()
         .ok_or_else(|| JsValue::from_str("no window"))?
         .navigator()
@@ -577,11 +638,6 @@ fn open_clipboard_write(
         .borrow_mut()
         .take()
         .ok_or_else(|| JsValue::from_str("promise executor did not run"))?;
-    let pending = PendingCopy {
-        resolve,
-        reject,
-        stale,
-    };
 
     // `new ClipboardItem({ "text/plain": <Promise<string>> })` — the promise
     // form. `writeText` cannot express this: it takes a resolved string, so it
@@ -605,8 +661,7 @@ fn open_clipboard_write(
     let _ = clipboard.write(&Array::of1(&item)).catch(&on_rejected);
     on_rejected.forget();
 
-    state.borrow_mut().pending = Some(pending);
-    Ok(())
+    Ok(PendingClipboard { resolve, reject })
 }
 
 /// `new ClipboardItem(init)` via the global constructor. web-sys does not
@@ -639,15 +694,11 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
     };
     let settled = match result {
         Ok(link) => {
-            let _ = pending
-                .resolve
-                .call1(&JsValue::NULL, &JsValue::from_str(&link));
+            pending.clipboard.resolve(&link);
             ShareState::Copied
         }
         Err(reason) => {
-            let _ = pending
-                .reject
-                .call1(&JsValue::NULL, &JsValue::from_str(reason));
+            pending.clipboard.reject(reason);
             ShareState::Failed
         }
     };
@@ -806,9 +857,7 @@ fn abandon(state: &Rc<RefCell<ShareStateCell>>, reason: &str) {
         clear_timeout(id);
     }
     if let Some(pending) = cell.pending.take() {
-        let _ = pending
-            .reject
-            .call1(&JsValue::NULL, &JsValue::from_str(reason));
+        pending.clipboard.reject(reason);
     }
 }
 

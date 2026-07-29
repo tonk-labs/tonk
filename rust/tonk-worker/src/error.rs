@@ -34,6 +34,17 @@ pub enum TonkWorkerError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    /// A typed non-success response from an upstream service.
+    #[error("Upstream service returned HTTP {status}: {message}")]
+    Upstream {
+        /// Original upstream HTTP status.
+        status: u16,
+        /// Stable upstream classification, when supplied.
+        code: Option<String>,
+        /// Bounded caller-safe message.
+        message: String,
+    },
+
     /// Durable identity must be provisioned before this operation.
     #[error("A local passkey root is required")]
     RootRequired,
@@ -112,6 +123,7 @@ impl TonkWorkerError {
             TonkWorkerError::Conflict(_) => "conflict",
             TonkWorkerError::PreconditionFailed(_) => "precondition_failed",
             TonkWorkerError::Forbidden(_) => "forbidden",
+            TonkWorkerError::Upstream { .. } => "upstream",
             TonkWorkerError::RootRequired => "conflict",
             TonkWorkerError::Analyze { .. } => "analyze",
         }
@@ -126,6 +138,7 @@ impl TonkWorkerError {
             | TonkWorkerError::PreconditionFailed(m)
             | TonkWorkerError::Forbidden(m) => m.clone(),
             TonkWorkerError::RootRequired => "a local passkey root is required".to_string(),
+            TonkWorkerError::Upstream { message, .. } => message.clone(),
             TonkWorkerError::Analyze { message, .. } => message.clone(),
         }
     }
@@ -160,10 +173,15 @@ impl IntoResponse for TonkWorkerError {
             TonkWorkerError::Conflict(_) | TonkWorkerError::RootRequired => StatusCode::CONFLICT,
             TonkWorkerError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             TonkWorkerError::Forbidden(_) => StatusCode::FORBIDDEN,
+            TonkWorkerError::Upstream { status, .. } => StatusCode::from_u16(*status)
+                .ok()
+                .filter(|status| status.is_client_error() || status.is_server_error())
+                .unwrap_or(StatusCode::BAD_GATEWAY),
         };
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
             TonkWorkerError::RootRequired => (Some("ROOT_REQUIRED".to_string()), None),
+            TonkWorkerError::Upstream { code, .. } => (code.clone(), None),
             _ => (None, None),
         };
         let body = ErrorBody {

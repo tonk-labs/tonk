@@ -76,6 +76,18 @@ fn it_lowers_the_profile_library() {
 }
 
 #[test]
+fn it_leaves_network_bearing_space_bindings_unquoted() {
+    assert!(
+        PROFILE_LIBRARY.contains("space={id}"),
+        "the FAB space binding must be resolved by the renderer"
+    );
+    assert!(
+        !PROFILE_LIBRARY.contains("space=\"{id}\""),
+        "a quoted binding can reach membership fetches unresolved"
+    );
+}
+
+#[test]
 fn it_lowers_core_concatenated_with_the_sheets_template() {
     // The worker never seeds sheets.yaml alone: for the `sheets`
     // template it concatenates core.yaml ahead of it into ONE document

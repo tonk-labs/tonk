@@ -8,10 +8,10 @@ use dialog_ucan_core::{DelegationChain, promise::Promised};
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_worker_api::{AccountDevice, RevokeDeviceRequest};
+use tonk_worker_api::{AccountDevice, RevokeDeviceAcknowledgement, RevokeDeviceRequest};
 
 use super::AppState;
-use super::account_backup::{account_service_url, post_for_bytes};
+use super::account_backup::account_service_url;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
@@ -35,8 +35,8 @@ async fn linked_service(
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
-    let service = account_service_url().ok_or_else(|| {
-        TonkWorkerError::NotFound("no account service is configured for this host".to_string())
+    let service = account_service_url(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("no account service is attached to this profile".to_string())
     })?;
     Ok((link, service))
 }
@@ -55,9 +55,12 @@ async fn fetch_devices(
     )
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("build device-list invocation: {e}")))?;
-    let endpoint = format!("{}/devices/list", service.trim_end_matches('/'));
-    let bytes = post_for_bytes(&endpoint, body).await?;
-    let rows: Vec<ServiceDevice> = serde_json::from_slice(&bytes)
+    let endpoint = url::Url::parse(&format!("{}/devices/list", service.trim_end_matches('/')))
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("invalid account provider URL: {error}"))
+        })?;
+    let response = super::http::post_cbor(&endpoint, &body).await?;
+    let rows: Vec<ServiceDevice> = serde_json::from_slice(&response.body)
         .map_err(|e| TonkWorkerError::Internal(format!("parse device list: {e}")))?;
     let this_did = state.profile.did().to_string();
     Ok(rows
@@ -106,9 +109,10 @@ async fn self_revocation(
 pub async fn revoke(
     State(state): State<AppState>,
     Json(request): Json<RevokeDeviceRequest>,
-) -> Result<Json<Vec<AccountDevice>>, TonkWorkerError> {
+) -> Result<Json<RevokeDeviceAcknowledgement>, TonkWorkerError> {
     let state = state.read().await;
     let own = request.did == state.profile.did().to_string();
+    let target_did = request.did.clone();
     let (link, service) = linked_service(&state).await?;
     let revocation = if own {
         self_revocation(&state, &link).await?
@@ -135,9 +139,26 @@ pub async fn revoke(
     )
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("build device-revoke invocation: {e}")))?;
-    let endpoint = format!("{}/devices/revoke", service.trim_end_matches('/'));
-    let _ = post_for_bytes(&endpoint, body).await?;
-    Ok(Json(fetch_devices(&state, &link, &service).await?))
+    let endpoint = url::Url::parse(&format!("{}/devices/revoke", service.trim_end_matches('/')))
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("invalid account provider URL: {error}"))
+        })?;
+    let response = super::http::post_cbor(&endpoint, &body).await?;
+    let acknowledgement: RevokeDeviceAcknowledgement = serde_json::from_slice(&response.body)
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("parse device-revoke acknowledgement: {error}"))
+        })?;
+    if acknowledgement.target_did != target_did {
+        return Err(TonkWorkerError::Internal(
+            "account provider acknowledged a different device".to_string(),
+        ));
+    }
+    if acknowledgement.target_cid.is_empty() || !acknowledgement.published {
+        return Err(TonkWorkerError::Internal(
+            "account provider did not confirm canonical revocation publication".to_string(),
+        ));
+    }
+    Ok(Json(acknowledgement))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -168,9 +189,10 @@ mod tests {
     #[dialog_common::test]
     async fn it_self_revokes_without_a_passkey_artifact() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let device_did = state.read().await.profile.did();
-        let request =
-            crate::router::account::tests_request_for(&[7u8; 32], device_did.clone()).await;
+        let request = {
+            let tonk = state.read().await;
+            crate::router::account::tests_matching_request(&tonk).await
+        };
         {
             let tonk = state.read().await;
             crate::router::account::persist_link(&tonk, &request)
@@ -187,9 +209,10 @@ mod tests {
     #[dialog_common::test]
     async fn it_refuses_to_revoke_without_a_signed_revocation() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let device_did = state.read().await.profile.did();
-        let request =
-            crate::router::account::tests_request_for(&[7u8; 32], device_did.clone()).await;
+        let request = {
+            let tonk = state.read().await;
+            crate::router::account::tests_matching_request(&tonk).await
+        };
         {
             let tonk = state.read().await;
             crate::router::account::persist_link(&tonk, &request)

@@ -325,14 +325,24 @@ mod when_claiming_an_invite_with_a_remote {
     use crate::common;
 
     const ENDPOINT: &str = "https://access.example.test/ucan/";
+    const REVOCATION_RELAY: &str = "https://artifacts.example.test/revocations/";
 
     #[dialog_common::test]
     async fn it_auto_configures_the_embedded_remote_on_the_joined_site() -> Result<()> {
         // Inviter site has a remote registered, mints an invite
         // referencing it.
         let inviter = common::TestSite::new().await?;
-        remote::add(&inviter.site, "origin", ENDPOINT, None).await?;
-        let invite_outcome = invite::mint(&inviter.site, None, Some(ENDPOINT)).await?;
+        remote::add_with_revocation(
+            &inviter.site,
+            "origin",
+            ENDPOINT,
+            None,
+            Some(REVOCATION_RELAY),
+        )
+        .await?;
+        let invite_outcome =
+            invite::mint_with_relay(&inviter.site, None, Some(ENDPOINT), Some(REVOCATION_RELAY))
+                .await?;
         assert!(invite_outcome.url.contains("remote="));
 
         // Claimer joins into a fresh tempdir.
@@ -358,6 +368,7 @@ mod when_claiming_an_invite_with_a_remote {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "origin");
         assert_eq!(listed[0].endpoint, ENDPOINT);
+        assert_eq!(listed[0].revocation_url.as_deref(), Some(REVOCATION_RELAY));
         // Subject is the inviter's DID — tonk holds delegated
         // authority on the inviter's repo.
         assert_eq!(listed[0].subject, inviter.site.repository.did());

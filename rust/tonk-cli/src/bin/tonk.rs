@@ -565,7 +565,9 @@ enum RemoteCommand {
     /// `Remote` concept browsers read. When no upstream is wired
     /// yet, the new remote becomes `main`'s upstream (an existing
     /// upstream is never touched — re-point with `set-upstream`).
-    #[command(after_help = "Examples:\n  tonk remote add prod https://access.example.com")]
+    #[command(
+        after_help = "Examples:\n  tonk remote add prod https://access.example.com --revocation-url https://artifacts.example.com/revocations"
+    )]
     Add {
         /// Local name for the remote.
         #[arg(value_name = "NAME")]
@@ -573,6 +575,9 @@ enum RemoteCommand {
         /// UCAN access-service endpoint URL.
         #[arg(value_name = "URL")]
         url: String,
+        /// Immutable-artifact relay used for invitation revocations.
+        #[arg(long, value_name = "URL")]
+        revocation_url: Option<String>,
         /// Override the remote's subject DID. Defaults to the
         /// local repository's DID — matches the worker's
         /// convention.
@@ -1721,7 +1726,12 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
     };
 
     match command {
-        RemoteCommand::Add { name, url, subject } => {
+        RemoteCommand::Add {
+            name,
+            url,
+            revocation_url,
+            subject,
+        } => {
             let subject = match subject.as_deref() {
                 Some(raw) => match raw.parse() {
                     Ok(did) => Some(did),
@@ -1729,7 +1739,15 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
                 },
                 None => None,
             };
-            match remote::add(&site, &name, &url, subject).await {
+            match remote::add_with_revocation(
+                &site,
+                &name,
+                &url,
+                subject,
+                revocation_url.as_deref(),
+            )
+            .await
+            {
                 Ok(outcome) => {
                     print_remote_add_outcome(&outcome);
                     // A first remote with no upstream wired is a
@@ -1796,6 +1814,9 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
 fn print_remote_add_outcome(outcome: &AddOutcome) {
     println!("Added remote '{name}'", name = outcome.name);
     println!("  endpoint: {}", outcome.endpoint);
+    if let Some(revocation_url) = &outcome.revocation_url {
+        println!("  revocation: {revocation_url}");
+    }
     println!("  subject:  {}", outcome.subject);
 }
 
@@ -1806,10 +1827,11 @@ fn print_remote_list(records: &[RemoteRecord]) {
     }
     for record in records {
         println!(
-            "{name}\t{endpoint}\t{subject}",
+            "{name}\t{endpoint}\t{subject}\t{revocation}",
             name = record.name,
             endpoint = record.endpoint,
             subject = record.subject,
+            revocation = record.revocation_url.as_deref().unwrap_or("-"),
         );
     }
 }
@@ -1963,13 +1985,38 @@ async fn mint_invite(
         (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
 
+    let revocation_url = resolved
+        .as_ref()
+        .and_then(|record| record.revocation_url.clone());
+    if embedded.is_some() && revocation_url.is_none() {
+        return print_error(
+            "the selected remote has no revocation relay; re-add it with \
+             `tonk remote add --revocation-url <URL>`"
+                .to_string(),
+        );
+    }
     let remote_url = embedded.map(|record| record.endpoint);
 
     let minted = match recipient_root {
         Some(root) => {
-            invite::mint_targeted(&site, Some(&base_url), remote_url.as_deref(), &root).await
+            invite::mint_targeted_with_relay(
+                &site,
+                Some(&base_url),
+                remote_url.as_deref(),
+                revocation_url.as_deref(),
+                &root,
+            )
+            .await
         }
-        None => invite::mint(&site, Some(&base_url), remote_url.as_deref()).await,
+        None => {
+            invite::mint_with_relay(
+                &site,
+                Some(&base_url),
+                remote_url.as_deref(),
+                revocation_url.as_deref(),
+            )
+            .await
+        }
     };
 
     match minted {

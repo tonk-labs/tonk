@@ -20,6 +20,8 @@ mod account;
 
 mod account_backup;
 
+mod http;
+
 pub(crate) mod restore;
 
 mod join;
@@ -222,6 +224,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/invites/{target_cid}/revoke",
             post(revoke_invite::revoke),
         )
+        .route("/api/repository/{repo}/invites", get(revoke_invite::list))
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
@@ -980,7 +983,8 @@ pub mod tests {
         let config = RepositoryConfiguration::default()
             .remote(
                 "origin",
-                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint))),
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint)))
+                    .revocation_url("https://relay.example.test/revocations".parse().unwrap()),
             )
             .branch(
                 "main",
@@ -1162,6 +1166,7 @@ pub mod tests {
                     "parameters": {
                         "space": subject,
                         "remote": "https://sync.example.test/ucan/",
+                        "revocation": "https://relay.example.test/revocations",
                         "share": "tonk:share",
                         "time": 1,
                         "marker": "tonk:enable-sync"
@@ -1173,6 +1178,7 @@ pub mod tests {
                             "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
                             "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
+                            "revocation": { "the": "xyz.tonk.enable-sync/revocation-url", "as": "Text" },
                             "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" }
                         }
                     } }
@@ -1688,7 +1694,7 @@ pub mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_syncs_after_commit() {
+    async fn it_rejects_manual_sync_without_an_upstream() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-sync";
@@ -1714,7 +1720,10 @@ pub mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        // Now sync — without upstream it should return OK with no changes
+        // Manual sync is an attempted operation, not the background sweep:
+        // without an upstream it must report an operational failure rather
+        // than claim a successful reconciliation. The background coordinator
+        // deliberately filters such branches before calling this route.
         let response = app
             .oneshot(
                 Request::builder()
@@ -1726,7 +1735,12 @@ pub mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(failure["error"]["code"], "SYNC_UNAVAILABLE");
     }
 
     #[dialog_common::test]

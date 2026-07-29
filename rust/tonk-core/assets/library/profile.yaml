@@ -100,6 +100,10 @@ command!: &space/create
         kebab→camel-cased.
       the: dom.event.current-target.elements.remote/value
       as: text
+    revocation:
+      description: Explicit immutable-artifact relay stored beside the remote.
+      the: dom.event.current-target.elements.revocation/revocation-url
+      as: text
     template:
       description: >
         Which template to seed: "wiki" for linked pages, "sheets" for
@@ -558,7 +562,8 @@ view/directory!:
                command never fires. -->
           <input type="hidden" name="name" value="Untitled">
           <input type="hidden" name="remote" value="">
-          <tonk-default-remote field="remote" auto></tonk-default-remote>
+          <input type="hidden" name="revocation" value="">
+          <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
 
           <!-- Screen 1: start chooser (navigation only, no submit) -->
           <div class="onb-screen onb-screen--start">
@@ -761,7 +766,7 @@ concept!: &fab/dock
 # /join view: the element reads the page location (the service worker can't
 # see the `#fragment`, where an open invite's seed rides) and delivers it in
 # the mount event's `detail` (a flat, URL-shaped record). The worker's
-# `JoinHandler` reassembles the URL from `search` + `hash`, claims the
+# `JoinHandler` reads the complete `href`, claims the
 # invite, and drives the overlay-only `tonk:join/status` (pending → failed,
 # or retract + durable replica on success). Lives here, not in core.yaml:
 # the join happens on the PROFILE meta branch (it records a replica), so
@@ -770,13 +775,9 @@ command!: &tonk/join
   this: tonk:join
   description: Redeem an invite URL and join its space.
   with:
-    search:
-      description: The full query string with its leading question mark, from detail.search.
-      the: dom.event.detail/search
-      as: text
-    hash:
-      description: The URL hash fragment carrying the seed, from detail.hash, page-only.
-      the: dom.event.detail/hash
+    url:
+      description: The complete invite URL, including any fragment, from detail.href.
+      the: dom.event.detail/href
       as: text
 
 # The in-flight join, overlay-only, at the fixed `tonk:join/status` entity.
@@ -849,7 +850,7 @@ view/directory!:
   model: tonk:join/status
   display: |
     <main class="join-view">
-      <tonk-page onmount=tonk:join></tonk-page>
+      <tonk-page onmount=tonk:join>
       <wa-card class="join-card">
         <div slot="header"><h1>Joining…</h1></div>
         <wa-spinner></wa-spinner>
@@ -867,6 +868,7 @@ view/directory!:
           </tonk-display>
         </div>
       </wa-card>
+      </tonk-page>
     </main>
 
 # The failure view — the default view for `tonk:join/failure`, so the join
@@ -880,6 +882,7 @@ view!: &join/failure-view
       <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
       <strong>Couldn’t join</strong>
       <p>{reason}</p>
+      <tonk-join-retry kind={kind}></tonk-join-retry>
     </wa-callout>
 
 # ============================================================
@@ -1128,7 +1131,7 @@ view!: &space-view
   model: tonk:space/chrome
   display: |
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-    <tonk-fab with="main@profile:tonk" space="{id}"></tonk-fab>
+    <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
     <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
       <tonk-title slot="no-model" text="Untitled — Tonk"></tonk-title>
       <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>

@@ -112,6 +112,7 @@ pub fn fab_html(space_did: &str) -> String {
           </tonk-share>
           <nav class="fab__menu fab__share-menu">
             <ui-member-roster space="{space}"></ui-member-roster>
+            <tonk-invitations space="{space}"></tonk-invitations>
           </nav>
         </span>
       </div>
@@ -139,7 +140,8 @@ pub fn fab_html(space_did: &str) -> String {
     <input class="wizard__template" type="radio" name="template" value="board" id="tpl-board">
     <input type="hidden" name="name" value="Untitled">
     <input type="hidden" name="remote" value="">
-    <tonk-default-remote field="remote" auto></tonk-default-remote>
+    <input type="hidden" name="revocation" value="">
+    <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
     <div class="wizard__screen wizard__screen--start">
       <div class="wizard__cards">
         <label class="wizard__card" for="wiz-template">

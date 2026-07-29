@@ -3,7 +3,8 @@ use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
     JoinRequest, JoinResponse, MembershipResponse, QueryResponse, RepositoryInfo,
-    RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse, SyncStatusResponse,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -343,10 +344,15 @@ async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, Ton
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(TonkUiError::ApiError(format!(
-            "POST {path} returned {status}: {text}"
-        )));
+        return match response.json::<ErrorBody>().await {
+            Ok(body) if body.error.code.is_some() => Err(TonkUiError::Sync {
+                code: body.error.code.expect("checked above"),
+                message: body.error.message,
+            }),
+            _ => Err(TonkUiError::ApiError(format!(
+                "POST {path} returned {status}"
+            ))),
+        };
     }
     response
         .json::<SyncResponse>()
@@ -582,11 +588,13 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
     }
 }
 
-/// Revoke one of the account's devices; returns the refreshed list.
+/// Revoke one of the account's devices and return the canonical publication
+/// acknowledgement. Refreshing the mutable device list is a separate,
+/// best-effort operation.
 pub async fn revoke_account_device(
     did: String,
     revocation: String,
-) -> Result<Vec<AccountDevice>, TonkUiError> {
+) -> Result<RevokeDeviceAcknowledgement, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))

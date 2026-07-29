@@ -14,75 +14,31 @@
 //! deployment rather than production.
 
 use ::axum::{
-    Json,
+    Extension, Json,
     body::Bytes,
     extract::{Path, State},
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
+use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{RepositoryExt as _, SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
-use dialog_varsig::{Did, Principal};
-use serde::{Deserialize, Serialize};
+use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, shortcut::ShortcutRequest};
-use tonk_schema::Invitation;
+use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept, RemoteExecution};
 use url::Url;
 
+pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
+
 use super::AppState;
-use crate::TonkWorkerError;
+use crate::{TonkWorkerError, axum::RequestOrigin};
 
 /// Name of the content branch on a repository — the branch that syncs
 /// across replicas, where roster/governance facts must live.
 const CONTENT_BRANCH: &str = "main";
-
-/// Body of `POST /api/repository/:repo/invite`.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct CreateInviteRequest {
-    /// Base URL to embed in the invite link. Falls back to
-    /// [`tonk_invite::DEFAULT_BASE_URL`] when absent. Typed as [`Url`]
-    /// so malformed values reject at deserialize time with a 400.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<Url>,
-
-    /// Recipient root DID for a targeted invite. Absent → open invite.
-    #[serde(
-        default,
-        rename = "recipientRoot",
-        alias = "audience",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub recipient_root: Option<Did>,
-}
-
-/// Response body of `POST /api/repository/:repo/invite`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CreateInviteResponse {
-    /// Only `recipient_root` can claim.
-    Scoped {
-        /// Minted invite URL.
-        url: Url,
-        /// Echo of the requested recipient root DID.
-        recipient_root: Did,
-    },
-    /// Anyone with the URL can claim.
-    Open {
-        /// Minted invite URL, with the ephemeral seed in the fragment.
-        url: Url,
-    },
-}
-
-impl CreateInviteResponse {
-    /// The minted invite URL, uniformly for both variants.
-    pub fn url(&self) -> &Url {
-        match self {
-            Self::Scoped { url, .. } | Self::Open { url } => url,
-        }
-    }
-}
 
 /// Generate an ephemeral Ed25519 signer with an extractable seed.
 ///
@@ -135,6 +91,7 @@ pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), To
 pub async fn create_invite(
     State(state): State<AppState>,
     Path(repo_name): Path<String>,
+    Extension(origin): Extension<RequestOrigin>,
     body_bytes: Bytes,
 ) -> Result<Json<CreateInviteResponse>, TonkWorkerError> {
     log!("POST /api/repository/{}/invite", repo_name);
@@ -148,11 +105,14 @@ pub async fn create_invite(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
-    let base_url = request
-        .base_url
-        .as_ref()
-        .map(Url::as_str)
-        .unwrap_or(tonk_invite::DEFAULT_BASE_URL);
+    let shorten_explicitly = request.base_url.is_some();
+    let base_url = match request.base_url.clone() {
+        Some(base_url) => base_url,
+        None => origin
+            .url()
+            .join("join")
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?,
+    };
 
     let tonk = state.read().await;
 
@@ -183,8 +143,8 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
 
-    let remote_url = match resolve_remote_url(&tonk, &repository).await? {
-        RemoteRequirement::Ready(url) => url,
+    let remote = match resolve_remote_url(&tonk, &repository).await? {
+        RemoteRequirement::Ready(remote) => remote,
         RemoteRequirement::Refused(reason) => {
             return Err(TonkWorkerError::Conflict(format!(
                 "cannot mint an invite for '{repo_name}': {} ({})",
@@ -194,19 +154,10 @@ pub async fn create_invite(
         }
     };
 
-    let revocation_url = if remote_url
-        .host_str()
-        .is_some_and(|host| host.starts_with("staging."))
-    {
-        Url::parse("https://accounts-staging.tonk.xyz/revocations")
-    } else {
-        Url::parse("https://accounts.tonk.xyz/revocations")
-    }
-    .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    let invite = Invite::new(delegation.into_chain(), audience, Some(remote_url))
+    let invite = Invite::new(delegation.into_chain(), audience, Some(remote.access_url))
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?
-        .with_revocation_url(Some(revocation_url));
+        .with_revocation_url(Some(remote.revocation_url));
 
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so
@@ -223,18 +174,32 @@ pub async fn create_invite(
     // it pinned at a stale head and the next pull's CAS fails forever.
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
+    let kind = match &invite.audience {
+        InviteAudience::Open { .. } => "open",
+        InviteAudience::Scoped => "scoped",
+    };
+    let execution = InvitationExecution::new(
+        &invitation,
+        kind,
+        invite
+            .revocation_url
+            .as_ref()
+            .expect("shareable invites always carry an explicit relay")
+            .as_str(),
+    );
     tonk.reactor
         .repository(&repo_name)
         .branch(CONTENT_BRANCH)
         .transaction()
         .assert(invitation)
+        .assert(execution)
         .commit()
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
     let url_str = invite
-        .to_url(base_url)
+        .to_url(base_url.as_str())
         .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
 
     // Shorten against the link's own origin — the only origin that can
@@ -243,7 +208,7 @@ pub async fn create_invite(
     // functional, so a failed PUT degrades to it rather than failing
     // the mint. The hardcoded default base is never PUT to, keeping
     // tests and offline mints network-free.
-    let url_str = if request.base_url.is_some() {
+    let url_str = if shorten_explicitly {
         match shorten(&url_str).await {
             Ok(short) => short,
             Err(e) => {
@@ -364,6 +329,8 @@ pub(crate) enum RemoteRefusal {
     /// address is not a UCAN endpoint. An invite URL has no way to express
     /// either, so there is nothing to offer.
     UnshareableRemote,
+    /// A UCAN remote exists, but no explicit revocation relay was stored.
+    MissingRevocationRelay,
 }
 
 impl RemoteRefusal {
@@ -372,6 +339,7 @@ impl RemoteRefusal {
         match self {
             Self::NotSynced => "not-synced",
             Self::UnshareableRemote => "unshareable-remote",
+            Self::MissingRevocationRelay => "missing-revocation-relay",
         }
     }
 
@@ -380,15 +348,27 @@ impl RemoteRefusal {
         match self {
             Self::NotSynced => "This spot only exists on this device.",
             Self::UnshareableRemote => "This spot's sync server can't be shared.",
+            Self::MissingRevocationRelay => {
+                "This spot's sync server needs an explicit revocation relay."
+            }
         }
     }
+}
+
+/// Explicit operational endpoints attached to one configured remote.
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteExecutionUrls {
+    /// UCAN access-service endpoint advertised in the invite.
+    pub(crate) access_url: Url,
+    /// Immutable-artifact relay advertised in the invite.
+    pub(crate) revocation_url: Url,
 }
 
 /// The outcome of probing a repository for a shareable sync endpoint.
 #[derive(Debug, Clone)]
 pub(crate) enum RemoteRequirement {
     /// A UCAN endpoint an invite can advertise.
-    Ready(Url),
+    Ready(RemoteExecutionUrls),
     /// No such endpoint. See [`RemoteRefusal`].
     Refused(RemoteRefusal),
 }
@@ -456,17 +436,82 @@ where
             ))
         })?;
 
-    match remote.address().site() {
-        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint())
-            .map(RemoteRequirement::Ready)
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!(
-                    "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
-                    ucan.endpoint()
-                ))
-            }),
-        _ => Ok(RemoteRequirement::Refused(RemoteRefusal::UnshareableRemote)),
-    }
+    let access_url = match remote.address().site() {
+        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
+                ucan.endpoint()
+            ))
+        })?,
+        _ => return Ok(RemoteRequirement::Refused(RemoteRefusal::UnshareableRemote)),
+    };
+
+    let meta = repository
+        .branch("meta")
+        .open()
+        .perform(operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to open meta while resolving remote execution: {error}"
+            ))
+        })?;
+    let remotes: Vec<RemoteConcept> = meta
+        .query()
+        .select(Query::<RemoteConcept> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to query remote metadata: {error:?}"))
+        })?;
+    let Some(remote_entity) = remotes
+        .into_iter()
+        .find(|concept| concept.name.0 == remote_name)
+        .map(|concept| concept.this)
+    else {
+        return Ok(RemoteRequirement::Refused(
+            RemoteRefusal::MissingRevocationRelay,
+        ));
+    };
+    let executions: Vec<RemoteExecution> = meta
+        .query()
+        .select(Query::<RemoteExecution> {
+            this: Term::var("this"),
+            revocation_url: Term::var("revocation_url"),
+        })
+        .perform(operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to query remote execution metadata: {error:?}"
+            ))
+        })?;
+    let Some(raw_relay) = executions
+        .into_iter()
+        .find(|execution| execution.this == remote_entity)
+        .map(|execution| execution.revocation_url.0)
+    else {
+        return Ok(RemoteRequirement::Refused(
+            RemoteRefusal::MissingRevocationRelay,
+        ));
+    };
+    let revocation_url = Url::parse(&raw_relay).map_err(|error| {
+        TonkWorkerError::Internal(format!(
+            "remote '{remote_name}' has an invalid revocation relay: {error}"
+        ))
+    })?;
+    Ok(RemoteRequirement::Ready(RemoteExecutionUrls {
+        access_url,
+        revocation_url,
+    }))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -483,6 +528,7 @@ mod tests {
     use tonk_schema::Invitation;
     use tonk_schema::prelude::DidExt as _;
 
+    use crate::axum::RequestOrigin;
     use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
     use crate::router::{CreateInviteResponse, api_router_with_state};
 
@@ -506,6 +552,9 @@ mod tests {
                     .uri(format!("/api/repository/{key}/invite"))
                     .method("POST")
                     .header("content-type", "application/json")
+                    .extension(
+                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
+                    )
                     .body(Body::from("{}"))
                     .unwrap(),
             )
@@ -525,11 +574,14 @@ mod tests {
         assert_eq!(invitations.len(), 1, "exactly the minted invitation");
         assert_eq!(invitations[0].this, expected.this);
 
-        let profile_entity = {
+        let root_entity = {
             let guard = state.read().await;
-            guard.profile.did().this()
+            crate::router::identity::root_did(&guard)
+                .await
+                .expect("test profile has a root")
+                .this()
         };
-        assert_eq!(invitations[0].inviter.0, profile_entity);
+        assert_eq!(invitations[0].inviter.0, root_entity);
     }
 
     /// A spot created without a remote refuses, and says which case it was.
@@ -576,6 +628,10 @@ mod tests {
             RemoteRefusal::UnshareableRemote.detail(),
             "This spot's sync server can't be shared."
         );
+        assert_eq!(
+            RemoteRefusal::MissingRevocationRelay.code(),
+            "missing-revocation-relay"
+        );
     }
 
     /// The HTTP mint route refuses a local-only repository rather than
@@ -591,6 +647,9 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/repository/{key}/invite"))
+                    .extension(
+                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -598,5 +657,57 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[dialog_common::test]
+    async fn it_uses_the_request_origin_and_rejects_unknown_fields() {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-request-origin").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/invite"))
+                    .header("content-type", "application/json")
+                    .extension(
+                        RequestOrigin::parse(
+                            "https://staging.example.test/source?ignored=yes#ignored",
+                        )
+                        .expect("valid origin"),
+                    )
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            minted.url().origin().ascii_serialization(),
+            "https://staging.example.test"
+        );
+        assert_eq!(minted.url().path(), "/join");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/invite"))
+                    .header("content-type", "application/json")
+                    .extension(
+                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
+                    )
+                    .body(Body::from(r#"{"baseURL":"https://wrong.example/join"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

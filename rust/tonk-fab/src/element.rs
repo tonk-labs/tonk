@@ -36,9 +36,9 @@
 
 use crate::logic::{
     DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
-    dock_claim_json, dock_from_conclusions, is_compact, mirrored, nearest_dock, pause_claim_json,
-    profile_rename_claim_json, ratchet_min_width, strip_at_end, strip_page_target,
-    telescope_delay_ms, telescope_settle_ms,
+    dock_claim_json, dock_from_conclusions, is_compact, membership_endpoint, mirrored,
+    nearest_dock, pause_claim_json, profile_rename_claim_json, ratchet_min_width, strip_at_end,
+    strip_page_target, telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -122,7 +122,7 @@ impl CustomElement for TonkFab {
     }
 
     /// Author the FAB's own DOM. The `space` attribute is stamped by the
-    /// mounting view (`<tonk-fab with="main@profile:tonk" space="{id}">`) and
+    /// mounting view (`<tonk-fab with="main@profile:tonk" space={id}>`) and
     /// is already resolved by the time `inject_children` runs — per the
     /// `custom-elements` crate, this is deferred to (and runs before) the
     /// first `connectedCallback`, i.e. after HTML parsing has set the
@@ -210,10 +210,12 @@ fn attach_membership(host: &HtmlElement) {
     let Some(space) = host.get_attribute("space") else {
         return;
     };
+    let Ok(endpoint) = membership_endpoint(&space) else {
+        return;
+    };
     let Ok(Some(button)) = host.query_selector(".fab__join") else {
         return;
     };
-    let endpoint = format!("/api/repository/{space}/membership");
     let check_button = button.clone();
     let check_endpoint = endpoint.clone();
     spawn_local(async move {

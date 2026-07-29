@@ -20,6 +20,8 @@ mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod join_retry;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod origin;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod page;
@@ -48,4 +50,5 @@ pub fn register() {
     ui_dropdown::register();
     default_remote::register();
     editable::register();
+    join_retry::register();
 }

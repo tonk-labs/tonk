@@ -7,6 +7,15 @@ pub enum TonkUiError {
     #[error("Error from local API: {0}")]
     ApiError(String),
 
+    /// Structured synchronization failure returned by the worker.
+    #[error("{message}")]
+    Sync {
+        /// Stable routing code such as `CREDENTIAL_REVOKED`.
+        code: String,
+        /// Fixed caller-safe message.
+        message: String,
+    },
+
     /// Structured analyzer error returned by the worker —
     /// preserved so the UI can route it to the editor as a
     /// source-positioned diagnostic instead of a banner.

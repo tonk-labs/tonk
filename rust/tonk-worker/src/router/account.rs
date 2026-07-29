@@ -199,23 +199,15 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn tests_request_for(
-    root_seed: &[u8; 32],
-    audience: dialog_varsig::Did,
+pub(crate) async fn tests_matching_request(
+    state: &crate::worker::TonkState,
 ) -> tonk_worker_api::AccountLinkRequest {
-    use dialog_varsig::Principal;
-    let root = tonk_identity::derive::derive_root_signer(root_seed)
-        .await
-        .unwrap();
-    let root_did = root.did().to_string();
-    let delegation = tonk_identity::delegation::mint_device_delegation(root, &audience)
-        .await
-        .unwrap();
+    let root = super::identity::local_root(state).await.unwrap();
     tonk_worker_api::AccountLinkRequest {
         provider: "https://accounts.tonk.xyz".into(),
-        root_did,
-        credential_id: "test-credential".into(),
-        delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
+        root_did: root.root_did.to_string(),
+        credential_id: root.credential_id,
+        delegation_hex: hex::encode(root.bytes),
     }
 }
 

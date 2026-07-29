@@ -1,56 +1,107 @@
 //! Top-document gate for durable operations that require a local root.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 
-use js_sys::{Function, Promise, Reflect};
-use serde::Deserialize;
-use tonk_worker_api::{IdentityIntent, IdentityRequired, RootStatus};
+use tonk_worker_api::{IdentityIntent, IdentityRequired, JoinResponse, RootStatus};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Element, Event, HtmlButtonElement, MessageEvent};
+use wasm_bindgen_futures::spawn_local;
+use web_sys::{Element, Event, HtmlButtonElement, HtmlElement, MessageEvent};
+
+use crate::identity_bridge::{CreateRootInput, RootOutput, create_root, evaluate_root};
+
+const STYLE_ID: &str = "tonk-identity-gate-styles";
 
 thread_local! {
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
-    static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static GATE_STATE: RefCell<GateState> = const { RefCell::new(GateState {
+        active: false,
+        pending: VecDeque::new(),
+    }) };
+    static PREVIOUS_FOCUS: RefCell<Option<Element>> = const { RefCell::new(None) };
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RootOutput {
-    credential_id: String,
-    delegation_hex: String,
+struct GateState {
+    active: bool,
+    pending: VecDeque<IdentityIntent>,
 }
 
-fn show_concurrent_warning() {
-    if let Some(document) = web_sys::window().and_then(|window| window.document())
-        && let Some(status) = document.get_element_by_id("tonk-identity-status")
-    {
-        status.set_text_content(Some(
-            "Finish the current identity request before starting another.",
-        ));
+#[derive(Clone, Copy)]
+enum RootMethod {
+    Create,
+    Evaluate,
+}
+
+fn ensure_stylesheet() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    if document.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
+    style.set_id(STYLE_ID);
+    style.set_text_content(Some(include_str!("identity_gate.css")));
+    if let Some(head) = document.head() {
+        let _ = head.append_child(&style);
     }
 }
 
-async fn identity_call(method: &str, device_did: &str) -> Result<RootOutput, String> {
-    let window = web_sys::window().ok_or_else(|| "window is unavailable".to_string())?;
-    let identity = Reflect::get(&window, &"tonkIdentity".into())
-        .map_err(|_| "identity ceremonies are unavailable".to_string())?;
-    let function: Function = Reflect::get(&identity, &method.into())
-        .map_err(|_| format!("identity ceremony {method} is unavailable"))?
-        .dyn_into()
-        .map_err(|_| format!("identity ceremony {method} is not callable"))?;
-    let input = serde_wasm_bindgen::to_value(&serde_json::json!({ "deviceDid": device_did }))
-        .map_err(|error| error.to_string())?;
-    let promise: Promise = function
-        .call1(&identity, &input)
-        .map_err(|error| format!("identity ceremony failed: {error:?}"))?
-        .dyn_into()
-        .map_err(|_| "identity ceremony did not return a promise".to_string())?;
-    let value = JsFuture::from(promise)
-        .await
-        .map_err(|error| format!("identity ceremony failed: {error:?}"))?;
-    serde_wasm_bindgen::from_value(value).map_err(|error| error.to_string())
+fn isolate_gate(modal: &Element, primary: &HtmlButtonElement) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    PREVIOUS_FOCUS.with(|focus| *focus.borrow_mut() = document.active_element());
+    if let Some(body) = document.body() {
+        let children = body.children();
+        for index in 0..children.length() {
+            let Some(child) = children.item(index) else {
+                continue;
+            };
+            if child.is_same_node(Some(modal)) || child.has_attribute("inert") {
+                continue;
+            }
+            let _ = child.set_attribute("inert", "");
+            let _ = child.set_attribute("data-tonk-gate-inert", "");
+        }
+    }
+    let _ = primary.focus();
+}
+
+fn restore_document() {
+    if let Some(document) = web_sys::window().and_then(|window| window.document())
+        && let Some(body) = document.body()
+    {
+        let children = body.children();
+        for index in 0..children.length() {
+            let Some(child) = children.item(index) else {
+                continue;
+            };
+            if child.has_attribute("data-tonk-gate-inert") {
+                let _ = child.remove_attribute("inert");
+                let _ = child.remove_attribute("data-tonk-gate-inert");
+            }
+        }
+    }
+    PREVIOUS_FOCUS.with(|focus| {
+        if let Some(element) = focus.borrow_mut().take()
+            && let Some(element) = element.dyn_ref::<HtmlElement>()
+        {
+            let _ = element.focus();
+        }
+    });
+}
+
+async fn request_root(method: RootMethod, device_did: String) -> Result<RootOutput, String> {
+    let input = CreateRootInput { device_did };
+    match method {
+        RootMethod::Create => create_root(input).await,
+        RootMethod::Evaluate => evaluate_root(input).await,
+    }
+    .map_err(|error| error.to_string())
 }
 
 async fn replay(intent: IdentityIntent) -> Result<(), String> {
@@ -62,6 +113,7 @@ async fn replay(intent: IdentityIntent) -> Result<(), String> {
         IdentityIntent::CreateSpace {
             name,
             remote,
+            revocation_url,
             template,
         } => {
             let response = client
@@ -69,6 +121,7 @@ async fn replay(intent: IdentityIntent) -> Result<(), String> {
                 .json(&tonk_worker_api::CreateSpaceRequest {
                     name,
                     remote,
+                    revocation_url,
                     template,
                 })
                 .send()
@@ -89,18 +142,66 @@ async fn replay(intent: IdentityIntent) -> Result<(), String> {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            if response.status().is_success() {
-                Ok(())
-            } else {
-                Err(format!("operation failed with {}", response.status()))
+            if !response.status().is_success() {
+                return Err(format!("operation failed with {}", response.status()));
             }
+            let joined: JoinResponse = response.json().await.map_err(|error| error.to_string())?;
+            let repository = match joined {
+                JoinResponse::Joined { repository } | JoinResponse::Renewed { repository } => {
+                    repository
+                }
+            };
+            tonk_host::navigate_to(&format!("/space/{}", repository.name));
+            Ok(())
         }
     }
 }
 
 fn finish(modal: &Element) {
     modal.remove();
-    ACTIVE.with(|active| active.set(false));
+    restore_document();
+    release_gate();
+    pump();
+}
+
+fn queue_intent(intent: IdentityIntent) {
+    GATE_STATE.with(|state| state.borrow_mut().pending.push_back(intent));
+}
+
+fn take_next_intent() -> Option<IdentityIntent> {
+    GATE_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.active {
+            return None;
+        }
+        let intent = state.pending.pop_front()?;
+        state.active = true;
+        Some(intent)
+    })
+}
+
+fn release_gate() {
+    GATE_STATE.with(|state| state.borrow_mut().active = false);
+}
+
+fn enqueue(intent: IdentityIntent) {
+    queue_intent(intent);
+    pump();
+}
+
+fn pump() {
+    let Some(intent) = take_next_intent() else {
+        return;
+    };
+    spawn_local(async move {
+        if let Err(error) = show(intent).await {
+            release_gate();
+            if let Some(window) = web_sys::window() {
+                let _ = window.alert_with_message(&error);
+            }
+            pump();
+        }
+    });
 }
 
 fn set_status(modal: &Element, message: &str) {
@@ -109,18 +210,28 @@ fn set_status(modal: &Element, message: &str) {
     }
 }
 
+fn begin_action(modal: &Element) -> bool {
+    if modal.has_attribute("data-running") {
+        return false;
+    }
+    modal.set_attribute("data-running", "").is_ok()
+}
+
 fn bind_link_action(
     button: HtmlButtonElement,
-    method: &'static str,
+    method: RootMethod,
     device_did: String,
     modal: Element,
 ) {
     let closure = Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
+        if !begin_action(&modal) {
+            return;
+        }
         let modal = modal.clone();
         let device_did = device_did.clone();
         set_status(&modal, "Waiting for your passkey…");
         spawn_local(async move {
-            match identity_call(method, &device_did).await {
+            match request_root(method, device_did).await {
                 Ok(output) => {
                     let response = serde_json::json!({
                         "credentialId": output.credential_id,
@@ -134,6 +245,7 @@ fn bind_link_action(
                 }
                 Err(error) => set_status(&modal, &error),
             }
+            let _ = modal.remove_attribute("data-running");
         });
     });
     let _ = button.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
@@ -195,36 +307,55 @@ fn show_cli_link() -> Result<(), String> {
         .ok_or_else(|| "existing button is missing".to_string())?
         .dyn_into()
         .map_err(|_| "existing button is invalid".to_string())?;
-    bind_link_action(create, "createRoot", device_did.clone(), modal.clone());
-    bind_link_action(existing, "evaluateRoot", device_did, modal);
+    isolate_gate(&modal, &create);
+    bind_link_action(
+        create,
+        RootMethod::Create,
+        device_did.clone(),
+        modal.clone(),
+    );
+    bind_link_action(existing, RootMethod::Evaluate, device_did, modal);
     Ok(())
 }
 
 fn bind_action(
     button: HtmlButtonElement,
-    method: &'static str,
+    method: RootMethod,
     device_did: String,
     intent: IdentityIntent,
     modal: Element,
 ) {
     let closure = Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
+        if !begin_action(&modal) {
+            return;
+        }
         let modal = modal.clone();
         let device_did = device_did.clone();
         let intent = intent.clone();
         set_status(&modal, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let output = identity_call(method, &device_did).await?;
+                let output = request_root(method, device_did).await?;
+                if !modal.is_connected() {
+                    return Ok(());
+                }
                 crate::api::save_root(output.credential_id, output.delegation_hex)
                     .await
                     .map_err(|error| error.to_string())?;
+                if !modal.is_connected() {
+                    return Ok(());
+                }
                 set_status(&modal, "Continuing…");
                 replay(intent).await
             }
             .await;
             match result {
-                Ok(()) => finish(&modal),
-                Err(error) => set_status(&modal, &error),
+                Ok(()) if modal.is_connected() => finish(&modal),
+                Ok(()) => {}
+                Err(error) => {
+                    let _ = modal.remove_attribute("data-running");
+                    set_status(&modal, &error);
+                }
             }
         });
     });
@@ -251,13 +382,20 @@ async fn show(intent: IdentityIntent) -> Result<(), String> {
     modal
         .set_attribute("aria-labelledby", "tonk-identity-title")
         .map_err(js_string)?;
+    modal
+        .set_attribute(
+            "aria-describedby",
+            "tonk-identity-description tonk-identity-status",
+        )
+        .map_err(js_string)?;
     modal.set_inner_html(
         r#"<div class="tonk-identity-card">
 <h2 id="tonk-identity-title">Create your local identity</h2>
-<p>This durable action needs a passkey root stored on this device.</p>
+<p id="tonk-identity-description">This durable action needs a passkey root stored on this device.</p>
 <div class="tonk-identity-actions">
 <button id="tonk-create-root" type="button">Create a new passkey</button>
 <button id="tonk-use-root" type="button">Use an existing passkey</button>
+<button id="tonk-cancel-root" type="button">Cancel</button>
 </div>
 <p id="tonk-identity-status" role="status" aria-live="polite"></p>
 </div>"#,
@@ -278,14 +416,28 @@ async fn show(intent: IdentityIntent) -> Result<(), String> {
         .ok_or_else(|| "existing button is missing".to_string())?
         .dyn_into()
         .map_err(|_| "existing button is invalid".to_string())?;
+    let cancel: HtmlButtonElement = modal
+        .query_selector("#tonk-cancel-root")
+        .map_err(js_string)?
+        .ok_or_else(|| "cancel button is missing".to_string())?
+        .dyn_into()
+        .map_err(|_| "cancel button is invalid".to_string())?;
+    let cancel_modal = modal.clone();
+    let cancel_action = Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
+        finish(&cancel_modal);
+    });
+    let _ =
+        cancel.add_event_listener_with_callback("click", cancel_action.as_ref().unchecked_ref());
+    cancel_action.forget();
+    isolate_gate(&modal, &create);
     bind_action(
         create,
-        "createRoot",
+        RootMethod::Create,
         device_did.clone(),
         intent.clone(),
         modal.clone(),
     );
-    bind_action(existing, "evaluateRoot", device_did, intent, modal);
+    bind_action(existing, RootMethod::Evaluate, device_did, intent, modal);
     Ok(())
 }
 
@@ -298,6 +450,7 @@ pub fn install() {
     if INSTALLED.with(|installed| installed.replace(true)) {
         return;
     }
+    ensure_stylesheet();
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -315,18 +468,7 @@ pub fn install() {
         if message.message_type != "identity-required" {
             return;
         }
-        if ACTIVE.with(|active| active.replace(true)) {
-            show_concurrent_warning();
-            return;
-        }
-        spawn_local(async move {
-            if let Err(error) = show(message.intent).await {
-                ACTIVE.with(|active| active.set(false));
-                if let Some(window) = web_sys::window() {
-                    let _ = window.alert_with_message(&error);
-                }
-            }
-        });
+        enqueue(message.intent);
     });
     let _ = service_worker
         .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
@@ -340,16 +482,93 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[dialog_common::test]
-    async fn it_mounts_create_and_use_existing_actions() {
-        ACTIVE.with(|active| active.set(true));
+    async fn it_processes_identity_intents_in_fifo_order() {
+        GATE_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.active = false;
+            state.pending.clear();
+        });
+        queue_intent(IdentityIntent::CreateSpace {
+            name: "first".into(),
+            remote: None,
+            revocation_url: None,
+            template: None,
+        });
+        queue_intent(IdentityIntent::DurableJoin {
+            url: "https://example.test/join#second".into(),
+        });
+
+        let Some(IdentityIntent::CreateSpace { name, .. }) = take_next_intent() else {
+            panic!("first queued intent should create a space");
+        };
+        assert_eq!(name, "first");
+        assert!(
+            take_next_intent().is_none(),
+            "only one prompt may be active"
+        );
+        release_gate();
+        let Some(IdentityIntent::DurableJoin { url }) = take_next_intent() else {
+            panic!("second queued intent should be the join");
+        };
+        assert!(url.ends_with("#second"));
+        release_gate();
+    }
+
+    #[dialog_common::test]
+    async fn it_isolates_focus_and_restores_the_document_on_cancel() {
         let document = web_sys::window().unwrap().document().unwrap();
+        let sibling = document.create_element("button").unwrap();
+        sibling.set_id("tonk-gate-focus-before");
+        document.body().unwrap().append_child(&sibling).unwrap();
+        sibling.dyn_ref::<HtmlElement>().unwrap().focus().unwrap();
+
         let modal = document.create_element("section").unwrap();
         modal.set_inner_html(
             r#"<button id="tonk-create-root">Create a new passkey</button>
 <button id="tonk-use-root">Use an existing passkey</button>"#,
         );
-        assert!(modal.query_selector("#tonk-create-root").unwrap().is_some());
-        assert!(modal.query_selector("#tonk-use-root").unwrap().is_some());
-        ACTIVE.with(|active| active.set(false));
+        document.body().unwrap().append_child(&modal).unwrap();
+        let primary: HtmlButtonElement = modal
+            .query_selector("#tonk-create-root")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+
+        isolate_gate(&modal, &primary);
+        assert!(sibling.has_attribute("inert"));
+        assert!(
+            document
+                .active_element()
+                .is_some_and(|element| element.is_same_node(Some(primary.as_ref()))),
+            "the primary action receives focus"
+        );
+
+        GATE_STATE.with(|state| state.borrow_mut().active = true);
+        finish(&modal);
+        assert!(!modal.is_connected());
+        assert!(!sibling.has_attribute("inert"));
+        assert!(
+            document
+                .active_element()
+                .is_some_and(|element| element.is_same_node(Some(&sibling))),
+            "focus returns to the previously active control"
+        );
+        GATE_STATE.with(|state| assert!(!state.borrow().active));
+        sibling.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_guards_replay_and_allows_an_explicit_retry() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let modal = document.create_element("section").unwrap();
+
+        assert!(begin_action(&modal));
+        assert!(!begin_action(&modal), "a second activation is ignored");
+        modal.remove_attribute("data-running").unwrap();
+        assert!(
+            begin_action(&modal),
+            "failure may re-enable an explicit retry"
+        );
     }
 }

@@ -12,12 +12,14 @@ use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_repository::Revision;
-use serde::{Deserialize, Serialize};
+use dialog_repository::{PublishError, PullError, Revision};
+use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::{SyncState, classify};
+use tonk_worker_api::SyncDisposition;
+pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
 
 use super::{AppState, BranchConfiguration};
 use crate::TonkWorkerError;
@@ -276,15 +278,85 @@ async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, bra
 /// of commits.
 const SYNC_RETRY_LIMIT: usize = 4;
 
-/// Whether `error` is the "branch head moved under us" version mismatch a pull
-/// raises (since `tonk-2026-06-21`) when a commit advanced the head while it
-/// merged — the signal to refresh and retry rather than fail. Matched on the
-/// rendered error: the mismatch is nested several error types deep
-/// (`ReactorError::Pull(PullError::Publish(PublishError::VersionMismatch))`),
-/// and the rendered chain carries the distinctive "Version mismatch" text from
-/// the leaf without the worker importing the whole dialog error hierarchy.
+/// Whether `error` is the typed "branch head moved under us" mismatch raised
+/// when a concurrent commit advances the local head during pull.
 fn is_head_moved(error: &crate::reactor::ReactorError) -> bool {
-    error.to_string().contains("Version mismatch")
+    matches!(
+        error,
+        crate::reactor::ReactorError::Pull(PullError::Publish(
+            PublishError::VersionMismatch { .. }
+        ))
+    )
+}
+
+fn classified_service_failure(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<TonkWorkerError> {
+    let response = dialog_effects::service::find_service_response(error)?;
+    Some(match response.code.as_deref() {
+        Some("CREDENTIAL_REVOKED" | "DEVICE_REVOKED") => TonkWorkerError::Upstream {
+            status: 403,
+            code: Some("CREDENTIAL_REVOKED".to_string()),
+            message: "remote access has been revoked".to_string(),
+        },
+        Some("REVOCATION_UNAVAILABLE") => TonkWorkerError::Upstream {
+            status: 503,
+            code: Some("SYNC_UNAVAILABLE".to_string()),
+            message: "synchronization is temporarily unavailable".to_string(),
+        },
+        _ if response.status == 503 => TonkWorkerError::Upstream {
+            status: 503,
+            code: Some("SYNC_UNAVAILABLE".to_string()),
+            message: "synchronization is temporarily unavailable".to_string(),
+        },
+        _ => TonkWorkerError::Upstream {
+            status: 502,
+            code: Some("UPSTREAM_ERROR".to_string()),
+            message: "the upstream service could not complete synchronization".to_string(),
+        },
+    })
+}
+
+fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
+    if is_head_moved(error)
+        || matches!(
+            error,
+            crate::reactor::ReactorError::Push(dialog_repository::PushError::NonFastForward { .. })
+        )
+    {
+        return TonkWorkerError::Upstream {
+            status: 409,
+            code: Some("SYNC_CONFLICT".to_string()),
+            message: "synchronization conflicted with another update".to_string(),
+        };
+    }
+    if let Some(error) = classified_service_failure(error) {
+        return error;
+    }
+    TonkWorkerError::Upstream {
+        status: 503,
+        code: Some("SYNC_UNAVAILABLE".to_string()),
+        message: "synchronization is temporarily unavailable".to_string(),
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_failure_status(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    error: &TonkWorkerError,
+) {
+    let status = match error {
+        TonkWorkerError::Upstream {
+            code: Some(code), ..
+        } if code == "CREDENTIAL_REVOKED" => tonk_schema::Replica::revoked_status(),
+        TonkWorkerError::Upstream {
+            code: Some(code), ..
+        } if code == "SYNC_CONFLICT" => tonk_schema::Replica::conflict_status(),
+        _ => tonk_schema::Replica::unavailable_status(),
+    };
+    publish_sync_status_attr(tonk, repo, branch, status).await;
 }
 
 /// Branch names in `branches` that have an upstream, sorted for a
@@ -384,18 +456,9 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
             repo: repo.to_string(),
             branch: branch.clone(),
         };
-        // The `/sync` route reports pull/push failures as a 200 with
-        // `success: false` (a non-fast-forward push after divergence,
-        // a fetch failure), so a returned `Ok` is not proof the sync
-        // landed — inspect `success` too.
+        // HTTP success now means reconciliation completed or was deliberately
+        // skipped; operational failures are typed route errors.
         match sync(State(state.clone()), Path(params)).await {
-            Ok(Json(response)) if !response.success => {
-                let detail = response
-                    .error
-                    .unwrap_or_else(|| "unknown error".to_string());
-                log!("background sync of {repo}/{branch} did not complete: {detail}");
-                failed = true;
-            }
             Ok(_) => {}
             Err(e) => {
                 log!("background sync of {repo}/{branch} failed: {e}");
@@ -420,25 +483,6 @@ pub struct SyncPath {
     pub repo: String,
     /// The branch name.
     pub branch: String,
-}
-
-/// Response for sync operations.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SyncResponse {
-    /// Whether the sync operation succeeded.
-    pub success: bool,
-    /// Local branch revision *before* the sync ran. `None` when
-    /// the branch had no commits at the start.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub before: Option<Revision>,
-    /// Local branch revision *after* the sync. `None` when the
-    /// branch still has no commits, or when the operation failed
-    /// before producing one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<Revision>,
-    /// Error message if sync failed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 /// Pull changes from the upstream remote.
@@ -478,6 +522,7 @@ pub async fn pull(
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
+                disposition: SyncDisposition::Completed,
                 before,
                 after,
                 error: None,
@@ -485,12 +530,10 @@ pub async fn pull(
         }
         Err(e) => {
             log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
-            Ok(Json(SyncResponse {
-                success: false,
-                before: before.clone(),
-                after: before,
-                error: Some(e.to_string()),
-            }))
+            let error = sync_failure(&e);
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+            Err(error)
         }
     }
 }
@@ -533,6 +576,7 @@ pub async fn push(
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
+                disposition: SyncDisposition::Completed,
                 before: before.clone(),
                 after,
                 error: None,
@@ -540,28 +584,12 @@ pub async fn push(
         }
         Err(e) => {
             log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
-            Ok(Json(SyncResponse {
-                success: false,
-                before: before.clone(),
-                after: before,
-                error: Some(e.to_string()),
-            }))
+            let error = sync_failure(&e);
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+            Err(error)
         }
     }
-}
-
-/// Sync-state of a branch relative to its upstream.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SyncStatusResponse {
-    /// How the local head relates to the upstream head.
-    pub state: SyncState,
-    /// Local branch revision, or `null` if it has no commits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local: Option<Revision>,
-    /// Upstream branch revision as last fetched, or `null` if the
-    /// upstream has no commits (or none is configured).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote: Option<Revision>,
 }
 
 /// Classify a branch against its upstream without mutating local
@@ -640,17 +668,14 @@ pub async fn sync_status(
     let remote = match handle.fetch().perform(&tonk_state.operator).await {
         Ok(remote) => remote,
         Err(e) => {
-            // A remote is configured but unreachable — publish `offline` so
-            // the chip reflects it (distinct from `local`, no remote at all).
+            let error = classified_service_failure(&e).unwrap_or(TonkWorkerError::Upstream {
+                status: 503,
+                code: Some("SYNC_UNAVAILABLE".to_string()),
+                message: "synchronization is temporarily unavailable".to_string(),
+            });
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_sync_status_attr(
-                &tonk_state,
-                &params.repo,
-                &params.branch,
-                tonk_schema::Replica::offline_status(),
-            )
-            .await;
-            return Err(TonkWorkerError::Internal(e.to_string()));
+            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+            return Err(error);
         }
     };
 
@@ -713,6 +738,7 @@ pub async fn sync(
         log!("sync of {}/{} skipped: offline", params.repo, params.branch);
         return Ok(Json(SyncResponse {
             success: true,
+            disposition: SyncDisposition::Offline,
             before: None,
             after: None,
             error: None,
@@ -734,6 +760,7 @@ pub async fn sync(
             log!("sync of {}/{} skipped: paused", params.repo, params.branch);
             return Ok(Json(SyncResponse {
                 success: true,
+                disposition: SyncDisposition::Paused,
                 before: None,
                 after: None,
                 error: None,
@@ -786,7 +813,7 @@ pub async fn sync(
 
     // Pull with bounded refresh-and-retry on a head that moved under us.
     let mut after_pull = None;
-    let mut pull_error = None;
+    let mut pull_error: Option<TonkWorkerError> = None;
     for attempt in 0..SYNC_RETRY_LIMIT {
         match tonk_state
             .reactor
@@ -813,24 +840,23 @@ pub async fn sync(
                 );
                 if let Err(refresh_err) = session.handle().refresh(&tonk_state.operator).await {
                     log!("refresh after raced pull failed: {refresh_err:?}");
-                    pull_error = Some(refresh_err.to_string());
+                    pull_error = Some(TonkWorkerError::Internal(
+                        "failed to refresh local branch after a concurrent update".to_string(),
+                    ));
                     break;
                 }
             }
             Err(e) => {
                 log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
-                pull_error = Some(format!("Pull failed: {e}"));
+                pull_error = Some(sync_failure(&e));
                 break;
             }
         }
     }
     if let Some(error) = pull_error {
-        return Ok(Json(SyncResponse {
-            success: false,
-            before: before.clone(),
-            after: before,
-            error: Some(error),
-        }));
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+        return Err(error);
     }
     let after_pull = after_pull.flatten();
 
@@ -855,6 +881,7 @@ pub async fn sync(
             publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
             Ok(Json(SyncResponse {
                 success: true,
+                disposition: SyncDisposition::Completed,
                 before,
                 after,
                 error: None,
@@ -866,12 +893,11 @@ pub async fn sync(
             // `pending`; classify so the chip reflects reality.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
-            Ok(Json(SyncResponse {
-                success: false,
-                before,
-                after: after_pull,
-                error: Some(format!("Push failed: {e}")),
-            }))
+            let _ = (before, after_pull);
+            let error = sync_failure(&e);
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+            Err(error)
         }
     }
 }
@@ -1184,6 +1210,44 @@ mod tests {
     fn it_returns_empty_when_no_branch_has_an_upstream() {
         let branches = HashMap::from([("main".to_string(), without_upstream())]);
         assert!(branches_to_sync(&branches).is_empty());
+    }
+
+    fn service_failure(status: u16, code: &str) -> crate::reactor::ReactorError {
+        crate::reactor::ReactorError::Pull(PullError::Publish(PublishError::ServiceResponse(
+            dialog_effects::service::ServiceResponseError::new(
+                status,
+                Some(code.to_string()),
+                "untrusted detail",
+            ),
+        )))
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_new_and_legacy_revocation_codes_without_string_matching() {
+        for code in ["CREDENTIAL_REVOKED", "DEVICE_REVOKED"] {
+            let error = sync_failure(&service_failure(403, code));
+            assert!(matches!(
+                error,
+                TonkWorkerError::Upstream {
+                    status: 403,
+                    code: Some(ref code),
+                    ..
+                } if code == "CREDENTIAL_REVOKED"
+            ));
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_maps_revocation_registry_outages_to_sync_unavailable() {
+        let error = sync_failure(&service_failure(503, "REVOCATION_UNAVAILABLE"));
+        assert!(matches!(
+            error,
+            TonkWorkerError::Upstream {
+                status: 503,
+                code: Some(ref code),
+                ..
+            } if code == "SYNC_UNAVAILABLE"
+        ));
     }
 
     #[dialog_common::test]

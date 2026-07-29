@@ -22,7 +22,7 @@ use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
-use tonk_schema::{Invitation, InvitedVia, Membership};
+use tonk_schema::{Invitation, InvitationExecution, InvitedVia, Membership};
 use url::Url;
 
 use crate::ExitCode;
@@ -136,7 +136,17 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None).await
+    mint_for(site, base_url, remote_url, None, None).await
+}
+
+/// Mint an audience-open invite with an explicit revocation relay.
+pub async fn mint_with_relay(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    revocation_url: Option<&str>,
+) -> Result<InviteOutcome, InviteError> {
+    mint_for(site, base_url, remote_url, revocation_url, None).await
 }
 
 /// Mint a seed-free invite targeted to an exact recipient root DID.
@@ -146,13 +156,32 @@ pub async fn mint_targeted(
     remote_url: Option<&str>,
     recipient_root: &str,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, Some(recipient_root)).await
+    mint_for(site, base_url, remote_url, None, Some(recipient_root)).await
+}
+
+/// Mint a root-targeted invite with an explicit revocation relay.
+pub async fn mint_targeted_with_relay(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    revocation_url: Option<&str>,
+    recipient_root: &str,
+) -> Result<InviteOutcome, InviteError> {
+    mint_for(
+        site,
+        base_url,
+        remote_url,
+        revocation_url,
+        Some(recipient_root),
+    )
+    .await
 }
 
 async fn mint_for(
     site: &TonkSite,
     base_url: Option<&str>,
     remote_url: Option<&str>,
+    revocation_url: Option<&str>,
     recipient_root: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
@@ -206,16 +235,19 @@ async fn mint_for(
         None => None,
     };
 
-    let relay = parsed_remote.as_ref().map(|remote| {
-        if remote
-            .host_str()
-            .is_some_and(|host| host.starts_with("staging."))
-        {
-            Url::parse("https://accounts-staging.tonk.xyz/revocations").unwrap()
-        } else {
-            Url::parse("https://accounts.tonk.xyz/revocations").unwrap()
+    let relay = match revocation_url {
+        Some(raw) => Some(
+            Url::parse(raw)
+                .map_err(|error| InviteError::Io(format!("invalid revocation URL: {error}")))?,
+        ),
+        None if parsed_remote.is_some() => {
+            return Err(InviteError::Io(
+                "the selected remote has no revocation relay; configure it with `tonk remote add --revocation-url <URL>`"
+                    .to_string(),
+            ));
         }
-    });
+        None => None,
+    };
     let invite = Invite::new(delegation.into_chain(), invite_audience, parsed_remote)
         .await
         .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
@@ -229,6 +261,17 @@ async fn mint_for(
     // secret-free half of the invite (the seed stays in the URL).
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
+    let execution = invite.revocation_url.as_ref().map(|relay| {
+        InvitationExecution::new(
+            &invitation,
+            if matches!(&invite.audience, InviteAudience::Open { .. }) {
+                "open"
+            } else {
+                "scoped"
+            },
+            relay.as_str(),
+        )
+    });
     let meta = site
         .repository
         .branch(META_BRANCH)
@@ -236,8 +279,11 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
-    meta.transaction()
-        .assert(invitation)
+    let mut transaction = meta.transaction().assert(invitation);
+    if let Some(execution) = execution {
+        transaction = transaction.assert(execution);
+    }
+    transaction
         .commit()
         .perform(&site.operator)
         .await
@@ -337,6 +383,17 @@ pub async fn claim(
         .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
+    let invitation_execution = invite.revocation_url.as_ref().map(|relay| {
+        InvitationExecution::new(
+            &invitation,
+            if matches!(&invite.audience, InviteAudience::Open { .. }) {
+                "open"
+            } else {
+                "scoped"
+            },
+            relay.as_str(),
+        )
+    });
 
     std::fs::create_dir_all(root)
         .map_err(|e| InviteError::Io(format!("failed to create {}: {e}", root.display())))?;
@@ -370,6 +427,7 @@ pub async fn claim(
 
     let subject = claimed.subject().clone();
     let remote_url = claimed.remote_url.clone();
+    let revocation_url = claimed.revocation_url.clone();
 
     profile
         .access()
@@ -430,6 +488,9 @@ pub async fn claim(
         .transaction()
         .assert(invitation)
         .assert(membership.clone());
+    if let Some(execution) = invitation_execution {
+        transaction = transaction.assert(execution);
+    }
     if !self_invite {
         transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
@@ -450,11 +511,15 @@ pub async fn claim(
     let mut auto_configured_remote: Option<String> = None;
     let mut synced = false;
     if let Some(url) = &remote_url {
-        remote::add(&joined, DEFAULT_REMOTE, url.as_str(), Some(subject.clone()))
-            .await
-            .map_err(|e| {
-                InviteError::Io(format!("failed to auto-register remote from invite: {e}"))
-            })?;
+        remote::add_with_revocation(
+            &joined,
+            DEFAULT_REMOTE,
+            url.as_str(),
+            Some(subject.clone()),
+            revocation_url.as_ref().map(Url::as_str),
+        )
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to auto-register remote from invite: {e}")))?;
         remote::set_upstream(&joined, DEFAULT_REMOTE)
             .await
             .map_err(|e| InviteError::Io(format!("failed to wire upstream from invite: {e}")))?;

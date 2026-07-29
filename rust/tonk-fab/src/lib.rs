@@ -14,6 +14,8 @@ pub mod retry;
 mod element;
 
 #[cfg(target_arch = "wasm32")]
+mod invitations;
+#[cfg(target_arch = "wasm32")]
 mod member_roster;
 
 #[cfg(target_arch = "wasm32")]
@@ -39,6 +41,7 @@ pub fn register() {
     space_name::register();
     profile_name::register();
     member_roster::register();
+    invitations::register();
     space_switcher::register();
 }
 

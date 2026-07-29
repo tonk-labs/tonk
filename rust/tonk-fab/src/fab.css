@@ -853,6 +853,32 @@ tonk-share[data-share-state="failed"] .fab__share-trigger {
 /* The roster opens when the share segment is CLICKED (element.rs
    toggles `is-open`), like the repo switcher above. */
 .fab__share.is-open .fab__share-menu { display: flex; }
+
+tonk-invitations,
+.fab__target-invite,
+.fab__invitation-list {
+  display: grid;
+  gap: 8px;
+}
+
+.fab__target-invite input,
+.fab__target-invite button,
+.fab__invitation-list button {
+  min-height: 40px;
+}
+
+.fab__invitation-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.fab__invitation-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 /* Click-away scrim. Resting: no box, no hit area — so it can never
    swallow a click on the page while the bar is idle. While EITHER
    dropdown is open it becomes a transparent, viewport-covering click
