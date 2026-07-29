@@ -522,6 +522,32 @@ tonk-fab.fab-dock-right  { left: auto; right: 16px; }
    `mr_oats`). A clickable segment (opens nothing itself; the name inside
    is an editable). */
 .fab__account { cursor: default; }
+/* The guest's durable-join action, sharing the account segment with the
+   member name — it is a statement about this member's standing in this spot,
+   so it belongs beside the name rather than in a segment of its own (which
+   would also have to earn a slot in the compact pager).
+   `.fab__share-trigger`'s treatment: bar font and ink, no chrome of its own,
+   the segment supplies the surface and the hover highlight. Without this the
+   button inherits Web Awesome's native-control skin and lands as an opaque
+   chip with its own border and box height, breaking the pill.
+   `attach_membership` reveals it only for a replica the worker reports as a
+   guest; `[hidden]` in the app stylesheet is what makes that stick. */
+.fab__join {
+  font: inherit;
+  line-height: 1;
+  border: 0;
+  background: transparent;
+  color: var(--fab-ink);
+  cursor: pointer;
+  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.fab__join:hover { opacity: .7; }
+/* Held for the promotion round trip, so the click neither reads as dead nor
+   posts twice. */
+.fab__join:disabled { opacity: .45; cursor: default; }
 .fab__account-link {
   display: inline-grid;
   place-items: center;

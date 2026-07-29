@@ -1,3 +1,23 @@
+/* `hidden` has to keep hiding things. Web Awesome skins native form
+   controls inside `@layer wa-native`, and its rule for
+   `button, input[type=button|reset|submit|file], a.wa-button` nests
+   `&:not(input[type="file"]) { display: inline-flex }` — a selector matching
+   every `<button>`. An author `display` declaration beats the UA's
+   `[hidden] { display: none }` whatever its specificity or layer, so the
+   attribute silently stops working on a bare button wherever that sheet
+   loads. A sealed `<tonk-portal>` guest concatenates it ahead of this file
+   (`tonk-portal`'s `build_inject_payload`), which is where it bit: the FAB's
+   guest-only "join spot" action rendered on every spot, owners included, and
+   the hide-again after a successful join was equally inert.
+
+   `!important` rather than a bare `display: none`. Unlayered declarations do
+   outrank layered ones, so this would already beat `@layer wa-native` — but
+   `fab.css` is appended to `<head>` after this sheet and styles `.fab__join`
+   with an unlayered `display` of the same 0-1-0 specificity, which wins the
+   tie on order. Anything that wants to show a `hidden` element has to drop
+   the attribute, which is what the attribute is for. */
+[hidden] { display: none !important; }
+
 /* Web Awesome FOUC cloak. The WA loader registers each `<wa-*>`
    element lazily, importing its chunk on demand, so until a component
    is upgraded it renders as an undefined element: a `<wa-button>` shows

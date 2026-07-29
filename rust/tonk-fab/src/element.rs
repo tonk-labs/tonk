@@ -243,21 +243,34 @@ fn attach_membership(host: &HtmlElement) {
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
         let endpoint = endpoint.clone();
         let button = action_button.clone();
+        // Held for the whole round trip, synchronously, before anything can
+        // await: promotion is a network call, and a second click would post a
+        // second promotion. Every path below either hides the button (success,
+        // which supersedes the disabled state) or clears it again.
+        let _ = button.set_attribute("disabled", "");
         spawn_local(async move {
-            let Some(window) = window() else { return };
+            let released = button.clone();
+            let release = move || {
+                let _ = released.remove_attribute("disabled");
+            };
+            let Some(window) = window() else {
+                return release();
+            };
             let init = RequestInit::new();
             init.set_method("POST");
             let Ok(request) = Request::new_with_str_and_init(&endpoint, &init) else {
-                return;
+                return release();
             };
             let Ok(value) = JsFuture::from(window.fetch_with_request(&request)).await else {
-                return;
+                return release();
             };
             let Ok(response) = value.dyn_into::<Response>() else {
-                return;
+                return release();
             };
             if response.ok() {
                 let _ = button.set_attribute("hidden", "");
+            } else {
+                release();
             }
         });
     });
@@ -1604,6 +1617,170 @@ mod tests {
             .flatten()
             .map(|seg| seg.class_list().contains("is-open"))
             .unwrap_or(false)
+    }
+
+    /// The shape of the rule that made `hidden` inert on the bar's join
+    /// action: Web Awesome's `@layer wa-native` skins native form controls,
+    /// and its nested `&:not(input[type="file"])` desugars to a selector
+    /// matching every `<button>`. An author `display` declaration outranks
+    /// the UA's `[hidden] { display: none }` whatever its specificity or
+    /// layer, so the attribute stops hiding anything.
+    ///
+    /// Reproduced rather than loaded: the real sheet is a hashed build
+    /// artifact, and the invariant under test is "a layered author `display`
+    /// rule on `button` must not defeat `hidden`" — true of whatever
+    /// selector Web Awesome ships next.
+    const WEB_AWESOME_NATIVE_BUTTON: &str = r#"
+@layer wa-native {
+  button, input[type="button"], input[type="reset"], input[type="submit"],
+  input[type="file"], a.wa-button {
+    &:not(input[type="file"]), &::file-selector-button {
+      display: inline-flex;
+    }
+  }
+}"#;
+
+    /// Mount the real bar under the stylesheets a sealed guest actually
+    /// applies, in the order it applies them: Web Awesome, then the app
+    /// stylesheet (the guest concatenates those two), then `fab.css`, which
+    /// `ensure_stylesheet` appends to `<head>` later. That ordering is the
+    /// hazard — `fab.css` losing a same-specificity tie by winning it — so
+    /// the fixture pins it instead of inheriting whatever order earlier
+    /// tests left behind.
+    ///
+    /// Returns the host and the sheets, both of which the caller removes.
+    fn guest_styled_fab() -> (HtmlElement, Vec<Element>) {
+        let document = window().expect("window").document().expect("document");
+        let head = document.head().expect("head");
+        let mut sheets = Vec::new();
+        for css in [
+            WEB_AWESOME_NATIVE_BUTTON,
+            include_str!("../../tonk-ui/styles.css"),
+            include_str!("fab.css"),
+        ] {
+            let style = document.create_element("style").expect("create style");
+            style.set_text_content(Some(css));
+            head.append_child(&style).expect("append style");
+            sheets.push(style);
+        }
+
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_inner_html(&crate::markup::fab_html("did:key:zJoinFixture"));
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+        (host, sheets)
+    }
+
+    fn teardown(host: &HtmlElement, sheets: &[Element]) {
+        host.remove();
+        for sheet in sheets {
+            sheet.remove();
+        }
+    }
+
+    fn computed(element: &Element, property: &str) -> String {
+        window()
+            .expect("window")
+            .get_computed_style(element)
+            .expect("computed style")
+            .expect("style declaration")
+            .get_property_value(property)
+            .expect("property")
+    }
+
+    /// The join action is guest-only: `attach_membership` unhides it just for
+    /// a replica the worker reports as a guest. The `hidden` attribute it
+    /// ships with has to actually hide it, or every owner sees an invitation
+    /// to join a spot they created.
+    #[dialog_common::test]
+    fn it_keeps_the_join_action_hidden_under_a_layered_button_display_rule() {
+        let (host, sheets) = guest_styled_fab();
+        let join = host
+            .query_selector(".fab__join")
+            .expect("query")
+            .expect("join action");
+        assert!(
+            join.has_attribute("hidden"),
+            "the bar must author the join action hidden",
+        );
+
+        let display = computed(&join, "display");
+        teardown(&host, &sheets);
+
+        assert_eq!(
+            display, "none",
+            "`hidden` must survive an author `display` rule on `button`",
+        );
+    }
+
+    /// Shown, it has to read as bar copy beside the member name — the same
+    /// treatment `.fab__share-trigger` gets. Unstyled it inherits Web
+    /// Awesome's native-button skin, which lands as an opaque chip with its
+    /// own border and box height, breaking the pill.
+    #[dialog_common::test]
+    fn it_styles_the_join_action_as_bar_copy_rather_than_a_native_button() {
+        let (host, sheets) = guest_styled_fab();
+        let join = host
+            .query_selector(".fab__join")
+            .expect("query")
+            .expect("join action");
+        join.remove_attribute("hidden").expect("unhide");
+
+        let display = computed(&join, "display");
+        let background = computed(&join, "background-color");
+        let border = computed(&join, "border-top-width");
+        teardown(&host, &sheets);
+
+        // Not a keyword assertion: the action is a flex item of
+        // `.fab__account`, and flex items blockify, so an authored
+        // `inline-flex` computes as `flex`. What matters is that it lays out
+        // at all once the attribute is gone.
+        assert_ne!(display, "none", "shown, it lays out");
+        assert_eq!(
+            background, "rgba(0, 0, 0, 0)",
+            "the segment supplies the surface; the action is transparent",
+        );
+        assert_eq!(border, "0px", "bar copy carries no button border");
+    }
+
+    /// Promotion is a network round trip. Without a disabled state the click
+    /// reads as dead and a second click posts a second promotion.
+    #[dialog_common::test]
+    fn it_disables_the_join_action_while_the_promotion_is_in_flight() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_attribute("space", "did:key:zJoinClick")
+            .expect("space");
+        host.set_inner_html(&crate::markup::fab_html("did:key:zJoinClick"));
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("mount");
+        attach_membership(&host);
+
+        let join: HtmlElement = host
+            .query_selector(".fab__join")
+            .expect("query")
+            .expect("join action")
+            .unchecked_into();
+        join.click();
+        let disabled = join.has_attribute("disabled");
+        host.remove();
+
+        assert!(
+            disabled,
+            "the click must disable the action for the round trip",
+        );
     }
 
     /// A `<tonk-fab>` holding the bar, the way `markup::fab_html` authors it —

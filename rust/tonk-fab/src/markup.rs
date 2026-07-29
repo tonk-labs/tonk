@@ -118,7 +118,7 @@ pub fn fab_html(space_did: &str) -> String {
       </div>
       <div class="fab__tele fab__tele--account">
         <span class="fab__seg fab__account">
-          <button type="button" class="fab__join" hidden>Join this spot</button>
+          <button type="button" class="fab__join" hidden>join spot</button>
           <span class="fab__name"><ui-profile-name></ui-profile-name></span>
           <a class="fab__account-link" href="/account" aria-label="Open account settings"><wa-icon name="user"></wa-icon></a>
         </span>
@@ -220,6 +220,19 @@ mod tests {
         // Structure is authored now, not inferred from child order.
         assert!(html.contains("fab__tele"));
         assert!(html.contains("fab__scrim"));
+    }
+
+    #[test]
+    fn it_labels_the_join_action_in_bar_case() {
+        let html = fab_html("did:key:z6Mk");
+        // The bar's own labels are lowercase ("share"); title case was Web
+        // Awesome's native-button skin reading as a foreign control, not a
+        // choice. `hidden` ships with it — the action is guest-only, and
+        // `attach_membership` is what reveals it.
+        assert!(
+            html.contains(r#"<button type="button" class="fab__join" hidden>join spot</button>"#),
+            "the join action must ship hidden with a lowercase label",
+        );
     }
 
     #[test]
