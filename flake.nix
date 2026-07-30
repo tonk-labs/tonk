@@ -54,6 +54,7 @@
             caddy
             cachix
             cargo-nextest
+            cargo-release
             esbuild
             imagemagick
             jq

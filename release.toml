@@ -1,0 +1,27 @@
+# Releases are cut with `cargo release <level>` from `staging` only. Each
+# run produces one commit and one `v<version>` tag, pushed together, so
+# the bump and the tag cannot drift apart the way 0.6.1 through 0.6.3 did.
+#
+# Every setting here overrides a default that misfires on this workspace.
+# See docs/superpowers/specs/2026-07-30-cargo-release-design.md.
+
+# The version is shared via `version.workspace`, so a release is one
+# commit for all 34 crates, not one commit each.
+consolidate-commits = true
+
+# `cli-npm.yml` triggers on the `v*` glob. The default of
+# `{{prefix}}v{{version}}` yields `tonk-cli-v0.6.4`, which never matches.
+tag-name = "v{{version}}"
+
+pre-release-commit-message = "chore: release {{version}}"
+tag-message = "chore: release {{version}}"
+
+# None of these crates are on crates.io. Without this, a release attempts
+# `cargo publish` on all 34. Note that cargo-release still logs a
+# cosmetic `Publishing <crates>` line under this setting -- it is not
+# evidence of a registry attempt.
+publish = false
+
+# The guardrail against the original failure: a release cut from a
+# feature branch. Bumps belong on `staging`; `stable` only fast-forwards.
+allow-branch = ["staging"]
