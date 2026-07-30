@@ -26,7 +26,10 @@ fn js_error(error: anyhow::Error) -> JsValue {
 }
 
 async fn create() -> Result<JsValue, JsValue> {
-    let created = crate::passkey::create_passkey().await.map_err(js_error)?;
+    // No account context here, so the credential stays unlabelled.
+    let created = crate::passkey::create_passkey(None)
+        .await
+        .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(
         &result,
@@ -49,6 +52,15 @@ async fn derive_root_did() -> Result<JsValue, JsValue> {
         .map_err(js_error)?;
     let did = signer.did();
     Ok(JsValue::from_str(did.as_ref()))
+}
+
+/// An optional string property: absent, empty, or not a string all read as
+/// `None`, so a caller with nothing to say can simply say nothing.
+fn optional_string_property(input: &JsValue, name: &str) -> Option<String> {
+    Reflect::get(input, &name.into())
+        .ok()?
+        .as_string()
+        .filter(|value| !value.is_empty())
 }
 
 fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
@@ -125,8 +137,12 @@ async fn create_root(input: JsValue) -> Result<JsValue, JsValue> {
     let device_did = string_property(&input, "deviceDid")?
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    // `label` is what the passkey manager will show. The account ceremony
+    // sends the address it just verified; a spot creating a root sends
+    // nothing, because no account exists to name.
+    let label = optional_string_property(&input, "label");
     root_result(
-        crate::ceremony::create_root(device_did)
+        crate::ceremony::create_root(device_did, label.as_deref())
             .await
             .map_err(js_error)?,
     )

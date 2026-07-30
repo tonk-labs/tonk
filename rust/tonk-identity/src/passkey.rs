@@ -84,7 +84,18 @@ fn current_rp_id() -> Option<&'static str> {
 
 /// Registration options: a discoverable, user-verified credential on
 /// this origin, with PRF requested up front.
-fn creation_options() -> Result<PublicKeyCredentialCreationOptions> {
+///
+/// `label` names the credential in the user's passkey manager. It carries
+/// the account address when an account ceremony is what creates this
+/// passkey, and is `None` for a root created before any account exists —
+/// which must not imply one. Both `name` and `displayName` take it:
+/// Chrome's passkey list and macOS Keychain surface `name`, so labelling
+/// only `displayName` would leave the list unreadable.
+///
+/// The user handle stays random regardless. It is not a display field —
+/// it rides every assertion — and deriving it from an address would make
+/// two accounts on one authenticator collide.
+fn creation_options(label: Option<&str>) -> Result<PublicKeyCredentialCreationOptions> {
     let mut challenge = rand::random::<[u8; 32]>();
     let rp = PublicKeyCredentialRpEntity::new("tonk");
     if let Some(id) = current_rp_id() {
@@ -93,8 +104,8 @@ fn creation_options() -> Result<PublicKeyCredentialCreationOptions> {
     let mut user_id = rand::random::<[u8; 32]>();
     let opaque_name = hex::encode(rand::random::<[u8; 16]>());
     let user = PublicKeyCredentialUserEntity::new_with_u8_slice(
-        &opaque_name,
-        "Tonk identity",
+        label.unwrap_or(&opaque_name),
+        label.unwrap_or("Tonk identity"),
         &mut user_id,
     );
     let params = Array::new();
@@ -135,9 +146,11 @@ fn extract_prf(credential: &PublicKeyCredential) -> Option<Zeroizing<[u8; 32]>> 
 
 /// Create the account passkey on this origin. One biometric prompt;
 /// must be called during a user gesture.
-pub async fn create_passkey() -> Result<PasskeyCredential> {
+///
+/// `label` is the name the passkey manager shows — see [`creation_options`].
+pub async fn create_passkey(label: Option<&str>) -> Result<PasskeyCredential> {
     let creation = CredentialCreationOptions::new();
-    creation.set_public_key(&creation_options()?);
+    creation.set_public_key(&creation_options(label)?);
     let promise = credentials()?
         .create_with_options(&creation)
         .map_err(|e| ceremony_error("credentials.create was rejected", e))?;
@@ -208,7 +221,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_requires_a_discoverable_user_verified_credential() {
-        let options = creation_options().unwrap();
+        let options = creation_options(None).unwrap();
         let selection = Reflect::get(&options, &"authenticatorSelection".into()).unwrap();
         let resident = Reflect::get(&selection, &"residentKey".into()).unwrap();
         assert_eq!(resident.as_string().as_deref(), Some("required"));
@@ -216,33 +229,63 @@ mod tests {
         assert_eq!(verification.as_string().as_deref(), Some("required"));
     }
 
+    fn user_entity(options: &PublicKeyCredentialCreationOptions) -> JsValue {
+        Reflect::get(options, &"user".into()).unwrap()
+    }
+
+    fn user_field(options: &PublicKeyCredentialCreationOptions, field: &str) -> String {
+        Reflect::get(&user_entity(options), &field.into())
+            .unwrap()
+            .as_string()
+            .unwrap()
+    }
+
+    fn user_handle(options: &PublicKeyCredentialCreationOptions) -> Vec<u8> {
+        Uint8Array::new(&Reflect::get(&user_entity(options), &"id".into()).unwrap()).to_vec()
+    }
+
+    /// With no label the entity stays opaque: a passkey created before any
+    /// account exists must not imply one.
     #[dialog_common::test]
-    fn it_uses_opaque_provider_neutral_user_entities() {
-        let first = creation_options().unwrap();
-        let second = creation_options().unwrap();
-        let first_user = Reflect::get(&first, &"user".into()).unwrap();
-        let second_user = Reflect::get(&second, &"user".into()).unwrap();
-        let first_name = Reflect::get(&first_user, &"name".into())
-            .unwrap()
-            .as_string()
-            .unwrap();
-        let second_name = Reflect::get(&second_user, &"name".into())
-            .unwrap()
-            .as_string()
-            .unwrap();
-        assert_ne!(first_name, second_name);
-        assert!(!first_name.contains('@'));
-        assert_eq!(
-            Reflect::get(&first_user, &"displayName".into())
-                .unwrap()
-                .as_string()
-                .as_deref(),
-            Some("Tonk identity")
-        );
-        assert_ne!(
-            Uint8Array::new(&Reflect::get(&first_user, &"id".into()).unwrap()).to_vec(),
-            Uint8Array::new(&Reflect::get(&second_user, &"id".into()).unwrap()).to_vec()
-        );
+    fn it_uses_an_opaque_user_entity_when_unlabelled() {
+        let first = creation_options(None).unwrap();
+        let second = creation_options(None).unwrap();
+
+        assert_ne!(user_field(&first, "name"), user_field(&second, "name"));
+        assert!(!user_field(&first, "name").contains('@'));
+        assert_eq!(user_field(&first, "displayName"), "Tonk identity");
+    }
+
+    /// Labelled, the entity carries the address, so a passkey manager lists
+    /// something a person can tell apart from their other keys. Both fields:
+    /// Chrome's list and macOS Keychain surface `name`, not `displayName`.
+    #[dialog_common::test]
+    fn it_labels_the_user_entity_with_the_account_address() {
+        let options = creation_options(Some("someone@example.com")).unwrap();
+
+        assert_eq!(user_field(&options, "name"), "someone@example.com");
+        assert_eq!(user_field(&options, "displayName"), "someone@example.com");
+    }
+
+    /// The handle stays random either way. It is the credential's user id,
+    /// and deriving it from an address would make two accounts on one
+    /// authenticator collide — and leak the address into a field that is sent
+    /// on every assertion, not just shown in a manager.
+    /// Each handle is read the moment its options are built, not after all
+    /// three exist: `new_with_u8_slice` gives JS a view into wasm linear
+    /// memory rather than a copy, so a later call reusing that slot changes
+    /// what an earlier entity's `id` reads back. Production never holds two
+    /// option objects at once — each goes straight to `credentials.create` —
+    /// but a test that compares them has to read as it goes.
+    #[dialog_common::test]
+    fn it_keeps_the_user_handle_random_whether_labelled_or_not() {
+        let labelled = user_handle(&creation_options(Some("someone@example.com")).unwrap());
+        let again = user_handle(&creation_options(Some("someone@example.com")).unwrap());
+        let unlabelled = user_handle(&creation_options(None).unwrap());
+
+        assert_eq!(labelled.len(), 32, "a full 32-byte handle");
+        assert_ne!(labelled, again, "same address, different handle");
+        assert_ne!(labelled, unlabelled);
     }
 
     #[dialog_common::test]
@@ -264,7 +307,7 @@ mod tests {
     fn it_leaves_the_rp_id_unset_off_apex() {
         // wasm tests run on a localhost origin, which is off-apex, so the
         // creation options must carry no id and requests no rpId.
-        let options = creation_options().unwrap();
+        let options = creation_options(None).unwrap();
         let rp = Reflect::get(&options, &"rp".into()).unwrap();
         assert!(
             Reflect::get(&rp, &"id".into()).unwrap().is_undefined(),

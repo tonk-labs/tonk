@@ -96,7 +96,13 @@ fn restore_document() {
 }
 
 async fn request_root(method: RootMethod, device_did: String) -> Result<RootOutput, String> {
-    let input = CreateRootInput { device_did };
+    // The gate provisions a root to finish an interrupted intent — creating a
+    // spot, joining durably. No address is in hand, so the credential goes
+    // unlabelled rather than mislabelled.
+    let input = CreateRootInput {
+        device_did,
+        label: None,
+    };
     match method {
         RootMethod::Create => create_root(input).await,
         RootMethod::Evaluate => evaluate_root(input).await,

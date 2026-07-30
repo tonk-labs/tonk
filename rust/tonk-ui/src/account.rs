@@ -653,9 +653,18 @@ fn bind(host: &HtmlElement) {
                         ..
                     } => (root_did, device_did, credential_id, delegation_hex),
                     tonk_worker_api::RootStatus::Missing { device_did } => {
-                        let created = create_root(CreateRootInput { device_did })
-                            .await
-                            .map_err(|error| error.to_string())?;
+                        // This ceremony is what creates the passkey, and it
+                        // knows the address the code just verified — so the
+                        // credential gets a name its owner will recognise in a
+                        // passkey manager instead of an opaque handle. Only
+                        // here: a root created by anything else has no account
+                        // to name.
+                        let created = create_root(CreateRootInput {
+                            device_did,
+                            label: Some(email.clone()),
+                        })
+                        .await
+                        .map_err(|error| error.to_string())?;
                         crate::api::save_root(
                             created.credential_id.clone(),
                             created.delegation_hex.clone(),

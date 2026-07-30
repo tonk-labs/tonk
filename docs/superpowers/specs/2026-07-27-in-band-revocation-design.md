@@ -105,10 +105,27 @@ No account service participates. The root signer exists only for the
 user-mediated passkey ceremony; routine work continues through the
 device and bounded session keys.
 
-The WebAuthn user handle and credential label must not depend on an
-email address or account-provider identifier. Registration uses an
-opaque local handle and a provider-neutral label. Attaching an account
-later records its metadata beside the root; it does not rename or
+The WebAuthn **user handle** must not depend on an email address or
+account-provider identifier. It rides every assertion, and deriving it
+from an address would both leak it there and collide when one
+authenticator holds two accounts. Registration always uses a random
+32-byte handle.
+
+The **credential label** — `name` and `displayName`, which exist only to
+name the key in the user's passkey manager — carries the account address
+when an account ceremony is what creates the passkey, and is a
+provider-neutral placeholder otherwise (a spot creating a root before any
+account exists). This revises an earlier decision to keep the label
+opaque too. The reason for the change: an unlabelled passkey lists as
+`tonk` plus a hex handle, which nobody can tell apart from their other
+keys. The reason it is safe: the label is metadata for the person, never
+part of a chain — no delegation, no verification, and no authority reads
+it, so provider independence is unaffected. The cost accepted knowingly:
+the address is visible to anyone who opens that device's passkey manager,
+where a placeholder would have shown nothing.
+
+A root created before an account keeps its placeholder label. Attaching
+an account records its metadata beside the root; it does not rename or
 replace the passkey.
 
 Creating an account later proves control of the existing root and adds

@@ -68,10 +68,18 @@ async fn root_ceremony(
     })
 }
 
-/// Create a provider-neutral passkey root and delegate it to `device_did`.
+/// Create a passkey root and delegate it to `device_did`.
+///
+/// `label` names the credential in the user's passkey manager: the account
+/// address when an account ceremony creates this root, `None` when a spot
+/// creates it before any account exists. It is metadata for the person, not
+/// for the chain — no delegation, and no authority, depends on it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn create_root(device_did: dialog_varsig::Did) -> Result<RootCeremony> {
-    let created = crate::passkey::create_passkey().await?;
+pub async fn create_root(
+    device_did: dialog_varsig::Did,
+    label: Option<&str>,
+) -> Result<RootCeremony> {
+    let created = crate::passkey::create_passkey(label).await?;
     let credential_id = hex::encode(created.id);
     let prf = match created.prf_output {
         Some(output) => output,

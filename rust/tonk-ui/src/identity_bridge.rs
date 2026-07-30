@@ -8,10 +8,16 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 /// Input for creating or evaluating a root credential.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateRootInput {
     pub device_did: String,
+    /// What the passkey manager should call this credential. Carries the
+    /// verified address when an account ceremony creates the root; omitted
+    /// when a spot creates one, since no account exists to name. Display
+    /// metadata only — no delegation depends on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Evaluating an existing root takes the same device binding as creation.
@@ -200,10 +206,50 @@ mod tests {
         );
         let output = create_root(CreateRootInput {
             device_did: "did:key:device".into(),
+            label: None,
         })
         .await
         .unwrap();
         assert_eq!(output.device_did, "did:key:device");
+    }
+
+    /// The credential label crosses to `window.tonkIdentity` under a name both
+    /// sides have to spell the same way — `install.rs` reads `label` off the
+    /// input object. A rename on either side is silent: the ceremony would run
+    /// and the passkey would simply be unlabelled, which nobody notices until
+    /// they open a passkey manager. Absent when there is no account to name,
+    /// rather than present and empty.
+    #[dialog_common::test]
+    async fn it_sends_the_credential_label_only_when_there_is_one() {
+        install_method(
+            "createRoot",
+            r#"
+            var labelled = input.deviceDid === "did:key:labelled";
+            var expected = labelled ? "someone@example.com" : undefined;
+            if (input.label !== expected)
+                return Promise.reject(new Error("label was " + JSON.stringify(input.label)));
+            if (!labelled && "label" in input)
+                return Promise.reject(new Error("unlabelled input carries the key"));
+            return Promise.resolve({
+                rootDid: "did:key:root", deviceDid: input.deviceDid,
+                credentialId: "credential", delegationHex: "delegation"
+            });
+            "#,
+        );
+
+        create_root(CreateRootInput {
+            device_did: "did:key:labelled".into(),
+            label: Some("someone@example.com".into()),
+        })
+        .await
+        .expect("an account ceremony sends its verified address");
+
+        create_root(CreateRootInput {
+            device_did: "did:key:plain".into(),
+            label: None,
+        })
+        .await
+        .expect("a spot-created root sends no label at all");
     }
 
     #[dialog_common::test]
@@ -228,6 +274,7 @@ mod tests {
         assert_eq!(
             evaluate_root(EvaluateRootInput {
                 device_did: "did:key:device".into(),
+                label: None,
             })
             .await
             .unwrap()
@@ -333,7 +380,8 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &JsValue::UNDEFINED).unwrap();
         assert_eq!(
             create_root(CreateRootInput {
-                device_did: "device".into()
+                device_did: "device".into(),
+                label: None,
             })
             .await
             .unwrap_err(),
@@ -343,7 +391,8 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &js_sys::Object::new()).unwrap();
         assert_eq!(
             create_root(CreateRootInput {
-                device_did: "device".into()
+                device_did: "device".into(),
+                label: None,
             })
             .await
             .unwrap_err(),
@@ -355,7 +404,8 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
         assert_eq!(
             create_root(CreateRootInput {
-                device_did: "device".into()
+                device_did: "device".into(),
+                label: None,
             })
             .await
             .unwrap_err(),
@@ -365,7 +415,8 @@ mod tests {
         install_method("createRoot", "return {};");
         assert_eq!(
             create_root(CreateRootInput {
-                device_did: "device".into()
+                device_did: "device".into(),
+                label: None,
             })
             .await
             .unwrap_err(),
@@ -375,7 +426,8 @@ mod tests {
         install_method("createRoot", "return Promise.reject(new Error('no')); ");
         assert_eq!(
             create_root(CreateRootInput {
-                device_did: "device".into()
+                device_did: "device".into(),
+                label: None,
             })
             .await
             .unwrap_err(),
@@ -385,7 +437,8 @@ mod tests {
         install_method("createRoot", "return Promise.resolve({});");
         assert_eq!(
             create_root(CreateRootInput {
-                device_did: "device".into()
+                device_did: "device".into(),
+                label: None,
             })
             .await
             .unwrap_err(),
