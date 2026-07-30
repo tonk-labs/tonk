@@ -905,6 +905,13 @@ pub mod tests {
                 Request::builder()
                     .uri(format!("/api/repository/{}/invite", repo))
                     .method("POST")
+                    // The mint derives the link's prefix from the request
+                    // origin, which the browser-to-axum conversion stamps on
+                    // every real request; a hand-built one has to supply it.
+                    .extension(
+                        crate::axum::RequestOrigin::parse("https://local.example/invite")
+                            .expect("valid origin"),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )

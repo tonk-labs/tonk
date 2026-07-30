@@ -4975,7 +4975,13 @@ mod tests {
     fn origin_config(endpoint: &str) -> RepositoryConfiguration {
         let address = SiteAddress::from(UcanAddress::new(endpoint));
         RepositoryConfiguration::default()
-            .remote("origin", RemoteConfiguration::new(address))
+            .remote(
+                "origin",
+                // A remote an invite can embed has to name the relay its
+                // revocations get published to, or the mint refuses it.
+                RemoteConfiguration::new(address)
+                    .revocation_url("https://relay.example.test/revocations".parse().unwrap()),
+            )
             .branch(
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
@@ -5074,6 +5080,13 @@ mod tests {
                     .uri(format!("/api/repository/{repo}/invite"))
                     .method("POST")
                     .header("content-type", "application/json")
+                    // The link's prefix comes from the request origin, which
+                    // the browser-to-axum conversion stamps on every real
+                    // request; a hand-built one has to supply it.
+                    .extension(
+                        crate::axum::RequestOrigin::parse("https://local.example/invite")
+                            .expect("valid origin"),
+                    )
                     .body(Body::from("{}"))
                     .unwrap(),
             )
