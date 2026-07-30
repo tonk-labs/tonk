@@ -5,10 +5,10 @@
 //! mounting and projection policy remains with the worker and CLI adapters.
 
 mod descriptor;
-mod link;
+mod provider;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};
-pub use link::{AccountLinkError, AccountLinkRecord};
+pub use provider::{AccountProviderError, AccountProviderRecord};
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
@@ -25,8 +25,9 @@ pub const MAIN_BRANCH: &str = "main";
 pub const ORIGIN_REMOTE: &str = "origin";
 /// Replica kind used for the hidden account system repository.
 pub const ACCOUNT_REPLICA_KIND: &str = "tonk:account";
-/// Existing credential site holding the versioned local account-link record.
-pub const ACCOUNT_LINK_CREDENTIAL_SITE: &str = "tonk-account-link-v1";
+/// Credential site holding the local provider attachment and the account
+/// repository descriptor it owns.
+pub const ACCOUNT_PROVIDER_CREDENTIAL_SITE: &str = "tonk-account-provider-v1";
 /// Credential site holding the trusted descriptor hash.
 pub const TRUSTED_BASE_CREDENTIAL_SITE: &str = "tonk-account-trusted-base-v1";
 

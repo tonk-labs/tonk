@@ -92,16 +92,11 @@ async fn descriptor(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<Option<AccountRepositoryDescriptorV1>> {
-    let Some(bytes) = crate::account::stored_provider_with_operator(profile, operator)
-        .await?
-        .and_then(|provider| provider.descriptor)
-    else {
-        return Ok(None);
-    };
-    AccountRepositoryDescriptorV1::validate(&bytes)
-        .await
-        .map(Some)
-        .context("stored account repository descriptor is invalid")
+    Ok(
+        crate::account::stored_provider_with_operator(profile, operator)
+            .await?
+            .and_then(|provider| provider.descriptor().cloned()),
+    )
 }
 
 /// Read durable native account-state status without contacting the remote.
@@ -399,6 +394,10 @@ mod tests {
         let descriptor = AccountRepositoryDescriptorV1::sign(&root, &remote)
             .await
             .unwrap();
+        let root_did = {
+            use dialog_varsig::Principal as _;
+            root.did()
+        };
         let delegation = tonk_identity::delegation::mint_device_delegation(root, &profile.did())
             .await
             .unwrap();
@@ -411,24 +410,55 @@ mod tests {
         .await
         .unwrap();
         profile
-            .save(UcanDelegation(delegation))
+            .save(UcanDelegation(delegation.clone()))
             .perform(&account_operator)
             .await
             .unwrap();
-        // The descriptor rides with the provider attachment, which is what
-        // `descriptor` reads back.
-        let provider = crate::account::ProviderRecord {
-            version: 1,
-            provider: "https://accounts.example".to_string(),
-            descriptor: Some(descriptor.bytes().to_vec()),
+        // Lay the two records down exactly where `account::persist` puts them:
+        // the profile's own credential store, through the same encoding. The
+        // descriptor is read back by a different code path than the one that
+        // writes it, and an earlier revision of this merge wrote it here and
+        // read it through the spot's account operator — which found nothing
+        // and reported an established account as unconfigured.
+        // Lay down the same two records `account::link` persists, through the
+        // shared type, so the descriptor this reads back is one that was
+        // actually bound to the local root rather than hand-stitched bytes.
+        let local_root = crate::identity::LocalRoot {
+            credential_id: "cli-account-test-credential".to_string(),
+            root_did: root_did.to_string(),
+            delegation_cid: delegation.proof_cids()[0].to_string(),
+            delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
         };
         profile
             .credential()
-            .site(crate::account::ACCOUNT_LINK_SITE)
-            .save(serde_json::to_vec(&provider).unwrap())
+            .site(crate::identity::LOCAL_ROOT_SITE)
+            .save(serde_json::to_vec(&local_root).unwrap())
             .perform(&account_operator)
             .await
             .unwrap();
+        let attachment = tonk_account::AccountProviderRecord::attach(
+            "https://accounts.example",
+            descriptor.bytes(),
+            &root_did,
+            1,
+        )
+        .await
+        .unwrap();
+        profile
+            .credential()
+            .site(crate::account::ACCOUNT_LINK_SITE)
+            .save(attachment.encode().unwrap())
+            .perform(&account_operator)
+            .await
+            .unwrap();
+        assert_eq!(
+            super::descriptor(&profile, &account_operator)
+                .await
+                .unwrap()
+                .expect("a linked profile reads back the descriptor it stored")
+                .bytes(),
+            descriptor.bytes(),
+        );
 
         let ensure_operator = operator_with_profile(
             &profile,

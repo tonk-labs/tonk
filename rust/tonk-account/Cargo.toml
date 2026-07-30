@@ -22,9 +22,10 @@ dialog-effects = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 

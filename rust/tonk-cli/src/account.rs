@@ -8,7 +8,7 @@ use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan_core::DelegationChain;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tonk_account::AccountStateStatus;
+use tonk_account::{AccountProviderRecord, AccountStateStatus};
 
 /// Production account API used unless explicitly overridden.
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
@@ -19,7 +19,7 @@ pub const DEFAULT_ACCOUNT_URL: &str = "https://tonk.spot/account/link";
 /// consumes a fragment secret, so a `?revoke=` sent there dead-ends.
 pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
 /// Credential-store key for optional provider attachment metadata.
-pub const ACCOUNT_LINK_SITE: &str = "tonk-account-provider-v1";
+pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
 /// Current native profile account-link state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,56 +98,58 @@ struct ConsumeResponse {
     descriptor_hex: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ProviderRecord {
-    pub(crate) version: u8,
-    pub(crate) provider: String,
-    /// Exact root-signed account repository descriptor, absent for a legacy
-    /// account that has not established one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) descriptor: Option<Vec<u8>>,
-}
-
 fn storage() -> Storage<NativeSpace> {
     Storage::<NativeSpace>::default()
+}
+
+async fn decode_provider(
+    root_did: &dialog_varsig::Did,
+    bytes: Result<Vec<u8>, dialog_effects::credential::CredentialError>,
+) -> Result<Option<AccountProviderRecord>> {
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(error) if crate::account_state::credential_is_missing(&error) => return Ok(None),
+        Err(error) => return Err(error).context("failed to load the account provider"),
+    };
+    AccountProviderRecord::decode(&bytes, root_did)
+        .await
+        .context("stored account provider is unusable")
 }
 
 /// Load the provider attachment through an already-mounted site operator.
 pub(crate) async fn stored_provider_with_operator(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
-) -> Result<Option<ProviderRecord>> {
-    match profile
+) -> Result<Option<AccountProviderRecord>> {
+    let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
+        return Ok(None);
+    };
+    let root_did = parse_root_did(&root.root_did)?;
+    let bytes = profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
         .load::<Vec<u8>>()
         .perform(operator)
-        .await
-    {
-        Ok(bytes) if bytes.is_empty() => Ok(None),
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .context("stored account provider is malformed"),
-        Err(error) if crate::account_state::credential_is_missing(&error) => Ok(None),
-        Err(error) => Err(error).context("failed to load the account provider"),
-    }
+        .await;
+    decode_provider(&root_did, bytes).await
 }
 
-async fn stored_provider(profile: &Profile) -> Result<Option<ProviderRecord>> {
-    match profile
+async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
+    let Some(root) = crate::identity::local_root(profile).await? else {
+        return Ok(None);
+    };
+    let root_did = parse_root_did(&root.root_did)?;
+    let bytes = profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
         .load::<Vec<u8>>()
         .perform(&storage())
-        .await
-    {
-        Ok(bytes) if bytes.is_empty() => Ok(None),
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .context("stored account provider is malformed"),
-        Err(error) if crate::account_state::credential_is_missing(&error) => Ok(None),
-        Err(error) => Err(error).context("failed to load the account provider"),
-    }
+        .await;
+    decode_provider(&root_did, bytes).await
+}
+
+fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
+    root_did.parse().context("stored local root DID is invalid")
 }
 
 /// Read the current profile's local account status.
@@ -168,7 +170,7 @@ pub async fn status(profile: &Profile) -> Result<AccountStatus> {
             device_did,
         }),
         Some(provider) => {
-            let account_state = if provider.descriptor.is_some() {
+            let account_state = if provider.descriptor().is_some() {
                 crate::account_state::status(profile).await?
             } else {
                 AccountStateStatus::Unconfigured
@@ -176,7 +178,7 @@ pub async fn status(profile: &Profile) -> Result<AccountStatus> {
             Ok(AccountStatus::Registered {
                 root_did: root.root_did,
                 device_did,
-                provider: provider.provider,
+                provider: provider.provider().to_owned(),
                 account_state,
             })
         }
@@ -191,27 +193,27 @@ async fn persist(
     descriptor_hex: &str,
 ) -> Result<String> {
     let root = crate::identity::save_local_root(profile, credential_id, delegation_hex).await?;
-    let descriptor_bytes =
-        hex::decode(descriptor_hex).context("invalid descriptor hex from account service")?;
-    let descriptor = tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor_bytes)
-        .await
-        .context("invalid account repository descriptor from account service")?;
     let root_did: dialog_varsig::Did = root
         .root_did
         .parse()
         .context("stored local root DID is invalid")?;
-    if descriptor.account_subject() != &root_did {
-        bail!("account repository descriptor names another account root");
-    }
-    let provider = ProviderRecord {
-        version: 1,
-        provider: service_url.trim_end_matches('/').to_string(),
-        descriptor: Some(descriptor.bytes().to_vec()),
-    };
+    let descriptor =
+        hex::decode(descriptor_hex).context("invalid descriptor hex from account service")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let record = AccountProviderRecord::attach(service_url, &descriptor, &root_did, now)
+        .await
+        .context("account service returned an unusable repository descriptor")?;
     profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
-        .save(serde_json::to_vec(&provider).context("failed to serialize account provider")?)
+        .save(
+            record
+                .encode()
+                .context("failed to serialize account provider")?,
+        )
         .perform(&storage())
         .await
         .context("failed to attach the account provider")?;
