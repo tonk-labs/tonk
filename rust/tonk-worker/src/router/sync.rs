@@ -509,6 +509,27 @@ pub async fn pull(
 
     let before = session.handle().revision();
 
+    // A branch that tracks nothing has nothing to reconcile, which is a
+    // configuration state rather than a failure — the same reading
+    // [`sync`] and [`publish_settled_status`] give it. Without this the
+    // pull reaches dialog, comes back `BranchHasNoUpstream`, and lands in
+    // the catch-all as a 503 "temporarily unavailable", which is untrue:
+    // nothing is going to become available until a remote is attached.
+    if session.handle().upstream().is_none() {
+        log!(
+            "Pull skipped, no upstream: {}@{}",
+            params.branch,
+            params.repo
+        );
+        return Ok(Json(SyncResponse {
+            success: true,
+            disposition: SyncDisposition::Completed,
+            before: before.clone(),
+            after: before,
+            error: None,
+        }));
+    }
+
     match tonk_state
         .reactor
         .repository(&params.repo)
