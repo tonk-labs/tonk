@@ -115,6 +115,10 @@
         # Include the Rust toolchain in build inputs for dev shells
         devShellBuildInputs = commonBuildInputs ++ [
           pkgs.cachix
+          # Devshell only: `commonBuildInputs` becomes nativeBuildInputs
+          # for every crate derivation, so a release tool in there would
+          # change 34 hashes and force a cold cache rebuild.
+          pkgs.cargo-release
           wrangler
           rustToolchain
           wasm-bindgen-cli

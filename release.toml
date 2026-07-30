@@ -1,0 +1,45 @@
+# A release is two acts, split across two machines, because it has to be.
+# `cargo release <level>` makes the version bump commit and stops. The
+# tag is created in CI by `.github/workflows/release-tag.yml` once that
+# commit lands on `staging`, and the tag is what publishes. That
+# workflow's header explains why the split is forced; the `push` and
+# `tag` settings below say what it means here.
+#
+# Every setting here overrides a default that misfires on this workspace.
+# See docs/superpowers/specs/2026-07-30-cargo-release-design.md.
+
+# The version is shared via `version.workspace`, so a release is one
+# commit for all 34 crates, not one commit each.
+consolidate-commits = true
+
+# The ruleset forbids pushing to `staging`, so cargo-release must not
+# try. It exits non-zero on the rejected push, after the commit exists,
+# leaving a confusing half-done state.
+push = false
+
+# CI owns the tag. A tag cut here would point at the local commit, and
+# the squash merge that lands it on `staging` produces a different SHA.
+tag = false
+
+# Kept even though `tag = false`: it names the tag for the escape hatch
+# where a maintainer cuts one by hand (`--tag` plus a manual push), and
+# it must stay in step with the tag `release-tag.yml` creates.
+# `cli-npm.yml` triggers on the `v*` glob, and cargo-release's default of
+# `{{prefix}}v{{version}}` yields `tonk-cli-v0.6.4`, which never matches.
+tag-name = "v{{version}}"
+
+pre-release-commit-message = "chore: release {{version}}"
+tag-message = "chore: release {{version}}"
+
+# None of these crates are on crates.io. Without this, a release attempts
+# `cargo publish` on all 34. Note that cargo-release still logs a
+# cosmetic `Publishing <crates>` line under this setting -- it is not
+# evidence of a registry attempt.
+publish = false
+
+# The guardrail against the original failure: a release cut from an
+# unrelated feature branch. `release/*` is the normal path -- the bump
+# needs a PR anyway, so it starts life on its own branch -- and
+# `staging` is allowed for the case where a maintainer already has it
+# checked out. `stable` is absent on purpose: it only fast-forwards.
+allow-branch = ["staging", "release/*"]

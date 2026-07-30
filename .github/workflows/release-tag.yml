@@ -1,0 +1,149 @@
+name: 'Release tag'
+
+# Turns a merged version bump into the `v<version>` tag that publishes it.
+#
+# CI owns the tag because a maintainer cannot own it. Two active rulesets
+# cover `staging` (the default branch) and require a pull request, forbid
+# non-fast-forward, and require signed commits and status checks, with no
+# bypass actor -- so nothing pushes a commit straight to `staging`. Merge
+# commits are disabled as well, so a PR merge rewrites the SHA and a
+# locally created tag would point at a commit that never lands on the
+# branch. The rulesets cover branches, not tags, so CI can push the tag
+# once the bump is on `staging`.
+#
+# The predicate is a *change* to `[workspace.package] version` across the
+# pushed range -- never the mere absence of `v<version>`. Staging has sat
+# 21 commits past 0.6.3 with no `v0.6.3` tag; tagging on absence would
+# ship an arbitrary HEAD as a release, which is the exact failure this
+# whole change exists to remove.
+on:
+  push:
+    branches:
+      - staging
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: 'Tag a merged version bump'
+    runs-on: ubuntu-latest
+    permissions:
+      # `contents: write` pushes the tag. `actions: write` starts the
+      # publish: a tag pushed with GITHUB_TOKEN does not itself trigger
+      # any workflow -- GitHub suppresses events raised by the built-in
+      # token to stop workflows recursing -- so `cli-npm.yml` has to be
+      # dispatched explicitly. `workflow_dispatch` is one of the two
+      # event types exempt from that suppression.
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so `github.event.before` is reachable, and the
+          # tags so an already-tagged release is a no-op.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 'Decide whether this push is a release'
+        id: decide
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # The same extraction `cli-npm.yml` uses, so one Cargo.toml
+          # shape feeds both. `|| true` stops a no-match from aborting
+          # the step under `pipefail`; every caller tests for an empty
+          # result instead.
+          workspace_version() {
+            git show "$1:Cargo.toml" 2>/dev/null \
+              | grep -A30 '^\[workspace.package\]' \
+              | grep -m1 '^version' \
+              | sed -E 's/.*"([^"]+)".*/\1/' || true
+          }
+
+          # Branch creation sends an all-zeroes `before`, and a force
+          # push can leave it unreachable; either way `workspace_version`
+          # comes back empty, as it does for an unreadable Cargo.toml.
+          # All three mean the same thing: without an old version we
+          # cannot prove one changed, and guessing would mint a release
+          # nobody asked for.
+          old=""
+          if [[ -n "$BEFORE" && ! "$BEFORE" =~ ^0+$ ]]; then
+            old="$(workspace_version "$BEFORE")"
+          fi
+          if [[ -z "$old" ]]; then
+            echo "no readable version at ${BEFORE:-the previous commit} (branch creation, force push, or unreadable Cargo.toml); nothing to tag"
+            exit 0
+          fi
+
+          # An unreadable version at HEAD is a broken Cargo.toml or a
+          # broken pipeline, and either would disable releases silently
+          # from here on. Fail loudly instead.
+          new="$(workspace_version "$GITHUB_SHA")"
+          if [[ -z "$new" ]]; then
+            echo "::error::could not read [workspace.package] version at $GITHUB_SHA"
+            exit 1
+          fi
+
+          if [[ "$old" == "$new" ]]; then
+            echo "version unchanged at $new; nothing to tag"
+            exit 0
+          fi
+          # Any change counts, in either direction. Reverting a release
+          # commit therefore looks like a release of the older version --
+          # but that version's tag almost always already exists, and the
+          # check below turns it into a no-op. Ordering is deliberately
+          # not enforced: no correct shell comparator gets 0.6.4-rc.2 ->
+          # 0.6.4 right (`sort -V` calls it backwards), and a broken one
+          # would block every real prerelease-to-final release.
+          echo "version changed $old -> $new"
+
+          # Re-running this workflow, or a push that lands after the tag
+          # already exists, must not fail and must not retag.
+          if git ls-remote --exit-code origin "refs/tags/v$new" >/dev/null 2>&1; then
+            echo "tag v$new already exists; nothing to tag"
+            exit 0
+          fi
+
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+
+      - name: 'Create and push the tag'
+        if: steps.decide.outputs.version != ''
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Anchored at the commit that landed, which is what the publish
+          # must build from.
+          git -c user.name='github-actions[bot]' \
+              -c 'user.email=41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -a "v$VERSION" -m "chore: release $VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
+          echo "tagged v$VERSION at $GITHUB_SHA"
+
+      - name: 'Start the publish'
+        if: steps.decide.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          # `cli-npm.yml` resolves the version from the ref's Cargo
+          # workspace version and refuses a mismatch, so dispatching it
+          # against the tag publishes exactly the tagged code -- the same
+          # contract a tag push would have given us.
+          for attempt in 1 2 3; do
+            if gh workflow run cli-npm.yml --ref "v$VERSION"; then
+              echo "dispatched CLI npm for v$VERSION"
+              exit 0
+            fi
+            echo "dispatch attempt $attempt failed; retrying in 5s"
+            sleep 5
+          done
+          # The tag exists at this point, so recovery is a re-dispatch
+          # rather than another release.
+          echo "::error::could not start CLI npm for v$VERSION; re-run it with: gh workflow run cli-npm.yml --ref v$VERSION"
+          exit 1
