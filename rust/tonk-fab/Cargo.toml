@@ -55,6 +55,7 @@ web-sys = { workspace = true, features = [
     "ScrollBehavior",
     "ScrollToOptions",
     "Text",
+    "VisibilityState",
     "Window",
 ] }
 

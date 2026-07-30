@@ -934,11 +934,14 @@ fn open_enable_sync_dialog(detail: &str, offer_confirm: bool) {
 /// Promote this guest replica to durable membership — the same request the
 /// bar's `join spot` action makes, so there is one promote path and not two.
 ///
-/// Fire-and-forget by design. The worker answers `RootRequired` when there is
-/// no local root yet and posts an identity-required message, which the page's
-/// gate turns into the passkey prompt and replays on success; the reply to
-/// this request carries nothing the bar needs either way. The membership check
-/// on the next render is what clears the join action and the unavailable mark.
+/// The worker answers `AccountRequired` when this device has no account and
+/// posts an account-required message, which the page turns into a trip through
+/// sign-up and replays on the way back — so a refusal needs nothing from here.
+/// A success does: the bar stamped `data-share-unavailable` from its check at
+/// connect and has no other reason to look again, so this asks it to. The
+/// comment this replaces deferred to "the membership check on the next
+/// render", which nothing performs — that is why share stayed greyed until a
+/// reload.
 fn promote_to_member(space: &str) {
     let Ok(path) = crate::logic::membership_endpoint(space) else {
         return;
@@ -947,10 +950,14 @@ fn promote_to_member(space: &str) {
         return;
     };
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = reqwest::Client::new()
+        let promoted = reqwest::Client::new()
             .post(format!("{origin}{path}"))
             .send()
-            .await;
+            .await
+            .is_ok_and(|response| response.status().is_success());
+        if promoted {
+            crate::element::refresh_membership();
+        }
     });
 }
 
