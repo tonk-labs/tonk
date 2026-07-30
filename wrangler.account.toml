@@ -34,7 +34,7 @@ routes = [{ pattern = "accounts-staging.tonk.xyz", custom_domain = true }]
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "tonk-accounts-staging"
-database_id = "d82a5715-d210-4bca-bd9d-4ab64e909566"
+database_id = "e1f11539-c01c-4c48-a27b-988609ad3fe1"
 migrations_dir = "rust/tonk-account-service/migrations"
 
 [[env.staging.r2_buckets]]

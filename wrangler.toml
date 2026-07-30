@@ -40,7 +40,7 @@ bucket_name = "tonk-spaces-staging"
 [[env.staging.d1_databases]]
 binding = "ACCOUNTS_DB"
 database_name = "tonk-accounts-staging"
-database_id = "d82a5715-d210-4bca-bd9d-4ab64e909566"
+database_id = "e1f11539-c01c-4c48-a27b-988609ad3fe1"
 
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
