@@ -112,7 +112,6 @@ pub fn fab_html(space_did: &str) -> String {
           </tonk-share>
           <nav class="fab__menu fab__share-menu">
             <ui-member-roster space="{space}"></ui-member-roster>
-            <tonk-invitations space="{space}"></tonk-invitations>
           </nav>
         </span>
       </div>
@@ -220,6 +219,23 @@ mod tests {
         // Structure is authored now, not inferred from child order.
         assert!(html.contains("fab__tele"));
         assert!(html.contains("fab__scrim"));
+    }
+
+    #[test]
+    fn it_mounts_no_invitation_panel() {
+        // Invitations and their revocation are infrastructure, not bar
+        // furniture: the one revocation surface a user gets is the account
+        // page's device list. The share dropdown carries the roster and
+        // nothing else.
+        let html = fab_html("did:key:z6Mk");
+        assert!(
+            !html.contains("tonk-invitations"),
+            "the bar must not mount an invitation panel",
+        );
+        assert!(
+            html.contains("ui-member-roster"),
+            "the share dropdown still carries the roster",
+        );
     }
 
     #[test]
