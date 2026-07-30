@@ -17,8 +17,6 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Ed25519Signer, SignerCredential};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use dialog_effects::credential::CredentialError;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -2642,11 +2640,12 @@ pub(crate) async fn space_root_prefix(
         .load::<Vec<u8>>()
         .perform(&tonk.operator)
         .await
-        .map_err(|error| match error {
-            CredentialError::NotFound(_) => TonkWorkerError::NotFound(
-                "space root delegation is not persisted on this device".to_string(),
-            ),
-            error => {
+        .map_err(|error| {
+            if crate::credential::is_missing(&error) {
+                TonkWorkerError::NotFound(
+                    "space root delegation is not persisted on this device".to_string(),
+                )
+            } else {
                 TonkWorkerError::Internal(format!("failed to load space root delegation: {error}"))
             }
         })?;

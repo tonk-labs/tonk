@@ -10,7 +10,6 @@ use std::sync::Mutex;
 
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Verifier};
-use dialog_effects::credential::CredentialError;
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
@@ -46,7 +45,7 @@ async fn trusted_marker(tonk: &TonkState) -> Result<Option<Vec<u8>>, TonkWorkerE
         .await
     {
         Ok(marker) => Ok(Some(marker)),
-        Err(CredentialError::NotFound(_)) => Ok(None),
+        Err(error) if crate::credential::is_missing(&error) => Ok(None),
         Err(error) => Err(TonkWorkerError::Internal(format!(
             "failed to load account trusted-base marker: {error}"
         ))),
@@ -1165,17 +1164,6 @@ mod tests {
             descriptor_hex: hex::encode(descriptor.bytes()),
             initialize_name: false,
         };
-        // Native filesystem fixtures do not pre-create credential sites the
-        // way the browser's IndexedDB store does. Seed the normal empty
-        // tombstone so persist_link's conflict check observes "unattached".
-        state
-            .profile
-            .credential()
-            .site(crate::router::account::ACCOUNT_PROVIDER_SITE)
-            .save(Vec::<u8>::new())
-            .perform(&state.operator)
-            .await
-            .unwrap();
         crate::router::account::persist_link(&state, &request)
             .await
             .unwrap();

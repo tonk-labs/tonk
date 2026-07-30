@@ -68,7 +68,6 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, Ed25519Verifier};
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::Identify;
-use dialog_effects::credential::CredentialError;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
@@ -680,7 +679,7 @@ async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, To
         .await
     {
         Ok(bytes) => bytes,
-        Err(CredentialError::NotFound(_)) => return Ok(None),
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
         Err(error) => {
             return Err(TonkWorkerError::Internal(format!(
                 "failed to load guest record: {error}"

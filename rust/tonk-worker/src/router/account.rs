@@ -3,7 +3,6 @@
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_effects::credential::CredentialError;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
@@ -16,7 +15,7 @@ use tonk_worker_api::{
 use super::AppState;
 use crate::TonkWorkerError;
 
-pub(crate) const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
+const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
 /// Map an attachment failure onto the router's error taxonomy. A rejected
 /// descriptor is the caller presenting the wrong account's bytes, not a local
@@ -44,7 +43,7 @@ async fn load_provider(
         .await
     {
         Ok(bytes) => bytes,
-        Err(CredentialError::NotFound(_)) => return Ok(None),
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
         Err(error) => {
             return Err(TonkWorkerError::Internal(format!(
                 "failed to load account provider: {error}"
