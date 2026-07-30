@@ -1,15 +1,9 @@
 # A release is two acts, split across two machines, because it has to be.
 # `cargo release <level>` makes the version bump commit and stops. The
 # tag is created in CI by `.github/workflows/release-tag.yml` once that
-# commit lands on `staging`, and the tag is what publishes.
-#
-# Why it cannot be one local act: two active rulesets cover `staging`
-# (the default branch) and require a pull request, forbid
-# non-fast-forward, and require signed commits and status checks, with no
-# bypass actor. So nothing can push a commit directly to `staging`.
-# Merge commits are disabled too, so a PR merge rewrites the SHA -- a tag
-# created locally would point at a commit that never lands on the branch.
-# The rulesets cover branches, not tags, which is why CI can push one.
+# commit lands on `staging`, and the tag is what publishes. That
+# workflow's header explains why the split is forced; the `push` and
+# `tag` settings below say what it means here.
 #
 # Every setting here overrides a default that misfires on this workspace.
 # See docs/superpowers/specs/2026-07-30-cargo-release-design.md.
