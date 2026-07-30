@@ -119,9 +119,16 @@ const SPACE_MODEL_NAME: &str = "tonk/space";
 /// Attribute binding a bookmark name to the entity it refers to.
 const NAME_REFERENT: &str = "dialog.name/referent";
 
-/// Attribute carrying a concept's descriptor body. Its presence is what
-/// separates "the name resolves" from "the model behind it exists".
-const CONCEPT_SOURCE: &str = "dialog.meta/source";
+/// Marker claim every concept declared on a branch carries. Its presence is
+/// what separates "the name resolves" from "the model behind it exists".
+///
+/// Deliberately the marker and not `dialog.meta/source`: `source` is the
+/// descriptor materialised as JSON by the concept-of-concept query, which
+/// reconstructs it from the branch's facts. Nothing ever asserts it, so a raw
+/// claims read for `source` answers "no" for every concept that has ever
+/// existed (see `tonk_schema::concept::concept_of_concept_descriptor`). The
+/// marker is the fact the query itself enumerates concepts by.
+const CONCEPT_MARKER: &str = "dialog.meta/concept";
 
 /// The provider surface a branch read, commit, or remote fallback needs.
 ///
@@ -1315,12 +1322,12 @@ async fn validate_content<Env: BranchEnv>(
             "the space model name resolves to a non-entity",
         ));
     };
-    if first_value(branch, env, model, CONCEPT_SOURCE)
+    if first_value(branch, env, model, CONCEPT_MARKER)
         .await?
         .is_none()
     {
         return Err(JoinFailure::unavailable(
-            "the space model has no descriptor",
+            "the space model is not a concept on this branch",
         ));
     }
     Ok(())
@@ -2848,5 +2855,119 @@ mod tests {
             "local data survives revocation",
         );
         assert_eq!(membership_status(&app, &key).await, "durable");
+    }
+
+    /// The content gate a remote-backed join runs before installing a
+    /// revision. Every other test here joins a handcrafted local invite,
+    /// which carries no access service, so `needs_remote_authorization` is
+    /// false and this gate never runs — which is how it shipped broken.
+    ///
+    /// The fixture declares the space model through the real evaluate path
+    /// rather than hand-asserting the claims a concept is made of. That
+    /// matters more than brevity here: hand-asserting would encode this
+    /// test's belief about how a concept is stored, and a wrong belief about
+    /// exactly that is the bug being fixed.
+    #[dialog_common::test]
+    async fn it_accepts_content_whose_space_model_is_a_declared_concept() {
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/validate-content")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: crate::router::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        let repo = info.name;
+
+        // The repository's own identity, asserted the way
+        // `run_rename_repository` does — the typed schema struct owns the
+        // storage shape, so the fixture states no opinion about it.
+        {
+            use dialog_repository::{Branch, Repository, RepositoryExt as _};
+            let tonk = state.read().await;
+            let repository: Repository = tonk
+                .profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            let content: Branch = repository
+                .branch("main")
+                .open()
+                .perform(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            content
+                .transaction()
+                .assert(tonk_schema::RepositoryName {
+                    this: repository.did().this(),
+                    name: tonk_schema::domain::repo::Name("Untitled".to_string()),
+                })
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .expect("the repository name commits");
+        }
+
+        // The shape `core.yaml` seeds for a lean spot: a pinned concept for
+        // the canvas, and the cardinality-one `tonk/space` alias pointing at
+        // it. The space route mounts whatever that alias resolves to.
+        const SPACE_MODEL: &str = r#"concept!: &blank
+  this: tonk:blank
+  description: A lean repo's starting canvas.
+  with:
+    subject:
+      the: xyz.tonk.replica/subject
+      as: entity
+      cardinality: one
+      description: The spot this canvas belongs to
+
+name!:
+  this: id:tonk/space
+  entity: tonk:blank
+"#;
+        {
+            let guard = state.read().await;
+            crate::router::evaluate::evaluate_body(
+                &guard,
+                &repo,
+                "main",
+                SPACE_MODEL.to_owned(),
+                true,
+            )
+            .await
+            .expect("the space model commits");
+        }
+
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(&repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let content: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("content branch opens");
+
+        super::validate_content(&content, &tonk.operator, &repository.did())
+            .await
+            .expect("content carrying a declared space model is joinable");
     }
 }
