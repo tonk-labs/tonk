@@ -538,10 +538,40 @@ pub mod tests {
         }
     }
 
-    /// Create an isolated test state with a stable local root grant.
-    pub async fn test_state() -> TonkState {
+    /// The root seed for a test profile, derived from its name.
+    ///
+    /// Per-profile rather than one shared constant, because the account
+    /// repository's routing key IS the root's — so every profile sharing a
+    /// root shares one account repository, and its storage is not scoped by
+    /// profile the way a space's is. Two tests that link descriptors naming
+    /// different remotes then fight over the same mount, and the second one
+    /// to run reads the first one's remote and refuses as a conflict. That
+    /// is invisible until the ordering shifts, which is exactly the failure
+    /// [`session_nonce`] exists to prevent one layer down.
+    ///
+    /// A fold rather than a hash: no dependency, deterministic, and it mixes
+    /// every byte of the name — which is all that separating test profiles
+    /// requires.
+    pub(crate) fn test_root_seed(profile_name: &str) -> [u8; 32] {
+        let mut seed = [42u8; 32];
+        for (index, byte) in profile_name.as_bytes().iter().enumerate() {
+            seed[index % 32] ^= byte.rotate_left((index % 8) as u32);
+        }
+        seed
+    }
+
+    /// Create an isolated test state with a stable local root grant and no
+    /// account attached to it.
+    ///
+    /// The shape a device is in between provisioning a root and finishing
+    /// sign-up. Only the tests that assert a durable operation refuses want
+    /// it; everything else wants [`test_state`], because production never
+    /// creates a root without an account around it.
+    pub async fn test_state_without_account() -> TonkState {
         let state = test_state_without_root().await;
-        let root = Ed25519Signer::import(&[42u8; 32]).await.unwrap();
+        let root = Ed25519Signer::import(&test_root_seed(&state.profile_name))
+            .await
+            .unwrap();
         let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
             .await
             .unwrap();
@@ -554,6 +584,14 @@ pub mod tests {
         )
         .await
         .unwrap();
+        state
+    }
+
+    /// Create an isolated test state with a stable local root grant and an
+    /// account attached to it — a signed-in device.
+    pub async fn test_state() -> TonkState {
+        let state = test_state_without_account().await;
+        super::account::attach_test_account(&state).await.unwrap();
         state
     }
 
@@ -761,9 +799,11 @@ pub mod tests {
         info.name
     }
 
-    #[dialog_common::test]
-    async fn it_refuses_space_creation_without_a_local_root() {
-        let state = test_state_without_root().await;
+    /// The stable code the page routes the account gate off, for both shapes
+    /// of "not signed in": no root at all, and a root with no account behind
+    /// it. Neither may create a spot — one that exists without an account is
+    /// local-only and never backed up, and nothing later would say so.
+    async fn create_space_refusal(state: TonkState) -> serde_json::Value {
         let (app, _lsp) = api_router(state);
         let response = app
             .oneshot(
@@ -782,8 +822,51 @@ pub mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(error["error"]["code"], "ROOT_REQUIRED");
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_space_creation_without_an_account() {
+        let error = create_space_refusal(test_state_without_root().await).await;
+        assert_eq!(error["error"]["code"], "ACCOUNT_REQUIRED");
+
+        let error = create_space_refusal(test_state_without_account().await).await;
+        assert_eq!(
+            error["error"]["code"], "ACCOUNT_REQUIRED",
+            "a bare passkey root is not an account"
+        );
+    }
+
+    /// An attached account is the whole precondition — a spot creates the
+    /// moment one exists.
+    ///
+    /// Through `PUT /api/repository/{label}` rather than `POST /api/spaces`,
+    /// because both reach the same gate in `create_repository` and only the
+    /// latter goes on to seed a template, which needs a library this harness
+    /// serves over no HTTP. `put_repo` asserts the 201 itself.
+    #[dialog_common::test]
+    async fn it_creates_a_space_once_an_account_is_attached() {
+        let (app, _state, _lsp) = super::api_router_with_state(test_state().await);
+        let key = put_repo(&app, "account-attached").await;
+        assert!(key.starts_with("did:key:"));
+    }
+
+    /// Every creation route shares the gate, not just the one the page uses.
+    #[dialog_common::test]
+    async fn it_refuses_repository_creation_without_an_account() {
+        let (app, _lsp) = api_router(test_state_without_account().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/no-account")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[dialog_common::test]

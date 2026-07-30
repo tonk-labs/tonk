@@ -38,8 +38,8 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    CreateSpaceRequest, CreateSpaceResponse, IdentityIntent, IdentityRequired, RootStatus,
-    SaveRootRequest,
+    ACCOUNT_REQUIRED, AccountRequired, CreateSpaceRequest, CreateSpaceResponse, PendingIntent,
+    RootStatus, SaveRootRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,

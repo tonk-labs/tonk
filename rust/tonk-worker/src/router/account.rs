@@ -124,6 +124,76 @@ pub(crate) async fn member_did(
     super::identity::root_did(state).await
 }
 
+/// Refuse unless this device holds an account.
+///
+/// The precondition every durable operation shares. Durable authority is only
+/// ever issued to an account: a spot created without one is local-only and
+/// un-backed-up, and a membership claimed without one has nothing revocable
+/// behind it. `Unhydrated` and `Unconfigured` accounts pass — those are
+/// synchronization states of an account that exists, and refusing on them
+/// would invent a way to be stuck with no way out.
+///
+/// [`attachment`] resolves the record against the local root and is fail-safe,
+/// so a missing root, an unreadable record and another account's descriptor
+/// all land here as "no account" rather than as an error the caller has to
+/// distinguish.
+pub(crate) async fn require_account(
+    state: &crate::worker::TonkState,
+) -> Result<(), TonkWorkerError> {
+    match attachment(state).await {
+        Some(_) => Ok(()),
+        None => Err(TonkWorkerError::AccountRequired),
+    }
+}
+
+/// Attach a descriptor-less provider record to the test profile's root.
+///
+/// The cheapest thing that satisfies [`require_account`]: an account exists,
+/// its repository is not established yet. Signing a descriptor here would fix
+/// one, and a test that wants a specific one signs its own.
+///
+/// The provider URL matches [`tests_matching_request`] deliberately. A test
+/// that links on top of this fixture is then an upgrade — the same account
+/// gaining its descriptor — rather than a second account arriving, which
+/// `persist_link` refuses.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn attach_test_account(
+    state: &crate::worker::TonkState,
+) -> Result<(), TonkWorkerError> {
+    let record = AccountProviderRecord::attach_unconfigured(TEST_ACCOUNT_PROVIDER, 0)
+        .map_err(provider_error)?;
+    save_provider(state, &record).await
+}
+
+/// The provider both test fixtures name. See [`attach_test_account`].
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) const TEST_ACCOUNT_PROVIDER: &str = "https://accounts.tonk.xyz";
+
+/// Detach the test account, leaving the profile's root and spaces alone.
+///
+/// The state a device reaches by signing out (`unlink`): local authority and
+/// every replica intact, no account behind them. The local profile-name path
+/// belongs to it, so the tests that cover that path end up here rather than in
+/// a state the account gate no longer allows — a profile that created spaces
+/// without ever having an account.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn detach_test_account(
+    state: &crate::worker::TonkState,
+) -> Result<(), TonkWorkerError> {
+    state
+        .profile
+        .credential()
+        .site(ACCOUNT_PROVIDER_SITE)
+        .save(Vec::<u8>::new())
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to clear account provider: {error}"))
+        })?;
+    state.account_keys.invalidate();
+    Ok(())
+}
+
 async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkWorkerError> {
     let device_did = state.profile.did().to_string();
     let root = match super::identity::local_root(state).await {
@@ -320,17 +390,19 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
 pub(crate) async fn tests_matching_request(
     state: &crate::worker::TonkState,
 ) -> tonk_worker_api::AccountLinkRequest {
-    // `test_state` persists a root derived from this exact seed, so a test can
-    // re-derive it to sign a descriptor the local root will accept.
-    let signer = dialog_credentials::Ed25519Signer::import(&[42u8; 32])
-        .await
-        .expect("the test root seed imports");
+    // `test_state` persists a root derived from this profile's seed, so a test
+    // can re-derive it to sign a descriptor the local root will accept.
+    let signer = dialog_credentials::Ed25519Signer::import(&crate::router::tests::test_root_seed(
+        &state.profile_name,
+    ))
+    .await
+    .expect("the test root seed imports");
     let descriptor = AccountRepositoryDescriptorV1::sign(&signer, "https://accounts.example/ucan/")
         .await
         .expect("the test descriptor signs");
     let root = super::identity::local_root(state).await.unwrap();
     tonk_worker_api::AccountLinkRequest {
-        provider: "https://accounts.tonk.xyz".into(),
+        provider: TEST_ACCOUNT_PROVIDER.into(),
         root_did: root.root_did.to_string(),
         credential_id: root.credential_id,
         delegation_hex: hex::encode(root.bytes),
@@ -347,7 +419,7 @@ mod tests {
     use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
-    use crate::router::tests::{test_state, test_state_without_root};
+    use crate::router::tests::{test_state_without_account, test_state_without_root};
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn matching_request(state: &crate::worker::TonkState) -> AccountLinkRequest {
@@ -356,7 +428,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reports_an_unregistered_local_root_without_an_account() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let Json(status) = get(State(state)).await.unwrap();
         assert!(matches!(status, AccountStatus::Unregistered { .. }));
     }
@@ -370,7 +442,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_attaches_a_provider_without_replacing_the_root_grant() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let before = {
             let state = state.read().await;
             super::super::identity::local_root(&state)
@@ -395,7 +467,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_stores_the_account_repository_descriptor_with_the_provider() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let request = {
             let state = state.read().await;
             matching_request(&state).await
@@ -419,7 +491,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_a_descriptor_for_another_account_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let stranger = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
             .await
             .unwrap();
@@ -440,7 +512,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_detaches_a_provider_without_revoking_or_rotating_the_device() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let before = state.read().await.profile.did();
         let request = {
             let state = state.read().await;

@@ -218,12 +218,13 @@ pub(crate) enum JoinMode {
 
 /// Why a join stopped short of committing.
 ///
-/// A missing local root is not a failure — it is a request for the
-/// identity the join needs, and the same URL is replayed once the
-/// ceremony completes.
+/// A missing account is not a failure — it is a request for the account
+/// the join needs, and the same URL is replayed once the user has one.
+/// A guest visit never reaches it: reading and writing through an open
+/// invite needs neither an account nor a root.
 pub(crate) enum JoinRejection {
-    /// A durable join was asked for before the device had a root.
-    IdentityRequired,
+    /// A durable join was asked for before the device had an account.
+    AccountRequired,
     /// The join reached a terminal classification.
     Failed(JoinFailure),
 }
@@ -237,7 +238,7 @@ impl From<JoinFailure> for JoinRejection {
 impl From<JoinRejection> for TonkWorkerError {
     fn from(rejection: JoinRejection) -> Self {
         match rejection {
-            JoinRejection::IdentityRequired => TonkWorkerError::RootRequired,
+            JoinRejection::AccountRequired => TonkWorkerError::AccountRequired,
             JoinRejection::Failed(failure) => failure.into(),
         }
     }
@@ -426,13 +427,13 @@ mod failure_vocabulary {
         ));
     }
 
-    /// A missing root is a request for identity, not a terminal failure —
-    /// the route has to keep answering `ROOT_REQUIRED` so the gate opens.
+    /// A missing account is a request to sign in, not a terminal failure —
+    /// the route has to keep answering `ACCOUNT_REQUIRED` so the gate opens.
     #[dialog_common::test]
-    fn it_keeps_a_missing_root_out_of_the_failure_vocabulary() {
+    fn it_keeps_a_missing_account_out_of_the_failure_vocabulary() {
         assert!(matches!(
-            TonkWorkerError::from(JoinRejection::IdentityRequired),
-            TonkWorkerError::RootRequired
+            TonkWorkerError::from(JoinRejection::AccountRequired),
+            TonkWorkerError::AccountRequired
         ));
     }
 }
@@ -764,18 +765,18 @@ pub async fn join_guest(
         .ok_or_else(|| TonkWorkerError::Conflict("this replica is already durable".to_string()))?;
     match join_invite(&tonk, &url, JoinMode::Durable).await {
         Ok(outcome) => joined_response(&tonk, outcome).await,
-        Err(JoinRejection::IdentityRequired) => {
+        Err(JoinRejection::AccountRequired) => {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
                 let client = request.extensions().get::<crate::router::ClientId>();
-                crate::router::navigate::notify_identity_required(
+                crate::router::navigate::notify_account_required(
                     client,
-                    tonk_worker_api::IdentityIntent::DurableJoin { url },
+                    tonk_worker_api::PendingIntent::DurableJoin { url },
                 );
             }
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             let _ = (request, url);
-            Err(TonkWorkerError::RootRequired)
+            Err(TonkWorkerError::AccountRequired)
         }
         Err(JoinRejection::Failed(failure)) => {
             log!("guest promotion failed: {failure:?}");
@@ -844,10 +845,18 @@ async fn prepare_join(
             (None, None)
         }
         JoinMode::Durable => {
+            // Durable membership is what a later share delegates from, so it
+            // has to terminate at an account root — an anonymous one leaves
+            // the chain rooted in something with no owner and no way to
+            // revoke it. A guest visit is the accountless path, and takes the
+            // arm above.
+            crate::router::account::require_account(tonk)
+                .await
+                .map_err(|_| JoinRejection::AccountRequired)?;
             let member = match crate::router::account::member_did(tonk).await {
                 Ok(member) => member,
                 Err(TonkWorkerError::RootRequired) => {
-                    return Err(JoinRejection::IdentityRequired);
+                    return Err(JoinRejection::AccountRequired);
                 }
                 Err(error) => {
                     return Err(JoinFailure::claim_failed(format!(
@@ -1789,10 +1798,10 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                 outcome.key
             );
         }
-        Err(JoinRejection::IdentityRequired) => {
-            crate::router::navigate::notify_identity_required(
+        Err(JoinRejection::AccountRequired) => {
+            crate::router::navigate::notify_account_required(
                 env.client(),
-                tonk_worker_api::IdentityIntent::DurableJoin { url },
+                tonk_worker_api::PendingIntent::DurableJoin { url },
             );
         }
         Err(JoinRejection::Failed(failure)) => {

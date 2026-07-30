@@ -967,7 +967,11 @@ mod tests {
 
         // The descriptor must be signed by the root `test_state` persisted:
         // linking now attaches a provider to that exact local root.
-        let root = Ed25519Signer::import(&[42u8; 32]).await.unwrap();
+        let seed = {
+            let tonk = state.read().await;
+            crate::router::tests::test_root_seed(&tonk.profile_name)
+        };
+        let root = Ed25519Signer::import(&seed).await.unwrap();
         let descriptor = AccountRepositoryDescriptorV1::sign(&root, "http://127.0.0.1:9/")
             .await
             .unwrap();
