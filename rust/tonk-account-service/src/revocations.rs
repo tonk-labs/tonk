@@ -86,7 +86,7 @@ mod memory {
     #[derive(Default)]
     pub struct MemoryRevocationStore(Mutex<HashMap<String, Vec<u8>>>);
 
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     impl MemoryRevocationStore {
         pub(super) fn len(&self) -> usize {
             self.0.lock().unwrap().len()
@@ -126,7 +126,12 @@ pub use memory::MemoryRevocationStore;
 #[cfg(target_arch = "wasm32")]
 pub mod r2;
 
-#[cfg(test)]
+// Native only, like the rest of the crate's tests. These need none of the
+// `helpers` backends, but a Worker exports `fetch`, and the wasm-bindgen
+// harness loads a module by calling `fetch` from inside that same module —
+// where the crate's export shadows the global. The module never initializes,
+// so no test in this crate can run under wasm.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use dialog_credentials::Ed25519Signer;
