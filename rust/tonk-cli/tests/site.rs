@@ -249,6 +249,13 @@ mod when_shortening_an_invite {
     #[cfg(feature = "integration-tests")]
     use crate::common;
 
+    /// The relay these fixtures' remote publishes revocations to — an
+    /// invite that embeds a remote must name one. It stays off the live
+    /// service on purpose: neither the mint nor the claim calls it, and in
+    /// production it is the artifact host, not the access endpoint.
+    #[cfg(feature = "integration-tests")]
+    const REVOCATION_RELAY: &str = "https://artifacts.example.test/revocations/";
+
     /// Full loop against a live local shortcut service: mint the long
     /// URL, shorten it (`PUT /@` on the link's own origin), then claim
     /// the short link — the claim resolves the 301 by hand, splicing
@@ -257,10 +264,23 @@ mod when_shortening_an_invite {
     async fn it_shortens_and_claims_a_minted_invite(env: AccessServiceAddress) -> Result<()> {
         let endpoint = env.access_service_url.as_str();
         let inviter = common::TestSite::new().await?;
-        remote::add(&inviter.site, "origin", endpoint, None).await?;
+        remote::add_with_revocation(
+            &inviter.site,
+            "origin",
+            endpoint,
+            None,
+            Some(REVOCATION_RELAY),
+        )
+        .await?;
 
         let base = format!("{endpoint}/join");
-        let outcome = invite::mint(&inviter.site, Some(&base), Some(endpoint)).await?;
+        let outcome = invite::mint_with_relay(
+            &inviter.site,
+            Some(&base),
+            Some(endpoint),
+            Some(REVOCATION_RELAY),
+        )
+        .await?;
         assert!(
             outcome.url.contains("access="),
             "long form: {}",
@@ -298,7 +318,14 @@ mod when_shortening_an_invite {
     ) -> Result<()> {
         let endpoint = env.access_service_url.as_str();
         let inviter = common::TestSite::new().await?;
-        remote::add(&inviter.site, "origin", endpoint, None).await?;
+        remote::add_with_revocation(
+            &inviter.site,
+            "origin",
+            endpoint,
+            None,
+            Some(REVOCATION_RELAY),
+        )
+        .await?;
 
         let resolved = remote::resolve(&inviter.site, None)
             .await?
@@ -306,11 +333,52 @@ mod when_shortening_an_invite {
         let base = invite::base_url_for_remote(&resolved.endpoint)?;
         assert_eq!(base, format!("{endpoint}/join"));
 
-        let outcome = invite::mint(&inviter.site, Some(&base), Some(&resolved.endpoint)).await?;
+        // Relay off the resolved record, the way the command does it.
+        let outcome = invite::mint_with_relay(
+            &inviter.site,
+            Some(&base),
+            Some(&resolved.endpoint),
+            resolved.revocation_url.as_deref(),
+        )
+        .await?;
         let short = invite::shorten(&outcome.url).await?;
         assert!(
             short.starts_with(&format!("{endpoint}/@/")),
             "short link sits on the remote's origin: {short}"
+        );
+        Ok(())
+    }
+}
+
+/// The library's own copy of the rule the binary enforces before it calls
+/// in: an invite that embeds a remote must name the relay its revocations
+/// will be published to. Every mint above that embeds a remote now passes
+/// one, so the refusal — which those mints used to cover by failing on it —
+/// is stated here instead. Offline: the check runs before any network.
+mod when_minting_an_invite_that_embeds_a_relay_less_remote {
+    use anyhow::Result;
+    use tonk_cli::invite;
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_refuses_and_says_how_to_configure_a_relay() -> Result<()> {
+        let inviter = common::TestSite::new().await?;
+
+        let error = invite::mint(&inviter.site, None, Some(ENDPOINT))
+            .await
+            .expect_err("a remote with no relay must not be embedded");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("no revocation relay"),
+            "and say why: {message}"
+        );
+        assert!(
+            message.contains("--revocation-url"),
+            "and how to fix it: {message}"
         );
         Ok(())
     }
