@@ -2302,11 +2302,11 @@ mod tests {
 
         assert_eq!(post_join(&app, &url_a).await, StatusCode::CREATED);
 
-        let profile_entity = state.read().await.profile.did().this();
+        let member_entity = member_entity(&state).await;
         let membership_entity = content_memberships(&state, &key)
             .await
             .into_iter()
-            .find(|m| m.member.0 == profile_entity)
+            .find(|m| m.member.0 == member_entity)
             .expect("claimer membership present")
             .this()
             .clone();

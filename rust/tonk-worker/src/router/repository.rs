@@ -5203,15 +5203,27 @@ mod tests {
         let (_app, state, key) = fresh_repo("test-founder-membership").await;
 
         let memberships = crate::router::tests::content_memberships(&state, &key).await;
-        let profile_entity = {
+        // Keyed on the local root, not the device that created it, so the
+        // row converges across every device holding the same root.
+        let (root_entity, device_entity) = {
             let guard = state.read().await;
             use tonk_schema::prelude::DidExt as _;
-            guard.profile.did().this()
+            (
+                crate::router::identity::root_did(&guard)
+                    .await
+                    .expect("the test profile has a local root")
+                    .this(),
+                guard.profile.did().this(),
+            )
         };
         // Every create mints a fresh routing key, so the repo is brand
         // new: exactly the founder's membership.
         assert_eq!(memberships.len(), 1, "exactly the founder membership");
-        assert_eq!(memberships[0].member.0, profile_entity);
+        assert_eq!(memberships[0].member.0, root_entity);
+        assert_ne!(
+            memberships[0].member.0, device_entity,
+            "no device-keyed row was written",
+        );
 
         // The creator's membership is stamped `founder`.
         let roles = crate::router::tests::content_member_roles(&state, &key).await;
