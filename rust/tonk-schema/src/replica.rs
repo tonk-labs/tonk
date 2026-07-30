@@ -309,6 +309,15 @@ impl Replica {
     /// but can't be reached).
     pub const LOCAL: &'static str = "sync:local";
 
+    /// Remote authorization was revoked; terminal until authority changes.
+    pub const REVOKED: &'static str = "sync:revoked";
+
+    /// Reconciliation conflicted with concurrent remote/local updates.
+    pub const CONFLICT: &'static str = "sync:conflict";
+
+    /// The configured service is temporarily unavailable.
+    pub const UNAVAILABLE: &'static str = "sync:unavailable";
+
     /// The live `status` value for a paused replica — the overlay twin of the
     /// durable [`PAUSED`](Self::PAUSED) `enabled` preference, so the chip shows
     /// `paused` immediately without waiting for a status sweep (which a paused
@@ -327,6 +336,21 @@ impl Replica {
     /// The `status` value for an unreachable remote (a real offline state).
     pub fn offline_status() -> SyncStatusAttr {
         SyncStatusAttr(Self::OFFLINE.parse().expect("sync:offline parses"))
+    }
+
+    /// The `status` value for revoked remote authority.
+    pub fn revoked_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::REVOKED.parse().expect("sync:revoked parses"))
+    }
+
+    /// The `status` value for a reconciliation conflict.
+    pub fn conflict_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::CONFLICT.parse().expect("sync:conflict parses"))
+    }
+
+    /// The `status` value for a temporarily unavailable service.
+    pub fn unavailable_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::UNAVAILABLE.parse().expect("sync:unavailable parses"))
     }
 
     /// Map a head-comparison [`SyncState`](crate::SyncState) to the

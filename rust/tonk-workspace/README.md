@@ -35,16 +35,18 @@ logic is split out so it can be unit-tested natively.
   the nearest `with` ancestor and dispatches a bubbling, composed
   `tonk:share` `CustomEvent` carrying `{ repo }` for the app shell to handle.
 - **`<tonk-invite>`** mints an artifact-scoped invite link via
-  `POST /api/repository/{repo}/invite` (with an artifact-targeted `base_url`,
+  `POST /api/repository/{repo}/invite` (with an artifact-targeted `baseUrl`,
   defaulting the link's concept to `tonk:artifact`) and renders it inline. Nothing
   is stored: the link's fragment is a private-key seed, so re-clicking mints a
   fresh one.
 - **`<tonk-sync-state>`** is the background-sync status pill and pause/resume
   button in one. It resolves repo/branch from the nearest `with="branch@repo"`
   ancestors, reads the `sync/status` route, and shows `synced`, `syncing`, or
-  `paused`. Clicking flips the per-repo `tonk:auto-sync:{repo}` `localStorage`
-  preference; for a branch with no upstream it instead reveals an "Enable sync"
-  trigger that opens the `#enable-sync` dialog. It refreshes on the
+  `paused`, while keeping `revoked`, `conflict`, `unavailable`, unknown HTTP
+  failures, and browser-offline visibly distinct. Clicking normal/paused states
+  flips the per-repo `tonk:auto-sync:{repo}` `localStorage` preference; failure
+  pills are inert. For a branch with no upstream it instead reveals an "Enable
+  sync" trigger that opens the `#enable-sync` dialog. It refreshes on the
   `tonk:status-refresh` and `tonk:committed` window events.
 - **`<tonk-default-remote field="remote">`** renders a button (label from its own
   text, default "Use this server") that writes `location.origin + "/ucan/"` into

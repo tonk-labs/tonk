@@ -28,17 +28,14 @@
 //! }
 //! ```
 //!
-//! So a command reads pieces via plain property paths:
-//! `dom.event.detail/hash` (the `#seed`),
-//! `dom.event.detail.search-params/access`, etc. — never touching
-//! `window`, never re-parsing a raw string. The `#hash` matters because
-//! the service worker can't see it (browsers strip fragments from
-//! requests); this element is the page-side courier that brings it into
-//! the command.
+//! Join reads `dom.event.detail/href` as one value. Keeping the query and
+//! fragment together avoids reconstructing bearer authority after parsing;
+//! the service worker cannot otherwise see the fragment because browsers
+//! strip it from requests.
 //!
-//! Fires once: the element connects once when the view mounts (chrome is
-//! not re-created on incremental reconcile), so the `mount` event — and
-//! any command bound to it — fires exactly once per page load.
+//! The element fires on connect. A detail-free `tonk:join-retry` event asks it
+//! to rebuild this in-memory location detail and fire again without navigating
+//! or putting the URL in the retry event.
 
 use custom_elements::CustomElement;
 use wasm_bindgen::closure::Closure;
@@ -53,6 +50,7 @@ use web_sys::{
 pub(crate) struct TonkPage {
     observer: Option<MutationObserver>,
     _callback: Option<Closure<dyn FnMut()>>,
+    retry: Option<Closure<dyn FnMut(web_sys::Event)>>,
 }
 
 impl CustomElement for TonkPage {
@@ -70,6 +68,16 @@ impl CustomElement for TonkPage {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        let retry_host = this.clone();
+        let retry = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            if let Some(detail) = location_detail() {
+                dispatch_mount(&retry_host, &detail);
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let _ = this
+            .add_event_listener_with_callback("tonk:join-retry", retry.as_ref().unchecked_ref());
+        self.retry = Some(retry);
+
         // Fire `mount` only once the `<tonk-display>` whose event delegate
         // handles this page's `onmount` binding is actually listening —
         // never on raw connect, when the delegate is still installing
@@ -120,11 +128,17 @@ impl CustomElement for TonkPage {
         self._callback = Some(callback);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
         if let Some(observer) = self.observer.take() {
             observer.disconnect();
         }
         self._callback = None;
+        if let Some(retry) = self.retry.take() {
+            let _ = this.remove_event_listener_with_callback(
+                "tonk:join-retry",
+                retry.as_ref().unchecked_ref(),
+            );
+        }
     }
 }
 

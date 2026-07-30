@@ -7,6 +7,22 @@ pub enum TonkUiError {
     #[error("Error from local API: {0}")]
     ApiError(String),
 
+    /// A curated, already-caller-facing message from the account
+    /// service. Shown verbatim: the service writes these for display, and
+    /// the account service is remote, so the `ApiError` wrapping would
+    /// both mislabel it and bury the sentence someone needs to read.
+    #[error("{0}")]
+    Account(String),
+
+    /// Structured synchronization failure returned by the worker.
+    #[error("{message}")]
+    Sync {
+        /// Stable routing code such as `CREDENTIAL_REVOKED`.
+        code: String,
+        /// Fixed caller-safe message.
+        message: String,
+    },
+
     /// Structured analyzer error returned by the worker —
     /// preserved so the UI can route it to the editor as a
     /// source-positioned diagnostic instead of a banner.

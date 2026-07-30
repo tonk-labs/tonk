@@ -15,9 +15,9 @@ use worker::wasm_bindgen::JsValue;
 use crate::store::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK,
-    INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_ROOT,
-    SELECT_CODE, SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError,
-    UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
+    SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT,
+    SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -93,6 +93,7 @@ struct DeviceRowD1 {
     account_id: f64,
     device_did: String,
     delegation_cid: String,
+    delegation_hex: Option<String>,
     name: String,
     status: String,
     created_at: f64,
@@ -106,6 +107,7 @@ impl TryFrom<DeviceRowD1> for Device {
             account_id: row.account_id as i64,
             device_did: row.device_did,
             delegation_cid: row.delegation_cid,
+            delegation_hex: row.delegation_hex.unwrap_or_default(),
             name: row.name,
             status: DeviceStatus::parse(&row.status)?,
             created_at: row.created_at as u64,
@@ -250,6 +252,7 @@ impl Store for D1Store {
             .bind(&[
                 JsValue::from(device.device_did.as_str()),
                 JsValue::from(device.delegation_cid.as_str()),
+                JsValue::from(device.delegation_hex.as_str()),
                 JsValue::from(device.name.as_str()),
                 JsValue::from_f64(created_at as f64),
             ])
@@ -278,6 +281,18 @@ impl Store for D1Store {
         Ok(row.map(Account::from))
     }
 
+    async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError> {
+        let row: Option<AccountRowD1> = self
+            .0
+            .prepare(SELECT_ACCOUNT_BY_EMAIL)
+            .bind(&[JsValue::from(email)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(Account::from))
+    }
+
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError> {
         self.0
             .prepare(INSERT_DEVICE)
@@ -285,6 +300,7 @@ impl Store for D1Store {
                 JsValue::from_f64(device.account_id as f64),
                 JsValue::from(device.device_did.as_str()),
                 JsValue::from(device.delegation_cid.as_str()),
+                JsValue::from(device.delegation_hex.as_str()),
                 JsValue::from(device.name.as_str()),
                 JsValue::from(device.status.as_str()),
                 JsValue::from_f64(device.created_at as f64),
@@ -341,6 +357,30 @@ impl Store for D1Store {
         Ok(changes > 0)
     }
 
+    async fn revoke_device_by_cid(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(UPDATE_DEVICE_REVOKE_BY_CID)
+            .bind(&[
+                JsValue::from_f64(account_id as f64),
+                JsValue::from(delegation_cid),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        let changes = result
+            .meta()
+            .map_err(map_err)?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0);
+        Ok(changes > 0)
+    }
+
     async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError> {
         self.0
             .prepare(INSERT_LINK)
@@ -384,6 +424,7 @@ impl Store for D1Store {
                 JsValue::from_f64(device.account_id as f64),
                 JsValue::from(device.device_did.as_str()),
                 JsValue::from(device.delegation_cid.as_str()),
+                JsValue::from(device.delegation_hex.as_str()),
                 JsValue::from(device.name.as_str()),
                 JsValue::from(device.status.as_str()),
                 JsValue::from_f64(device.created_at as f64),

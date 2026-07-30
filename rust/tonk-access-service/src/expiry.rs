@@ -57,9 +57,7 @@ mod tests {
 
     fn bounded(not_before: Option<u64>, expires_at: Option<u64>) -> PresentedCredentials {
         PresentedCredentials {
-            invocation_issuer: "did:key:zDevice".to_string(),
             delegation_cids: vec!["bafycid".to_string()],
-            delegation_issuers: vec!["did:key:zRoot".to_string()],
             not_before,
             expires_at,
         }

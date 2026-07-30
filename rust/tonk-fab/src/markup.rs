@@ -117,6 +117,7 @@ pub fn fab_html(space_did: &str) -> String {
       </div>
       <div class="fab__tele fab__tele--account">
         <span class="fab__seg fab__account">
+          <button type="button" class="fab__join" hidden>join spot</button>
           <span class="fab__name"><ui-profile-name></ui-profile-name></span>
           <a class="fab__account-link" href="/account" aria-label="Open account settings"><wa-icon name="user"></wa-icon></a>
         </span>
@@ -138,7 +139,8 @@ pub fn fab_html(space_did: &str) -> String {
     <input class="wizard__template" type="radio" name="template" value="board" id="tpl-board">
     <input type="hidden" name="name" value="Untitled">
     <input type="hidden" name="remote" value="">
-    <tonk-default-remote field="remote" auto></tonk-default-remote>
+    <input type="hidden" name="revocation" value="">
+    <tonk-default-remote field="remote" relay-field="revocation" auto></tonk-default-remote>
     <div class="wizard__screen wizard__screen--start">
       <div class="wizard__cards">
         <label class="wizard__card" for="wiz-template">
@@ -192,6 +194,18 @@ pub fn fab_html(space_did: &str) -> String {
   <p class="fab__prompt">Turn on sync so the people you share with can open it.</p>
   <wa-button slot="footer" variant="primary" data-enable-sync-confirm>Turn on sync &amp; copy link</wa-button>
   <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
+</wa-dialog>
+<!-- The other repairable refusal: a guest can't mint, because a guest holds
+     the invite it arrived with rather than membership to delegate from. Its
+     own prompt, not the sync one's copy with the words swapped — this spot's
+     sync is fine, and offering to "turn on sync" would be answering a
+     question nobody asked. Confirming joins; the share is a second click,
+     which keeps this prompt's promise the one it can keep. -->
+<wa-dialog id="fab-join-first" label="Join this spot?" class="fab__dialog" style="--width: 28rem">
+  <p class="fab__prompt" data-join-first-detail>You're visiting this spot as a guest.</p>
+  <p class="fab__prompt">Joining makes you a member of it, so you can share it with other people.</p>
+  <wa-button slot="footer" variant="primary" data-join-first-confirm>Join this spot</wa-button>
+  <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
 </wa-dialog>"#,
         space = space_did
     )
@@ -217,6 +231,36 @@ mod tests {
         // Structure is authored now, not inferred from child order.
         assert!(html.contains("fab__tele"));
         assert!(html.contains("fab__scrim"));
+    }
+
+    #[test]
+    fn it_mounts_no_invitation_panel() {
+        // Invitations and their revocation are infrastructure, not bar
+        // furniture: the one revocation surface a user gets is the account
+        // page's device list. The share dropdown carries the roster and
+        // nothing else.
+        let html = fab_html("did:key:z6Mk");
+        assert!(
+            !html.contains("tonk-invitations"),
+            "the bar must not mount an invitation panel",
+        );
+        assert!(
+            html.contains("ui-member-roster"),
+            "the share dropdown still carries the roster",
+        );
+    }
+
+    #[test]
+    fn it_labels_the_join_action_in_bar_case() {
+        let html = fab_html("did:key:z6Mk");
+        // The bar's own labels are lowercase ("share"); title case was Web
+        // Awesome's native-button skin reading as a foreign control, not a
+        // choice. `hidden` ships with it — the action is guest-only, and
+        // `attach_membership` is what reveals it.
+        assert!(
+            html.contains(r#"<button type="button" class="fab__join" hidden>join spot</button>"#),
+            "the join action must ship hidden with a lowercase label",
+        );
     }
 
     #[test]

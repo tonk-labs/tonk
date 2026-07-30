@@ -38,7 +38,7 @@ async fn try_restore_spaces(tonk: &TonkState) -> Result<(), crate::TonkWorkerErr
     let Some(link) = crate::router::account::account_link(tonk).await else {
         return Ok(());
     };
-    let Some(service) = account_service_url() else {
+    let Some(service) = account_service_url(tonk).await else {
         return Ok(());
     };
     let device = tonk.profile.signer().signer().clone();
@@ -91,7 +91,17 @@ async fn restore_one(
     // `MemberName`) — the roster is authoritative on the content branch
     // and arrives over sync. Writing a role here would demote a founder
     // on a space this account created.
-    crate::router::join::mount_replica(tonk, &subject, artifact.remote_url.as_deref()).await?;
-    crate::router::repository::mark_replica_initialized(tonk, &subject).await?;
+    //
+    // The mount is hidden; the profile index entry that makes it visible
+    // is the separate commit below, so a restore interrupted between the
+    // two leaves nothing half-listed in the Hub.
+    crate::router::join::mount_replica(
+        tonk,
+        &subject,
+        artifact.remote_url.as_deref(),
+        artifact.revocation_url.as_deref(),
+    )
+    .await?;
+    crate::router::repository::record_initialized_replica_in_profile(tonk, &subject).await?;
     Ok(())
 }

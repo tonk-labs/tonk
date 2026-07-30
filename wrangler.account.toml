@@ -18,6 +18,10 @@ migrations_dir = "rust/tonk-account-service/migrations"
 binding = "CHAINS"
 bucket_name = "tonk-account-chains"
 
+[[r2_buckets]]
+binding = "REVOCATIONS"
+bucket_name = "tonk-revocations"
+
 [vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
@@ -40,6 +44,10 @@ migrations_dir = "rust/tonk-account-service/migrations"
 [[env.staging.r2_buckets]]
 binding = "CHAINS"
 bucket_name = "tonk-account-chains-staging"
+
+[[env.staging.r2_buckets]]
+binding = "REVOCATIONS"
+bucket_name = "tonk-revocations-staging"
 
 [env.staging.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"

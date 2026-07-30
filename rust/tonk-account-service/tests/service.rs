@@ -29,6 +29,82 @@ async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Ve
         .unwrap()
 }
 
+/// Creating a second account for an already-registered email address
+/// returns 409 with a message meant for the person reading it, and none
+/// of the database's own constraint text.
+#[dialog_common::test]
+async fn it_explains_an_already_registered_email_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+    let email = "person@example.com";
+
+    let latest_code = || {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .rfind(|(to, _)| to == email)
+            .map(|(_, code): &(String, String)| code.clone())
+            .expect("a code was sent")
+    };
+    let request_code = async |client: &reqwest::Client| {
+        client
+            .post(format!("{base}/codes"))
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .unwrap()
+    };
+    let create = async |client: &reqwest::Client, prf: [u8; 32], seed: [u8; 32], code: String| {
+        let root = tonk_identity::derive::derive_root_signer(&prf)
+            .await
+            .unwrap();
+        let device = Ed25519Signer::import(&seed).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+        let ceremony = tonk_identity::ceremony::create_account(
+            root,
+            email.into(),
+            code,
+            "cred".into(),
+            device.did(),
+            "laptop".into(),
+            hex::encode(grant.to_bytes().unwrap()),
+        )
+        .await
+        .unwrap();
+        client
+            .post(format!("{base}/accounts"))
+            .body(hex::decode(ceremony.invocation_hex).unwrap())
+            .send()
+            .await
+            .unwrap()
+    };
+
+    assert_eq!(request_code(&client).await.status(), 200);
+    let response = create(&client, ROOT_PRF, DEVICE_SEED, latest_code()).await;
+    assert_eq!(response.status(), 201);
+
+    // A different passkey claiming the same address: the email is taken,
+    // and the root DID is not, so the conflict is about the email.
+    assert_eq!(request_code(&client).await.status(), 200);
+    let response = create(&client, [10u8; 32], [12u8; 32], latest_code()).await;
+    assert_eq!(response.status(), 409);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "CONFLICT");
+    assert_eq!(
+        body["error"]["message"],
+        tonk_account_service::core::accounts::EMAIL_TAKEN
+    );
+    let rendered = body.to_string();
+    for leak in ["UNIQUE constraint", "accounts.", "SQLITE_", "D1Error"] {
+        assert!(
+            !rendered.contains(leak),
+            "response leaked {leak:?}: {rendered}"
+        );
+    }
+}
+
 #[dialog_common::test]
 async fn it_drives_the_full_ceremony_over_http() {
     let server = AccountServer::start().await;
@@ -59,6 +135,10 @@ async fn it_drives_the_full_ceremony_over_http() {
         .unwrap();
     let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
     let device_did = device.did().to_string();
+    let first_grant =
+        tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
     let ceremony = tonk_identity::ceremony::create_account(
         root,
         "person@example.com".into(),
@@ -66,6 +146,7 @@ async fn it_drives_the_full_ceremony_over_http() {
         "cred-1".into(),
         device.did(),
         "laptop".into(),
+        hex::encode(first_grant.to_bytes().unwrap()),
     )
     .await
     .unwrap();
@@ -90,6 +171,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     let ceremony = tonk_identity::ceremony::link_device(root, second.did(), "phone".into())
         .await
         .unwrap();
+    let second_grant_bytes = hex::decode(&ceremony.delegation_hex).unwrap();
+    let second_grant =
+        dialog_ucan_core::DelegationChain::try_from(second_grant_bytes.as_slice()).unwrap();
     let response = client
         .post(format!("{base}/devices/link"))
         .body(hex::decode(ceremony.invocation_hex).unwrap())
@@ -122,7 +206,14 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     // The worker and CLI parse exactly these keys; renaming one is a
     // breaking wire change.
-    for key in ["did", "name", "status", "delegationCid", "createdAt"] {
+    for key in [
+        "did",
+        "name",
+        "status",
+        "delegationCid",
+        "delegationHex",
+        "createdAt",
+    ] {
         assert!(
             devices[0].get(key).is_some(),
             "device list row is missing `{key}`"
@@ -130,18 +221,24 @@ async fn it_drives_the_full_ceremony_over_http() {
     }
     assert!(devices[0].get("created_at").is_none());
     assert!(devices[0].get("delegation_cid").is_none());
+    assert_eq!(devices[1]["delegationHex"], ceremony.delegation_hex);
 
     // POST /devices/revoke -> the first device cuts off the second,
     // carrying a root-signed revocation of the second device's grant.
     // Cross-device revocation needs root attestation; a device-signed
     // artifact only ever names its own grant.
     let second_grant_cid = devices[1]["delegationCid"].as_str().unwrap().to_string();
+    assert_eq!(second_grant_cid, second_grant.proof_cids()[0].to_string());
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
-    let revocation = tonk_identity::revocation::mint_root_revocation(root, &second_grant_cid)
-        .await
-        .unwrap();
+    let revocation = tonk_identity::revocation::mint_root_revocation(
+        root,
+        &second_grant,
+        &second_grant.proof_cids()[0],
+    )
+    .await
+    .unwrap();
     let body = container(
         vec!["account".into(), "device".into(), "revoke".into()],
         [
@@ -164,26 +261,25 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 200);
     let revoked: serde_json::Value = response.json().await.unwrap();
     assert_eq!(revoked["attestation"], "root");
+    assert_eq!(revoked["projection"], "updated");
+    assert_eq!(revoked["targetDid"], second_did);
+    assert_eq!(revoked["targetCid"], second_grant_cid);
+    assert_eq!(revoked["published"], true);
 
-    // POST /devices/revocations -> the artifact is retrievable and
-    // carries its attestation level.
-    let body = container(
-        vec!["account".into(), "device".into(), "revocations".into()],
-        BTreeMap::new(),
-    )
-    .await;
+    // The unauthenticated global endpoint verifies the same artifact and
+    // treats an identical publication as idempotent.
     let response = client
-        .post(format!("{base}/devices/revocations"))
-        .body(body)
+        .post(format!("{base}/revocations"))
+        .header("Content-Type", "application/cbor")
+        .body(revocation.clone())
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let listed: serde_json::Value = response.json().await.unwrap();
-    let listed = listed["revocations"].as_array().unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0]["attestation"], "root");
-    assert_eq!(listed[0]["revocation"], hex::encode(&revocation));
+    assert_eq!(response.status(), 202);
+    let published: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(published["targetCid"], second_grant_cid);
+    assert_eq!(published["artifactCid"], revoked["artifactCid"]);
+    assert_eq!(published["stored"], false);
 
     let body = container(
         vec!["account".into(), "device".into(), "list".into()],

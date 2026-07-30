@@ -77,6 +77,8 @@ Pick the right host:
 
 The `#[cfg(target_arch = "wasm32")]` guards keep the configure line out of the way on native (where it doesn't apply); the test attribute itself dispatches per target so the *tests* don't need any cfg.
 
+**Exception — Cloudflare Worker crates (`tonk-account-service`, `tonk-access-service`): gate the whole mod off wasm instead.** No configure line can save them. Their `#[event(fetch)]` exports a JS function named `fetch`, and the wasm-bindgen harness loads a module by calling `fetch` from inside that same module — where the crate's export shadows the global. The module never initializes: the page hangs on `Loading Wasm module...` and the runner reports `Failed to detect test as having been run`. Write `#[cfg(all(test, not(target_arch = "wasm32")))] mod tests`, which is what every other test mod in those two crates already does.
+
 ## Three test layers
 
 ### 1. Unit tests (zero arguments)

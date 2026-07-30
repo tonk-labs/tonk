@@ -223,4 +223,20 @@ mod tests {
         assert_eq!(remote.address.0, b"addr");
         assert_eq!(remote.name.0, "origin");
     }
+
+    #[test]
+    fn execution_metadata_uses_the_remote_entity_without_changing_it() {
+        let r = replica();
+        let remote = Remote::new(&r, did!("test:repo-x"), addr(b"addr"), "origin");
+        let before = remote.this.clone();
+        let execution =
+            crate::RemoteExecution::new(&remote, "https://artifacts.example.test/revocations/");
+
+        assert_eq!(remote.this, before);
+        assert_eq!(execution.this, remote.this);
+        assert_eq!(
+            execution.revocation_url.0,
+            "https://artifacts.example.test/revocations/"
+        );
+    }
 }

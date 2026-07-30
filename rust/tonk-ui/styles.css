@@ -1,3 +1,23 @@
+/* `hidden` has to keep hiding things. Web Awesome skins native form
+   controls inside `@layer wa-native`, and its rule for
+   `button, input[type=button|reset|submit|file], a.wa-button` nests
+   `&:not(input[type="file"]) { display: inline-flex }` — a selector matching
+   every `<button>`. An author `display` declaration beats the UA's
+   `[hidden] { display: none }` whatever its specificity or layer, so the
+   attribute silently stops working on a bare button wherever that sheet
+   loads. A sealed `<tonk-portal>` guest concatenates it ahead of this file
+   (`tonk-portal`'s `build_inject_payload`), which is where it bit: the FAB's
+   guest-only "join spot" action rendered on every spot, owners included, and
+   the hide-again after a successful join was equally inert.
+
+   `!important` rather than a bare `display: none`. Unlayered declarations do
+   outrank layered ones, so this would already beat `@layer wa-native` — but
+   `fab.css` is appended to `<head>` after this sheet and styles `.fab__join`
+   with an unlayered `display` of the same 0-1-0 specificity, which wins the
+   tie on order. Anything that wants to show a `hidden` element has to drop
+   the attribute, which is what the attribute is for. */
+[hidden] { display: none !important; }
+
 /* Web Awesome FOUC cloak. The WA loader registers each `<wa-*>`
    element lazily, importing its chunk on demand, so until a component
    is upgraded it renders as an undefined element: a `<wa-button>` shows
@@ -493,21 +513,56 @@ tonk-display > .site-pending:not([hidden]) {
 .workspace__sync.is-synced::before {
     background: var(--wa-color-success-fill-loud);
 }
-.workspace__sync.is-ahead,
-.workspace__sync.is-behind {
+.workspace__sync.is-syncing {
     color: var(--wa-color-warning-on-quiet);
     background: var(--wa-color-warning-fill-quiet);
 }
-.workspace__sync.is-ahead::before,
-.workspace__sync.is-behind::before {
+.workspace__sync.is-syncing::before {
     background: var(--wa-color-warning-fill-loud);
 }
-.workspace__sync.is-diverged {
+.workspace__sync.is-paused,
+.workspace__sync.is-offline {
+    color: var(--wa-color-text-quiet);
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.workspace__sync.is-offline,
+.workspace__sync.is-revoked,
+.workspace__sync.is-conflict,
+.workspace__sync.is-unavailable,
+.workspace__sync.is-unknown {
+    cursor: default;
+}
+.workspace__sync.is-revoked {
     color: var(--wa-color-danger-on-quiet);
     background: var(--wa-color-danger-fill-quiet);
 }
-.workspace__sync.is-diverged::before {
+.workspace__sync.is-revoked::before {
     background: var(--wa-color-danger-fill-loud);
+}
+.workspace__sync.is-conflict {
+    color: var(--wa-color-warning-on-quiet);
+    background: var(--wa-color-warning-fill-quiet);
+}
+.workspace__sync.is-conflict::before {
+    border-radius: 0;
+    transform: rotate(45deg);
+    background: var(--wa-color-warning-fill-loud);
+}
+.workspace__sync.is-unavailable {
+    color: var(--wa-color-brand-on-quiet);
+    background: var(--wa-color-brand-fill-quiet);
+}
+.workspace__sync.is-unavailable::before {
+    background: transparent;
+    border: 1px dashed currentColor;
+}
+.workspace__sync.is-unknown {
+    color: var(--wa-color-text-quiet);
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.workspace__sync.is-unknown::before {
+    background: transparent;
+    border: 1px dotted currentColor;
 }
 /* The topbar chips (identity, sync) render through a `<tonk-display>` →
    `<tonk-view>` pair whose line boxes would otherwise sit them above the
@@ -826,6 +881,22 @@ tonk-display > .site-pending:not([hidden]) {
 .sync--paused .disc {
     background: linear-gradient(135deg, var(--sync-ink) 0 50%, transparent 50% 100%);
     border: 1.5px solid var(--sync-ink);
+}
+/* Typed failures stay visually distinct from browser-offline/local. */
+.sync--revoked .disc {
+    background: linear-gradient(45deg, transparent 42%, var(--sync-ink) 43% 57%, transparent 58%),
+                linear-gradient(-45deg, transparent 42%, var(--sync-ink) 43% 57%, transparent 58%);
+    border: 1.5px solid var(--sync-ink);
+}
+.sync--conflict .disc {
+    background: linear-gradient(90deg, var(--sync-ink) 0 38%, transparent 38% 62%, var(--sync-ink) 62%);
+    border: 1.5px solid var(--sync-ink);
+}
+.sync--unavailable .disc {
+    border: 2px dashed var(--sync-ink);
+}
+.sync--unknown .disc {
+    border: 2px dotted var(--sync-ink);
 }
 @keyframes sync-disc-pulse {
     0%, 100% { opacity: 1; }
@@ -2368,4 +2439,10 @@ tonk-code:focus-within {
     display: block;
     block-size: 100%;
     min-block-size: 0;
+}
+
+.join-error__retry {
+    min-height: 40px;
+    margin-top: var(--wa-space-s);
+    padding-inline: var(--wa-space-m);
 }

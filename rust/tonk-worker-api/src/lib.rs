@@ -15,26 +15,44 @@
 mod account;
 mod claim;
 mod conclusion;
+mod deployment;
 mod evaluate;
 mod identify;
+mod identity;
+mod invite;
 mod join;
 mod profile;
 mod query;
 mod repository;
+pub mod share;
 mod sync;
 
 pub use account::{
-    AccountDevice, AccountLinkRequest, AccountStatus, RevokeDeviceRequest, SignOutResponse,
+    AccountDevice, AccountLinkRequest, AccountStatus, RevocationProjection,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
+pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
-pub use join::{JoinRequest, JoinResponse};
+pub use identity::{
+    CreateSpaceRequest, CreateSpaceResponse, IdentityIntent, IdentityRequired, RootStatus,
+    SaveRootRequest,
+};
+pub use invite::{
+    CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
+    RevokeInvitationAcknowledgement,
+};
+pub use join::{
+    JoinFailureKind, JoinRequest, JoinResponse, MembershipResponse, VisitRequest, VisitResponse,
+};
 pub use profile::{ProfileInfo, SpaceEntry};
 pub use query::Query;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration,
 };
-pub use sync::{Comparison, SyncResponse, SyncState, SyncStatusResponse, classify};
+pub use sync::{
+    Comparison, SyncDisposition, SyncResponse, SyncState, SyncStatusResponse, classify,
+};

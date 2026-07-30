@@ -77,3 +77,41 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
         }
     });
 }
+
+/// Ask the originating top document to provision a local root and replay an intent.
+/// The intent is never formatted or logged because durable-join intents may contain
+/// an authority-bearing invite URL.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_identity_required(
+    client: Option<&crate::router::ClientId>,
+    intent: tonk_worker_api::IdentityIntent,
+) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("identity request has no originating client");
+        return;
+    };
+    let client_id = client.0.clone();
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(global) => global,
+        Err(_) => return,
+    };
+    spawn_local(async move {
+        let Ok(value) = JsFuture::from(global.clients().get(&client_id)).await else {
+            return;
+        };
+        let Ok(client) = value.dyn_into::<web_sys::Client>() else {
+            return;
+        };
+        let message = tonk_worker_api::IdentityRequired {
+            message_type: "identity-required".to_string(),
+            intent,
+        };
+        let Ok(message) = serde_wasm_bindgen::to_value(&message) else {
+            return;
+        };
+        let _ = client.post_message(&message);
+    });
+}

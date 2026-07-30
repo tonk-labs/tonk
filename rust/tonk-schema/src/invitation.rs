@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_ucan_core::DelegationChain;
 use serde::Serialize;
 
-use crate::domain::invitation::{Audience, Inviter, Subject};
+use crate::domain::invitation::{Audience, Inviter, PathHex, Subject, TargetCid};
 use crate::prelude::*;
 
 /// An invitation — the durable record of a minted invite to a
@@ -33,13 +33,16 @@ pub struct Invitation {
     pub this: Entity,
     /// Reference to the repository the invite grants access to.
     pub subject: Subject,
-    /// Reference to the minting profile — the leaf delegation's
-    /// issuer on the chain as minted, before any claim redelegation
-    /// extends it.
+    /// Reference to the minting profile's root identity on the chain as
+    /// minted, before any claim redelegation extends it.
     pub inviter: Inviter,
     /// The chain's tail audience: the ephemeral key DID for open
     /// invites, the recipient DID for scoped ones.
     pub audience: Audience,
+    /// Canonical CID of the invitation delegation that closes this route.
+    pub target_cid: TargetCid,
+    /// Exact public delegation path through the target, hex encoded.
+    pub path_hex: PathHex,
 }
 
 /// Hash input for [`Invitation::this`]. Single-variant enum tags the
@@ -63,16 +66,23 @@ impl Invitation {
             .proof_cids()
             .last()
             .expect("delegation chains are non-empty by construction");
-        let leaf = chain
+        // Root-first chains begin `space → root → device`. Membership and
+        // provenance are account semantics, so attribute the invite to the
+        // first hop's audience (the root), never the device that happened to
+        // sign the final invite hop. Legacy one-hop chains naturally retain
+        // their original audience as the best available identity.
+        let inviter = chain
             .proofs()
-            .last()
-            .expect("delegation chains are non-empty by construction");
-        let inviter = leaf.issuer().clone();
+            .next()
+            .expect("delegation chains are non-empty by construction")
+            .audience()
+            .clone();
         let audience = chain.audience().clone();
         // The canonical CID string, not the raw bytes: it keeps the
         // hash input human-inspectable and independent of `Cid`'s
         // serde representation.
         let delegation = leaf_cid.to_string();
+        let path_hex = hex::encode(chain.to_bytes().ok()?);
         Some(Self {
             this: Entity::of(&This::Invitation {
                 delegation: &delegation,
@@ -80,6 +90,8 @@ impl Invitation {
             subject: Subject(subject.this()),
             inviter: Inviter(inviter.this()),
             audience: Audience(audience.this()),
+            target_cid: TargetCid(delegation),
+            path_hex: PathHex(path_hex),
         })
     }
 
@@ -145,6 +157,24 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_keys_execution_metadata_to_the_invitation_entity() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let invitation = Invitation::from_chain(&minted_chain(&subject).await).unwrap();
+        let execution = crate::InvitationExecution::new(
+            &invitation,
+            "open",
+            "https://artifacts.example.test/revocations/",
+        );
+
+        assert_eq!(execution.this, invitation.this);
+        assert_eq!(execution.kind.0, "open");
+        assert_eq!(
+            execution.revocation_url.0,
+            "https://artifacts.example.test/revocations/"
+        );
+    }
+
+    #[dialog_common::test]
     async fn it_derives_a_different_entity_after_a_claim_redelegation() {
         // Open-invite claims push `ephemeral -> claimer` onto the
         // chain; the leaf changes, so the derived entity changes.
@@ -173,14 +203,54 @@ mod tests {
     #[dialog_common::test]
     async fn it_reads_subject_inviter_and_audience_from_the_chain() {
         let subject = signer(&SUBJECT_SEED).await.did();
-        let inviter = signer(&INVITER_SEED).await.did();
         let ephemeral = signer(&EPHEMERAL_SEED).await.did();
         let chain = minted_chain(&subject).await;
 
         let invitation = Invitation::from_chain(&chain).unwrap();
         assert_eq!(invitation.subject.0.to_string(), subject.as_str());
-        assert_eq!(invitation.inviter.0.to_string(), inviter.as_str());
+        assert_eq!(invitation.inviter.0.to_string(), ephemeral.as_str());
         assert_eq!(invitation.audience.0.to_string(), ephemeral.as_str());
+    }
+
+    #[dialog_common::test]
+    async fn it_attributes_a_multi_hop_invite_to_the_root_not_the_device() {
+        let space = signer(&SUBJECT_SEED).await;
+        let root = signer(&INVITER_SEED).await;
+        let device = signer(&CLAIMER_SEED).await;
+        let ephemeral = signer(&EPHEMERAL_SEED).await;
+        let first = DelegationBuilder::new()
+            .issuer(space.clone())
+            .audience(&root.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let root_to_device = DelegationBuilder::new()
+            .issuer(root.clone())
+            .audience(&device.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let device_to_invite = DelegationBuilder::new()
+            .issuer(device.clone())
+            .audience(&ephemeral.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(first)
+            .push(root_to_device)
+            .unwrap()
+            .push(device_to_invite)
+            .unwrap();
+
+        let invitation = Invitation::from_chain(&chain).unwrap();
+        assert_eq!(invitation.inviter.0.to_string(), root.did().as_str());
+        assert_ne!(invitation.inviter.0.to_string(), device.did().as_str());
     }
 
     #[dialog_common::test]

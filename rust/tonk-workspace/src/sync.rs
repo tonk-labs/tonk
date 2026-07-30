@@ -5,14 +5,17 @@
 //! `with="branch@repo"` ancestor and otherwise holds no app policy.
 //!
 //! - `<tonk-sync-state>` is the status indicator *and* the pause/resume
-//!   button in one. It shows exactly three states for the branch in
-//!   scope:
+//!   button in one. It shows ordinary branch state plus failures that require
+//!   different operator action:
 //!     - `synced`  — auto-sync on and up to date with the remote.
 //!     - `syncing` — auto-sync on and mid-reconcile (pushing/pulling).
 //!       The remote's `ahead` / `behind` / `diverged` states all fold
 //!       into this one: if sync is running, those deltas are being
 //!       reconciled right now.
 //!     - `paused`  — auto-sync off. Overrides any real drift.
+//!     - `offline` — no HTTP response exists because transport is down.
+//!     - `revoked`, `conflict`, `unavailable`, `unknown` — distinct typed or
+//!       unclassified HTTP failures; none masquerades as browser-offline.
 //!
 //!   It re-reads the read-only `sync/status` route whenever the
 //!   controller dispatches `tonk:status-refresh` or a commit lands, and
@@ -58,13 +61,63 @@ mod logic {
             .unwrap_or_else(|| "main".to_string())
     }
 
-    /// The pill's `(label, modifier-class)` for the paused preference
-    /// and for an absent / unreachable remote. `paused` comes from the
-    /// preference (not a `SyncState`); `offline` covers both `NoUpstream`
-    /// (no remote configured) and a failed status fetch (remote
-    /// unavailable), which read identically to the user.
+    /// The pill's `(label, modifier-class)` for local UI states.
     pub(crate) const PAUSED_CHIP: (&str, &str) = ("paused", "is-paused");
     pub(crate) const OFFLINE_CHIP: (&str, &str) = ("offline", "is-offline");
+
+    /// A typed failure returned by the sync-status route.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum SyncFailure {
+        Revoked,
+        Conflict,
+        Unavailable,
+        Unknown,
+    }
+
+    /// A successful status classification or a typed operational failure.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum SyncObservation {
+        State(SyncState),
+        Failure(SyncFailure),
+    }
+
+    /// Classify only the stable sync/revocation codes understood by this
+    /// release. A future code remains visibly unknown.
+    pub(crate) fn failure_from_code(code: Option<&str>) -> SyncFailure {
+        match code {
+            Some("CREDENTIAL_REVOKED" | "DEVICE_REVOKED") => SyncFailure::Revoked,
+            Some("SYNC_CONFLICT") => SyncFailure::Conflict,
+            Some("SYNC_UNAVAILABLE" | "REVOCATION_UNAVAILABLE") => SyncFailure::Unavailable,
+            _ => SyncFailure::Unknown,
+        }
+    }
+
+    /// Label, modifier class, and accessible explanation for a failure pill.
+    pub(crate) fn failure_chip(failure: SyncFailure) -> (&'static str, &'static str, &'static str) {
+        match failure {
+            SyncFailure::Revoked => (
+                "revoked",
+                "is-revoked",
+                "Sync revoked — reconnect with valid authority",
+            ),
+            SyncFailure::Conflict => (
+                "conflict",
+                "is-conflict",
+                "Sync conflict — competing updates need resolution",
+            ),
+            SyncFailure::Unavailable => (
+                "unavailable",
+                "is-unavailable",
+                "Sync unavailable — retry later",
+            ),
+            SyncFailure::Unknown => (
+                "unknown",
+                "is-unknown",
+                "Sync failed with an unknown status",
+            ),
+        }
+    }
 
     /// Label and modifier class for a live sync state.
     ///
@@ -97,13 +150,14 @@ mod dom {
     use custom_elements::CustomElement;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::spawn_local;
-    use web_sys::{CustomEvent, CustomEventInit, Element, Event, HtmlElement, window};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+    use web_sys::{CustomEvent, CustomEventInit, Element, Event, HtmlElement, Response, window};
 
     use tonk_schema::SyncState;
 
     use super::logic::{
-        OFFLINE_CHIP, PAUSED_CHIP, branch_or_default, pref_is_enabled, pref_key, state_chip,
+        OFFLINE_CHIP, PAUSED_CHIP, SyncObservation, branch_or_default, failure_chip,
+        failure_from_code, pref_is_enabled, pref_key, state_chip,
     };
     use crate::ancestors::repo_from_context;
 
@@ -161,10 +215,10 @@ mod dom {
         branch_or_default(name)
     }
 
-    /// Fetch the read-only sync status for `repo`/`branch`, returning
-    /// the classified [`SyncState`] or `None` on any failure. Gated on
-    /// service-worker readiness so a cold-start call doesn't land on the
-    /// asset server.
+    /// Fetch the read-only sync status for `repo`/`branch`, preserving
+    /// structured operational failures. `None` is reserved for a transport
+    /// failure before any HTTP response exists (browser offline, worker
+    /// restart, or cold-start rejection).
     ///
     /// The chip degrades to invisible on `None`, so the *cold-start*
     /// failures (no window, a fetch rejected before the worker is up)
@@ -172,18 +226,33 @@ mod dom {
     /// contract the worker is meant to honour — a non-200, undecodable
     /// body, malformed JSON, or missing/unknown `state` is a real defect
     /// a dev should see, so those leave a `console` breadcrumb.
-    async fn fetch_sync_status(repo: &str, branch: &str) -> Option<SyncState> {
+    async fn fetch_sync_status(repo: &str, branch: &str) -> Option<SyncObservation> {
         tonk_host::ready::wait().await;
-        // GET a host-RELATIVE path: `host_fetch_text` performs it on the real
-        // origin — directly in the top document, or over the `window.tonk`
-        // bridge from the sealed guest (which has no reachable origin of its
-        // own). Either way the chip needs no `window.location`.
         let path = format!("/api/repository/{repo}/branch/{branch}/sync/status");
-        let text = match tonk_host::bridge::host_fetch_text(&path).await {
-            Ok(text) => text,
-            // Quiet on failure: a cold-start or unreachable remote is expected
-            // and the chip degrades to `offline` rather than logging noise.
-            Err(_) => return None,
+        // `window.fetch` is host-forwarded by the sealed guest bridge, so this
+        // reaches the real origin in both documents while retaining the
+        // response status and body needed for typed failure classification.
+        let window = window()?;
+        let response: Response = JsFuture::from(window.fetch_with_str(&path))
+            .await
+            .ok()?
+            .dyn_into()
+            .ok()?;
+        let text = JsFuture::from(response.text().ok()?)
+            .await
+            .ok()?
+            .as_string()
+            .unwrap_or_default();
+        if !response.ok() {
+            let code = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/code")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                });
+            return Some(SyncObservation::Failure(failure_from_code(code.as_deref())));
         };
         // Read just the `state` field; the rest of the response (local /
         // remote revisions) is the inspector's concern.
@@ -191,18 +260,18 @@ mod dom {
             Ok(value) => value,
             Err(err) => {
                 tonk_common::log!("sync status: malformed JSON from {path}: {err}");
-                return None;
+                return Some(SyncObservation::Failure(super::logic::SyncFailure::Unknown));
             }
         };
         let Some(state) = value.get("state") else {
             tonk_common::log!("sync status: response from {path} missing `state` field");
-            return None;
+            return Some(SyncObservation::Failure(super::logic::SyncFailure::Unknown));
         };
         match serde_json::from_value::<SyncState>(state.clone()) {
-            Ok(state) => Some(state),
+            Ok(state) => Some(SyncObservation::State(state)),
             Err(err) => {
                 tonk_common::log!("sync status: unrecognized `state` from {path}: {err}");
-                None
+                Some(SyncObservation::Failure(super::logic::SyncFailure::Unknown))
             }
         }
     }
@@ -233,7 +302,7 @@ mod dom {
     const PAUSED_LABEL: &str = "Auto-sync paused — click to resume";
     /// Title/`aria-label` on the offline pill — no upstream or an
     /// unreachable remote. Not a toggle hint: the pill isn't clickable.
-    const OFFLINE_LABEL: &str = "Offline — no remote to sync";
+    const OFFLINE_LABEL: &str = "Offline — the remote cannot be reached";
 
     /// Install the pill's click listener on the host: flip the
     /// preference and ask for a status refresh. The refresh dispatches
@@ -271,11 +340,14 @@ mod dom {
     /// resume. False for the inert `offline` pill and when the
     /// enable-sync trigger is showing instead of a pill (no pill child).
     fn is_togglable(host: &HtmlElement) -> bool {
-        let (_, offline_class) = OFFLINE_CHIP;
         host.query_selector(&format!(":scope > .{STATE_CHIP}"))
             .ok()
             .flatten()
-            .is_some_and(|button| !button.class_list().contains(offline_class))
+            .is_some_and(|button| {
+                ["is-synced", "is-syncing", "is-paused"]
+                    .iter()
+                    .any(|class| button.class_list().contains(class))
+            })
     }
 
     /// CSS class for the "Enable sync" trigger button rendered in place
@@ -350,17 +422,18 @@ mod dom {
     /// ancestor there is nothing to show, so the host is cleared.
     ///
     /// State priority, highest first:
-    ///   1. `offline` — no upstream, or an unreachable remote (a `None`
-    ///      fetch). Nothing to sync *or* pause, so it overrides the
-    ///      preference entirely (and the pill goes inert).
-    ///   2. `paused`  — preference off and the remote reachable. Overrides
+    ///   1. typed/unknown HTTP failure — revoked, conflict, unavailable, or
+    ///      unknown. It overrides the local preference and stays inert.
+    ///   2. no upstream — show the explicit enable-sync affordance.
+    ///   3. `offline` — fetch failed before an HTTP response existed.
+    ///   4. `paused`  — preference off and the remote reachable. Overrides
     ///      the real drift (`ahead` / `behind` / `diverged`).
-    ///   3. `synced` / `syncing…` — running and reachable.
+    ///   5. `synced` / `syncing…` — running and reachable.
     ///
     /// The status is fetched on every refresh — even while paused —
-    /// because only the fetch can tell `offline` from `paused`. The
+    /// because only the fetch can distinguish failures from `paused`. The
     /// paused pill is painted optimistically first so it appears at once;
-    /// the fetch then confirms it or overrides it with `offline`. A
+    /// the fetch then confirms or overrides it. A
     /// repaint never clears first, so a refresh holds the last good pill
     /// until the new one is ready.
     fn refresh_state(this: &HtmlElement) {
@@ -369,8 +442,7 @@ mod dom {
             return;
         };
         // Optimistic: show `paused` immediately so the pill is present
-        // without waiting on the network. The fetch below may override
-        // it with `offline`.
+        // without waiting on the network. The fetch below may override it.
         if !is_enabled(&repo) {
             paint(this, PAUSED_CHIP, PAUSED_LABEL);
         }
@@ -381,24 +453,28 @@ mod dom {
                 // No upstream: offer the "Enable sync" trigger instead of
                 // a pill — a local-only branch can't sync until it has a
                 // remote, so the actionable affordance is to add one.
-                Some(SyncState::NoUpstream) => paint_enable_sync(&host),
+                Some(SyncObservation::State(SyncState::NoUpstream)) => paint_enable_sync(&host),
                 // Unreachable remote (a `None` fetch): there *is* an
                 // upstream, but we can't reach it — the inert offline pill.
                 None => paint(&host, OFFLINE_CHIP, OFFLINE_LABEL),
+                Some(SyncObservation::Failure(failure)) => {
+                    let (label, class, title) = failure_chip(failure);
+                    paint(&host, (label, class), title);
+                }
                 // Reachable + running: the live state, click pauses.
-                Some(state) if is_enabled(&repo) => {
+                Some(SyncObservation::State(state)) if is_enabled(&repo) => {
                     paint(&host, state_chip(state), RUNNING_LABEL);
                 }
                 // Reachable + paused: the preference overrides real drift.
-                Some(_) => paint(&host, PAUSED_CHIP, PAUSED_LABEL),
+                Some(SyncObservation::State(_)) => paint(&host, PAUSED_CHIP, PAUSED_LABEL),
             }
         });
     }
 
     /// Resolve repo+branch and repaint the read-only badge. The
     /// read-only twin of [`refresh_state`]: same state priority, but it
-    /// never offers the enable-sync trigger — a no-upstream or
-    /// unreachable branch reads as `offline` (its `state_chip`). With no
+    /// never offers the enable-sync trigger. A no-upstream branch reads as
+    /// `offline`, transport-offline and HTTP failures stay distinct. With no
     /// repository ancestor there is nothing to show, so the host clears.
     fn refresh_badge(this: &HtmlElement) {
         let Some(repo) = repo_from_context(this) else {
@@ -406,8 +482,7 @@ mod dom {
             return;
         };
         // Optimistic: show `paused` immediately so the badge is present
-        // without waiting on the network. The fetch below may override
-        // it with `offline`.
+        // without waiting on the network. The fetch below may override it.
         if !is_enabled(&repo) {
             paint_badge(this, PAUSED_CHIP);
         }
@@ -419,10 +494,14 @@ mod dom {
                 // reach. No upstream at all also reads `offline` via its
                 // chip below — the badge never offers an enable affordance.
                 None => paint_badge(&host, OFFLINE_CHIP),
-                Some(state) if is_enabled(&repo) => {
+                Some(SyncObservation::Failure(failure)) => {
+                    let (label, class, _) = failure_chip(failure);
+                    paint_badge(&host, (label, class));
+                }
+                Some(SyncObservation::State(state)) if is_enabled(&repo) => {
                     paint_badge(&host, state_chip(state));
                 }
-                Some(_) => paint_badge(&host, PAUSED_CHIP),
+                Some(SyncObservation::State(_)) => paint_badge(&host, PAUSED_CHIP),
             }
         });
     }
@@ -791,6 +870,35 @@ mod dom {
         }
 
         #[dialog_common::test]
+        async fn it_paints_typed_failures_as_inert_distinct_pills() {
+            let document = window().unwrap().document().unwrap();
+            let body = document.body().unwrap();
+            let host = document.create_element("tonk-sync-state").unwrap();
+            body.append_child(&host).unwrap();
+            let host_el = host.dyn_ref::<HtmlElement>().unwrap();
+
+            for failure in [
+                super::super::logic::SyncFailure::Revoked,
+                super::super::logic::SyncFailure::Conflict,
+                super::super::logic::SyncFailure::Unavailable,
+                super::super::logic::SyncFailure::Unknown,
+            ] {
+                let (label, class, title) = failure_chip(failure);
+                paint(host_el, (label, class), title);
+                let button = host
+                    .query_selector(".workspace__sync")
+                    .unwrap()
+                    .expect("typed failure pill");
+                assert_eq!(button.text_content().as_deref(), Some(label));
+                assert_eq!(button.class_name(), format!("workspace__sync {class}"),);
+                assert_eq!(button.get_attribute("aria-label").as_deref(), Some(title));
+                assert!(!is_togglable(host_el));
+            }
+
+            host.remove();
+        }
+
+        #[dialog_common::test]
         async fn it_paints_a_read_only_badge_that_does_not_toggle_on_click() {
             register();
             let document = window().unwrap().document().unwrap();
@@ -990,6 +1098,41 @@ mod tests {
     #[dialog_common::test]
     fn it_labels_the_paused_chip() {
         assert_eq!(PAUSED_CHIP, ("paused", "is-paused"));
+    }
+
+    #[dialog_common::test]
+    fn it_maps_only_stable_sync_codes_to_typed_failures() {
+        assert_eq!(
+            failure_from_code(Some("DEVICE_REVOKED")),
+            SyncFailure::Revoked
+        );
+        assert_eq!(
+            failure_from_code(Some("CREDENTIAL_REVOKED")),
+            SyncFailure::Revoked
+        );
+        assert_eq!(
+            failure_from_code(Some("SYNC_CONFLICT")),
+            SyncFailure::Conflict
+        );
+        assert_eq!(
+            failure_from_code(Some("SYNC_UNAVAILABLE")),
+            SyncFailure::Unavailable
+        );
+        assert_eq!(failure_from_code(Some("FUTURE_CODE")), SyncFailure::Unknown);
+        assert_eq!(failure_from_code(None), SyncFailure::Unknown);
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_typed_failure_chips_distinct_from_offline() {
+        for failure in [
+            SyncFailure::Revoked,
+            SyncFailure::Conflict,
+            SyncFailure::Unavailable,
+            SyncFailure::Unknown,
+        ] {
+            let (label, class, _) = failure_chip(failure);
+            assert_ne!((label, class), OFFLINE_CHIP);
+        }
     }
 
     #[dialog_common::test]

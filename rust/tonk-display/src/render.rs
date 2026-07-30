@@ -1040,10 +1040,13 @@ mod tests {
         // field is ABSENT from the conclusions, and `{id}` attribute
         // bindings on both roots.
         let (mut r, host) = renderer(
-            "<x-inner with=\"main@{id}\" allow=\"main@{id}\" path={rest}></x-inner>\n<x-other model=\"tonk:profile/fab\" data-space=\"{id}\"></x-other>\n",
+            "<tonk-site with=\"main@{id}\" allow=\"main@{id}\" path={rest}></tonk-site>\n<tonk-fab with=\"main@profile:tonk\" space={id}></tonk-fab>\n",
         );
         r.apply(&[row("site:1", &[("id", "did:key:aaa")])]);
-        let inner = host.query_selector("x-inner").expect("q").expect("inner");
+        let inner = host
+            .query_selector("tonk-site")
+            .expect("q")
+            .expect("tonk-site");
         assert_eq!(
             inner.get_attribute("with").as_deref(),
             Some("main@did:key:aaa"),
@@ -1051,18 +1054,55 @@ mod tests {
         );
 
         r.apply(&[row("site:1", &[("id", "did:key:bbb")])]);
-        let inner = host.query_selector("x-inner").expect("q").expect("inner");
+        let inner = host
+            .query_selector("tonk-site")
+            .expect("q")
+            .expect("tonk-site");
         assert_eq!(
             inner.get_attribute("with").as_deref(),
             Some("main@did:key:bbb"),
             "a retained whole-fragment row must restamp attribute bindings"
         );
-        let other = host.query_selector("x-other").expect("q").expect("other");
+        let other = host
+            .query_selector("tonk-fab")
+            .expect("q")
+            .expect("tonk-fab");
         assert_eq!(
-            other.get_attribute("data-space").as_deref(),
+            other.get_attribute("space").as_deref(),
             Some("did:key:bbb"),
             "every root's bindings restamp, not just the first"
         );
+        assert_eq!(
+            other.get_attribute("with").as_deref(),
+            Some("main@profile:tonk"),
+            "the FAB keeps its profile routing context"
+        );
+
+        // Network-bearing attributes on actual custom-element roots must
+        // never receive a placeholder token. This guard is intentionally
+        // attribute-scoped: literal braces in ordinary text or code remain
+        // valid content.
+        let elements = host.query_selector_all("*").expect("query descendants");
+        for index in 0..elements.length() {
+            let Some(element) = elements
+                .item(index)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+            else {
+                continue;
+            };
+            if !element.tag_name().contains('-') {
+                continue;
+            }
+            for attribute in ["with", "allow", "path", "space", "entity", "src", "href"] {
+                if let Some(value) = element.get_attribute(attribute) {
+                    assert!(
+                        !value.contains('{') && !value.contains('}'),
+                        "{}[{attribute}] contains unresolved binding {value:?}",
+                        element.tag_name(),
+                    );
+                }
+            }
+        }
     }
 
     /// Same whole-fragment shape, text bindings: the multi-root template's

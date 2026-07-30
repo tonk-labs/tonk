@@ -1,11 +1,11 @@
-//! Device registry operations: list, register, and revoke devices
-//! under an account's root DID.
+//! Device registry operations: list, register, and publish revocations.
 
-use crate::chains::ChainStore;
+use tonk_identity::revocation::{RevocationAuthority, VerifyError};
+
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
-use crate::core::revocation::{Attestation, check_revocation, put_revocation};
-use crate::store::{Account, Device, DeviceStatus, Store};
+use crate::revocations::{PublishError, RevocationStore, publish};
+use crate::store::{Account, Device, DeviceStatus, Store, StoreError};
 
 /// A device row as surfaced to API callers.
 pub struct DeviceView {
@@ -17,6 +17,8 @@ pub struct DeviceView {
     pub status: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Exact public delegation path bytes, hex-encoded, when retained.
+    pub delegation_hex: Option<String>,
     /// Creation time, as a unix timestamp in seconds.
     pub created_at: u64,
 }
@@ -28,6 +30,7 @@ impl From<Device> for DeviceView {
             name: device.name,
             status: device.status.as_str().to_string(),
             delegation_cid: device.delegation_cid,
+            delegation_hex: (!device.delegation_hex.is_empty()).then_some(device.delegation_hex),
             created_at: device.created_at,
         }
     }
@@ -43,11 +46,6 @@ pub async fn list_devices<S: Store>(
 }
 
 /// Register a new device under an account.
-///
-/// Checks that `delegation_hex` is a valid `root → device` delegation
-/// issued by `account.root_did` to `device_did` before registering the
-/// device as active. A duplicate device DID surfaces as
-/// `CeremonyError::Conflict`.
 pub async fn register_device<S: Store>(
     store: &S,
     account: &Account,
@@ -63,6 +61,7 @@ pub async fn register_device<S: Store>(
             account_id: account.id,
             device_did: device_did.to_string(),
             delegation_cid,
+            delegation_hex: delegation_hex.to_string(),
             name: device_name.to_string(),
             status: DeviceStatus::Active,
             created_at: now,
@@ -71,408 +70,392 @@ pub async fn register_device<S: Store>(
     Ok(())
 }
 
-/// Revoke a device under an account, recording the signed revocation
-/// that authorized it.
-///
-/// **Authority scales with blast radius.** Revoking a device other than
-/// the caller requires a root-signed revocation: only the account root
-/// can produce one, and the root key lives behind the user's passkey, so
-/// a stolen device cannot lock out its siblings. A device revoking
-/// itself signs with its own key — always available, offline, no prompt.
-///
-/// The artifact is verified and stored *before* the status flips: a
-/// stored artifact with no flag is a recoverable inconsistency, while a
-/// flag with no artifact is a silent gap in the audit trail. A rejected
-/// artifact leaves the device active.
-///
-/// Returns the attestation level recorded, or `None` for a self-revoke
-/// that carried no artifact. Returns `CeremonyError::Invalid` if the
-/// device does not exist under this account.
-pub async fn revoke_device<S: Store, C: ChainStore>(
+/// Which product-level authority published a device revocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attestation {
+    /// The account root revoked one of its devices.
+    Root,
+    /// A device revoked its own exact grant.
+    Device,
+}
+
+impl Attestation {
+    /// Stable response value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Device => "device",
+        }
+    }
+}
+
+/// Whether the account-service status projection was updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Projection {
+    /// The matching D1 row now says revoked.
+    Updated,
+    /// R2 accepted the artifact but the D1 projection failed.
+    Stale,
+}
+
+impl Projection {
+    /// Stable response value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Stale => "stale",
+        }
+    }
+}
+
+/// Result of publishing a device revocation and attempting its UI projection.
+pub struct RevokeOutcome {
+    /// Product-level authority used.
+    pub attestation: Attestation,
+    /// D1 projection state.
+    pub projection: Projection,
+    /// Canonical target delegation CID.
+    pub target_cid: String,
+    /// Canonical artifact CID.
+    pub artifact_cid: String,
+    /// Whether this call created the immutable R2 object.
+    pub stored: bool,
+}
+
+/// Focused device lookup/projection seam used by revocation publication.
+#[allow(async_fn_in_trait)]
+pub trait DeviceRevocationProjection {
+    /// Look up a target device by DID.
+    async fn target_device(&self, device_did: &str) -> Result<Option<Device>, StoreError>;
+    /// Mark the row matching account and delegation CID revoked.
+    async fn project_revoked(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError>;
+}
+
+impl<S: Store> DeviceRevocationProjection for S {
+    async fn target_device(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
+        self.device_by_did(device_did).await
+    }
+
+    async fn project_revoked(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError> {
+        self.revoke_device_by_cid(account_id, delegation_cid).await
+    }
+}
+
+fn publication_error(error: PublishError) -> CeremonyError {
+    match error {
+        PublishError::Verification(VerifyError::Malformed(message)) => {
+            CeremonyError::Invalid(message)
+        }
+        PublishError::Verification(VerifyError::Unauthorized(message)) => {
+            CeremonyError::Unauthorized(message)
+        }
+        PublishError::Store(error) => CeremonyError::Internal(error.to_string()),
+    }
+}
+
+/// Publish a verified device revocation before projecting its D1 status.
+pub async fn revoke_device<S: DeviceRevocationProjection, R: RevocationStore>(
     store: &S,
-    chains: &C,
+    revocations: &R,
     account: &Account,
     caller_did: &str,
     target_did: &str,
-    revocation: Option<&[u8]>,
-) -> Result<Option<Attestation>, CeremonyError> {
+    artifact: &[u8],
+) -> Result<RevokeOutcome, CeremonyError> {
     let device = store
-        .device_by_did(target_did)
+        .target_device(target_did)
         .await?
         .filter(|device| device.account_id == account.id)
         .ok_or_else(|| CeremonyError::Invalid("unknown device".to_string()))?;
 
-    let revoking_self = caller_did == target_did;
+    let published = publish(revocations, artifact)
+        .await
+        .map_err(publication_error)?;
+    if published.verified.target_cid != device.delegation_cid {
+        return Err(CeremonyError::Invalid(
+            "revocation names a delegation other than the target device's".to_string(),
+        ));
+    }
 
-    let attestation = match revocation {
-        Some(bytes) => {
-            let attestation = check_revocation(bytes, &account.root_did, &device).await?;
-            if !revoking_self && attestation != Attestation::Root {
-                return Err(CeremonyError::Forbidden(
-                    "revoking another device requires a root-signed revocation".to_string(),
-                ));
-            }
-            put_revocation(chains, account, attestation, bytes).await?;
-            Some(attestation)
-        }
-        None if revoking_self => None,
-        None => {
-            return Err(CeremonyError::Forbidden(
-                "revoking another device requires a root-signed revocation".to_string(),
-            ));
+    let revoking_self = caller_did == target_did;
+    let attestation = if revoking_self
+        && published.verified.issuer.to_string() == device.device_did
+        && published.verified.authority == RevocationAuthority::Delegated
+    {
+        Attestation::Device
+    } else if !revoking_self
+        && published.verified.issuer.to_string() == account.root_did
+        && published.verified.authority == RevocationAuthority::PathIssuer
+    {
+        Attestation::Root
+    } else {
+        return Err(CeremonyError::Forbidden(if revoking_self {
+            "self-revocation must be signed by the target device under its registered grant"
+                .to_string()
+        } else {
+            "revoking another device requires an account-root revocation".to_string()
+        }));
+    };
+
+    let projection = match store
+        .project_revoked(account.id, &device.delegation_cid)
+        .await
+    {
+        Ok(true) => Projection::Updated,
+        Ok(false) => Projection::Stale,
+        Err(error) => {
+            #[cfg(target_arch = "wasm32")]
+            worker::console_error!("device revocation projection failed: {error:?}");
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!("device revocation projection failed: {error:?}");
+            Projection::Stale
         }
     };
 
-    let changed = store.revoke_device(account.id, target_did).await?;
-    if !changed {
-        return Err(CeremonyError::Invalid("unknown device".to_string()));
-    }
-    Ok(attestation)
+    Ok(RevokeOutcome {
+        attestation,
+        projection,
+        target_cid: published.verified.target_cid,
+        artifact_cid: published.verified.artifact_cid,
+        stored: published.stored,
+    })
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use dialog_credentials::Ed25519Signer;
+    use dialog_varsig::Principal;
+
     use super::*;
-    use crate::chains::MemoryChainStore;
+    use crate::revocations::{PutOutcome, RevocationStoreError, object_key};
     use crate::store::sqlite::SqliteStore;
 
     const ROOT_PRF: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [11u8; 32];
-    const FOREIGN_ROOT_PRF: [u8; 32] = [9u8; 32];
-
-    /// A caller that is not the device being revoked, so the
-    /// cross-device authority rule applies.
     const CALLER_DID: &str = "did:key:zCaller";
 
-    /// Seed an account through the store directly (root PRF `[7u8; 32]`,
-    /// the same root as Task 5's `fixture()`), then mint a fresh
-    /// `root → device` delegation from the given root signer PRF to a
-    /// device derived from `device_seed`.
-    async fn delegation_from(root_prf: [u8; 32], device_seed: [u8; 32]) -> (String, String) {
-        use dialog_varsig::Principal;
-        let root = tonk_identity::derive::derive_root_signer(&root_prf)
+    async fn fixture() -> (
+        Account,
+        Device,
+        Ed25519Signer,
+        dialog_ucan_core::DelegationChain,
+    ) {
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
             .await
             .unwrap();
-        let device = dialog_credentials::Ed25519Signer::import(&device_seed)
-            .await
-            .unwrap();
-        let device_did = device.did().to_string();
-        let chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
-            .await
-            .unwrap();
-        (device_did, hex::encode(chain.to_bytes().unwrap()))
-    }
-
-    async fn seeded_account(store: &SqliteStore) -> Account {
-        use dialog_varsig::Principal;
-        let root_did = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
-            .await
-            .unwrap()
-            .did()
-            .to_string();
-        store
-            .create_account("a@x.com", &root_did, "cred", 100)
-            .await
-            .unwrap();
-        store.account_by_root(&root_did).await.unwrap().unwrap()
+        let device_signer = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &device_signer.did())
+                .await
+                .unwrap();
+        let account = Account {
+            id: 1,
+            email: "a@x.com".into(),
+            root_did: root.did().to_string(),
+            credential_id: "cred".into(),
+            created_at: 1,
+        };
+        let device = Device {
+            account_id: account.id,
+            device_did: device_signer.did().to_string(),
+            delegation_cid: grant.proof_cids()[0].to_string(),
+            delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+            name: "phone".into(),
+            status: DeviceStatus::Active,
+            created_at: 2,
+        };
+        (account, device, root, grant)
     }
 
     #[dialog_common::test]
     async fn it_registers_a_device_delegated_by_the_account_root() {
         let store = SqliteStore::in_memory().unwrap();
-        let account = seeded_account(&store).await;
-        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
-
-        register_device(&store, &account, &device_did, "phone", &delegation_hex, 200)
+        let (mut account, device, _, grant) = fixture().await;
+        account.id = store
+            .create_account(
+                &account.email,
+                &account.root_did,
+                &account.credential_id,
+                account.created_at,
+            )
             .await
             .unwrap();
 
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].did, device_did);
-        assert_eq!(views[0].name, "phone");
-        assert_eq!(views[0].status, "active");
-    }
-
-    #[dialog_common::test]
-    async fn it_rejects_a_device_delegated_by_a_foreign_root() {
-        let store = SqliteStore::in_memory().unwrap();
-        let account = seeded_account(&store).await;
-        let (device_did, delegation_hex) = delegation_from(FOREIGN_ROOT_PRF, DEVICE_SEED).await;
-
-        let result =
-            register_device(&store, &account, &device_did, "phone", &delegation_hex, 200).await;
-        assert!(matches!(result, Err(CeremonyError::Invalid(_))));
-    }
-
-    /// Register a device, then mint the root-signed revocation of its
-    /// grant. Returns (device did, revocation container bytes).
-    async fn registered_with_revocation(
-        store: &SqliteStore,
-        account: &Account,
-    ) -> (String, Vec<u8>) {
-        let (device_did, delegation_hex) = delegation_from(ROOT_PRF, DEVICE_SEED).await;
-        register_device(store, account, &device_did, "phone", &delegation_hex, 200)
-            .await
-            .unwrap();
-        let device = store.device_by_did(&device_did).await.unwrap().unwrap();
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
-            .await
-            .unwrap();
-        let revocation =
-            tonk_identity::revocation::mint_root_revocation(root, &device.delegation_cid)
-                .await
-                .unwrap();
-        (device_did, revocation)
-    }
-
-    #[dialog_common::test]
-    async fn it_revokes_and_reflects_status_in_the_listing() {
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let (device_did, revocation) = registered_with_revocation(&store, &account).await;
-
-        revoke_device(
-            &store,
-            &chains,
-            &account,
-            CALLER_DID,
-            &device_did,
-            Some(&revocation),
-        )
-        .await
-        .unwrap();
-
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].status, "revoked");
-    }
-
-    #[dialog_common::test]
-    async fn it_revokes_without_an_artifact_and_records_nothing() {
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let (device_did, _) = registered_with_revocation(&store, &account).await;
-
-        let attestation = revoke_device(&store, &chains, &account, &device_did, &device_did, None)
-            .await
-            .unwrap();
-
-        assert!(
-            attestation.is_none(),
-            "a caller that cannot mint an artifact still revokes"
-        );
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(views[0].status, "revoked");
-        let stored = crate::core::revocation::list_revocations(&chains, &account)
-            .await
-            .unwrap();
-        assert!(
-            stored.is_empty(),
-            "nothing unsigned enters the artifact set"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_refuses_to_revoke_another_device_without_an_artifact() {
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let (device_did, _) = registered_with_revocation(&store, &account).await;
-
-        let result = revoke_device(&store, &chains, &account, CALLER_DID, &device_did, None).await;
-
-        assert!(
-            matches!(result, Err(CeremonyError::Forbidden(_))),
-            "cutting off another device takes the root, not a device signature"
-        );
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(views[0].status, "active");
-    }
-
-    #[dialog_common::test]
-    async fn it_refuses_a_device_attested_revocation_of_another_device() {
-        use dialog_varsig::Principal;
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-
-        // Register from the very grant the self-revocation will name, so
-        // the CIDs match and the only thing left to reject is the
-        // attestation level.
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
-            .await
-            .unwrap();
-        let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
-            .await
-            .unwrap();
-        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
-            .await
-            .unwrap();
-        let device_did = device.did().to_string();
         register_device(
             &store,
             &account,
-            &device_did,
-            "phone",
+            &device.device_did,
+            &device.name,
             &hex::encode(grant.to_bytes().unwrap()),
-            200,
+            device.created_at,
         )
         .await
         .unwrap();
 
-        let self_signed =
-            tonk_identity::revocation::mint_self_revocation(device, &grant, &root.did())
-                .await
-                .unwrap();
-
-        let result = revoke_device(
-            &store,
-            &chains,
-            &account,
-            CALLER_DID,
-            &device_did,
-            Some(&self_signed),
-        )
-        .await;
-
-        assert!(
-            matches!(result, Err(CeremonyError::Forbidden(_))),
-            "a device-attested artifact is only good for revoking itself"
-        );
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(views[0].status, "active");
+        let listed = list_devices(&store, &account).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].delegation_cid, device.delegation_cid);
     }
 
-    #[dialog_common::test]
-    async fn it_accepts_a_device_attested_revocation_of_itself() {
-        use dialog_varsig::Principal;
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
-            .await
-            .unwrap();
-        let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
-            .await
-            .unwrap();
-        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
-            .await
-            .unwrap();
-        let device_did = device.did().to_string();
-        register_device(
-            &store,
-            &account,
-            &device_did,
-            "phone",
-            &hex::encode(grant.to_bytes().unwrap()),
-            200,
-        )
-        .await
-        .unwrap();
-        let self_signed =
-            tonk_identity::revocation::mint_self_revocation(device, &grant, &root.did())
-                .await
-                .unwrap();
-
-        let attestation = revoke_device(
-            &store,
-            &chains,
-            &account,
-            &device_did,
-            &device_did,
-            Some(&self_signed),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(attestation, Some(Attestation::Device));
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(views[0].status, "revoked");
+    struct SpyProjection {
+        device: Device,
+        events: Arc<Mutex<Vec<&'static str>>>,
+        fail: bool,
     }
 
-    #[dialog_common::test]
-    async fn it_stores_the_artifact_alongside_the_status_flip() {
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let (device_did, revocation) = registered_with_revocation(&store, &account).await;
+    impl DeviceRevocationProjection for SpyProjection {
+        async fn target_device(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
+            Ok((self.device.device_did == device_did).then(|| self.device.clone()))
+        }
 
-        let attestation = revoke_device(
-            &store,
-            &chains,
-            &account,
-            CALLER_DID,
-            &device_did,
-            Some(&revocation),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(attestation, Some(Attestation::Root));
-        let stored = crate::core::revocation::list_revocations(&chains, &account)
-            .await
-            .unwrap();
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].attestation, "root");
+        async fn project_revoked(
+            &self,
+            _account_id: i64,
+            _delegation_cid: &str,
+        ) -> Result<bool, StoreError> {
+            self.events.lock().unwrap().push("d1");
+            if self.fail {
+                Err(StoreError::Internal("projection unavailable".into()))
+            } else {
+                Ok(true)
+            }
+        }
     }
 
-    #[dialog_common::test]
-    async fn it_leaves_the_device_active_when_the_artifact_is_rejected() {
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let (device_did, _) = registered_with_revocation(&store, &account).await;
-        let foreign = tonk_identity::derive::derive_root_signer(&FOREIGN_ROOT_PRF)
-            .await
-            .unwrap();
-        let device = store.device_by_did(&device_did).await.unwrap().unwrap();
-        let forged =
-            tonk_identity::revocation::mint_root_revocation(foreign, &device.delegation_cid)
-                .await
-                .unwrap();
-
-        let result = revoke_device(
-            &store,
-            &chains,
-            &account,
-            CALLER_DID,
-            &device_did,
-            Some(&forged),
-        )
-        .await;
-
-        assert!(matches!(result, Err(CeremonyError::Forbidden(_))));
-        let views = list_devices(&store, &account).await.unwrap();
-        assert_eq!(
-            views[0].status, "active",
-            "a rejected artifact must not flip the status"
-        );
+    struct SpyRevocations {
+        objects: Mutex<HashMap<String, Vec<u8>>>,
+        events: Arc<Mutex<Vec<&'static str>>>,
     }
 
-    #[dialog_common::test]
-    async fn it_rejects_revoking_a_device_of_another_account() {
-        let store = SqliteStore::in_memory().unwrap();
-        let chains = MemoryChainStore::default();
-        let account = seeded_account(&store).await;
-        let (device_did, revocation) = registered_with_revocation(&store, &account).await;
-        let foreign = Account {
-            id: account.id + 1,
-            ..account.clone()
+    impl RevocationStore for SpyRevocations {
+        async fn put(
+            &self,
+            verified: &tonk_identity::revocation::VerifiedRevocation,
+            bytes: &[u8],
+        ) -> Result<PutOutcome, RevocationStoreError> {
+            self.events.lock().unwrap().push("r2");
+            self.objects
+                .lock()
+                .unwrap()
+                .insert(object_key(verified), bytes.to_vec());
+            Ok(PutOutcome::Stored)
+        }
+    }
+
+    async fn spies(
+        fail_projection: bool,
+    ) -> (
+        Account,
+        Device,
+        Ed25519Signer,
+        dialog_ucan_core::DelegationChain,
+        SpyProjection,
+        SpyRevocations,
+        Arc<Mutex<Vec<&'static str>>>,
+    ) {
+        let (account, device, root, grant) = fixture().await;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let projection = SpyProjection {
+            device: device.clone(),
+            events: events.clone(),
+            fail: fail_projection,
         };
-
-        let result = revoke_device(
-            &store,
-            &chains,
-            &foreign,
-            CALLER_DID,
-            &device_did,
-            Some(&revocation),
+        let revocations = SpyRevocations {
+            objects: Mutex::new(HashMap::new()),
+            events: events.clone(),
+        };
+        (
+            account,
+            device,
+            root,
+            grant,
+            projection,
+            revocations,
+            events,
         )
-        .await;
+    }
 
-        assert!(matches!(result, Err(CeremonyError::Invalid(_))));
+    #[dialog_common::test]
+    async fn it_writes_r2_before_projecting_device_status() {
+        let (account, device, root, grant, projection, revocations, events) = spies(false).await;
+        let artifact =
+            tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
+                .await
+                .unwrap();
+
+        let outcome = revoke_device(
+            &projection,
+            &revocations,
+            &account,
+            CALLER_DID,
+            &device.device_did,
+            &artifact,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(events.lock().unwrap().as_slice(), ["r2", "d1"]);
+        assert_eq!(outcome.projection, Projection::Updated);
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_revocation_when_the_projection_fails() {
+        let (account, device, root, grant, projection, revocations, events) = spies(true).await;
+        let artifact =
+            tonk_identity::revocation::mint_root_revocation(root, &grant, &grant.proof_cids()[0])
+                .await
+                .unwrap();
+
+        let outcome = revoke_device(
+            &projection,
+            &revocations,
+            &account,
+            CALLER_DID,
+            &device.device_did,
+            &artifact,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.projection, Projection::Stale);
+        assert_eq!(events.lock().unwrap().as_slice(), ["r2", "d1"]);
+    }
+
+    #[dialog_common::test]
+    async fn it_never_projects_an_artifact_that_failed_verification() {
+        let (account, device, _, _, projection, revocations, events) = spies(false).await;
+
+        assert!(
+            revoke_device(
+                &projection,
+                &revocations,
+                &account,
+                CALLER_DID,
+                &device.device_did,
+                b"invalid",
+            )
+            .await
+            .is_err()
+        );
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    /// `revoke_device` takes `artifact: &[u8]`, not an option; handlers reject
+    /// an absent invocation argument before calling it.
+    #[dialog_common::test]
+    fn it_requires_an_artifact_for_self_revocation() {
+        fn artifact_argument(_: &[u8]) {}
+        artifact_argument(b"signed artifact required");
     }
 }

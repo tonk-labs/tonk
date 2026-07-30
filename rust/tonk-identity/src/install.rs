@@ -25,9 +25,9 @@ fn js_error(error: anyhow::Error) -> JsValue {
     JsValue::from_str(&format!("{error:#}"))
 }
 
-async fn create(name: JsValue) -> Result<JsValue, JsValue> {
-    let name = name.as_string().unwrap_or_else(|| "tonk".to_owned());
-    let created = crate::passkey::create_passkey(&name)
+async fn create() -> Result<JsValue, JsValue> {
+    // No account context here, so the credential stays unlabelled.
+    let created = crate::passkey::create_passkey(None)
         .await
         .map_err(js_error)?;
     let result = Object::new();
@@ -54,6 +54,15 @@ async fn derive_root_did() -> Result<JsValue, JsValue> {
     Ok(JsValue::from_str(did.as_ref()))
 }
 
+/// An optional string property: absent, empty, or not a string all read as
+/// `None`, so a caller with nothing to say can simply say nothing.
+fn optional_string_property(input: &JsValue, name: &str) -> Option<String> {
+    Reflect::get(input, &name.into())
+        .ok()?
+        .as_string()
+        .filter(|value| !value.is_empty())
+}
+
 fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
     Reflect::get(input, &name.into())?
         .as_string()
@@ -61,23 +70,93 @@ fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
         .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
 }
 
-/// `signRevocation({ delegationCid })` → `{ revocationHex }`.
+/// `signRevocation({ delegationCid, pathHex })` → `{ revocationHex }`.
 ///
-/// Prompts for the passkey, derives the root, and signs a revocation of
-/// the named delegation. The caller sends the hex on as an argument to
-/// its own device-signed revoke request.
+/// Parses the public witness before prompting, derives the root, and signs
+/// only when that root issued a delegation in the target's path prefix.
 async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     let delegation_cid = string_property(&input, "delegationCid")?;
+    let target = delegation_cid
+        .parse::<ipld_core::cid::Cid>()
+        .map_err(|error| JsValue::from_str(&format!("invalid delegationCid: {error}")))?;
+    if target.to_string() != delegation_cid {
+        return Err(JsValue::from_str("delegationCid must be canonical"));
+    }
+    let path_hex = string_property(&input, "pathHex")?;
+    let path_bytes = hex::decode(path_hex)
+        .map_err(|error| JsValue::from_str(&format!("invalid pathHex: {error}")))?;
+    let path = dialog_ucan_core::DelegationChain::try_from(path_bytes.as_slice())
+        .map_err(|error| JsValue::from_str(&format!("invalid revocation path: {error}")))?;
+    if path
+        .proof_cids()
+        .iter()
+        .filter(|cid| **cid == target)
+        .count()
+        != 1
+    {
+        return Err(JsValue::from_str(
+            "revocation path must contain delegationCid exactly once",
+        ));
+    }
+
     let prf = crate::passkey::prf_output().await.map_err(js_error)?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let revocation_hex = crate::ceremony::sign_revocation(root, &delegation_cid)
+    let revocation_hex = crate::ceremony::sign_revocation(root, &path, &target)
         .await
         .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(&result, &"revocationHex".into(), &revocation_hex.into())?;
     Ok(result.into())
+}
+
+fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsValue> {
+    let result = Object::new();
+    Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
+    Reflect::set(&result, &"deviceDid".into(), &ceremony.device_did.into())?;
+    Reflect::set(
+        &result,
+        &"credentialId".into(),
+        &ceremony.credential_id.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"delegationCid".into(),
+        &ceremony.delegation_cid.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"delegationHex".into(),
+        &ceremony.delegation_hex.into(),
+    )?;
+    Ok(result.into())
+}
+
+async fn create_root(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    // `label` is what the passkey manager will show. The account ceremony
+    // sends the address it just verified; a spot creating a root sends
+    // nothing, because no account exists to name.
+    let label = optional_string_property(&input, "label");
+    root_result(
+        crate::ceremony::create_root(device_did, label.as_deref())
+            .await
+            .map_err(js_error)?,
+    )
+}
+
+async fn evaluate_root(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    root_result(
+        crate::ceremony::evaluate_root(device_did)
+            .await
+            .map_err(js_error)?,
+    )
 }
 
 fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue, JsValue> {
@@ -104,36 +183,41 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let user_name = Reflect::get(&input, &"userName".into())?
-        .as_string()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| email.clone());
-
-    let created = crate::passkey::create_passkey(&user_name)
-        .await
-        .map_err(js_error)?;
-    let credential_id = hex::encode(&created.id);
-    let prf_at_create = created.prf_output.is_some();
-    let prf = match created.prf_output {
-        Some(output) => output,
-        None => crate::passkey::prf_output().await.map_err(js_error)?,
-    };
+    let expected_root = string_property(&input, "rootDid")?;
+    let credential_id = string_property(&input, "credentialId")?;
+    let delegation_hex = string_property(&input, "delegationHex")?;
+    let evaluated = crate::passkey::evaluate_passkey().await.map_err(js_error)?;
+    if hex::encode(evaluated.id) != credential_id {
+        return Err(JsValue::from_str(
+            "the evaluated passkey does not match credentialId",
+        ));
+    }
+    let prf = evaluated
+        .prf_output
+        .ok_or_else(|| JsValue::from_str("the authenticator returned no PRF output"))?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let ceremony = crate::ceremony::create_account(
-        root,
-        email,
-        code,
-        credential_id.clone(),
-        device_did,
-        device_name,
-    )
-    .await
-    .map_err(js_error)?;
-    let result = ceremony_result(ceremony)?;
+    use dialog_varsig::Principal as _;
+    if root.did().to_string() != expected_root {
+        return Err(JsValue::from_str(
+            "the evaluated passkey does not match rootDid",
+        ));
+    }
+    let result = ceremony_result(
+        crate::ceremony::create_account(
+            root,
+            email,
+            code,
+            credential_id.clone(),
+            device_did,
+            device_name,
+            delegation_hex,
+        )
+        .await
+        .map_err(js_error)?,
+    )?;
     Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
-    Reflect::set(&result, &"prfAtCreate".into(), &prf_at_create.into())?;
     Ok(result)
 }
 
@@ -142,14 +226,21 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
-    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let evaluated = crate::passkey::evaluate_passkey().await.map_err(js_error)?;
+    let credential_id = hex::encode(evaluated.id);
+    let prf = evaluated
+        .prf_output
+        .ok_or_else(|| JsValue::from_str("the authenticator returned no PRF output"))?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let ceremony = crate::ceremony::link_device(root, device_did, device_name)
-        .await
-        .map_err(js_error)?;
-    ceremony_result(ceremony)
+    let result = ceremony_result(
+        crate::ceremony::link_device(root, device_did, device_name)
+            .await
+            .map_err(js_error)?,
+    )?;
+    Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
+    Ok(result)
 }
 
 async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
@@ -176,15 +267,33 @@ pub fn install() {
     };
     let identity = Object::new();
 
-    let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|name: JsValue| {
-        future_to_promise(create(name))
-    });
+    let create_passkey = Closure::<dyn FnMut() -> Promise>::new(|| future_to_promise(create()));
     let _ = Reflect::set(
         &identity,
         &"createPasskey".into(),
         create_passkey.as_ref().unchecked_ref(),
     );
     create_passkey.forget();
+
+    let create_root = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_root(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createRoot".into(),
+        create_root.as_ref().unchecked_ref(),
+    );
+    create_root.forget();
+
+    let evaluate_root = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(evaluate_root(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"evaluateRoot".into(),
+        evaluate_root.as_ref().unchecked_ref(),
+    );
+    evaluate_root.forget();
 
     let derive = Closure::<dyn FnMut() -> Promise>::new(|| future_to_promise(derive_root_did()));
     let _ = Reflect::set(
@@ -251,6 +360,8 @@ mod tests {
         let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
         for name in [
             "createPasskey",
+            "createRoot",
+            "evaluateRoot",
             "deriveRootDid",
             "createAccount",
             "linkDevice",

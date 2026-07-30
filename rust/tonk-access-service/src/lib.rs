@@ -50,6 +50,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
 
     router
+        // Browser deployment configuration must run before static assets.
+        .get_async("/.well-known/tonk", handlers::config::handle)
         // Service info endpoint
         .get_async("/", handlers::info::handle)
         // Health check

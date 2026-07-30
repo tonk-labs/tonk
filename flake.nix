@@ -36,6 +36,13 @@
           overlays = [
             (import rust-overlay)
             (import ./nix/esbuild.nix)
+            (
+              final: prev:
+              prev.lib.optionalAttrs prev.stdenv.isDarwin {
+                # Remove when nixpkgs remarshal passes with Python 3.14 on Darwin.
+                remarshal = final.python313Packages.remarshal;
+              }
+            )
           ];
         };
         filter = nix-filter.lib;
@@ -319,14 +326,23 @@
         };
 
         packages = rec {
+          # `tonk-account-service/helpers` is package-qualified on purpose.
+          # Four crates define a `helpers` feature, and a bare `--features
+          # helpers` would switch on all of them — including tonk-ui's, which
+          # pulls a WebDriver client. This one gates the account service's
+          # native backends (bundled rusqlite, in-memory chains, captured
+          # email, a hyper server serving the Worker's routes), which its
+          # `tests/service.rs` is `#![cfg]`'d on: without the feature that file
+          # compiles to zero tests, so its HTTP-level ceremony coverage never
+          # ran here.
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests,tonk-account-service/helpers";
           };
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --release";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests,tonk-account-service/helpers --release";
           };
 
           tests-web-debug = buildTestArchive {

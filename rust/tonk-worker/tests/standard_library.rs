@@ -75,6 +75,85 @@ fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
 }
 
+/// Form controls expose their submitted value at `.value` (a
+/// `RadioNodeList` included). Nothing else on an `<input>` is a value
+/// slot, so a read path ending anywhere else resolves to `undefined`.
+const FORM_CONTROL_PROPERTIES: &[&str] = &["value"];
+
+/// The read-path prefix that addresses a named control inside the
+/// submitting form.
+const FORM_CONTROL_PREFIX: &str = "dom.event.current-target.elements.";
+
+/// Every `elements.<name>/<leaf>` read path in `document` must end at a
+/// property a form control actually has.
+///
+/// The event extractor walks the path against the live form and aborts
+/// the WHOLE command when a leaf resolves to `undefined`
+/// (`ExtractError::UnresolvedField`) — no claim posted, no
+/// `preventDefault`, a dead button with only a console warning. A leaf
+/// typo is therefore silent at seed time and fatal at click time, which
+/// is what this catches. The trap is naming the field and its leaf
+/// after the same thing (`revocation/revocation-url`): the leaf is a JS
+/// property, not a label.
+fn assert_form_reads_resolve(label: &str, document: &str) {
+    for (index, _) in document.match_indices(FORM_CONTROL_PREFIX) {
+        let rest = &document[index + FORM_CONTROL_PREFIX.len()..];
+        let identifier = rest
+            .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .next()
+            .unwrap_or_default();
+        let Some((control, leaf)) = identifier.split_once('/') else {
+            panic!("{label}: `{FORM_CONTROL_PREFIX}{identifier}` names no property to read");
+        };
+        assert!(
+            FORM_CONTROL_PROPERTIES.contains(&leaf),
+            "{label}: `{FORM_CONTROL_PREFIX}{control}/{leaf}` reads \
+             `form.elements.{control}.{}` — not a form-control property, so \
+             the command aborts unresolved on submit",
+            kebab_to_camel(leaf),
+        );
+    }
+}
+
+/// The event layer camel-cases every path segment at read time; mirror it
+/// so the failure message names the property the browser would look for.
+fn kebab_to_camel(segment: &str) -> String {
+    let mut camel = String::with_capacity(segment.len());
+    let mut upper = false;
+    for c in segment.chars() {
+        if c == '-' {
+            upper = true;
+        } else if upper {
+            camel.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            camel.push(c);
+        }
+    }
+    camel
+}
+
+#[test]
+fn it_reads_form_controls_at_properties_they_have() {
+    assert_form_reads_resolve("standard library (core.yaml)", STANDARD_LIBRARY);
+    assert_form_reads_resolve("profile library (profile.yaml)", PROFILE_LIBRARY);
+    assert_form_reads_resolve("sheets template (sheets.yaml)", SHEETS_LIBRARY);
+    assert_form_reads_resolve("wiki template (wiki.yaml)", WIKI_LIBRARY);
+    assert_form_reads_resolve("board template (board.yaml)", BOARD_LIBRARY);
+}
+
+#[test]
+fn it_leaves_network_bearing_space_bindings_unquoted() {
+    assert!(
+        PROFILE_LIBRARY.contains("space={id}"),
+        "the FAB space binding must be resolved by the renderer"
+    );
+    assert!(
+        !PROFILE_LIBRARY.contains("space=\"{id}\""),
+        "a quoted binding can reach membership fetches unresolved"
+    );
+}
+
 #[test]
 fn it_lowers_core_concatenated_with_the_sheets_template() {
     // The worker never seeds sheets.yaml alone: for the `sheets`

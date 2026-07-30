@@ -7,9 +7,13 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use dialog_operator::Profile;
+use anyhow::{Context, Result, bail};
+use dialog_effects::credential::CredentialError;
+use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::DelegationChain;
+use serde::{Deserialize, Serialize};
 
 use crate::site::PROFILE_NAME;
 
@@ -19,6 +23,120 @@ use crate::site::PROFILE_NAME;
 /// Vendored here because it isn't exposed publicly, and `--reset`
 /// needs the on-disk path to wipe the profile directory.
 const STORAGE_NAMESPACE: &str = "dialog";
+
+/// Provider-neutral credential-store key for the durable local root.
+pub const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
+
+/// Stable local-root record shared in shape with the browser worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRoot {
+    /// Opaque passkey credential identifier.
+    pub credential_id: String,
+    /// Root DID derived by the passkey ceremony.
+    pub root_did: String,
+    /// CID of the exact root-to-device grant.
+    pub delegation_cid: String,
+    /// Exact grant bytes, hex encoded.
+    pub delegation_hex: String,
+}
+
+fn missing_credential(error: &CredentialError) -> bool {
+    matches!(error, CredentialError::NotFound(_))
+        || matches!(error, CredentialError::Storage(message) if message.contains("No such file or directory"))
+}
+
+/// Load the provider-neutral local root, if one has been provisioned.
+pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
+    let storage = Storage::<NativeSpace>::default();
+    let bytes = match profile
+        .credential()
+        .site(LOCAL_ROOT_SITE)
+        .load::<Vec<u8>>()
+        .perform(&storage)
+        .await
+    {
+        Ok(bytes) if bytes.is_empty() => return Ok(None),
+        Ok(bytes) => bytes,
+        Err(error) if missing_credential(&error) => return Ok(None),
+        Err(error) => return Err(error).context("failed to load the local root"),
+    };
+    let record: LocalRoot =
+        serde_json::from_slice(&bytes).context("stored local root is malformed")?;
+    Ok(Some(record))
+}
+
+/// Load the local root through an already-mounted site operator.
+pub(crate) async fn local_root_with_operator(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+) -> Result<Option<LocalRoot>> {
+    let bytes = match profile
+        .credential()
+        .site(LOCAL_ROOT_SITE)
+        .load::<Vec<u8>>()
+        .perform(operator)
+        .await
+    {
+        Ok(bytes) if bytes.is_empty() => return Ok(None),
+        Ok(bytes) => bytes,
+        Err(error) if missing_credential(&error) => return Ok(None),
+        Err(error) => return Err(error).context("failed to load the local root"),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .context("stored local root is malformed")
+}
+
+/// Validate and persist exact root-to-device material from a browser handoff.
+pub async fn save_local_root(
+    profile: &Profile,
+    credential_id: String,
+    delegation_hex: String,
+) -> Result<LocalRoot> {
+    let bytes = hex::decode(&delegation_hex).context("invalid local-root delegation hex")?;
+    let chain = DelegationChain::try_from(bytes.as_slice())
+        .context("invalid local-root delegation container")?;
+    if chain.proof_cids().len() != 1 || chain.subject().is_some() {
+        bail!("local-root delegation has an invalid shape");
+    }
+    if chain.audience() != &profile.did() {
+        bail!("local-root delegation targets another device");
+    }
+    let proof = chain
+        .proofs()
+        .next()
+        .context("local-root delegation is missing its proof")?;
+    proof
+        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .await
+        .context("local-root delegation signature is invalid")?;
+    let record = LocalRoot {
+        credential_id,
+        root_did: chain.issuer().to_string(),
+        delegation_cid: chain.proof_cids()[0].to_string(),
+        delegation_hex,
+    };
+    if let Some(existing) = local_root(profile).await?
+        && existing != record
+    {
+        bail!("this device already has a different local root");
+    }
+    let storage = Storage::<NativeSpace>::default();
+    profile
+        .save(UcanDelegation(chain))
+        .perform(&storage)
+        .await
+        .context("failed to install the local-root delegation")?;
+    profile
+        .credential()
+        .site(LOCAL_ROOT_SITE)
+        .save(serde_json::to_vec(&record).context("failed to serialize the local root")?)
+        .perform(&storage)
+        .await
+        .context("failed to persist the local root")?;
+    Ok(record)
+}
 
 /// Open the user's profile, creating it on first run.
 pub async fn open() -> Result<Profile> {

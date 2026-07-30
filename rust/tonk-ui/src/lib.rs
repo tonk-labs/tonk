@@ -16,8 +16,18 @@ pub mod api;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod analytics;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod deployment;
+
 /// Error types for the Tonk UI.
 pub mod error;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod identity_bridge;
+
+/// Top-document local identity provisioning gate.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod identity_gate;
 
 /// Test helpers for integration testing.
 #[cfg(any(test, feature = "helpers"))]

@@ -138,6 +138,7 @@ pub async fn complete_link<S: Store>(
                 account_id: account.id,
                 device_did: device_did.to_string(),
                 delegation_cid,
+                delegation_hex: delegation_hex.to_string(),
                 name: device_name.to_string(),
                 status: DeviceStatus::Active,
                 created_at: now,
@@ -154,12 +155,22 @@ pub async fn complete_link<S: Store>(
     Ok(())
 }
 
+/// Provider-neutral local-root material returned by a completed handoff.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumedLink {
+    /// Exact root-to-device delegation bytes, hex encoded.
+    pub delegation_hex: String,
+    /// Opaque credential identifier belonging to the root passkey.
+    pub credential_id: String,
+}
+
 /// Consume a completed delegation once. `None` means the CLI should poll again.
 pub async fn consume_link<S: Store>(
     store: &S,
     secret: &str,
     now: u64,
-) -> Result<Option<String>, CeremonyError> {
+) -> Result<Option<ConsumedLink>, CeremonyError> {
     let token_hash = hash_secret(secret)?;
     let link = store
         .link(&token_hash)
@@ -177,7 +188,23 @@ pub async fn consume_link<S: Store>(
             "link request was already consumed".to_string(),
         ));
     }
-    Ok(consumed)
+    let Some(delegation_hex) = consumed else {
+        return Ok(None);
+    };
+    let bytes = hex::decode(&delegation_hex).map_err(|error| {
+        CeremonyError::Internal(format!("stored link delegation is invalid: {error}"))
+    })?;
+    let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
+        CeremonyError::Internal(format!("stored link delegation is invalid: {error}"))
+    })?;
+    let account = store
+        .account_by_root(chain.issuer().as_ref())
+        .await?
+        .ok_or_else(|| CeremonyError::Internal("completed link account is missing".to_string()))?;
+    Ok(Some(ConsumedLink {
+        delegation_hex,
+        credential_id: account.credential_id,
+    }))
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
@@ -231,7 +258,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             consume_link(&store, SECRET, 103).await.unwrap(),
-            Some(delegation)
+            Some(ConsumedLink {
+                delegation_hex: delegation,
+                credential_id: "cred".to_string(),
+            })
         );
         assert!(consume_link(&store, SECRET, 104).await.is_err());
     }

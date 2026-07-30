@@ -19,6 +19,28 @@ use wasm_streams::ReadableStream;
 use web_sys::{Blob, Request as BrowserRequest, Response as BrowserResponse, ResponseInit};
 
 use tonk_common::ExclusiveStream;
+use url::Url;
+
+/// Same-origin scheme and authority captured from the browser request URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestOrigin(Url);
+
+impl RequestOrigin {
+    /// Capture only the URL origin, discarding path, query, and fragment.
+    pub fn parse(request_url: &str) -> Result<Self, JsError> {
+        let parsed = Url::parse(request_url)
+            .map_err(|error| JsError::new(&format!("invalid browser request URL: {error}")))?;
+        let origin = parsed.origin().ascii_serialization();
+        let origin = Url::parse(&format!("{origin}/"))
+            .map_err(|error| JsError::new(&format!("invalid browser request origin: {error}")))?;
+        Ok(Self(origin))
+    }
+
+    /// Origin URL with a root path and no query or fragment.
+    pub fn url(&self) -> &Url {
+        &self.0
+    }
+}
 
 /// Wrapper for converting browser requests to Axum requests.
 pub struct RequestConversion(BrowserRequest);
@@ -48,9 +70,14 @@ impl RequestConversion {
     pub async fn into_axum_request(self) -> Result<AxumRequest<Body>, JsError> {
         let request: BrowserRequest = self.into();
         let method = Method::from_str(&request.method())?;
-        let uri = Uri::try_from(&request.url())?;
+        let request_url = request.url();
+        let origin = RequestOrigin::parse(&request_url)?;
+        let uri = Uri::try_from(&request_url)?;
 
-        let mut request_builder = AxumRequest::builder().method(method).uri(uri);
+        let mut request_builder = AxumRequest::builder()
+            .method(method)
+            .uri(uri)
+            .extension(origin);
 
         for header_entry in request
             .headers()
@@ -102,17 +129,15 @@ impl RequestConversion {
 }
 
 /// Wrapper for converting Axum responses to browser responses.
-pub struct ResponseConversion(AxumResponse<Body>);
-
-impl From<AxumResponse<Body>> for ResponseConversion {
-    fn from(value: AxumResponse<Body>) -> Self {
-        ResponseConversion(value)
-    }
+pub struct ResponseConversion {
+    method: Method,
+    response: AxumResponse<Body>,
 }
 
-impl From<ResponseConversion> for AxumResponse<Body> {
-    fn from(value: ResponseConversion) -> Self {
-        value.0
+impl ResponseConversion {
+    /// Pair a response with the method of the request that produced it.
+    pub fn new(method: Method, response: AxumResponse<Body>) -> Self {
+        Self { method, response }
     }
 }
 
@@ -120,7 +145,7 @@ impl TryFrom<ResponseConversion> for BrowserResponse {
     type Error = JsError;
 
     fn try_from(value: ResponseConversion) -> Result<Self, Self::Error> {
-        let response: AxumResponse<Body> = value.into();
+        let ResponseConversion { method, response } = value;
         let status_code = response.status();
         let headers = JsValue::from(Object::new());
 
@@ -131,30 +156,32 @@ impl TryFrom<ResponseConversion> for BrowserResponse {
                     &JsValue::from(key.as_str()),
                     &JsValue::from(value),
                 )
-                .unwrap_throw();
+                .map_err(|_| JsError::new("Could not set fetch response header"))?;
             }
         }
-
-        let body_stream = ReadableStream::from_stream(
-            response
-                .into_body()
-                .into_data_stream()
-                .map_ok(|value| JsValue::from(Uint8Array::from(value.as_ref())))
-                .map_err(|error| JsValue::from(format!("{error}"))),
-        )
-        .into_raw();
 
         let response_options = ResponseInit::new();
         response_options.set_status(status_code.as_u16());
         response_options.set_headers(&headers);
 
-        let response = BrowserResponse::new_with_opt_readable_stream_and_init(
-            Some(&body_stream),
+        let has_null_body =
+            method == Method::HEAD || matches!(status_code.as_u16(), 204 | 205 | 304);
+        let body_stream = (!has_null_body).then(|| {
+            ReadableStream::from_stream(
+                response
+                    .into_body()
+                    .into_data_stream()
+                    .map_ok(|value| JsValue::from(Uint8Array::from(value.as_ref())))
+                    .map_err(|error| JsValue::from(format!("{error}"))),
+            )
+            .into_raw()
+        });
+
+        BrowserResponse::new_with_opt_readable_stream_and_init(
+            body_stream.as_ref(),
             &response_options,
         )
-        .expect_throw("Could not construct fetch response");
-
-        Ok(response)
+        .map_err(|_| JsError::new("Could not construct fetch response"))
     }
 }
 
@@ -181,6 +208,10 @@ mod tests {
 
         assert_eq!(axum_request.method(), Method::GET);
         assert_eq!(axum_request.uri().path(), "/api/test");
+        let origin = axum_request.extensions().get::<RequestOrigin>().unwrap();
+        assert_eq!(origin.url().as_str(), "https://example.com/");
+        assert!(origin.url().query().is_none());
+        assert!(origin.url().fragment().is_none());
     }
 
     #[dialog_common::test]
@@ -245,7 +276,7 @@ mod tests {
             .body(Body::empty())
             .expect("Failed to build response");
 
-        let browser_response: BrowserResponse = ResponseConversion::from(response)
+        let browser_response: BrowserResponse = ResponseConversion::new(Method::GET, response)
             .try_into()
             .expect("Failed to convert response");
 
@@ -261,7 +292,7 @@ mod tests {
             .body(Body::empty())
             .expect("Failed to build response");
 
-        let browser_response: BrowserResponse = ResponseConversion::from(response)
+        let browser_response: BrowserResponse = ResponseConversion::new(Method::GET, response)
             .try_into()
             .expect("Failed to convert response");
 
@@ -286,11 +317,70 @@ mod tests {
                 .body(Body::empty())
                 .expect("Failed to build response");
 
-            let browser_response: BrowserResponse = ResponseConversion::from(response)
+            let browser_response: BrowserResponse = ResponseConversion::new(Method::GET, response)
                 .try_into()
                 .expect("Failed to convert response");
 
             assert_eq!(browser_response.status(), *status);
         }
+    }
+
+    #[dialog_common::test]
+    async fn it_omits_bodies_for_null_body_statuses_and_head() {
+        for (method, status) in [
+            (Method::GET, 204),
+            (Method::GET, 205),
+            (Method::GET, 304),
+            (Method::HEAD, 200),
+        ] {
+            let response = AxumResponse::builder()
+                .status(status)
+                .header("x-test", "retained")
+                .body(Body::from("accidental body"))
+                .unwrap();
+            let browser: BrowserResponse = ResponseConversion::new(method, response)
+                .try_into()
+                .expect("null-body response converts");
+
+            assert!(
+                browser.body().is_none(),
+                "status {status} must have no body"
+            );
+            assert_eq!(
+                browser.headers().get("x-test").unwrap().as_deref(),
+                Some("retained")
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_empty_and_streamed_success_bodies() {
+        for body in [Body::empty(), Body::from(r#"{"ok":true}"#)] {
+            let response = AxumResponse::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(body)
+                .unwrap();
+            let browser: BrowserResponse = ResponseConversion::new(Method::GET, response)
+                .try_into()
+                .expect("success response converts");
+
+            assert!(browser.body().is_some());
+            assert_eq!(
+                browser.headers().get("content-type").unwrap().as_deref(),
+                Some("application/json")
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_invalid_browser_response_construction() {
+        let response = AxumResponse::builder()
+            .status(101)
+            .body(Body::empty())
+            .unwrap();
+
+        let result = BrowserResponse::try_from(ResponseConversion::new(Method::GET, response));
+        assert!(result.is_err());
     }
 }

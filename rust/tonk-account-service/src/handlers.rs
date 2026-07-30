@@ -14,6 +14,8 @@ pub mod codes;
 pub mod devices;
 #[cfg(target_arch = "wasm32")]
 pub mod links;
+#[cfg(target_arch = "wasm32")]
+pub mod revocations;
 
 /// Add CORS headers permitting cross-origin requests to a response.
 #[cfg(target_arch = "wasm32")]
@@ -50,10 +52,7 @@ pub fn ceremony_error(err: crate::core::CeremonyError) -> crate::error::ServiceE
         | CeremonyError::Unauthorized(msg)
         | CeremonyError::Forbidden(msg) => msg.clone(),
         CeremonyError::Internal(detail) => {
-            #[cfg(target_arch = "wasm32")]
-            worker::console_error!("internal error: {detail}");
-            #[cfg(not(target_arch = "wasm32"))]
-            eprintln!("internal error: {detail}");
+            crate::core::log_detail(&format!("internal error: {detail}"));
             "internal error".to_string()
         }
     };
@@ -104,6 +103,18 @@ pub fn build_chains(
         crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
     })?;
     Ok(crate::chains::r2::R2ChainStore::new(bucket))
+}
+
+/// Build the immutable revocation writer from the `REVOCATIONS` binding.
+#[cfg(target_arch = "wasm32")]
+pub fn build_revocations(
+    ctx: &worker::RouteContext<()>,
+) -> std::result::Result<crate::revocations::r2::R2RevocationStore, crate::error::ServiceError> {
+    let bucket = ctx.bucket("REVOCATIONS").map_err(|err| {
+        worker::console_error!("missing REVOCATIONS binding: {err}");
+        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
+    })?;
+    Ok(crate::revocations::r2::R2RevocationStore::new(bucket))
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]

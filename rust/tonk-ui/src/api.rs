@@ -2,8 +2,9 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
-    JoinRequest, JoinResponse, QueryResponse, RepositoryInfo, RevokeDeviceRequest, SignOutResponse,
-    SyncResponse, SyncStatusResponse,
+    JoinRequest, JoinResponse, MembershipResponse, QueryResponse, RepositoryInfo,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -343,10 +344,15 @@ async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, Ton
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(TonkUiError::ApiError(format!(
-            "POST {path} returned {status}: {text}"
-        )));
+        return match response.json::<ErrorBody>().await {
+            Ok(body) if body.error.code.is_some() => Err(TonkUiError::Sync {
+                code: body.error.code.expect("checked above"),
+                message: body.error.message,
+            }),
+            _ => Err(TonkUiError::ApiError(format!(
+                "POST {path} returned {status}"
+            ))),
+        };
     }
     response
         .json::<SyncResponse>()
@@ -422,6 +428,55 @@ pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
     }
 }
 
+/// Open an audience-open invite as a bounded guest without provisioning a root.
+pub async fn visit(url: &str) -> Result<JoinResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/profile/visit", origin()))
+        .json(&JoinRequest {
+            url: url.to_string(),
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/profile/visit returned {}",
+            response.status()
+        )))
+    }
+}
+
+/// Read whether the current local replica is a guest or durable member.
+pub async fn membership(repo: &str) -> Result<MembershipResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    reqwest::Client::new()
+        .get(format!("{}/api/repository/{repo}/membership", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?
+        .error_for_status()
+        .map_err(into_api_error)?
+        .json()
+        .await
+        .map_err(into_api_error)
+}
+
+/// Promote a local guest visit to durable root membership.
+pub async fn join_guest(repo: &str) -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    reqwest::Client::new()
+        .post(format!("{}/api/repository/{repo}/membership", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?
+        .error_for_status()
+        .map_err(into_api_error)?;
+    Ok(())
+}
+
 /// Fetches the current user's identity (DID) from the service worker.
 pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -434,6 +489,43 @@ pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
         .map_err(into_api_error)?;
 
     response.json().await.map_err(into_api_error)
+}
+
+/// Return the current profile's provider-neutral local root state.
+pub async fn root_status() -> Result<RootStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/identity/root", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    response.json().await.map_err(into_api_error)
+}
+
+/// Persist a verified local root ceremony result.
+pub async fn save_root(
+    credential_id: String,
+    delegation_hex: String,
+) -> Result<RootStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/identity/root", origin()))
+        .json(&SaveRootRequest {
+            credential_id,
+            delegation_hex,
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/identity/root returned {status}: {text}"
+        )))
+    }
 }
 
 /// Return the current profile's persisted account-link state.
@@ -449,14 +541,18 @@ pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
 
 /// Persist a verified account-root delegation in the local profile.
 pub async fn save_account_link(
+    provider: String,
     root_did: String,
+    credential_id: String,
     delegation_hex: String,
 ) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
-        .post(format!("{}/api/account/link", origin()))
+        .post(format!("{}/api/account/attach", origin()))
         .json(&AccountLinkRequest {
+            provider,
             root_did,
+            credential_id,
             delegation_hex,
         })
         .send()
@@ -468,7 +564,7 @@ pub async fn save_account_link(
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
-            "POST /api/account/link returned {status}: {text}"
+            "POST /api/account/attach returned {status}: {text}"
         )))
     }
 }
@@ -492,11 +588,13 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
     }
 }
 
-/// Revoke one of the account's devices; returns the refreshed list.
+/// Revoke one of the account's devices and return the canonical publication
+/// acknowledgement. Refreshing the mutable device list is a separate,
+/// best-effort operation.
 pub async fn revoke_account_device(
     did: String,
     revocation: String,
-) -> Result<Vec<AccountDevice>, TonkUiError> {
+) -> Result<RevokeDeviceAcknowledgement, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
@@ -517,7 +615,7 @@ pub async fn revoke_account_device(
 
 /// Sign out on this device: revoke it in the registry (best-effort,
 /// reported in the response) and rotate onto a fresh key.
-pub async fn unlink_account() -> Result<SignOutResponse, TonkUiError> {
+pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .delete(format!("{}/api/account", origin()))
@@ -535,6 +633,35 @@ pub async fn unlink_account() -> Result<SignOutResponse, TonkUiError> {
     }
 }
 
+/// The account service's error body: `{"error":{"code":…,"message":…}}`.
+/// Distinct from [`ErrorBody`], whose `kind` the account service does not
+/// emit.
+#[derive(Deserialize)]
+struct AccountErrorBody {
+    error: AccountErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct AccountErrorDetail {
+    message: String,
+}
+
+/// Turn a failed account-service response into an error the account
+/// panel can show verbatim.
+///
+/// The service already curates these messages for display ("an account
+/// already exists for this email address"), so the message alone is what
+/// belongs in front of someone — not the JSON envelope, and not the HTTP
+/// status. An unparseable body falls back to the raw text, which is only
+/// reachable if the service returned something other than its own error
+/// shape.
+fn account_service_error(path: &str, status: reqwest::StatusCode, text: &str) -> TonkUiError {
+    match serde_json::from_str::<AccountErrorBody>(text) {
+        Ok(body) => TonkUiError::Account(body.error.message),
+        Err(_) => TonkUiError::ApiError(format!("POST {path} returned {status}: {text}")),
+    }
+}
+
 /// Ask the account service to email a verification code.
 pub async fn request_account_code(service: &str, email: &str) -> Result<(), TonkUiError> {
     let response = reqwest::Client::new()
@@ -548,9 +675,7 @@ pub async fn request_account_code(service: &str, email: &str) -> Result<(), Tonk
     } else {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /codes returned {status}: {text}"
-        )))
+        Err(account_service_error("/codes", status, &text))
     }
 }
 
@@ -578,9 +703,7 @@ pub async fn submit_account_ceremony(
     } else {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST {path} returned {status}: {text}"
-        )))
+        Err(account_service_error(path, status, &text))
     }
 }
 
@@ -603,5 +726,42 @@ pub async fn resolve_account_link(
         Err(TonkUiError::ApiError(format!(
             "POST /links/resolve returned {status}: {text}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The account panel shows whatever string comes back, so the
+    /// service's curated sentence has to survive on its own — without the
+    /// JSON envelope, the HTTP status, or the "local API" label that
+    /// [`TonkUiError::ApiError`] adds.
+    #[test]
+    fn it_shows_only_the_services_message() {
+        let error = account_service_error(
+            "/accounts",
+            reqwest::StatusCode::CONFLICT,
+            r#"{"error":{"code":"CONFLICT","message":"an account already exists for this email address"}}"#,
+        );
+        assert_eq!(
+            error.to_string(),
+            "an account already exists for this email address"
+        );
+    }
+
+    /// A body that isn't the service's error shape keeps the diagnostic
+    /// context, since there is no curated message to show instead.
+    #[test]
+    fn it_falls_back_to_the_raw_body_for_an_unknown_shape() {
+        let error = account_service_error(
+            "/accounts",
+            reqwest::StatusCode::BAD_GATEWAY,
+            "<html>upstream is down</html>",
+        );
+        assert_eq!(
+            error.to_string(),
+            "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
+        );
     }
 }

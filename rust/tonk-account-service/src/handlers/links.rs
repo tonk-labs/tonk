@@ -106,10 +106,7 @@ pub async fn handle_consume(mut req: Request, ctx: RouteContext<()>) -> Result<R
             .await
             .map_err(ceremony_error)?
         {
-            Some(delegation_hex) => {
-                Response::from_json(&serde_json::json!({ "delegationHex": delegation_hex }))
-                    .map_err(response_error)
-            }
+            Some(consumed) => Response::from_json(&consumed).map_err(response_error),
             None => Response::from_json(&serde_json::json!({ "pending": true }))
                 .map(|response| response.with_status(202))
                 .map_err(response_error),

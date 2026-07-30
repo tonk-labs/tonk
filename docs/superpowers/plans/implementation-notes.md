@@ -95,3 +95,73 @@ on CI (Chrome 150 at the default path plus nixpkgs chromedriver 150 —
 randomly, or the next run inherits the last run's rotated pointer and a
 profile that never rotated reads as one that did. Same trap
 `router.rs`'s `session_nonce` documents.
+
+## Identity and sharing E2E hardening
+
+The accepted dialog prerequisite was already present in the worktree at
+`25fac91eaa4d23fc220721df19f9e2593be618d7`. All workspace `dialog-*`
+dependencies and `Cargo.lock` use that one revision; no mixed pin was
+introduced.
+
+The Darwin fix is the narrow top-level `remarshal` overlay described by the
+plan. `nix-store -qR` resolves it to `python3.13-remarshal-1.3.0`; unrelated
+Python packages remain unchanged.
+
+Two defects were visible only in the aggregate Web gate:
+
+- `tonk-fab` used `HtmlInputElement` for targeted invitations without enabling
+  its `web-sys` feature.
+- a `tonk-identity` revocation test passed `std::time::SystemTime` to dialog's
+  Wasm `web_time::SystemTime`, and `tonk-account-service` used
+  `#[dialog_common::test]` without its test-only `wasm-bindgen-test`
+  dependency.
+
+The targeted invitation copy cannot call `clipboard.writeText` after awaiting
+the mint response because transient user activation has expired. It now shares
+the existing promise-backed `ClipboardItem` seam: the form submit opens the
+write synchronously and resolves it with the returned URL.
+
+Native HTTP and credential tests cannot bind loopback ports or save temporary
+signing sessions in the managed sandbox. The same binaries pass outside the
+sandbox. No product error was hidden by those permission failures.
+
+`path:.` is required while the new modules are untracked, but it also snapshots
+the ignored 32 GB Cargo `target/` directory. The gates temporarily moved that
+regenerable cache outside the source and restored it on exit. The
+`test:native:debug` shell wrapper then invoked `git+file:.` internally and
+omitted the untracked modules, so the equivalent `tests-native-debug` and
+`tests-web-debug` derivations were built directly from `path:.`.
+
+No account/access/UI deployment or staging mutation was performed. The session
+had no staging ownership or deployment provenance, and the smoke requires
+disposable account data plus controlled D1/R2 state. The implementation and
+local/Nix gates are complete; the serial deployment and non-destructive staging
+smoke remain an operator-owned release step.
+
+Root-first account tests must derive provider ceremony metadata from the root
+already persisted in the test profile. Supplying a second deterministic root is
+not a harmless fixture shortcut: the account boundary correctly rejects it as a
+ceremony/root mismatch. Invitation attribution likewise asserts the persisted
+root entity, not the profile device DID.
+
+The hardened sync contract distinguishes orchestration from an attempted
+operation. A background sweep filters out branches with no upstream and
+resolves as a no-op; a direct `POST .../sync` for that same branch is an
+operational failure and returns non-2xx `SYNC_UNAVAILABLE`. Tests now pin both
+sides so a manual request cannot claim reconciliation merely because there was
+nothing configured to reconcile.
+
+The crate-wide Wasm test harness runs in a browser document even when one module
+requests a service-worker harness. The outbound HTTP helper therefore calls the
+same `globalThis.fetch`, `setTimeout`, and `clearTimeout` functions dynamically
+on both targets. Production still supplies the service-worker global; the
+browser test can replace those functions to verify bytes, media type, structured
+status, and abort timeout without maintaining a second transport.
+
+The staging pre-deploy audit found that `delegation_hex` had been added to the
+already-applied `0001_init.sql`, so Wrangler reported no pending migration while
+the live `devices` table still lacked the column. The signed path cannot be
+reconstructed from its CID or from account space backups. Migration 0003
+therefore adds a nullable column: new registrations always populate it, while
+legacy rows expose absent evidence explicitly and disable only cross-device
+revocation. Self-revocation remains possible from the device's local grant.

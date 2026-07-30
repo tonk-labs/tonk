@@ -53,7 +53,8 @@ tonk export --out data.csv
 tonk import data.csv
 
 # Remotes and sync.
-tonk remote add prod https://access.example.com
+tonk remote add prod https://access.example.com \
+  --revocation-url https://artifacts.example.com/revocations
 tonk remote set-upstream prod
 tonk push
 tonk pull
@@ -65,9 +66,10 @@ tonk account link --name workstation
 
 # Delegate access to the space.
 tonk invite                    # audience-open: anyone holding it can claim
-tonk invite --remote prod      # pick the remote when several are registered
+tonk invite --remote prod      # selected remote must carry a revocation relay
+tonk invite --recipient-root did:key:z6Mk... # seed-free targeted invite
 tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
-tonk join 'https://...#invite'
+tonk join 'https://...#invite' --name garden
 ```
 
 ## Telemetry
@@ -124,6 +126,8 @@ with errors that name the upstream-not-configured and non-fast-forward cases.
 `status` classifies the local branch against its upstream without merging.
 
 Remotes are UCAN-S3 access services registered on the repository's meta branch.
+Their immutable-artifact relay is separate metadata supplied with
+`tonk remote add --revocation-url`; it is never inferred from the access host.
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
 embedded ephemeral key); `tonk join` claims one into a fresh spot
@@ -132,7 +136,8 @@ embedded ephemeral key); `tonk join` claims one into a fresh spot
 A bare `tonk invite` resolves the repo's remote, builds the link on that
 remote's origin, and embeds it so the claimer auto-configures the same access
 service. `--remote <NAME>` picks one when several are registered; `--no-remote`
-mints without one.
+mints without one. A selected remote without relay metadata remains listable
+but invitation minting fails with an explicit configuration error.
 
 ## Built on
 

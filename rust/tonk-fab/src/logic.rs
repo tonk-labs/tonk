@@ -4,6 +4,45 @@
 
 use serde_json::{Value, json};
 
+/// Build the membership endpoint with the repository DID as one path segment.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn membership_endpoint(space: &str) -> Result<String, &'static str> {
+    let space = space.trim();
+    if space.is_empty() || space.contains('{') || space.contains('}') {
+        return Err("repository binding is unresolved");
+    }
+    Ok(format!(
+        "/api/repository/{}/membership",
+        urlencoding::encode(space)
+    ))
+}
+
+// The bar addresses exactly one repository endpoint, above. It mints its open
+// link through the share control's transient command, and it reaches no
+// invitation endpoint at all: listing, minting to a named root, and revoking
+// are infrastructure the worker and CLI own. The one revocation surface a user
+// gets is the account page's device list.
+
+#[cfg(test)]
+mod membership_endpoint_tests {
+    use super::membership_endpoint;
+
+    #[test]
+    fn it_encodes_a_repository_did_as_one_path_segment() {
+        assert_eq!(
+            membership_endpoint("did:key:z6Mk/a").unwrap(),
+            "/api/repository/did%3Akey%3Az6Mk%2Fa/membership"
+        );
+    }
+
+    #[test]
+    fn it_rejects_empty_and_unresolved_repository_bindings() {
+        for value in ["", "  ", "{id}", "did:key:{id}"] {
+            assert!(membership_endpoint(value).is_err(), "{value:?}");
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FabBox {
     pub left: f64,
@@ -1214,16 +1253,28 @@ mod rename_repo {
 /// `name` is always sent (the wizard's hidden input always carries the
 /// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
 /// alone — an absent `name` fact means the command never fires at all).
-/// `remote` and `template` are read directly off the transient's facts by
-/// the handler (not decoded as typed `CreateSpace` fields), so an empty
-/// value is omitted rather than sent as `""` — an omitted fact and a
-/// filtered-empty fact land the same way handler-side, but omitting mirrors
-/// what the browser's own event extractor would have done, and keeps this
-/// consistent with [`rename_repo_claim_json`].
-pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Value {
+/// `remote`, `revocation` and `template` are read directly off the
+/// transient's facts by the handler (not decoded as typed `CreateSpace`
+/// fields), so an empty value is omitted rather than sent as `""` — an
+/// omitted fact and a filtered-empty fact land the same way handler-side,
+/// but omitting mirrors what the browser's own event extractor would have
+/// done, and keeps this consistent with [`rename_repo_claim_json`].
+///
+/// `revocation` is the relay stored beside the remote: dropping it here
+/// would attach the remote with no relay, and the omission only surfaces
+/// much later, when an invite has nowhere to publish its revocations.
+pub fn create_space_claim_json(
+    name: &str,
+    remote: &str,
+    revocation: &str,
+    template: &str,
+) -> Value {
     let mut parameters = json!({ "name": name });
     if !remote.is_empty() {
         parameters["remote"] = json!(remote);
+    }
+    if !revocation.is_empty() {
+        parameters["revocation"] = json!(revocation);
     }
     if !template.is_empty() {
         parameters["template"] = json!(template);
@@ -1237,9 +1288,10 @@ pub fn create_space_claim_json(name: &str, remote: &str, template: &str) -> Valu
                     "concept": {
                         "description": "A request to create a new space from the wizard form.",
                         "with": {
-                            "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "template": { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
+                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
+                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
+                            "revocation": { "the": "dom.event.current-target.elements.revocation/value", "as": "Text" },
+                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
                         }
                     }
                 },
@@ -1255,21 +1307,39 @@ mod create_space {
 
     #[test]
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
-        let claim = create_space_claim_json("Untitled", "https://x", "wiki");
+        let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "wiki");
         let text = claim.to_string();
         // Verbatim, kebab-cased as declared — the handler matches on these.
+        // Every control is read at `/value`: the segment after the control
+        // name is the JS property the browser's extractor would have read,
+        // so a descriptive leaf resolves to `undefined` there and the
+        // handler would never see the field here.
         assert!(text.contains("dom.event.current-target.elements.name/value"));
         assert!(text.contains("dom.event.current-target.elements.remote/value"));
+        assert!(text.contains("dom.event.current-target.elements.revocation/value"));
         assert!(text.contains("dom.event.current-target.elements.template/value"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
         assert_eq!(params["remote"], "https://x");
+        assert_eq!(params["revocation"], "https://x/rev");
         assert_eq!(params["template"], "wiki");
     }
 
     #[test]
+    fn it_omits_a_blank_revocation_rather_than_sending_an_empty_string() {
+        // A deployment with no relay configured leaves the hidden input
+        // blank; the remote must still attach, just without a relay.
+        let claim = create_space_claim_json("Untitled", "https://x", "", "blank");
+        assert!(
+            claim["claims"][0]["application"]["parameters"]
+                .get("revocation")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn it_omits_a_blank_remote_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "", "blank");
+        let claim = create_space_claim_json("Untitled", "", "", "blank");
         // The descriptor's `with.remote` mapping is always present (it is
         // schema metadata) — what must be absent is the `remote` PARAMETER,
         // the thing that actually becomes a fact. Asserting on a bare
@@ -1284,7 +1354,7 @@ mod create_space {
 
     #[test]
     fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
-        let claim = create_space_claim_json("Untitled", "https://x", "");
+        let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "");
         assert!(
             claim["claims"][0]["application"]["parameters"]
                 .get("template")
@@ -1411,7 +1481,13 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
 /// remote is attached. When false the marker is omitted from BOTH the
 /// declared concept and the parameters — a declared field with no value makes
 /// the assert incomplete, so the transient would commit and match nothing.
-pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
+pub fn enable_sync_claim_json(
+    space: &str,
+    remote: &str,
+    revocation_url: Option<&str>,
+    share: bool,
+    time: f64,
+) -> Value {
     let mut with = json!({
         "time":   { "the": "dom.event/time-stamp", "as": "Float" },
         "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
@@ -1424,6 +1500,10 @@ pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64)
         "remote": remote,
         "marker": "tonk:enable-sync"
     });
+    if let Some(revocation_url) = revocation_url {
+        with["revocation"] = json!({ "the": "xyz.tonk.enable-sync/revocation-url", "as": "Text" });
+        parameters["revocation"] = json!(revocation_url);
+    }
     if share {
         with["share"] = json!({ "the": "xyz.tonk.enable-sync/share", "as": "Entity" });
         parameters["share"] = json!("tonk:share");
@@ -1556,10 +1636,20 @@ mod enable_sync_claim {
 
     #[test]
     fn it_names_the_space_remote_and_share_marker() {
-        let claim = enable_sync_claim_json("did:key:z6Mk", "https://tonk.spot/ucan/", true, 7.0);
+        let claim = enable_sync_claim_json(
+            "did:key:z6Mk",
+            "https://tonk.spot/ucan/",
+            Some("https://accounts.tonk.xyz/revocations"),
+            true,
+            7.0,
+        );
         let app = &claim["claims"][0]["application"];
         assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
         assert_eq!(app["parameters"]["remote"], "https://tonk.spot/ucan/");
+        assert_eq!(
+            app["parameters"]["revocation"],
+            "https://accounts.tonk.xyz/revocations"
+        );
         assert_eq!(app["parameters"]["share"], "tonk:share");
         assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
@@ -1573,6 +1663,10 @@ mod enable_sync_claim {
         assert_eq!(with["space"]["the"], "xyz.tonk.enable-sync/space");
         assert_eq!(with["remote"]["the"], "xyz.tonk.enable-sync/remote");
         assert_eq!(
+            with["revocation"]["the"],
+            "xyz.tonk.enable-sync/revocation-url"
+        );
+        assert_eq!(
             with["marker"]["the"],
             "dom.event.current-target.dataset/enable-sync"
         );
@@ -1581,13 +1675,15 @@ mod enable_sync_claim {
 
     #[test]
     fn it_omits_the_share_marker_when_not_sharing() {
-        let claim = enable_sync_claim_json("did:key:z6Mk", "https://x.test/ucan/", false, 1.0);
+        let claim =
+            enable_sync_claim_json("did:key:z6Mk", "https://x.test/ucan/", None, false, 1.0);
         let app = &claim["claims"][0]["application"];
         assert!(app["parameters"].get("share").is_none());
         assert!(
             app["predicate"]["concept"]["with"].get("share").is_none(),
             "an omitted parameter must not be declared, or the assert is incomplete"
         );
+        assert!(app["parameters"].get("revocation").is_none());
     }
 }
 
@@ -1691,7 +1787,7 @@ mod wire_types {
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
             rename_repo_claim_json("did:key:zX", "N").to_string(),
-            create_space_claim_json("N", "https://r", "wiki").to_string(),
+            create_space_claim_json("N", "https://r", "https://r/rev", "wiki").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
             pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),

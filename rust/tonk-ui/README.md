@@ -10,17 +10,36 @@ The shell mounts into the page, the service worker (`tonk-worker`) installs and
 claims the page, and once the worker is controlling, the UI's `/api/*` fetches
 route through it.
 
+## Local identity and invite visits
+
+Durable browser operations use a provider-neutral passkey root stored locally as
+an exact `root → device` delegation. The top document handles identity-required
+messages because passkey ceremonies cannot run in sealed guests. One typed
+identity bridge turns Rust DTOs into ordinary camelCase JavaScript objects; the
+serialized gate queues concurrent requests, restores focus after cancel or
+failure, and replays a successful operation exactly once.
+
+Opening an audience-open invite first installs only bounded guest authority.
+“Join this spot” explicitly claims to the root. Targeted invites go directly
+through the durable root gate. A remote-backed join stages its authority and
+content first; the replica becomes visible, guest state is cleared, backup is
+started, and navigation occurs only after that stage is usable. Failed,
+revoked, wrong-recipient, and unavailable joins leave no visible replica.
+
 ## Account route
 
 `/account` is mounted directly in the top document rather than inside a sealed
 `<tonk-site>` guest. WebAuthn must run on the `tonk.spot` RP-ID origin, so
 `<tonk-account>` owns account creation and passkey self-link there. It reads the
 local profile DID from `/api/identify`, sends root-signed ceremony bytes to the
-account service for its host, then persists the accepted delegation through
-`/api/account/link`. The service is chosen from the page host — `tonk.spot`
-reaches production, `staging.tonk.xyz` reaches staging, and every other host
-refuses, so a user never ends up with two disjoint root keys. A `service`
-attribute overrides the lookup for local tests.
+configured account service, then attaches provider metadata through
+`/api/account/attach`; it does not replace or own the local root.
+
+The page fetches `GET /.well-known/tonk` once and uses its typed
+`accountServiceUrl` and `revocationRelayUrl`. It never infers services from a
+hostname or falls back to production for an unknown origin. A `service`
+attribute remains an explicit local-test/operator override. Once attached,
+background account operations use the persisted provider URL.
 
 ## Binaries
 

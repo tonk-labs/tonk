@@ -345,8 +345,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
             cancel:function(){ sp.postMessage({type:"cancel"}); sp.close(); }
           });
         }
-        h.resolve(new Response(body,
-          {status:env.status,statusText:env.statusText,headers:headers}));
+        var rebuilt=new Response(body,
+          {status:env.status,statusText:env.statusText,headers:headers});
+        // `url` is a readonly getter the constructor can't populate, so a
+        // rebuilt response reports "". Consumers that parse it break on
+        // that: reqwest's wasm client does `Url::parse(resp.url()).
+        // expect_throw("url parse")` while converting EVERY response, so
+        // any Rust component fetching from inside the guest (e.g.
+        // `<tonk-default-remote>` reading /.well-known/tonk) throws
+        // instead of returning. Shadow the getter with an own property
+        // carrying the URL the host actually fetched.
+        try{ Object.defineProperty(rebuilt,"url",
+          {value:env.url||"",configurable:true}); }catch(e){}
+        h.resolve(rebuilt);
         return;
       }
       case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": {
@@ -2046,6 +2057,12 @@ async fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Respo
         &"statusText".into(),
         &JsValue::from_str(&resp.status_text()),
     );
+    // The final URL the host fetched (post-redirect). The guest can't
+    // recover it — `new Response(...)` leaves `url` as `""` and the
+    // property is readonly — so it travels on the envelope and the guest
+    // shadows the getter with it. Without it, a guest consumer that parses
+    // `response.url` fails on every relayed fetch.
+    let _ = Reflect::set(&env, &"url".into(), &JsValue::from_str(&resp.url()));
     // Headers as an array of [name, value] pairs — structured-clonable and
     // re-hydrated into a `Headers` on the guest side.
     let _ = Reflect::set(&env, &"headers".into(), &headers_to_array(&resp.headers()));
@@ -3699,6 +3716,50 @@ mod tests {
             .await
             .expect("await body");
         assert_eq!(body.as_string().as_deref(), Some("{\"q\":1}"));
+    }
+
+    /// A relayed response must carry the URL the host fetched.
+    ///
+    /// The guest rebuilds the `Response` from the envelope, and
+    /// `new Response(...)` cannot set `url` — it reads back `""` unless the
+    /// shim restores it. An empty `url` is not cosmetic: reqwest's wasm
+    /// client parses it while converting every response and throws
+    /// `url parse`, so a Rust component fetching from inside a sealed guest
+    /// (`<tonk-default-remote>` reading `/.well-known/tonk`) dies mid-await
+    /// with the request already served.
+    #[dialog_common::test]
+    async fn it_gives_the_guest_a_response_carrying_the_fetched_url() {
+        let host = FakeHost::install();
+        let probe = WindowProbe::install("u");
+
+        // Author code at the opaque origin fetches through the relayed
+        // `window.fetch` and reports what `url` the response carries. The
+        // path need not exist — a 404 is still a Response with a URL.
+        let content = "<script>\
+            fetch('/.well-known/tonk')\
+              .then(function(r){parent.postMessage({__test:'u',url:r.url},'*');})\
+              .catch(function(err){parent.postMessage({__test:'u',error:String(err)},'*');});\
+            </script>";
+        mount_portal(&host, content, None, None, None);
+
+        let msg = probe.wait().await;
+        assert!(
+            !msg.is_undefined(),
+            "author iframe should post the relayed response back",
+        );
+        assert!(
+            Reflect::get(&msg, &"error".into())
+                .ok()
+                .filter(|v| !v.is_undefined())
+                .is_none(),
+            "the relayed fetch should not error; got: {:?}",
+            Reflect::get(&msg, &"error".into()).ok(),
+        );
+        let url = get_str(&msg, "url").unwrap_or_default();
+        assert!(
+            url.ends_with("/.well-known/tonk"),
+            "the rebuilt response must report the fetched URL, got {url:?}",
+        );
     }
 
     fn title_message(kind: &str, text: &str) -> JsValue {

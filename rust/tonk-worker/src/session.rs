@@ -29,14 +29,17 @@
 //! drain's rotation heals. Service-worker lifetimes make that window
 //! rare; revisit only if it is ever observed.
 
-use dialog_capability::Subject;
-use dialog_operator::Profile;
+use dialog_capability::access::{Prove, Retain};
+use dialog_capability::{Provider, Subject};
+use dialog_operator::{Operator, Profile};
+use dialog_storage::provider::space::SpaceProvider;
 use dialog_storage::provider::storage::Storage;
+use dialog_ucan::Ucan;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 
 use crate::TonkWorkerError;
-use crate::worker::{DefaultOperator, DefaultSpace};
+use crate::worker::DefaultSpace;
 
 /// How long a session delegation is good for.
 ///
@@ -55,9 +58,9 @@ pub const RENEWAL_MARGIN_SECONDS: u64 = 60 * 60;
 
 /// A signing session: the operator that signs presigns, and the moment
 /// the delegation authorizing it stops being valid.
-pub struct Session {
+pub struct Session<S: Clone = DefaultSpace> {
     /// The operator, keyed for this session alone.
-    pub operator: DefaultOperator,
+    pub operator: Operator<S>,
     /// Expiry of the `profile → operator` delegation, unix seconds.
     pub expires_at: u64,
 }
@@ -68,10 +71,11 @@ pub struct Session {
 /// mounts into the same pool as every handle already open against it.
 /// A session built over its own pool would leave the reactor's cached
 /// repositories talking to the previous one.
-pub async fn open(
-    profile: &Profile,
-    storage: &Storage<DefaultSpace>,
-) -> Result<Session, TonkWorkerError> {
+pub async fn open<S>(profile: &Profile, storage: &Storage<S>) -> Result<Session<S>, TonkWorkerError>
+where
+    S: SpaceProvider + Clone + 'static,
+    S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
+{
     // A random derivation context is what makes the operator key
     // session-scoped: `derive` is a KDF over the profile seed and this
     // context, so a fixed context would hand every session the same

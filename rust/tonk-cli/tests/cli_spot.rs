@@ -36,6 +36,9 @@ fn tonk_cmd(state_dir: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Comm
         .env("TONK_NO_UPDATE_CHECK", "1")
         .env("TONK_UPDATE_STATE", state_dir)
         .env("HOME", state_dir)
+        // These fixtures exercise remote selection, not identity provisioning.
+        // Production omits this explicit unsafe compatibility override.
+        .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1")
         .env_remove("TONK_SPOT");
     for (key, value) in extra_env {
         cmd.env(key, value);
@@ -73,19 +76,39 @@ fn stdout_of(output: &Output) -> String {
 const DEAD_REMOTE: &str = "http://127.0.0.1:9/ucan/";
 const OTHER_DEAD_REMOTE: &str = "http://127.0.0.1:9/other/";
 
+/// A revocation relay for remotes that need one. Also on the discard port:
+/// a mint parses this URL and embeds it in the link, and never calls it.
+const DEAD_RELAY: &str = "http://127.0.0.1:9/revocations";
+
 /// Stand up a real spot through the CLI — `tonk spot new` writes the
 /// site the rest of these invocations read — then register `remotes`
 /// in order. `tonk remote add` wires the *first* remote as `main`'s
 /// upstream and leaves it alone after that, so `remotes[0]` is the one
 /// the repo pushes to.
 fn spot_with_remotes(state_dir: &Path, remotes: &[(&str, &str)]) {
+    let relayed: Vec<(&str, &str, Option<&str>)> = remotes
+        .iter()
+        .map(|(name, endpoint)| (*name, *endpoint, None))
+        .collect();
+    spot_with_relayed_remotes(state_dir, &relayed);
+}
+
+/// The same, with a revocation relay per remote. An invite that embeds a
+/// remote must name a relay for its revocations to reach, so a mint against
+/// a relay-less remote is refused — see
+/// `when_a_remote_carries_no_revocation_relay`.
+fn spot_with_relayed_remotes(state_dir: &Path, remotes: &[(&str, &str, Option<&str>)]) {
     let site = state_dir.join("site");
     let site = site.to_str().expect("utf-8 site path");
     let output = run(state_dir, &["spot", "new", "demo", "--site", site], &[]);
     assert!(output.status.success(), "{}", stderr_of(&output));
 
-    for (name, endpoint) in remotes {
-        let output = run(state_dir, &["remote", "add", name, endpoint], &[]);
+    for (name, endpoint, relay) in remotes {
+        let mut args = vec!["remote", "add", name, endpoint];
+        if let Some(relay) = relay {
+            args.extend_from_slice(&["--revocation-url", relay]);
+        }
+        let output = run(state_dir, &args, &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
     }
 }
@@ -365,6 +388,55 @@ mod when_the_invite_remote_differs_from_the_upstream {
     }
 }
 
+/// An invite that embeds a remote must name the relay its revocations will
+/// be published to, or revoking it later would have nowhere to land. The
+/// refusal used to be covered only by accident — two live-remote tests
+/// failed on it — so it is stated here, offline, where it belongs.
+mod when_a_remote_carries_no_revocation_relay {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_refuses_to_mint_an_invite_that_embeds_it() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+
+        let output = run(state.path(), &["invite"], &[]);
+        let stderr = stderr_of(&output);
+        assert!(!output.status.success(), "the mint must refuse: {stderr}");
+        assert!(
+            stderr.contains("no revocation relay"),
+            "and say why: {stderr}"
+        );
+        assert!(
+            stderr.contains("--revocation-url"),
+            "and how to fix it: {stderr}"
+        );
+    }
+
+    /// `--no-remote` embeds no endpoint, so there is nothing for a relay to
+    /// belong to and the rule does not apply. The boundary of the test above,
+    /// and the reason the third live-remote test passed while its two siblings
+    /// failed.
+    ///
+    /// The command still exits non-zero here: past the relay check it pulls
+    /// and pushes, and this upstream is a discard port — the same reason the
+    /// other offline mints assert on stderr and never on success. That the
+    /// refusal is absent is meaningful anyway, because the check runs *before*
+    /// the network and would otherwise be the first line printed.
+    #[dialog_common::test]
+    fn it_does_not_demand_a_relay_for_a_link_that_embeds_no_remote() {
+        let state = tempfile::tempdir().expect("tempdir");
+        spot_with_remotes(state.path(), &[("origin", DEAD_REMOTE)]);
+
+        let output = run(state.path(), &["invite", "--no-remote"], &[]);
+        let stderr = stderr_of(&output);
+        assert!(
+            !stderr.contains("no revocation relay"),
+            "a link with no remote needs no relay: {stderr}"
+        );
+    }
+}
+
 mod when_the_invite_remote_is_the_upstream {
     use super::*;
 
@@ -513,7 +585,9 @@ mod when_minting_against_a_live_remote {
     async fn mint_against(state_dir: PathBuf, endpoint: String, args: &[&str]) -> Output {
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
         tokio::task::spawn_blocking(move || {
-            spot_with_remotes(&state_dir, &[("origin", &endpoint)]);
+            // With a relay, because these mints embed the remote: an invite
+            // that carries an endpoint has to say where its revocations go.
+            spot_with_relayed_remotes(&state_dir, &[("origin", &endpoint, Some(DEAD_RELAY))]);
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             run(&state_dir, &args, &[])
         })

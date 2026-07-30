@@ -10,8 +10,21 @@ The Worker (`src/lib.rs`) routes:
 
 - `POST /ucan/`: authorize a UCAN invocation container and return a pre-signed S3 request.
 - `OPTIONS /ucan/`: CORS preflight (returns 204; `/ucan/` responses carry permissive CORS headers).
+- `GET /.well-known/tonk`: same-origin browser deployment configuration.
 - `GET /`: service info as JSON (`service`, `version`).
 - `GET /health`: liveness check (`OK`).
+
+`GET /.well-known/tonk` returns canonical camelCase JSON:
+
+```json
+{
+  "accountServiceUrl": "https://accounts.tonk.xyz/",
+  "revocationRelayUrl": "https://accounts.tonk.xyz/revocations"
+}
+```
+
+Both values are validated as absolute URLs. Missing or invalid configuration is
+a 500; browser clients do not guess from the host or use a production default.
 
 ### `POST /ucan/`
 
@@ -27,7 +40,7 @@ The handler reads the body, builds a `UcanAuthorizer` from the Worker environmen
 - `method`: HTTP method (GET, PUT, DELETE)
 - `headers`: headers to send with the request
 
-On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error codes map verification outcomes to HTTP status (see `src/error.rs`): `INVALID_ARGUMENT` (400); `SIGNATURE_INVALID` / `AUDIENCE_MISMATCH` / `INVOCATION_EXPIRED` (401); `CHAIN_INVALID` / `COMMAND_MISMATCH` / `SUBJECT_NOT_ALLOWED` / `DEVICE_REVOKED` (403); `INTERNAL_ERROR` (500); `REVOCATION_UNAVAILABLE` (503).
+On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error codes map verification outcomes to HTTP status (see `src/error.rs`): `INVALID_ARGUMENT` (400); `SIGNATURE_INVALID` / `AUDIENCE_MISMATCH` / `INVOCATION_EXPIRED` (401); `CHAIN_INVALID` / `COMMAND_MISMATCH` / `SUBJECT_NOT_ALLOWED` / `CREDENTIAL_REVOKED` (403); `INTERNAL_ERROR` (500); `REVOCATION_UNAVAILABLE` (503).
 
 ## Credential screening
 
@@ -41,11 +54,9 @@ Unbounded chains are unaffected. A `root → device` grant carries no expiration
 
 ### Revocation
 
-After cryptographic authorization succeeds, `POST /ucan/` screens the presented container against the account registry (`src/revocation.rs`). It re-parses the container independently, collects every delegation CID, every delegation issuer DID, and the invocation issuer DID, and asks whether any of them belongs to a device with `status = 'revoked'`. Matching on issuer DIDs as well as CIDs is what severs chains that flow through a delegation the registry never recorded — anything a revoked key signed, whenever it signed it. A match returns `403 DEVICE_REVOKED`; users with no account match nothing and are unaffected.
+After authorization, `POST /ucan/` collects only the delegation CIDs in the presented path and compares them with a monotone set derived from signed artifacts in the dedicated `REVOCATIONS` R2 bucket. Refresh follows every listing cursor, fetches unseen `revocations/<target-cid>/<artifact-cid>` objects, verifies each artifact and its key, and updates freshness only after the complete pass succeeds. Known revoked CIDs are never removed and return `403 CREDENTIAL_REVOKED` even during an outage. Clients accept the legacy `DEVICE_REVOKED` code during rollout.
 
-The screen **fails closed**. A verdict is authoritative for 60 seconds (`REVOCATION_TTL_MS`) and then usable for a further 10 minutes (`REVOCATION_GRACE_MS`) *only* to cover an unreachable registry, so a brief D1 outage stops chains the isolate has never cleared rather than stopping active sync. Outside that window — and for an unparseable container or a missing `ACCOUNTS_DB` binding — the request gets `503 REVOCATION_UNAVAILABLE`, which clients should treat as retryable. Failed queries are never cached, so the grace window is anchored to the last successful lookup.
-
-Operationally this means a misconfigured `ACCOUNTS_DB` binding **stops presigns** rather than silently disabling enforcement. That is deliberate. Verify the binding after any change to `wrangler.toml`.
+A complete snapshot is fresh for 60 seconds (`REVOCATION_TTL_MS`) and may clear clean paths for a further 10 minutes (`REVOCATION_GRACE_MS`) only when refresh is unavailable. Without a complete snapshot, or after grace, the screen fails closed with retryable `503 REVOCATION_UNAVAILABLE`. Mutable account rows and issuer DID strings are not enforcement inputs.
 
 ## Configuration
 
@@ -55,7 +66,11 @@ The authorizer is constructed per request from the Worker environment (`src/hand
 - `R2_BUCKET_NAME` (var): target bucket
 - `R2_ACCESS_KEY_ID` (secret): R2 access key
 - `R2_SECRET_ACCESS_KEY` (secret): R2 secret key
-- `ACCOUNTS_DB` (D1 binding): read-only view of the account registry, owned and migrated by `tonk-account-service`. Never write through it; this crate issues nothing but `SELECT`.
+- `REVOCATIONS` (R2 binding): read-only view of immutable, self-certifying revocation artifacts published by relay services.
+- `ACCOUNT_SERVICE_URL` (var): account provider returned by
+  `/.well-known/tonk`.
+- `REVOCATION_RELAY_URL` (var): immutable-artifact submission endpoint returned
+  by `/.well-known/tonk`.
 
 The S3 address uses region `auto`, as R2 requires.
 

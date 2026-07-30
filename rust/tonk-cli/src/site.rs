@@ -16,11 +16,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use dialog_capability::Subject;
+use dialog_credentials::Ed25519Signer;
 use dialog_effects::storage::Directory;
 use dialog_operator::{Operator, Profile};
 use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::time::Timestamp;
+use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
+use dialog_varsig::Principal;
 
 /// The standard-library notation document seeded into a freshly
 /// created repository: the built-in concepts, views, commands, and
@@ -176,7 +181,7 @@ impl TonkSite {
         {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(&profile, &operator)
+                bootstrap_repository(&profile, &operator, config.require_root)
                     .await
                     .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
@@ -249,6 +254,7 @@ impl TonkSite {
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
+    require_root: bool,
 ) -> Result<Repository> {
     let signer_repo = profile
         .repository(REPO_NAME)
@@ -257,10 +263,19 @@ async fn bootstrap_repository(
         .await
         .context("failed to create repository")?;
 
+    let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
+    if require_root && local_root.is_none() {
+        anyhow::bail!("A local passkey root is required; run `tonk identity link`");
+    }
+    let durable_did: dialog_varsig::Did = local_root
+        .context("local root provisioning did not produce a record")?
+        .root_did
+        .parse()
+        .context("stored root DID is invalid")?;
     let delegation = signer_repo
         .access()
         .claim(&signer_repo)
-        .delegate(profile.did())
+        .delegate(durable_did)
         .perform(operator)
         .await
         .context("failed to mint repo→profile delegation")?;
@@ -292,6 +307,9 @@ pub struct SiteConfig {
     /// is the platform default; tests pick `Directory::At(...)`
     /// to redirect onto a temp dir.
     pub profile_directory: Directory,
+    /// Whether creating a new space must have a provider-neutral local root.
+    /// Production enables this; legacy-isolation test fixtures disable it.
+    pub require_root: bool,
 }
 
 impl SiteConfig {
@@ -302,6 +320,7 @@ impl SiteConfig {
         Self {
             profile_name: name.into(),
             profile_directory: Directory::Profile,
+            require_root: false,
         }
     }
 }
@@ -315,6 +334,7 @@ pub fn default_config() -> SiteConfig {
     SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
+        require_root: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
     }
 }
 
@@ -347,11 +367,65 @@ pub(crate) async fn build_profile_and_operator(
 
     let operator = profile
         .derive(OPERATOR_CONTEXT)
-        .allow(Subject::any())
         .base(Directory::At(root_str))
         .build(storage)
         .await
         .context("failed to build operator")?;
+    let expiration = Timestamp::new(
+        SystemTime::now() + Duration::from_secs(tonk_identity::session::SESSION_TTL_SECONDS),
+    )
+    .context("native session expiration is out of range")?;
+    let session = profile
+        .access()
+        .claim(Subject::any())
+        .expires(expiration)
+        .delegate(operator.did())
+        .perform(&operator)
+        .await
+        .context("failed to mint the native signing session")?;
+    profile
+        .access()
+        .save(session)
+        .perform(&operator)
+        .await
+        .context("failed to save the native signing session")?;
+
+    // Isolated legacy test fixtures opt into a software-generated root so they
+    // still exercise the same space → root → device chain shape. Production
+    // never enters this path and requires a browser/passkey handoff.
+    if !config.require_root
+        && crate::identity::local_root_with_operator(&profile, &operator)
+            .await?
+            .is_none()
+    {
+        let root = Ed25519Signer::generate()
+            .await
+            .context("failed to generate the isolated fixture root")?;
+        let delegation =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did()).await?;
+        let bytes = delegation
+            .to_bytes()
+            .context("failed to serialize fixture root")?;
+        let record = crate::identity::LocalRoot {
+            credential_id: "isolated-software-root".to_string(),
+            root_did: root.did().to_string(),
+            delegation_cid: delegation.proof_cids()[0].to_string(),
+            delegation_hex: hex::encode(&bytes),
+        };
+        profile
+            .access()
+            .save(UcanDelegation(delegation))
+            .perform(&operator)
+            .await
+            .context("failed to install fixture root grant")?;
+        profile
+            .credential()
+            .site(crate::identity::LOCAL_ROOT_SITE)
+            .save(serde_json::to_vec(&record)?)
+            .perform(&operator)
+            .await
+            .context("failed to persist fixture root")?;
+    }
 
     Ok((profile, operator))
 }

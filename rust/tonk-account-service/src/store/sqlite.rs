@@ -9,8 +9,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest,
-    NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPSERT_CODE,
+    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE,
+    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -36,6 +37,10 @@ impl SqliteStore {
             .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0002_link_requests.sql"))
             .map_err(map_err)?;
+        conn.execute_batch(include_str!(
+            "../../migrations/0003_device_delegation_path.sql"
+        ))
+        .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
 }
@@ -58,14 +63,15 @@ fn map_err(err: rusqlite::Error) -> StoreError {
 
 /// A device row as read straight off a `devices` query, before the
 /// status column is parsed.
-type DeviceRow = (i64, String, String, String, String, i64);
+type DeviceRow = (i64, String, String, Option<String>, String, String, i64);
 
 fn device_from_row(row: DeviceRow) -> Result<Device, StoreError> {
-    let (account_id, device_did, delegation_cid, name, status, created_at) = row;
+    let (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) = row;
     Ok(Device {
         account_id,
         device_did,
         delegation_cid,
+        delegation_hex: delegation_hex.unwrap_or_default(),
         name,
         status: DeviceStatus::parse(&status)?,
         created_at: created_at as u64,
@@ -154,6 +160,7 @@ impl Store for SqliteStore {
                 account_id,
                 device.device_did,
                 device.delegation_cid,
+                device.delegation_hex,
                 device.name,
                 DeviceStatus::Active.as_str(),
                 created_at as i64,
@@ -179,6 +186,21 @@ impl Store for SqliteStore {
         .map_err(map_err)
     }
 
+    async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.query_row(SELECT_ACCOUNT_BY_EMAIL, params![email], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                root_did: row.get(2)?,
+                credential_id: row.get(3)?,
+                created_at: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .optional()
+        .map_err(map_err)
+    }
+
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.execute(
@@ -187,6 +209,7 @@ impl Store for SqliteStore {
                 device.account_id,
                 device.device_did,
                 device.delegation_cid,
+                device.delegation_hex,
                 device.name,
                 device.status.as_str(),
                 device.created_at as i64,
@@ -208,6 +231,7 @@ impl Store for SqliteStore {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             })
             .map_err(map_err)?
@@ -227,6 +251,7 @@ impl Store for SqliteStore {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             })
             .optional()
@@ -238,6 +263,21 @@ impl Store for SqliteStore {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(UPDATE_DEVICE_REVOKE, params![account_id, device_did])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn revoke_device_by_cid(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(
+                UPDATE_DEVICE_REVOKE_BY_CID,
+                params![account_id, delegation_cid],
+            )
             .map_err(map_err)?;
         Ok(changed > 0)
     }
@@ -291,6 +331,7 @@ impl Store for SqliteStore {
                     device.account_id,
                     device.device_did,
                     device.delegation_cid,
+                    device.delegation_hex,
                     device.name,
                     device.status.as_str(),
                     device.created_at as i64,
@@ -326,6 +367,9 @@ impl Store for SqliteStore {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::params;
+
+    use crate::core::devices::DeviceView;
     use crate::store::sqlite::SqliteStore;
     use crate::store::{CodeRow, Device, DeviceStatus, Store, StoreError};
 
@@ -357,6 +401,7 @@ mod tests {
             account_id: id,
             device_did: "did:key:zDev".into(),
             delegation_cid: "bafyCid".into(),
+            delegation_hex: "beef".into(),
             name: "laptop".into(),
             status: DeviceStatus::Active,
             created_at: 2,
@@ -378,6 +423,29 @@ mod tests {
             DeviceStatus::Revoked
         );
         assert!(!store.revoke_device(id, "did:key:zAbsent").await.unwrap());
+    }
+
+    #[dialog_common::test]
+    async fn it_preserves_legacy_devices_without_inventing_path_evidence() {
+        let store = SqliteStore::in_memory().unwrap();
+        let id = store
+            .create_account("legacy@x.com", "did:key:zLegacyRoot", "cred", 1)
+            .await
+            .unwrap();
+        {
+            let conn = store.0.lock().expect("store mutex poisoned");
+            conn.execute(
+                "INSERT INTO devices \
+                 (account_id, device_did, delegation_cid, name, status, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+                params![id, "did:key:zLegacyDevice", "bafyLegacy", "old laptop", 2],
+            )
+            .unwrap();
+        }
+
+        let device = store.devices(id).await.unwrap().pop().unwrap();
+        assert!(device.delegation_hex.is_empty());
+        assert_eq!(DeviceView::from(device).delegation_hex, None);
     }
 
     #[dialog_common::test]
@@ -412,6 +480,7 @@ mod tests {
             account_id: 999,
             device_did: "did:key:zOrphan".into(),
             delegation_cid: "bafyCid".into(),
+            delegation_hex: "beef".into(),
             name: "ghost".into(),
             status: DeviceStatus::Active,
             created_at: 1,

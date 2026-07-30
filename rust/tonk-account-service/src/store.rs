@@ -1,8 +1,8 @@
 //! Storage abstraction for the account service.
 //!
-//! The schema in `migrations/0001_init.sql` is the single source of
-//! truth: it is applied to Cloudflare D1 by wrangler and, natively, to
-//! an in-memory `rusqlite` connection via [`sqlite::SqliteStore`]. Both
+//! The ordered SQL files under `migrations/` are the schema's source of
+//! truth: Wrangler applies them to Cloudflare D1 and
+//! [`sqlite::SqliteStore`] applies the same sequence natively. Both
 //! backends implement [`Store`], so ceremony logic elsewhere in this
 //! crate is written once, generically over the trait.
 
@@ -31,6 +31,9 @@ pub struct Device {
     pub device_did: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Exact public delegation path bytes, hex-encoded. Empty only for a
+    /// legacy row created before migration 0003 retained these bytes.
+    pub delegation_hex: String,
     /// Human-readable device name.
     pub name: String,
     /// Whether the device is currently active or has been revoked.
@@ -49,6 +52,8 @@ pub struct NewDevice {
     pub device_did: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Exact public delegation path bytes, hex-encoded.
+    pub delegation_hex: String,
     /// Human-readable device name.
     pub name: String,
 }
@@ -160,6 +165,15 @@ pub trait Store {
     /// Look up an account by root DID.
     async fn account_by_root(&self, root_did: &str) -> Result<Option<Account>, StoreError>;
 
+    /// Look up an account by email address. Callers are responsible for
+    /// lowercasing, as the column stores lowercased addresses.
+    ///
+    /// Reserved for explaining a uniqueness conflict to a caller who has
+    /// already proven control of the address, never for answering
+    /// "is this email registered?" before that proof — see
+    /// [`crate::core::accounts::create_account`].
+    async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError>;
+
     /// Atomically create a new account and register its first device.
     ///
     /// Either both rows are created or neither is: a conflict on the
@@ -186,9 +200,15 @@ pub trait Store {
     /// Look up a device by its DID.
     async fn device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError>;
 
-    /// Mark a device as revoked. Returns `false` if no matching device
-    /// was found.
+    /// Mark a device as revoked by DID. Returns `false` if no match was found.
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError>;
+
+    /// Project a verified revocation onto the row matching its delegation CID.
+    async fn revoke_device_by_cid(
+        &self,
+        account_id: i64,
+        delegation_cid: &str,
+    ) -> Result<bool, StoreError>;
 
     /// Create a pending CLI browser handoff.
     async fn put_link(&self, link: &LinkRequest) -> Result<(), StoreError>;
@@ -237,9 +257,13 @@ pub const INSERT_ACCOUNT: &str =
 pub const SELECT_ACCOUNT_BY_ROOT: &str =
     "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE root_did = ?1";
 
+/// SQL: look up an account by email address.
+pub const SELECT_ACCOUNT_BY_EMAIL: &str =
+    "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE email = ?1";
+
 /// SQL: register a device under an account.
-pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 /// SQL: register a device under the account just created by a preceding
 /// `INSERT_ACCOUNT` statement in the same batch/transaction on this
@@ -247,20 +271,24 @@ pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, de
 /// [`Store::create_account_with_device`]'s D1 batch, where the new
 /// account's id is not otherwise known until the batch commits. Always
 /// registers the device as `active`.
-pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, name, status, created_at) \
-     VALUES (last_insert_rowid(), ?1, ?2, ?3, 'active', ?4)";
+pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
+     VALUES (last_insert_rowid(), ?1, ?2, ?3, ?4, 'active', ?5)";
 
 /// SQL: list the devices registered under an account.
-pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \
+pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, delegation_hex, name, status, created_at \
      FROM devices WHERE account_id = ?1";
 
 /// SQL: look up a device by its DID.
-pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegation_cid, name, status, created_at \
+pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegation_cid, delegation_hex, name, status, created_at \
      FROM devices WHERE device_did = ?1";
 
 /// SQL: mark a device as revoked.
 pub const UPDATE_DEVICE_REVOKE: &str =
     "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2";
+
+/// SQL: project revocation by the exact registered delegation CID.
+pub const UPDATE_DEVICE_REVOKE_BY_CID: &str =
+    "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND delegation_cid = ?2";
 
 /// SQL: create a pending browser handoff.
 pub const INSERT_LINK: &str = "INSERT INTO link_requests \
@@ -273,9 +301,9 @@ pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, deleg
 
 /// SQL: insert a handoff device only while its request is pending and live.
 pub const INSERT_DEVICE_FOR_LINK: &str = "INSERT INTO devices \
-    (account_id, device_did, delegation_cid, name, status, created_at) \
-    SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE EXISTS (SELECT 1 FROM link_requests \
-    WHERE token_hash = ?7 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?8)";
+    (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM link_requests \
+    WHERE token_hash = ?8 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?9)";
 
 /// SQL: attach the delegation to a live, still-pending handoff.
 pub const COMPLETE_LINK: &str = "UPDATE link_requests SET delegation_hex = ?1 \

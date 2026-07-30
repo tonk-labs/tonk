@@ -13,8 +13,11 @@ crate-type = ["cdylib", "rlib"]
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
 tonk-common = { workspace = true }
 tonk-host = { workspace = true }
+tonk-worker-api = { workspace = true }
+urlencoding = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
@@ -35,6 +38,7 @@ web-sys = { workspace = true, features = [
     "HtmlCollection",
     "HtmlElement",
     "HtmlHeadElement",
+    "HtmlInputElement",
     "MessageEvent",
     "MouseEvent",
     "MouseEventInit",
@@ -44,6 +48,9 @@ web-sys = { workspace = true, features = [
     "Node",
     "NodeList",
     "PointerEvent",
+    "Request",
+    "RequestInit",
+    "Response",
     "ResizeObserver",
     "ScrollBehavior",
     "ScrollToOptions",

@@ -286,6 +286,10 @@ enum Command {
         #[arg(long)]
         no_remote: bool,
 
+        /// Mint a seed-free invite for this exact recipient root DID.
+        #[arg(long, value_name = "DID")]
+        recipient_root: Option<String>,
+
         /// Print the long invite URL instead of shortening it.
         /// Shortening is a live PUT to the link's own origin, so
         /// this is the way to mint offline, against a deployment
@@ -347,13 +351,29 @@ enum Command {
     /// ever, mostly when debugging delegation.
     #[command(
         hide = true,
-        after_help = "Examples:\n  tonk identity\n  tonk identity --reset"
+        after_help = "Examples:\n  tonk identity\n  tonk identity --root '{\"credentialId\":\"…\",\"delegationHex\":\"…\"}'\n  tonk identity --reset"
     )]
     Identity {
+        /// Optional identity action (`link` opens a provider-free browser handoff).
+        #[arg(value_enum)]
+        action: Option<IdentityAction>,
         /// Wipe the on-disk profile and create a new one. This removes
         /// access to existing repos without re-delegation.
         #[arg(long)]
         reset: bool,
+        /// Paste provider-neutral browser handoff JSON for this device.
+        #[arg(long, value_name = "JSON")]
+        root: Option<String>,
+        /// Print the handoff URL without asking the OS to open it.
+        #[arg(long)]
+        no_open: bool,
+        /// Top-document provider-free identity handoff route.
+        #[arg(
+            long,
+            default_value = "https://tonk.spot/identity/link",
+            value_name = "URL"
+        )]
+        link_url: String,
     },
 
     /// Link this machine's profile to a Tonk account
@@ -439,6 +459,12 @@ enum Command {
         #[arg(long)]
         enable_check: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum IdentityAction {
+    /// Open a provider-free browser ceremony for this CLI device.
+    Link,
 }
 
 #[derive(Subcommand, Debug)]
@@ -539,7 +565,9 @@ enum RemoteCommand {
     /// `Remote` concept browsers read. When no upstream is wired
     /// yet, the new remote becomes `main`'s upstream (an existing
     /// upstream is never touched — re-point with `set-upstream`).
-    #[command(after_help = "Examples:\n  tonk remote add prod https://access.example.com")]
+    #[command(
+        after_help = "Examples:\n  tonk remote add prod https://access.example.com --revocation-url https://artifacts.example.com/revocations"
+    )]
     Add {
         /// Local name for the remote.
         #[arg(value_name = "NAME")]
@@ -547,6 +575,9 @@ enum RemoteCommand {
         /// UCAN access-service endpoint URL.
         #[arg(value_name = "URL")]
         url: String,
+        /// Immutable-artifact relay used for invitation revocations.
+        #[arg(long, value_name = "URL")]
+        revocation_url: Option<String>,
         /// Override the remote's subject DID. Defaults to the
         /// local repository's DID — matches the worker's
         /// convention.
@@ -928,7 +959,13 @@ async fn main() {
         Command::Agents { json, command } => agents_op(json, command, spot.as_deref()).await,
         Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
-        Command::Identity { reset } => identity(reset).await,
+        Command::Identity {
+            action,
+            reset,
+            root,
+            no_open,
+            link_url,
+        } => identity(action, reset, root, no_open, &link_url).await,
         Command::Account { command } => account_op(command).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
@@ -958,8 +995,19 @@ async fn main() {
             base_url,
             remote,
             no_remote,
+            recipient_root,
             no_shorten,
-        } => mint_invite(base_url, remote, no_remote, no_shorten, spot.as_deref()).await,
+        } => {
+            mint_invite(
+                base_url,
+                remote,
+                no_remote,
+                recipient_root,
+                no_shorten,
+                spot.as_deref(),
+            )
+            .await
+        }
         Command::Join { url, name } => claim_invite(url, name, spot.as_deref()).await,
         Command::Remote { command } => remote_op(command, spot.as_deref()).await,
         Command::Blob { command } => blob_op(command, spot.as_deref()).await,
@@ -1001,7 +1049,16 @@ async fn main() {
     std::process::exit(exit.into_raw());
 }
 
-async fn identity(reset: bool) -> ExitCode {
+async fn identity(
+    action: Option<IdentityAction>,
+    reset: bool,
+    root: Option<String>,
+    no_open: bool,
+    link_url: &str,
+) -> ExitCode {
+    if reset && (root.is_some() || action.is_some()) {
+        return print_error("--reset cannot be combined with linking".to_string());
+    }
     let result = if reset {
         identity::reset().await
     } else {
@@ -1009,7 +1066,56 @@ async fn identity(reset: bool) -> ExitCode {
     };
     match result {
         Ok(profile) => {
-            println!("did: {}", profile.did());
+            if matches!(action, Some(IdentityAction::Link)) && root.is_none() {
+                use rand::RngCore as _;
+                let mut challenge = [0u8; 16];
+                rand::rng().fill_bytes(&mut challenge);
+                let mut url = match url::Url::parse(link_url) {
+                    Ok(url) => url,
+                    Err(error) => {
+                        return print_error(format!("invalid identity link URL: {error}"));
+                    }
+                };
+                let fragment = url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("deviceDid", profile.did().as_ref())
+                    .append_pair("challenge", &hex::encode(challenge))
+                    .finish();
+                url.set_fragment(Some(&fragment));
+                println!(
+                    "Open this URL to create or use a local root:\n{url}\n\nThen run `tonk identity link --root '<response>'`."
+                );
+                if !no_open && webbrowser::open(url.as_str()).is_err() {
+                    eprintln!("Could not open a browser; use the URL above.");
+                }
+                return ExitCode::Success;
+            }
+            if let Some(json) = root {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct RootInput {
+                    credential_id: String,
+                    delegation_hex: String,
+                }
+                let input: RootInput = match serde_json::from_str(&json) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        return print_error(format!("invalid root handoff JSON: {error}"));
+                    }
+                };
+                match identity::save_local_root(&profile, input.credential_id, input.delegation_hex)
+                    .await
+                {
+                    Ok(root) => println!("root: {}\ndevice: {}", root.root_did, profile.did()),
+                    Err(error) => return print_error(error.to_string()),
+                }
+            } else {
+                println!("device: {}", profile.did());
+                match identity::local_root(&profile).await {
+                    Ok(Some(root)) => println!("root: {}", root.root_did),
+                    Ok(None) => println!("root: missing"),
+                    Err(error) => return print_error(error.to_string()),
+                }
+            }
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
@@ -1113,15 +1219,23 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     };
     match command {
         AccountCommand::Status => match account::status(&profile).await {
-            Ok(account::AccountStatus::Unlinked { device_did }) => {
-                println!("unlinked\ndevice: {device_did}");
+            Ok(account::AccountStatus::MissingRoot { device_did }) => {
+                println!("root: missing\nprovider: none\ndevice: {device_did}");
                 ExitCode::Success
             }
-            Ok(account::AccountStatus::Linked {
+            Ok(account::AccountStatus::Unregistered {
                 root_did,
                 device_did,
             }) => {
-                println!("linked\nroot: {root_did}\ndevice: {device_did}");
+                println!("root: {root_did}\nprovider: none\ndevice: {device_did}");
+                ExitCode::Success
+            }
+            Ok(account::AccountStatus::Registered {
+                root_did,
+                device_did,
+                provider,
+            }) => {
+                println!("root: {root_did}\nprovider: {provider}\ndevice: {device_did}");
                 ExitCode::Success
             }
             Err(error) => print_error(error.to_string()),
@@ -1612,7 +1726,12 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
     };
 
     match command {
-        RemoteCommand::Add { name, url, subject } => {
+        RemoteCommand::Add {
+            name,
+            url,
+            revocation_url,
+            subject,
+        } => {
             let subject = match subject.as_deref() {
                 Some(raw) => match raw.parse() {
                     Ok(did) => Some(did),
@@ -1620,7 +1739,15 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
                 },
                 None => None,
             };
-            match remote::add(&site, &name, &url, subject).await {
+            match remote::add_with_revocation(
+                &site,
+                &name,
+                &url,
+                subject,
+                revocation_url.as_deref(),
+            )
+            .await
+            {
                 Ok(outcome) => {
                     print_remote_add_outcome(&outcome);
                     // A first remote with no upstream wired is a
@@ -1687,6 +1814,9 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
 fn print_remote_add_outcome(outcome: &AddOutcome) {
     println!("Added remote '{name}'", name = outcome.name);
     println!("  endpoint: {}", outcome.endpoint);
+    if let Some(revocation_url) = &outcome.revocation_url {
+        println!("  revocation: {revocation_url}");
+    }
     println!("  subject:  {}", outcome.subject);
 }
 
@@ -1697,10 +1827,11 @@ fn print_remote_list(records: &[RemoteRecord]) {
     }
     for record in records {
         println!(
-            "{name}\t{endpoint}\t{subject}",
+            "{name}\t{endpoint}\t{subject}\t{revocation}",
             name = record.name,
             endpoint = record.endpoint,
             subject = record.subject,
+            revocation = record.revocation_url.as_deref().unwrap_or("-"),
         );
     }
 }
@@ -1779,6 +1910,7 @@ async fn mint_invite(
     base_url: Option<String>,
     remote_name: Option<String>,
     no_remote: bool,
+    recipient_root: Option<String>,
     no_shorten: bool,
     spot: Option<&str>,
 ) -> ExitCode {
@@ -1853,9 +1985,41 @@ async fn mint_invite(
         (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
 
+    let revocation_url = resolved
+        .as_ref()
+        .and_then(|record| record.revocation_url.clone());
+    if embedded.is_some() && revocation_url.is_none() {
+        return print_error(
+            "the selected remote has no revocation relay; re-add it with \
+             `tonk remote add --revocation-url <URL>`"
+                .to_string(),
+        );
+    }
     let remote_url = embedded.map(|record| record.endpoint);
 
-    match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
+    let minted = match recipient_root {
+        Some(root) => {
+            invite::mint_targeted_with_relay(
+                &site,
+                Some(&base_url),
+                remote_url.as_deref(),
+                revocation_url.as_deref(),
+                &root,
+            )
+            .await
+        }
+        None => {
+            invite::mint_with_relay(
+                &site,
+                Some(&base_url),
+                remote_url.as_deref(),
+                revocation_url.as_deref(),
+            )
+            .await
+        }
+    };
+
+    match minted {
         Ok(mut outcome) => {
             // Shorten against the link's own origin; the long URL is
             // fully functional, so an unreachable shortcut service

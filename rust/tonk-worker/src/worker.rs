@@ -176,6 +176,9 @@ async fn handle_via_router(
         request.extensions_mut().insert(ClientId(client_id.clone()));
     }
 
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+
     // Clone the router out of the lock and release the guard before
     // dispatching: `Router` is cheap to clone (its routes are `Arc`-shared)
     // and `Service::call` runs on the owned clone, so concurrent requests
@@ -218,10 +221,33 @@ async fn handle_via_router(
         HeaderValue::from_static("x-tonk-client-id"),
     );
 
-    ResponseConversion::from(response)
-        .try_into()
-        .map(|value: Response| JsValue::from(value))
-        .map_err(JsValue::from)
+    let status = response.status();
+    match Response::try_from(ResponseConversion::new(method.clone(), response)) {
+        Ok(response) => Ok(JsValue::from(response)),
+        Err(_) => {
+            log!(
+                "response conversion failed: method={} path={} status={}",
+                method,
+                path,
+                status.as_u16()
+            );
+            conversion_failure_response()
+        }
+    }
+}
+
+/// Return a fixed response when an Axum response cannot be represented by Fetch.
+fn conversion_failure_response() -> Result<JsValue, JsValue> {
+    let init = web_sys::ResponseInit::new();
+    init.set_status(500);
+    init.set_headers(&serde_wasm_bindgen::to_value(
+        &serde_json::json!({ "content-type": "application/json" }),
+    )?);
+    web_sys::Response::new_with_opt_str_and_init(
+        Some(r#"{"error":{"code":"RESPONSE_CONVERSION_FAILED","message":"Response conversion failed"}}"#),
+        &init,
+    )
+    .map(JsValue::from)
 }
 
 /// Synthesise a 404 response for view clients hitting `/api/...`.

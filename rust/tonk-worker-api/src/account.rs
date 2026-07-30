@@ -1,18 +1,22 @@
-//! Account-link wire DTOs.
+//! Local-root and optional account-provider wire DTOs.
 
 use serde::{Deserialize, Serialize};
 
-/// Persist a verified `root → current profile` delegation locally.
+/// Attach provider services to an already persisted local root.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountLinkRequest {
-    /// Root DID claimed by the account ceremony.
+    /// Provider base URL.
+    pub provider: String,
+    /// Root DID returned by the provider ceremony.
     pub root_did: String,
-    /// Hex-encoded UCAN delegation chain from the root to this profile.
+    /// Opaque credential ID already stored with the local root.
+    pub credential_id: String,
+    /// Exact existing root → device grant bytes.
     pub delegation_hex: String,
 }
 
-/// Local account-link state.
+/// Local identity and provider attachment state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "status",
@@ -20,43 +24,30 @@ pub struct AccountLinkRequest {
     rename_all_fields = "camelCase"
 )]
 pub enum AccountStatus {
-    /// This profile has not been linked to an account root.
-    Unlinked {
-        /// Current local profile DID.
+    /// No local passkey root is available.
+    RootMissing {
+        /// Current device DID.
         device_did: String,
     },
-    /// This profile holds a verified delegation from an account root.
-    Linked {
-        /// Account root DID.
+    /// A local root exists without provider services.
+    Unregistered {
+        /// Local root DID.
         root_did: String,
-        /// Current local profile DID.
+        /// Current device DID.
         device_did: String,
+    },
+    /// Provider services are attached to the local root.
+    Registered {
+        /// Local root DID.
+        root_did: String,
+        /// Current device DID.
+        device_did: String,
+        /// Attached provider base URL.
+        provider: String,
     },
 }
 
-/// Result of signing out on this device.
-///
-/// Sign-out is two acts: telling the registry this device is out, and
-/// rotating the local key. The rotation always happens; the registry
-/// call is best-effort, and this response is where its failure
-/// surfaces instead of vanishing into a console log.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignOutResponse {
-    /// DID of the replacement profile this browser now signs as.
-    pub device_did: String,
-    /// Whether the registry recorded this device's self-revocation.
-    /// `false` when there was nothing to record — never linked, or no
-    /// account service for this deployment — as well as on failure.
-    pub revoked: bool,
-    /// Why the registry was not told, when it should have been. The
-    /// device is signed out locally either way; a caller showing this
-    /// should tell the user to revoke from another device.
-    pub warning: Option<String>,
-}
-
-/// One device registered under the linked account, as returned by the
-/// worker's device-list proxy.
+/// One device registered under the attached provider account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDevice {
@@ -68,25 +59,48 @@ pub struct AccountDevice {
     pub status: String,
     /// Registration time, seconds since the epoch.
     pub created_at: u64,
-    /// CID of the `root → device` delegation, which a revocation must
-    /// name. Carried to the browser so it can sign one.
+    /// CID of the root → device delegation.
     pub delegation_cid: String,
+    /// Public path bytes needed to witness a revocation. Absent for devices
+    /// registered before providers retained this evidence.
+    pub delegation_hex: Option<String>,
     /// Whether this row is the profile making the request.
     pub this_device: bool,
 }
 
-/// Revoke one device under the linked account.
+/// Revoke one device under the attached provider account.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeDeviceRequest {
     /// DID of the device to revoke.
     pub did: String,
-    /// Hex-encoded root-signed revocation of that device's delegation.
-    ///
-    /// Required: cutting off a device other than the one in your hand
-    /// takes the account root, and the root lives behind the passkey, so
-    /// the browser must run the ceremony before calling this.
+    /// Hex-encoded signed revocation artifact.
     pub revocation: String,
+}
+
+/// Whether the account service's device-list projection caught up with a
+/// published revocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RevocationProjection {
+    /// The mutable device row now reflects the revocation.
+    Updated,
+    /// The immutable revocation was published, but the device row is stale.
+    Stale,
+}
+
+/// Canonical acknowledgement returned after revoking an account device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceAcknowledgement {
+    /// DID whose grant was revoked.
+    pub target_did: String,
+    /// CID of the revoked root-to-device delegation.
+    pub target_cid: String,
+    /// Whether the immutable revocation was accepted by canonical storage.
+    pub published: bool,
+    /// Best-effort state of the account-service device-list projection.
+    pub projection: RevocationProjection,
 }
 
 #[cfg(test)]
@@ -95,15 +109,15 @@ mod tests {
 
     #[dialog_common::test]
     fn it_serializes_account_status_in_camel_case() {
-        let json = serde_json::to_value(AccountStatus::Linked {
+        let json = serde_json::to_value(AccountStatus::Registered {
             root_did: "did:key:root".into(),
             device_did: "did:key:device".into(),
+            provider: "https://accounts.example".into(),
         })
         .unwrap();
-        assert_eq!(json["status"], "linked");
+        assert_eq!(json["status"], "registered");
         assert_eq!(json["rootDid"], "did:key:root");
         assert_eq!(json["deviceDid"], "did:key:device");
-        assert!(json.get("root_did").is_none());
     }
 
     #[dialog_common::test]
@@ -114,34 +128,43 @@ mod tests {
             status: "active".into(),
             created_at: 1_753_300_000,
             delegation_cid: "bafycid".into(),
+            delegation_hex: Some("beef".into()),
             this_device: true,
         })
         .unwrap();
-        assert_eq!(json["did"], "did:key:device");
-        assert_eq!(json["createdAt"], 1_753_300_000);
+        assert_eq!(json["createdAt"], 1_753_300_000u64);
         assert_eq!(json["thisDevice"], true);
         assert_eq!(json["delegationCid"], "bafycid");
-        assert!(json.get("created_at").is_none());
-        assert!(json.get("delegation_cid").is_none());
-
-        let request: RevokeDeviceRequest = serde_json::from_value(
-            serde_json::json!({ "did": "did:key:device", "revocation": "beef" }),
-        )
-        .unwrap();
-        assert_eq!(request.did, "did:key:device");
-        assert_eq!(request.revocation, "beef");
+        assert_eq!(json["delegationHex"], "beef");
     }
 
     #[dialog_common::test]
-    fn it_serializes_the_sign_out_warning_in_camel_case() {
-        let json = serde_json::to_value(SignOutResponse {
-            device_did: "did:key:fresh".into(),
-            revoked: false,
-            warning: Some("service unreachable".into()),
+    fn it_represents_legacy_device_path_evidence_as_absent() {
+        let json = serde_json::to_value(AccountDevice {
+            did: "did:key:legacy".into(),
+            name: "old laptop".into(),
+            status: "active".into(),
+            created_at: 1_753_300_000,
+            delegation_cid: "bafycid".into(),
+            delegation_hex: None,
+            this_device: false,
         })
         .unwrap();
-        assert_eq!(json["deviceDid"], "did:key:fresh");
-        assert_eq!(json["revoked"], false);
-        assert_eq!(json["warning"], "service unreachable");
+        assert!(json["delegationHex"].is_null());
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_a_canonical_revocation_acknowledgement() {
+        let json = serde_json::to_value(RevokeDeviceAcknowledgement {
+            target_did: "did:key:device".into(),
+            target_cid: "bafycid".into(),
+            published: true,
+            projection: RevocationProjection::Stale,
+        })
+        .unwrap();
+        assert_eq!(json["targetDid"], "did:key:device");
+        assert_eq!(json["targetCid"], "bafycid");
+        assert_eq!(json["published"], true);
+        assert_eq!(json["projection"], "stale");
     }
 }

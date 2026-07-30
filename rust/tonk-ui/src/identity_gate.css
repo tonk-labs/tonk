@@ -1,0 +1,90 @@
+#tonk-identity-gate,
+#tonk-identity-link {
+  --identity-surface: #fff;
+  --identity-text: #171717;
+  --identity-muted: #5f6368;
+  --identity-border: rgb(0 0 0 / 12%);
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 24px;
+  color: var(--identity-text);
+  background: rgb(12 14 18 / 54%);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+}
+
+#tonk-identity-gate .tonk-identity-card,
+#tonk-identity-link .tonk-identity-card {
+  width: min(100%, 480px);
+  box-sizing: border-box;
+  padding: 28px;
+  border: 1px solid var(--identity-border);
+  border-radius: 18px;
+  background: var(--identity-surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 24%), 0 3px 12px rgb(0 0 0 / 12%);
+}
+
+#tonk-identity-gate h2,
+#tonk-identity-link h2 {
+  margin: 0 0 10px;
+  text-wrap: balance;
+}
+
+#tonk-identity-gate p,
+#tonk-identity-link p {
+  color: var(--identity-muted);
+  text-wrap: pretty;
+}
+
+.tonk-identity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.tonk-identity-actions button {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 1px solid var(--identity-border);
+  border-radius: 10px;
+  color: inherit;
+  background: var(--identity-surface);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.tonk-identity-actions button:hover {
+  background: color-mix(in srgb, var(--identity-surface), currentColor 6%);
+}
+
+.tonk-identity-actions button:active {
+  transform: translateY(1px);
+}
+
+.tonk-identity-actions button:focus-visible {
+  outline: 3px solid #6b8afd;
+  outline-offset: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  #tonk-identity-gate,
+  #tonk-identity-link {
+    --identity-surface: #202124;
+    --identity-text: #f3f4f6;
+    --identity-muted: #bdc1c6;
+    --identity-border: rgb(255 255 255 / 16%);
+    background: rgb(0 0 0 / 68%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tonk-identity-actions button {
+    transition: none;
+  }
+}

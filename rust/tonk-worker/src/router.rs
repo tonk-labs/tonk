@@ -20,17 +20,19 @@ mod account;
 
 mod account_backup;
 
+mod http;
+
 pub(crate) mod restore;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
 
-pub(crate) mod migrate;
-
 pub(crate) mod account_devices;
 
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
+
+mod revoke_invite;
 
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
@@ -54,6 +56,8 @@ pub use tonk_schema::SyncState;
 
 mod identify;
 pub use identify::IdentifyResponse;
+
+pub(crate) mod identity;
 
 pub mod lsp;
 pub use lsp::LspHub;
@@ -144,8 +148,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        .route(
+            "/api/identity/root",
+            get(identity::get).post(identity::save),
+        )
         .route("/api/account", get(account::get).delete(account::unlink))
-        .route("/api/account/link", post(account::link))
+        .route("/api/account/attach", post(account::link))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
@@ -189,12 +197,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
+        .route("/api/profile/visit", post(join::visit))
         .route("/api/profile/join", post(join::join))
+        .route(
+            "/api/repository/{repo}/membership",
+            get(join::membership).post(join::join_guest),
+        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
         )
         // Repository lifecycle
+        .route("/api/spaces", post(repository::post_space))
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),
@@ -206,6 +220,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/invite",
             post(create_invite::create_invite),
         )
+        .route(
+            "/api/repository/{repo}/invites/{target_cid}/revoke",
+            post(revoke_invite::revoke),
+        )
+        .route("/api/repository/{repo}/invites", get(revoke_invite::list))
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
@@ -352,6 +371,7 @@ pub mod tests {
 
     use dialog_credentials::Ed25519Signer;
     use dialog_operator::Profile;
+    use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
     use dialog_varsig::Principal as _;
@@ -391,7 +411,7 @@ pub mod tests {
     /// run N+1's third test, reviving the order dependence in cross-run
     /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
     /// that today; the [`session_nonce`] makes it unconditional.
-    pub async fn test_state() -> TonkState {
+    pub async fn test_state_without_root() -> TonkState {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let profile_name = format!(
@@ -425,6 +445,25 @@ pub mod tests {
             commands: super::command_registry(),
             clients: Default::default(),
         }
+    }
+
+    /// Create an isolated test state with a stable local root grant.
+    pub async fn test_state() -> TonkState {
+        let state = test_state_without_root().await;
+        let root = Ed25519Signer::import(&[42u8; 32]).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
+            .await
+            .unwrap();
+        super::identity::persist_root(
+            &state,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "test-credential".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+        state
     }
 
     /// Query all `Membership` rows on `repo`'s content branch.
@@ -489,6 +528,8 @@ pub mod tests {
                 subject: Term::var("subject"),
                 inviter: Term::var("inviter"),
                 audience: Term::var("audience"),
+                target_cid: Term::var("target_cid"),
+                path_hex: Term::var("path_hex"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -627,6 +668,72 @@ pub mod tests {
             .unwrap();
         let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
         info.name
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_space_creation_without_a_local_root() {
+        let state = test_state_without_root().await;
+        let (app, _lsp) = api_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spaces")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"Notes","remote":null,"template":null}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["error"]["code"], "ROOT_REQUIRED");
+    }
+
+    #[dialog_common::test]
+    async fn it_presents_space_root_device_and_session_cids_for_proof() {
+        use dialog_capability::Subject;
+
+        let state = test_state().await;
+        let root = super::identity::local_root(&state).await.unwrap();
+        let grant_cid = root.delegation.proof_cids()[0];
+        let (app, state, _lsp) = super::api_router_with_state(state);
+        let first = put_repo(&app, "First").await;
+        let second = put_repo(&app, "Second").await;
+        let tonk = state.read().await;
+
+        for key in [first, second] {
+            let repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let proof = tonk
+                .profile
+                .access()
+                .prove(Subject::from(repository.did()))
+                .audience(&tonk.operator)
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let cids: Vec<_> = proof.proofs.iter().map(|proof| proof.0.to_cid()).collect();
+            assert_eq!(cids.len(), 3);
+            assert_eq!(cids[1], grant_cid);
+            assert_eq!(proof.proofs[0].0.audience(), root.delegation.issuer());
+            assert_eq!(proof.proofs[1].0.audience(), &tonk.profile.did());
+            assert_eq!(proof.proofs[2].0.issuer(), &tonk.profile.did());
+            let stored = super::repository::space_root_prefix(&tonk, &repository.did())
+                .await
+                .unwrap();
+            assert_eq!(stored.proof_cids()[0], cids[0]);
+        }
     }
 
     #[dialog_common::test]
@@ -798,6 +905,13 @@ pub mod tests {
                 Request::builder()
                     .uri(format!("/api/repository/{}/invite", repo))
                     .method("POST")
+                    // The mint derives the link's prefix from the request
+                    // origin, which the browser-to-axum conversion stamps on
+                    // every real request; a hand-built one has to supply it.
+                    .extension(
+                        crate::axum::RequestOrigin::parse("https://local.example/invite")
+                            .expect("valid origin"),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -876,7 +990,8 @@ pub mod tests {
         let config = RepositoryConfiguration::default()
             .remote(
                 "origin",
-                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint))),
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint)))
+                    .revocation_url("https://relay.example.test/revocations".parse().unwrap()),
             )
             .branch(
                 "main",
@@ -1058,6 +1173,7 @@ pub mod tests {
                     "parameters": {
                         "space": subject,
                         "remote": "https://sync.example.test/ucan/",
+                        "revocation": "https://relay.example.test/revocations",
                         "share": "tonk:share",
                         "time": 1,
                         "marker": "tonk:enable-sync"
@@ -1069,6 +1185,7 @@ pub mod tests {
                             "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
                             "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
+                            "revocation": { "the": "xyz.tonk.enable-sync/revocation-url", "as": "Text" },
                             "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" }
                         }
                     } }
@@ -1584,7 +1701,7 @@ pub mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_syncs_after_commit() {
+    async fn it_rejects_manual_sync_without_an_upstream() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-sync";
@@ -1610,7 +1727,10 @@ pub mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        // Now sync — without upstream it should return OK with no changes
+        // Manual sync is an attempted operation, not the background sweep:
+        // without an upstream it must report an operational failure rather
+        // than claim a successful reconciliation. The background coordinator
+        // deliberately filters such branches before calling this route.
         let response = app
             .oneshot(
                 Request::builder()
@@ -1622,7 +1742,12 @@ pub mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(failure["error"]["code"], "SYNC_UNAVAILABLE");
     }
 
     #[dialog_common::test]

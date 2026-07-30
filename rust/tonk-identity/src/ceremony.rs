@@ -11,8 +11,9 @@ use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
+use ipld_core::cid::Cid;
 
 use crate::delegation::mint_device_delegation;
 
@@ -27,6 +28,77 @@ pub struct AccountCeremony {
     pub delegation_hex: String,
     /// Hex-encoded root-signed invocation container for the account service.
     pub invocation_hex: String,
+}
+
+/// Output of a provider-neutral local-root ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootCeremony {
+    /// Passkey-derived root DID.
+    pub root_did: String,
+    /// Device receiving the stable grant.
+    pub device_did: String,
+    /// Opaque WebAuthn credential identifier.
+    pub credential_id: String,
+    /// CID of the root → device delegation.
+    pub delegation_cid: String,
+    /// Exact hex-encoded root → device delegation bytes.
+    pub delegation_hex: String,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn root_ceremony(
+    root: Ed25519Signer,
+    credential_id: String,
+    device_did: dialog_varsig::Did,
+) -> Result<RootCeremony> {
+    let root_did = root.did().to_string();
+    let delegation = mint_device_delegation(root, &device_did).await?;
+    let delegation_cid = delegation.proof_cids()[0].to_string();
+    let delegation_hex = hex::encode(
+        delegation
+            .to_bytes()
+            .context("failed to serialize root to device delegation")?,
+    );
+    Ok(RootCeremony {
+        root_did,
+        device_did: device_did.to_string(),
+        credential_id,
+        delegation_cid,
+        delegation_hex,
+    })
+}
+
+/// Create a passkey root and delegate it to `device_did`.
+///
+/// `label` names the credential in the user's passkey manager: the account
+/// address when an account ceremony creates this root, `None` when a spot
+/// creates it before any account exists. It is metadata for the person, not
+/// for the chain — no delegation, and no authority, depends on it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn create_root(
+    device_did: dialog_varsig::Did,
+    label: Option<&str>,
+) -> Result<RootCeremony> {
+    let created = crate::passkey::create_passkey(label).await?;
+    let credential_id = hex::encode(created.id);
+    let prf = match created.prf_output {
+        Some(output) => output,
+        None => crate::passkey::prf_output().await?,
+    };
+    let root = crate::derive::derive_root_signer(&prf).await?;
+    root_ceremony(root, credential_id, device_did).await
+}
+
+/// Evaluate an existing discoverable passkey and delegate its root to `device_did`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_root(device_did: dialog_varsig::Did) -> Result<RootCeremony> {
+    let evaluated = crate::passkey::evaluate_passkey().await?;
+    let credential_id = hex::encode(evaluated.id);
+    let prf = evaluated
+        .prf_output
+        .context("the authenticator returned no PRF output")?;
+    let root = crate::derive::derive_root_signer(&prf).await?;
+    root_ceremony(root, credential_id, device_did).await
 }
 
 fn strings(values: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, Promised> {
@@ -71,25 +143,23 @@ async fn build(
     })
 }
 
-/// Sign a revocation of `delegation_cid` with the passkey-derived root.
+/// Sign a witnessed revocation with the passkey-derived root.
 ///
-/// Unlike the other ceremonies this returns no delegation and no
-/// service invocation: the revocation travels as an argument inside a
-/// device-signed request, because the service still authorizes the call
-/// by device while the artifact carries the authority to revoke.
-///
-/// This is the ceremony behind revoking a device other than the one in
-/// your hand. Requiring it is what stops a stolen device from locking
-/// out its siblings — a device holds only its grant, and a grant cannot
-/// produce a root signature.
-pub async fn sign_revocation(root: Ed25519Signer, delegation_cid: &str) -> Result<String> {
-    let bytes = crate::revocation::mint_root_revocation(root, delegation_cid)
+/// The root must be an issuer in the path prefix through the target. The
+/// resulting artifact carries the exact signed path and can be verified
+/// without an account provider.
+pub async fn sign_revocation(
+    root: Ed25519Signer,
+    path: &DelegationChain,
+    target: &Cid,
+) -> Result<String> {
+    let bytes = crate::revocation::mint_root_revocation(root, path, target)
         .await
         .context("failed to sign the revocation")?;
     Ok(hex::encode(bytes))
 }
 
-/// Build the root-signed account-creation request and first-device delegation.
+/// Build account creation around an existing stable local-root grant.
 pub async fn create_account(
     root: Ed25519Signer,
     email: String,
@@ -97,14 +167,15 @@ pub async fn create_account(
     credential_id: String,
     device_did: dialog_varsig::Did,
     device_name: String,
+    delegation_hex: String,
 ) -> Result<AccountCeremony> {
     let device_did_string = device_did.to_string();
-    let delegation = mint_device_delegation(root.clone(), &device_did).await?;
-    let delegation_hex = hex::encode(
-        delegation
-            .to_bytes()
-            .context("failed to serialize root to device delegation")?,
-    );
+    let bytes = hex::decode(&delegation_hex).context("invalid existing delegation hex")?;
+    let delegation = DelegationChain::try_from(bytes.as_slice())
+        .context("invalid existing root to device delegation")?;
+    if delegation.issuer() != &root.did() || delegation.audience() != &device_did {
+        anyhow::bail!("existing delegation does not match the evaluated root and device");
+    }
     build(
         root,
         vec!["account".into(), "create".into()],
@@ -193,6 +264,10 @@ mod tests {
     async fn it_binds_account_creation_fields_to_the_root_signature() {
         let (root, device) = fixture().await;
         let expected_root = root.did();
+        let delegation = crate::delegation::mint_device_delegation(root.clone(), &device)
+            .await
+            .unwrap();
+        let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
         let output = create_account(
             root,
             "a@x.com".into(),
@@ -200,6 +275,7 @@ mod tests {
             "credential".into(),
             device.clone(),
             "laptop".into(),
+            delegation_hex,
         )
         .await
         .unwrap();

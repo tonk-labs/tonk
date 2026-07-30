@@ -9,20 +9,23 @@ and WASM targets, so invites minted by the `carry` CLI are redeemable by the
 `tonk-ui` web client and vice versa.
 
 The core type is [`Invite`]: a [`DelegationChain`] plus an [`InviteAudience`]
-mode and an optional sync remote. It serializes to a URL today via
+mode, an optional sync remote, and optional revocation relay configuration. It serializes to a URL today via
 [`Invite::to_url`]; QR codes and invite files can slot in as additional
 methods without touching the type.
 
 ## URL format
 
 ```text
-<base>?access=<base58-ucan-chain>[&remote=<access-service-url>][#<base58-seed>]
+<base>?access=<base58-ucan-chain>[&remote=<access-service-url>][&revocation=<relay-url>][#<base58-seed>]
 ```
 
 - `access`: base58-encoded [`DelegationChain`] bytes. The chain's subject must
   be specific (`Subject::Specific`); chains with `Subject::Any` are rejected,
   because an invite always scopes to a particular repository.
 - `remote` (optional): UCAN access service endpoint used for sync.
+- `revocation` (optional): executor URL accepting raw signed revocation
+  artifacts; it grants no authority. It is copied from explicit remote
+  metadata, never inferred from an access-service hostname.
 - `#fragment` (optional): base58 of a 32-byte Ed25519 seed.
 
 The fragment is the *audience* axis. Its presence marks the invite as
@@ -33,7 +36,8 @@ audience DID can claim. The *subject* axis (which repo) is always scoped and is
 orthogonal to this.
 
 [`DEFAULT_BASE_URL`] (`https://tonk.spot/join`) is the canonical base for
-minted links.
+generic non-browser callers. Browser mint routes use `/join` on the exact
+request origin when `baseUrl` is omitted.
 
 ## Mint and claim
 
@@ -44,7 +48,7 @@ up-front error. [`Invite::parse_url`] decodes a URL back into an `Invite`,
 applying the same validation (plus a strict 32-byte length check on the
 fragment seed).
 
-[`Invite::claim`] redeems an invite for a redeemer's `Did` and returns a
+[`Invite::visit`] redelegates an open invite to a bounded guest session without creating durable membership. [`Invite::claim`] performs durable acceptance for a root `Did` and returns a
 [`ClaimedInvite`] (the final chain plus any `remote_url`):
 
 - audience-open: redelegates from the embedded ephemeral key to the redeemer,
@@ -52,7 +56,7 @@ fragment seed).
 - audience-scoped: verifies the chain's existing audience matches the redeemer
   and returns the chain as-is, erroring otherwise.
 
-Persisting the returned chain and wiring up `remote_url` for sync are the
+Targeted invites contain no bearer seed and require exact root-audience equality. Persisting the returned chain and wiring up `remote_url` for sync are the
 caller's responsibility. `From<Invite> for UcanProof` is also provided to
 project the chain into dialog-ucan's authorization machinery.
 
