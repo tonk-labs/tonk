@@ -538,7 +538,33 @@ fn on_click(host: &HtmlElement, selector: &str, callback: impl Fn(HtmlElement) +
     closure.forget();
 }
 
+/// Stop every account form from ever navigating.
+///
+/// These panels are forms for the semantics — labels, `required`, a password
+/// manager that recognises an email field — not to submit anywhere. None
+/// carries an `action`, so a submission that got through would GET the current
+/// URL: the panel reloads, whatever was typed is gone, and the handler that
+/// should have run never does. The per-button `prevent_default` in [`on_click`]
+/// covers the click path; this covers the form itself, including the implicit
+/// submission Enter triggers.
+fn prevent_form_navigation(host: &HtmlElement) {
+    let Ok(forms) = host.query_selector_all(".account__form") else {
+        return;
+    };
+    for index in 0..forms.length() {
+        let Some(form) = forms.item(index) else {
+            continue;
+        };
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            event.prevent_default();
+        });
+        let _ = form.add_event_listener_with_callback("submit", closure.as_ref().unchecked_ref());
+        closure.forget();
+    }
+}
+
 fn bind(host: &HtmlElement) {
+    prevent_form_navigation(host);
     on_click(host, "#account-choose-create", |host| {
         clear_error(&host);
         set_mode(&host, "create");
@@ -993,6 +1019,61 @@ mod tests {
         assert_eq!(
             revocation_status(&stale, true),
             "This device has been revoked. Its remote authority is permanently withdrawn."
+        );
+    }
+
+    /// No account form may navigate.
+    ///
+    /// Enter in a single-field form implicitly submits it — the email panel
+    /// has exactly one field and, before this, no submit button, so the
+    /// browser submitted the form itself: a GET to the current URL with no
+    /// action, which reloaded `/account?Email=…`, threw the typed address
+    /// away, and never ran the handler that sends the code. Nothing about
+    /// that is specific to the email panel, so the guard covers every form
+    /// the panel authors.
+    #[dialog_common::test]
+    async fn it_prevents_every_account_form_from_navigating() {
+        let host = mounted_account_host().await;
+        bind(&host);
+        let forms = host.query_selector_all(".account__form").expect("query");
+        assert!(forms.length() > 0, "the panel authors forms to guard");
+
+        let mut unguarded = Vec::new();
+        for index in 0..forms.length() {
+            let form: web_sys::Element = forms.item(index).expect("form").unchecked_into();
+            let init = web_sys::EventInit::new();
+            init.set_cancelable(true);
+            init.set_bubbles(true);
+            let event =
+                web_sys::Event::new_with_event_init_dict("submit", &init).expect("submit event");
+            form.dispatch_event(&event).expect("dispatch");
+            if !event.default_prevented() {
+                unguarded.push(form.parent_element().map(|panel| panel.id()));
+            }
+        }
+        host.remove();
+
+        assert!(
+            unguarded.is_empty(),
+            "these forms would navigate on Enter: {unguarded:?}",
+        );
+    }
+
+    /// Enter has to do what Continue does, not nothing. Implicit submission
+    /// clicks the form's submit button, and that click is what carries the
+    /// send-code handler — so the button has to be the form's submit button
+    /// rather than an inert `type="button"` beside it.
+    #[dialog_common::test]
+    fn it_lets_enter_send_the_verification_code() {
+        let host = host();
+        let button = host
+            .query_selector("#account-send-code")
+            .expect("query")
+            .expect("continue button");
+        assert_eq!(
+            button.get_attribute("type").as_deref(),
+            Some("submit"),
+            "Continue must be the email form's submit button",
         );
     }
 

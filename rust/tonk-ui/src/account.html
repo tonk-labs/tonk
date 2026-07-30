@@ -20,7 +20,12 @@
       <label>Email
         <input id="account-email" name="Email" type="email" autocomplete="email" required>
       </label>
-      <button id="account-send-code" class="account__button" type="button">Continue</button>
+      <!-- The form's submit button, not an inert `type="button"`: this panel
+           has a single field, so Enter implicitly submits, and implicit
+           submission clicks the submit button — which is where the send-code
+           handler hangs. As a plain button, Enter submitted the form itself,
+           reloading `/account?Email=…` with the address thrown away. -->
+      <button id="account-send-code" class="account__button" type="submit">Continue</button>
       <button id="account-create-back" class="account__button account__button--quiet" type="button">Back</button>
     </form>
   </section>
