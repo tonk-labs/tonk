@@ -754,6 +754,24 @@ concept!: &tonk/repository
       cardinality: one
       as: text
 
+# Agent working context carried by the repository itself. The instance is keyed
+# by the same stable repository subject DID as `tonk/repository`, so it syncs
+# with the spot rather than belonging to one filesystem checkout or replica.
+attribute!: &tonk/agents-markdown
+  the: xyz.tonk.repo/agents
+  description: >
+    Markdown working context for agents using this repository.
+    Keep durable concepts, workflows, decisions, and recurring pitfalls here;
+    omit credentials, invite links, transient status, and one-off completions.
+  cardinality: one
+  as: text
+
+concept!: &tonk/agents
+  this: tonk:agents
+  description: AGENTS.md context attached to the repository subject DID.
+  with:
+    markdown: tonk/agents-markdown
+
 # Rename the current repository. The editable banner input dispatches
 # this on commit (blur/enter); `name` reads the input's value and
 # `subject` reads the repository identity stamped on the banner so the

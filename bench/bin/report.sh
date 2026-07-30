@@ -5,7 +5,7 @@ ROOT="${ROOT:?}"
 N="${1:-10}"
 IDX="$ROOT/bench/runs/index.jsonl"
 [ -f "$IDX" ] || { echo "no runs yet" >&2; exit 1; }
-echo "run | scenario | outcome | friction | failed | turns | wall(s) | tokens-out"
-echo "--- | -------- | ------- | -------- | ------ | ----- | ------- | ----------"
+echo "run | variant | scenario | outcome | first tonk/live/data/write | tonk failed/orient | friction | turns | wall(s) | tokens-out"
+echo "--- | ------- | -------- | ------- | -------------------------- | ------------------ | -------- | ----- | ------- | ----------"
 tail -n "$N" "$IDX" | jq -r \
-  '"\(.run) | \(.scenario) | \(.outcome) | \(.friction_count) | \(.failed_tool_results) | \(.num_turns) | \(.wall_seconds) | \(.tokens_out)"'
+  '"\(.run) | \(.variant // \"-\") | \(.scenario) | \(.outcome) | \(.first_tonk // \"-\")/\(.first_read // \"-\")/\(.first_data_read // \"-\")/\(.first_write // \"-\") | \(.failed_tonk_calls // \"-\")/\(.orientation_calls // \"-\") | \(.friction_count) | \(.num_turns) | \(.wall_seconds) | \(.tokens_out)"'

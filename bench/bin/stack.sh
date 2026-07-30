@@ -14,7 +14,10 @@ BENCH_URL="${BENCH_URL:-http://127.0.0.1:$BENCH_PORT}"
 
 ensure_ui() {
   echo "stack: trunk build tonk-ui..." >&2
-  (cd "$ROOT/rust/tonk-ui" && trunk build)
+  # The devshell exports the conventional NO_COLOR=1. Current Trunk maps that
+  # env var onto clap's boolean `--no-color`, which accepts true/false rather
+  # than 1/0. Normalize it for this subprocess.
+  (cd "$ROOT/rust/tonk-ui" && NO_COLOR=true trunk build)
 }
 
 ensure_access_bin() {

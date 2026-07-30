@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"test-first-use"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'tonk'","aggregated_output":"# Tonk context","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'tonk query --help'","aggregated_output":"Usage: tonk query <CONCEPT>","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc 'tonk query task'","aggregated_output":"task launch-email","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"/bin/zsh -lc 'tonk eval -c \"task: this: ?task\"'","aggregated_output":"revision-before: '#same'\nrevision-after: '#same'\nclaims: 0","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"/bin/zsh -lc 'tonk assert task launch-email --done true'","aggregated_output":"asserted launch-email","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"/bin/zsh -lc 'tonk eval --format json -c \"task: this: ?task\\n  status: done\"'","aggregated_output":"warning: remote unavailable\n{\"revision_before\":{\"tree\":[1]},\"revision_after\":{\"tree\":[2]},\"commits\":{\"claims\":1,\"entities\":{}}}","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_6","type":"command_execution","command":"/bin/zsh -lc 'rg -n tonk README.md'","aggregated_output":"README.md:1:# tonk","exit_code":0,"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0}}

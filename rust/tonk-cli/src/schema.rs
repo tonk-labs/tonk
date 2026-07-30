@@ -55,6 +55,8 @@ pub struct ConceptSummary {
     /// Bookmark name published via `dialog.name/referent` on
     /// the matching `id:<name>` entity.
     pub name: String,
+    /// Entity identifier of the concept descriptor.
+    pub entity: String,
     /// Human description claim (`dialog.meta/description`), if
     /// asserted. Concept descriptions are optional in the
     /// analyzer.
@@ -62,6 +64,23 @@ pub struct ConceptSummary {
     /// Field names from the concept's `with:` map, in the order
     /// the descriptor yields them.
     pub fields: Vec<String>,
+    /// Typed field details for workflow-oriented clients.
+    pub field_specs: Vec<FieldSummary>,
+}
+
+/// Agent-facing summary of one concept field.
+#[derive(Debug, Clone)]
+pub struct FieldSummary {
+    /// Flag name accepted by `tonk assert`.
+    pub name: String,
+    /// Asserted-notation value type.
+    pub value_type: String,
+    /// `one` or `many`.
+    pub cardinality: String,
+    /// Whether minting a new instance requires this field.
+    pub required: bool,
+    /// Human description from the attribute descriptor.
+    pub description: String,
 }
 
 /// Enumerate every user-defined concept on the meta branch,
@@ -74,12 +93,32 @@ pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
         .into_iter()
         .map(|info| ConceptSummary {
             name: info.name,
+            entity: info.entity,
             description: info.description,
             fields: info
                 .descriptor
                 .with()
                 .iter()
                 .map(|(field, _)| field.to_string())
+                .collect(),
+            field_specs: info
+                .descriptor
+                .with()
+                .iter()
+                .map(|(field, descriptor)| FieldSummary {
+                    name: field.to_string(),
+                    value_type: descriptor
+                        .content_type()
+                        .map(|value_type| type_to_notation(&value_type).to_ascii_lowercase())
+                        .unwrap_or_else(|| "value".to_string()),
+                    cardinality: match descriptor.cardinality() {
+                        Cardinality::One => "one",
+                        Cardinality::Many => "many",
+                    }
+                    .to_string(),
+                    required: !descriptor.is_optional(),
+                    description: descriptor.description().to_string(),
+                })
                 .collect(),
         })
         .collect())
@@ -166,6 +205,8 @@ pub struct ConceptInfo {
     /// Bookmark name. Required — anonymous concepts aren't yet
     /// surfaced.
     pub name: String,
+    /// Entity identifier of the concept descriptor.
+    pub entity: String,
     /// `dialog.meta/description` when present.
     pub description: Option<String>,
     /// Decoded descriptor — the source of truth for the rendered
@@ -316,6 +357,7 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
         };
         out.push(ConceptInfo {
             name,
+            entity: row.this.to_string(),
             description,
             descriptor,
         });

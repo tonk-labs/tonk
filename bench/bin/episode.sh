@@ -7,7 +7,7 @@
 # Env: ROOT, RUN_DIR, SCENARIO, TONK_SPOTS_STATE, TONK_SPOT
 # Optional (from scenario.env): EPISODE_DIR, EPISODE_BIN,
 #   EPISODE_PATH_SANDBOX, EPISODE_RUNNER, EPISODE_SANDBOX, CODEX_MODEL,
-#   EPISODE_HOME, EPISODE_SPOT, EPISODE_SPOTS_STATE
+#   EPISODE_HOME, EPISODE_SPOT, EPISODE_SPOTS_STATE, EPISODE_SITE_DIR
 set -euo pipefail
 
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; SCENARIO="${SCENARIO:?}"
@@ -170,6 +170,10 @@ run_codex() {
   # episode's profile dir, not the real one.
   local EP_PROFILE_DIR="${EPISODE_HOME:-$REAL_HOME}/Library/Application Support/dialog"
   mkdir -p "$EP_PROFILE_DIR"
+  local SITE_DIR_ARGS=()
+  if [ -n "${EPISODE_SITE_DIR:-}" ]; then
+    SITE_DIR_ARGS=(--add-dir "$EPISODE_SITE_DIR")
+  fi
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
@@ -182,6 +186,8 @@ run_codex() {
       -s "${EPISODE_SANDBOX:-workspace-write}" \
       -c sandbox_workspace_write.network_access=true \
       --add-dir "$RUN_DIR" \
+      --add-dir "$EPISODE_SPOTS_STATE" \
+      ${SITE_DIR_ARGS[@]:+"${SITE_DIR_ARGS[@]}"} \
       --add-dir "$EP_PROFILE_DIR" \
       - < "$PROMPT_FILE" \
   ) > "$RUN_DIR/episode.jsonl" 2> "$RUN_DIR/episode.stderr"

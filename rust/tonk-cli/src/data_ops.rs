@@ -181,16 +181,17 @@ fn query_doc(
     doc
 }
 
-/// Run a read-only query document through the eval pipeline and
-/// return its rendered stdout.
-async fn run_read(site: &TonkSite, doc: String, json: bool) -> Result<String, DataOpError> {
-    let options = Options {
-        format: if json { Format::Json } else { Format::Notation },
-        quiet: false,
-        dry_run: false,
-    };
-    let outcome = eval::run_against_site(site, Source::Inline(doc), options).await?;
-    Ok(outcome.stdout)
+/// Run a read-only query and return only current instances.
+async fn run_read(
+    site: &TonkSite,
+    doc: String,
+    concept: &str,
+    json: bool,
+) -> Result<String, DataOpError> {
+    let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
+    let format = if json { Format::Json } else { Format::Notation };
+    crate::output::render_results(&outcome.response, format, concept)
+        .map_err(|error| DataOpError::Io(format!("output rendering failed: {error}")))
 }
 
 /// Query every instance of `concept`, with every field bound —
@@ -198,7 +199,13 @@ async fn run_read(site: &TonkSite, doc: String, json: bool) -> Result<String, Da
 /// or as JSON when `json` is `true`.
 pub async fn query(site: &TonkSite, concept: &str, json: bool) -> Result<String, DataOpError> {
     let info = require_concept(site, concept).await?;
-    run_read(site, query_doc(&info.descriptor, concept, None), json).await
+    run_read(
+        site,
+        query_doc(&info.descriptor, concept, None),
+        concept,
+        json,
+    )
+    .await
 }
 
 /// True iff `entity` currently matches `concept` — every `with:`
@@ -245,6 +252,7 @@ pub async fn get(
     run_read(
         site,
         query_doc(&info.descriptor, concept, Some(entity)),
+        concept,
         json,
     )
     .await
@@ -318,7 +326,34 @@ pub async fn assert_op(
                 auto_sync::enabled(false),
             )
             .await?;
-            Ok(format!("asserted {entity}\n{}", outcome.stdout))
+            let before = outcome
+                .response
+                .revision_before
+                .as_ref()
+                .map(|revision| revision.tree.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let after = outcome
+                .response
+                .revision_after
+                .as_ref()
+                .map(|revision| revision.tree.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let mut rendered = format!(
+                "updated {entity}\nclaims: {}\nrevision: {before} -> {after}\n",
+                outcome.response.commits.claims
+            );
+            match get(site, concept, entity, false).await {
+                Ok(current) => {
+                    rendered.push_str("current state:\n");
+                    rendered.push_str(&current);
+                }
+                Err(error) => {
+                    rendered.push_str(&format!(
+                        "write committed, but the post-write read failed: {error}\nverify: tonk query {concept} {entity}\n"
+                    ));
+                }
+            }
+            Ok(rendered)
         }
     }
 }

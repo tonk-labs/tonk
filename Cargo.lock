@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "dialog-reactor"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4244,7 +4244,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-access-service"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4285,7 +4285,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-account-service"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4315,7 +4315,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-analytics"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "dialog-common",
  "hex",
@@ -4331,7 +4331,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-analyzer"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-board"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "custom-elements",
  "js-sys",
@@ -4370,7 +4370,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-cli"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4426,7 +4426,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-code"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4435,7 +4435,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-common"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "dialog-common",
  "futures-util",
@@ -4448,7 +4448,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-core"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "base58",
  "dialog-artifacts",
@@ -4467,7 +4467,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-display"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-evaluator"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "dialog-artifacts",
@@ -4514,7 +4514,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-fab"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -4531,7 +4531,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-guest"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "console_error_panic_hook",
  "custom-elements",
@@ -4554,7 +4554,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-host"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "bytes",
  "custom-elements",
@@ -4577,7 +4577,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-identity"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "dialog-common",
@@ -4600,7 +4600,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-inspector"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "bs58",
  "custom-elements",
@@ -4619,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-invite"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "bs58",
@@ -4636,7 +4636,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-language-server"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -4655,7 +4655,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-macros"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4668,7 +4668,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-notation"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "dialog-common",
  "lsp-types",
@@ -4683,7 +4683,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-portal"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -4705,7 +4705,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-prose"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4714,7 +4714,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-render"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "async-trait",
  "dialog-common",
@@ -4731,7 +4731,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-router"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "dialog-common",
  "tokio",
@@ -4740,7 +4740,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-schema"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4774,7 +4774,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-sigil"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "blake3",
  "bs58",
@@ -4786,7 +4786,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-table"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4795,7 +4795,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-template"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "dialog-common",
  "indexmap",
@@ -4809,7 +4809,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-tree"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "custom-elements",
  "js-sys",
@@ -4823,7 +4823,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-ui"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4866,7 +4866,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-worker"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4937,7 +4937,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-worker-api"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "dialog-capability",
  "dialog-common",
@@ -4952,7 +4952,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-workspace"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "custom-elements",
  "dialog-common",

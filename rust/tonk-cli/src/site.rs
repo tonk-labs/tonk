@@ -30,6 +30,23 @@ use dialog_storage::provider::storage::{NativeSpace, Storage};
 /// repository creation.
 const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 
+/// Whether the seeded standard library publishes `name`.
+///
+/// Live schema enumeration also sees runtime/system concepts. Agent-facing
+/// workflow surfaces use this to keep the application vocabulary short.
+pub(crate) fn standard_library_has_name(name: &str) -> bool {
+    STANDARD_LIBRARY.lines().any(|line| {
+        let Some((_, anchor)) = line.split_once("!: &") else {
+            return false;
+        };
+        anchor
+            .split_ascii_whitespace()
+            .next()
+            .map(|anchor| anchor.trim_end_matches(':'))
+            == Some(name)
+    })
+}
+
 /// Name of the dialog repository tonk uses inside `.tonk/`.
 pub const REPO_NAME: &str = "main";
 

@@ -1,17 +1,15 @@
-//! [`RepositoryName`] — a repository's own self-describing name.
+//! Repository description carried on the content branch.
 //!
 //! Unlike the meta-branch [`Replica`](crate::Replica) index (which only
-//! records *that* a profile holds a repository), this concept lives on
-//! the repository's *content* branch and carries the repository's
-//! display name. Because it travels with the repository, every device
-//! that syncs the content branch sees the current name — there is no
-//! per-profile cache to fall stale when another device renames it.
+//! records *that* a profile holds a repository), these concepts live on the
+//! repository's *content* branch. Because they travel with the repository,
+//! every device that syncs the content branch sees the same display name and
+//! agent context.
 //!
-//! The concept is pinned to the `tonk:repository` URI so a
-//! `<tonk-display model=tonk:repository>` can resolve its view, but its
-//! *instances* are keyed by the repository's subject DID (the entity the
-//! name attaches to). The standard-library `tonk/rename-repository` rule
-//! writes it; the banner and the Hub card read it.
+//! [`RepositoryName`] is pinned to the `tonk:repository` URI so a
+//! `<tonk-display model=tonk:repository>` can resolve its view. Both concepts'
+//! *instances* are keyed by the repository's subject DID: the stable entity the
+//! name and agent context attach to.
 
 // The `#[derive(Concept)]` macro generates helper types without doc
 // comments; suppress `missing_docs` for this module so it compiles
@@ -21,7 +19,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::repo::Name;
+use crate::domain::repo::{Agents, Name};
 
 /// A repository's own display name, stored on its content branch and
 /// keyed by the subject DID.
@@ -31,4 +29,14 @@ pub struct RepositoryName {
     pub this: Entity,
     /// The repository's display name.
     pub name: Name,
+}
+
+/// A repository's synced agent context, keyed by the same subject DID as its
+/// self-describing name.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RepositoryAgents {
+    /// The repository's subject DID — the entity the context attaches to.
+    pub this: Entity,
+    /// Markdown projected as `AGENTS.md` by compatible agent launchers.
+    pub agents: Agents,
 }

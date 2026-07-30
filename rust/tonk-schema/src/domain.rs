@@ -525,17 +525,24 @@ pub mod profile {
     pub struct DisplayName(pub String);
 }
 
-/// Attributes that live on a repository's own `tonk/repository`
-/// concept — the repository's self-describing name, stored on its
-/// content branch and keyed by the subject DID.
+/// Attributes that describe a repository on its content branch, keyed by the
+/// subject DID. They travel with the repository rather than belonging to one
+/// profile or replica.
 ///
 /// [`RepositoryName`]: crate::RepositoryName
+/// [`RepositoryAgents`]: crate::RepositoryAgents
 pub mod repo {
     use super::Attribute;
 
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.repo")]
     pub struct Name(pub String);
+
+    /// Markdown agent context carried by the repository subject.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.repo")]
+    #[cardinality(one)]
+    pub struct Agents(pub String);
 }
 
 /// Attributes on the durable `tonk:authorization` concept — the

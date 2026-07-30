@@ -4,16 +4,28 @@
 set -euo pipefail
 
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; SCENARIO_NAME="${SCENARIO_NAME:-unknown}"
+EXPERIMENT_FILE="$RUN_DIR/experiment.json"
 
 {
   echo "# Bench run: $SCENARIO_NAME — $(basename "$RUN_DIR")"
   echo
+  if [ -f "$EXPERIMENT_FILE" ]; then
+    jq -r '"variant: `\(.variant)` · revision: `\(.revision[0:10])` · runner: `\(.runner)` · model: `\(.model)` · dirty: `\(.dirty)`"' \
+      "$EXPERIMENT_FILE"
+    echo
+  fi
   if [ -f "$RUN_DIR/scores.json" ]; then
     echo "## Scores"
     echo
     jq -r '"- outcome: \(.judge.outcome)/10",
+           "- execution verified: \(.verifier.passed // "n/a")",
            "- wall: \(.wall_seconds)s, turns: \(.num_turns), tool calls: \(.tool_calls)",
            "- failed tool results: \(.failed_tool_results), repeated commands: \(.repeated_commands | length)",
+           "- first successful tonk: command \(.journey.cmds_before_first_success // "?") — \(.journey.first_success // "not reached")",
+           "- first live read: command \(.journey.cmds_before_first_read // "?") — \(.journey.first_read // "not reached")",
+           "- first data read: command \(.journey.cmds_before_first_data_read // "?") — \(.journey.first_data_read // "not reached")",
+           "- first content write: command \(.journey.cmds_before_first_write // "?") — \(.journey.first_write // "not reached")",
+           "- tonk calls: \(.journey.tonk_calls), failed: \(.journey.failed_tonk_calls), orientation: \(.journey.orientation_calls)",
            "- tokens out: \(.tokens.output)"' "$RUN_DIR/scores.json"
     echo
     echo "## Friction"
@@ -58,8 +70,23 @@ ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; SCENARIO_NAME="${SCENARIO_NAME:-unknow
 } > "$RUN_DIR/report.md"
 
 if [ -f "$RUN_DIR/scores.json" ]; then
-  jq -c '{run, scenario, outcome: .judge.outcome, wall_seconds, num_turns,
+  jq -c --slurpfile experiment "$EXPERIMENT_FILE" \
+         '{run, scenario,
+          variant: ($experiment[0].variant // "unlabelled"),
+          revision: ($experiment[0].revision // null),
+          dirty: ($experiment[0].dirty // null),
+          runner: ($experiment[0].runner // null),
+          model: ($experiment[0].model // null),
+          verified: (.verifier.passed // null),
+          outcome: .judge.outcome, wall_seconds, num_turns,
           tool_calls, failed_tool_results, tokens_out: .tokens.output,
+          first_tonk: .journey.cmds_before_first_success,
+          first_read: .journey.cmds_before_first_read,
+          first_data_read: .journey.cmds_before_first_data_read,
+          first_write: .journey.cmds_before_first_write,
+          tonk_calls: .journey.tonk_calls,
+          failed_tonk_calls: .journey.failed_tonk_calls,
+          orientation_calls: .journey.orientation_calls,
           friction_count: (.judge.friction | length)}' \
     "$RUN_DIR/scores.json" >> "$ROOT/bench/runs/index.jsonl"
 fi
