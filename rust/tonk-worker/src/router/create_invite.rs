@@ -334,12 +334,15 @@ pub(crate) enum RemoteRefusal {
 }
 
 impl RemoteRefusal {
-    /// The stable class string carried on `xyz.tonk.share/blocked`.
+    /// The stable class string carried on `xyz.tonk.share/blocked`. Wire
+    /// vocabulary the bar branches on, so it comes from `tonk-worker-api`
+    /// rather than a literal here that agrees with the bar's by luck.
     pub(crate) fn code(self) -> &'static str {
+        use tonk_worker_api::share;
         match self {
-            Self::NotSynced => "not-synced",
-            Self::UnshareableRemote => "unshareable-remote",
-            Self::MissingRevocationRelay => "missing-revocation-relay",
+            Self::NotSynced => share::BLOCKED_NOT_SYNCED,
+            Self::UnshareableRemote => share::BLOCKED_UNSHAREABLE_REMOTE,
+            Self::MissingRevocationRelay => share::BLOCKED_MISSING_REVOCATION_RELAY,
         }
     }
 

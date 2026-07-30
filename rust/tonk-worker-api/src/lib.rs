@@ -24,6 +24,7 @@ mod join;
 mod profile;
 mod query;
 mod repository;
+pub mod share;
 mod sync;
 
 pub use account::{

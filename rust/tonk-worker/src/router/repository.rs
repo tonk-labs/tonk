@@ -1004,6 +1004,27 @@ async fn run_invite(
             TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
         })?;
 
+    // A guest visit cannot mint: it installed bounded invite authority, not
+    // the durable membership a delegation is cut from. Refuse ahead of the
+    // remote check — it is the more fundamental answer, and it is cheaper —
+    // so the click spends no delegation and rotates no credential. The bar
+    // turns this code into an offer to join, which is what raises the passkey
+    // prompt.
+    if super::join::is_guest_replica(&tonk, &repository.did()).await? {
+        log!("Invite for repo '{}' refused: guest visit", repo_name);
+        drop(tonk);
+        publish_share_blocked(
+            env.state(),
+            repo_name,
+            subject_entity,
+            tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP,
+            "You're visiting this spot as a guest. Join it to share it with others.",
+            time,
+        )
+        .await;
+        return Ok(());
+    }
+
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
     // remote lands its recipient in a spot that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
@@ -4466,7 +4487,7 @@ mod tests {
         existing_space_labels,
     };
     use crate::router::evaluate::evaluate_body;
-    use crate::router::tests::{content_invitations, put_repo, put_repo_info};
+    use crate::router::tests::{attach_remote, content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
 
     /// The scaffold notation, embedded at compile time.
@@ -5350,6 +5371,58 @@ mod tests {
         assert!(
             invitations.is_empty(),
             "a refused mint records no invitation"
+        );
+    }
+
+    /// A guest visit holds bounded invite authority, not the durable
+    /// membership a mint delegates from, so the click cannot succeed. Refusing
+    /// before minting means it costs no delegation and rotates no credential —
+    /// and the code is what lets the bar offer to join rather than just
+    /// reporting a failure.
+    ///
+    /// The remote is attached first so guest-ness is the only thing left to
+    /// refuse over: without it this would pass on `not-synced` alone.
+    #[dialog_common::test]
+    async fn it_refuses_to_mint_for_a_guest_visit() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-refuse-guest").await;
+        attach_remote(&app, &key, "https://access.example.test/ucan/").await;
+
+        // Marked a guest through the writer the visit path itself uses, so the
+        // fixture states no opinion about how guest state is stored.
+        {
+            use dialog_repository::{Repository, RepositoryExt as _};
+            let tonk = state.read().await;
+            let repository: Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            crate::router::join::save_guest(
+                &tonk,
+                &repository.did(),
+                "https://staging.example.test/join?access=fixture",
+            )
+            .await
+            .expect("guest record stores");
+        }
+
+        run_invite_with_time(&state, &key, 4242.0).await;
+
+        let blocked = share_blocked_rows(&state, &key).await;
+        assert_eq!(blocked.len(), 1, "one refusal recorded");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_NEEDS_MEMBERSHIP,
+        );
+        assert_eq!(blocked[0].2, 4242.0, "echoes the command's timestamp");
+
+        let invitations = content_invitations(&state, &key).await;
+        assert!(
+            invitations.is_empty(),
+            "a guest's refused mint records no invitation",
         );
     }
 

@@ -632,7 +632,11 @@ fn guest_site(subject: &Did) -> String {
 
 /// Retain the invite a guest visit was opened with, so an explicit
 /// promotion can replay it without the page holding the URL.
-async fn save_guest(tonk: &TonkState, subject: &Did, url: &str) -> Result<(), JoinFailure> {
+pub(crate) async fn save_guest(
+    tonk: &TonkState,
+    subject: &Did,
+    url: &str,
+) -> Result<(), JoinFailure> {
     let record = serde_json::to_vec(&GuestRecord {
         version: 1,
         url: url.to_string(),
@@ -690,6 +694,22 @@ async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, To
         TonkWorkerError::Internal(format!("stored guest record is invalid: {error}"))
     })?;
     Ok(Some(record.url))
+}
+
+/// Whether this replica is a guest visit rather than a durable member.
+///
+/// A guest installed bounded invite authority and no roster row. Anything that
+/// needs to delegate the spot's access — minting an invite of its own — has to
+/// ask, because a guest cannot: the retained invite is what it holds, and a
+/// mint delegates from durable membership.
+/// Gated like its only caller (`run_invite`, service-worker only), so a native
+/// build doesn't carry it as dead code.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn is_guest_replica(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<bool, TonkWorkerError> {
+    Ok(guest_url(tonk, subject).await?.is_some())
 }
 
 /// Active local membership mode for one mounted repository.

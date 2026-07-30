@@ -205,6 +205,37 @@ impl CustomElement for TonkFab {
     }
 }
 
+/// The membership status the worker reports for a guest visit.
+const MEMBERSHIP_GUEST: &str = "guest";
+
+/// Host attribute marking share as unavailable, styled to dim the control.
+/// Advisory: the control stays clickable, because the worker's refusal is what
+/// carries the reason and the offer to join.
+const SHARE_UNAVAILABLE_ATTR: &str = "data-share-unavailable";
+
+/// Put the bar in the shape this replica's membership calls for.
+///
+/// Both effects follow from the same answer, so they live in one place rather
+/// than drifting apart: a guest gets the join action and a share control marked
+/// unavailable (the worker refuses a guest's mint), a durable member gets
+/// neither. Idempotent, and separate from the fetch in [`attach_membership`] so
+/// the shape is testable without a service worker to answer.
+fn apply_membership(host: &HtmlElement, status: &str) {
+    let guest = status == MEMBERSHIP_GUEST;
+    if let Ok(Some(join)) = host.query_selector(".fab__join") {
+        if guest {
+            let _ = join.remove_attribute("hidden");
+        } else {
+            let _ = join.set_attribute("hidden", "");
+        }
+    }
+    if guest {
+        let _ = host.set_attribute(SHARE_UNAVAILABLE_ATTR, "");
+    } else {
+        let _ = host.remove_attribute(SHARE_UNAVAILABLE_ATTR);
+    }
+}
+
 /// Show a guest-only durable-join action and promote through the worker.
 fn attach_membership(host: &HtmlElement) {
     let Some(space) = host.get_attribute("space") else {
@@ -216,7 +247,7 @@ fn attach_membership(host: &HtmlElement) {
     let Ok(Some(button)) = host.query_selector(".fab__join") else {
         return;
     };
-    let check_button = button.clone();
+    let check_host = host.clone();
     let check_endpoint = endpoint.clone();
     spawn_local(async move {
         let Some(window) = window() else { return };
@@ -230,13 +261,13 @@ fn attach_membership(host: &HtmlElement) {
         let Ok(value) = JsFuture::from(json).await else {
             return;
         };
-        let guest = Reflect::get(&value, &"status".into())
+        let Some(status) = Reflect::get(&value, &"status".into())
             .ok()
             .and_then(|value| value.as_string())
-            .is_some_and(|status| status == "guest");
-        if guest {
-            let _ = check_button.remove_attribute("hidden");
-        }
+        else {
+            return;
+        };
+        apply_membership(&check_host, &status);
     });
 
     let action_button = button.clone();
@@ -1747,6 +1778,43 @@ mod tests {
             "the segment supplies the surface; the action is transparent",
         );
         assert_eq!(border, "0px", "bar copy carries no button border");
+    }
+
+    /// A guest's share attempt is refused by the worker, so the bar can say so
+    /// before the click rather than after a round trip. Same membership answer
+    /// that reveals the join action, so it costs no extra request.
+    ///
+    /// Advisory only — the control stays clickable, because the refusal is
+    /// what carries the reason and the offer to join.
+    #[dialog_common::test]
+    fn it_marks_share_unavailable_for_a_guest_replica() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_inner_html(&crate::markup::fab_html("did:key:zGuest"));
+
+        apply_membership(&host, "guest");
+        let guest_marked = host.has_attribute(SHARE_UNAVAILABLE_ATTR);
+        let join_shown = host
+            .query_selector(".fab__join")
+            .expect("query")
+            .map(|join| !join.has_attribute("hidden"))
+            .unwrap_or(false);
+
+        apply_membership(&host, "durable");
+        let member_marked = host.has_attribute(SHARE_UNAVAILABLE_ATTR);
+        let join_hidden = host
+            .query_selector(".fab__join")
+            .expect("query")
+            .map(|join| join.has_attribute("hidden"))
+            .unwrap_or(false);
+
+        assert!(guest_marked, "a guest's bar marks share unavailable");
+        assert!(join_shown, "and reveals the join action");
+        assert!(!member_marked, "a durable member's share is available");
+        assert!(join_hidden, "and carries no join action");
     }
 
     /// Promotion is a network round trip. Without a disabled state the click

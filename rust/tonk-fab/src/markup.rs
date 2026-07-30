@@ -194,6 +194,18 @@ pub fn fab_html(space_did: &str) -> String {
   <p class="fab__prompt">Turn on sync so the people you share with can open it.</p>
   <wa-button slot="footer" variant="primary" data-enable-sync-confirm>Turn on sync &amp; copy link</wa-button>
   <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
+</wa-dialog>
+<!-- The other repairable refusal: a guest can't mint, because a guest holds
+     the invite it arrived with rather than membership to delegate from. Its
+     own prompt, not the sync one's copy with the words swapped — this spot's
+     sync is fine, and offering to "turn on sync" would be answering a
+     question nobody asked. Confirming joins; the share is a second click,
+     which keeps this prompt's promise the one it can keep. -->
+<wa-dialog id="fab-join-first" label="Join this spot?" class="fab__dialog" style="--width: 28rem">
+  <p class="fab__prompt" data-join-first-detail>You're visiting this spot as a guest.</p>
+  <p class="fab__prompt">Joining makes you a member of it, so you can share it with other people.</p>
+  <wa-button slot="footer" variant="primary" data-join-first-confirm>Join this spot</wa-button>
+  <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
 </wa-dialog>"#,
         space = space_did
     )
