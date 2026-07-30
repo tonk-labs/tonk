@@ -53,7 +53,25 @@ In `flake.nix`, add `pkgs.cargo-release` to `devShellBuildInputs`.
 
 - [ ] **Step 3: Commit**
 
-Commit with Task 2's workflow (see Task 2, Step 4). The commit has to come before the dry runs regardless: cargo-release refuses to plan against an uncommitted tree.
+Commit before verifying. The dry runs in Steps 4-7 need a clean tree: cargo-release checks for uncommitted changes *before* it reaches the branch guard, so on a dirty tree it aborts with `uncommitted changes detected` and never prints the release plan you are trying to inspect.
+
+```bash
+git add release.toml flake.nix
+git commit -m "build(release): let CI cut the release tag
+
+cargo-release cannot push to staging. Two active rulesets cover the
+default branch and require a pull request with no bypass actor, and
+merge commits are disabled, so a PR merge rewrites the SHA and a
+locally created tag could never point at a commit that lands. The bump
+stays local; CI owns the tag.
+
+The remaining settings each override a default that misfires on a
+34-crate shared-version workspace: without them a release is 34
+commits, 34 tags named tonk-cli-v*, and 34 attempted crates.io
+publishes."
+```
+
+Task 2 adds the tag workflow to *this* commit rather than a second one — see Task 2, Step 4.
 
 - [ ] **Step 4: Verify the tool resolves in the devshell**
 
@@ -143,13 +161,13 @@ The whole design rests on this predicate, so simulate it against staging history
 
 Expected: `changed` for the bump pair, `unchanged` for the other. An empty version on either side means the pipeline is broken.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Amend Task 1's commit**
 
-This belongs with Task 1: `push = false`/`tag = false` and this workflow are two halves of one decision, and either alone is broken — the config without the workflow never tags, the workflow without the config double-tags.
+This belongs with Task 1: `push = false`/`tag = false` and this workflow are two halves of one decision, and either alone is broken — the config without the workflow never tags, the workflow without the config double-tags. Task 1 already committed the config so its dry runs had a clean tree to plan against, so add the workflow to that commit instead of creating a second one.
 
 ```bash
-git add release.toml flake.nix .github/workflows/release-tag.yml
-git commit -m "build(release): let CI cut the release tag"
+git add .github/workflows/release-tag.yml
+git commit --amend --no-edit
 ```
 
 ---
