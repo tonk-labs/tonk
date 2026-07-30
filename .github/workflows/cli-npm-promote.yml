@@ -1,0 +1,59 @@
+name: 'CLI npm promote'
+
+# Promoting `stable` re-points the npm `stable` dist-tag at the version
+# stable now holds. It never publishes: because promotion is a
+# fast-forward, that version was already published from `staging` when
+# its `v*` tag fired `cli-npm.yml`. A dist-tag move is metadata only.
+#
+# This lives apart from `cli-npm.yml` deliberately. Adding a branch
+# trigger there would need `if:` guards on all three of its jobs, and one
+# missed guard means publishing on every push to stable.
+on:
+  push:
+    branches:
+      - stable
+  workflow_dispatch:
+
+concurrency:
+  group: cli-npm-promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: 'Point @stable at the promoted version'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+      - name: Promote
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
+            | grep -m1 '^version' \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "stable holds $version"
+          # `stable` is only ever fast-forwarded to a final release. A
+          # prerelease here means the wrong commit was promoted.
+          if [[ "$version" == *-* ]]; then
+            echo "::error::stable holds prerelease $version; promote a final release instead"
+            exit 1
+          fi
+          # The version must already be on the registry. If it is not,
+          # stable holds a release that never published -- worth failing
+          # on rather than silently pointing the tag at nothing.
+          if ! npm view "@tonk/cli@$version" version >/dev/null 2>&1; then
+            echo "::error::@tonk/cli@$version is not published; nothing to promote"
+            exit 1
+          fi
+          # Only the wrapper needs the tag: its optionalDependencies pin
+          # exact platform versions, so `@tonk/cli@stable` resolves the
+          # right platform package on its own.
+          npm dist-tag add "@tonk/cli@$version" stable
+          npm dist-tag ls @tonk/cli
