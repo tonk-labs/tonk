@@ -7,6 +7,11 @@
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod account;
 
+/// Top-document gate sending a signed-out user to sign up, and replaying
+/// what they were doing when it fired.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod account_gate;
+
 /// API client for interacting with the Tonk service worker.
 pub mod api;
 
@@ -24,10 +29,6 @@ pub mod error;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod identity_bridge;
-
-/// Top-document local identity provisioning gate.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub mod identity_gate;
 
 /// Test helpers for integration testing.
 #[cfg(any(test, feature = "helpers"))]

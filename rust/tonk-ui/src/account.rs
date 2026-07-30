@@ -178,6 +178,52 @@ fn show_success(host: &HtmlElement) {
     set_mode(host, "success");
 }
 
+/// Land a signed-in device where it was going.
+///
+/// The gate parks the operation it refused and sends the user here; this is
+/// the other half. [`crate::account_gate::finish`] replays that operation —
+/// which navigates into the space it created or joined — or, with nothing
+/// parked, returns to the `next` this page was opened with. Only when neither
+/// applies does the success panel show, which is the case where the user came
+/// to `/account` on their own.
+///
+/// A replay failure is shown rather than swallowed. The account is real, so
+/// the panel says so; the sentence underneath says the operation is not done.
+fn settle(host: &HtmlElement) {
+    settle_with(host, crate::account_gate::finish());
+}
+
+/// Show the account page to a device that already had an account.
+///
+/// Same shape as [`settle`], minus the return-to-`next` step. A gated user who
+/// signed in on another tab still gets their interrupted operation replayed;
+/// someone who opened their account settings from a spot — the FAB's account
+/// link carries `next` so its Back goes home — stays on the page they asked
+/// for instead of being bounced straight back out of it.
+fn settle_on_load(host: &HtmlElement) {
+    settle_with(host, crate::account_gate::resume_pending());
+}
+
+fn settle_with(
+    host: &HtmlElement,
+    finish: impl std::future::Future<Output = Result<bool, String>> + 'static,
+) {
+    show_success(host);
+    let host = host.clone();
+    spawn_local(async move {
+        match finish.await {
+            // Either it navigated — leave the panel exactly as it is rather
+            // than repainting a page on its way out — or there was nothing to
+            // return to, and the success panel is already the right answer.
+            Ok(_) => {}
+            Err(error) => show_error(
+                &host,
+                format!("You're signed in, but we couldn't finish what you started: {error}"),
+            ),
+        }
+    });
+}
+
 fn show_handoff_success(host: &HtmlElement) {
     if let Ok(Some(message)) = host.query_selector("#account-success-message") {
         message.set_text_content(Some("The command-line profile is connected."));
@@ -385,6 +431,13 @@ fn load_status(host: HtmlElement) {
         load_handoff(host);
         return;
     }
+    // The gate always arrives with a `next`. Without one the user came here
+    // themselves, so anything parked belongs to an attempt they walked away
+    // from — replaying it on this sign-in would create a spot nobody asked
+    // for. Drop it before any ceremony can pick it up.
+    if crate::account_gate::requested_next().is_none() {
+        crate::account_gate::discard_pending();
+    }
     set_busy(&host, true, "Checking this browser…");
     spawn_local(async move {
         if let Err(error) = service(&host).await {
@@ -406,7 +459,7 @@ fn load_status(host: HtmlElement) {
                         set_mode(&host, "setup");
                     }
                     Landing::Success => {
-                        show_success(&host);
+                        settle_on_load(&host);
                         if account_state == Some(AccountStateStatus::Unhydrated) {
                             show_error(
                                 &host,
@@ -606,7 +659,7 @@ async fn complete_remote(
             );
         }
     };
-    show_success(host);
+    settle(host);
     if initialize_name && is_unhydrated(&status) {
         show_error(
             host,
@@ -641,7 +694,7 @@ async fn establish_repository(host: &HtmlElement) -> Result<(), String> {
     let status = crate::api::establish_local_account_repository(descriptor_hex, created)
         .await
         .map_err(|error| error.to_string())?;
-    show_success(host);
+    settle(host);
     if is_unhydrated(&status) {
         show_error(
             host,
@@ -689,8 +742,38 @@ fn prevent_form_navigation(host: &HtmlElement) {
     }
 }
 
+/// Point the "back" links at wherever the user came from.
+///
+/// They read `/` in the markup because that is where someone who opened
+/// `/account` themselves belongs. Arriving through the gate, `/` is the one
+/// place the user was NOT — leaving means abandoning the spot they were
+/// looking at — so the `next` the gate carried wins.
+fn bind_return_links(host: &HtmlElement) {
+    let Some(next) = crate::account_gate::requested_next() else {
+        return;
+    };
+    let Ok(links) = host.query_selector_all("[data-return]") else {
+        return;
+    };
+    for index in 0..links.length() {
+        let Some(link) = links.item(index) else {
+            continue;
+        };
+        let Ok(link) = link.dyn_into::<web_sys::Element>() else {
+            continue;
+        };
+        let _ = link.set_attribute("href", &next);
+        // "Back to Tonk" is the truth for `/`, and a lie for a spot. The
+        // destination changed, so the label has to.
+        if link.text_content().as_deref() == Some("Back to Tonk") {
+            link.set_text_content(Some("Back"));
+        }
+    }
+}
+
 fn bind(host: &HtmlElement) {
     prevent_form_navigation(host);
+    bind_return_links(host);
     on_click(host, "#account-choose-create", |host| {
         clear_error(&host);
         set_mode(&host, "create");
@@ -1120,6 +1203,76 @@ mod tests {
             .unwrap();
         yield_for(0).await;
         host
+    }
+
+    /// Swap the page query for the duration of a test, then put it back.
+    ///
+    /// `requested_next` reads `window.location.search`, and the test page has
+    /// its own — restoring it keeps these tests from leaking into whatever
+    /// runs next in the same document.
+    struct Query(String);
+
+    impl Query {
+        fn set(search: &str) -> Self {
+            let window = window().unwrap();
+            let previous = window.location().search().unwrap_or_default();
+            let path = window.location().pathname().unwrap();
+            window
+                .history()
+                .unwrap()
+                .replace_state_with_url(&JsValue::NULL, "", Some(&format!("{path}{search}")))
+                .unwrap();
+            Self(format!("{path}{previous}"))
+        }
+    }
+
+    impl Drop for Query {
+        fn drop(&mut self) {
+            if let Some(window) = window()
+                && let Ok(history) = window.history()
+            {
+                let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&self.0));
+            }
+        }
+    }
+
+    /// Arriving through the gate, `/` is the one place the user was not.
+    #[dialog_common::test]
+    fn it_returns_the_back_links_to_where_the_gate_came_from() {
+        let _query = Query::set("?next=%2Fspace%2Fdid%3Akey%3AzBack");
+        let host = host();
+        bind_return_links(&host);
+
+        let back = host
+            .query_selector("#account-success [data-return]")
+            .unwrap()
+            .expect("the success panel offers a way back");
+        assert_eq!(
+            back.get_attribute("href").as_deref(),
+            Some("/space/did:key:zBack")
+        );
+        assert_eq!(
+            back.text_content().as_deref(),
+            Some("Back"),
+            "the label has to stop claiming it goes to Tonk"
+        );
+    }
+
+    /// Opened directly, the back links stay pointed at the hub.
+    #[dialog_common::test]
+    fn it_leaves_the_back_links_alone_without_a_next() {
+        let _query = Query::set("");
+        let host = host();
+        bind_return_links(&host);
+
+        assert_eq!(
+            host.query_selector("#account-success [data-return]")
+                .unwrap()
+                .expect("the success panel offers a way back")
+                .get_attribute("href")
+                .as_deref(),
+            Some("/")
+        );
     }
 
     #[dialog_common::test]
