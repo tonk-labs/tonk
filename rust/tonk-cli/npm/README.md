@@ -28,20 +28,46 @@ Publishing runs in CI so every platform binary is built reproducibly —
 you cannot build the Linux binary from a Mac. It is **tag-driven**;
 nothing publishes on a normal push.
 
-1. One-time: add an `NPM_TOKEN` repository secret (an npm automation
-   token for the `@tonk` scope with publish rights).
-2. Bump the version (see below) and land it.
-3. Push a `v<version>` tag matching the Cargo workspace version, e.g.
-   `git tag v0.5.0 && git push origin v0.5.0`. That fires
-   `.github/workflows/cli-npm.yml`, which builds both binaries, stamps
-   the version across all three package.jsons, and publishes the
-   platform packages first, then the wrapper.
+1. One-time: add an `NPM_TOKEN` repository secret — an npm automation
+   token with read-write on the whole **`@tonk` scope**, not a package
+   subset, so platform packages added later keep working. A token
+   scoped too narrowly still passes `npm whoami` and then fails with a
+   bare `404 Not Found - PUT`, which reads like a missing package.
+2. From `staging`, cut the release. This is one command; it bumps the
+   workspace version, commits, tags, and pushes together:
 
-The tag is the source of the version, and the workflow **refuses to
-publish if it disagrees with the Cargo workspace version** — so the
-bump has to land before the tag. The dist-tag is derived, not chosen:
-a prerelease version (`0.5.1-rc.1`) publishes under `next`, anything
-else under `latest`.
+   ```sh
+   cargo release rc        # 0.6.3 -> 0.6.4-rc.1, publishes to @next
+   cargo release release   # 0.6.4-rc.2 -> 0.6.4, publishes to @latest
+   ```
+
+   Dry-run is the default — add `--execute` to act. Releases are
+   refused from any branch but `staging`.
+
+3. Promote by fast-forwarding `stable`. That re-points the `stable`
+   dist-tag; it does not publish again.
+
+The first `rc` fixes the target version, and there is no combined
+level-plus-prerelease flag, so if scope grows mid-cycle, re-target
+explicitly: `cargo release 0.7.0-rc.1`.
+
+### Dist-tags
+
+| Tag | Points at | Install |
+| --- | --- | --- |
+| `next` | prereleases from `staging` | `npx @tonk/cli@next` |
+| `latest` | finals from `staging` | `npx @tonk/cli` |
+| `stable` | the version `stable` holds | `npx @tonk/cli@stable` |
+
+`latest` tracks staging finals rather than `stable` on purpose. `stable`
+moves on milestones, so mapping `latest` onto it would make the default
+install progressively more stale.
+
+The workflow **refuses to publish if the tag disagrees with the Cargo
+workspace version**, and `cargo release` keeps them in step by
+construction. `cli-npm.yml` can also be run manually
+(`gh workflow run cli-npm.yml --ref staging`) to retry a failed publish
+without cutting a new tag; it skips any version already on the registry.
 
 To verify locally without publishing, from `rust/tonk-cli/npm`:
 

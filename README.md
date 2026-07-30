@@ -91,9 +91,9 @@ channel you installed from, so a `TONK_CHANNEL=staging` install keeps
 tracking staging.
 
 If `tonk` was installed some other way, `tonk update` says so instead
-of interfering: use `npm i -g @tonk/cli@latest` for an npm install, or
-your flake for a nix one. Re-running the install command also still
-works:
+of interfering: use `npm i -g @tonk/cli` for an npm install (or
+`@tonk/cli@stable` to pin to the last milestone), or your flake for a
+nix one. Re-running the install command also still works:
 
 ```sh
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
