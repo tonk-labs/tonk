@@ -35,10 +35,32 @@ pub enum CeremonyError {
     Internal(String),
 }
 
+/// The message returned for a uniqueness conflict a ceremony has not
+/// explained in its own terms.
+pub const GENERIC_CONFLICT: &str = "conflicts with existing state";
+
+/// Log a detail that must not be returned to the caller.
+pub fn log_detail(detail: &str) {
+    #[cfg(target_arch = "wasm32")]
+    worker::console_error!("{detail}");
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("{detail}");
+}
+
 impl From<StoreError> for CeremonyError {
+    /// A storage-layer conflict carries the database driver's own text
+    /// ("UNIQUE constraint failed: accounts.email", plus a JS stack trace
+    /// under D1), which names tables and columns and must not reach a
+    /// caller. The detail is logged and replaced with
+    /// [`GENERIC_CONFLICT`]; ceremonies that can say something accurate
+    /// and actionable build [`CeremonyError::Conflict`] directly instead
+    /// of relying on this conversion.
     fn from(err: StoreError) -> Self {
         match err {
-            StoreError::Conflict(msg) => CeremonyError::Conflict(msg),
+            StoreError::Conflict(detail) => {
+                log_detail(&format!("storage conflict: {detail}"));
+                CeremonyError::Conflict(GENERIC_CONFLICT.to_string())
+            }
             StoreError::Internal(msg) => CeremonyError::Internal(msg),
         }
     }

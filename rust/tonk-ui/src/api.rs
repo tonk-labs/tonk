@@ -633,6 +633,35 @@ pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     }
 }
 
+/// The account service's error body: `{"error":{"code":…,"message":…}}`.
+/// Distinct from [`ErrorBody`], whose `kind` the account service does not
+/// emit.
+#[derive(Deserialize)]
+struct AccountErrorBody {
+    error: AccountErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct AccountErrorDetail {
+    message: String,
+}
+
+/// Turn a failed account-service response into an error the account
+/// panel can show verbatim.
+///
+/// The service already curates these messages for display ("an account
+/// already exists for this email address"), so the message alone is what
+/// belongs in front of someone — not the JSON envelope, and not the HTTP
+/// status. An unparseable body falls back to the raw text, which is only
+/// reachable if the service returned something other than its own error
+/// shape.
+fn account_service_error(path: &str, status: reqwest::StatusCode, text: &str) -> TonkUiError {
+    match serde_json::from_str::<AccountErrorBody>(text) {
+        Ok(body) => TonkUiError::Account(body.error.message),
+        Err(_) => TonkUiError::ApiError(format!("POST {path} returned {status}: {text}")),
+    }
+}
+
 /// Ask the account service to email a verification code.
 pub async fn request_account_code(service: &str, email: &str) -> Result<(), TonkUiError> {
     let response = reqwest::Client::new()
@@ -646,9 +675,7 @@ pub async fn request_account_code(service: &str, email: &str) -> Result<(), Tonk
     } else {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /codes returned {status}: {text}"
-        )))
+        Err(account_service_error("/codes", status, &text))
     }
 }
 
@@ -676,9 +703,7 @@ pub async fn submit_account_ceremony(
     } else {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST {path} returned {status}: {text}"
-        )))
+        Err(account_service_error(path, status, &text))
     }
 }
 
@@ -701,5 +726,42 @@ pub async fn resolve_account_link(
         Err(TonkUiError::ApiError(format!(
             "POST /links/resolve returned {status}: {text}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The account panel shows whatever string comes back, so the
+    /// service's curated sentence has to survive on its own — without the
+    /// JSON envelope, the HTTP status, or the "local API" label that
+    /// [`TonkUiError::ApiError`] adds.
+    #[test]
+    fn it_shows_only_the_services_message() {
+        let error = account_service_error(
+            "/accounts",
+            reqwest::StatusCode::CONFLICT,
+            r#"{"error":{"code":"CONFLICT","message":"an account already exists for this email address"}}"#,
+        );
+        assert_eq!(
+            error.to_string(),
+            "an account already exists for this email address"
+        );
+    }
+
+    /// A body that isn't the service's error shape keeps the diagnostic
+    /// context, since there is no curated message to show instead.
+    #[test]
+    fn it_falls_back_to_the_raw_body_for_an_unknown_shape() {
+        let error = account_service_error(
+            "/accounts",
+            reqwest::StatusCode::BAD_GATEWAY,
+            "<html>upstream is down</html>",
+        );
+        assert_eq!(
+            error.to_string(),
+            "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
+        );
     }
 }

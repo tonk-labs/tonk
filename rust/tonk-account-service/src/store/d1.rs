@@ -15,9 +15,9 @@ use worker::wasm_bindgen::JsValue;
 use crate::store::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK,
-    INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_ROOT,
-    SELECT_CODE, SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError,
-    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
+    SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT,
+    SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -274,6 +274,18 @@ impl Store for D1Store {
             .0
             .prepare(SELECT_ACCOUNT_BY_ROOT)
             .bind(&[JsValue::from(root_did)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(Account::from))
+    }
+
+    async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError> {
+        let row: Option<AccountRowD1> = self
+            .0
+            .prepare(SELECT_ACCOUNT_BY_EMAIL)
+            .bind(&[JsValue::from(email)])
             .map_err(map_err)?
             .first(None)
             .await

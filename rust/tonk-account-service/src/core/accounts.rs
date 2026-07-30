@@ -5,7 +5,18 @@
 use crate::core::CeremonyError;
 use crate::core::codes::verify_code;
 use crate::core::delegation::check_device_delegation;
-use crate::store::{NewDevice, Store};
+use crate::store::{NewDevice, Store, StoreError};
+
+/// Returned when the verified email address already belongs to an
+/// account under a different root DID.
+pub const EMAIL_TAKEN: &str = "an account already exists for this email address";
+
+/// Returned when the calling root DID already has an account.
+pub const ROOT_TAKEN: &str = "an account already exists for this passkey";
+
+/// Returned when the first device's DID is already registered, under
+/// this account or another.
+pub const DEVICE_TAKEN: &str = "this browser profile is already registered to an account";
 
 /// A request to create a new account and register its first device.
 pub struct CreateAccount {
@@ -48,9 +59,10 @@ pub async fn create_account<S: Store>(
     )
     .await?;
 
-    let account_id = store
+    let email = request.email.to_lowercase();
+    let created = store
         .create_account_with_device(
-            &request.email.to_lowercase(),
+            &email,
             &request.root_did,
             &request.credential_id,
             &NewDevice {
@@ -61,9 +73,52 @@ pub async fn create_account<S: Store>(
             },
             now,
         )
-        .await?;
+        .await;
 
-    Ok(account_id)
+    match created {
+        Ok(account_id) => Ok(account_id),
+        Err(StoreError::Conflict(detail)) => {
+            Err(explain_conflict(store, request, &email, detail).await)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Turn a uniqueness conflict from
+/// [`Store::create_account_with_device`] into a message the caller can
+/// act on, by asking which of the three unique columns is already taken.
+///
+/// Naming the taken column is safe here and only here: reaching this
+/// point means the caller both verified an emailed code (proving control
+/// of the address) and signed the invocation with the root key (proving
+/// possession of the passkey), so nothing is disclosed that they did not
+/// already supply. The registry is never consulted *before* those
+/// proofs, which is what keeps `POST /accounts` from answering "is this
+/// email registered?" for an arbitrary address.
+///
+/// A lookup that itself fails degrades to the generic message rather
+/// than masking the conflict as an internal error: the request conflicted
+/// either way, and the driver's own text is never a safe substitute.
+async fn explain_conflict<S: Store>(
+    store: &S,
+    request: &CreateAccount,
+    email: &str,
+    detail: String,
+) -> CeremonyError {
+    crate::core::log_detail(&format!("account creation conflict: {detail}"));
+    fn taken<T>(result: Result<Option<T>, StoreError>) -> bool {
+        matches!(result, Ok(Some(_)))
+    }
+    let message = if taken(store.account_by_root(&request.root_did).await) {
+        ROOT_TAKEN
+    } else if taken(store.account_by_email(email).await) {
+        EMAIL_TAKEN
+    } else if taken(store.device_by_did(&request.device_did).await) {
+        DEVICE_TAKEN
+    } else {
+        crate::core::GENERIC_CONFLICT
+    };
+    CeremonyError::Conflict(message.to_string())
 }
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
@@ -228,10 +283,101 @@ mod tests {
             device_name: "phone".into(),
             delegation_hex: hex::encode(chain2.to_bytes().unwrap()),
         };
-        assert!(matches!(
-            create_account(&store, &second, 500).await,
-            Err(CeremonyError::Conflict(_))
-        ));
+        // The message names the email, not the database's own
+        // "UNIQUE constraint failed: accounts.email" text.
+        let error = create_account(&store, &second, 500).await;
+        assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == EMAIL_TAKEN));
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_the_passkey_when_the_root_did_is_already_registered() {
+        // Same root, different email: SQLite reports the `root_did` index
+        // whenever the root collides, even if the email collides too, so
+        // this case must not be explained as a taken email address.
+        let store = SqliteStore::in_memory().unwrap();
+        let sender = CapturedEmail::default();
+        request_code(&store, &sender, "a@x.com", "123456", 100)
+            .await
+            .unwrap();
+        let (root_did, device_did, delegation_hex) = fixture().await;
+        create_account(
+            &store,
+            &CreateAccount {
+                email: "a@x.com".into(),
+                code: "123456".into(),
+                root_did: root_did.clone(),
+                credential_id: "cred".into(),
+                device_did: device_did.clone(),
+                device_name: "laptop".into(),
+                delegation_hex: delegation_hex.clone(),
+            },
+            200,
+        )
+        .await
+        .unwrap();
+
+        request_code(&store, &sender, "b@x.com", "654321", 400)
+            .await
+            .unwrap();
+        let again = CreateAccount {
+            email: "b@x.com".into(),
+            code: "654321".into(),
+            root_did,
+            credential_id: "cred".into(),
+            device_did,
+            device_name: "laptop".into(),
+            delegation_hex,
+        };
+        let error = create_account(&store, &again, 500).await;
+        assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == ROOT_TAKEN));
+    }
+
+    #[dialog_common::test]
+    async fn it_never_returns_the_database_error_text_for_a_conflict() {
+        // The store's own conflict text names tables and columns (and,
+        // under D1, carries a JS stack trace). No conflict message from
+        // this ceremony may contain any of it.
+        let store = SqliteStore::in_memory().unwrap();
+        let sender = CapturedEmail::default();
+        request_code(&store, &sender, "a@x.com", "123456", 100)
+            .await
+            .unwrap();
+        let (root_did, device_did, delegation_hex) = fixture().await;
+        let request = CreateAccount {
+            email: "a@x.com".into(),
+            code: "123456".into(),
+            root_did,
+            credential_id: "cred".into(),
+            device_did,
+            device_name: "laptop".into(),
+            delegation_hex,
+        };
+        create_account(&store, &request, 200).await.unwrap();
+
+        request_code(&store, &sender, "a@x.com", "654321", 400)
+            .await
+            .unwrap();
+        let request = CreateAccount {
+            code: "654321".into(),
+            ..request
+        };
+        let Err(CeremonyError::Conflict(message)) = create_account(&store, &request, 500).await
+        else {
+            panic!("expected a conflict");
+        };
+        for leak in [
+            "UNIQUE constraint",
+            "constraint failed",
+            "accounts.",
+            "devices.",
+            "SQLITE_",
+            "D1Error",
+        ] {
+            assert!(
+                !message.contains(leak),
+                "conflict message leaked {leak:?}: {message}"
+            );
+        }
     }
 
     #[dialog_common::test]
@@ -274,10 +420,8 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
         };
-        assert!(matches!(
-            create_account(&store, &request, 200).await,
-            Err(CeremonyError::Conflict(_))
-        ));
+        let error = create_account(&store, &request, 200).await;
+        assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == DEVICE_TAKEN));
         assert!(store.account_by_root(&root_did).await.unwrap().is_none());
     }
 }

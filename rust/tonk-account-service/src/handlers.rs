@@ -52,10 +52,7 @@ pub fn ceremony_error(err: crate::core::CeremonyError) -> crate::error::ServiceE
         | CeremonyError::Unauthorized(msg)
         | CeremonyError::Forbidden(msg) => msg.clone(),
         CeremonyError::Internal(detail) => {
-            #[cfg(target_arch = "wasm32")]
-            worker::console_error!("internal error: {detail}");
-            #[cfg(not(target_arch = "wasm32"))]
-            eprintln!("internal error: {detail}");
+            crate::core::log_detail(&format!("internal error: {detail}"));
             "internal error".to_string()
         }
     };

@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
     DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest,
-    NewDevice, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
     SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE,
     UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
@@ -174,6 +174,21 @@ impl Store for SqliteStore {
     async fn account_by_root(&self, root_did: &str) -> Result<Option<Account>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.query_row(SELECT_ACCOUNT_BY_ROOT, params![root_did], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                root_did: row.get(2)?,
+                credential_id: row.get(3)?,
+                created_at: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .optional()
+        .map_err(map_err)
+    }
+
+    async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.query_row(SELECT_ACCOUNT_BY_EMAIL, params![email], |row| {
             Ok(Account {
                 id: row.get(0)?,
                 email: row.get(1)?,

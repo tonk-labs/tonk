@@ -29,6 +29,82 @@ async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Ve
         .unwrap()
 }
 
+/// Creating a second account for an already-registered email address
+/// returns 409 with a message meant for the person reading it, and none
+/// of the database's own constraint text.
+#[dialog_common::test]
+async fn it_explains_an_already_registered_email_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+    let email = "person@example.com";
+
+    let latest_code = || {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .rfind(|(to, _)| to == email)
+            .map(|(_, code): &(String, String)| code.clone())
+            .expect("a code was sent")
+    };
+    let request_code = async |client: &reqwest::Client| {
+        client
+            .post(format!("{base}/codes"))
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .unwrap()
+    };
+    let create = async |client: &reqwest::Client, prf: [u8; 32], seed: [u8; 32], code: String| {
+        let root = tonk_identity::derive::derive_root_signer(&prf)
+            .await
+            .unwrap();
+        let device = Ed25519Signer::import(&seed).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+            .await
+            .unwrap();
+        let ceremony = tonk_identity::ceremony::create_account(
+            root,
+            email.into(),
+            code,
+            "cred".into(),
+            device.did(),
+            "laptop".into(),
+            hex::encode(grant.to_bytes().unwrap()),
+        )
+        .await
+        .unwrap();
+        client
+            .post(format!("{base}/accounts"))
+            .body(hex::decode(ceremony.invocation_hex).unwrap())
+            .send()
+            .await
+            .unwrap()
+    };
+
+    assert_eq!(request_code(&client).await.status(), 200);
+    let response = create(&client, ROOT_PRF, DEVICE_SEED, latest_code()).await;
+    assert_eq!(response.status(), 201);
+
+    // A different passkey claiming the same address: the email is taken,
+    // and the root DID is not, so the conflict is about the email.
+    assert_eq!(request_code(&client).await.status(), 200);
+    let response = create(&client, [10u8; 32], [12u8; 32], latest_code()).await;
+    assert_eq!(response.status(), 409);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "CONFLICT");
+    assert_eq!(
+        body["error"]["message"],
+        tonk_account_service::core::accounts::EMAIL_TAKEN
+    );
+    let rendered = body.to_string();
+    for leak in ["UNIQUE constraint", "accounts.", "SQLITE_", "D1Error"] {
+        assert!(
+            !rendered.contains(leak),
+            "response leaked {leak:?}: {rendered}"
+        );
+    }
+}
+
 #[dialog_common::test]
 async fn it_drives_the_full_ceremony_over_http() {
     let server = AccountServer::start().await;

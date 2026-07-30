@@ -165,6 +165,15 @@ pub trait Store {
     /// Look up an account by root DID.
     async fn account_by_root(&self, root_did: &str) -> Result<Option<Account>, StoreError>;
 
+    /// Look up an account by email address. Callers are responsible for
+    /// lowercasing, as the column stores lowercased addresses.
+    ///
+    /// Reserved for explaining a uniqueness conflict to a caller who has
+    /// already proven control of the address, never for answering
+    /// "is this email registered?" before that proof — see
+    /// [`crate::core::accounts::create_account`].
+    async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError>;
+
     /// Atomically create a new account and register its first device.
     ///
     /// Either both rows are created or neither is: a conflict on the
@@ -247,6 +256,10 @@ pub const INSERT_ACCOUNT: &str =
 /// SQL: look up an account by root DID.
 pub const SELECT_ACCOUNT_BY_ROOT: &str =
     "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE root_did = ?1";
+
+/// SQL: look up an account by email address.
+pub const SELECT_ACCOUNT_BY_EMAIL: &str =
+    "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE email = ?1";
 
 /// SQL: register a device under an account.
 pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
