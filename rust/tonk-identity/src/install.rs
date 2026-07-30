@@ -168,6 +168,9 @@ fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue
         &"delegationHex".into(),
         &ceremony.delegation_hex.into(),
     )?;
+    if let Some(descriptor_hex) = ceremony.descriptor_hex {
+        Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
+    }
     Reflect::set(
         &result,
         &"invocationHex".into(),
@@ -195,6 +198,7 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     let prf = evaluated
         .prf_output
         .ok_or_else(|| JsValue::from_str("the authenticator returned no PRF output"))?;
+    let remote = string_property(&input, "remote")?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
@@ -213,6 +217,7 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
             device_did,
             device_name,
             delegation_hex,
+            remote,
         )
         .await
         .map_err(js_error)?,
@@ -241,6 +246,30 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
     )?;
     Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
     Ok(result)
+}
+
+async fn establish_account_repository(input: JsValue) -> Result<JsValue, JsValue> {
+    let remote = string_property(&input, "remote")?;
+    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+    let ceremony = crate::ceremony::establish_account_repository(root, remote)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
+    Reflect::set(
+        &result,
+        &"descriptorHex".into(),
+        &ceremony.descriptor_hex.into(),
+    )?;
+    Reflect::set(
+        &result,
+        &"invocationHex".into(),
+        &ceremony.invocation_hex.into(),
+    )?;
+    Ok(result.into())
 }
 
 async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
@@ -323,6 +352,16 @@ pub fn install() {
     );
     link_device.forget();
 
+    let establish = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(establish_account_repository(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"establishAccountRepository".into(),
+        establish.as_ref().unchecked_ref(),
+    );
+    establish.forget();
+
     let complete_link = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(complete_link(input))
     });
@@ -365,6 +404,7 @@ mod tests {
             "deriveRootDid",
             "createAccount",
             "linkDevice",
+            "establishAccountRepository",
             "completeLink",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();

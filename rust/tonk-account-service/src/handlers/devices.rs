@@ -112,6 +112,12 @@ async fn handle_link_inner(
     let device_name = required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?;
     let delegation_hex =
         required_string(&caller.arguments, "delegation").map_err(ceremony_error)?;
+    let descriptor = account.repository_descriptor.as_ref().ok_or_else(|| {
+        ceremony_error(crate::core::CeremonyError::Conflict(
+            tonk_account::UNESTABLISHED_ACCOUNT_CONFLICT.to_string(),
+        ))
+    })?;
+    let descriptor_hex = hex::encode(descriptor);
     let now = Date::now().as_millis() / 1000;
 
     register_device(
@@ -125,7 +131,7 @@ async fn handle_link_inner(
     .await
     .map_err(ceremony_error)?;
 
-    Response::from_json(&serde_json::json!({})).map_err(|err| {
+    Response::from_json(&serde_json::json!({ "descriptorHex": descriptor_hex })).map_err(|err| {
         ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
     })
 }

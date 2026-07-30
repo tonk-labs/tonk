@@ -103,7 +103,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
 
     // Replicas that already carry a `kind` — these match the full
     // concept. Anything in `all` but not here needs stamping.
-    let already: HashSet<_> = meta
+    let kinded: Vec<Replica> = meta
         .handle()
         .query()
         .select(Query::<Replica> {
@@ -115,9 +115,12 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
         .perform(&tonk.operator)
         .try_vec()
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("kinded-replica query failed: {e:?}")))?
-        .into_iter()
-        .map(|replica| replica.this)
+        .map_err(|e| TonkWorkerError::Internal(format!("kinded-replica query failed: {e:?}")))?;
+    let already: HashSet<_> = kinded.iter().map(|replica| replica.this.clone()).collect();
+    let account: HashSet<_> = kinded
+        .iter()
+        .filter(|replica| replica.kind == Replica::account_kind())
+        .map(|replica| replica.this.clone())
         .collect();
 
     // Replicas that already carry a `status` (the `(this, status)`
@@ -167,7 +170,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
             touched = true;
         }
 
-        if !has_status.contains(&replica.this) {
+        if !account.contains(&replica.this) && !has_status.contains(&replica.this) {
             transaction =
                 transaction.assert(SpaceStatus::new(replica.this.clone(), initialized.clone()));
             report.status += 1;
@@ -197,4 +200,56 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
         report.status
     );
     Ok(report)
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use std::sync::Arc;
+
+    use dialog_credentials::Ed25519Signer;
+    use dialog_varsig::Principal as _;
+    use tokio::sync::RwLock;
+
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_leaves_account_replicas_kind_stamped_and_status_free() {
+        let tonk = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[75; 32]).await.unwrap().did();
+        tonk.reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .transaction()
+            .assert(Replica::account(tonk.profile.did(), account))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        let state = Arc::new(RwLock::new(tonk));
+
+        let report = run_migration(state.clone()).await.unwrap();
+        assert_eq!(report.migrated, 0);
+        assert_eq!(report.status, 0);
+
+        let tonk = state.read().await;
+        let rows: Vec<SpaceStatus> = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap()
+            .handle()
+            .query()
+            .select(Query::<SpaceStatus> {
+                this: Term::var("this"),
+                status: Term::var("status"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+    }
 }

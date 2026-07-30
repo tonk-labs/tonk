@@ -1,10 +1,11 @@
-//! The account creation ceremony: consume a verified email code, check
-//! the presented `root → device` delegation, then register the account
-//! and its first device.
+//! The account creation ceremony: check the presented descriptor and
+//! `root → device` delegation, consume the verified email code, then
+//! register the account and its first device.
 
 use crate::core::CeremonyError;
 use crate::core::codes::verify_code;
 use crate::core::delegation::check_device_delegation;
+use crate::core::descriptor::validate_descriptor;
 use crate::store::{NewDevice, Store, StoreError};
 
 /// Returned when the verified email address already belongs to an
@@ -34,16 +35,20 @@ pub struct CreateAccount {
     pub device_name: String,
     /// Hex-encoded `root → device` delegation chain.
     pub delegation_hex: String,
+    /// Hex-encoded root-signed account repository descriptor.
+    pub repository_descriptor_hex: String,
 }
 
 /// Create a new account and register its first device.
 ///
-/// Verifies `request.code` first, consuming it, then checks the
-/// presented delegation before touching the account registry. The
-/// email address is lowercased before being stored. The account and its
-/// first device are created atomically: a conflict on the device DID
-/// (for example, an attacker who has pre-registered a delegation to the
-/// victim's device DID under a different account) rolls back the
+/// Checks the presented descriptor and delegation before consuming
+/// `request.code`. Both checks are purely local, and [`verify_code`] is
+/// one-shot: validating after it would let a malformed request burn the
+/// user's code and leave them waiting out the resend cooldown for a new
+/// one. The email address is lowercased before being stored. The account
+/// and its first device are created atomically: a conflict on the device
+/// DID (for example, an attacker who has pre-registered a delegation to
+/// the victim's device DID under a different account) rolls back the
 /// account row too, rather than stranding a zero-device account that
 /// has permanently burned the email and root DID.
 pub async fn create_account<S: Store>(
@@ -51,13 +56,15 @@ pub async fn create_account<S: Store>(
     request: &CreateAccount,
     now: u64,
 ) -> Result<i64, CeremonyError> {
-    verify_code(store, &request.email, &request.code, now).await?;
+    let repository_descriptor =
+        validate_descriptor(&request.repository_descriptor_hex, &request.root_did).await?;
     let delegation_cid = check_device_delegation(
         &request.delegation_hex,
         &request.root_did,
         &request.device_did,
     )
     .await?;
+    verify_code(store, &request.email, &request.code, now).await?;
 
     let email = request.email.to_lowercase();
     let created = store
@@ -65,6 +72,7 @@ pub async fn create_account<S: Store>(
             &email,
             &request.root_did,
             &request.credential_id,
+            &repository_descriptor,
             &NewDevice {
                 device_did: request.device_did.clone(),
                 delegation_cid,
@@ -132,8 +140,8 @@ mod tests {
     const ROOT_PRF: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [8u8; 32];
 
-    async fn fixture() -> (String, String, String) {
-        // (root_did, device_did, delegation_hex)
+    async fn fixture() -> (String, String, String, String) {
+        // (root_did, device_did, delegation_hex, descriptor_hex)
         let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
             .await
             .unwrap();
@@ -148,13 +156,25 @@ mod tests {
             use dialog_varsig::Principal;
             device.did().to_string()
         };
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(
+            &root,
+            "https://accounts.example/ucan/",
+        )
+        .await
+        .unwrap();
+        let descriptor_hex = hex::encode(descriptor.bytes());
         let chain = tonk_identity::delegation::mint_device_delegation(root, &{
             use dialog_varsig::Principal;
             device.did()
         })
         .await
         .unwrap();
-        (root_did, device_did, hex::encode(chain.to_bytes().unwrap()))
+        (
+            root_did,
+            device_did,
+            hex::encode(chain.to_bytes().unwrap()),
+            descriptor_hex,
+        )
     }
 
     #[dialog_common::test]
@@ -164,7 +184,7 @@ mod tests {
         request_code(&store, &sender, "a@x.com", "123456", 100)
             .await
             .unwrap();
-        let (root_did, device_did, delegation_hex) = fixture().await;
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
             code: "123456".into(),
@@ -173,6 +193,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex,
         };
         let id = create_account(&store, &request, 200).await.unwrap();
         let account = store.account_by_root(&root_did).await.unwrap().unwrap();
@@ -189,7 +210,7 @@ mod tests {
         request_code(&store, &sender, "a@x.com", "123456", 100)
             .await
             .unwrap();
-        let (_, device_did, delegation_hex) = fixture().await;
+        let (_, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let other_root = {
             use dialog_varsig::Principal;
             tonk_identity::derive::derive_root_signer(&[9u8; 32])
@@ -206,6 +227,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex,
         };
         assert!(matches!(
             create_account(&store, &request, 200).await,
@@ -216,7 +238,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_a_bad_code_before_touching_the_registry() {
         let store = SqliteStore::in_memory().unwrap();
-        let (root_did, device_did, delegation_hex) = fixture().await;
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
             code: "000000".into(),
@@ -225,6 +247,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex,
         };
         assert!(matches!(
             create_account(&store, &request, 200).await,
@@ -234,13 +257,83 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_keeps_the_code_usable_after_a_malformed_descriptor() {
+        // The code is one-shot and rate limited behind a resend cooldown, so a
+        // locally detectable descriptor fault must not consume it.
+        let store = SqliteStore::in_memory().unwrap();
+        let sender = CapturedEmail::default();
+        request_code(&store, &sender, "a@x.com", "123456", 100)
+            .await
+            .unwrap();
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
+        let mut request = CreateAccount {
+            email: "a@x.com".into(),
+            code: "123456".into(),
+            root_did: root_did.clone(),
+            credential_id: "cred".into(),
+            device_did,
+            device_name: "laptop".into(),
+            delegation_hex,
+            repository_descriptor_hex,
+        };
+        let good_descriptor = request.repository_descriptor_hex.clone();
+        request.repository_descriptor_hex = "not hex".into();
+        assert!(matches!(
+            create_account(&store, &request, 200).await,
+            Err(CeremonyError::Invalid(_))
+        ));
+
+        request.repository_descriptor_hex = good_descriptor;
+        create_account(&store, &request, 200).await.unwrap();
+        assert!(store.account_by_root(&root_did).await.unwrap().is_some());
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_code_usable_after_a_mismatched_delegation() {
+        // Same one-shot reasoning as the descriptor: the delegation check is
+        // local, so it runs before the code is spent.
+        let store = SqliteStore::in_memory().unwrap();
+        let sender = CapturedEmail::default();
+        request_code(&store, &sender, "a@x.com", "123456", 100)
+            .await
+            .unwrap();
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
+        let mut request = CreateAccount {
+            email: "a@x.com".into(),
+            code: "123456".into(),
+            root_did: root_did.clone(),
+            credential_id: "cred".into(),
+            device_did: device_did.clone(),
+            device_name: "laptop".into(),
+            delegation_hex,
+            repository_descriptor_hex,
+        };
+        request.device_did = {
+            use dialog_varsig::Principal;
+            dialog_credentials::Ed25519Signer::import(&[13u8; 32])
+                .await
+                .unwrap()
+                .did()
+                .to_string()
+        };
+        assert!(matches!(
+            create_account(&store, &request, 200).await,
+            Err(CeremonyError::Invalid(_))
+        ));
+
+        request.device_did = device_did;
+        create_account(&store, &request, 200).await.unwrap();
+        assert!(store.account_by_root(&root_did).await.unwrap().is_some());
+    }
+
+    #[dialog_common::test]
     async fn it_rejects_a_second_account_for_the_same_email() {
         let store = SqliteStore::in_memory().unwrap();
         let sender = CapturedEmail::default();
         request_code(&store, &sender, "a@x.com", "123456", 100)
             .await
             .unwrap();
-        let (root_did, device_did, delegation_hex) = fixture().await;
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let first = CreateAccount {
             email: "a@x.com".into(),
             code: "123456".into(),
@@ -249,6 +342,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex,
         };
         create_account(&store, &first, 200).await.unwrap();
 
@@ -265,6 +359,12 @@ mod tests {
             use dialog_varsig::Principal;
             (root2.did().to_string(), device2.did().to_string())
         };
+        let descriptor2 = tonk_account::AccountRepositoryDescriptorV1::sign(
+            &root2,
+            "https://accounts.example/ucan/",
+        )
+        .await
+        .unwrap();
         let chain2 = {
             use dialog_varsig::Principal;
             tonk_identity::delegation::mint_device_delegation(root2, &device2.did())
@@ -282,6 +382,7 @@ mod tests {
             device_did: device2_did,
             device_name: "phone".into(),
             delegation_hex: hex::encode(chain2.to_bytes().unwrap()),
+            repository_descriptor_hex: hex::encode(descriptor2.bytes()),
         };
         // The message names the email, not the database's own
         // "UNIQUE constraint failed: accounts.email" text.
@@ -299,7 +400,7 @@ mod tests {
         request_code(&store, &sender, "a@x.com", "123456", 100)
             .await
             .unwrap();
-        let (root_did, device_did, delegation_hex) = fixture().await;
+        let (root_did, device_did, delegation_hex, descriptor_hex) = fixture().await;
         create_account(
             &store,
             &CreateAccount {
@@ -310,6 +411,7 @@ mod tests {
                 device_did: device_did.clone(),
                 device_name: "laptop".into(),
                 delegation_hex: delegation_hex.clone(),
+                repository_descriptor_hex: descriptor_hex.clone(),
             },
             200,
         )
@@ -327,6 +429,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex: descriptor_hex,
         };
         let error = create_account(&store, &again, 500).await;
         assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == ROOT_TAKEN));
@@ -342,7 +445,7 @@ mod tests {
         request_code(&store, &sender, "a@x.com", "123456", 100)
             .await
             .unwrap();
-        let (root_did, device_did, delegation_hex) = fixture().await;
+        let (root_did, device_did, delegation_hex, descriptor_hex) = fixture().await;
         let request = CreateAccount {
             email: "a@x.com".into(),
             code: "123456".into(),
@@ -351,6 +454,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex: descriptor_hex,
         };
         create_account(&store, &request, 200).await.unwrap();
 
@@ -387,7 +491,7 @@ mod tests {
         request_code(&store, &sender, "a@x.com", "123456", 100)
             .await
             .unwrap();
-        let (root_did, device_did, delegation_hex) = fixture().await;
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
 
         // Pre-register the fixture's device DID under a different
         // account, as an attacker front-running the victim's device DID
@@ -419,6 +523,7 @@ mod tests {
             device_did,
             device_name: "laptop".into(),
             delegation_hex,
+            repository_descriptor_hex,
         };
         let error = create_account(&store, &request, 200).await;
         assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == DEVICE_TAKEN));

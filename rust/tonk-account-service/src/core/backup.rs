@@ -56,6 +56,7 @@ mod tests {
             email: format!("account-{id}@x.com"),
             root_did: root_did.to_string(),
             credential_id: "cred".to_string(),
+            repository_descriptor: None,
             created_at: 100,
         }
     }

@@ -369,6 +369,11 @@ pub struct TonkState {
     /// whether we have observed it alive. The stale-client sweep reaps
     /// born-then-died clients from here. See [`crate::router::ClientRegistry`].
     pub clients: crate::router::ClientRegistry,
+    /// Routing keys the hidden account repository answers to, resolved lazily.
+    /// Consulted by the middleware that keeps that repository off the generic
+    /// HTTP surface, so it sits on the hot path for every repository request.
+    /// See [`crate::router::AccountKeys`].
+    pub account_keys: crate::router::AccountKeys,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -1709,6 +1714,7 @@ impl TonkServiceWorker {
             commands: crate::router::command_registry(),
             sync_queue: Default::default(),
             clients: Default::default(),
+            account_keys: Default::default(),
         };
         bootstrap_profile(&state)
             .await
@@ -1736,6 +1742,7 @@ impl TonkServiceWorker {
             let state = state.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let tonk = state.read().await;
+                crate::router::account_state::ensure_account_state(&tonk).await;
                 crate::router::restore::restore_spaces(&tonk).await;
             });
         }

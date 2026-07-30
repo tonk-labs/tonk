@@ -1520,6 +1520,11 @@ pub(crate) async fn mount_replica(
     revocation_url: Option<&str>,
 ) -> Result<Repository<Credential>, TonkWorkerError> {
     let key = subject.repo_key().to_owned();
+    if super::account_state::is_account_key(tonk, &key).await {
+        return Err(TonkWorkerError::Forbidden(
+            "account system repository cannot be joined as a user space".to_string(),
+        ));
+    }
 
     // Create a verifier-only credential keyed to the subject DID, then
     // mount it as a local replica at the routing key (so path ==
@@ -1612,7 +1617,7 @@ pub(crate) async fn find_replica_for_subject(
             profile: Term::from(tonk_schema::domain::replica::Profile(
                 tonk.profile.did().this(),
             )),
-            kind: Term::var("kind"),
+            kind: Term::from(Replica::repository_kind()),
         })
         .perform(&tonk.operator)
         .try_vec()

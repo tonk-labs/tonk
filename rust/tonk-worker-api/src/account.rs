@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Attach provider services to an already persisted local root.
+/// Attach provider services to an already persisted local root, naming the
+/// account repository this root owns.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountLinkRequest {
@@ -14,6 +15,21 @@ pub struct AccountLinkRequest {
     pub credential_id: String,
     /// Exact existing root → device grant bytes.
     pub delegation_hex: String,
+    /// Hex-encoded root-signed account repository descriptor.
+    pub descriptor_hex: String,
+    /// Seed the current profile name only for a new-account creation winner.
+    #[serde(default)]
+    pub initialize_name: bool,
+}
+
+/// Persist the service-selected descriptor for a legacy account link.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRepositoryEstablishRequest {
+    /// Exact descriptor winner returned by the account service.
+    pub descriptor_hex: String,
+    /// Whether this ceremony created the service-side descriptor winner.
+    pub created: bool,
 }
 
 /// Local identity and provider attachment state.
@@ -44,7 +60,39 @@ pub enum AccountStatus {
         device_did: String,
         /// Attached provider base URL.
         provider: String,
+        /// Configuration/hydration state of the account repository.
+        account_state: tonk_account::AccountStateStatus,
     },
+}
+
+/// Request to change the authoritative account display name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDisplayNameRequest {
+    /// New non-blank display name.
+    pub name: String,
+}
+
+/// Durable projections changed by account-state convergence.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountConvergenceReport {
+    /// Whether the device-local profile name cache changed.
+    pub profile_changed: bool,
+    /// Real-space routing keys whose durable roster changed.
+    pub changed_keys: Vec<String>,
+    /// Real-space routing keys that could not be checked or updated.
+    pub failed_keys: Vec<String>,
+}
+
+/// Result of an authoritative account display-name write.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDisplayNameResponse {
+    /// Name committed to the account repository.
+    pub name: String,
+    /// Idempotent projection work completed after the account commit.
+    pub convergence: AccountConvergenceReport,
 }
 
 /// One device registered under the attached provider account.
@@ -108,16 +156,61 @@ mod tests {
     use super::*;
 
     #[dialog_common::test]
+    fn it_serializes_repository_setup_requests_in_camel_case() {
+        let link = serde_json::to_value(AccountLinkRequest {
+            provider: "https://accounts.example".into(),
+            root_did: "did:key:root".into(),
+            credential_id: "cred".into(),
+            delegation_hex: "aa".into(),
+            descriptor_hex: "bb".into(),
+            initialize_name: true,
+        })
+        .unwrap();
+        assert_eq!(link["credentialId"], "cred");
+        assert_eq!(link["delegationHex"], "aa");
+        assert_eq!(link["descriptorHex"], "bb");
+        assert_eq!(link["initializeName"], true);
+
+        let establish = serde_json::to_value(AccountRepositoryEstablishRequest {
+            descriptor_hex: "cc".into(),
+            created: false,
+        })
+        .unwrap();
+        assert_eq!(establish["descriptorHex"], "cc");
+        assert_eq!(establish["created"], false);
+    }
+
+    #[dialog_common::test]
     fn it_serializes_account_status_in_camel_case() {
         let json = serde_json::to_value(AccountStatus::Registered {
             root_did: "did:key:root".into(),
             device_did: "did:key:device".into(),
             provider: "https://accounts.example".into(),
+            account_state: tonk_account::AccountStateStatus::Unhydrated,
         })
         .unwrap();
         assert_eq!(json["status"], "registered");
         assert_eq!(json["rootDid"], "did:key:root");
         assert_eq!(json["deviceDid"], "did:key:device");
+        assert_eq!(json["accountState"], "unhydrated");
+        assert!(json.get("root_did").is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_display_name_results_in_camel_case() {
+        let value = serde_json::to_value(AccountDisplayNameResponse {
+            name: "Alice".into(),
+            convergence: AccountConvergenceReport {
+                profile_changed: true,
+                changed_keys: vec!["one".into()],
+                failed_keys: vec!["two".into()],
+            },
+        })
+        .unwrap();
+        assert_eq!(value["name"], "Alice");
+        assert_eq!(value["convergence"]["profileChanged"], true);
+        assert_eq!(value["convergence"]["changedKeys"][0], "one");
+        assert_eq!(value["convergence"]["failedKeys"][0], "two");
     }
 
     #[dialog_common::test]

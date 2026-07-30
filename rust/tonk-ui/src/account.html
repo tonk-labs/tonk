@@ -64,6 +64,13 @@
     <a class="account__button account__button--quiet" href="/account">Cancel</a>
   </section>
 
+  <section id="account-setup" class="account__panel" hidden>
+    <h2>Finish account setup</h2>
+    <p class="account__message">This account predates synchronized account state. Confirm once with your passkey to establish its shared repository.</p>
+    <button id="account-setup-submit" class="account__button" type="button">Finish account setup</button>
+    <p class="account__hint">The first accepted setup chooses one repository location for every device. Retries always recover that same choice.</p>
+  </section>
+
   <section id="account-success" class="account__panel" hidden>
     <p id="account-success-message" class="account__status">You're logged in.</p>
     <button id="account-manage-devices" class="account__button account__button--secondary" type="button">Manage devices</button>

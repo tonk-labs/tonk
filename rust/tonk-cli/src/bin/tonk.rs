@@ -1212,6 +1212,15 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, spot: Option<&str
     }
 }
 
+/// How `tonk account` prints the account repository's lifecycle state.
+fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str {
+    match status {
+        tonk_account::AccountStateStatus::Unconfigured => "unconfigured",
+        tonk_account::AccountStateStatus::Unhydrated => "unhydrated",
+        tonk_account::AccountStateStatus::Ready => "ready",
+    }
+}
+
 async fn account_op(command: AccountCommand) -> ExitCode {
     let profile = match identity::open().await {
         Ok(profile) => profile,
@@ -1234,8 +1243,12 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 root_did,
                 device_did,
                 provider,
+                account_state,
             }) => {
-                println!("root: {root_did}\nprovider: {provider}\ndevice: {device_did}");
+                println!(
+                    "root: {root_did}\nprovider: {provider}\ndevice: {device_did}\naccount state: {}",
+                    account_state_label(account_state)
+                );
                 ExitCode::Success
             }
             Err(error) => print_error(error.to_string()),
@@ -1258,9 +1271,14 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         {
             Ok(outcome) => {
                 println!(
-                    "linked\nroot: {}\ndevice: {}",
-                    outcome.root_did, outcome.device_did
+                    "linked\nroot: {}\ndevice: {}\naccount state: {}",
+                    outcome.root_did,
+                    outcome.device_did,
+                    account_state_label(outcome.account_state)
                 );
+                if let Some(warning) = outcome.warning {
+                    eprintln!("warning: account repository is not synchronized: {warning}");
+                }
                 ExitCode::Success
             }
             Err(error) => print_error(error.to_string()),

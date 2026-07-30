@@ -18,6 +18,8 @@ pub struct Account {
     /// Opaque identifier for the passkey credential used to create the
     /// account.
     pub credential_id: String,
+    /// Exact root-signed account repository descriptor, when established.
+    pub repository_descriptor: Option<Vec<u8>>,
     /// Creation time, as a unix timestamp in seconds.
     pub created_at: u64,
 }
@@ -114,6 +116,8 @@ pub struct LinkRequest {
     pub device_name: String,
     /// Completed root-to-device delegation, until it is consumed once.
     pub delegation_hex: Option<String>,
+    /// Account repository descriptor copied alongside the delegation.
+    pub descriptor_hex: Option<String>,
     /// Creation time, as unix seconds.
     pub created_at: u64,
     /// Expiry time, as unix seconds.
@@ -186,9 +190,17 @@ pub trait Store {
         email: &str,
         root_did: &str,
         credential_id: &str,
+        repository_descriptor: &[u8],
         device: &NewDevice,
         created_at: u64,
     ) -> Result<i64, StoreError>;
+
+    /// Establish one immutable repository descriptor and return `(winner, created)`.
+    async fn establish_repository_descriptor(
+        &self,
+        account_id: i64,
+        candidate: &[u8],
+    ) -> Result<(Vec<u8>, bool), StoreError>;
 
     /// Register a device under an account. Returns `StoreError::Conflict`
     /// if the device DID is already registered.
@@ -222,11 +234,16 @@ pub trait Store {
         token_hash: &str,
         device: &Device,
         delegation_hex: &str,
+        descriptor_hex: &str,
         now: u64,
     ) -> Result<bool, StoreError>;
 
     /// Atomically retrieve and consume a completed handoff once.
-    async fn consume_link(&self, token_hash: &str, now: u64) -> Result<Option<String>, StoreError>;
+    async fn consume_link(
+        &self,
+        token_hash: &str,
+        now: u64,
+    ) -> Result<Option<(String, String)>, StoreError>;
 }
 
 /// SQL: look up the pending code row for an email.
@@ -253,13 +270,27 @@ pub const DELETE_CODE: &str = "DELETE FROM email_codes WHERE email = ?1";
 pub const INSERT_ACCOUNT: &str =
     "INSERT INTO accounts (email, root_did, credential_id, created_at) VALUES (?1, ?2, ?3, ?4)";
 
+/// SQL: insert a new account with its repository descriptor.
+pub const INSERT_ACCOUNT_WITH_DESCRIPTOR: &str = "INSERT INTO accounts \
+    (email, root_did, credential_id, repository_descriptor, created_at) \
+    VALUES (?1, ?2, ?3, ?4, ?5)";
+
 /// SQL: look up an account by root DID.
-pub const SELECT_ACCOUNT_BY_ROOT: &str =
-    "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE root_did = ?1";
+pub const SELECT_ACCOUNT_BY_ROOT: &str = "SELECT id, email, root_did, credential_id, \
+    repository_descriptor, created_at FROM accounts WHERE root_did = ?1";
+
+/// SQL: install a descriptor only while the account has none.
+pub const ESTABLISH_REPOSITORY_DESCRIPTOR: &str = "UPDATE accounts \
+    SET repository_descriptor = ?2 WHERE id = ?1 AND repository_descriptor IS NULL \
+    RETURNING repository_descriptor";
+
+/// SQL: read the established descriptor winner.
+pub const SELECT_REPOSITORY_DESCRIPTOR: &str =
+    "SELECT repository_descriptor FROM accounts WHERE id = ?1";
 
 /// SQL: look up an account by email address.
-pub const SELECT_ACCOUNT_BY_EMAIL: &str =
-    "SELECT id, email, root_did, credential_id, created_at FROM accounts WHERE email = ?1";
+pub const SELECT_ACCOUNT_BY_EMAIL: &str = "SELECT id, email, root_did, credential_id, \
+    repository_descriptor, created_at FROM accounts WHERE email = ?1";
 
 /// SQL: register a device under an account.
 pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
@@ -292,12 +323,12 @@ pub const UPDATE_DEVICE_REVOKE_BY_CID: &str =
 
 /// SQL: create a pending browser handoff.
 pub const INSERT_LINK: &str = "INSERT INTO link_requests \
-    (token_hash, device_did, device_name, delegation_hex, created_at, expires_at, consumed_at) \
-    VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL)";
+    (token_hash, device_did, device_name, delegation_hex, descriptor_hex, created_at, expires_at, consumed_at) \
+    VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, NULL)";
 
 /// SQL: load a browser handoff by token hash.
 pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, delegation_hex, \
-    created_at, expires_at, consumed_at FROM link_requests WHERE token_hash = ?1";
+    descriptor_hex, created_at, expires_at, consumed_at FROM link_requests WHERE token_hash = ?1";
 
 /// SQL: insert a handoff device only while its request is pending and live.
 pub const INSERT_DEVICE_FOR_LINK: &str = "INSERT INTO devices \
@@ -306,13 +337,16 @@ pub const INSERT_DEVICE_FOR_LINK: &str = "INSERT INTO devices \
     WHERE token_hash = ?8 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?9)";
 
 /// SQL: attach the delegation to a live, still-pending handoff.
-pub const COMPLETE_LINK: &str = "UPDATE link_requests SET delegation_hex = ?1 \
-    WHERE token_hash = ?2 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?3";
+pub const COMPLETE_LINK: &str = "UPDATE link_requests \
+    SET delegation_hex = ?1, descriptor_hex = ?2 \
+    WHERE token_hash = ?3 AND delegation_hex IS NULL AND descriptor_hex IS NULL \
+    AND consumed_at IS NULL AND expires_at >= ?4";
 
 /// SQL: retrieve a completed handoff and mark it consumed in one statement.
 pub const CONSUME_LINK: &str = "UPDATE link_requests SET consumed_at = ?1 \
-    WHERE token_hash = ?2 AND delegation_hex IS NOT NULL AND consumed_at IS NULL AND expires_at >= ?3 \
-    RETURNING delegation_hex";
+    WHERE token_hash = ?2 AND delegation_hex IS NOT NULL AND descriptor_hex IS NOT NULL \
+    AND consumed_at IS NULL AND expires_at >= ?3 \
+    RETURNING delegation_hex, descriptor_hex";
 
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;

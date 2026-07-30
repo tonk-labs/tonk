@@ -530,8 +530,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
 
     let mut labels = Vec::new();
     for replica in rows {
-        // The profile's self-replica is not a space.
-        if replica.subject.0 == profile_entity {
+        if replica.kind != Replica::repository_kind() {
             continue;
         }
         let Ok(did) = replica.subject.0.to_string().parse::<Did>() else {
@@ -992,6 +991,7 @@ async fn run_invite(
         .map_err(|e| {
             TonkWorkerError::NotFound(format!("Repository '{repo_name}' not found: {e}"))
         })?;
+    require_real_space(&tonk, &repository.did()).await?;
 
     // Both facts are keyed by the repository's *subject* DID — the entity
     // the share view already addresses (`entity={subject}`) — not the
@@ -1497,42 +1497,13 @@ async fn run_profile_rename(
     name: &str,
 ) -> Result<(), TonkWorkerError> {
     let tonk = env.state().read().await;
-    let profile_entity = tonk.profile.did().this();
+    crate::router::account_state::rename_display_name(&tonk, name).await?;
 
-    // 1. Persist the override on the profile meta branch.
-    tonk.reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .transaction()
-        .assert(tonk_schema::ProfileName::new(
-            profile_entity,
-            name.to_string(),
-        ))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to persist profile name override: {e}"))
-        })?;
-
-    // 2. Re-stamp MemberName on every space's roster, so peers on each
-    //    space the profile belongs to see the new name — not just the one
-    //    in focus. Per-space failures are logged inside; a single
-    //    unreachable space must not abort the rename.
-    crate::router::profile_name::restamp_member_name_all_spaces(&tonk, name).await;
-
-    // 3. Re-stamp the self-identity overlay on every space so the topbar chip
-    //    reflects the new name instantly without waiting for the next sync
-    //    cycle. The rename fires on the PROFILE branch, so there is no origin
-    //    space to target — re-stamp them all (mirrors step 2).
-    crate::router::profile_name::restamp_self_identity_all_spaces(&tonk).await;
-
-    // 4. Prompt an immediate push so peers see the new name without waiting
-    //    for the 20s heartbeat. Fire-and-forget: the held read lock is
-    //    released before the spawned task runs.
+    // Prompt an immediate push so peers see the new name without waiting for
+    // the heartbeat. Linked and unlinked paths both queue their durable writes
+    // before this compatibility notification.
     drop(tonk);
     crate::router::join::notify_sync(env.client());
-
     Ok(())
 }
 
@@ -1832,10 +1803,10 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), RepositoryError> {
     {
         let tonk = state.write().await;
-        if *subject == tonk.profile.did() {
-            return Err(RepositoryError::Internal(
-                "refusing to remove the profile's self-replica".to_string(),
-            ));
+        if let Err(error) = require_real_space(&tonk, subject).await
+            && replica_still_recorded(&tonk, subject).await?
+        {
+            return Err(RepositoryError::Internal(error.to_string()));
         }
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
@@ -1862,6 +1833,43 @@ async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), Repos
         tonk.reactor.evict(subject.repo_key());
     }
     Ok(())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open profile meta: {error}")))?;
+    let rows: Vec<Replica> = meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::from(entity),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("replica kind query: {error:?}")))?;
+    if rows
+        .iter()
+        .any(|replica| replica.kind == Replica::repository_kind())
+    {
+        Ok(())
+    } else {
+        Err(TonkWorkerError::Forbidden(
+            "system replicas are ineligible for user-space controls".to_string(),
+        ))
+    }
 }
 
 /// Retract every fact keyed on `subject`'s replica entity from the
@@ -2014,9 +2022,9 @@ async fn run_pause_sync(
         .acquire(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::NotFound(format!("{repo}/{branch} not found: {e}")))?;
-    let replica = Replica::new(tonk.profile.did(), session.handle().of().clone())
-        .this()
-        .clone();
+    let subject = session.handle().of().clone();
+    require_real_space(&tonk, &subject).await?;
+    let replica = Replica::new(tonk.profile.did(), subject).this().clone();
 
     // Toggle: read the current preference (absent → enabled, so a first click
     // pauses), flip it.
@@ -4674,6 +4682,47 @@ mod tests {
         assert!(
             remaining.iter().any(|r| r.subject.0 == profile_did.this()),
             "the self-replica record must survive"
+        );
+    }
+
+    /// Account replicas survive removal and fail the shared guard used by
+    /// pause, invite, and other direct user-space controls.
+    #[dialog_common::test]
+    async fn it_refuses_user_space_controls_for_the_account_replica() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, _key) = fresh_repo("test-account-controls").await;
+        let account = Ed25519Signer::import(&[74; 32]).await.unwrap().did();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .profile_repository()
+                .branch(super::PROFILE_BRANCH)
+                .transaction()
+                .assert(super::Replica::account(tonk.profile.did(), account.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .expect("seed account replica");
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+            super::require_real_space(&tonk, &account)
+                .await
+                .expect_err("account replica must fail the user-space guard");
+        }
+
+        super::remove_space_inner(&state, &account)
+            .await
+            .expect_err("account replica must not be removable");
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            remaining
+                .iter()
+                .any(|replica| replica.subject.0 == account.this()
+                    && replica.kind == super::Replica::account_kind()),
+            "the account replica must survive refused controls"
         );
     }
 

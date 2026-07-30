@@ -128,18 +128,18 @@ pub async fn get_profile(
             TonkWorkerError::Internal(format!("Replica query on profile meta failed: {:?}", e))
         })?;
 
-    // Build the space list — every row except the self-replica,
-    // which has `subject == profile`. Each entry carries the routing
+    // Build the space list from explicitly real-space replicas only.
+    // System replicas (profile and account) never enter user navigation.
+    // Each entry carries the routing
     // key (the subject DID suffix, what the UI links by) and the
     // identity DID. The display name is not here: the Hub card resolves
     // it from the space's own `tonk/repository` concept. An unparseable
     // subject is a single bad entry; log and skip it rather than failing
     // the whole response.
-    let profile_entity = profile_did.this();
     let mut space = Vec::with_capacity(rows.len());
 
     for replica in rows {
-        if replica.subject.0 == profile_entity {
+        if replica.kind != Replica::repository_kind() {
             continue;
         }
         let did = match replica.subject.0.to_string().parse::<Did>() {
@@ -170,6 +170,8 @@ pub async fn get_profile(
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
+    use super::*;
+
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -207,5 +209,47 @@ mod tests {
             .as_str()
             .expect("display_name is a string");
         assert_eq!(name, expected);
+    }
+
+    #[dialog_common::test]
+    async fn it_lists_only_real_spaces_when_an_account_replica_is_indexed() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::Replica;
+
+        let state = test_state().await;
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
+        let real_key = crate::router::tests::put_repo(&app, "visible-space").await;
+        let account = Ed25519Signer::import(&[73; 32]).await.unwrap().did();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .profile_repository()
+                .branch(PROFILE_BRANCH)
+                .transaction()
+                .assert(Replica::account(tonk.profile.did(), account.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let profile: ProfileInfo = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(profile.space.len(), 1);
+        assert_eq!(profile.space[0].key, real_key);
+        assert_ne!(profile.space[0].subject, account);
     }
 }

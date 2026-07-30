@@ -223,9 +223,10 @@ pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch
 /// surfaced — the caller's sync result already carried the real outcome.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
-    // A replica paused mid-sync keeps `paused` — don't classify or hit the
-    // network for it.
-    if !is_sync_enabled(tonk, repo, branch).await {
+    let account = super::account_state::is_account_key(tonk, repo).await;
+    // A user space paused mid-sync keeps `paused`. Account-system replicas
+    // ignore user pause preferences and always remain in the sync population.
+    if !account && !is_sync_enabled(tonk, repo, branch).await {
         publish_paused_status(tonk, repo, branch).await;
         return;
     }
@@ -417,6 +418,26 @@ pub async fn mark_offline(state: &AppState) {
 /// with backoff. An unknown repo is not an error: there is nothing to
 /// retry, so it resolves as a no-op.
 pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String> {
+    let account = {
+        let tonk = state.read().await;
+        super::account_state::is_account_key(&tonk, repo).await
+    };
+    if account {
+        // The account repository's sweep is `ensure_account_state_swept` and
+        // stops there: it mounts, hydrates when it must, then pulls, projects
+        // and pushes. Falling through to the generic per-branch route below
+        // would reconcile the same branch a second time every heartbeat, and
+        // stamp status on a replica that has no chip to read it.
+        let (status, swept) = {
+            let tonk = state.read().await;
+            super::account_state::ensure_account_state_swept(&tonk).await
+        };
+        if status != tonk_account::AccountStateStatus::Ready {
+            return Err("account repository remains unhydrated".to_string());
+        }
+        return swept;
+    }
+
     // Honor the durable pause preference: a paused replica skips the whole
     // sweep (no pull, no push) until resumed. This is the gate localStorage
     // couldn't provide — the SW can read this branch fact. Keyed on the
@@ -424,6 +445,8 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let tonk = state.read().await;
+        // The account repository returned above, so everything reaching here is
+        // a user space with a pause preference a chip can have written.
         if !is_sync_enabled(&tonk, repo, "main").await {
             log!("background sync of '{repo}' skipped: paused");
             // Re-stamp `sync:paused` on the way out. The status lives in the
@@ -540,6 +563,11 @@ pub async fn pull(
     {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
+            if super::account_state::is_account_key(&tonk_state, &params.repo).await
+                && let Err(error) = super::account_state::converge_account_state(&tonk_state).await
+            {
+                log!("account-state convergence after pull failed: {error}");
+            }
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
@@ -774,7 +802,9 @@ pub async fn sync(
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let tonk_state = state.read().await;
-        if !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await {
+        if !super::account_state::is_account_key(&tonk_state, &params.repo).await
+            && !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await
+        {
             drop(tonk_state);
             let tonk_state = state.write().await;
             publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
@@ -846,6 +876,12 @@ pub async fn sync(
         {
             Ok(after) => {
                 log!("Pull succeeded: {}@{}", params.branch, params.repo);
+                if super::account_state::is_account_key(&tonk_state, &params.repo).await
+                    && let Err(error) =
+                        super::account_state::converge_account_state(&tonk_state).await
+                {
+                    log!("account-state convergence after sync pull failed: {error}");
+                }
                 after_pull = Some(after);
                 pull_error = None;
                 break;

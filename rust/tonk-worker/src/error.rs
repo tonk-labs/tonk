@@ -48,6 +48,9 @@ pub enum TonkWorkerError {
     /// Durable identity must be provisioned before this operation.
     #[error("A local passkey root is required")]
     RootRequired,
+    /// Linked account state is not ready for authoritative writes.
+    #[error("Account state unavailable: {0}")]
+    AccountStateUnavailable(String),
 
     /// An analyzer rejection — preserved structurally so the
     /// editor can attach the diagnostic to the offending source
@@ -125,6 +128,7 @@ impl TonkWorkerError {
             TonkWorkerError::Forbidden(_) => "forbidden",
             TonkWorkerError::Upstream { .. } => "upstream",
             TonkWorkerError::RootRequired => "conflict",
+            TonkWorkerError::AccountStateUnavailable(_) => "account_state_unavailable",
             TonkWorkerError::Analyze { .. } => "analyze",
         }
     }
@@ -136,7 +140,8 @@ impl TonkWorkerError {
             | TonkWorkerError::NotFound(m)
             | TonkWorkerError::Conflict(m)
             | TonkWorkerError::PreconditionFailed(m)
-            | TonkWorkerError::Forbidden(m) => m.clone(),
+            | TonkWorkerError::Forbidden(m)
+            | TonkWorkerError::AccountStateUnavailable(m) => m.clone(),
             TonkWorkerError::RootRequired => "a local passkey root is required".to_string(),
             TonkWorkerError::Upstream { message, .. } => message.clone(),
             TonkWorkerError::Analyze { message, .. } => message.clone(),
@@ -177,6 +182,7 @@ impl IntoResponse for TonkWorkerError {
                 .ok()
                 .filter(|status| status.is_client_error() || status.is_server_error())
                 .unwrap_or(StatusCode::BAD_GATEWAY),
+            TonkWorkerError::AccountStateUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         };
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
