@@ -143,17 +143,35 @@ jobs:
             }
             fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
           '
+      - name: Verify npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # An expired or under-scoped token shows up as a bare `404 Not
+          # Found - PUT` partway through publishing, which reads like a
+          # missing package rather than an auth problem. Fail here first.
+          npm whoami
       - name: Publish
         working-directory: rust/tonk-cli/npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ needs.prepare.outputs.dist-tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           # Platform packages first: the wrapper's optionalDependencies
           # point at them, so they must exist before it resolves.
           # The `./` prefix is required — a bare name like `darwin-arm64`
           # is parsed as a registry package spec, not a local directory.
-          npm publish ./darwin-arm64 --access public --tag "$TAG"
-          npm publish ./linux-x64    --access public --tag "$TAG"
-          npm publish ./cli          --access public --tag "$TAG"
+          for dir in darwin-arm64 linux-x64 cli; do
+            name="$(node -p "require('./$dir/package.json').name")"
+            # npm never allows a version to be republished, so a retry
+            # after a partial failure has to step over what already
+            # landed instead of dying on the first conflict.
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "$name@$VERSION already published, skipping"
+              continue
+            fi
+            npm publish "./$dir" --access public --tag "$TAG"
+          done
