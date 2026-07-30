@@ -4,10 +4,21 @@ name: 'CLI npm'
 # and publishes @tonk/cli (plus its platform packages) to npm. The
 # version comes from the tag and must match the Cargo workspace version;
 # nothing publishes on a normal push.
+#
+# Can also be run manually against any ref (`workflow_dispatch`), for
+# re-running a failed publish or shipping without cutting a tag. The
+# version still has to match the Cargo workspace version of the ref you
+# pick, so there is only ever one source of truth.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish. Leave empty to use the ref Cargo workspace version.'
+        required: false
+        type: string
 
 concurrency:
   group: cli-npm-${{ github.ref }}
@@ -24,16 +35,27 @@ jobs:
       - uses: actions/checkout@v4
       - name: Derive and validate version
         id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # Tag `v0.4.0` -> version `0.4.0`.
-          version="${GITHUB_REF_NAME#v}"
-          # Single source of truth: the Cargo workspace version must match the tag.
+          # Single source of truth: whatever we publish must match the
+          # Cargo workspace version of the checked-out ref.
           cargo_version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            # An empty input just means "publish what this ref says".
+            version="${INPUT_VERSION:-$cargo_version}"
+            version="${version#v}"
+            source="requested version $version"
+          else
+            # Tag `v0.4.0` -> version `0.4.0`.
+            version="${GITHUB_REF_NAME#v}"
+            source="tag $GITHUB_REF_NAME"
+          fi
           if [[ "$version" != "$cargo_version" ]]; then
-            echo "::error::tag v$version does not match Cargo workspace version $cargo_version"
+            echo "::error::$source does not match Cargo workspace version $cargo_version"
             exit 1
           fi
           # Prereleases (e.g. 0.4.1-rc.1) publish under `next`, releases under `latest`.
