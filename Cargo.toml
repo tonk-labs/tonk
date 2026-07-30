@@ -180,27 +180,37 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "25fac91eaa4d23fc220721df19f9e2593be618d7" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
 
-# NOTE — the dialog deps above are pinned to the immutable head of dialog-db
-# #411. That compatibility branch starts at `tonk-2026-07-17-storage-clone`
-# and adds structured service errors plus atomic staged installation without
+# NOTE — the dialog deps above are pinned to the immutable head of
+# `fix/idb-upgrade-invalidates-sessions`, one commit past dialog-db #411.
+# That compatibility branch starts at `tonk-2026-07-17-storage-clone` and
+# adds structured service errors plus atomic staged installation without
 # taking the unrelated version-control/search-tree migration from dialog main.
+#
+# Why the IndexedDB commit: adding an object store reopens the database a
+# version higher, and the browser grants that only once every other
+# connection closes — so an upgrade destroys the connection every other
+# caller holds. A store session that outlived one upgrade was addressing a
+# closed connection, and the worker reported `Transaction error: idb error`
+# on ordinary reads whenever `POST /account/link`'s background restore grew
+# the schema underneath a request. Fold this into #411 when that PR next
+# moves.
 #
 # Why the extra commit: the worker's presign credential is its operator
 # delegation, and bounding it in time means rotating the operator before it
