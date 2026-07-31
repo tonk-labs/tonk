@@ -8,14 +8,9 @@ The path is **declarative-first**: most behavior lives in concept + view + rule 
 
 ## Reference
 
-Visual / interaction model is `prototype-pull.html` on the `feat/window-manager` branch — a niri-inspired horizontal strip with pull-to-reveal at column ends, inline app selector, fixed-height tiles. Width presets per column. Snap on horizontal scroll.
+The visual model is a niri-inspired horizontal strip with pull-to-reveal at column ends, an inline app selector, fixed-height tiles, width presets per column, and horizontal scroll snapping.
 
-Architectural conventions from `plan/tonk-host.md` apply: consumer elements dispatch `tonk-*` events that bubble through the routing tree; `<tonk-host>` performs IO.
-
-Patterns from journal entries that inform the design:
-- `2026-05-22.md` — "Command Pallet": commands are transient concepts; deductive rules consume them.
-- `2026-05-26.md` — `<tonk-host>` design; declarative view templates with `subject={field}` iteration; event handlers as transient concepts via `dom.event.*` namespaces; cardinality-many template iteration.
-- `2026-05-27.md` (latest) — current state; effects landed; transients land too.
+Consumer elements dispatch `tonk-*` events that bubble through the routing tree; `<tonk-host>` performs IO. Commands are transient concepts consumed by deductive rules. Declarative view templates support `subject={field}` and cardinality-many iteration, while event handlers read transient concepts through the `dom.event.*` namespaces.
 
 ## Data model — v1 hierarchical
 

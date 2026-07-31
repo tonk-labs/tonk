@@ -392,8 +392,7 @@ pub(crate) enum RemoteRequirement {
 /// - `Err(...)` — branch/remote load failed or the stored UCAN endpoint
 ///   won't parse. Failing loudly is right for the same reason.
 ///
-/// `main` is hardcoded; see `project_main_branch_implicit_creation` memory
-/// note on why `.open()` is used here despite not being strictly read-only.
+/// `main` is currently the canonical content branch and is hardcoded here.
 pub(crate) async fn resolve_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,

@@ -450,9 +450,8 @@ pub async fn concept_add(
 /// Resolve a published bookmark name (`name!: {this: id:<name>, entity:
 /// …}`) to the entity it currently points at, or `None` if the name
 /// was never published. Pure query — nothing commits. Always re-reads
-/// the branch rather than trusting an assertion's own echoed matches:
-/// per `.superpowers/sdd/repoint-findings.md`, the printed match block
-/// of a `name!:` assertion can show a stale pre-commit echo.
+/// the branch rather than trusting an assertion's own echoed matches,
+/// because a `name!:` assertion can print a stale pre-commit echo.
 async fn resolve_name(site: &TonkSite, name: &str) -> Result<Option<String>, DataOpError> {
     let doc = format!("name:\n  this: id:{name}\n  entity: ?e\n");
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;

@@ -23,8 +23,8 @@ does it once more.
 
 Three of the four elements exist only to carry two strings (a
 repository and a branch) to the IO owner. `<tonk-host>` is meant to be
-a page-level singleton (`plan/tonk-host.md`) but drifted into being
-re-mounted at every call site. `<tonk-repository>` and `<tonk-branch>`
+a page-level singleton but drifted into being re-mounted at every call
+site. `<tonk-repository>` and `<tonk-branch>`
 are pure passive annotators — no state, no IO — that stamp
 `detail.space`/`detail.branch` on the bubble.
 
