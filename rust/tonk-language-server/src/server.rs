@@ -249,7 +249,6 @@ impl Server {
     /// request. Position-driven dispatch: the trigger character
     /// is a hint, not the contract — what we return is decided
     /// by where the cursor actually sits in the parse tree.
-    /// See `docs/auto-completion.md` for the full source taxonomy.
     async fn complete(
         &self,
         params: &CompletionParams,
@@ -1173,7 +1172,6 @@ fn server_capabilities() -> ServerCapabilities {
         // `:` is intentionally not a trigger — value position can
         // hold a variable, a reference, or a constant; auto-firing
         // would surface the wrong thing more often than the right.
-        // See `docs/auto-completion.md`.
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec!["\n".into(), "?".into()]),
             resolve_provider: Some(false),

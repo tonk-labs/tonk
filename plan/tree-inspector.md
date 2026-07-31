@@ -3,10 +3,9 @@
 Status: proposed. See and navigate the search/prolly tree that backs a
 branch, the way `dialog-diagnose` does in its TUI but in the browser,
 against the live IndexedDB-backed tree, with byte/size introspection so we
-can find where commit cost concentrates (the perf thread that started
-this: a ~51-expression scaffold is ~23 nodes but a single node can be
-~150 KB, and that large-node re-encode dominates the CPU — see
-`@gozala/2026-06-12.md`).
+can find where commit cost concentrates. A ~51-expression scaffold is
+about 23 nodes, but a single node can be ~150 KB; re-encoding that large
+node dominates the CPU.
 
 Two deliverables: a framework-agnostic visualizer web component,
 **`dialog-arboretum`**, that knows nothing about tonk; and a thin

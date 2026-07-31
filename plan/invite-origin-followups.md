@@ -116,10 +116,8 @@ remotes where one fails to decode resolves the other implicitly.
 and `README.md`; `tonk views` → `tonk view ls` and `tonk init` → `tonk
 spot new` in `README.md`, whose CLI blurb also still described a
 `.tonk/` site in the current directory. `bench/README.md`'s
-harness description updated. Deliberately left alone:
-`rust/tonk-cli/RFC.md` (marked "draft, pre-implementation", preserves
-the design as proposed) and `bench/README.md`'s dated measurement
-sections, which record what past runs actually did.
+harness description updated. Its dated measurement sections remain because
+they record what past runs actually did.
 
 ## Resolved without action
 

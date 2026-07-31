@@ -127,8 +127,8 @@ impl Command for Load {
 /// is frozen at `{this, time, marker}` (no `space` field). A required
 /// `space` field here would make those transients silently fail to match
 /// (the transient commits, no handler runs) — see `CreateSpace`'s doc and
-/// `docs/space-sync-remotes-and-launchpad.md` §3.1, which hit the identical
-/// mistake with `CreateSpace.remote`.
+/// `docs/evolving-command-concepts.md`, which records the same mistake with
+/// `CreateSpace.remote`.
 ///
 /// The FAB's newer profile-dispatched share affordance (routeless, so
 /// `CommandEnv::origin` is empty) still needs to name its target: it does
