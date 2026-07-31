@@ -25,9 +25,9 @@ trace is a `transact` log line with no `command` line after it.
 
 ## It has happened twice
 
-**`CreateSpace.remote`** — `docs/space-sync-remotes-and-launchpad.md` §3.1. A
-required `remote` field could not match the older name-only descriptor. Would
-have broken space creation for every existing user. Caught before merge.
+**`CreateSpace.remote`** — a required `remote` field could not match the older
+name-only descriptor. It would have broken space creation for every existing
+user, and was caught before merge.
 
 **`Invite.space`** (2026-07-17) — the FAB moved to dispatching routeless from
 the profile branch, where the origin repo is empty, so the handler needed the

@@ -14,9 +14,8 @@ and the loud callout is reserved for `offline` / `unauthorized` /
 CSS off `data-state`, not a forced callout. Decision 2 (shadow-root state
 slots) stays deferred until the light-DOM-dependents question is settled.
 
-See [tonk-display.md](./tonk-display.md) for the element's resolve flow
-and [tonk-display-rewire.md](./tonk-display-rewire.md) for the host-driven
-consumer model.
+See [tonk-display.md](./tonk-display.md) for the element's resolve flow.
+The element consumes routing context supplied by its host.
 
 ## Why this exists
 

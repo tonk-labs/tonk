@@ -5,11 +5,8 @@
 //! own reading CLI flags and handing the result to
 //! `eval::run_against_site`.
 //!
-//! `build_home_recipe` in particular is not a free design — it
-//! reproduces the verified shape from
-//! `.superpowers/sdd/repoint-findings.md` §"THE MINIMAL WORKING
-//! RECIPE". That document records a from-scratch investigation into
-//! why a home page renders (or silently doesn't): the root concept's
+//! `build_home_recipe` in particular reproduces a verified shape.
+//! The root concept's
 //! one `with:` field must map to `the: dialog.origin/subject` /
 //! `as: entity` — the only attribute guaranteed already-asserted on
 //! the entity the space-home route renders — and the inline
@@ -294,9 +291,7 @@ pub fn build_view_decl(anchor: &str, model: &str, template: &str) -> String {
 /// bare tag when there's exactly one), and the `name!:` repoint of
 /// `id:tonk/space` onto it.
 ///
-/// This is the exact, verified shape from
-/// `.superpowers/sdd/repoint-findings.md` §"THE MINIMAL WORKING
-/// RECIPE" — see the module doc for why each piece is load-bearing.
+/// See the module documentation for why each piece is load-bearing.
 pub fn build_home_recipe(models: &[String]) -> String {
     let mut out = String::new();
 

@@ -10,8 +10,7 @@
 //! The shape is Bevy-ECS-flavoured: a handler is an `async fn` whose
 //! parameters declare what it reads (`&Cmd` = the transient trigger,
 //! `Current<C>` = durable state joined on `this`) and a `Transaction`
-//! it writes outcomes into. See `project_effect_command_design` and
-//! the journal entry `@gozala/2026-06-05.md` for the full rationale.
+//! it writes outcomes into.
 //!
 //! This module is the registry + dispatch seam. The typed handler
 //! and its trigger concept are captured behind a dyn-safe

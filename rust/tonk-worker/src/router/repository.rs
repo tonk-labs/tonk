@@ -712,8 +712,8 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
 /// space's `tonk:invite` descriptor is frozen without it, and a required
 /// field would make those transients silently fail to match (the transient
 /// commits, no handler runs) — see that type's doc and
-/// `docs/space-sync-remotes-and-launchpad.md` §3.1, which hit the identical
-/// mistake with `CreateSpace.remote`.
+/// `docs/evolving-command-concepts.md`, which records the same mistake with
+/// `CreateSpace.remote`.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 

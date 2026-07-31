@@ -6,7 +6,6 @@
 # `tag` settings below say what it means here.
 #
 # Every setting here overrides a default that misfires on this workspace.
-# See docs/superpowers/specs/2026-07-30-cargo-release-design.md.
 
 # The version is shared via `version.workspace`, so a release is one
 # commit for all 34 crates, not one commit each.

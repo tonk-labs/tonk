@@ -100,10 +100,9 @@ concept!: &view
 The catch is identity. Nothing stops several views being published for the
 same model, and if resolution then enumerates "all views for this model"
 it has to pick one arbitrarily — the ambiguity we hit before. We fix this
-by deriving a view's identity from its fields (see
-[`derived-entity.md`](./derived-entity.md)). With identity derived from the
-full body, two views for the same model with different templates are simply
-two different entities; there's no collision to resolve.
+by deriving a view's identity from its full body. Two views for the same
+model with different templates are therefore different entities; there's no
+collision to resolve.
 
 ```yaml
 view!:
@@ -222,9 +221,8 @@ exactly what `<tonk-layout>` provides, and we revisit then.
 ### PR 1 — derive view identity from fields
 
 Make a view's identity derivable so multiple views for one model can't
-collide. This is the entity-derivation work in
-[`derived-entity.md`](./derived-entity.md): the implicit digest includes
-all resolved fields and the notation/wire paths converge. Repoint
+collide: the implicit digest includes all resolved fields and the
+notation/wire paths converge. Repoint
 `<tonk-display>`'s view resolution to the derived entity instead of
 enumerating views-for-model and picking one. Remove the stale `name` field
 from the `view` concept in `tonk-board`'s bootstrap and migrate its
