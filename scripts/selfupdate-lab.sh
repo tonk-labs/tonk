@@ -26,10 +26,10 @@ esac
 LAB="$(mktemp -d)"
 trap 'kill ${SRV:-0} 2>/dev/null || true; rm -rf "$LAB"' EXIT
 
-# Stable resolves through /latest/download; staging would be
-# /download/tonk-staging. Mirror the real layout so the CLI's own URL
-# building is exercised rather than bypassed.
-REL="$LAB/releases/latest/download"
+# Self-update always resolves through /download/tonk-staging. Mirror
+# the real layout so the CLI's own URL building is exercised rather
+# than bypassed.
+REL="$LAB/releases/download/tonk-staging"
 mkdir -p "$REL" "$LAB/bin" "$LAB/state" "$LAB/stage"
 
 # The copy we let it overwrite. A real install.sh install is a plain
@@ -55,7 +55,7 @@ cat > "$REL/manifest.json" <<EOF
 {
   "version": "9.9.9",
   "commit": "$COMMIT",
-  "channel": "stable",
+  "channel": "staging",
   "built_at": "2026-07-16T00:00:00Z"
 }
 EOF
@@ -63,12 +63,14 @@ EOF
 PORT=8973
 python3 -m http.server "$PORT" --bind 127.0.0.1 -d "$LAB" >/dev/null 2>&1 &
 SRV=$!
-until curl -fsS "http://127.0.0.1:$PORT/releases/latest/download/manifest.json" >/dev/null 2>&1; do sleep 0.1; done
+until curl -fsS "http://127.0.0.1:$PORT/releases/download/tonk-staging/manifest.json" >/dev/null 2>&1; do sleep 0.1; done
 
 export TONK_UPDATE_ENDPOINT="http://127.0.0.1:$PORT/releases"
 export TONK_UPDATE_STATE="$LAB/state"
 export TONK_TELEMETRY_STATE="$LAB/state"
-unset TONK_NO_UPDATE_CHECK CI TONK_CHANNEL 2>/dev/null || true
+# Prove legacy channel selection cannot move self-update off staging.
+export TONK_CHANNEL=stable
+unset TONK_NO_UPDATE_CHECK CI 2>/dev/null || true
 
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
