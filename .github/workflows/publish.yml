@@ -22,6 +22,17 @@ jobs:
     name: Cloudflare Artifacts
     steps:
       - uses: actions/checkout@v4
+
+      # Every pull request comment names the commit it deployed. A reviewer
+      # who opens the comment while a newer run is still uploading otherwise
+      # cannot tell that the link is one commit behind.
+      - name: Identify the previewed commit
+        if: github.event_name == 'pull_request'
+        id: commit
+        run: echo "short=${HEAD_SHA:0:7}" >> "$GITHUB_OUTPUT"
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
       - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:
@@ -30,11 +41,15 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      # This and the comment at the end of the job deliberately share the
+      # default message id, so the second edits the first rather than stacking
+      # a new one per run. Anything added here must leave that id alone or a
+      # pull request ends up with several competing previews.
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'
         with:
           message: |
-            Deploying Cloudflare artifacts...
+            Deploying a preview of `${{ steps.commit.outputs.short }}`...
 
       - name: Build assets
         run: |
@@ -101,7 +116,11 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
           {
             echo 'command-output<<WRANGLER_OUTPUT_EOF'
-            cat "$RUNNER_TEMP/account-preview.log" "$log"
+            echo '--- account worker ---'
+            cat "$RUNNER_TEMP/account-preview.log"
+            echo
+            echo '--- access worker ---'
+            cat "$log"
             echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
         env:
@@ -126,25 +145,17 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           message: |
-            Preview deployment for this change:
+            **Preview of `${{ steps.commit.outputs.short }}`** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-            | Service | URL |
-            | --- | --- |
-            | App (`tonk-ui` + access worker) | ${{ steps.deploy-preview.outputs.url }} |
-            | Account registry | ${{ steps.account-preview.outputs.url }} |
+            ${{ steps.deploy-preview.outputs.url }}
 
-            The app serves that registry from its own `/.well-known/tonk`, so
-            browser ceremonies find it with no client configuration. The CLI
-            has to be told:
+            To link the CLI to it:
 
             ```
             tonk account link \
               --service-url ${{ steps.account-preview.outputs.url }} \
               --account-url ${{ steps.deploy-preview.outputs.url }}/account/link
             ```
-
-            Passkeys minted here belong to the preview host and to nothing
-            else, so they are disposable and cannot reach a real account.
 
             <details><summary>Wrangler output</summary>
 
