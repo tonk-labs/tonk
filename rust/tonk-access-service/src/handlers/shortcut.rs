@@ -30,8 +30,12 @@ fn with_cors_headers(response: Response) -> Response {
 
 /// OPTIONS → Handle CORS preflight
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
-    let response = Response::empty()?.with_status(204);
-    Ok(with_cors_headers(response))
+    let response = with_cors_headers(Response::empty()?.with_status(204));
+    // Only the preflight can be cached, so the lifetime is set here
+    // rather than on every response.
+    let headers = response.headers().clone();
+    let _ = headers.set("Access-Control-Max-Age", crate::PREFLIGHT_MAX_AGE);
+    Ok(response.with_headers(headers))
 }
 
 /// PUT /@ → store a shortcut target, respond with its hash

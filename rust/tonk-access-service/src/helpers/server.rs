@@ -13,7 +13,8 @@ use dialog_remote_ucan_s3::UcanAuthorizer;
 use hyper::body::Incoming;
 use hyper::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL, CONTENT_TYPE, LOCATION,
+    ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_MAX_AGE, CACHE_CONTROL, CONTENT_TYPE,
+    HeaderValue, LOCATION,
 };
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
@@ -121,14 +122,20 @@ async fn handle_request(
     use bytes::Bytes;
     use http_body_util::Full;
 
-    // Handle CORS preflight
+    // Handle CORS preflight. Like the Worker handlers, the preflight
+    // carries its own cache lifetime; only the preflight can be cached.
     if req.method() == Method::OPTIONS {
-        return Ok(cors_response(
+        let mut response = cors_response(
             Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
-        ));
+        );
+        response.headers_mut().insert(
+            ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static(crate::PREFLIGHT_MAX_AGE),
+        );
+        return Ok(response);
     }
 
     if req.method() == Method::PUT && req.uri().path() == "/@" {

@@ -331,3 +331,29 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
 
     Ok(())
 }
+
+/// Every `POST /ucan/` carries a non-safelisted `Content-Type`, so the
+/// browser preflights it. The preflight must say how long it stays
+/// good, or a cold load re-issues `OPTIONS` between batches of fetches.
+#[dialog_common::test]
+async fn it_caches_the_ucan_preflight(env: AccessServiceAddress) -> anyhow::Result<()> {
+    let response = reqwest::Client::new()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/ucan/", env.access_service_url),
+        )
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), 204);
+    assert_eq!(
+        response
+            .headers()
+            .get("Access-Control-Max-Age")
+            .and_then(|value| value.to_str().ok()),
+        Some("86400"),
+        "the preflight must carry a cache lifetime",
+    );
+
+    Ok(())
+}

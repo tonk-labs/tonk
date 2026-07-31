@@ -170,6 +170,35 @@ mod http {
         Ok(())
     }
 
+    /// The shortcut routes are preflighted too, and their preflight
+    /// carries the same cache lifetime as the UCAN one.
+    #[dialog_common::test]
+    async fn it_caches_the_shortcut_preflight(env: AccessServiceAddress) -> anyhow::Result<()> {
+        let client = reqwest::Client::new();
+        let hash = Shortcut::new(b"/join?access=abc").unwrap().hash_str();
+
+        for path in ["/@", &format!("/@/{hash}")] {
+            let response = client
+                .request(
+                    reqwest::Method::OPTIONS,
+                    format!("{}{path}", env.access_service_url),
+                )
+                .send()
+                .await?;
+            assert_eq!(response.status(), 204, "{path}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get("Access-Control-Max-Age")
+                    .and_then(|value| value.to_str().ok()),
+                Some("86400"),
+                "{path} preflight must carry a cache lifetime",
+            );
+        }
+
+        Ok(())
+    }
+
     /// A `ttl=0` shortcut is stored already-expired: the logical
     /// expiry check makes the very next read a 404.
     #[dialog_common::test]
