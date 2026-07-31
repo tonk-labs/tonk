@@ -29,6 +29,7 @@ use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::backup::{get_chain, list_chains, put_chain};
 use crate::core::codes::{generate_code, request_code};
+use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
 use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
@@ -136,6 +137,9 @@ async fn handle_request(
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/revocations") => revocations_route(req, &backends).await,
+        (Method::POST, "/account/repository/establish") => {
+            repository_establish_route(req, &backends).await
+        }
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
@@ -247,15 +251,63 @@ async fn accounts_route(
         device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
         device_name: required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
         delegation_hex: required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
+        repository_descriptor_hex: required_string(&caller.arguments, "repositoryDescriptor")
+            .map_err(ceremony_error)?,
         root_did: caller.root_did,
     };
     let account_id = create_account(&backends.store, &request, unix_now())
         .await
         .map_err(ceremony_error)?;
+    let account = backends
+        .store
+        .account_by_root(&request.root_did)
+        .await
+        .map_err(|error| ceremony_error(error.into()))?
+        .ok_or_else(|| ServiceError::new(ErrorCode::InternalError, "created account missing"))?;
+    let descriptor_hex = account
+        .repository_descriptor
+        .map(hex::encode)
+        .ok_or_else(|| ServiceError::new(ErrorCode::InternalError, "descriptor missing"))?;
 
     Ok(json_response(
         StatusCode::CREATED,
-        &serde_json::json!({ "accountId": account_id }),
+        &serde_json::json!({
+            "accountId": account_id,
+            "descriptorHex": descriptor_hex,
+        }),
+    ))
+}
+
+/// `POST /account/repository/establish` → establish one descriptor winner.
+async fn repository_establish_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize_root(&body, &["account", "repository", "establish"])
+        .await
+        .map_err(ceremony_error)?;
+    let account = backends
+        .store
+        .account_by_root(&caller.root_did)
+        .await
+        .map_err(|error| ceremony_error(error.into()))?
+        .ok_or_else(|| {
+            ceremony_error(crate::core::CeremonyError::Unauthorized(
+                "unknown account".to_string(),
+            ))
+        })?;
+    let candidate =
+        required_string(&caller.arguments, "repositoryDescriptor").map_err(ceremony_error)?;
+    let established = establish_descriptor(&backends.store, &account, &candidate)
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({
+            "descriptorHex": hex::encode(established.descriptor),
+            "created": established.created,
+        }),
     ))
 }
 
@@ -282,6 +334,12 @@ async fn devices_link_route(
     let device_name = required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?;
     let delegation_hex =
         required_string(&caller.arguments, "delegation").map_err(ceremony_error)?;
+    let descriptor = account.repository_descriptor.as_ref().ok_or_else(|| {
+        ceremony_error(crate::core::CeremonyError::Conflict(
+            tonk_account::UNESTABLISHED_ACCOUNT_CONFLICT.to_string(),
+        ))
+    })?;
+    let descriptor_hex = hex::encode(descriptor);
 
     register_device(
         &backends.store,
@@ -294,7 +352,10 @@ async fn devices_link_route(
     .await
     .map_err(ceremony_error)?;
 
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "descriptorHex": descriptor_hex }),
+    ))
 }
 
 /// `POST /devices/list` → list the devices registered under an account.

@@ -37,8 +37,8 @@
 use crate::logic::{
     DOCK_CLASSES, Dock, clamp_position, corrected_min_width, create_space_claim_json,
     dock_claim_json, dock_from_conclusions, is_compact, membership_endpoint, mirrored,
-    nearest_dock, pause_claim_json, profile_rename_claim_json, ratchet_min_width, strip_at_end,
-    strip_page_target, telescope_delay_ms, telescope_settle_ms,
+    nearest_dock, pause_claim_json, ratchet_min_width, strip_at_end, strip_page_target,
+    telescope_delay_ms, telescope_settle_ms,
 };
 use custom_elements::CustomElement;
 use js_sys::Promise;
@@ -582,7 +582,33 @@ fn attach_profile_name_commit(element: &HtmlElement) {
             return;
         };
         let name = editable.text_content().unwrap_or_default();
-        transact(&profile_rename_claim_json(&name));
+        if name.trim().is_empty() {
+            if let Some(profile_name) = editable.closest("ui-profile-name").ok().flatten()
+                && let Some(previous) = profile_name.get_attribute("data-subscribed-name")
+            {
+                editable.set_text_content(Some(&previous));
+            }
+            return;
+        }
+        let profile_name = editable.closest("ui-profile-name").ok().flatten();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = tonk_host::set_account_display_name(name.trim()).await {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "account display-name write failed: {error:?}"
+                )));
+                if let Some(previous) = profile_name
+                    .as_ref()
+                    .and_then(|host| host.get_attribute("data-subscribed-name"))
+                {
+                    editable.set_text_content(Some(&previous));
+                }
+                if let Some(window) = web_sys::window() {
+                    let _ = window.alert_with_message(
+                        "Name wasn’t changed. Open /account to finish or retry account setup, then try again.",
+                    );
+                }
+            }
+        });
     });
     let target: &web_sys::EventTarget = element.unchecked_ref();
     let _ = target.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());

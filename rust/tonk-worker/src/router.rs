@@ -4,12 +4,16 @@ use std::sync::Arc;
 
 use ::axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Request, State},
+    middleware::{self, Next},
+    response::{IntoResponse as _, Response},
     routing::get,
     routing::post,
     routing::put,
 };
 use tokio::sync::RwLock;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
 
 use crate::worker::TonkState;
 
@@ -17,6 +21,9 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
+
+pub(crate) mod account_state;
+pub use account_state::AccountKeys;
 
 mod account_backup;
 
@@ -114,6 +121,77 @@ async fn root(State(_state): State<AppState>) -> &'static str {
     "Hello, Tonk!"
 }
 
+/// Route prefixes whose next path segment is a repository routing key.
+///
+/// Both families are covered: `/api/repository/` carries the mutation surface,
+/// and `/api/inspect/repository/` is read-only but would still confirm the
+/// hidden repository's existence and expose its remote and archive blocks.
+const REPOSITORY_KEY_PREFIXES: [&str; 2] = ["/api/repository/", "/api/inspect/repository/"];
+
+/// The routing key a request addresses, decoded for comparison.
+///
+/// Middleware sees the raw URI before Axum's `Path` extractor, so an encoded
+/// DID (`did%3Akey%3A…`) must not bypass system-repository filtering.
+fn repository_key_from_path(path: &str) -> Option<String> {
+    REPOSITORY_KEY_PREFIXES
+        .iter()
+        .find_map(|prefix| path.strip_prefix(prefix))
+        .and_then(|rest| rest.split('/').next())
+        .filter(|key| !key.is_empty())
+        .map(percent_decode_path_segment)
+}
+
+#[axum_wasm_macros::wasm_compat]
+async fn hide_account_repository(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(key) = repository_key_from_path(request.uri().path()) {
+        let tonk = state.read().await;
+        if account_state::is_account_key(&tonk, &key).await {
+            return crate::TonkWorkerError::NotFound(
+                "account system repository is not a user space".to_string(),
+            )
+            .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Decode one URI path segment before comparing it with a canonical routing
+/// key. Decodes a single level, matching Axum's `Path` extractor: a
+/// double-encoded segment (`%253A`) stays encoded in both, so the two still
+/// agree on which repository a request addresses.
+fn percent_decode_path_segment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+        {
+            decoded.push(high << 4 | low);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| value.to_owned())
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Creates the API router with all configured routes.
 ///
 /// Sets up the routing tree with the TonkState as shared state.
@@ -154,6 +232,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/attach", post(account::link))
+        .route("/api/account/display-name", post(account::set_display_name))
+        .route(
+            "/api/account/repository/establish",
+            post(account::establish_repository),
+        )
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
@@ -349,7 +432,14 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
             get(inspect::archive::inspect_remote_archive_block),
         )
-        .with_state(state)
+        .with_state(state.clone())
+        // The account branch is mounted in the same dialog namespace so the
+        // reactor can sync it, but it is never part of the generic user-space
+        // HTTP surface. Account mutations use the trusted, typed adapter.
+        .layer(middleware::from_fn_with_state(
+            state,
+            hide_account_repository,
+        ))
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
         // the language-server lifetime tied to the worker.
@@ -444,6 +534,7 @@ pub mod tests {
             sync_queue: Default::default(),
             commands: super::command_registry(),
             clients: Default::default(),
+            account_keys: Default::default(),
         }
     }
 
@@ -4481,5 +4572,85 @@ person!:
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod hidden_repository_tests {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use super::{REPOSITORY_KEY_PREFIXES, repository_key_from_path};
+
+    /// Every route family whose next segment after the prefix is a routing key.
+    /// A new one that this misses is a route the account repository is visible
+    /// through, so keep it in step with the `{repo}` routes in `api_router`.
+    const KEYED_ROUTES: [&str; 8] = [
+        "/api/repository/KEY",
+        "/api/repository/KEY/invite",
+        "/api/repository/KEY/remote",
+        "/api/repository/KEY/branch/main/transact",
+        "/api/repository/KEY/branch/main/blob/some-entity",
+        "/api/inspect/repository/KEY/branch/main",
+        "/api/inspect/repository/KEY/remote/origin",
+        "/api/inspect/repository/KEY/archive/index/abc123",
+    ];
+
+    #[dialog_common::test]
+    fn it_finds_the_key_in_every_keyed_route() {
+        for route in KEYED_ROUTES {
+            assert_eq!(
+                repository_key_from_path(route).as_deref(),
+                Some("KEY"),
+                "{route} must expose its routing key to the hiding middleware"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_decodes_one_level_like_the_path_extractor() {
+        // A single-encoded DID must compare equal to the canonical key.
+        assert_eq!(
+            repository_key_from_path("/api/repository/did%3Akey%3Az123/invite").as_deref(),
+            Some("did:key:z123")
+        );
+        assert_eq!(
+            repository_key_from_path("/api/inspect/repository/did%3Akey%3Az123/remote/origin")
+                .as_deref(),
+            Some("did:key:z123")
+        );
+        // Double-encoded stays encoded here *and* in Axum's extractor, so the
+        // two agree on the addressed repository rather than diverging.
+        assert_eq!(
+            repository_key_from_path("/api/repository/did%253Akey%253Az123").as_deref(),
+            Some("did%3Akey%3Az123")
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_paths_that_carry_no_routing_key() {
+        for path in [
+            "/api/repository",
+            "/api/repository/",
+            "/api/inspect/repository/",
+            "/api/profile",
+            "/api/sync",
+            "/",
+        ] {
+            assert_eq!(
+                repository_key_from_path(path),
+                None,
+                "{path} names no repository"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_covers_both_repository_route_families() {
+        for prefix in REPOSITORY_KEY_PREFIXES {
+            assert!(KEYED_ROUTES.iter().any(|route| route.starts_with(prefix)));
+        }
     }
 }

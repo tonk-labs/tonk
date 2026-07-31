@@ -8,10 +8,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
-    DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest,
-    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE,
-    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR,
+    INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest, NewDevice,
+    SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
+    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -41,6 +42,12 @@ impl SqliteStore {
             "../../migrations/0003_device_delegation_path.sql"
         ))
         .map_err(map_err)?;
+        conn.execute_batch(include_str!(
+            "../../migrations/0004_account_repository_descriptor.sql"
+        ))
+        .map_err(map_err)?;
+        conn.execute_batch(include_str!("../../migrations/0005_normalize_devices.sql"))
+            .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
 }
@@ -143,14 +150,21 @@ impl Store for SqliteStore {
         email: &str,
         root_did: &str,
         credential_id: &str,
+        repository_descriptor: &[u8],
         device: &NewDevice,
         created_at: u64,
     ) -> Result<i64, StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
         tx.execute(
-            INSERT_ACCOUNT,
-            params![email, root_did, credential_id, created_at as i64],
+            INSERT_ACCOUNT_WITH_DESCRIPTOR,
+            params![
+                email,
+                root_did,
+                credential_id,
+                repository_descriptor,
+                created_at as i64
+            ],
         )
         .map_err(map_err)?;
         let account_id = tx.last_insert_rowid();
@@ -179,7 +193,8 @@ impl Store for SqliteStore {
                 email: row.get(1)?,
                 root_did: row.get(2)?,
                 credential_id: row.get(3)?,
-                created_at: row.get::<_, i64>(4)? as u64,
+                repository_descriptor: row.get(4)?,
+                created_at: row.get::<_, i64>(5)? as u64,
             })
         })
         .optional()
@@ -194,11 +209,38 @@ impl Store for SqliteStore {
                 email: row.get(1)?,
                 root_did: row.get(2)?,
                 credential_id: row.get(3)?,
-                created_at: row.get::<_, i64>(4)? as u64,
+                repository_descriptor: row.get(4)?,
+                created_at: row.get::<_, i64>(5)? as u64,
             })
         })
         .optional()
         .map_err(map_err)
+    }
+
+    async fn establish_repository_descriptor(
+        &self,
+        account_id: i64,
+        candidate: &[u8],
+    ) -> Result<(Vec<u8>, bool), StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        let created: Option<Vec<u8>> = tx
+            .query_row(
+                ESTABLISH_REPOSITORY_DESCRIPTOR,
+                params![account_id, candidate],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map_err)?;
+        let winner: Option<Vec<u8>> = tx
+            .query_row(SELECT_REPOSITORY_DESCRIPTOR, params![account_id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(map_err)?;
+        let winner = winner.ok_or_else(|| StoreError::Internal("account not found".to_string()))?;
+        tx.commit().map_err(map_err)?;
+        Ok((winner, created.is_some()))
     }
 
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError> {
@@ -306,9 +348,10 @@ impl Store for SqliteStore {
                 device_did: row.get(1)?,
                 device_name: row.get(2)?,
                 delegation_hex: row.get(3)?,
-                created_at: row.get::<_, i64>(4)? as u64,
-                expires_at: row.get::<_, i64>(5)? as u64,
-                consumed_at: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+                descriptor_hex: row.get(4)?,
+                created_at: row.get::<_, i64>(5)? as u64,
+                expires_at: row.get::<_, i64>(6)? as u64,
+                consumed_at: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
             })
         })
         .optional()
@@ -320,6 +363,7 @@ impl Store for SqliteStore {
         token_hash: &str,
         device: &Device,
         delegation_hex: &str,
+        descriptor_hex: &str,
         now: u64,
     ) -> Result<bool, StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
@@ -343,7 +387,7 @@ impl Store for SqliteStore {
         let completed = tx
             .execute(
                 COMPLETE_LINK,
-                params![delegation_hex, token_hash, now as i64],
+                params![delegation_hex, descriptor_hex, token_hash, now as i64],
             )
             .map_err(map_err)?;
         if inserted != 1 || completed != 1 {
@@ -353,12 +397,16 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
-    async fn consume_link(&self, token_hash: &str, now: u64) -> Result<Option<String>, StoreError> {
+    async fn consume_link(
+        &self,
+        token_hash: &str,
+        now: u64,
+    ) -> Result<Option<(String, String)>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.query_row(
             CONSUME_LINK,
             params![now as i64, token_hash, now as i64],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(map_err)
@@ -370,6 +418,8 @@ mod tests {
     use rusqlite::params;
 
     use crate::core::devices::DeviceView;
+    use rusqlite::Connection;
+
     use crate::store::sqlite::SqliteStore;
     use crate::store::{CodeRow, Device, DeviceStatus, Store, StoreError};
 
@@ -471,6 +521,60 @@ mod tests {
         assert_eq!((read.code_hash.as_str(), read.attempts), ("h2", 1));
         store.delete_code("a@x.com").await.unwrap();
         assert!(store.code("a@x.com").await.unwrap().is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_normalizes_a_deployed_devices_table_and_keeps_delegation_bytes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE devices ADD COLUMN delegation_hex TEXT NOT NULL DEFAULT '';\
+             INSERT INTO accounts (email, root_did, credential_id, created_at)\
+             VALUES ('a@x.com', 'did:key:zRoot', 'cred', 1);\
+             INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at)\
+             VALUES (1, 'did:key:zDev', 'bafyCid', 'obsolete', 'laptop', 'active', 2);",
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!("../../migrations/0005_normalize_devices.sql"))
+            .unwrap();
+
+        let columns = conn
+            .prepare("PRAGMA table_info(devices)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "id",
+                "account_id",
+                "device_did",
+                "delegation_cid",
+                "delegation_hex",
+                "name",
+                "status",
+                "created_at"
+            ]
+        );
+        // The signed path cannot be reconstructed from its CID, so normalizing
+        // must carry it across the rebuild or cross-device revocation silently
+        // stops working for every already-registered device.
+        let retained: (String, String, String) = conn
+            .query_row(
+                "SELECT device_did, delegation_cid, delegation_hex FROM devices",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            retained,
+            ("did:key:zDev".into(), "bafyCid".into(), "obsolete".into())
+        );
     }
 
     #[dialog_common::test]

@@ -35,6 +35,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/accounts", handlers::accounts::handle_options)
         .post_async("/revocations", handlers::revocations::handle)
         .options_async("/revocations", handlers::revocations::handle_options)
+        .post_async(
+            "/account/repository/establish",
+            handlers::repository::handle,
+        )
+        .options_async(
+            "/account/repository/establish",
+            handlers::repository::handle_options,
+        )
         .post_async("/devices/list", handlers::devices::handle_list)
         .options_async("/devices/list", handlers::devices::handle_options)
         .post_async("/devices/register", handlers::devices::handle_register)

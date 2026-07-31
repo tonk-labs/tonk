@@ -1,27 +1,39 @@
-//! Attach optional provider services to the provider-neutral local root.
+//! Attach optional provider services to the provider-neutral local root, and
+//! name the account repository that root owns.
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_effects::credential::CredentialError;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_worker_api::{AccountLinkRequest, AccountStatus};
+use tonk_account::{AccountProviderRecord, AccountRepositoryDescriptorV1, AccountStateStatus};
+use tonk_common::log;
+use tonk_worker_api::{
+    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest,
+    AccountRepositoryEstablishRequest, AccountStatus,
+};
 
 use super::AppState;
 use crate::TonkWorkerError;
 
-const ACCOUNT_PROVIDER_SITE: &str = "tonk-account-provider-v1";
+const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct ProviderRecord {
-    version: u8,
-    provider: String,
-    attached_at: u64,
+/// Map an attachment failure onto the router's error taxonomy. A rejected
+/// descriptor is the caller presenting the wrong account's bytes, not a local
+/// fault, so it answers 403 rather than 500.
+fn provider_error(error: tonk_account::AccountProviderError) -> TonkWorkerError {
+    use tonk_account::AccountProviderError as E;
+    match error {
+        E::EmptyProvider => TonkWorkerError::Router(error.to_string()),
+        E::DescriptorEstablished => TonkWorkerError::Conflict(error.to_string()),
+        E::Descriptor(_) | E::DescriptorSubject => TonkWorkerError::Forbidden(error.to_string()),
+        E::Encoding(_) | E::UnsupportedVersion(_) => TonkWorkerError::Internal(error.to_string()),
+    }
 }
 
 async fn load_provider(
     state: &crate::worker::TonkState,
-) -> Result<Option<ProviderRecord>, TonkWorkerError> {
+    root_did: &dialog_varsig::Did,
+) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
     let bytes = match state
         .profile
         .credential()
@@ -30,34 +42,68 @@ async fn load_provider(
         .perform(&state.operator)
         .await
     {
-        Ok(bytes) if bytes.is_empty() => return Ok(None),
         Ok(bytes) => bytes,
-        Err(CredentialError::NotFound(_)) => return Ok(None),
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
         Err(error) => {
             return Err(TonkWorkerError::Internal(format!(
                 "failed to load account provider: {error}"
             )));
         }
     };
-    let record: ProviderRecord = serde_json::from_slice(&bytes).map_err(|error| {
-        TonkWorkerError::Internal(format!("stored account provider is malformed: {error}"))
+    AccountProviderRecord::decode(&bytes, root_did)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("stored account provider is unusable: {error}"))
+        })
+}
+
+async fn save_provider(
+    state: &crate::worker::TonkState,
+    record: &AccountProviderRecord,
+) -> Result<(), TonkWorkerError> {
+    let bytes = record.encode().map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to serialize account provider: {error}"))
     })?;
-    if record.version != 1 {
-        return Err(TonkWorkerError::Internal(format!(
-            "unsupported account provider version {}",
-            record.version
-        )));
+    state
+        .profile
+        .credential()
+        .site(ACCOUNT_PROVIDER_SITE)
+        .save(bytes)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to save account provider: {error}"))
+        })
+}
+
+/// The stored attachment, resolved against this device's local root.
+///
+/// Fail-safe: no root, an unreadable record, or a descriptor bound to another
+/// account all resolve to `None`, so the device behaves as an unattached one
+/// and keeps working rather than failing every account read.
+async fn attachment(state: &crate::worker::TonkState) -> Option<AccountProviderRecord> {
+    let root = super::identity::local_root(state).await.ok()?;
+    match load_provider(state, &root.root_did).await {
+        Ok(record) => record,
+        Err(error) => {
+            log!("account provider attachment unusable: {error}");
+            None
+        }
     }
-    Ok(Some(record))
 }
 
 /// Attached provider base URL, if any.
 pub(crate) async fn provider(state: &crate::worker::TonkState) -> Option<String> {
-    load_provider(state)
+    attachment(state)
         .await
-        .ok()
-        .flatten()
-        .map(|record| record.provider)
+        .map(|record| record.provider().to_owned())
+}
+
+/// The root-signed descriptor naming this account's repository and remote.
+pub(crate) async fn descriptor(
+    state: &crate::worker::TonkState,
+) -> Option<AccountRepositoryDescriptorV1> {
+    attachment(state).await?.descriptor().cloned()
 }
 
 /// The stable local root grant, available to provider operations only when attached.
@@ -87,16 +133,24 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
         }
         Err(error) => return Err(error),
     };
-    match load_provider(state).await? {
+    match load_provider(state, &root.root_did).await? {
         None => Ok(AccountStatus::Unregistered {
             root_did: root.root_did.to_string(),
             device_did,
         }),
-        Some(provider) => Ok(AccountStatus::Registered {
-            root_did: root.root_did.to_string(),
-            device_did,
-            provider: provider.provider,
-        }),
+        Some(record) => {
+            let account_state = if record.descriptor().is_some() {
+                super::account_state::status(state).await
+            } else {
+                AccountStateStatus::Unconfigured
+            };
+            Ok(AccountStatus::Registered {
+                root_did: root.root_did.to_string(),
+                device_did,
+                provider: record.provider().to_owned(),
+                account_state,
+            })
+        }
     }
 }
 
@@ -107,17 +161,66 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<AccountStatus>, T
     Ok(Json(status(&state).await?))
 }
 
+/// Commit a display name through the linked-account authority when present.
+#[wasm_compat]
+pub async fn set_display_name(
+    State(state): State<AppState>,
+    Json(request): Json<AccountDisplayNameRequest>,
+) -> Result<Json<AccountDisplayNameResponse>, TonkWorkerError> {
+    let tonk = state.read().await;
+    match super::account_state::rename_display_name(&tonk, &request.name).await? {
+        Some(response) => Ok(Json(response)),
+        None => Ok(Json(AccountDisplayNameResponse {
+            name: crate::router::profile_name::resolve_display_name(&tonk).await,
+            convergence: Default::default(),
+        })),
+    }
+}
+
+/// Persist the service-selected descriptor winner for a legacy account.
+///
+/// An account created before repository descriptors existed is attached to a
+/// provider but names no repository. The service picks one winner among the
+/// devices racing to establish it; this stores exactly the bytes it returned,
+/// never the caller's own losing candidate.
+#[wasm_compat]
+pub async fn establish_repository(
+    State(state): State<AppState>,
+    Json(request): Json<AccountRepositoryEstablishRequest>,
+) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    let tonk = state.read().await;
+    let root = super::identity::local_root(&tonk).await?;
+    let attached = load_provider(&tonk, &root.root_did)
+        .await?
+        .ok_or_else(|| TonkWorkerError::Conflict("no account provider is attached".to_string()))?;
+    let descriptor = hex::decode(&request.descriptor_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("invalid descriptor hex: {error}")))?;
+    let record = attached
+        .establish(&descriptor, &root.root_did)
+        .await
+        .map_err(provider_error)?;
+    save_provider(&tonk, &record).await?;
+    // This profile now has an account routing key to hide where a moment ago
+    // it had none.
+    tonk.account_keys.invalidate();
+
+    if request.created {
+        if let Err(error) = super::account_state::initialize_display_name(&tonk).await {
+            log!("initial account display-name seed did not complete: {error}");
+        }
+    } else {
+        super::account_state::ensure_account_state(&tonk).await;
+    }
+    Ok(Json(status(&tonk).await?))
+}
+
 /// Validate that provider ceremony metadata exactly matches the local root,
-/// then store provider metadata without changing authority.
+/// then store provider metadata and the account repository descriptor without
+/// changing authority.
 pub(crate) async fn persist_link(
     state: &crate::worker::TonkState,
     request: &AccountLinkRequest,
 ) -> Result<(), TonkWorkerError> {
-    if request.provider.trim().is_empty() {
-        return Err(TonkWorkerError::Router(
-            "provider must not be empty".to_string(),
-        ));
-    }
     let root = super::identity::local_root(state).await?;
     if request.root_did != root.root_did.to_string()
         || request.credential_id != root.credential_id
@@ -127,34 +230,36 @@ pub(crate) async fn persist_link(
             "provider ceremony does not match the persisted local root".to_string(),
         ));
     }
-    if let Some(existing) = load_provider(state).await?
-        && existing.provider != request.provider
-    {
-        return Err(TonkWorkerError::Conflict(
-            "another account provider is already attached".to_string(),
-        ));
-    }
-    let record = ProviderRecord {
-        version: 1,
-        provider: request.provider.trim_end_matches('/').to_string(),
-        attached_at: web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    };
-    let bytes = serde_json::to_vec(&record).map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to serialize account provider: {error}"))
-    })?;
-    state
-        .profile
-        .credential()
-        .site(ACCOUNT_PROVIDER_SITE)
-        .save(bytes)
-        .perform(&state.operator)
+    let descriptor = hex::decode(&request.descriptor_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("invalid descriptor hex: {error}")))?;
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let record = AccountProviderRecord::attach(&request.provider, &descriptor, &root.root_did, now)
         .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to save account provider: {error}"))
-        })?;
+        .map_err(provider_error)?;
+
+    if let Some(existing) = load_provider(state, &root.root_did).await? {
+        if existing.provider() != record.provider() {
+            return Err(TonkWorkerError::Conflict(
+                "another account provider is already attached".to_string(),
+            ));
+        }
+        // The descriptor is immutable: one account subject, one remote. A
+        // second, different one would silently repoint this device's account
+        // history, so it is a conflict rather than an update.
+        if let Some(stored) = existing.descriptor()
+            && stored.bytes() != descriptor
+        {
+            return Err(TonkWorkerError::Conflict(
+                "another account repository is already established".to_string(),
+            ));
+        }
+    }
+    save_provider(state, &record).await?;
+    // This profile now has an account repository to keep hidden.
+    state.account_keys.invalidate();
     Ok(())
 }
 
@@ -168,15 +273,26 @@ pub async fn link(
     let app_state = state.clone();
     let state = state.read().await;
     persist_link(&state, &request).await?;
+    if request.initialize_name
+        && let Err(error) = super::account_state::initialize_display_name(&state).await
+    {
+        log!("new-account display-name seed did not complete: {error}");
+    }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_futures::spawn_local(async move {
         let state = app_state.read().await;
+        // Mount/hydrate the hidden account repository before touching user
+        // spaces. Remote failure leaves it retryable and unready.
+        super::account_state::ensure_account_state(&state).await;
         crate::router::account_backup::back_up_existing_spaces(&state).await;
         crate::router::restore::restore_spaces(&state).await;
     });
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    crate::router::restore::restore_spaces(&state).await;
+    {
+        super::account_state::ensure_account_state(&state).await;
+        crate::router::restore::restore_spaces(&state).await;
+    }
 
     Ok(Json(status(&state).await?))
 }
@@ -195,6 +311,8 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear account provider: {error}"))
         })?;
+    // The account repository is no longer this profile's to hide.
+    state.account_keys.invalidate();
     Ok(Json(status(&state).await?))
 }
 
@@ -202,12 +320,22 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
 pub(crate) async fn tests_matching_request(
     state: &crate::worker::TonkState,
 ) -> tonk_worker_api::AccountLinkRequest {
+    // `test_state` persists a root derived from this exact seed, so a test can
+    // re-derive it to sign a descriptor the local root will accept.
+    let signer = dialog_credentials::Ed25519Signer::import(&[42u8; 32])
+        .await
+        .expect("the test root seed imports");
+    let descriptor = AccountRepositoryDescriptorV1::sign(&signer, "https://accounts.example/ucan/")
+        .await
+        .expect("the test descriptor signs");
     let root = super::identity::local_root(state).await.unwrap();
     tonk_worker_api::AccountLinkRequest {
         provider: "https://accounts.tonk.xyz".into(),
         root_did: root.root_did.to_string(),
         credential_id: root.credential_id,
         delegation_hex: hex::encode(root.bytes),
+        descriptor_hex: hex::encode(descriptor.bytes()),
+        initialize_name: false,
     }
 }
 
@@ -223,13 +351,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn matching_request(state: &crate::worker::TonkState) -> AccountLinkRequest {
-        let root = super::super::identity::local_root(state).await.unwrap();
-        AccountLinkRequest {
-            provider: "https://accounts.tonk.xyz".into(),
-            root_did: root.root_did.to_string(),
-            credential_id: root.credential_id,
-            delegation_hex: hex::encode(root.bytes),
-        }
+        super::tests_matching_request(state).await
     }
 
     #[dialog_common::test]
@@ -269,6 +391,51 @@ mod tests {
                 .bytes
         };
         assert_eq!(before, after);
+    }
+
+    #[dialog_common::test]
+    async fn it_stores_the_account_repository_descriptor_with_the_provider() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let request = {
+            let state = state.read().await;
+            matching_request(&state).await
+        };
+        let expected = request.descriptor_hex.clone();
+        let _ = link(State(state.clone()), Json(request)).await.unwrap();
+
+        let state = state.read().await;
+        let stored = super::descriptor(&state)
+            .await
+            .expect("a descriptor is stored");
+        assert_eq!(hex::encode(stored.bytes()), expected);
+        assert_eq!(
+            stored.account_subject(),
+            &super::super::identity::local_root(&state)
+                .await
+                .unwrap()
+                .root_did
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_a_descriptor_for_another_account_root() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let stranger = dialog_credentials::Ed25519Signer::import(&[9u8; 32])
+            .await
+            .unwrap();
+        let descriptor =
+            AccountRepositoryDescriptorV1::sign(&stranger, "https://accounts.example/ucan/")
+                .await
+                .unwrap();
+        let request = {
+            let state = state.read().await;
+            AccountLinkRequest {
+                descriptor_hex: hex::encode(descriptor.bytes()),
+                ..matching_request(&state).await
+            }
+        };
+        let error = link(State(state.clone()), Json(request)).await.unwrap_err();
+        assert!(matches!(error, TonkWorkerError::Forbidden(_)));
     }
 
     #[dialog_common::test]

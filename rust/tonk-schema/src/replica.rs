@@ -222,7 +222,22 @@ impl Replica {
         } else {
             Self::repository_kind()
         };
-        Self {
+        Self::with_kind(profile, subject, kind).expect("built-in replica kind is valid")
+    }
+
+    /// Build a replica with one of the three recognized kinds.
+    ///
+    /// This is the explicit constructor for system replicas. It rejects
+    /// arbitrary kind URIs so callers cannot accidentally create a fourth
+    /// replica class that ordinary space enumeration does not understand.
+    pub fn with_kind(profile: Did, subject: Did, kind: Kind) -> Option<Self> {
+        if kind != Self::profile_kind()
+            && kind != Self::repository_kind()
+            && kind != Self::account_kind()
+        {
+            return None;
+        }
+        Some(Self {
             // Derive `this` via dialog's own `Origin` so a tonk `Replica` and a
             // dialog `Origin` for the same `(profile, subject)` are the SAME
             // entity. They are the same thing — this device's view of a repo —
@@ -234,7 +249,13 @@ impl Replica {
             subject: Subject(subject.this()),
             profile: Profile(profile.this()),
             kind,
-        }
+        })
+    }
+
+    /// Build the hidden account-system replica.
+    pub fn account(profile: Did, subject: Did) -> Self {
+        Self::with_kind(profile, subject, Self::account_kind())
+            .expect("account replica kind is valid")
     }
 
     /// `kind` URI for the profile's own self-replica.
@@ -244,6 +265,9 @@ impl Replica {
     /// created).
     pub const REPOSITORY: &'static str = "tonk:repository";
 
+    /// `kind` URI for the hidden root-owned account repository.
+    pub const ACCOUNT: &'static str = "tonk:account";
+
     /// The [`Kind`] for the profile's own self-replica.
     pub fn profile_kind() -> Kind {
         Kind(Self::PROFILE.parse().expect("tonk:profile parses"))
@@ -252,6 +276,11 @@ impl Replica {
     /// The [`Kind`] for a space.
     pub fn repository_kind() -> Kind {
         Kind(Self::REPOSITORY.parse().expect("tonk:repository parses"))
+    }
+
+    /// The [`Kind`] for the hidden account-system repository.
+    pub fn account_kind() -> Kind {
+        Kind(Self::ACCOUNT.parse().expect("tonk:account parses"))
     }
 
     /// `status` URI for a freshly created replica whose content
@@ -432,5 +461,23 @@ mod tests {
         let replica = Replica::new(profile.clone(), subject.clone());
         assert_eq!(replica.profile.0.to_string(), profile.as_str());
         assert_eq!(replica.subject.0.to_string(), subject.as_str());
+    }
+
+    #[test]
+    fn account_replica_keeps_the_same_origin_entity_but_a_distinct_kind() {
+        let profile = did!("test:profile-x");
+        let subject = did!("test:account-y");
+        let account = Replica::account(profile.clone(), subject.clone());
+        let space = Replica::new(profile, subject);
+
+        assert_eq!(account.this, space.this);
+        assert_eq!(account.kind, Replica::account_kind());
+        assert_eq!(space.kind, Replica::repository_kind());
+    }
+
+    #[test]
+    fn explicit_constructor_rejects_unknown_kinds() {
+        let unknown = Kind("tonk:unknown".parse().unwrap());
+        assert!(Replica::with_kind(did!("test:p"), did!("test:r"), unknown).is_none());
     }
 }

@@ -13,6 +13,7 @@ pub mod accounts;
 pub mod backup;
 pub mod codes;
 pub mod delegation;
+pub mod descriptor;
 pub mod devices;
 pub mod links;
 

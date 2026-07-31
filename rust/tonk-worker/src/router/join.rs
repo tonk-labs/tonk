@@ -68,7 +68,6 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, Ed25519Verifier};
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::Identify;
-use dialog_effects::credential::CredentialError;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
@@ -680,7 +679,7 @@ async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, To
         .await
     {
         Ok(bytes) => bytes,
-        Err(CredentialError::NotFound(_)) => return Ok(None),
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
         Err(error) => {
             return Err(TonkWorkerError::Internal(format!(
                 "failed to load guest record: {error}"
@@ -1520,6 +1519,11 @@ pub(crate) async fn mount_replica(
     revocation_url: Option<&str>,
 ) -> Result<Repository<Credential>, TonkWorkerError> {
     let key = subject.repo_key().to_owned();
+    if super::account_state::is_account_key(tonk, &key).await {
+        return Err(TonkWorkerError::Forbidden(
+            "account system repository cannot be joined as a user space".to_string(),
+        ));
+    }
 
     // Create a verifier-only credential keyed to the subject DID, then
     // mount it as a local replica at the routing key (so path ==
@@ -1612,7 +1616,7 @@ pub(crate) async fn find_replica_for_subject(
             profile: Term::from(tonk_schema::domain::replica::Profile(
                 tonk.profile.did().this(),
             )),
-            kind: Term::var("kind"),
+            kind: Term::from(Replica::repository_kind()),
         })
         .perform(&tonk.operator)
         .try_vec()

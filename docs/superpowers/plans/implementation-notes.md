@@ -165,3 +165,176 @@ reconstructed from its CID or from account space backups. Migration 0003
 therefore adds a nullable column: new registrations always populate it, while
 legacy rows expose absent evidence explicitly and disable only cross-device
 revocation. Self-revocation remains possible from the device's local grant.
+
+# Design notes — root-owned account state repository, initial rewrite
+
+2026-07-28 rewrite of
+`docs/superpowers/specs/2026-07-27-account-profile-name-design.md`.
+
+> Superseded in part by the V1 simplification recorded below. In particular,
+> `Provision`/`OpenOnly`, mutable manifests, endpoint lists, and repository
+> subject rotation are no longer the current design.
+
+## The root DID identifies a repository but cannot locate it
+
+The original design treated each device's default remote as if deriving the
+same root subject would make devices converge on the same remote history. It
+does not: identity and location are separate. Two providers can both host a
+repository with the root subject and never discover each other.
+
+The revised design requires a root-signed `AccountHomeManifest` carried by the
+account link handoff. The current origin's default remote is only a
+first-home proposal, never an existing account's discovery rule.
+
+The manifest is signed directly during a root/passkey ceremony, not by an
+ordinary linked device. Moving the home has account-wide blast radius; requiring
+the root prevents a compromised but not-yet-revoked device from silently
+redirecting every future link.
+
+## Boot is not allowed to infer creation authority from absence
+
+A missing branch, an unreachable remote, and a remote the caller cannot read
+must not collapse into one "clone failed, initialize" path. Only the ceremony
+that establishes the first manifest gets `Provision` authority, and only a
+confirmed absent response permits creation. Devices receiving an existing
+manifest are `OpenOnly`.
+
+Existing accounts therefore need a distinct one-time root/passkey establishment
+path. The original "same boot path, no migration machinery" claim was removed
+because it cannot resolve simultaneous devices or distinguish outage from
+absence.
+
+## Account state is a system replica
+
+The existing `Replica::new` has only profile and repository kinds. A
+root-subject replica mounted with it would appear as a space and enter roster,
+migration, pause, removal, and switcher paths. The revised design adds
+`tonk:account` and changes space enumeration to select the real-space kind.
+
+## Projection is an explicit worker responsibility
+
+Reactor pulls re-poll in-memory subscriptions and broadcast frames; they do not
+durably project one branch into another. `converge_account_state` is now an
+explicit hook after boot, account-state writes, mount/pull, and background
+pulls.
+
+An adopting device restamps every real space it knows. The renaming device may
+not hold the same set of spaces, and the current restamp loop logs and skips
+per-space failures without a durable retry.
+
+## The portability claim is deliberately narrower
+
+The repository removes Tonk services as the data authority for already-linked
+devices. It does not yet make enrollment or revocation provider-independent:
+root→device grants are unexpiring, and Tonk's access service consults the
+account registry. A non-Tonk remote without equivalent revocation screening is
+compatible at the object protocol but weaker at the authorization boundary.
+
+## Generality comes from typed facts, not a generic settings document
+
+The repository is a small account control plane. `AccountDisplayName` is
+separate from the device-local `ProfileName` cache. Future settings, a
+space/delegation index, and bounded user-owned summaries define their own
+concepts and merge behavior. Provider-metered usage, secrets, large blobs, and
+unbounded event logs stay outside it.
+
+# Design notes — account-state V1 simplification
+
+2026-07-28 review revision of
+`docs/superpowers/specs/2026-07-27-account-profile-name-design.md`.
+
+## Generality is now concentrated at stable boundaries
+
+The display name is the only known account-wide fact. Version 1 therefore
+builds no settings API, projector registry, provider migration, or second
+account fact. The reusable boundaries are the immutable account subject, a
+versioned signed descriptor, the `tonk:account` replica kind, a trusted-base
+write gate, and a typed fact with explicit merge and projection behavior.
+
+A later fact must justify that it is small, bounded, user-owned,
+provider-visible, genuinely account-wide, and compatible with the account
+repository's active-device writer set.
+
+## Account identity survives authority rotation
+
+Using "root DID" for both repository identity and current signing authority
+conflicted with the planned `oldRoot → newRoot` succession ceremony. Version 1
+defines an immutable account subject equal to the genesis root DID. Rotation
+must preserve authorization to that subject; it does not migrate the repository
+or change its routing key.
+
+## The descriptor is immutable and deliberately narrow
+
+`AccountRepositoryDescriptorV1` contains one account subject and one canonical
+remote. It has no generation, endpoint list, failover, or provider-movement
+semantics. It is a durable signed artifact, not the existing five-minute
+account-service invocation.
+
+The account service stores the exact descriptor bytes atomically with new
+account creation, or by set-if-absent for existing accounts, and relays them in
+browser and CLI links. Root signatures remove content and authenticity
+authority from the service, but the service remains a V1 availability and
+first-writer coordination dependency. Calling it wholly untrusted would
+overstate the design. An establishment response returns the stored winner, so a
+caller does not persist its own losing candidate.
+
+## Hydration, configuration, and reachability are separate
+
+Mounting creates a local handle but does not prove that the local branch
+descends from the established account history. The durable lifecycle is:
+
+- unconfigured: no valid descriptor;
+- unhydrated: descriptor valid, trusted base not yet acquired;
+- ready: successful pull or successful create-if-absent recorded for the
+  descriptor hash.
+
+Remote reachability is transient. A ready replica remains writable offline; an
+unhydrated replica accepts no account-state writes. Linked rename now fails
+clearly in the latter state instead of writing to a blank branch or silently
+falling back to the device-local cache.
+
+## Atomic remote creation replaces one-shot provisioning authority
+
+`Provision` and `OpenOnly` were removed. Once one descriptor is durably
+established, every active linked device names the same subject and remote and
+already has account write authority. Any of them may retry atomic
+create-if-absent of the empty repository and its `main` branch:
+
+- the winner adopts the created empty history;
+- a loser pulls the winning history;
+- outages and ambiguous failures do neither.
+
+This closes the browser-failure case without minting another durable capability.
+It depends on a live remote proving typed absence and compare-and-set creation.
+If that primitive does not exist, implementation stops and revisits
+provisioning authority rather than weakening the no-fork invariant.
+
+## Initial names are explicit, not elected by boot
+
+New-account creation and the one-time existing-account establishment ceremony
+copy the initiating device's current `ProfileName` after the account repository
+becomes ready. `device_name` is only a device label. Other devices never seed
+from their local petnames merely because `AccountDisplayName` is absent.
+
+If the initiating device disappears before writing the fact, the account is
+valid but unnamed until an explicit rename. This is preferable to an implicit
+multi-device election or another pending-intent protocol.
+
+## Projection retries each target independently
+
+Convergence cannot return early because the local `ProfileName` already
+matches. It checks every real space, commits only stale targets, and leaves a
+failed target eligible for the next boot or successful account sync even when
+the authoritative name has not changed.
+
+The account display name is globally canonical in version 1. Per-space aliases
+are unsupported, so space `MemberName` rows remain projections rather than
+overrides.
+
+## CLI shares transport but needs no daemon
+
+Browser and CLI link responses both carry the descriptor with the delegation
+and persist them as one local account-link record. The worker ensures account
+state during boot. The CLI ensures it during link and on demand before an
+account-state operation; version 1 adds no native background process or
+display-name editing surface.

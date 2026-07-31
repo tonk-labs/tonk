@@ -56,13 +56,17 @@ permissive CORS headers).
 - `POST /accounts`: create an account and register its first device, consuming
   a verification code. Body: a root-signed UCAN invocation container with
   command `["account", "create"]` and arguments `email`, `code`,
-  `credentialId`, `deviceDid`, `deviceName`, and `delegation` (the hex-encoded
-  `root → device` delegation).
-  Returns `201` with `{ "accountId": number }`.
+  `credentialId`, `deviceDid`, `deviceName`, `delegation` (the hex-encoded
+  `root → device` delegation), and `repositoryDescriptor`.
+  Returns `201` with `{ "accountId": number, "descriptorHex": string }`.
+- `POST /account/repository/establish`: root-authorized set-if-absent
+  descriptor establishment for an existing account. Returns the exact stored
+  winner as `{ "descriptorHex": string, "created": boolean }`.
 - `POST /devices/link`: register a device through a passkey self-link ceremony.
   Body: a root-signed UCAN invocation container with command
   `["account", "device", "link"]` and arguments `deviceDid`, `deviceName`,
-  and `delegation`.
+  and `delegation`. Returns the account's exact stored `descriptorHex`; an
+  old account without an established descriptor receives `409`.
 - `POST /devices/list`: list the devices registered under the caller's
   account. Body: a UCAN invocation container (CBOR bytes) with command
   `["account", "device", "list"]`. Returns an array of device rows (`did`,
@@ -89,8 +93,9 @@ permissive CORS headers).
   delegation. Body: a root-signed invocation with command
   `["account", "link", "complete"]`, binding `tokenHash`, `deviceDid`,
   `deviceName`, and `delegation`.
-- `POST /links/consume`: retrieve the delegation once with `{ "secret": … }`.
-  Returns `202` while pending; a successful `200` consumes the result.
+- `POST /links/consume`: retrieve delegation and descriptor together with
+  `{ "secret": … }`. Returns `202` while pending; a successful `200` returns
+  `delegationHex` + `descriptorHex` and consumes both.
 - `POST /chains/put`: back up a delegation chain, keyed by content address.
   Body: a UCAN invocation container with command
   `["account", "chain", "put"]` and argument `chain` (hex-encoded chain
@@ -130,7 +135,8 @@ First deploy, in order:
    wrangler refuses to deploy without it, so there's no risk of silently
    deploying against the wrong database).
 2. `wrangler d1 migrations apply tonk-accounts --remote -c wrangler.account.toml`
-   to apply every pending migration, including `0002_link_requests.sql`.
+   to apply every pending migration, including
+   `0003_account_repository_descriptor.sql` and `0004_normalize_devices.sql`.
 3. `wrangler r2 bucket create tonk-account-chains`.
 4. `wrangler r2 bucket create tonk-revocations`.
 5. `wrangler secret put RESEND_API_KEY -c wrangler.account.toml`.
@@ -269,8 +275,9 @@ Preview is not on this list: its migrations are applied by the deploy workflow
 on every pull request, so its schema is whatever the branch under review says it
 is, and drift there is the expected state rather than a fault.
 
-Both must show `0001_init.sql`, `0002_link_requests.sql`, and
-`0003_device_delegation_path.sql` as applied; apply any pending ones with the
+Both must show `0001_init.sql`, `0002_link_requests.sql`,
+`0003_device_delegation_path.sql`, `0004_account_repository_descriptor.sql`, and
+`0005_normalize_devices.sql` as applied; apply any pending ones with the
 matching `d1 migrations apply` command. Migration 0003 deliberately leaves the
 new column null for legacy devices because a delegation CID cannot reconstruct
 its signed path bytes. Those rows remain visible and may self-revoke, but a
