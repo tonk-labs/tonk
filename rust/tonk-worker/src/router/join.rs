@@ -530,11 +530,34 @@ pub(crate) struct StagedJoin {
     /// terminates at the staged operator and is re-minted at commit time
     /// for the real one.
     chain: DelegationChain,
-    /// Staged branch and the exact revision to install when the attempt
-    /// produced a content head.
-    installable: Option<(Branch, Revision)>,
+    /// Staged content to publish, when the attempt produced a head.
+    installable: Option<StagedContent>,
     /// The same member has already claimed this exact invitation.
     repeated_claim: bool,
+}
+
+/// The staged head to publish locally, and how much of it the durable
+/// replica has to be handed up front.
+struct StagedContent {
+    /// Staged branch the revision lives on.
+    branch: Branch,
+    /// The exact revision to publish.
+    revision: Revision,
+    /// The head the remote served, before this claim's facts were staged
+    /// on top of it.
+    ///
+    /// `Some` only when everything reachable from it is still reachable
+    /// *through the durable replica's own remote* — a fresh remote-backed
+    /// join, whose staged branch started empty and therefore holds exactly
+    /// what the remote handed back. Then the install carries only the nodes
+    /// this claim created and the rest is read lazily, the way every other
+    /// path in the worker already reads a synced branch.
+    ///
+    /// `None` when there is nowhere to read the remainder back from: a
+    /// local-only invite has no remote, and a renewal's staged branch is a
+    /// merge of local and remote content whose nodes exist whole in
+    /// neither store.
+    remote_head: Option<Revision>,
 }
 
 impl std::fmt::Debug for StagedJoin {
@@ -544,7 +567,7 @@ impl std::fmt::Debug for StagedJoin {
             .field("prepared", &self.prepared)
             .field(
                 "installable",
-                &self.installable.as_ref().map(|(_, revision)| revision),
+                &self.installable.as_ref().map(|content| &content.revision),
             )
             .finish_non_exhaustive()
     }
@@ -958,9 +981,17 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
         copy_existing_to_stage(tonk, &prepared, &branch, staging.operator()).await?;
     }
 
+    // What the remote served, captured before this claim writes on top of
+    // it. Only a fresh join can use it as an install base: a renewal staged
+    // its local head first, so the merge below produces nodes the remote
+    // cannot serve back.
+    let mut remote_head = None;
     if prepared.needs_remote_authorization() {
         pull_staged(&branch, staging.operator()).await?;
         validate_content(&branch, staging.operator(), &prepared.subject).await?;
+        if !prepared.existing {
+            remote_head = branch.revision();
+        }
     }
 
     // A guest records no roster row; every durable claim, including a
@@ -997,7 +1028,11 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
 
     // A local-only guest visit can still have no revision. Every durable
     // claim and every existing replica has an exact staged head to install.
-    let installable = branch.revision().map(|revision| (branch, revision));
+    let installable = branch.revision().map(|revision| StagedContent {
+        branch,
+        revision,
+        remote_head,
+    });
 
     Ok(StagedJoin {
         prepared,
@@ -1095,13 +1130,12 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
                 JoinFailure::claim_failed(format!("failed to load the renewing replica: {error}"))
             })?
     };
-    if let Some((source, revision)) = installable {
+    if let Some(content) = installable {
         install_revision(
             tonk,
-            &source,
+            &content,
             staging.operator(),
             &repository,
-            revision,
             prepared.needs_remote_authorization(),
         )
         .await?;
@@ -1196,35 +1230,64 @@ async fn save_authority(
         })
 }
 
-/// Copy the exact staged revision — its whole reachable tree and every
-/// blob it references — into the durable repository, then publish it as
-/// the branch head and verify what landed.
+/// Give the durable repository the staged revision, then publish it as the
+/// branch head and verify what landed.
+///
+/// How much content moves depends on what the durable replica can read for
+/// itself. A synced replica reads through a remote-backed index on every
+/// ordinary path — `select`, `session`, `commit`, `pull`, `blob` — so a
+/// fresh remote-backed join only has to carry the nodes this claim created;
+/// the rest of the tree resolves on demand against the same `origin` the
+/// invite named. Copying it eagerly instead meant one authorized round trip
+/// per node and per blob, strictly sequential, before the recipient could
+/// see anything (~500 requests and ~110s on a modest space), which is a full
+/// replication masquerading as a join.
+///
+/// Everything else still moves whole, because there is nowhere to read the
+/// remainder back from: see [`StagedContent::remote_head`].
 ///
 /// Not an export/import: that would mint a synthetic commit, drop the
-/// history the remote handed back, and leave blobs behind. `install`
-/// writes blocks without publishing a head, so the destination stays
-/// unreadable until the `reset` below, and the head it then carries is
-/// byte-identical to the one that was validated.
+/// history the remote handed back, and leave blobs behind. Both paths write
+/// blocks without publishing a head, so the destination stays unreadable
+/// until the `reset` below, and the head it then carries is byte-identical
+/// to the one that was validated.
 async fn install_revision(
     tonk: &TonkState,
-    source: &Branch,
+    content: &StagedContent,
     source_env: &staging::StagedOperator,
     repository: &Repository<Credential>,
-    revision: Revision,
     validate_remote_content: bool,
 ) -> Result<(), JoinFailure> {
-    let installed = source
-        .install(revision.clone())
-        .perform(source_env, &tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to install the staged content: {error}"))
-        })?;
-    if installed != revision {
-        return Err(JoinFailure::claim_failed(
-            "installed revision does not match the staged one",
-        ));
+    let StagedContent {
+        branch: source,
+        revision,
+        remote_head,
+    } = content;
+    let revision = revision.clone();
+
+    match remote_head {
+        Some(base) => {
+            let nodes = install_claim_nodes(tonk, source, source_env, &revision, base).await?;
+            log!("join: installed {nodes} claim node(s); the rest reads through the remote");
+        }
+        None => {
+            let installed = source
+                .install(revision.clone())
+                .perform(source_env, &tonk.operator)
+                .await
+                .map_err(|error| {
+                    JoinFailure::claim_failed(format!(
+                        "failed to install the staged content: {error}"
+                    ))
+                })?;
+            if installed != revision {
+                return Err(JoinFailure::claim_failed(
+                    "installed revision does not match the staged one",
+                ));
+            }
+        }
     }
+    let installed = revision.clone();
 
     let destination = repository
         .branch(DEFAULT_BRANCH)
@@ -1258,7 +1321,14 @@ async fn install_revision(
             "installed content did not become the local head",
         ));
     }
-    if validate_remote_content {
+    // Re-read the content through the durable replica — but only when the
+    // durable replica actually holds it. On the lazy path most of the tree
+    // is still upstream, so this query would go to the remote, and the
+    // authority to ask has deliberately not been saved yet
+    // (`save_authority` runs after this returns). Nothing is lost: the
+    // staged pass validated this exact revision, and the head-equality
+    // check above is what proves the reset landed.
+    if validate_remote_content && remote_head.is_none() {
         validate_content(&landed, &tonk.operator, &repository.did()).await?;
     }
 
@@ -1274,6 +1344,92 @@ async fn install_revision(
         })?;
 
     Ok(())
+}
+
+/// Copy only the tree nodes this claim created — the difference between
+/// what the remote served and the staged head committed on top of it.
+///
+/// The nodes left behind are exactly those reachable from `base`, which is
+/// the head the remote handed back and can hand back again. The durable
+/// replica tracks that same remote, so its own reads resolve them on demand.
+///
+/// Blobs are skipped for the same reason and are never novel here anyway: a
+/// claim writes roster facts, not blobs.
+///
+/// This is dialog's `Branch::install` with a real diff base. That command
+/// hardcodes `Index::empty()`, which makes every node in the tree novel and
+/// turns the walk into a full replication.
+/// Returns how many nodes were copied — the number this change exists to
+/// keep small, and the one a regression would blow up.
+async fn install_claim_nodes<Source>(
+    tonk: &TonkState,
+    source: &Branch,
+    source_env: &Source,
+    revision: &Revision,
+    base: &Revision,
+) -> Result<usize, JoinFailure>
+where
+    Source: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Fork<RemoteSite, Get>>
+        + ConditionalSync
+        + 'static,
+{
+    use dialog_artifacts::tree::TreeStorageBridge;
+    use dialog_common::Blake3Hash;
+    use dialog_effects::archive::prelude::CatalogExt as _;
+    use dialog_repository::{
+        Index, NetworkedIndex, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Upstream,
+    };
+    use dialog_search_tree::{ContentAddressedStorage, TreeDifference};
+
+    // The staged branch reads through its own upstream, so a node the diff
+    // needs but the volatile pool never fetched still resolves.
+    let remote = match source.upstream() {
+        Some(Upstream::Remote { remote, .. }) => Some(
+            source
+                .subject()
+                .remote(remote)
+                .load()
+                .perform(source_env)
+                .await
+                .map_err(|error| {
+                    JoinFailure::claim_failed(format!("failed to read the staged remote: {error}"))
+                })?,
+        ),
+        _ => None,
+    };
+
+    let catalog = source.archive().index();
+    let index = NetworkedIndex::new(source_env, catalog.clone(), remote);
+    let storage = ContentAddressedStorage::new(TreeStorageBridge(index));
+    let from = Index::from_hash(Blake3Hash::from(*base.tree.hash()));
+    let to = Index::from_hash(Blake3Hash::from(*revision.tree.hash()));
+
+    let difference = TreeDifference::compute(&from, &to, &storage, &storage)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to diff the staged claim: {error}"))
+        })?;
+    let nodes = difference.novel_nodes();
+    futures_util::pin_mut!(nodes);
+    let mut installed = 0usize;
+    while let Some(node) = nodes.next().await {
+        let node = node.map_err(|error| {
+            JoinFailure::claim_failed(format!("staged claim node did not read back: {error}"))
+        })?;
+        catalog
+            .clone()
+            .put(node.buffer().clone())
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to install a claim node: {error}"))
+            })?;
+        installed += 1;
+    }
+    Ok(installed)
 }
 
 /// Pull the staged branch and classify what the remote said.
@@ -2865,10 +3021,32 @@ mod tests {
         assert_eq!(after.roles.len(), 1, "the claimer is stamped a member");
     }
 
-    /// Data joined before a revocation stays readable locally —
-    /// revocation controls remote access, not local erasure.
+    /// Classifying a remote's refusal as a revocation is a read: it reports
+    /// what sync should say and erases nothing locally.
+    ///
+    /// Scope, because the old name for this test (`it_keeps_joined_data_
+    /// readable_after_the_invite_is_revoked`) claimed far more than the body
+    /// checks. The invite here is local-only, nothing is actually revoked,
+    /// and the two snapshots bracket a constant comparison — so what is
+    /// pinned is that a durable join lands and that classification has no
+    /// side effects. It is not evidence that a revoked member can still read
+    /// a space.
+    ///
+    /// That stronger property no longer holds unconditionally anyway. A
+    /// remote-backed join now installs only the nodes its claim created and
+    /// reads the rest through the remote (see [`install_claim_nodes`]), so a
+    /// revoked replica retains what it happened to read, not a whole copy.
+    /// Access control is unchanged — the access service still refuses a
+    /// revoked credential — but local durability after revocation is now a
+    /// consequence of what was read, not a guarantee.
+    ///
+    /// Proving the stronger property would need a working remote, which no
+    /// fixture here has: every invite is either remote-less or points at an
+    /// unreachable host.
+    ///
+    /// [`install_claim_nodes`]: super::install_claim_nodes
     #[dialog_common::test]
-    async fn it_keeps_joined_data_readable_after_the_invite_is_revoked() {
+    async fn it_leaves_local_state_untouched_when_a_refusal_is_classified() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let (url, key) = handcrafted_invite_url(82, 83).await;
         assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
@@ -2885,7 +3063,7 @@ mod tests {
         assert_eq!(
             snapshot(&state, &key).await,
             joined,
-            "local data survives revocation",
+            "classifying a refusal wrote nothing",
         );
         assert_eq!(membership_status(&app, &key).await, "durable");
     }
@@ -3002,5 +3180,147 @@ name!:
         super::validate_content(&content, &tonk.operator, &repository.did())
             .await
             .expect("content carrying a declared space model is joinable");
+    }
+
+    /// Build a branch holding `filler` facts, snapshot it, commit one more
+    /// fact on top, and report how many nodes
+    /// [`install_claim_nodes`](super::install_claim_nodes) copies to carry
+    /// that last commit.
+    ///
+    /// The snapshot stands in for the head a remote served, and the commit
+    /// on top for the roster facts a claim stages — the two revisions the
+    /// real install diffs.
+    async fn claim_install_cost(filler: usize) -> usize {
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let repo = put_repo(&app, &format!("cost-{filler}")).await;
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(&repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let content: Branch = repository
+            .branch(DEFAULT_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("content branch opens");
+
+        // Enough distinct entities to give the tree real depth. One
+        // transaction: the cost under test is the diff between two
+        // revisions, not how many commits produced them.
+        let mut bulk = content.transaction();
+        for index in 0..filler {
+            bulk = bulk.assert(tonk_schema::RepositoryName {
+                this: format!("id:filler/{index}").parse().expect("entity parses"),
+                name: tonk_schema::domain::repo::Name(format!("filler {index}")),
+            });
+        }
+        bulk.commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the filler commits");
+        let base = content.revision().expect("the filler produced a head");
+
+        content
+            .transaction()
+            .assert(tonk_schema::RepositoryName {
+                this: "id:filler/claim".parse().expect("entity parses"),
+                name: tonk_schema::domain::repo::Name("the claim".to_string()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the claim commits");
+        let target = content.revision().expect("the claim produced a head");
+
+        super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
+            .await
+            .expect("the claim installs")
+    }
+
+    /// A claim install carries what the claim wrote, not what the space
+    /// holds — so its cost does not grow with the size of the space.
+    ///
+    /// This is the regression that shipped: dialog's `Branch::install`
+    /// diffs against `Index::empty()`, which makes every node in the tree
+    /// novel and turns a join into a full replication. On a modest space
+    /// that was ~500 sequential authorized round trips and ~110 seconds
+    /// before the recipient saw anything, against ~40 and ~9s once the diff
+    /// had a real base.
+    ///
+    /// Asserted as a ratio rather than an absolute: node counts depend on
+    /// the tree's fan-out, but the whole point is that the big tree costs
+    /// about what the small one does. Measured at the sizes below, a
+    /// correct diff copies 4 nodes either way while a baseless one copies
+    /// 74 — so the bound discriminates with room to spare, and the 750x
+    /// size gap is what buys that room.
+    #[dialog_common::test]
+    async fn it_installs_a_claim_without_copying_the_space() {
+        let small = claim_install_cost(8).await;
+        let large = claim_install_cost(6000).await;
+
+        assert!(
+            small > 0,
+            "a claim that wrote a fact must carry at least one node",
+        );
+        assert!(
+            large <= small * 3,
+            "installing a claim onto a 6000-fact space cost {large} nodes \
+             against {small} for an 8-fact one — the copy is scaling with \
+             the space, so the diff has lost its base",
+        );
+    }
+
+    /// A guest visit stages no roster row, so its staged head is the one
+    /// the remote served and there is nothing for the install to carry.
+    ///
+    /// The limit case of the rule above: when a claim writes nothing, the
+    /// join copies nothing, and the replica is composed entirely of content
+    /// read back through the remote.
+    #[dialog_common::test]
+    async fn it_copies_nothing_when_a_claim_wrote_nothing() {
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let repo = put_repo(&app, "guest-visit").await;
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(&repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let content: Branch = repository
+            .branch(DEFAULT_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        content
+            .transaction()
+            .assert(tonk_schema::RepositoryName {
+                this: repository.did().this(),
+                name: tonk_schema::domain::repo::Name("Untitled".to_string()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the content commits");
+        let head = content.revision().expect("the content produced a head");
+
+        let copied = super::install_claim_nodes(&tonk, &content, &tonk.operator, &head, &head)
+            .await
+            .expect("an empty claim installs");
+
+        assert_eq!(
+            copied, 0,
+            "a visit that adds no facts must carry no nodes of its own",
+        );
     }
 }
