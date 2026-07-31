@@ -466,18 +466,29 @@ impl CustomElement for TonkShare {
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // Two subscriptions on one element: the minted link, and the refusal
-        // that says no link is coming. The scaffolding routes each frame back
-        // by the tag its behaviour subscribed under.
-        let link: Rc<dyn subscribing::Subscribing> = Rc::new(ShareLinkBehaviour {
-            state: Rc::clone(&self.state),
-            current_link: Rc::clone(&self.current_link),
-        });
-        let blocked: Rc<dyn subscribing::Subscribing> = Rc::new(ShareBlockedBehaviour {
-            state: Rc::clone(&self.state),
-        });
-        self.scaffold.connect_all(this, vec![link, blocked]);
+        self.connect_subscriptions(this);
         self.install_confirm_listener(this);
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if name != "space" || old == new {
+            return;
+        }
+        // The space landed (or moved). Any subscriptions were opened against
+        // the old value — or skipped entirely while it was blank
+        // (`resolve_with` returns `None` on an empty `space`, and
+        // `connect_all` no-ops). Drop them and subscribe against the space
+        // that is actually here; without this, a mint still fires on click
+        // but the link it produces has no subscription left to arrive on,
+        // and the copy can only time out.
+        self.scaffold.disconnect();
+        self.connect_subscriptions(this);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -523,6 +534,25 @@ impl CustomElement for TonkShare {
 }
 
 impl TonkShare {
+    /// Open the element's two subscriptions: the minted link, and the refusal
+    /// that says no link is coming. The scaffolding routes each frame back by
+    /// the tag its behaviour subscribed under.
+    ///
+    /// Run from `connected_callback`, and again from the `space` attribute
+    /// callback once a late-arriving space lands — `connect_all` is built to
+    /// be re-run (it no-ops while the routing context is unresolvable and
+    /// dedupes live tags).
+    fn connect_subscriptions(&self, this: &HtmlElement) {
+        let link: Rc<dyn subscribing::Subscribing> = Rc::new(ShareLinkBehaviour {
+            state: Rc::clone(&self.state),
+            current_link: Rc::clone(&self.current_link),
+        });
+        let blocked: Rc<dyn subscribing::Subscribing> = Rc::new(ShareBlockedBehaviour {
+            state: Rc::clone(&self.state),
+        });
+        self.scaffold.connect_all(this, vec![link, blocked]);
+    }
+
     /// Listen for the enable-sync prompt's confirm, wherever it is in the
     /// document.
     ///

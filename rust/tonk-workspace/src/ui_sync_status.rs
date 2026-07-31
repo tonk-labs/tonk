@@ -64,7 +64,7 @@ impl CustomElement for UiSyncStatus {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        &["with"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -110,35 +110,27 @@ impl CustomElement for UiSyncStatus {
         let _ = Reflect::set(this, &"__tonkError".into(), error.as_ref());
         *self.error.borrow_mut() = Some(error);
 
-        // Subscribe on a microtask, NOT synchronously: when a render pass
-        // runs inside an outer custom-element reaction, the reaction queue
-        // delivers this callback only after that reaction finishes — by
-        // which time the diff may have detached this element again, and a
-        // dispatch from a detached tree never reaches the document
-        // listeners. By microtask time the DOM has settled; skip if no
-        // longer connected (a real re-connection re-runs this callback).
-        let subscription = self.subscription.clone();
-        let host = this.clone();
-        spawn_local(async move {
-            if !host.is_connected() || subscription.borrow().is_some() {
-                return;
-            }
-            let consumer: Element = host.into();
-            match status_query_body() {
-                Ok(body) => {
-                    let tag = JsValue::from_str(SUB_TAG);
-                    match consumer::subscribe(&consumer, &body, Some(&tag)) {
-                        Ok(sub) => *subscription.borrow_mut() = Some(sub),
-                        Err(err) => {
-                            // Dispatch failure: leave the pending disc;
-                            // nothing to subscribe to.
-                            tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
-                        }
-                    }
-                }
-                Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
-            }
-        });
+        subscribe_status(this, self.subscription.clone());
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if name != "with" || old == new {
+            return;
+        }
+        // The location landed (or moved): any subscription is addressed to
+        // the branch the OLD `with` named — or failed outright while the
+        // repo half was blank (`main@` is malformed, and the host refuses
+        // it). Drop it (its `Drop` cancels upstream) and subscribe against
+        // where `with` points now. This is how the disc comes alive on a
+        // host whose first projection stamped a blank space.
+        self.subscription.borrow_mut().take();
+        subscribe_status(this, self.subscription.clone());
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -148,6 +140,40 @@ impl CustomElement for UiSyncStatus {
         self.update.borrow_mut().take();
         self.error.borrow_mut().take();
     }
+}
+
+/// Open the status subscription for `this`, on a microtask.
+///
+/// NOT synchronously: when a render pass runs inside an outer custom-element
+/// reaction, the reaction queue delivers the calling callback only after that
+/// reaction finishes — by which time the diff may have detached this element
+/// again, and a dispatch from a detached tree never reaches the document
+/// listeners. By microtask time the DOM has settled; skip if no longer
+/// connected (a real re-connection re-runs `connected_callback`) or if a
+/// subscription is already live (a same-value attribute re-stamp must not
+/// double-subscribe).
+fn subscribe_status(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        let consumer: Element = host.into();
+        match status_query_body() {
+            Ok(body) => {
+                let tag = JsValue::from_str(SUB_TAG);
+                match consumer::subscribe(&consumer, &body, Some(&tag)) {
+                    Ok(sub) => *subscription.borrow_mut() = Some(sub),
+                    Err(err) => {
+                        // Dispatch failure: leave the pending disc;
+                        // nothing to subscribe to.
+                        tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+                    }
+                }
+            }
+            Err(err) => tonk_common::log!("ui-sync-status: query build failed: {err}"),
+        }
+    });
 }
 
 /// Build the subscribe body for the `tonk:sync` status at `state:here`.
