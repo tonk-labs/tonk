@@ -41,9 +41,19 @@ struct Cli {
     #[arg(long, global = true, value_name = "NAME")]
     spot: Option<String>,
 
+    /// Print full error chains: every layer of context down to the
+    /// root cause, not just the outermost message.
+    #[arg(long, short = 'v', global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
+
+/// Whether `--verbose` was passed; read by the error printers. A process
+/// global rather than a threaded parameter because errors are printed from
+/// dozens of leaf match arms that otherwise never see the parsed `Cli`.
+static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -901,6 +911,7 @@ fn uses_active_spot(command: &Command) -> bool {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
+    VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
     let command = cli.command.unwrap_or(Command::Context { json: false });
 
     // The telemetry subcommand itself is never tracked — toggling
@@ -1042,11 +1053,11 @@ async fn identity(reset: bool) -> ExitCode {
             match identity::local_root(&profile).await {
                 Ok(Some(root)) => println!("root: {}", root.root_did),
                 Ok(None) => println!("root: missing (run `tonk account link`)"),
-                Err(error) => return print_error(error.to_string()),
+                Err(error) => return print_failure(error),
             }
             ExitCode::Success
         }
-        Err(err) => print_error(err.to_string()),
+        Err(err) => print_failure(err),
     }
 }
 
@@ -1152,7 +1163,7 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
 async fn account_op(command: AccountCommand) -> ExitCode {
     let profile = match identity::open().await {
         Ok(profile) => profile,
-        Err(error) => return print_error(error.to_string()),
+        Err(error) => return print_failure(error),
     };
     match command {
         AccountCommand::Status => match account::status(&profile).await {
@@ -1179,7 +1190,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 );
                 ExitCode::Success
             }
-            Err(error) => print_error(error.to_string()),
+            Err(error) => print_failure(error),
         },
         AccountCommand::Link {
             name,
@@ -1209,7 +1220,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 }
                 ExitCode::Success
             }
-            Err(error) => print_error(error.to_string()),
+            Err(error) => print_failure(error),
         },
         AccountCommand::Devices { service_url } => {
             match account::devices(&profile, &service_url).await {
@@ -1221,7 +1232,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     }
                     ExitCode::Success
                 }
-                Err(error) => print_error(error.to_string()),
+                Err(error) => print_failure(error),
             }
         }
         AccountCommand::Revoke {
@@ -1244,7 +1255,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     println!("already revoked\ndevice: {did}");
                     ExitCode::Success
                 }
-                Err(error) => print_error(error.to_string()),
+                Err(error) => print_failure(error),
             }
         }
     }
@@ -1254,7 +1265,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
 async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     let cwd = working_directory();
     match name {
@@ -1279,7 +1290,7 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
                     println!("next: tonk context");
                     ExitCode::Success
                 }
-                Err(err) => print_error(err.to_string()),
+                Err(err) => print_failure(err),
             }
         }
         None => {
@@ -1287,7 +1298,7 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
             let listing =
                 match tonk_cli::spot::listing(&store, flag, env.as_deref(), cwd.as_deref()) {
                     Ok(listing) => listing,
-                    Err(err) => return print_error(err.to_string()),
+                    Err(err) => return print_failure(err),
                 };
             match listing.active {
                 Some(active) => println!(
@@ -1314,7 +1325,7 @@ async fn use_op(name: Option<String>, flag: Option<&str>) -> ExitCode {
 async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     match command {
         SpotCommand::New { name, site } => {
@@ -1338,7 +1349,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     print_active_resolution(&store, flag, Some(&cwd));
                     ExitCode::Success
                 }
-                Err(err) => print_error(err.to_string()),
+                Err(err) => print_failure(err),
             }
         }
         SpotCommand::List => {
@@ -1377,7 +1388,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     }
                     ExitCode::Success
                 }
-                Err(err) => print_error(err.to_string()),
+                Err(err) => print_failure(err),
             }
         }
         SpotCommand::Rm { name, delete } => match tonk_cli::spot::remove(&store, &name, delete) {
@@ -1393,7 +1404,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 }
                 ExitCode::Success
             }
-            Err(err) => print_error(err.to_string()),
+            Err(err) => print_failure(err),
         },
         SpotCommand::Unbind { path } => {
             let directory = match path.or_else(working_directory) {
@@ -1409,7 +1420,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     );
                     ExitCode::Success
                 }
-                Err(err) => print_error(err.to_string()),
+                Err(err) => print_failure(err),
             }
         }
     }
@@ -1483,7 +1494,7 @@ fn resolve_source(args: &EvalArgs) -> Result<Source, String> {
 fn print_guide(topic: Option<&str>, item: Option<&str>) -> ExitCode {
     let text = match guide::resolve(topic, item) {
         Ok(text) => text,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     let mut stdout = std::io::stdout().lock();
     if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -1556,7 +1567,7 @@ async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
 async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
     let parsed = match RenderRoute::parse(&route) {
         Ok(r) => r,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     let (_, site) = match open_selected(spot).await {
         Ok(opened) => opened,
@@ -1577,7 +1588,7 @@ async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> E
                 ExitCode::Success
             }
         },
-        Err(err) => print_error(err.to_string()),
+        Err(err) => print_failure(err),
     }
 }
 
@@ -1926,7 +1937,7 @@ async fn mint_invite(
         (Some(explicit), _) => explicit,
         (None, Some(record)) => match invite::base_url_for_remote(&record.endpoint) {
             Ok(derived) => derived,
-            Err(err) => return print_error(err.to_string()),
+            Err(err) => return print_failure(err),
         },
         (None, None) => invite::DEFAULT_BASE_URL.to_owned(),
     };
@@ -2007,11 +2018,11 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 /// reports it).
 async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode {
     if let Err(err) = tonk_cli::spot::validate_name(&name) {
-        return print_error(err.to_string());
+        return print_failure(err);
     }
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     let cwd = match working_directory().and_then(|path| path.canonicalize().ok()) {
         Some(cwd) => cwd,
@@ -2019,7 +2030,7 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
     };
     let registry = match store.load() {
         Ok(registry) => registry,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     if registry.spots.contains_key(&name) {
         return print_error(tonk_cli::spot::SpotError::Exists(name).to_string());
@@ -2044,7 +2055,7 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
 
             let mut registry = match store.load() {
                 Ok(registry) => registry,
-                Err(err) => return print_error(err.to_string()),
+                Err(err) => return print_failure(err),
             };
             if registry.spots.contains_key(&name) {
                 return print_error(format!(
@@ -2129,7 +2140,7 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
             );
             ExitCode::Success
         }
-        Err(err) => print_error(err.to_string()),
+        Err(err) => print_failure(err),
     }
 }
 
@@ -2138,7 +2149,7 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
 async fn list_concepts_op(site: &site::TonkSite) -> ExitCode {
     let concepts = match schema::list_concepts(site).await {
         Ok(c) => c,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     let mut stdout = std::io::stdout().lock();
     for concept in &concepts {
@@ -2401,7 +2412,7 @@ async fn home_op(models: Vec<String>, spot: Option<&str>) -> ExitCode {
 async fn list_views_op(site: &site::TonkSite) -> ExitCode {
     let listed = match views::list(site).await {
         Ok(v) => v,
-        Err(err) => return print_error(err.to_string()),
+        Err(err) => return print_failure(err),
     };
     let mut stdout = std::io::stdout().lock();
     for row in &listed {
@@ -2433,7 +2444,7 @@ async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
         },
         None => match schema::render(&site).await {
             Ok(text) => text,
-            Err(err) => return print_error(err.to_string()),
+            Err(err) => return print_failure(err),
         },
     };
     let mut stdout = std::io::stdout().lock();
@@ -2501,6 +2512,23 @@ fn print_error(message: impl Into<String>) -> ExitCode {
     ExitCode::IoError
 }
 
+/// Render an error the way the active verbosity calls for: the outermost
+/// context alone by default, the whole chain (`{:#}`) under `--verbose`.
+/// The difference between "failed to load the local root" and the
+/// "no mount for did:key:…" that actually explains it.
+fn failure_text(error: &anyhow::Error) -> String {
+    if VERBOSE.load(std::sync::atomic::Ordering::Relaxed) {
+        format!("{error:#}")
+    } else {
+        error.to_string()
+    }
+}
+
+/// Print an [`anyhow::Error`] as `error: …`, honoring `--verbose`.
+fn print_failure(error: impl Into<anyhow::Error>) -> ExitCode {
+    print_error(failure_text(&error.into()))
+}
+
 /// The process's working directory, used only as a key into the
 /// binding map. A cwd the OS refuses to report (deleted out from
 /// under the process) is not fatal when --spot or TONK_SPOT names
@@ -2563,7 +2591,7 @@ async fn open_selected(
 ) -> Result<(tonk_cli::spot::Resolved, site::TonkSite), ExitCode> {
     let store = match tonk_cli::spot::SpotStore::open() {
         Ok(store) => store,
-        Err(err) => return Err(print_error(err.to_string())),
+        Err(err) => return Err(print_failure(err)),
     };
     let env = std::env::var(tonk_cli::spot::SPOT_ENV)
         .ok()
@@ -2571,7 +2599,7 @@ async fn open_selected(
     let cwd = working_directory();
     let resolved = match store.resolve(flag, env.as_deref(), cwd.as_deref()) {
         Ok(resolved) => resolved,
-        Err(err) => return Err(print_error(err.to_string())),
+        Err(err) => return Err(print_failure(err)),
     };
     match site::TonkSite::open(&resolved.site).await {
         Ok(site) => Ok((resolved, site)),
