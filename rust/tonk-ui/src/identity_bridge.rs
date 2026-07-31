@@ -20,9 +20,6 @@ pub(crate) struct CreateRootInput {
     pub label: Option<String>,
 }
 
-/// Evaluating an existing root takes the same device binding as creation.
-pub(crate) type EvaluateRootInput = CreateRootInput;
-
 /// Input for creating an account and its first device registration.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,12 +161,6 @@ pub(crate) async fn create_root(input: CreateRootInput) -> Result<RootOutput, Id
     call("createRoot", input).await
 }
 
-pub(crate) async fn evaluate_root(
-    input: EvaluateRootInput,
-) -> Result<RootOutput, IdentityBridgeError> {
-    call("evaluateRoot", input).await
-}
-
 pub(crate) async fn create_account(
     input: CreateAccountInput,
 ) -> Result<CeremonyOutput, IdentityBridgeError> {
@@ -286,28 +277,6 @@ mod tests {
             if (!(Object.getPrototypeOf(input) === Object.prototype || Object.getPrototypeOf(input) === null))
                 return Promise.reject(new Error("prototype"));
         "#;
-
-        install_method(
-            "evaluateRoot",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.deviceDid !== "did:key:device") return Promise.reject(new Error("property"));
-                return Promise.resolve({{
-                    rootDid: "did:key:root", deviceDid: input.deviceDid,
-                    credentialId: "credential", delegationHex: "delegation"
-                }});"#
-            ),
-        );
-        assert_eq!(
-            evaluate_root(EvaluateRootInput {
-                device_did: "did:key:device".into(),
-                label: None,
-            })
-            .await
-            .unwrap()
-            .root_did,
-            "did:key:root"
-        );
 
         install_method(
             "createAccount",

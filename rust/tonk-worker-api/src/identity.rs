@@ -62,15 +62,15 @@ pub struct CreateSpaceResponse {
     pub key: String,
 }
 
-/// Deferred durable operation that requires a local root.
+/// Deferred durable operation that requires an account.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum IdentityIntent {
-    /// Create a durable space after provisioning identity.
+pub enum PendingIntent {
+    /// Create a durable space once an account exists.
     CreateSpace {
         /// Space display name.
         name: String,
@@ -88,7 +88,7 @@ pub enum IdentityIntent {
     },
 }
 
-impl fmt::Debug for IdentityIntent {
+impl fmt::Debug for PendingIntent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CreateSpace {
@@ -111,24 +111,27 @@ impl fmt::Debug for IdentityIntent {
     }
 }
 
-/// Service-worker message asking the top document to provision identity.
+/// Service-worker message asking the top document to sign the user in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityRequired {
+pub struct AccountRequired {
     /// Fixed message discriminator.
     #[serde(rename = "type")]
     pub message_type: String,
-    /// Operation to replay after provisioning.
-    pub intent: IdentityIntent,
+    /// Operation to replay once an account exists.
+    pub intent: PendingIntent,
 }
+
+/// The `type` every [`AccountRequired`] message carries.
+pub const ACCOUNT_REQUIRED: &str = "account-required";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[dialog_common::test]
-    fn it_accepts_only_known_identity_intents() {
+    fn it_accepts_only_known_pending_intents() {
         assert!(
-            serde_json::from_value::<IdentityIntent>(serde_json::json!({
+            serde_json::from_value::<PendingIntent>(serde_json::json!({
                 "kind": "createSpace",
                 "name": "Notes",
                 "remote": null,
@@ -138,7 +141,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            serde_json::from_value::<IdentityIntent>(serde_json::json!({
+            serde_json::from_value::<PendingIntent>(serde_json::json!({
                 "kind": "unknown"
             }))
             .is_err()
@@ -148,8 +151,22 @@ mod tests {
     #[dialog_common::test]
     fn it_omits_invite_urls_from_debug_output() {
         let secret = "https://tonk.spot/join#authority";
-        let debug = format!("{:?}", IdentityIntent::DurableJoin { url: secret.into() });
+        let debug = format!("{:?}", PendingIntent::DurableJoin { url: secret.into() });
         assert!(!debug.contains(secret));
         assert!(debug.contains("<redacted>"));
+    }
+
+    /// The page routes on this discriminator, so it is part of the contract
+    /// between the service worker and the top document, not a local string.
+    #[dialog_common::test]
+    fn it_names_the_account_required_message() {
+        let message = AccountRequired {
+            message_type: ACCOUNT_REQUIRED.to_string(),
+            intent: PendingIntent::DurableJoin {
+                url: "https://tonk.spot/join#authority".into(),
+            },
+        };
+        let value = serde_json::to_value(&message).expect("serializes");
+        assert_eq!(value["type"], "account-required");
     }
 }

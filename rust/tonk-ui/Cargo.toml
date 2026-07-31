@@ -89,6 +89,7 @@ features = [
     "MessageEvent",
     "Node",
     "ServiceWorkerContainer",
+    "Storage",
     "VisibilityState",
     "Window",
 ]

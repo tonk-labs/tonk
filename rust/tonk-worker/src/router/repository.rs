@@ -649,28 +649,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             } else {
                 name
             };
-            let root = {
+            let has_account = {
                 let tonk = env.state().read().await;
-                super::identity::local_root(&tonk).await
+                super::account::require_account(&tonk).await.is_ok()
             };
-            match root {
-                Ok(_) => {}
-                Err(TonkWorkerError::RootRequired) => {
-                    crate::router::navigate::notify_identity_required(
-                        env.client(),
-                        tonk_worker_api::IdentityIntent::CreateSpace {
-                            name,
-                            remote,
-                            revocation_url,
-                            template,
-                        },
-                    );
-                    return;
-                }
-                Err(error) => {
-                    log!("CreateSpace local root is unreadable: {error}");
-                    return;
-                }
+            if !has_account {
+                crate::router::navigate::notify_account_required(
+                    env.client(),
+                    tonk_worker_api::PendingIntent::CreateSpace {
+                        name,
+                        remote,
+                        revocation_url,
+                        template,
+                    },
+                );
+                return;
             }
 
             log!("command CreateSpace name={} remote={:?}", name, remote);
@@ -2541,6 +2534,14 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
+    // Ahead of the root read, and ahead of every write: a spot created without
+    // an account is local-only and un-backed-up, and nothing later in this
+    // function would notice. The gate belongs here rather than only at the
+    // command handler so the HTTP route the gate replays through is held to
+    // the same rule.
+    super::account::require_account(tonk)
+        .await
+        .map_err(|_| RepositoryError::AccountRequired)?;
     let local_root = match super::identity::local_root(tonk).await {
         Ok(root) => root,
         Err(TonkWorkerError::RootRequired) => return Err(RepositoryError::RootRequired),
@@ -4533,6 +4534,23 @@ mod tests {
         (app, state, info.name)
     }
 
+    /// A profile holding one space, signed out of its account.
+    ///
+    /// The local profile-name override belongs to this state: with an account
+    /// attached, a rename adopts the account's display name instead. Signing
+    /// out is how a device reaches it while still holding spaces — creating
+    /// them without an account is what the account gate refuses.
+    async fn fresh_repo_signed_out(label: &str) -> (Router, AppState, String) {
+        let (app, state, key) = fresh_repo(label).await;
+        {
+            let tonk = state.read().await;
+            crate::router::account::detach_test_account(&tonk)
+                .await
+                .expect("the test account detaches");
+        }
+        (app, state, key)
+    }
+
     /// A freshly created repo reports exactly its founder as a member,
     /// named, marked `is_self`, with no inviter.
     #[dialog_common::test]
@@ -4771,7 +4789,7 @@ mod tests {
     /// re-stamps the self member's `MemberName` on the current space.
     #[dialog_common::test]
     async fn it_persists_the_override_and_restamps_the_current_space() {
-        let (_app, state, key) = fresh_repo("test-profile-rename").await;
+        let (_app, state, key) = fresh_repo_signed_out("test-profile-rename").await;
 
         // Drive the transient command through the real dispatcher, scoped
         // to the space's content branch — mirrors
@@ -4813,7 +4831,9 @@ mod tests {
     async fn it_restamps_member_name_across_all_spaces() {
         let (app, state, key_a) = fresh_repo("rename-all-a").await;
 
-        // A second space in the same profile/state.
+        // A second space in the same profile/state. Both are created before
+        // signing out, because creating one is exactly what the account gate
+        // refuses afterwards.
         let key_b = {
             let response = app
                 .clone()
@@ -4834,6 +4854,12 @@ mod tests {
             let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
             info.name
         };
+        {
+            let tonk = state.read().await;
+            crate::router::account::detach_test_account(&tonk)
+                .await
+                .expect("the test account detaches");
+        }
 
         // Rename while focused on space A.
         let changes = profile_rename_transient("did:key:zRenameAll", "brave-lynx");
@@ -4869,7 +4895,7 @@ mod tests {
     async fn it_stamps_the_self_identity_overlay_with_an_empty_origin() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (_app, state, key) = fresh_repo("rename-empty-origin").await;
+        let (_app, state, key) = fresh_repo_signed_out("rename-empty-origin").await;
 
         // Realistic origin: a profile-branch rename command has no repo.
         let changes = profile_rename_transient("did:key:zRenameChip", "brave-lynx");

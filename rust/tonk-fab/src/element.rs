@@ -49,7 +49,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
     Element, HtmlElement, MutationObserver, MutationObserverInit, PointerEvent, Request,
-    RequestInit, Response, window,
+    RequestInit, Response, VisibilityState, window,
 };
 
 // web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
@@ -166,6 +166,7 @@ impl CustomElement for TonkFab {
             attach_create_space_form(this);
             attach_profile_name_commit(this);
             attach_membership(this);
+            attach_account_link(this);
             preload_menu_widths(this);
             attach_resize(this);
             attach_strip_scroll(this);
@@ -236,48 +237,111 @@ fn apply_membership(host: &HtmlElement, status: &str) {
     }
 }
 
-/// Show a guest-only durable-join action and promote through the worker.
-fn attach_membership(host: &HtmlElement) {
+/// The membership endpoint for the bar's `space` binding, or `None` when the
+/// attribute is absent or still an unresolved view binding.
+fn host_membership_endpoint(host: &HtmlElement) -> Option<String> {
+    membership_endpoint(&host.get_attribute("space")?).ok()
+}
+
+/// Ask the worker what this replica is, and reshape the bar.
+///
+/// Every path that can change the answer calls this rather than assuming one:
+/// membership is worker state, and the bar has been wrong about it before.
+async fn check_membership(host: HtmlElement, endpoint: String) {
+    let Some(window) = window() else { return };
+    let Ok(value) = JsFuture::from(window.fetch_with_str(&endpoint)).await else {
+        return;
+    };
+    let Ok(response) = value.dyn_into::<Response>() else {
+        return;
+    };
+    let Ok(json) = response.json() else { return };
+    let Ok(value) = JsFuture::from(json).await else {
+        return;
+    };
+    let Some(status) = Reflect::get(&value, &"status".into())
+        .ok()
+        .and_then(|value| value.as_string())
+    else {
+        return;
+    };
+    apply_membership(&host, &status);
+}
+
+/// Re-ask for the mounted bar's membership.
+///
+/// The bar and the share control are separate elements with no handle on each
+/// other, and a promotion can also land from another tab or from the account
+/// page. Reaching the mounted host through the document is what lets any of
+/// them settle the bar without threading a reference through.
+pub(crate) fn refresh_membership() {
+    let Some(host) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector("tonk-fab").ok().flatten())
+        .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    let Some(endpoint) = host_membership_endpoint(&host) else {
+        return;
+    };
+    spawn_local(check_membership(host, endpoint));
+}
+
+/// Point the account link back at the spot it was opened from.
+///
+/// The account page is a top-document route — WebAuthn has to run on the real
+/// origin — so opening it leaves the spot. Carrying `next` is what brings the
+/// user back to where they were instead of dropping them on the hub.
+///
+/// The href is authored as a bare `/account` so the control still works before
+/// this runs, and because the bar renders with an unresolved `space` binding
+/// for a moment on mount.
+fn attach_account_link(host: &HtmlElement) {
     let Some(space) = host.get_attribute("space") else {
         return;
     };
-    let Ok(endpoint) = membership_endpoint(&space) else {
+    // The same rejection `membership_endpoint` applies: an unresolved `{id}`
+    // binding is not a spot, and must not be pasted into a URL.
+    if membership_endpoint(&space).is_err() {
+        return;
+    }
+    let Ok(Some(link)) = host.query_selector(".fab__account-link") else {
+        return;
+    };
+    // The space route carries the DID raw — `navigate_to("/space/{key}")` is
+    // what every other caller builds — so `next` is the plain path, encoded
+    // exactly once as a query value. Encoding the segment first as well would
+    // park `%253A` in the URL and return the user to a route that never
+    // matches.
+    let next = format!("/space/{space}");
+    let _ = link.set_attribute(
+        "href",
+        &format!("/account?next={}", urlencoding::encode(&next)),
+    );
+}
+
+/// Show a guest-only durable-join action and promote through the worker.
+fn attach_membership(host: &HtmlElement) {
+    let Some(endpoint) = host_membership_endpoint(host) else {
         return;
     };
     let Ok(Some(button)) = host.query_selector(".fab__join") else {
         return;
     };
-    let check_host = host.clone();
-    let check_endpoint = endpoint.clone();
-    spawn_local(async move {
-        let Some(window) = window() else { return };
-        let Ok(value) = JsFuture::from(window.fetch_with_str(&check_endpoint)).await else {
-            return;
-        };
-        let Ok(response) = value.dyn_into::<Response>() else {
-            return;
-        };
-        let Ok(json) = response.json() else { return };
-        let Ok(value) = JsFuture::from(json).await else {
-            return;
-        };
-        let Some(status) = Reflect::get(&value, &"status".into())
-            .ok()
-            .and_then(|value| value.as_string())
-        else {
-            return;
-        };
-        apply_membership(&check_host, &status);
-    });
+    spawn_local(check_membership(host.clone(), endpoint.clone()));
+    attach_membership_revisit(host, &endpoint);
 
     let action_button = button.clone();
+    let action_host = host.clone();
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
         let endpoint = endpoint.clone();
         let button = action_button.clone();
+        let host = action_host.clone();
         // Held for the whole round trip, synchronously, before anything can
         // await: promotion is a network call, and a second click would post a
-        // second promotion. Every path below either hides the button (success,
-        // which supersedes the disabled state) or clears it again.
+        // second promotion. Every path below either reshapes the bar (success)
+        // or clears the disabled state again.
         let _ = button.set_attribute("disabled", "");
         spawn_local(async move {
             let released = button.clone();
@@ -299,13 +363,44 @@ fn attach_membership(host: &HtmlElement) {
                 return release();
             };
             if response.ok() {
-                let _ = button.set_attribute("hidden", "");
+                // The whole answer changed, not just this button's. Hiding the
+                // join action alone left `data-share-unavailable` stamped from
+                // the check at connect, so share stayed greyed for the rest of
+                // the session — the promotion succeeded and the bar still said
+                // it hadn't.
+                apply_membership(&host, "durable");
             } else {
                 release();
             }
         });
     });
     let _ = button.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+    closure.forget();
+}
+
+/// Re-check membership whenever this tab comes back to the foreground.
+///
+/// The check at connect is a snapshot, and the two ways to become a member
+/// both leave the page: signing up happens on `/account`, and a promotion can
+/// land in another tab entirely. Returning is the moment the snapshot is most
+/// likely to be stale, and it costs one request against the local worker.
+fn attach_membership_revisit(host: &HtmlElement, endpoint: &str) {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    let host = host.clone();
+    let endpoint = endpoint.to_owned();
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        let hidden = window()
+            .and_then(|window| window.document())
+            .is_some_and(|document| document.visibility_state() == VisibilityState::Hidden);
+        if hidden || !host.is_connected() {
+            return;
+        }
+        spawn_local(check_membership(host.clone(), endpoint.clone()));
+    });
+    let _ = document
+        .add_event_listener_with_callback("visibilitychange", closure.as_ref().unchecked_ref());
     closure.forget();
 }
 
@@ -1841,6 +1936,55 @@ mod tests {
         assert!(join_shown, "and reveals the join action");
         assert!(!member_marked, "a durable member's share is available");
         assert!(join_hidden, "and carries no join action");
+    }
+
+    /// The account page runs on the top-level origin, so opening it leaves
+    /// the spot. Without a return path the user lands on the hub afterwards
+    /// and has to find their way back.
+    #[dialog_common::test]
+    fn it_points_the_account_link_back_at_this_spot() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_attribute("space", "did:key:zAccount")
+            .expect("space");
+        host.set_inner_html(&crate::markup::fab_html("did:key:zAccount"));
+        attach_account_link(&host);
+
+        assert_eq!(
+            host.query_selector(".fab__account-link")
+                .expect("query")
+                .expect("account link")
+                .get_attribute("href")
+                .as_deref(),
+            Some("/account?next=%2Fspace%2Fdid%3Akey%3AzAccount"),
+        );
+    }
+
+    /// An unresolved `{id}` binding is not a spot. Pasting one into `next`
+    /// would send the user to a route that cannot exist, so the authored
+    /// bare `/account` stands.
+    #[dialog_common::test]
+    fn it_leaves_the_account_link_alone_for_an_unresolved_space() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-fab")
+            .expect("create host")
+            .unchecked_into();
+        host.set_attribute("space", "{id}").expect("space");
+        host.set_inner_html(&crate::markup::fab_html("{id}"));
+        attach_account_link(&host);
+
+        assert_eq!(
+            host.query_selector(".fab__account-link")
+                .expect("query")
+                .expect("account link")
+                .get_attribute("href")
+                .as_deref(),
+            Some("/account"),
+        );
     }
 
     /// Promotion is a network round trip. Without a disabled state the click

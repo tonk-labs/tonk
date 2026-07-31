@@ -408,10 +408,13 @@ pub async fn claim(
     let local_root = crate::identity::local_root_with_operator(&profile, &operator)
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?;
-    if config.require_root && local_root.is_none() {
-        return Err(InviteError::Io(
-            "A local passkey root is required; run `tonk identity link`".to_string(),
-        ));
+    // Claiming an invite is what makes this device a member, and a member is
+    // what a later `tonk invite` delegates from. Rooting that chain in an
+    // anonymous key leaves it with no owner and nothing able to revoke it.
+    if config.require_account {
+        crate::account::require_account_with_operator(&profile, &operator)
+            .await
+            .map_err(|e| InviteError::Io(e.to_string()))?;
     }
     let member = local_root
         .ok_or_else(|| {

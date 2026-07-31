@@ -244,8 +244,9 @@ fn classify_click(event: &Event) -> Intent {
             .get_attribute("target")
             .is_some_and(|target| target == "_blank");
 
-    // Same origin as our synthetic base → in-app; different → external.
-    let in_app = base_origin().is_some_and(|origin| url.origin() == origin);
+    // Same origin as the coordinate system this guest resolves against →
+    // in-app; different → external.
+    let in_app = link_origin().is_some_and(|origin| url.origin() == origin);
 
     if in_app && !wants_new_tab {
         // Relay the guest-world path (the host re-maps it to the real route).
@@ -258,19 +259,32 @@ fn classify_click(event: &Event) -> Intent {
     }
 }
 
-/// The origin of the guest's synthetic per-space base
-/// (`https://{label}.tonk.spot`), read from the bridge context, or `None`
-/// when there is none (profile/Hub) — where every link is external to any
-/// space and falls through to the host.
-fn base_origin() -> Option<String> {
+/// The origin a link in this guest is judged against.
+///
+/// A space guest resolves against its synthetic per-space base
+/// (`https://{label}.tonk.spot`), so that is the origin that means "in-app".
+/// The profile/Hub guest has no synthetic origin — `space_origin_for` only
+/// answers for a `did:key`, and the profile is not one — and its links are
+/// genuinely top-level, resolving against the REAL host origin. Judging those
+/// against a missing base made every one of them external: the hub's own spot
+/// links and the FAB's account link were relayed to `open_external`, which
+/// opens our own origin in a new tab. Falling back to `context.origin` is what
+/// makes a top-level link navigate in place.
+///
+/// `None` only when the bridge context is absent entirely, where classifying
+/// anything as in-app would be a guess.
+fn link_origin() -> Option<String> {
     let win: JsValue = window()?.into();
     let tonk = Reflect::get(&win, &JsValue::from_str("tonk")).ok()?;
     let context = Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
-    let base = Reflect::get(&context, &JsValue::from_str("base"))
-        .ok()?
-        .as_string()
-        .filter(|b| !b.is_empty())?;
-    web_sys::Url::new(&base).ok().map(|u| u.origin())
+    let field = |name: &str| {
+        Reflect::get(&context, &JsValue::from_str(name))
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|value| !value.is_empty())
+    };
+    let origin = field("base").or_else(|| field("origin"))?;
+    web_sys::Url::new(&origin).ok().map(|url| url.origin())
 }
 
 /// Walk up from an event target to the nearest `<a href>`.
@@ -375,10 +389,8 @@ mod tests {
         window().unwrap().location().origin().unwrap()
     }
 
-    /// Install `window.tonk.context.base = <origin>/` so [`base_origin`] has a
-    /// synthetic base to compare against. Idempotent; every classify test that
-    /// depends on origin comparison calls it first.
-    fn set_test_base() {
+    /// The guest bridge context, creating `window.tonk.context` if absent.
+    fn test_context() -> JsValue {
         let win: JsValue = window().unwrap().into();
         let tonk = match Reflect::get(&win, &JsValue::from_str("tonk")) {
             Ok(v) if v.is_object() => v,
@@ -388,20 +400,37 @@ mod tests {
                 o.into()
             }
         };
-        let context = match Reflect::get(&tonk, &JsValue::from_str("context")) {
+        match Reflect::get(&tonk, &JsValue::from_str("context")) {
             Ok(v) if v.is_object() => v,
             _ => {
                 let o = Object::new();
                 let _ = Reflect::set(&tonk, &JsValue::from_str("context"), &o);
                 o.into()
             }
-        };
-        let base = format!("{}/", test_origin());
+        }
+    }
+
+    fn set_context_field(name: &str, value: &str) {
         let _ = Reflect::set(
-            &context,
-            &JsValue::from_str("base"),
-            &JsValue::from_str(&base),
+            &test_context(),
+            &JsValue::from_str(name),
+            &JsValue::from_str(value),
         );
+    }
+
+    /// Install `window.tonk.context.base = <origin>/` so [`link_origin`] has a
+    /// synthetic base to compare against. Idempotent; every classify test that
+    /// depends on origin comparison calls it first.
+    fn set_test_base() {
+        set_context_field("base", &format!("{}/", test_origin()));
+    }
+
+    /// Put the context in the shape a PROFILE guest gets: no synthetic space
+    /// origin (`space_origin_for` only answers for a `did:key`), just the real
+    /// host origin.
+    fn set_profile_context() {
+        set_context_field("base", "");
+        set_context_field("origin", &test_origin());
     }
 
     /// A detached `<a>` carrying the given attributes.
@@ -505,6 +534,12 @@ mod tests {
 
     fn classify(target: &EventTarget, click: &Click) -> Intent {
         set_test_base();
+        dispatch(target, click.kind, &mouse_event(click))
+    }
+
+    /// Classify against whatever context the caller has already installed,
+    /// rather than resetting it to a space guest's synthetic base.
+    fn classify_in_context(target: &EventTarget, click: &Click) -> Intent {
         dispatch(target, click.kind, &mouse_event(click))
     }
 
@@ -676,6 +711,46 @@ mod tests {
                 "a {name} click should open rather than navigate in place"
             );
         }
+    }
+
+    /// The profile guest — the Hub, and the space chrome that mounts the FAB —
+    /// has no synthetic space origin, because `space_origin_for` only answers
+    /// for a `did:key`. Its links are top-level and resolve against the real
+    /// host origin, so they must navigate in place.
+    ///
+    /// Judged against the missing base instead, every one of them was
+    /// `Open` — relayed to `open_external`, which opens our own origin with
+    /// `window.open(_, "_blank")`. That is what put `/account` in a new tab.
+    #[dialog_common::test]
+    async fn it_navigates_a_top_level_link_in_the_profile_guest() {
+        set_profile_context();
+        for href in [
+            "/account",
+            "/account?next=%2Fspace%2Fabc",
+            "/space/abc",
+            "/",
+        ] {
+            assert_eq!(
+                classify_in_context(anchor(&[("href", href)]).unchecked_ref(), &Click::plain()),
+                Intent::Navigate(href.to_owned()),
+                "{href} addresses the host origin and should navigate in place"
+            );
+        }
+    }
+
+    /// The fallback is the REAL origin, not "anything goes": an off-origin
+    /// link in the profile guest still leaves through the host, where the
+    /// confirmation dialog lives.
+    #[dialog_common::test]
+    async fn it_still_opens_an_off_origin_link_in_the_profile_guest() {
+        set_profile_context();
+        assert_eq!(
+            classify_in_context(
+                anchor(&[("href", "https://example.test/docs")]).unchecked_ref(),
+                &Click::plain(),
+            ),
+            Intent::Open("https://example.test/docs".to_owned()),
+        );
     }
 
     /// `target="_blank"` asks for a new tab without any modifier.

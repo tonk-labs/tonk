@@ -1087,6 +1087,38 @@ mod when_listing_views {
     }
 }
 
+mod when_a_device_has_no_account {
+    use anyhow::Result;
+    use tonk_cli::site::TonkSite;
+
+    use crate::common;
+
+    /// Creating a spot mints durable authority: a `space → root` chain that a
+    /// later `tonk invite` delegates from. Rooted in an anonymous key that
+    /// chain has no owner, nothing can revoke it, and nothing backs up what it
+    /// creates — so the account is the precondition, not the passkey.
+    ///
+    /// The error has to name the command that fixes it. `tonk identity link`,
+    /// which the old message named, no longer exists.
+    #[dialog_common::test]
+    async fn it_refuses_to_create_a_spot() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let parent = tmp.path().canonicalize()?;
+        let mut config = common::isolated_config(&parent)?;
+        config.require_account = true;
+
+        let Err(error) = TonkSite::init_with(&parent, config).await else {
+            panic!("a device with no account cannot create a spot");
+        };
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("tonk account link"),
+            "the refusal must name the command that fixes it: {rendered}"
+        );
+        Ok(())
+    }
+}
+
 mod when_migrating_from_carry {
     use anyhow::Result;
     use tonk_cli::migrate::{self, Mode};

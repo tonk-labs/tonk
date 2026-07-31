@@ -134,6 +134,28 @@ pub(crate) async fn stored_provider_with_operator(
     decode_provider(&root_did, bytes).await
 }
 
+/// What to tell a device that has no account when it asks for durable
+/// authority. Names the one command that provisions both the root and the
+/// account it belongs to.
+const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account link`";
+
+/// Refuse unless this profile holds an account.
+///
+/// The precondition every durable operation shares, in the shape the browser
+/// worker uses it (`router::account::require_account`): durable authority is
+/// only ever issued to an account, so what it mints stays revocable and what
+/// it creates gets backed up. `Unhydrated` and `Unconfigured` accounts pass —
+/// an account that exists but has not synchronized is still an account.
+pub(crate) async fn require_account_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+) -> Result<()> {
+    match stored_provider_with_operator(profile, operator).await? {
+        Some(_) => Ok(()),
+        None => bail!(ACCOUNT_REQUIRED),
+    }
+}
+
 async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
     let Some(root) = crate::identity::local_root(profile).await? else {
         return Ok(None);

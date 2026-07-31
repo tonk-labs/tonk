@@ -61,7 +61,7 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
     Ok(SiteConfig {
         profile_name: format!("tonk-test-{suffix:x}"),
         profile_directory: Directory::At(profile_dir.to_string_lossy().into_owned()),
-        require_root: false,
+        require_account: false,
     })
 }
 

@@ -351,29 +351,13 @@ enum Command {
     /// ever, mostly when debugging delegation.
     #[command(
         hide = true,
-        after_help = "Examples:\n  tonk identity\n  tonk identity --root '{\"credentialId\":\"…\",\"delegationHex\":\"…\"}'\n  tonk identity --reset"
+        after_help = "Examples:\n  tonk identity\n  tonk identity --reset\n\nProvisioning a root is part of `tonk account link`."
     )]
     Identity {
-        /// Optional identity action (`link` opens a provider-free browser handoff).
-        #[arg(value_enum)]
-        action: Option<IdentityAction>,
         /// Wipe the on-disk profile and create a new one. This removes
         /// access to existing repos without re-delegation.
         #[arg(long)]
         reset: bool,
-        /// Paste provider-neutral browser handoff JSON for this device.
-        #[arg(long, value_name = "JSON")]
-        root: Option<String>,
-        /// Print the handoff URL without asking the OS to open it.
-        #[arg(long)]
-        no_open: bool,
-        /// Top-document provider-free identity handoff route.
-        #[arg(
-            long,
-            default_value = "https://tonk.spot/identity/link",
-            value_name = "URL"
-        )]
-        link_url: String,
     },
 
     /// Link this machine's profile to a Tonk account
@@ -459,12 +443,6 @@ enum Command {
         #[arg(long)]
         enable_check: bool,
     },
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum IdentityAction {
-    /// Open a provider-free browser ceremony for this CLI device.
-    Link,
 }
 
 #[derive(Subcommand, Debug)]
@@ -959,13 +937,7 @@ async fn main() {
         Command::Agents { json, command } => agents_op(json, command, spot.as_deref()).await,
         Command::Use { name } => use_op(name, spot.as_deref()).await,
         Command::Spot { command } => spot_op(command, spot.as_deref()).await,
-        Command::Identity {
-            action,
-            reset,
-            root,
-            no_open,
-            link_url,
-        } => identity(action, reset, root, no_open, &link_url).await,
+        Command::Identity { reset } => identity(reset).await,
         Command::Account { command } => account_op(command).await,
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
@@ -1049,16 +1021,16 @@ async fn main() {
     std::process::exit(exit.into_raw());
 }
 
-async fn identity(
-    action: Option<IdentityAction>,
-    reset: bool,
-    root: Option<String>,
-    no_open: bool,
-    link_url: &str,
-) -> ExitCode {
-    if reset && (root.is_some() || action.is_some()) {
-        return print_error("--reset cannot be combined with linking".to_string());
-    }
+/// `tonk identity` — report this device's profile DID and its root, or start
+/// over with `--reset`.
+///
+/// Provisioning a root is no longer a command of its own. It used to be: an
+/// `identity link` action opened a provider-free browser ceremony that minted
+/// an anonymous root and printed handoff JSON to paste back. That root looked
+/// like an account to its owner and was not one — nothing could revoke it, and
+/// nothing backed up what it created. `tonk account link` runs the same
+/// handoff with an account behind it.
+async fn identity(reset: bool) -> ExitCode {
     let result = if reset {
         identity::reset().await
     } else {
@@ -1066,55 +1038,11 @@ async fn identity(
     };
     match result {
         Ok(profile) => {
-            if matches!(action, Some(IdentityAction::Link)) && root.is_none() {
-                use rand::RngCore as _;
-                let mut challenge = [0u8; 16];
-                rand::rng().fill_bytes(&mut challenge);
-                let mut url = match url::Url::parse(link_url) {
-                    Ok(url) => url,
-                    Err(error) => {
-                        return print_error(format!("invalid identity link URL: {error}"));
-                    }
-                };
-                let fragment = url::form_urlencoded::Serializer::new(String::new())
-                    .append_pair("deviceDid", profile.did().as_ref())
-                    .append_pair("challenge", &hex::encode(challenge))
-                    .finish();
-                url.set_fragment(Some(&fragment));
-                println!(
-                    "Open this URL to create or use a local root:\n{url}\n\nThen run `tonk identity link --root '<response>'`."
-                );
-                if !no_open && webbrowser::open(url.as_str()).is_err() {
-                    eprintln!("Could not open a browser; use the URL above.");
-                }
-                return ExitCode::Success;
-            }
-            if let Some(json) = root {
-                #[derive(serde::Deserialize)]
-                #[serde(rename_all = "camelCase")]
-                struct RootInput {
-                    credential_id: String,
-                    delegation_hex: String,
-                }
-                let input: RootInput = match serde_json::from_str(&json) {
-                    Ok(input) => input,
-                    Err(error) => {
-                        return print_error(format!("invalid root handoff JSON: {error}"));
-                    }
-                };
-                match identity::save_local_root(&profile, input.credential_id, input.delegation_hex)
-                    .await
-                {
-                    Ok(root) => println!("root: {}\ndevice: {}", root.root_did, profile.did()),
-                    Err(error) => return print_error(error.to_string()),
-                }
-            } else {
-                println!("device: {}", profile.did());
-                match identity::local_root(&profile).await {
-                    Ok(Some(root)) => println!("root: {}", root.root_did),
-                    Ok(None) => println!("root: missing"),
-                    Err(error) => return print_error(error.to_string()),
-                }
+            println!("device: {}", profile.did());
+            match identity::local_root(&profile).await {
+                Ok(Some(root)) => println!("root: {}", root.root_did),
+                Ok(None) => println!("root: missing (run `tonk account link`)"),
+                Err(error) => return print_error(error.to_string()),
             }
             ExitCode::Success
         }
