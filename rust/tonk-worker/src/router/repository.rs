@@ -2138,6 +2138,47 @@ async fn create_space_inner(
     Ok(key)
 }
 
+/// The relay the access service behind `remote` publishes revocations to,
+/// read from its `/.well-known/tonk`.
+///
+/// The fallback for a caller that named a remote but no relay. Resolved
+/// against the *remote's* origin rather than this worker's, because the
+/// relay belongs to the access service the spot actually syncs through —
+/// which is not necessarily the deployment serving this page.
+///
+/// Best-effort: `None` on any failure, so a blip leaves the spot synced
+/// but unshareable rather than not synced at all. That state is no longer
+/// a dead end — the share prompt offers to attach a relay to an existing
+/// remote (see [`RemoteRefusal::MissingRevocationRelay`]).
+///
+/// [`RemoteRefusal::MissingRevocationRelay`]: super::create_invite::RemoteRefusal::MissingRevocationRelay
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn deployment_revocation_url(remote: &str) -> Option<String> {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_futures::JsFuture;
+
+    let endpoint = Url::parse(remote).ok()?.join("/.well-known/tonk").ok()?;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global().dyn_into().ok()?;
+    let response: web_sys::Response = JsFuture::from(global.fetch_with_str(endpoint.as_str()))
+        .await
+        .and_then(|value| value.dyn_into())
+        .ok()?;
+    if !response.ok() {
+        log!(
+            "deployment config at {} returned HTTP {}",
+            endpoint,
+            response.status()
+        );
+        return None;
+    }
+    let body = JsFuture::from(response.text().ok()?)
+        .await
+        .ok()?
+        .as_string()?;
+    let config: tonk_worker_api::DeploymentConfig = serde_json::from_str(&body).ok()?;
+    Some(config.revocation_relay_url.to_string())
+}
+
 /// Attach a sync remote to a space, idempotently, via
 /// [`ensure_remote_config`] — the same helper [`attach_remote`] uses, so
 /// the in-app path and the HTTP route converge on one implementation.
@@ -2146,6 +2187,12 @@ async fn create_space_inner(
 /// or pre-existing), for both the Hub "New space" and topbar "Enable
 /// sync" forms. A missing repository or empty URL is a no-op (logged),
 /// not an error.
+///
+/// A caller that names no relay gets the remote's own
+/// ([`deployment_revocation_url`]) rather than a remote with none. The
+/// create wizard is exactly that caller: its hidden `revocation` input is
+/// filled by an async fetch that a fast submit can beat, and an omitted
+/// relay used to produce a spot that could sync but never be shared.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enable_sync_inner(
     state: &AppState,
@@ -2158,7 +2205,21 @@ async fn enable_sync_inner(
         log!("enable sync '{}': empty remote, nothing to attach", key);
         return Ok(());
     }
-    let configuration = space_config(remote, revocation_url)?;
+    let relay = match revocation_url.filter(|url| !url.trim().is_empty()) {
+        Some(url) => Some(url.to_owned()),
+        None => {
+            let resolved = deployment_revocation_url(remote).await;
+            if resolved.is_none() {
+                log!(
+                    "enable sync '{}': no relay given and none advertised by {}",
+                    key,
+                    remote
+                );
+            }
+            resolved
+        }
+    };
+    let configuration = space_config(remote, relay.as_deref())?;
 
     let tonk = state.write().await;
     // A missing repository is a no-op, not an error — defensive against a
@@ -2188,8 +2249,16 @@ async fn enable_sync_inner(
     // Escrow this owned space's delegation so the account's other devices
     // can restore it. Best-effort; no-op for unlinked profiles or for a
     // repository that doesn't hold its signer (i.e. wasn't created here).
-    crate::router::account_backup::back_up_owned_space(&tonk, &repository, remote, revocation_url)
-        .await;
+    // The resolved relay, not the caller's: an escrowed space restored on
+    // another device has to come back shareable, which the omitted-relay
+    // record it used to carry would not.
+    crate::router::account_backup::back_up_owned_space(
+        &tonk,
+        &repository,
+        remote,
+        relay.as_deref(),
+    )
+    .await;
 
     Ok(())
 }
@@ -3781,13 +3850,24 @@ where
             .clone()
             .unwrap_or_else(|| repository.did());
 
-        match repository
+        // What the meta mirror should describe. An existing remote is left
+        // alone at the dialog layer, so the mirror has to follow the remote
+        // that is really there and not the one the request asked for —
+        // otherwise a caller that names a remote only to reach the
+        // `revocationUrl` beside it (the share prompt's relay repair) would
+        // silently rewrite its address to whatever origin that caller
+        // happened to be served from.
+        let (subject, address) = match repository
             .remote(remote_name.as_str())
             .load()
             .perform(&tonk.operator)
             .await
         {
-            Ok(_) => log!("Remote '{}' already present; left as-is", remote_name),
+            Ok(existing) => {
+                log!("Remote '{}' already present; left as-is", remote_name);
+                let address = existing.address();
+                (address.subject().clone(), address.site().clone())
+            }
             Err(_) => {
                 let mut create = repository
                     .remote(remote_name.as_str())
@@ -3802,10 +3882,11 @@ where
                     ))
                 })?;
                 log!("Remote '{}' created", remote_name);
+                (subject, remote_config.address.clone())
             }
-        }
+        };
 
-        let concept = replica.remote(remote_name.as_str(), subject, &remote_config.address);
+        let concept = replica.remote(remote_name.as_str(), subject, &address);
         transaction = transaction.assert(concept.clone());
         if let Some(revocation_url) = &remote_config.revocation_url {
             transaction =
@@ -5470,6 +5551,96 @@ mod tests {
         assert!(
             invitations.is_empty(),
             "a refused mint records no invitation"
+        );
+    }
+
+    /// POST a remote config to `key`, exactly as the topbar and the share
+    /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
+    /// unless asked, so a test can produce the pre-in-band-revocation shape:
+    /// a spot that syncs but cannot mint.
+    async fn post_remote(
+        app: &Router,
+        key: &str,
+        endpoint: &str,
+        relay: Option<&str>,
+    ) -> RepositoryInfo {
+        use dialog_remote_ucan_s3::UcanAddress;
+
+        let mut remote = RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint)));
+        if let Some(relay) = relay {
+            remote = remote.revocation_url(relay.parse().unwrap());
+        }
+        let config = RepositoryConfiguration::default()
+            .remote("origin", remote)
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "remote attach succeeds");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// A synced spot whose remote carries no relay refuses the mint, and a
+    /// second attach naming the relay repairs it — the path the share
+    /// prompt's confirm drives for every spot created before in-band
+    /// revocation landed.
+    ///
+    /// The repair names a DIFFERENT endpoint on purpose. The prompt builds it
+    /// from the page's origin, which need not be the origin the spot actually
+    /// syncs through, and an existing remote is left as-is at the dialog
+    /// layer — so the meta mirror has to keep describing the remote that is
+    /// really there rather than adopting the caller's.
+    #[dialog_common::test]
+    async fn it_repairs_a_remote_that_carries_no_revocation_relay() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-relay-repair").await;
+        let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
+
+        run_invite_with_time(&state, &key, 11.0).await;
+
+        let blocked = share_blocked_rows(&state, &key).await;
+        assert_eq!(blocked.len(), 1, "one refusal recorded");
+        assert_eq!(blocked[0].0, "missing-revocation-relay");
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "a refused mint records no invitation",
+        );
+
+        let info = post_remote(
+            &app,
+            &key,
+            "https://a-different-origin.example.test/ucan/",
+            Some("https://relay.example.test/revocations"),
+        )
+        .await;
+
+        run_invite_with_time(&state, &key, 12.0).await;
+
+        assert_eq!(
+            content_invitations(&state, &key).await.len(),
+            1,
+            "the repaired spot mints",
+        );
+
+        let address = serde_json::to_string(&info.remote["origin"].address).unwrap();
+        assert!(
+            address.contains("https://access.example.test/ucan/"),
+            "the repair must not repoint the remote, got {address}",
         );
     }
 
