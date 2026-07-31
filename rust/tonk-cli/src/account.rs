@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use dialog_operator::Profile;
-use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan_core::DelegationChain;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -98,10 +98,6 @@ struct ConsumeResponse {
     descriptor_hex: String,
 }
 
-fn storage() -> Storage<NativeSpace> {
-    Storage::<NativeSpace>::default()
-}
-
 async fn decode_provider(
     root_did: &dialog_varsig::Did,
     bytes: Result<Vec<u8>, dialog_effects::credential::CredentialError>,
@@ -157,17 +153,8 @@ pub(crate) async fn require_account_with_operator(
 }
 
 async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
-    let Some(root) = crate::identity::local_root(profile).await? else {
-        return Ok(None);
-    };
-    let root_did = parse_root_did(&root.root_did)?;
-    let bytes = profile
-        .credential()
-        .site(ACCOUNT_LINK_SITE)
-        .load::<Vec<u8>>()
-        .perform(&storage())
-        .await;
-    decode_provider(&root_did, bytes).await
+    let operator = crate::account_state::credential_operator(profile).await?;
+    stored_provider_with_operator(profile, &operator).await
 }
 
 fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
@@ -228,6 +215,7 @@ async fn persist(
     let record = AccountProviderRecord::attach(service_url, &descriptor, &root_did, now)
         .await
         .context("account service returned an unusable repository descriptor")?;
+    let operator = crate::account_state::credential_operator(profile).await?;
     profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
@@ -236,7 +224,7 @@ async fn persist(
                 .encode()
                 .context("failed to serialize account provider")?,
         )
-        .perform(&storage())
+        .perform(&operator)
         .await
         .context("failed to attach the account provider")?;
     Ok(root.root_did)
