@@ -180,6 +180,58 @@ tonk account link \
   --account-url https://staging.tonk.xyz/account/link
 ```
 
+### Preview
+
+Preview is a third wrangler environment, on no route at all: `.github/workflows/publish.yml`
+uploads one version of it per pull request under a `pr-<number>` preview alias
+and reads back the workers.dev URL that alias resolves to. The access worker's
+`ACCOUNT_SERVICE_URL` is then overridden with that URL, so a pull request's
+browser reaches the same pull request's registry rather than a released one.
+
+The environment exists so continuous integration can apply an unreviewed
+migration to a real D1 database. That is exactly what must never happen to
+staging, and it is why preview holds its own database and buckets rather than
+borrowing staging's. Resetting or recreating any of them is safe, and is the
+right first move whenever two open pull requests have left the schema in a
+state neither of them expects.
+
+Bootstrap covers both workers, because a preview is only testable as a pair.
+Do it once, in order; after this, pull requests need no manual step.
+
+State:
+
+1. `wrangler d1 create tonk-accounts-preview` and paste the returned id into
+   `database_id` under `[[env.preview.d1_databases]]`.
+2. `wrangler r2 bucket create tonk-account-chains-preview`.
+3. `wrangler r2 bucket create tonk-revocations-preview`. Both workers bind this
+   one: this service publishes revocation artifacts into it and the access
+   service reads them back, so a preview that split them would enforce nothing.
+4. `wrangler r2 bucket create tonk-spaces-preview`, bound by the access service
+   as `BUCKET`.
+
+Secrets, which are per-environment and so have to be set explicitly:
+
+5. `wrangler secret put RESEND_API_KEY -c wrangler.account.toml --env preview`.
+   Preview sends from the same verified domain as staging and production, so it
+   inherits the same email fan-out exposure and wants the matching rate limiting
+   rule.
+6. `wrangler secret put R2_ACCESS_KEY_ID -c wrangler.toml --env preview` and
+   `wrangler secret put R2_SECRET_ACCESS_KEY -c wrangler.toml --env preview`,
+   from an R2 API token granting object read and write on `tonk-spaces-preview`.
+   That is the only bucket these credentials presign; `BUCKET` and `REVOCATIONS`
+   are native bindings and need none.
+
+Workers. `wrangler versions upload` versions an existing Worker and fails when
+there is none, so each needs one deploy by hand before the workflow has anything
+to attach its uploads to:
+
+7. `wrangler deploy -c wrangler.account.toml --env preview`.
+8. `wrangler deploy -c wrangler.toml --env preview`.
+
+The API token the workflow authenticates with needs D1 edit permission, not just
+Workers deployment. Without it the run fails at the migration step, before
+either upload.
+
 ## Abuse controls
 
 Application-level throttles live in `src/core/codes.rs`: per-email 60 s
@@ -212,6 +264,10 @@ Migrations must be applied to both environments (wrangler reads
 wrangler d1 migrations list tonk-accounts --remote -c wrangler.account.toml
 wrangler d1 migrations list tonk-accounts-staging --remote -c wrangler.account.toml --env staging
 ```
+
+Preview is not on this list: its migrations are applied by the deploy workflow
+on every pull request, so its schema is whatever the branch under review says it
+is, and drift there is the expected state rather than a fault.
 
 Both must show `0001_init.sql`, `0002_link_requests.sql`, and
 `0003_device_delegation_path.sql` as applied; apply any pending ones with the
