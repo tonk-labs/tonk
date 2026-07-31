@@ -61,8 +61,8 @@ fn prf_extensions() -> AuthenticationExtensionsClientInputs {
 /// boundary — any origin allowed to use it can silently derive a visiting
 /// user's root key with one discoverable-credential assertion — so it is
 /// pinned to this exact origin and nothing else. Every other host under
-/// `tonk.spot`, including staging and any wildcard hostname, is its own
-/// relying party with its own disjoint credentials. Widening later is
+/// `tonk.spot`, including any wildcard hostname, is its own relying party
+/// with its own disjoint credentials. Widening later is
 /// possible via Related Origin Requests; narrowing never is.
 const RP_APEX: &str = "tonk.spot";
 
@@ -295,7 +295,6 @@ mod tests {
         // cannot derive an apex root key from a visiting user's passkey.
         assert_eq!(apex_rp_id("www.tonk.spot"), None);
         assert_eq!(apex_rp_id("hub.tonk.spot"), None);
-        assert_eq!(apex_rp_id("staging.tonk.spot"), None);
         assert_eq!(apex_rp_id("a.b.tonk.spot"), None);
         assert_eq!(apex_rp_id("staging.tonk.xyz"), None);
         assert_eq!(apex_rp_id("localhost"), None);

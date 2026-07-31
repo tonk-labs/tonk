@@ -109,8 +109,7 @@ remotes where one fails to decode resolves the other implicitly.
 
 **Analytics classified CLI invitees as `dev`.**
 `rust/tonk-analytics/src/web.rs` knew only `hub.tonk.xyz` and
-`staging.tonk.xyz`. It now maps `tonk.spot` and `staging.tonk.spot` to
-the same environments.
+`staging.tonk.xyz`. It now maps the production alias `tonk.spot` too.
 
 **Stale command names.** `tonk concepts` → `tonk concept ls` in
 `.claude/skills/tonk-bug/SKILL.md` (agent-facing, so a live footgun)

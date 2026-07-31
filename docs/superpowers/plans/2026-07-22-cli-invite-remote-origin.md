@@ -930,11 +930,11 @@ Expected: the link starts with `https://tonk.spot/join?access=` after Task 7 (be
 export TONK_SPOTS_STATE="$(mktemp -d)"
 export TONK_SPOT=probe-staging
 cargo run -q -p tonk-cli --bin tonk -- spot new probe-staging 2>&1 | tail -2
-cargo run -q -p tonk-cli --bin tonk -- remote add origin https://staging.tonk.spot/ucan/ 2>&1 | tail -2
+cargo run -q -p tonk-cli --bin tonk -- remote add origin https://staging.tonk.xyz/ucan/ 2>&1 | tail -2
 cargo run -q -p tonk-cli --bin tonk -- invite 2>&1 | tail -4
 ```
 
-Expected: a short link of the form `https://staging.tonk.spot/@/<base58>#<seed>`, and **no** shorten warning. This is the whole point of the change — if the warning is still there, stop and diagnose before continuing.
+Expected: a short link of the form `https://staging.tonk.xyz/@/<base58>#<seed>`, and **no** shorten warning. This is the whole point of the change — if the warning is still there, stop and diagnose before continuing.
 
 Note this makes a real `PUT` to the staging shortcut service, storing a delegation for a throwaway local repo with no data on it.
 
@@ -947,7 +947,7 @@ cargo run -q -p tonk-cli --bin tonk -- invite --remote origin 2>&1 | tail -3
 cargo run -q -p tonk-cli --bin tonk -- invite --no-remote 2>&1 | tail -3
 ```
 
-Expected: the bare `invite` errors naming both remotes; `--remote origin` mints a short `staging.tonk.spot` link; `--no-remote` mints against the fallback base with a shorten warning.
+Expected: the bare `invite` errors naming both remotes; `--remote origin` mints a short `staging.tonk.xyz` link; `--no-remote` mints against the fallback base with a shorten warning.
 
 - [ ] **Step 8: Commit**
 
@@ -1322,4 +1322,4 @@ Neither PR makes production shorten. `https://tonk.spot/@` returns 404 because t
 curl -s -X PUT https://tonk.spot/@ --data-binary "/join?access=probe" -w " [%{http_code}]\n"
 ```
 
-Expected after the deploy: a base58 hash and `[200]`, matching `staging.tonk.spot` today.
+Expected after the deploy: a base58 hash and `[200]`, matching `staging.tonk.xyz` today.

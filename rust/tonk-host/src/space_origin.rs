@@ -9,7 +9,7 @@
 //! resolution; classification then reduces to an origin comparison.
 //!
 //! It is an ILLUSION. The document is really served from the host origin
-//! (`staging.tonk.spot`) at `/space/{did}/...`; the host translates a
+//! (`staging.tonk.xyz`) at `/space/{did}/...`; the host translates a
 //! guest-world path back to the real route at the bridge. Only the guest's
 //! internal coordinate system is the per-space origin.
 //!

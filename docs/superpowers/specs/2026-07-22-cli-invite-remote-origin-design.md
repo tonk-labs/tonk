@@ -23,7 +23,7 @@ Measured, 2026-07-22:
 | origin | `PUT /@` |
 | --- | --- |
 | `tonk.spot` (= `hub.tonk.xyz`, prod) | 404 Not Found |
-| `staging.tonk.spot` (= `staging.tonk.xyz`) | 200, returns a base58 hash |
+| `staging.tonk.xyz` | 200, returns a base58 hash |
 
 `wrangler.toml` gates the routes on `run_worker_first = ["/@", "/@/*",
 ...]` under `[assets]`; the production deploy predates that, so the asset
@@ -149,5 +149,5 @@ access service via `AccessServiceAddress`. Extend it to mint without an
 explicit `--base-url` and assert the link's origin matches the harness
 remote's, which is the regression this whole change is about.
 
-Manual check against staging: register a `staging.tonk.spot` remote,
+Manual check against staging: register a `staging.tonk.xyz` remote,
 run `tonk invite`, confirm a short link with no warning.
