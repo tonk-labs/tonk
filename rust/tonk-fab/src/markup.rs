@@ -189,9 +189,14 @@ pub fn fab_html(space_did: &str) -> String {
   </form>
   <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
 </wa-dialog>
+<!-- One prompt, two repairs. Both end in the same `tonk:enable-sync` claim,
+     so they share a dialog — but every line of it is rewritten per refusal
+     (see `share.rs::Repair`), because a spot missing only its revocation
+     relay is already synced and "turn on sync" would be a lie. The markup
+     here is just the `not-synced` wording, which is also the default. -->
 <wa-dialog id="fab-enable-sync" label="Turn on sync?" class="fab__dialog" style="--width: 28rem">
   <p class="fab__prompt" data-enable-sync-detail>This spot only exists on this device.</p>
-  <p class="fab__prompt">Turn on sync so the people you share with can open it.</p>
+  <p class="fab__prompt" data-enable-sync-action>Turn on sync so the people you share with can open it.</p>
   <wa-button slot="footer" variant="primary" data-enable-sync-confirm>Turn on sync &amp; copy link</wa-button>
   <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
 </wa-dialog>
@@ -366,5 +371,9 @@ mod tests {
         assert!(html.contains("data-enable-sync-confirm"));
         assert!(html.contains("Turn on sync &amp; copy link"));
         assert!(html.contains("Not now"));
+        // The line `share.rs` rewrites per refusal class. Without the hook it
+        // is silently stuck on the `not-synced` wording, which is a lie for
+        // every other class the prompt serves.
+        assert!(html.contains("data-enable-sync-action"));
     }
 }
