@@ -1,10 +1,10 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker_api::{
-    AccountDevice, AccountLinkRequest, AccountStatus, EvaluateResponse, IdentifyResponse,
-    JoinRequest, JoinResponse, MembershipResponse, QueryResponse, RepositoryInfo,
-    RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
-    SyncStatusResponse,
+    AccountDevice, AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus,
+    EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse, MembershipResponse,
+    QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus,
+    SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -545,6 +545,8 @@ pub async fn save_account_link(
     root_did: String,
     credential_id: String,
     delegation_hex: String,
+    descriptor_hex: String,
+    initialize_name: bool,
 ) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -554,6 +556,8 @@ pub async fn save_account_link(
             root_did,
             credential_id,
             delegation_hex,
+            descriptor_hex,
+            initialize_name,
         })
         .send()
         .await
@@ -565,6 +569,32 @@ pub async fn save_account_link(
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "POST /api/account/attach returned {status}: {text}"
+        )))
+    }
+}
+
+/// Persist and hydrate the service-selected repository winner for a legacy link.
+pub async fn establish_local_account_repository(
+    descriptor_hex: String,
+    created: bool,
+) -> Result<AccountStatus, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/account/repository/establish", origin()))
+        .json(&AccountRepositoryEstablishRequest {
+            descriptor_hex,
+            created,
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/account/repository/establish returned {status}: {text}"
         )))
     }
 }
@@ -684,7 +714,7 @@ pub async fn submit_account_ceremony(
     service: &str,
     path: &str,
     invocation_hex: &str,
-) -> Result<(), TonkUiError> {
+) -> Result<serde_json::Value, TonkUiError> {
     let body = hex::decode(invocation_hex)
         .map_err(|error| TonkUiError::ApiError(format!("invalid invocation bytes: {error}")))?;
     let response = reqwest::Client::new()
@@ -699,7 +729,7 @@ pub async fn submit_account_ceremony(
         .await
         .map_err(into_api_error)?;
     if response.status().is_success() {
-        Ok(())
+        response.json().await.map_err(into_api_error)
     } else {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();

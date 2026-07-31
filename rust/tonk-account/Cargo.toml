@@ -1,0 +1,39 @@
+[package]
+name = "tonk-account"
+description = "Shared account repository contracts and lifecycle primitives"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(dialog_test_native_integration)",
+    "cfg(dialog_test_wasm_integration)",
+    'cfg(feature, values("web-integration-tests"))',
+] }
+
+[dependencies]
+blake3 = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-repository = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+dialog-operator = { workspace = true }
+dialog-repository = { workspace = true, features = ["helpers"] }
+dialog-storage = { workspace = true, features = ["helpers"] }
+dialog-ucan = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }

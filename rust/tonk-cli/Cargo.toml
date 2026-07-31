@@ -134,6 +134,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util", "signal", "time"] }
 tokio-util = { workspace = true }
+tonk-account = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-identity = { workspace = true }

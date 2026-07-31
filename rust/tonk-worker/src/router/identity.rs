@@ -2,7 +2,6 @@
 
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_effects::credential::CredentialError;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
@@ -84,7 +83,7 @@ async fn load_record(state: &TonkState) -> Result<Option<LocalRootRecord>, TonkW
         .await
     {
         Ok(bytes) => bytes,
-        Err(CredentialError::NotFound(_)) => return Ok(None),
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
         Err(error) => {
             return Err(TonkWorkerError::Internal(format!(
                 "failed to load local root: {error}"

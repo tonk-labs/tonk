@@ -65,6 +65,9 @@ pub mod query_source;
 pub mod sync;
 pub use sync::*;
 
+pub mod account;
+pub use account::AccountDisplayName;
+
 pub mod replica;
 pub use replica::*;
 

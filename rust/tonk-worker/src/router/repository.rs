@@ -17,8 +17,6 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Ed25519Signer, SignerCredential};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use dialog_effects::credential::CredentialError;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -530,8 +528,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
 
     let mut labels = Vec::new();
     for replica in rows {
-        // The profile's self-replica is not a space.
-        if replica.subject.0 == profile_entity {
+        if replica.kind != Replica::repository_kind() {
             continue;
         }
         let Ok(did) = replica.subject.0.to_string().parse::<Did>() else {
@@ -652,28 +649,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             } else {
                 name
             };
-            let root = {
+            let has_account = {
                 let tonk = env.state().read().await;
-                super::identity::local_root(&tonk).await
+                super::account::require_account(&tonk).await.is_ok()
             };
-            match root {
-                Ok(_) => {}
-                Err(TonkWorkerError::RootRequired) => {
-                    crate::router::navigate::notify_identity_required(
-                        env.client(),
-                        tonk_worker_api::IdentityIntent::CreateSpace {
-                            name,
-                            remote,
-                            revocation_url,
-                            template,
-                        },
-                    );
-                    return;
-                }
-                Err(error) => {
-                    log!("CreateSpace local root is unreadable: {error}");
-                    return;
-                }
+            if !has_account {
+                crate::router::navigate::notify_account_required(
+                    env.client(),
+                    tonk_worker_api::PendingIntent::CreateSpace {
+                        name,
+                        remote,
+                        revocation_url,
+                        template,
+                    },
+                );
+                return;
             }
 
             log!("command CreateSpace name={} remote={:?}", name, remote);
@@ -992,6 +982,7 @@ async fn run_invite(
         .map_err(|e| {
             TonkWorkerError::NotFound(format!("Repository '{repo_name}' not found: {e}"))
         })?;
+    require_real_space(&tonk, &repository.did()).await?;
 
     // Both facts are keyed by the repository's *subject* DID — the entity
     // the share view already addresses (`entity={subject}`) — not the
@@ -1497,42 +1488,13 @@ async fn run_profile_rename(
     name: &str,
 ) -> Result<(), TonkWorkerError> {
     let tonk = env.state().read().await;
-    let profile_entity = tonk.profile.did().this();
+    crate::router::account_state::rename_display_name(&tonk, name).await?;
 
-    // 1. Persist the override on the profile meta branch.
-    tonk.reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .transaction()
-        .assert(tonk_schema::ProfileName::new(
-            profile_entity,
-            name.to_string(),
-        ))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to persist profile name override: {e}"))
-        })?;
-
-    // 2. Re-stamp MemberName on every space's roster, so peers on each
-    //    space the profile belongs to see the new name — not just the one
-    //    in focus. Per-space failures are logged inside; a single
-    //    unreachable space must not abort the rename.
-    crate::router::profile_name::restamp_member_name_all_spaces(&tonk, name).await;
-
-    // 3. Re-stamp the self-identity overlay on every space so the topbar chip
-    //    reflects the new name instantly without waiting for the next sync
-    //    cycle. The rename fires on the PROFILE branch, so there is no origin
-    //    space to target — re-stamp them all (mirrors step 2).
-    crate::router::profile_name::restamp_self_identity_all_spaces(&tonk).await;
-
-    // 4. Prompt an immediate push so peers see the new name without waiting
-    //    for the 20s heartbeat. Fire-and-forget: the held read lock is
-    //    released before the spawned task runs.
+    // Prompt an immediate push so peers see the new name without waiting for
+    // the heartbeat. Linked and unlinked paths both queue their durable writes
+    // before this compatibility notification.
     drop(tonk);
     crate::router::join::notify_sync(env.client());
-
     Ok(())
 }
 
@@ -1832,10 +1794,10 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), RepositoryError> {
     {
         let tonk = state.write().await;
-        if *subject == tonk.profile.did() {
-            return Err(RepositoryError::Internal(
-                "refusing to remove the profile's self-replica".to_string(),
-            ));
+        if let Err(error) = require_real_space(&tonk, subject).await
+            && replica_still_recorded(&tonk, subject).await?
+        {
+            return Err(RepositoryError::Internal(error.to_string()));
         }
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
@@ -1862,6 +1824,43 @@ async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), Repos
         tonk.reactor.evict(subject.repo_key());
     }
     Ok(())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open profile meta: {error}")))?;
+    let rows: Vec<Replica> = meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::from(entity),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("replica kind query: {error:?}")))?;
+    if rows
+        .iter()
+        .any(|replica| replica.kind == Replica::repository_kind())
+    {
+        Ok(())
+    } else {
+        Err(TonkWorkerError::Forbidden(
+            "system replicas are ineligible for user-space controls".to_string(),
+        ))
+    }
 }
 
 /// Retract every fact keyed on `subject`'s replica entity from the
@@ -2014,9 +2013,9 @@ async fn run_pause_sync(
         .acquire(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::NotFound(format!("{repo}/{branch} not found: {e}")))?;
-    let replica = Replica::new(tonk.profile.did(), session.handle().of().clone())
-        .this()
-        .clone();
+    let subject = session.handle().of().clone();
+    require_real_space(&tonk, &subject).await?;
+    let replica = Replica::new(tonk.profile.did(), subject).this().clone();
 
     // Toggle: read the current preference (absent → enabled, so a first click
     // pauses), flip it.
@@ -2535,6 +2534,14 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
+    // Ahead of the root read, and ahead of every write: a spot created without
+    // an account is local-only and un-backed-up, and nothing later in this
+    // function would notice. The gate belongs here rather than only at the
+    // command handler so the HTTP route the gate replays through is held to
+    // the same rule.
+    super::account::require_account(tonk)
+        .await
+        .map_err(|_| RepositoryError::AccountRequired)?;
     let local_root = match super::identity::local_root(tonk).await {
         Ok(root) => root,
         Err(TonkWorkerError::RootRequired) => return Err(RepositoryError::RootRequired),
@@ -2634,11 +2641,12 @@ pub(crate) async fn space_root_prefix(
         .load::<Vec<u8>>()
         .perform(&tonk.operator)
         .await
-        .map_err(|error| match error {
-            CredentialError::NotFound(_) => TonkWorkerError::NotFound(
-                "space root delegation is not persisted on this device".to_string(),
-            ),
-            error => {
+        .map_err(|error| {
+            if crate::credential::is_missing(&error) {
+                TonkWorkerError::NotFound(
+                    "space root delegation is not persisted on this device".to_string(),
+                )
+            } else {
                 TonkWorkerError::Internal(format!("failed to load space root delegation: {error}"))
             }
         })?;
@@ -4526,6 +4534,23 @@ mod tests {
         (app, state, info.name)
     }
 
+    /// A profile holding one space, signed out of its account.
+    ///
+    /// The local profile-name override belongs to this state: with an account
+    /// attached, a rename adopts the account's display name instead. Signing
+    /// out is how a device reaches it while still holding spaces — creating
+    /// them without an account is what the account gate refuses.
+    async fn fresh_repo_signed_out(label: &str) -> (Router, AppState, String) {
+        let (app, state, key) = fresh_repo(label).await;
+        {
+            let tonk = state.read().await;
+            crate::router::account::detach_test_account(&tonk)
+                .await
+                .expect("the test account detaches");
+        }
+        (app, state, key)
+    }
+
     /// A freshly created repo reports exactly its founder as a member,
     /// named, marked `is_self`, with no inviter.
     #[dialog_common::test]
@@ -4677,6 +4702,47 @@ mod tests {
         );
     }
 
+    /// Account replicas survive removal and fail the shared guard used by
+    /// pause, invite, and other direct user-space controls.
+    #[dialog_common::test]
+    async fn it_refuses_user_space_controls_for_the_account_replica() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (_app, state, _key) = fresh_repo("test-account-controls").await;
+        let account = Ed25519Signer::import(&[74; 32]).await.unwrap().did();
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .profile_repository()
+                .branch(super::PROFILE_BRANCH)
+                .transaction()
+                .assert(super::Replica::account(tonk.profile.did(), account.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .expect("seed account replica");
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+            super::require_real_space(&tonk, &account)
+                .await
+                .expect_err("account replica must fail the user-space guard");
+        }
+
+        super::remove_space_inner(&state, &account)
+            .await
+            .expect_err("account replica must not be removable");
+        let remaining = profile_replicas(&state).await;
+        assert!(
+            remaining
+                .iter()
+                .any(|replica| replica.subject.0 == account.this()
+                    && replica.kind == super::Replica::account_kind()),
+            "the account replica must survive refused controls"
+        );
+    }
+
     /// Build a one-entity transient `ProfileRename{this, name, marker}`
     /// batch — the facts the identity chip's `<tonk-editable>` commit
     /// asserts. Mirrors how `command::tests::ping_transient` hand-builds a
@@ -4723,7 +4789,7 @@ mod tests {
     /// re-stamps the self member's `MemberName` on the current space.
     #[dialog_common::test]
     async fn it_persists_the_override_and_restamps_the_current_space() {
-        let (_app, state, key) = fresh_repo("test-profile-rename").await;
+        let (_app, state, key) = fresh_repo_signed_out("test-profile-rename").await;
 
         // Drive the transient command through the real dispatcher, scoped
         // to the space's content branch — mirrors
@@ -4765,7 +4831,9 @@ mod tests {
     async fn it_restamps_member_name_across_all_spaces() {
         let (app, state, key_a) = fresh_repo("rename-all-a").await;
 
-        // A second space in the same profile/state.
+        // A second space in the same profile/state. Both are created before
+        // signing out, because creating one is exactly what the account gate
+        // refuses afterwards.
         let key_b = {
             let response = app
                 .clone()
@@ -4786,6 +4854,12 @@ mod tests {
             let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
             info.name
         };
+        {
+            let tonk = state.read().await;
+            crate::router::account::detach_test_account(&tonk)
+                .await
+                .expect("the test account detaches");
+        }
 
         // Rename while focused on space A.
         let changes = profile_rename_transient("did:key:zRenameAll", "brave-lynx");
@@ -4821,7 +4895,7 @@ mod tests {
     async fn it_stamps_the_self_identity_overlay_with_an_empty_origin() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (_app, state, key) = fresh_repo("rename-empty-origin").await;
+        let (_app, state, key) = fresh_repo_signed_out("rename-empty-origin").await;
 
         // Realistic origin: a profile-branch rename command has no repo.
         let changes = profile_rename_transient("did:key:zRenameChip", "brave-lynx");

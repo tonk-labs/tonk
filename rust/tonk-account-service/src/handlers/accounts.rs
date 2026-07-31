@@ -6,6 +6,7 @@ use crate::auth::{authorize_root, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
+use crate::store::Store;
 
 /// `OPTIONS /accounts` → CORS preflight.
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
@@ -37,6 +38,8 @@ async fn handle_inner(
         device_did: required_string(&caller.arguments, "deviceDid").map_err(ceremony_error)?,
         device_name: required_string(&caller.arguments, "deviceName").map_err(ceremony_error)?,
         delegation_hex: required_string(&caller.arguments, "delegation").map_err(ceremony_error)?,
+        repository_descriptor_hex: required_string(&caller.arguments, "repositoryDescriptor")
+            .map_err(ceremony_error)?,
         root_did: caller.root_did,
     };
     let store = build_store(ctx)?;
@@ -44,10 +47,22 @@ async fn handle_inner(
     let account_id = create_account(&store, &request, now)
         .await
         .map_err(ceremony_error)?;
+    let account = store
+        .account_by_root(&request.root_did)
+        .await
+        .map_err(|error| ceremony_error(error.into()))?
+        .ok_or_else(|| {
+            ServiceError::new(ErrorCode::InternalError, "created account was not found")
+        })?;
+    let descriptor_hex = account
+        .repository_descriptor
+        .map(hex::encode)
+        .ok_or_else(|| ServiceError::new(ErrorCode::InternalError, "descriptor was not stored"))?;
 
-    Response::from_json(&serde_json::json!({ "accountId": account_id }))
-        .map(|response| response.with_status(201))
-        .map_err(|err| {
-            ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
-        })
+    Response::from_json(&serde_json::json!({
+        "accountId": account_id,
+        "descriptorHex": descriptor_hex,
+    }))
+    .map(|response| response.with_status(201))
+    .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
 }

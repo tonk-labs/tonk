@@ -258,6 +258,14 @@ impl SpotStore {
         self.dir.join(REGISTRY_FILE)
     }
 
+    /// Dedicated account-system repository directory.
+    ///
+    /// It is a sibling of `spots/`, never a registered spot and never written
+    /// to `spots.json`.
+    pub fn account_dir(&self) -> PathBuf {
+        self.dir.join("account")
+    }
+
     /// Canonical site directory for `name` inside this store.
     /// Purely a path computation — nothing is created.
     pub fn canonical_site(&self, name: &str) -> PathBuf {
@@ -663,6 +671,14 @@ mod tests {
             let (_tmp, store) = store();
             let registry = store.load().expect("load");
             assert_eq!(registry, Registry::default());
+        }
+
+        #[test]
+        fn it_keeps_account_storage_outside_spots_and_the_registry() {
+            let (tmp, store) = store();
+            assert_eq!(store.account_dir(), tmp.path().join("account"));
+            assert_ne!(store.account_dir(), store.canonical_site("account"));
+            assert!(store.load().unwrap().spots.is_empty());
         }
 
         #[test]

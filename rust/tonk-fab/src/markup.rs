@@ -203,7 +203,7 @@ pub fn fab_html(space_did: &str) -> String {
      which keeps this prompt's promise the one it can keep. -->
 <wa-dialog id="fab-join-first" label="Join this spot?" class="fab__dialog" style="--width: 28rem">
   <p class="fab__prompt" data-join-first-detail>You're visiting this spot as a guest.</p>
-  <p class="fab__prompt">Joining makes you a member of it, so you can share it with other people.</p>
+  <p class="fab__prompt">Joining makes you a member of it, so you can share it with other people. It needs a Tonk account — we'll ask you to sign in if you don't have one yet, and bring you back here.</p>
   <wa-button slot="footer" variant="primary" data-join-first-confirm>Join this spot</wa-button>
   <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Not now</wa-button>
 </wa-dialog>"#,

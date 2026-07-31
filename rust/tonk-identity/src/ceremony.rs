@@ -26,6 +26,19 @@ pub struct AccountCeremony {
     pub device_did: String,
     /// Hex-encoded `root → device` delegation chain.
     pub delegation_hex: String,
+    /// Exact signed account repository descriptor, only during creation.
+    pub descriptor_hex: Option<String>,
+    /// Hex-encoded root-signed invocation container for the account service.
+    pub invocation_hex: String,
+}
+
+/// Output of the one-time account repository establishment ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRepositoryCeremony {
+    /// The passkey-derived root DID that signed the request.
+    pub root_did: String,
+    /// Exact signed account repository descriptor.
+    pub descriptor_hex: String,
     /// Hex-encoded root-signed invocation container for the account service.
     pub invocation_hex: String,
 }
@@ -114,6 +127,7 @@ async fn build(
     arguments: BTreeMap<String, Promised>,
     device_did: String,
     delegation_hex: String,
+    descriptor_hex: Option<String>,
 ) -> Result<AccountCeremony> {
     let root_did = root.did();
     let invocation = InvocationBuilder::new()
@@ -139,6 +153,7 @@ async fn build(
         root_did: root_did.to_string(),
         device_did,
         delegation_hex,
+        descriptor_hex,
         invocation_hex,
     })
 }
@@ -160,6 +175,7 @@ pub async fn sign_revocation(
 }
 
 /// Build account creation around an existing stable local-root grant.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_account(
     root: Ed25519Signer,
     email: String,
@@ -168,7 +184,12 @@ pub async fn create_account(
     device_did: dialog_varsig::Did,
     device_name: String,
     delegation_hex: String,
+    remote: String,
 ) -> Result<AccountCeremony> {
+    let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, &remote)
+        .await
+        .context("failed to sign account repository descriptor")?;
+    let descriptor_hex = hex::encode(descriptor.bytes());
     let device_did_string = device_did.to_string();
     let bytes = hex::decode(&delegation_hex).context("invalid existing delegation hex")?;
     let delegation = DelegationChain::try_from(bytes.as_slice())
@@ -186,9 +207,11 @@ pub async fn create_account(
             ("deviceDid", device_did.to_string()),
             ("deviceName", device_name),
             ("delegation", delegation_hex.clone()),
+            ("repositoryDescriptor", descriptor_hex.clone()),
         ]),
         device_did_string,
         delegation_hex,
+        Some(descriptor_hex),
     )
     .await
 }
@@ -216,8 +239,47 @@ pub async fn link_device(
         ]),
         device_did_string,
         delegation_hex,
+        None,
     )
     .await
+}
+
+/// Sign the one-time repository descriptor for an existing account.
+pub async fn establish_account_repository(
+    root: Ed25519Signer,
+    remote: String,
+) -> Result<AccountRepositoryCeremony> {
+    let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, &remote)
+        .await
+        .context("failed to sign account repository descriptor")?;
+    let descriptor_hex = hex::encode(descriptor.bytes());
+    let root_did = root.did();
+    let invocation = InvocationBuilder::new()
+        .issuer(root)
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(vec![
+            "account".into(),
+            "repository".into(),
+            "establish".into(),
+        ])
+        .arguments(strings([("repositoryDescriptor", descriptor_hex.clone())]))
+        .proofs(vec![])
+        .issue_now()
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .context("failed to sign account repository invocation")?;
+    let invocation = InvocationChain::new(invocation, HashMap::new());
+    Ok(AccountRepositoryCeremony {
+        root_did: root_did.to_string(),
+        descriptor_hex,
+        invocation_hex: hex::encode(
+            invocation
+                .to_bytes()
+                .context("failed to serialize account invocation")?,
+        ),
+    })
 }
 
 /// Build the root-signed completion for a CLI browser handoff.
@@ -245,6 +307,7 @@ pub async fn complete_link(
         ]),
         device_did_string,
         delegation_hex,
+        None,
     )
     .await
 }
@@ -276,6 +339,7 @@ mod tests {
             device.clone(),
             "laptop".into(),
             delegation_hex,
+            "https://accounts.example/ucan/".into(),
         )
         .await
         .unwrap();
@@ -300,6 +364,17 @@ mod tests {
             chain.arguments().get("email"),
             Some(&Promised::String("a@x.com".into()))
         );
+        let descriptor_hex = output.descriptor_hex.unwrap();
+        assert_eq!(
+            chain.arguments().get("repositoryDescriptor"),
+            Some(&Promised::String(descriptor_hex.clone()))
+        );
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::validate(
+            &hex::decode(descriptor_hex).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(descriptor.account_subject(), &expected_root);
     }
 
     #[dialog_common::test]
@@ -329,6 +404,41 @@ mod tests {
         assert_eq!(
             chain.arguments().get("deviceDid"),
             Some(&Promised::String(device.to_string()))
+        );
+        assert!(output.descriptor_hex.is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_signs_a_non_expiring_descriptor_for_establishment() {
+        let (root, _) = fixture().await;
+        let expected_root = root.did();
+        let output = establish_account_repository(root, "https://accounts.example/ucan/".into())
+            .await
+            .unwrap();
+        let invocation =
+            InvocationChain::try_from(hex::decode(output.invocation_hex).unwrap().as_slice())
+                .unwrap();
+        invocation
+            .verify(&dialog_credentials::Ed25519KeyResolver)
+            .await
+            .unwrap();
+        assert_eq!(
+            invocation.command().0,
+            vec![
+                "account".to_string(),
+                "repository".to_string(),
+                "establish".to_string(),
+            ]
+        );
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::validate(
+            &hex::decode(&output.descriptor_hex).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(descriptor.account_subject(), &expected_root);
+        assert_eq!(
+            invocation.arguments().get("repositoryDescriptor"),
+            Some(&Promised::String(output.descriptor_hex))
         );
     }
 

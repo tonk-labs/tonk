@@ -20,9 +20,6 @@ pub(crate) struct CreateRootInput {
     pub label: Option<String>,
 }
 
-/// Evaluating an existing root takes the same device binding as creation.
-pub(crate) type EvaluateRootInput = CreateRootInput;
-
 /// Input for creating an account and its first device registration.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +31,27 @@ pub(crate) struct CreateAccountInput {
     pub root_did: String,
     pub credential_id: String,
     pub delegation_hex: String,
+    /// Account repository remote this browser proposes for the new account.
+    pub remote: String,
+}
+
+/// Input for the one-time account repository establishment ceremony.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EstablishRepositoryInput {
+    /// Account repository remote this browser proposes.
+    pub remote: String,
+}
+
+/// Establishment ceremony output sent to the account service.
+///
+/// Its `descriptorHex` is deliberately not read: only the service-selected
+/// winner may be stored locally, and this is merely the candidate this browser
+/// signed. Serde ignores the extra field.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EstablishCeremonyOutput {
+    pub invocation_hex: String,
 }
 
 /// Input for linking the current browser as another account device.
@@ -143,16 +161,16 @@ pub(crate) async fn create_root(input: CreateRootInput) -> Result<RootOutput, Id
     call("createRoot", input).await
 }
 
-pub(crate) async fn evaluate_root(
-    input: EvaluateRootInput,
-) -> Result<RootOutput, IdentityBridgeError> {
-    call("evaluateRoot", input).await
-}
-
 pub(crate) async fn create_account(
     input: CreateAccountInput,
 ) -> Result<CeremonyOutput, IdentityBridgeError> {
     call("createAccount", input).await
+}
+
+pub(crate) async fn establish_account_repository(
+    input: EstablishRepositoryInput,
+) -> Result<EstablishCeremonyOutput, IdentityBridgeError> {
+    call("establishAccountRepository", input).await
 }
 
 pub(crate) async fn link_device(
@@ -261,35 +279,14 @@ mod tests {
         "#;
 
         install_method(
-            "evaluateRoot",
-            &format!(
-                r#"{plain_object_guard}
-                if (input.deviceDid !== "did:key:device") return Promise.reject(new Error("property"));
-                return Promise.resolve({{
-                    rootDid: "did:key:root", deviceDid: input.deviceDid,
-                    credentialId: "credential", delegationHex: "delegation"
-                }});"#
-            ),
-        );
-        assert_eq!(
-            evaluate_root(EvaluateRootInput {
-                device_did: "did:key:device".into(),
-                label: None,
-            })
-            .await
-            .unwrap()
-            .root_did,
-            "did:key:root"
-        );
-
-        install_method(
             "createAccount",
             &format!(
                 r#"{plain_object_guard}
                 if (input.email !== "person@example.test" || input.code !== "123456"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.rootDid !== "did:key:root" || input.credentialId !== "credential"
-                    || input.delegationHex !== "delegation")
+                    || input.delegationHex !== "delegation"
+                    || input.remote !== "https://tonk.spot/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
                     rootDid: input.rootDid, credentialId: input.credentialId,
@@ -306,6 +303,7 @@ mod tests {
                 root_did: "did:key:root".into(),
                 credential_id: "credential".into(),
                 delegation_hex: "delegation".into(),
+                remote: "https://tonk.spot/ucan/".into(),
             })
             .await
             .unwrap()

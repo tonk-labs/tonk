@@ -70,6 +70,7 @@ async fn it_explains_an_already_registered_email_over_http() {
             device.did(),
             "laptop".into(),
             hex::encode(grant.to_bytes().unwrap()),
+            "http://127.0.0.1:8080/ucan/".into(),
         )
         .await
         .unwrap();
@@ -147,10 +148,12 @@ async fn it_drives_the_full_ceremony_over_http() {
         device.did(),
         "laptop".into(),
         hex::encode(first_grant.to_bytes().unwrap()),
+        "http://127.0.0.1:8080/ucan/".into(),
     )
     .await
     .unwrap();
 
+    let expected_descriptor = ceremony.descriptor_hex.clone().unwrap();
     let response = client
         .post(format!("{base}/accounts"))
         .body(hex::decode(ceremony.invocation_hex).unwrap())
@@ -160,6 +163,30 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 201);
     let created: serde_json::Value = response.json().await.unwrap();
     assert!(created["accountId"].is_i64());
+    assert_eq!(created["descriptorHex"], expected_descriptor);
+
+    // Establishment is set-if-absent: a later valid candidate receives
+    // the stored creation winner, never its own bytes.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let establishment = tonk_identity::ceremony::establish_account_repository(
+        root,
+        "https://other.example/ucan/".into(),
+    )
+    .await
+    .unwrap();
+    assert_ne!(establishment.descriptor_hex, expected_descriptor);
+    let response = client
+        .post(format!("{base}/account/repository/establish"))
+        .body(hex::decode(establishment.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let established: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(established["descriptorHex"], expected_descriptor);
+    assert_eq!(established["created"], false);
 
     // A fresh browser profile can self-link directly from the root
     // ceremony; it does not need an already registered device to sign.
@@ -181,6 +208,8 @@ async fn it_drives_the_full_ceremony_over_http() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    let linked: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(linked["descriptorHex"], expected_descriptor);
 
     // POST /devices/list -> the newly registered device shows up.
     let body = container(
@@ -352,6 +381,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 200);
     let consumed: serde_json::Value = response.json().await.unwrap();
     assert_eq!(consumed["delegationHex"], expected_delegation);
+    assert_eq!(consumed["descriptorHex"], expected_descriptor);
     let response = client
         .post(format!("{base}/links/consume"))
         .json(&serde_json::json!({ "secret": secret }))

@@ -14,6 +14,7 @@ lsp-types = { workspace = true }
 dialog-varsig = { workspace = true }
 dialog-capability = { workspace = true }
 url = { workspace = true, features = ["serde"] }
+tonk-account = { workspace = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }

@@ -18,7 +18,6 @@
 //! profile rather than inside the profile it names: a pointer stored in
 //! the thing it points at could not be read before opening it.
 
-use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::Directory;
 use dialog_operator::Profile;
 use dialog_storage::provider::storage::Storage;
@@ -82,7 +81,7 @@ impl Registry {
             .await
         {
             Ok(bytes) => bytes,
-            Err(CredentialError::NotFound(_)) => return Ok(None),
+            Err(error) if crate::credential::is_missing(&error) => return Ok(None),
             Err(error) => {
                 return Err(TonkWorkerError::Internal(format!(
                     "failed to read the active profile pointer: {error}"

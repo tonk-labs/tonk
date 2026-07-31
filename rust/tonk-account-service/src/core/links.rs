@@ -70,6 +70,7 @@ pub async fn create_link<S: Store>(
             device_did: device_did.to_string(),
             device_name: device_name.trim().to_string(),
             delegation_hex: None,
+            descriptor_hex: None,
             created_at: now,
             expires_at: now + LINK_TTL_SECONDS,
             consumed_at: None,
@@ -89,7 +90,11 @@ pub async fn resolve_link<S: Store>(
         .link(&token_hash)
         .await?
         .ok_or_else(|| CeremonyError::Unauthorized("unknown link request".to_string()))?;
-    if link.expires_at < now || link.consumed_at.is_some() || link.delegation_hex.is_some() {
+    if link.expires_at < now
+        || link.consumed_at.is_some()
+        || link.delegation_hex.is_some()
+        || link.descriptor_hex.is_some()
+    {
         return Err(CeremonyError::Unauthorized(
             "link request is no longer pending".to_string(),
         ));
@@ -116,7 +121,11 @@ pub async fn complete_link<S: Store>(
         .link(token_hash)
         .await?
         .ok_or_else(|| CeremonyError::Invalid("unknown link request".to_string()))?;
-    if link.expires_at < now || link.consumed_at.is_some() || link.delegation_hex.is_some() {
+    if link.expires_at < now
+        || link.consumed_at.is_some()
+        || link.delegation_hex.is_some()
+        || link.descriptor_hex.is_some()
+    {
         return Err(CeremonyError::Conflict(
             "link request is no longer pending".to_string(),
         ));
@@ -130,6 +139,10 @@ pub async fn complete_link<S: Store>(
         .account_by_root(root_did)
         .await?
         .ok_or_else(|| CeremonyError::Unauthorized("unknown account".to_string()))?;
+    let descriptor = account.repository_descriptor.as_ref().ok_or_else(|| {
+        CeremonyError::Conflict(tonk_account::UNESTABLISHED_ACCOUNT_CONFLICT.to_string())
+    })?;
+    let descriptor_hex = hex::encode(descriptor);
     let delegation_cid = check_device_delegation(delegation_hex, root_did, device_did).await?;
     let completed = store
         .complete_link(
@@ -144,6 +157,7 @@ pub async fn complete_link<S: Store>(
                 created_at: now,
             },
             delegation_hex,
+            &descriptor_hex,
             now,
         )
         .await?;
@@ -163,9 +177,12 @@ pub struct ConsumedLink {
     pub delegation_hex: String,
     /// Opaque credential identifier belonging to the root passkey.
     pub credential_id: String,
+    /// Exact established account repository descriptor hex.
+    pub descriptor_hex: String,
 }
 
-/// Consume a completed delegation once. `None` means the CLI should poll again.
+/// Consume a completed delegation and descriptor once. `None` means the CLI
+/// should poll again.
 pub async fn consume_link<S: Store>(
     store: &S,
     secret: &str,
@@ -181,14 +198,14 @@ pub async fn consume_link<S: Store>(
             "link request has expired or was consumed".to_string(),
         ));
     }
-    let completed = link.delegation_hex.is_some();
+    let completed = link.delegation_hex.is_some() && link.descriptor_hex.is_some();
     let consumed = store.consume_link(&token_hash, now).await?;
     if completed && consumed.is_none() {
         return Err(CeremonyError::Conflict(
             "link request was already consumed".to_string(),
         ));
     }
-    let Some(delegation_hex) = consumed else {
+    let Some((delegation_hex, descriptor_hex)) = consumed else {
         return Ok(None);
     };
     let bytes = hex::decode(&delegation_hex).map_err(|error| {
@@ -204,6 +221,7 @@ pub async fn consume_link<S: Store>(
     Ok(Some(ConsumedLink {
         delegation_hex,
         credential_id: account.credential_id,
+        descriptor_hex,
     }))
 }
 
@@ -217,7 +235,7 @@ mod tests {
 
     const SECRET: &str = "0707070707070707070707070707070707070707070707070707070707070707";
 
-    async fn fixture() -> (SqliteStore, String, String, String) {
+    async fn fixture() -> (SqliteStore, String, String, String, String) {
         let store = SqliteStore::in_memory().unwrap();
         let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
             .await
@@ -227,8 +245,19 @@ mod tests {
             .unwrap();
         let root_did = root.did().to_string();
         let device_did = device.did().to_string();
-        store
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(
+            &root,
+            "https://accounts.example/ucan/",
+        )
+        .await
+        .unwrap();
+        let descriptor_hex = hex::encode(descriptor.bytes());
+        let account_id = store
             .create_account("a@x.com", &root_did, "cred", 1)
+            .await
+            .unwrap();
+        store
+            .establish_repository_descriptor(account_id, descriptor.bytes())
             .await
             .unwrap();
         let delegation = tonk_identity::delegation::mint_device_delegation(root, &device.did())
@@ -239,12 +268,13 @@ mod tests {
             root_did,
             device_did,
             hex::encode(delegation.to_bytes().unwrap()),
+            descriptor_hex,
         )
     }
 
     #[dialog_common::test]
     async fn it_completes_and_consumes_a_link_once() {
-        let (store, root, device, delegation) = fixture().await;
+        let (store, root, device, delegation, descriptor) = fixture().await;
         let hash = hash_secret(SECRET).unwrap();
         create_link(&store, &hash, &device, "terminal", 100)
             .await
@@ -261,6 +291,7 @@ mod tests {
             Some(ConsumedLink {
                 delegation_hex: delegation,
                 credential_id: "cred".to_string(),
+                descriptor_hex: descriptor,
             })
         );
         assert!(consume_link(&store, SECRET, 104).await.is_err());
@@ -268,7 +299,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_substitution_and_rolls_back_the_device() {
-        let (store, root, device, delegation) = fixture().await;
+        let (store, root, device, delegation, _) = fixture().await;
         let hash = hash_secret(SECRET).unwrap();
         create_link(&store, &hash, &device, "terminal", 100)
             .await
@@ -282,8 +313,48 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_refuses_to_link_an_unestablished_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let root = tonk_identity::derive::derive_root_signer(&[7u8; 32])
+            .await
+            .unwrap();
+        let device = dialog_credentials::Ed25519Signer::import(&[8u8; 32])
+            .await
+            .unwrap();
+        let root_did = root.did().to_string();
+        let device_did = device.did().to_string();
+        store
+            .create_account("old@x.com", &root_did, "cred", 1)
+            .await
+            .unwrap();
+        let delegation = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+            .await
+            .unwrap();
+        let delegation = hex::encode(delegation.to_bytes().unwrap());
+        let hash = hash_secret(SECRET).unwrap();
+        create_link(&store, &hash, &device_did, "terminal", 100)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            complete_link(
+                &store,
+                &root_did,
+                &hash,
+                &device_did,
+                "terminal",
+                &delegation,
+                102,
+            )
+            .await,
+            Err(CeremonyError::Conflict(_))
+        ));
+        assert!(store.device_by_did(&device_did).await.unwrap().is_none());
+    }
+
+    #[dialog_common::test]
     async fn it_expires_without_registering_the_device() {
-        let (store, root, device, delegation) = fixture().await;
+        let (store, root, device, delegation, _) = fixture().await;
         let hash = hash_secret(SECRET).unwrap();
         create_link(&store, &hash, &device, "terminal", 100)
             .await

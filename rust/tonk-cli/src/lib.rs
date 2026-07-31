@@ -30,6 +30,7 @@
 //! - [`update`] — self-update: `tonk update` plus the release check.
 
 pub mod account;
+pub mod account_state;
 pub mod agents;
 pub mod authoring;
 pub mod auto_sync;

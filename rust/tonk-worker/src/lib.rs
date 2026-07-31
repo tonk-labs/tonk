@@ -63,6 +63,8 @@ pub use axum::*;
 mod router;
 pub use router::*;
 
+mod credential;
+
 mod error;
 pub use error::*;
 

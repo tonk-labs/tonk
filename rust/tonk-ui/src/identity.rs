@@ -129,6 +129,7 @@ mod tests {
                     code: "123456",
                     deviceDid: arguments[0],
                     deviceName: "test browser",
+                    remote: "https://accounts.example/ucan/",
                 })
                     .then((result) => done({ ok: result }))
                     .catch((error) => done({ error: String(error) }));
@@ -155,6 +156,15 @@ mod tests {
         let delegation = DelegationChain::try_from(delegation.as_slice())?;
         assert_eq!(delegation.audience().to_string(), device_did);
         assert_eq!(delegation.issuer(), invocation.subject());
+        let descriptor = hex::decode(ceremony["descriptorHex"].as_str().unwrap())?;
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
+        assert_eq!(descriptor.account_subject(), delegation.issuer());
+        assert_eq!(
+            invocation.arguments().get("repositoryDescriptor"),
+            Some(&Promised::String(
+                ceremony["descriptorHex"].as_str().unwrap().to_string()
+            ))
+        );
 
         let cli = Ed25519Signer::import(&[9u8; 32]).await?;
         let cli_did = cli.did().to_string();

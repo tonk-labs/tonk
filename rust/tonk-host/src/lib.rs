@@ -64,6 +64,10 @@ mod context;
 #[cfg(target_arch = "wasm32")]
 mod depth;
 #[cfg(target_arch = "wasm32")]
+mod display_name;
+#[cfg(target_arch = "wasm32")]
+pub use display_name::set_account_display_name;
+#[cfg(target_arch = "wasm32")]
 mod host;
 #[cfg(target_arch = "wasm32")]
 mod http;

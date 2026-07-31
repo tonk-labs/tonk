@@ -16,6 +16,7 @@ hkdf = { workspace = true }
 ipld-core = { workspace = true }
 sha2_0_10 = { workspace = true }
 thiserror = { workspace = true }
+tonk-account = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

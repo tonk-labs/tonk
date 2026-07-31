@@ -119,15 +119,15 @@ pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), Reposito
     Ok(())
 }
 
-/// The routing keys of every space the profile belongs to.
+/// The routing keys of every real space the profile belongs to.
 ///
 /// Reads the profile's replica index off the meta branch (the same query
-/// `get_profile` runs) and projects each space's routing key. The
-/// self-replica (`subject == profile`) carries no roster, so it's skipped.
+/// `get_profile` runs) and projects only `tonk:repository` routing keys.
+/// Profile and account system replicas carry no user-space roster.
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
 #[cfg(target_arch = "wasm32")]
-pub(crate) async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
+pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     use dialog_varsig::Did;
     use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity};
 
@@ -143,7 +143,7 @@ pub(crate) async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
     {
         Ok(s) => s,
         Err(e) => {
-            log!("profile_space_keys: meta acquire failed: {e}");
+            log!("real_space_keys: meta acquire failed: {e}");
             return Vec::new();
         }
     };
@@ -164,13 +164,13 @@ pub(crate) async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
 
     let mut keys = Vec::new();
     for replica in rows {
-        if replica.subject.0 == profile_entity {
+        if replica.kind != Replica::repository_kind() {
             continue;
         }
         match replica.subject.0.to_string().parse::<Did>() {
             Ok(did) => keys.push(did.repo_key().to_owned()),
             Err(e) => log!(
-                "profile_space_keys: unparseable subject {:?}: {e:?}",
+                "real_space_keys: unparseable subject {:?}: {e:?}",
                 replica.subject.0
             ),
         }
@@ -178,41 +178,7 @@ pub(crate) async fn profile_space_keys(tonk: &TonkState) -> Vec<String> {
     keys
 }
 
-/// Re-stamp the self member's `MemberName` on every space the profile
-/// belongs to.
-///
-/// A rename changes the profile's effective name; each space's roster
-/// (`MemberName` on its synced `main` branch) must reflect it so peers on
-/// every space see the new name — not just the space in focus when the
-/// rename happened. One space's failure is logged and skipped so a single
-/// unreachable branch can't block the rest.
-#[cfg(target_arch = "wasm32")]
-pub(crate) async fn restamp_member_name_all_spaces(tonk: &TonkState, name: &str) {
-    for key in profile_space_keys(tonk).await {
-        if let Err(e) = restamp_member_name(tonk, &key, name).await {
-            log!("restamp MemberName for space '{key}' failed: {e}");
-        }
-    }
-}
-
-/// Re-stamp the self-identity overlay (`state:self`) on every space the
-/// profile belongs to, so the topbar chip reflects a rename instantly on
-/// whichever space is in view.
-///
-/// A profile rename is fired from the FAB on the PROFILE branch, so the
-/// command carries no origin space — it can't target just the one in focus.
-/// The overlay is per-space (the chip reads it without seeing the profile
-/// branch), so re-stamp them all; each is overlay-only and one space's
-/// failure is logged inside [`crate::router::sync::publish_self_identity`].
-#[cfg(target_arch = "wasm32")]
-pub(crate) async fn restamp_self_identity_all_spaces(tonk: &TonkState) {
-    for key in profile_space_keys(tonk).await {
-        crate::router::sync::publish_self_identity(tonk, &key, CONTENT_BRANCH).await;
-    }
-}
-
 /// Re-stamp the self member's `MemberName` on a space's content branch.
-/// Used by [`restamp_member_name_all_spaces`] to update one space's roster.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn restamp_member_name(
     tonk: &TonkState,
@@ -315,6 +281,7 @@ mod tests {
             sync_queue: Default::default(),
             commands: crate::router::command_registry(),
             clients: Default::default(),
+            account_keys: Default::default(),
         }
     }
 

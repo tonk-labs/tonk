@@ -172,13 +172,13 @@ mod tests {
 
     use super::*;
     use crate::TonkWorkerError;
-    use crate::router::tests::test_state;
+    use crate::router::tests::test_state_without_account;
 
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     #[dialog_common::test]
     async fn it_refuses_to_list_devices_for_an_unlinked_profile() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         assert!(matches!(
             list(State(state)).await,
             Err(TonkWorkerError::NotFound(_))
@@ -187,7 +187,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_self_revokes_without_a_passkey_artifact() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let request = {
             let tonk = state.read().await;
             crate::router::account::tests_matching_request(&tonk).await
@@ -207,7 +207,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_to_revoke_without_a_signed_revocation() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
         let request = {
             let tonk = state.read().await;
             crate::router::account::tests_matching_request(&tonk).await

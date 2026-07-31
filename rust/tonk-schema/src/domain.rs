@@ -532,6 +532,18 @@ pub mod profile {
     pub struct DisplayName(pub String);
 }
 
+/// Root-owned account state replicated through the hidden account repository.
+pub mod account {
+    use super::Attribute;
+
+    /// The account-wide display name. Cardinality-one merge semantics choose a
+    /// deterministic winner when linked devices write concurrently.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct DisplayName(pub String);
+}
+
 /// Attributes that describe a repository on its content branch, keyed by the
 /// subject DID. They travel with the repository rather than belonging to one
 /// profile or replica.

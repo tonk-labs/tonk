@@ -4,12 +4,16 @@ use std::sync::Arc;
 
 use ::axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Request, State},
+    middleware::{self, Next},
+    response::{IntoResponse as _, Response},
     routing::get,
     routing::post,
     routing::put,
 };
 use tokio::sync::RwLock;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
 
 use crate::worker::TonkState;
 
@@ -17,6 +21,9 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
+
+pub(crate) mod account_state;
+pub use account_state::AccountKeys;
 
 mod account_backup;
 
@@ -114,6 +121,77 @@ async fn root(State(_state): State<AppState>) -> &'static str {
     "Hello, Tonk!"
 }
 
+/// Route prefixes whose next path segment is a repository routing key.
+///
+/// Both families are covered: `/api/repository/` carries the mutation surface,
+/// and `/api/inspect/repository/` is read-only but would still confirm the
+/// hidden repository's existence and expose its remote and archive blocks.
+const REPOSITORY_KEY_PREFIXES: [&str; 2] = ["/api/repository/", "/api/inspect/repository/"];
+
+/// The routing key a request addresses, decoded for comparison.
+///
+/// Middleware sees the raw URI before Axum's `Path` extractor, so an encoded
+/// DID (`did%3Akey%3A…`) must not bypass system-repository filtering.
+fn repository_key_from_path(path: &str) -> Option<String> {
+    REPOSITORY_KEY_PREFIXES
+        .iter()
+        .find_map(|prefix| path.strip_prefix(prefix))
+        .and_then(|rest| rest.split('/').next())
+        .filter(|key| !key.is_empty())
+        .map(percent_decode_path_segment)
+}
+
+#[axum_wasm_macros::wasm_compat]
+async fn hide_account_repository(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(key) = repository_key_from_path(request.uri().path()) {
+        let tonk = state.read().await;
+        if account_state::is_account_key(&tonk, &key).await {
+            return crate::TonkWorkerError::NotFound(
+                "account system repository is not a user space".to_string(),
+            )
+            .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Decode one URI path segment before comparing it with a canonical routing
+/// key. Decodes a single level, matching Axum's `Path` extractor: a
+/// double-encoded segment (`%253A`) stays encoded in both, so the two still
+/// agree on which repository a request addresses.
+fn percent_decode_path_segment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+        {
+            decoded.push(high << 4 | low);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| value.to_owned())
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Creates the API router with all configured routes.
 ///
 /// Sets up the routing tree with the TonkState as shared state.
@@ -154,6 +232,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/attach", post(account::link))
+        .route("/api/account/display-name", post(account::set_display_name))
+        .route(
+            "/api/account/repository/establish",
+            post(account::establish_repository),
+        )
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
@@ -349,7 +432,14 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
             get(inspect::archive::inspect_remote_archive_block),
         )
-        .with_state(state)
+        .with_state(state.clone())
+        // The account branch is mounted in the same dialog namespace so the
+        // reactor can sync it, but it is never part of the generic user-space
+        // HTTP surface. Account mutations use the trusted, typed adapter.
+        .layer(middleware::from_fn_with_state(
+            state,
+            hide_account_repository,
+        ))
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
         // the language-server lifetime tied to the worker.
@@ -444,13 +534,44 @@ pub mod tests {
             sync_queue: Default::default(),
             commands: super::command_registry(),
             clients: Default::default(),
+            account_keys: Default::default(),
         }
     }
 
-    /// Create an isolated test state with a stable local root grant.
-    pub async fn test_state() -> TonkState {
+    /// The root seed for a test profile, derived from its name.
+    ///
+    /// Per-profile rather than one shared constant, because the account
+    /// repository's routing key IS the root's — so every profile sharing a
+    /// root shares one account repository, and its storage is not scoped by
+    /// profile the way a space's is. Two tests that link descriptors naming
+    /// different remotes then fight over the same mount, and the second one
+    /// to run reads the first one's remote and refuses as a conflict. That
+    /// is invisible until the ordering shifts, which is exactly the failure
+    /// [`session_nonce`] exists to prevent one layer down.
+    ///
+    /// A fold rather than a hash: no dependency, deterministic, and it mixes
+    /// every byte of the name — which is all that separating test profiles
+    /// requires.
+    pub(crate) fn test_root_seed(profile_name: &str) -> [u8; 32] {
+        let mut seed = [42u8; 32];
+        for (index, byte) in profile_name.as_bytes().iter().enumerate() {
+            seed[index % 32] ^= byte.rotate_left((index % 8) as u32);
+        }
+        seed
+    }
+
+    /// Create an isolated test state with a stable local root grant and no
+    /// account attached to it.
+    ///
+    /// The shape a device is in between provisioning a root and finishing
+    /// sign-up. Only the tests that assert a durable operation refuses want
+    /// it; everything else wants [`test_state`], because production never
+    /// creates a root without an account around it.
+    pub async fn test_state_without_account() -> TonkState {
         let state = test_state_without_root().await;
-        let root = Ed25519Signer::import(&[42u8; 32]).await.unwrap();
+        let root = Ed25519Signer::import(&test_root_seed(&state.profile_name))
+            .await
+            .unwrap();
         let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
             .await
             .unwrap();
@@ -463,6 +584,14 @@ pub mod tests {
         )
         .await
         .unwrap();
+        state
+    }
+
+    /// Create an isolated test state with a stable local root grant and an
+    /// account attached to it — a signed-in device.
+    pub async fn test_state() -> TonkState {
+        let state = test_state_without_account().await;
+        super::account::attach_test_account(&state).await.unwrap();
         state
     }
 
@@ -670,9 +799,11 @@ pub mod tests {
         info.name
     }
 
-    #[dialog_common::test]
-    async fn it_refuses_space_creation_without_a_local_root() {
-        let state = test_state_without_root().await;
+    /// The stable code the page routes the account gate off, for both shapes
+    /// of "not signed in": no root at all, and a root with no account behind
+    /// it. Neither may create a spot — one that exists without an account is
+    /// local-only and never backed up, and nothing later would say so.
+    async fn create_space_refusal(state: TonkState) -> serde_json::Value {
         let (app, _lsp) = api_router(state);
         let response = app
             .oneshot(
@@ -691,8 +822,51 @@ pub mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(error["error"]["code"], "ROOT_REQUIRED");
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_space_creation_without_an_account() {
+        let error = create_space_refusal(test_state_without_root().await).await;
+        assert_eq!(error["error"]["code"], "ACCOUNT_REQUIRED");
+
+        let error = create_space_refusal(test_state_without_account().await).await;
+        assert_eq!(
+            error["error"]["code"], "ACCOUNT_REQUIRED",
+            "a bare passkey root is not an account"
+        );
+    }
+
+    /// An attached account is the whole precondition — a spot creates the
+    /// moment one exists.
+    ///
+    /// Through `PUT /api/repository/{label}` rather than `POST /api/spaces`,
+    /// because both reach the same gate in `create_repository` and only the
+    /// latter goes on to seed a template, which needs a library this harness
+    /// serves over no HTTP. `put_repo` asserts the 201 itself.
+    #[dialog_common::test]
+    async fn it_creates_a_space_once_an_account_is_attached() {
+        let (app, _state, _lsp) = super::api_router_with_state(test_state().await);
+        let key = put_repo(&app, "account-attached").await;
+        assert!(key.starts_with("did:key:"));
+    }
+
+    /// Every creation route shares the gate, not just the one the page uses.
+    #[dialog_common::test]
+    async fn it_refuses_repository_creation_without_an_account() {
+        let (app, _lsp) = api_router(test_state_without_account().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/no-account")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[dialog_common::test]
@@ -4481,5 +4655,85 @@ person!:
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod hidden_repository_tests {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use super::{REPOSITORY_KEY_PREFIXES, repository_key_from_path};
+
+    /// Every route family whose next segment after the prefix is a routing key.
+    /// A new one that this misses is a route the account repository is visible
+    /// through, so keep it in step with the `{repo}` routes in `api_router`.
+    const KEYED_ROUTES: [&str; 8] = [
+        "/api/repository/KEY",
+        "/api/repository/KEY/invite",
+        "/api/repository/KEY/remote",
+        "/api/repository/KEY/branch/main/transact",
+        "/api/repository/KEY/branch/main/blob/some-entity",
+        "/api/inspect/repository/KEY/branch/main",
+        "/api/inspect/repository/KEY/remote/origin",
+        "/api/inspect/repository/KEY/archive/index/abc123",
+    ];
+
+    #[dialog_common::test]
+    fn it_finds_the_key_in_every_keyed_route() {
+        for route in KEYED_ROUTES {
+            assert_eq!(
+                repository_key_from_path(route).as_deref(),
+                Some("KEY"),
+                "{route} must expose its routing key to the hiding middleware"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_decodes_one_level_like_the_path_extractor() {
+        // A single-encoded DID must compare equal to the canonical key.
+        assert_eq!(
+            repository_key_from_path("/api/repository/did%3Akey%3Az123/invite").as_deref(),
+            Some("did:key:z123")
+        );
+        assert_eq!(
+            repository_key_from_path("/api/inspect/repository/did%3Akey%3Az123/remote/origin")
+                .as_deref(),
+            Some("did:key:z123")
+        );
+        // Double-encoded stays encoded here *and* in Axum's extractor, so the
+        // two agree on the addressed repository rather than diverging.
+        assert_eq!(
+            repository_key_from_path("/api/repository/did%253Akey%253Az123").as_deref(),
+            Some("did%3Akey%3Az123")
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_paths_that_carry_no_routing_key() {
+        for path in [
+            "/api/repository",
+            "/api/repository/",
+            "/api/inspect/repository/",
+            "/api/profile",
+            "/api/sync",
+            "/",
+        ] {
+            assert_eq!(
+                repository_key_from_path(path),
+                None,
+                "{path} names no repository"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_covers_both_repository_route_families() {
+        for prefix in REPOSITORY_KEY_PREFIXES {
+            assert!(KEYED_ROUTES.iter().any(|route| route.starts_with(prefix)));
+        }
     }
 }

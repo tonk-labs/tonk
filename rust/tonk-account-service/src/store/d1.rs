@@ -14,10 +14,11 @@ use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
     Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
-    DeviceStatus, INSERT_ACCOUNT, INSERT_DEVICE, INSERT_DEVICE_FOR_LINK,
-    INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
-    SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID, SELECT_DEVICES_BY_ACCOUNT,
-    SELECT_LINK, Store, StoreError, UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR,
+    INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest,
+    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
+    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -71,6 +72,7 @@ struct AccountRowD1 {
     email: String,
     root_did: String,
     credential_id: String,
+    repository_descriptor: Option<Vec<u8>>,
     created_at: f64,
 }
 
@@ -81,6 +83,7 @@ impl From<AccountRowD1> for Account {
             email: row.email,
             root_did: row.root_did,
             credential_id: row.credential_id,
+            repository_descriptor: row.repository_descriptor,
             created_at: row.created_at as u64,
         }
     }
@@ -121,6 +124,7 @@ struct LinkRequestD1 {
     device_did: String,
     device_name: String,
     delegation_hex: Option<String>,
+    descriptor_hex: Option<String>,
     created_at: f64,
     expires_at: f64,
     consumed_at: Option<f64>,
@@ -133,6 +137,7 @@ impl From<LinkRequestD1> for LinkRequest {
             device_did: row.device_did,
             device_name: row.device_name,
             delegation_hex: row.delegation_hex,
+            descriptor_hex: row.descriptor_hex,
             created_at: row.created_at as u64,
             expires_at: row.expires_at as u64,
             consumed_at: row.consumed_at.map(|value| value as u64),
@@ -143,6 +148,12 @@ impl From<LinkRequestD1> for LinkRequest {
 #[derive(Deserialize)]
 struct ConsumedLinkD1 {
     delegation_hex: String,
+    descriptor_hex: String,
+}
+
+#[derive(Deserialize)]
+struct DescriptorRowD1 {
+    repository_descriptor: Vec<u8>,
 }
 
 impl Store for D1Store {
@@ -228,6 +239,7 @@ impl Store for D1Store {
         email: &str,
         root_did: &str,
         credential_id: &str,
+        repository_descriptor: &[u8],
         device: &NewDevice,
         created_at: u64,
     ) -> Result<i64, StoreError> {
@@ -236,13 +248,15 @@ impl Store for D1Store {
         // account id it needs via SQLite's `last_insert_rowid()` rather
         // than a value threaded in from Rust, since the account id isn't
         // known until the first statement in this same batch executes.
+        let descriptor = js_sys::Uint8Array::from(repository_descriptor);
         let insert_account = self
             .0
-            .prepare(INSERT_ACCOUNT)
+            .prepare(INSERT_ACCOUNT_WITH_DESCRIPTOR)
             .bind(&[
                 JsValue::from(email),
                 JsValue::from(root_did),
                 JsValue::from(credential_id),
+                descriptor.into(),
                 JsValue::from_f64(created_at as f64),
             ])
             .map_err(map_err)?;
@@ -291,6 +305,46 @@ impl Store for D1Store {
             .await
             .map_err(map_err)?;
         Ok(row.map(Account::from))
+    }
+
+    async fn establish_repository_descriptor(
+        &self,
+        account_id: i64,
+        candidate: &[u8],
+    ) -> Result<(Vec<u8>, bool), StoreError> {
+        let candidate = js_sys::Uint8Array::from(candidate);
+        let establish = self
+            .0
+            .prepare(ESTABLISH_REPOSITORY_DESCRIPTOR)
+            .bind(&[JsValue::from_f64(account_id as f64), candidate.into()])
+            .map_err(map_err)?;
+        let select = self
+            .0
+            .prepare(SELECT_REPOSITORY_DESCRIPTOR)
+            .bind(&[JsValue::from_f64(account_id as f64)])
+            .map_err(map_err)?;
+        let results = self
+            .0
+            .batch(vec![establish, select])
+            .await
+            .map_err(map_err)?;
+        let created = results
+            .first()
+            .ok_or_else(|| StoreError::Internal("descriptor update returned no result".into()))?
+            .results::<DescriptorRowD1>()
+            .map_err(map_err)?
+            .len()
+            == 1;
+        let winner = results
+            .get(1)
+            .ok_or_else(|| StoreError::Internal("descriptor lookup returned no result".into()))?
+            .results::<DescriptorRowD1>()
+            .map_err(map_err)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| StoreError::Internal("account not found".into()))?
+            .repository_descriptor;
+        Ok((winner, created))
     }
 
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError> {
@@ -415,6 +469,7 @@ impl Store for D1Store {
         token_hash: &str,
         device: &Device,
         delegation_hex: &str,
+        descriptor_hex: &str,
         now: u64,
     ) -> Result<bool, StoreError> {
         let insert = self
@@ -437,6 +492,7 @@ impl Store for D1Store {
             .prepare(COMPLETE_LINK)
             .bind(&[
                 JsValue::from(delegation_hex),
+                JsValue::from(descriptor_hex),
                 JsValue::from(token_hash),
                 JsValue::from_f64(now as f64),
             ])
@@ -456,7 +512,11 @@ impl Store for D1Store {
         Ok(changes(0) == 1 && changes(1) == 1)
     }
 
-    async fn consume_link(&self, token_hash: &str, now: u64) -> Result<Option<String>, StoreError> {
+    async fn consume_link(
+        &self,
+        token_hash: &str,
+        now: u64,
+    ) -> Result<Option<(String, String)>, StoreError> {
         let row: Option<ConsumedLinkD1> = self
             .0
             .prepare(CONSUME_LINK)
@@ -469,6 +529,6 @@ impl Store for D1Store {
             .first(None)
             .await
             .map_err(map_err)?;
-        Ok(row.map(|row| row.delegation_hex))
+        Ok(row.map(|row| (row.delegation_hex, row.descriptor_hex)))
     }
 }

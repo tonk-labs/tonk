@@ -217,7 +217,7 @@ pub(crate) async fn back_up_claim(
 /// Back up every existing owned root prefix after provider attachment.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn back_up_existing_spaces(tonk: &TonkState) {
-    for key in crate::router::profile_name::profile_space_keys(tonk).await {
+    for key in crate::router::profile_name::real_space_keys(tonk).await {
         let repository = match tonk
             .profile
             .repository(&key)

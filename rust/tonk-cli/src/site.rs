@@ -181,7 +181,7 @@ impl TonkSite {
         {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(&profile, &operator, config.require_root)
+                bootstrap_repository(&profile, &operator, config.require_account)
                     .await
                     .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
@@ -254,7 +254,7 @@ impl TonkSite {
 async fn bootstrap_repository(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    require_root: bool,
+    require_account: bool,
 ) -> Result<Repository> {
     let signer_repo = profile
         .repository(REPO_NAME)
@@ -264,8 +264,8 @@ async fn bootstrap_repository(
         .context("failed to create repository")?;
 
     let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
-    if require_root && local_root.is_none() {
-        anyhow::bail!("A local passkey root is required; run `tonk identity link`");
+    if require_account {
+        crate::account::require_account_with_operator(profile, operator).await?;
     }
     let durable_did: dialog_varsig::Did = local_root
         .context("local root provisioning did not produce a record")?
@@ -307,9 +307,11 @@ pub struct SiteConfig {
     /// is the platform default; tests pick `Directory::At(...)`
     /// to redirect onto a temp dir.
     pub profile_directory: Directory,
-    /// Whether creating a new space must have a provider-neutral local root.
-    /// Production enables this; legacy-isolation test fixtures disable it.
-    pub require_root: bool,
+    /// Whether minting durable authority must have an account behind it.
+    /// Production enables this; legacy-isolation test fixtures disable it,
+    /// and get a software-generated root instead (see
+    /// [`build_profile_and_operator`]).
+    pub require_account: bool,
 }
 
 impl SiteConfig {
@@ -320,7 +322,7 @@ impl SiteConfig {
         Self {
             profile_name: name.into(),
             profile_directory: Directory::Profile,
-            require_root: false,
+            require_account: false,
         }
     }
 }
@@ -334,7 +336,7 @@ pub fn default_config() -> SiteConfig {
     SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
-        require_root: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
+        require_account: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
     }
 }
 
@@ -393,7 +395,7 @@ pub(crate) async fn build_profile_and_operator(
     // Isolated legacy test fixtures opt into a software-generated root so they
     // still exercise the same space → root → device chain shape. Production
     // never enters this path and requires a browser/passkey handoff.
-    if !config.require_root
+    if !config.require_account
         && crate::identity::local_root_with_operator(&profile, &operator)
             .await?
             .is_none()

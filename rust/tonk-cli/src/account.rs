@@ -3,12 +3,12 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use dialog_effects::credential::CredentialError;
 use dialog_operator::Profile;
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan_core::DelegationChain;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use tonk_account::{AccountProviderRecord, AccountStateStatus};
 
 /// Production account API used unless explicitly overridden.
 pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
@@ -19,7 +19,7 @@ pub const DEFAULT_ACCOUNT_URL: &str = "https://tonk.spot/account/link";
 /// consumes a fragment secret, so a `?revoke=` sent there dead-ends.
 pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
 /// Credential-store key for optional provider attachment metadata.
-pub const ACCOUNT_LINK_SITE: &str = "tonk-account-provider-v1";
+pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
 /// Current native profile account-link state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +44,8 @@ pub enum AccountStatus {
         device_did: String,
         /// Attached provider base URL.
         provider: String,
+        /// Configuration/hydration state of the account repository.
+        account_state: AccountStateStatus,
     },
 }
 
@@ -69,6 +71,10 @@ pub struct LinkOutcome {
     pub root_did: String,
     /// Native profile DID.
     pub device_did: String,
+    /// Account repository lifecycle after the immediate ensure attempt.
+    pub account_state: AccountStateStatus,
+    /// Diagnostic when the persisted link remains unhydrated.
+    pub warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -89,36 +95,92 @@ struct SecretRequest<'a> {
 struct ConsumeResponse {
     delegation_hex: String,
     credential_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProviderRecord {
-    version: u8,
-    provider: String,
+    descriptor_hex: String,
 }
 
 fn storage() -> Storage<NativeSpace> {
     Storage::<NativeSpace>::default()
 }
 
-async fn stored_provider(profile: &Profile) -> Result<Option<ProviderRecord>> {
-    match profile
+async fn decode_provider(
+    root_did: &dialog_varsig::Did,
+    bytes: Result<Vec<u8>, dialog_effects::credential::CredentialError>,
+) -> Result<Option<AccountProviderRecord>> {
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(error) if crate::account_state::credential_is_missing(&error) => return Ok(None),
+        Err(error) => return Err(error).context("failed to load the account provider"),
+    };
+    AccountProviderRecord::decode(&bytes, root_did)
+        .await
+        .context("stored account provider is unusable")
+}
+
+/// Load the provider attachment through an already-mounted site operator.
+pub(crate) async fn stored_provider_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+) -> Result<Option<AccountProviderRecord>> {
+    let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
+        return Ok(None);
+    };
+    let root_did = parse_root_did(&root.root_did)?;
+    let bytes = profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .load::<Vec<u8>>()
+        .perform(operator)
+        .await;
+    decode_provider(&root_did, bytes).await
+}
+
+/// What to tell a device that has no account when it asks for durable
+/// authority. Names the one command that provisions both the root and the
+/// account it belongs to.
+const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account link`";
+
+/// Refuse unless this profile holds an account.
+///
+/// The precondition every durable operation shares, in the shape the browser
+/// worker uses it (`router::account::require_account`): durable authority is
+/// only ever issued to an account, so what it mints stays revocable and what
+/// it creates gets backed up. `Unhydrated` and `Unconfigured` accounts pass —
+/// an account that exists but has not synchronized is still an account.
+pub(crate) async fn require_account_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+) -> Result<()> {
+    match stored_provider_with_operator(profile, operator).await? {
+        Some(_) => Ok(()),
+        None => bail!(ACCOUNT_REQUIRED),
+    }
+}
+
+async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
+    let Some(root) = crate::identity::local_root(profile).await? else {
+        return Ok(None);
+    };
+    let root_did = parse_root_did(&root.root_did)?;
+    let bytes = profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
         .load::<Vec<u8>>()
         .perform(&storage())
-        .await
-    {
-        Ok(bytes) if bytes.is_empty() => Ok(None),
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .context("stored account provider is malformed"),
-        Err(CredentialError::NotFound(_)) => Ok(None),
-        Err(error) => Err(error).context("failed to load the account provider"),
-    }
+        .await;
+    decode_provider(&root_did, bytes).await
+}
+
+fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
+    root_did.parse().context("stored local root DID is invalid")
 }
 
 /// Read the current profile's local account status.
+///
+/// Reads only durable local state. Reporting status must not depend on the
+/// account remote being reachable: an offline device is still linked, and a
+/// mount failure should be reported as `unhydrated` rather than failing the
+/// command. Hydration is [`crate::account_state::ensure`]'s job, and the
+/// paths that need it call it directly.
 pub async fn status(profile: &Profile) -> Result<AccountStatus> {
     let device_did = profile.did().to_string();
     let Some(root) = crate::identity::local_root(profile).await? else {
@@ -129,11 +191,19 @@ pub async fn status(profile: &Profile) -> Result<AccountStatus> {
             root_did: root.root_did,
             device_did,
         }),
-        Some(provider) => Ok(AccountStatus::Registered {
-            root_did: root.root_did,
-            device_did,
-            provider: provider.provider,
-        }),
+        Some(provider) => {
+            let account_state = if provider.descriptor().is_some() {
+                crate::account_state::status(profile).await?
+            } else {
+                AccountStateStatus::Unconfigured
+            };
+            Ok(AccountStatus::Registered {
+                root_did: root.root_did,
+                device_did,
+                provider: provider.provider().to_owned(),
+                account_state,
+            })
+        }
     }
 }
 
@@ -142,16 +212,30 @@ async fn persist(
     service_url: &str,
     credential_id: String,
     delegation_hex: String,
+    descriptor_hex: &str,
 ) -> Result<String> {
     let root = crate::identity::save_local_root(profile, credential_id, delegation_hex).await?;
-    let provider = ProviderRecord {
-        version: 1,
-        provider: service_url.trim_end_matches('/').to_string(),
-    };
+    let root_did: dialog_varsig::Did = root
+        .root_did
+        .parse()
+        .context("stored local root DID is invalid")?;
+    let descriptor =
+        hex::decode(descriptor_hex).context("invalid descriptor hex from account service")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let record = AccountProviderRecord::attach(service_url, &descriptor, &root_did, now)
+        .await
+        .context("account service returned an unusable repository descriptor")?;
     profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
-        .save(serde_json::to_vec(&provider).context("failed to serialize account provider")?)
+        .save(
+            record
+                .encode()
+                .context("failed to serialize account provider")?,
+        )
         .perform(&storage())
         .await
         .context("failed to attach the account provider")?;
@@ -269,12 +353,22 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
         &options.service_url,
         consumed.credential_id,
         consumed.delegation_hex,
+        &consumed.descriptor_hex,
     )
     .await?;
+    let ensured = match crate::account_state::ensure(profile).await {
+        Ok(outcome) => outcome,
+        Err(error) => crate::account_state::EnsureOutcome {
+            status: AccountStateStatus::Unhydrated,
+            warning: Some(error.to_string()),
+        },
+    };
     Ok(LinkOutcome {
         url,
         root_did,
         device_did,
+        account_state: ensured.status,
+        warning: ensured.warning,
     })
 }
 

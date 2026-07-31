@@ -152,6 +152,7 @@ fn read_name_field(row: &JsValue) -> Option<String> {
 /// live frame arriving mid-edit must not clobber in-progress typing,
 /// mirroring `<ui-space-name>`'s identical guard.
 fn paint(host: &HtmlElement, name: &str) {
+    let _ = host.set_attribute("data-subscribed-name", name);
     let Some(editable) = host.query_selector("tonk-editable").ok().flatten() else {
         return;
     };
