@@ -46,3 +46,36 @@ R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-staging"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 REVOCATION_RELAY_URL = "https://accounts-staging.tonk.xyz/revocations"
+
+# Preview. Every pull request uploads a version of this environment under a
+# `--preview-alias` and is reached at its own workers.dev URL, so the
+# environment holds no route of its own. `routes = []` is load-bearing: a named
+# environment inherits the top-level `routes`, and deploying it with that
+# inherited entry would reassign the `hub.tonk.xyz` custom domain away from
+# production.
+#
+# Its state is disjoint from staging as well as production. A pull request
+# applies its own account-service migrations and writes real objects through
+# this worker's presigned URLs, and neither of those belongs in an environment
+# someone else is testing against.
+[env.preview]
+workers_dev = true
+routes = []
+
+[[env.preview.r2_buckets]]
+binding = "BUCKET"
+bucket_name = "tonk-spaces-preview"
+
+[[env.preview.r2_buckets]]
+binding = "REVOCATIONS"
+bucket_name = "tonk-revocations-preview"
+
+[env.preview.vars]
+R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
+R2_BUCKET_NAME = "tonk-spaces-preview"
+# Replaced per pull request with the account worker's own preview alias, which
+# is only known once that upload returns. The checked-in values are deliberately
+# unresolvable: a preview that failed to wire itself has to break visibly rather
+# than quietly serve a real registry to browsers that trust `/.well-known/tonk`.
+ACCOUNT_SERVICE_URL = "https://accounts-preview.invalid"
+REVOCATION_RELAY_URL = "https://accounts-preview.invalid/revocations"

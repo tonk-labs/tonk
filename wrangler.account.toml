@@ -51,3 +51,38 @@ bucket_name = "tonk-revocations-staging"
 
 [env.staging.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+
+# Preview. Disjoint from staging for the same reason staging is disjoint from
+# production, and more urgently: continuous integration applies each pull
+# request's migrations to this database before uploading that request's worker,
+# so the schema here tracks whatever is under review rather than what is
+# released. Resetting it costs nothing, which is the point.
+#
+# `routes = []` prevents the named environment from inheriting the top-level
+# `accounts.tonk.xyz` custom domain; each pull request is reached at its own
+# `--preview-alias` workers.dev URL instead.
+[env.preview]
+workers_dev = true
+routes = []
+
+# Ships empty: the id is minted by `wrangler d1 create` on whichever account
+# hosts this, and is filled in once at bootstrap. Blank is the safe default,
+# because the preview job applies migrations before it uploads anything — a
+# forgotten bootstrap fails there, rather than anywhere near a database that
+# holds real accounts.
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "tonk-accounts-preview"
+database_id = "323cb440-c356-4d1d-b238-2ffd11abedcc"
+migrations_dir = "rust/tonk-account-service/migrations"
+
+[[env.preview.r2_buckets]]
+binding = "CHAINS"
+bucket_name = "tonk-account-chains-preview"
+
+[[env.preview.r2_buckets]]
+binding = "REVOCATIONS"
+bucket_name = "tonk-revocations-preview"
+
+[env.preview.vars]
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"

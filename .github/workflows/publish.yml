@@ -5,6 +5,13 @@ on:
   push:
     branches: [stable, staging]
 
+# Every job here mutates shared Cloudflare state, and two runs of one pull
+# request would race for the same `--preview-alias`. Superseding the in-flight
+# run is the wanted outcome: the newer commit is the one worth previewing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -33,15 +40,69 @@ jobs:
         run: |
           nix build --accept-flake-config .#tonk-cloudflare-artifacts
 
-      - name: Deploy preview
+      # A pull request gets the whole deployment, not just the access worker.
+      # The browser reads its account provider from the access worker's
+      # `/.well-known/tonk`, so previewing one against the released other tests
+      # a pairing that does not exist anywhere. Both go to the disposable
+      # `preview` environment, account worker first, because the access worker
+      # has to be told where that one landed.
+      - name: Apply preview account migrations
+        if: github.event_name == 'pull_request'
+        run: |
+          nix --accept-flake-config develop .#ci --command \
+            wrangler d1 migrations apply tonk-accounts-preview \
+              --remote --env preview -c wrangler.account.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy account preview
+        if: github.event_name == 'pull_request'
+        id: account-preview
+        run: |
+          set -o pipefail
+          preview_alias="pr-${{ github.event.pull_request.number }}"
+          log="$RUNNER_TEMP/account-preview.log"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler versions upload --env preview -c wrangler.account.toml \
+              --preview-alias "$preview_alias" 2>&1 | tee "$log"
+          url="$(grep -Eo "https://$preview_alias-tonk-account-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
+          if [ -z "$url" ]; then
+            echo "::error::wrangler printed no preview alias URL for the account worker; refusing to point the access preview at an unknown registry"
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The two service URLs are the only configuration that cannot be checked
+      # in, because an alias URL exists only once its upload returns. Command
+      # line vars merge over the environment's, so the rest of `[env.preview]`
+      # still applies.
+      - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
-        working-directory: rust/tonk-access-service
         run: |
+          set -o pipefail
+          preview_alias="pr-${{ github.event.pull_request.number }}"
+          account="${{ steps.account-preview.outputs.url }}"
+          log="$RUNNER_TEMP/access-preview.log"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler versions upload --env preview -c wrangler.toml \
+              --preview-alias "$preview_alias" \
+              --var "ACCOUNT_SERVICE_URL:$account" \
+              --var "REVOCATION_RELAY_URL:$account/revocations" 2>&1 | tee "$log"
+          url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
+          if [ -z "$url" ]; then
+            echo "::error::wrangler printed no preview alias URL for the access worker"
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
           {
-            echo 'command-output<<EOF'
-            nix --accept-flake-config develop .#ci --command wrangler versions upload --preview-alias pr-${{ github.event.pull_request.number }}
-            echo EOF
+            echo 'command-output<<WRANGLER_OUTPUT_EOF'
+            cat "$RUNNER_TEMP/account-preview.log" "$log"
+            echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -49,16 +110,14 @@ jobs:
 
       - name: Deploy staging
         if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
-        working-directory: rust/tonk-access-service
-        run: nix --accept-flake-config develop --command wrangler deploy --env staging
+        run: nix --accept-flake-config develop --command wrangler deploy --env staging -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy production
         if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
-        working-directory: rust/tonk-access-service
-        run: nix --accept-flake-config develop --command wrangler deploy
+        run: nix --accept-flake-config develop --command wrangler deploy -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -67,7 +126,30 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           message: |
-            Wrangler output for this change:
-            
+            Preview deployment for this change:
+
+            | Service | URL |
+            | --- | --- |
+            | App (`tonk-ui` + access worker) | ${{ steps.deploy-preview.outputs.url }} |
+            | Account registry | ${{ steps.account-preview.outputs.url }} |
+
+            The app serves that registry from its own `/.well-known/tonk`, so
+            browser ceremonies find it with no client configuration. The CLI
+            has to be told:
+
+            ```
+            tonk account link \
+              --service-url ${{ steps.account-preview.outputs.url }} \
+              --account-url ${{ steps.deploy-preview.outputs.url }}/account/link
+            ```
+
+            Passkeys minted here belong to the preview host and to nothing
+            else, so they are disposable and cannot reach a real account.
+
+            <details><summary>Wrangler output</summary>
+
+            ```
             ${{ steps.deploy-preview.outputs.command-output }}
-            
+            ```
+
+            </details>
