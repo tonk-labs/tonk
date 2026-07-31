@@ -118,15 +118,19 @@ impl CustomElement for TonkFab {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        &["space"]
     }
 
     /// Author the FAB's own DOM. The `space` attribute is stamped by the
     /// mounting view (`<tonk-fab with="main@profile:tonk" space={id}>`) and
-    /// is already resolved by the time `inject_children` runs — per the
+    /// is usually resolved by the time `inject_children` runs — per the
     /// `custom-elements` crate, this is deferred to (and runs before) the
     /// first `connectedCallback`, i.e. after HTML parsing has set the
-    /// element's attributes.
+    /// element's attributes. Usually, not always: the mounting view's first
+    /// projection can carry a blank `{id}` (the field lands a frame later),
+    /// in which case the subtree is authored around the blank and
+    /// [`attribute_changed_callback`](Self::attribute_changed_callback)
+    /// heals it when the real value arrives.
     fn inject_children(&mut self, this: &HtmlElement) {
         let space = this.get_attribute("space").unwrap_or_default();
         this.set_inner_html(&crate::markup::fab_html(&space));
@@ -198,11 +202,44 @@ impl CustomElement for TonkFab {
 
     fn attribute_changed_callback(
         &mut self,
-        _this: &HtmlElement,
-        _name: String,
-        _old: Option<String>,
-        _new: Option<String>,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
     ) {
+        if name != "space" || old == new {
+            return;
+        }
+        restamp_space(this, new.as_deref().unwrap_or(""));
+    }
+}
+
+/// Re-stamp the space onto every child [`crate::markup::fab_html`] derives
+/// from it.
+///
+/// The mounting view stamps `space={id}` on the host, but the subtree is
+/// authored ONCE, in `inject_children` — so a host whose `space` was blank at
+/// authoring time (an unsubstituted first projection) carries children
+/// pointed at nothing: a `main@` sync location, a share overlay with no
+/// space to subscribe against, an empty rename subject. The children are
+/// built to heal — each observes its own attribute and re-opens its
+/// subscriptions when it changes — but nothing ever re-delivered the space
+/// to them. This is that delivery. Attribute writes only, never a re-stamp
+/// of the subtree: every listener and observer bound at `connected_callback`
+/// stays live, and `setAttribute` fires each child's own changed callback.
+fn restamp_space(host: &HtmlElement, space: &str) {
+    let stamps = [
+        ("ui-sync-status", "with", crate::logic::space_with(space)),
+        ("ui-space-name", "space", space.to_owned()),
+        ("tonk-share", "space", space.to_owned()),
+        ("ui-member-roster", "space", space.to_owned()),
+        ("ui-dropdown", "exclude", space.to_owned()),
+        ("ui-space-switcher", "exclude", space.to_owned()),
+    ];
+    for (selector, attribute, value) in stamps {
+        if let Some(child) = host.query_selector(selector).ok().flatten() {
+            let _ = child.set_attribute(attribute, &value);
+        }
     }
 }
 
@@ -1745,6 +1782,47 @@ mod tests {
     use web_sys::window;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A blank-authored FAB heals every space-derived child attribute when
+    /// the space finally lands: the sync disc's location gets its repo half,
+    /// and the name/share/roster/switcher children get the space itself. The
+    /// subtree is NOT re-authored — the marker child proves the existing DOM
+    /// survives, which is what keeps every listener bound at connect alive.
+    #[wasm_bindgen_test]
+    fn it_restamps_the_space_onto_every_space_derived_child() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("div")
+            .expect("create host")
+            .unchecked_into();
+        host.set_inner_html(&crate::markup::fab_html(""));
+        let marker = document.create_element("i").expect("create marker");
+        marker.set_id("survives-heal");
+        host.append_child(&marker).expect("append marker");
+
+        restamp_space(&host, "did:key:zHeal");
+
+        let attr = |selector: &str, name: &str| {
+            host.query_selector(selector)
+                .ok()
+                .flatten()
+                .and_then(|el| el.get_attribute(name))
+                .unwrap_or_default()
+        };
+        assert_eq!(attr("ui-sync-status", "with"), "main@did:key:zHeal");
+        assert_eq!(attr("ui-space-name", "space"), "did:key:zHeal");
+        assert_eq!(attr("tonk-share", "space"), "did:key:zHeal");
+        assert_eq!(attr("ui-member-roster", "space"), "did:key:zHeal");
+        assert_eq!(attr("ui-dropdown", "exclude"), "did:key:zHeal");
+        assert_eq!(attr("ui-space-switcher", "exclude"), "did:key:zHeal");
+        assert!(
+            host.query_selector("#survives-heal")
+                .ok()
+                .flatten()
+                .is_some(),
+            "healing must re-stamp attributes on the existing subtree, not re-author it"
+        );
+    }
 
     /// A FAB whose two dropdown segments are both open, plus the click-away
     /// curtain — the shape the profile view renders.
