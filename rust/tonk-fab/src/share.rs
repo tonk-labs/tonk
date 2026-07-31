@@ -50,12 +50,19 @@
 //! subscription because a single predicate over both would resolve only when a
 //! refusal AND a link are present, which never happens.
 //!
-//! A refusal the prompt can repair (`not-synced`) abandons the clipboard write
-//! and opens the enable-sync dialog. Confirming it is a FRESH user activation,
-//! so a new clipboard write opens there and the attach-then-mint the worker
-//! runs settles it — one click, from refusal to link on the clipboard.
+//! A refusal the prompt can repair abandons the clipboard write and opens the
+//! enable-sync dialog. Confirming it is a FRESH user activation, so a new
+//! clipboard write opens there and the attach-then-mint the worker runs
+//! settles it — one click, from refusal to link on the clipboard.
 //!
-//! The other two classes (`unshareable-remote`, and `attach-failed` — an
+//! Two classes are repairable, and they share the claim but not the wording
+//! (see [`Repair`]). `not-synced` attaches a remote. `missing-revocation-relay`
+//! means the spot syncs fine but its remote carries no relay, so an invite
+//! could never be withdrawn — every spot whose remote predates in-band
+//! revocation is in that state; confirming upserts the relay onto the remote
+//! already there, leaving its address and its branch upstream untouched.
+//!
+//! The remaining classes (`unshareable-remote`, and `attach-failed` — an
 //! attach the user already approved that failed anyway) have no action the
 //! dialog could offer, but `detail` still has to reach the user: the button's
 //! "failed" label is a static string. `handle_blocked` re-opens the same
@@ -161,18 +168,75 @@ const BLOCKED_NEEDS_MEMBERSHIP: &str = tonk_worker_api::share::BLOCKED_NEEDS_MEM
 /// scaffolding can tell the two subscriptions' frames apart.
 const BLOCKED_TAG: &str = "tonk-share-blocked";
 
-/// The enable-sync prompt's id, and the attribute marking its confirm button
-/// and its reason slot. Authored in `markup.rs`; every lookup here is
-/// `Option`-guarded, so the element still shares (and still refuses) in a host
-/// that renders no dialog at all.
+/// The refusal class the same prompt repairs by attaching a relay rather than
+/// a remote: the spot syncs, but its remote carries no revocation relay, so a
+/// minted invite could never be withdrawn.
+const BLOCKED_MISSING_REVOCATION_RELAY: &str =
+    tonk_worker_api::share::BLOCKED_MISSING_REVOCATION_RELAY;
+
+/// The enable-sync prompt's id, and the attributes marking its confirm button,
+/// its reason slot, and the line describing what confirming does. Authored in
+/// `markup.rs`; every lookup here is `Option`-guarded, so the element still
+/// shares (and still refuses) in a host that renders no dialog at all.
 ///
 /// The dialog is not only for `not-synced`: [`handle_blocked`] re-opens it on
 /// every refusal so `detail` always lands somewhere visible, disabling the
-/// confirm button (see `open_enable_sync_dialog`) on the two classes it
-/// cannot repair.
+/// confirm button (see `open_enable_sync_dialog`) on the one class it cannot
+/// repair.
 const DIALOG_ID: &str = "fab-enable-sync";
 const DIALOG_CONFIRM: &str = "[data-enable-sync-confirm]";
 const DIALOG_DETAIL: &str = "[data-enable-sync-detail]";
+const DIALOG_ACTION: &str = "[data-enable-sync-action]";
+
+/// Heading and confirm label for a refusal with no repair. The button stays
+/// visible but disabled, so it needs wording that doesn't promise an action —
+/// "Turn on sync & copy link" greyed out reads as a broken control rather than
+/// an answer.
+const TERMINAL_LABEL: &str = "Can't share this spot";
+const TERMINAL_CONFIRM: &str = "Copy link";
+
+/// What confirming the prompt is offering to do, for one refusal class.
+///
+/// The prompt serves two repairs that share a claim but not a sentence, plus
+/// a terminal class it only reports. Holding the whole wording per class —
+/// rather than swapping `detail` alone, as it used to — is what keeps a
+/// synced spot from being told to turn on sync: before this, EVERY refusal
+/// re-used the `not-synced` copy, so a missing relay showed a greyed-out
+/// "Turn on sync & copy link" under a sentence about a device-only spot.
+///
+/// `None` from [`Repair::for_code`] is the terminal case: report `detail`,
+/// no action line, confirm disabled.
+struct Repair {
+    /// The dialog's `label` attribute — its heading.
+    label: &'static str,
+    /// The line under `detail` saying what confirming does.
+    action: &'static str,
+    /// The confirm button's text.
+    confirm: &'static str,
+}
+
+impl Repair {
+    /// The repair for a refusal class, or `None` when there is none to offer.
+    fn for_code(code: &str) -> Option<Self> {
+        match code {
+            BLOCKED_NOT_SYNCED => Some(Self {
+                label: "Turn on sync?",
+                action: "Turn on sync so the people you share with can open it.",
+                confirm: "Turn on sync & copy link",
+            }),
+            // The spot already syncs — this repair upserts the relay onto the
+            // remote that is there. Every spot whose remote predates in-band
+            // revocation lands here, so the wording explains a gap the user
+            // never chose rather than asking them to configure anything.
+            BLOCKED_MISSING_REVOCATION_RELAY => Some(Self {
+                label: "Finish setting up sharing?",
+                action: "Add a revocation relay so you can take access back later.",
+                confirm: "Add relay & copy link",
+            }),
+            _ => None,
+        }
+    }
+}
 
 /// The join prompt, shown for [`BLOCKED_NEEDS_MEMBERSHIP`]. Its own dialog
 /// rather than the sync one with substituted copy: the two refusals have
@@ -861,7 +925,7 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         return;
     }
 
-    if blocked.code != BLOCKED_NOT_SYNCED {
+    let Some(repair) = Repair::for_code(&blocked.code) else {
         // Nothing the prompt could fix — including an attach that failed after
         // the user already accepted it. Say so rather than leaving the button
         // spinning until the timeout. Through `fail_copy`, not bare `settle`,
@@ -874,16 +938,16 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         // user just approved already failed), so the confirm button is
         // disabled rather than absent — visible, but not a second attempt at
         // something that cannot help.
-        open_enable_sync_dialog(&blocked.detail, false);
+        open_enable_sync_dialog(&blocked.detail, None);
         return;
-    }
+    };
 
     // Repairable: abandon the copy and ask. `settle` would stamp `Failed` and
     // arm the revert timer, which is wrong while a question is on screen — the
     // control would quietly flip back to "share" underneath the dialog.
     abandon(state, &blocked.detail);
     set_state(host, ShareState::Blocked);
-    open_enable_sync_dialog(&blocked.detail, true);
+    open_enable_sync_dialog(&blocked.detail, Some(repair));
 }
 
 /// Drop a pending clipboard write without moving the control's state. The
@@ -902,27 +966,45 @@ fn abandon(state: &Rc<RefCell<ShareStateCell>>, reason: &str) {
 /// dialog is absent, so the element still works in a host that does not
 /// render it.
 ///
-/// `offer_confirm` distinguishes the one refusal the dialog can act on
-/// (`not-synced`) from the two it can only report (`unshareable-remote`,
-/// `attach-failed`): `false` disables the confirm button — there is no
-/// attach to retry — while leaving the dialog open so `detail` stays
-/// visible. The button is reused across refusals rather than replaced, so a
-/// later repairable refusal must re-enable it: `true` clears both attributes
-/// back off.
-fn open_enable_sync_dialog(detail: &str, offer_confirm: bool) {
+/// `repair` is the refusal's offer, or `None` for a class the dialog can only
+/// report (`unshareable-remote`, `attach-failed`): that disables the confirm
+/// button — there is no attach to retry — while leaving the dialog open so
+/// `detail` stays visible, and blanks the action line, which would otherwise
+/// promise something the greyed-out button cannot do.
+///
+/// Every slot is written on every open, never left at its markup default: the
+/// dialog is one element reused across refusal classes, so anything not
+/// rewritten here is the *previous* refusal's wording. That is the bug this
+/// signature exists to make hard — a repairable refusal must also restore
+/// what a terminal one disabled.
+fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
     if let Ok(Some(slot)) = dialog.query_selector(DIALOG_DETAIL) {
         slot.set_text_content(Some(detail));
     }
+    // The terminal wording, used wherever `repair` is `None`.
+    let label = repair
+        .as_ref()
+        .map_or(TERMINAL_LABEL, |repair| repair.label);
+    let action = repair.as_ref().map_or("", |repair| repair.action);
+    let confirm_label = repair
+        .as_ref()
+        .map_or(TERMINAL_CONFIRM, |repair| repair.confirm);
+
+    if let Ok(Some(slot)) = dialog.query_selector(DIALOG_ACTION) {
+        slot.set_text_content(Some(action));
+    }
+    let _ = dialog.set_attribute("label", label);
     if let Ok(Some(confirm)) = dialog.query_selector(DIALOG_CONFIRM) {
+        confirm.set_text_content(Some(confirm_label));
         // Visible either way — an unrepairable refusal greys the button rather
         // than removing it, so the dialog reads as an answer and not as a form
         // with a button missing. `disabled` is the whole mechanism: the click
         // handler checks it explicitly, since nothing native backs the
         // attribute on a custom-element button.
-        if offer_confirm {
+        if repair.is_some() {
             let _ = confirm.remove_attribute("disabled");
         } else {
             let _ = confirm.set_attribute("disabled", "");
@@ -1181,10 +1263,13 @@ mod tests {
     }
 
     /// A stand-in for `markup.rs`'s `#fab-enable-sync` dialog: just enough
-    /// structure (the id, the detail slot, the confirm button) for
-    /// `open_enable_sync_dialog`'s lookups to find something. Attached to
-    /// `document.body` — `enable_sync_dialog` reads through
+    /// structure (the id, the detail slot, the action line, the confirm
+    /// button) for `open_enable_sync_dialog`'s lookups to find something.
+    /// Attached to `document.body` — `enable_sync_dialog` reads through
     /// `document.get_element_by_id`, not a passed-in root.
+    ///
+    /// The action line is not returned: only the tests about per-refusal
+    /// wording read it, and they do so through [`action_text`].
     fn dialog_stub() -> (Element, Element, Element) {
         let document = window().expect("window").document().expect("document");
         let dialog = document.create_element("div").expect("create dialog");
@@ -1193,11 +1278,16 @@ mod tests {
         detail
             .set_attribute("data-enable-sync-detail", "")
             .expect("mark detail");
+        let action = document.create_element("p").expect("create action");
+        action
+            .set_attribute("data-enable-sync-action", "")
+            .expect("mark action");
         let confirm = document.create_element("button").expect("create confirm");
         confirm
             .set_attribute("data-enable-sync-confirm", "")
             .expect("mark confirm");
         dialog.append_child(&detail).expect("attach detail");
+        dialog.append_child(&action).expect("attach action");
         dialog.append_child(&confirm).expect("attach confirm");
         document
             .body()
@@ -1205,6 +1295,16 @@ mod tests {
             .append_child(&dialog)
             .expect("attach dialog");
         (dialog, detail, confirm)
+    }
+
+    /// The prompt's action line — what confirming is being offered as.
+    fn action_text(dialog: &Element) -> String {
+        dialog
+            .query_selector(DIALOG_ACTION)
+            .expect("query action")
+            .expect("action slot")
+            .text_content()
+            .unwrap_or_default()
     }
 
     #[wasm_bindgen_test]
@@ -1491,7 +1591,7 @@ mod tests {
     fn it_keeps_an_unrepairable_refusals_confirm_visible_and_inert() {
         let bar = mounted_bar();
 
-        open_enable_sync_dialog("This spot's sync server can't be shared.", false);
+        open_enable_sync_dialog("This spot's sync server can't be shared.", None);
 
         let confirm = window()
             .and_then(|w| w.document())
@@ -1742,6 +1842,117 @@ mod tests {
         );
 
         dialog.remove();
+    }
+
+    /// A spot whose remote carries no revocation relay is repairable, not
+    /// terminal: it syncs, so the mint is refused only because the invite
+    /// could never be withdrawn, and confirming upserts the relay.
+    ///
+    /// The regression this pins: every spot whose remote predates in-band
+    /// revocation lands here, and the class used to fall through to the
+    /// terminal branch — a dead, greyed-out confirm with no way forward.
+    #[dialog_common::test]
+    fn it_offers_the_relay_repair_when_the_remote_has_no_revocation_relay() {
+        let (dialog, detail, confirm) = dialog_stub();
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        state.borrow_mut().pending_time = Some(7.0);
+        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        set_state(&host, ShareState::Copying);
+
+        handle_blocked(
+            &host,
+            &state,
+            Blocked {
+                code: BLOCKED_MISSING_REVOCATION_RELAY.to_owned(),
+                detail: "Invites to this spot can't be withdrawn yet.".to_owned(),
+                time: 7.0,
+            },
+        );
+
+        assert_eq!(read_state(&host), ShareState::Blocked);
+        assert!(
+            !confirm.has_attribute("disabled"),
+            "the relay repair must offer a working confirm button",
+        );
+        assert_eq!(
+            detail.text_content().as_deref(),
+            Some("Invites to this spot can't be withdrawn yet.")
+        );
+        assert!(
+            state.borrow().pending.is_none(),
+            "the clipboard write is abandoned while the question is on screen",
+        );
+
+        dialog.remove();
+    }
+
+    /// The prompt is one element reused across refusal classes, so the wording
+    /// has to be rewritten per class and not merely appended to. A spot that
+    /// already syncs must never be told to turn on sync — the bug that made a
+    /// missing relay show "Turn on sync so the people you share with can open
+    /// it." above a button offering the same.
+    #[dialog_common::test]
+    fn it_rewrites_the_whole_prompt_for_each_refusal_class() {
+        let (dialog, _detail, confirm) = dialog_stub();
+
+        open_enable_sync_dialog(
+            "This spot only exists on this device.",
+            Repair::for_code(BLOCKED_NOT_SYNCED),
+        );
+        let synced_action = action_text(&dialog);
+        let synced_confirm = confirm.text_content().unwrap_or_default();
+        let synced_label = dialog.get_attribute("label").unwrap_or_default();
+
+        open_enable_sync_dialog(
+            "Invites to this spot can't be withdrawn yet.",
+            Repair::for_code(BLOCKED_MISSING_REVOCATION_RELAY),
+        );
+        let relay_action = action_text(&dialog);
+        let relay_confirm = confirm.text_content().unwrap_or_default();
+        let relay_label = dialog.get_attribute("label").unwrap_or_default();
+
+        dialog.remove();
+
+        assert!(synced_action.contains("Turn on sync"));
+        assert!(synced_confirm.contains("Turn on sync"));
+        assert_eq!(synced_label, "Turn on sync?");
+
+        assert!(
+            !relay_action.contains("Turn on sync"),
+            "a synced spot is not asked to turn on sync, got {relay_action:?}",
+        );
+        assert!(
+            !relay_confirm.contains("Turn on sync"),
+            "nor offered it on the button, got {relay_confirm:?}",
+        );
+        assert!(
+            !relay_label.contains("Turn on sync"),
+            "nor in the heading, got {relay_label:?}",
+        );
+    }
+
+    /// A terminal refusal must not leave the previous repair's promise on
+    /// screen beside a button that can no longer keep it.
+    #[dialog_common::test]
+    fn it_clears_the_action_line_on_an_unrepairable_refusal() {
+        let (dialog, _detail, confirm) = dialog_stub();
+
+        open_enable_sync_dialog(
+            "This spot only exists on this device.",
+            Repair::for_code(BLOCKED_NOT_SYNCED),
+        );
+        assert!(!action_text(&dialog).is_empty(), "the repair promises one");
+
+        open_enable_sync_dialog("This spot's sync server can't be shared.", None);
+        let action = action_text(&dialog);
+        let confirm_label = confirm.text_content().unwrap_or_default();
+        let disabled = confirm.has_attribute("disabled");
+        dialog.remove();
+
+        assert_eq!(action, "", "a terminal refusal promises nothing");
+        assert_eq!(confirm_label, TERMINAL_CONFIRM);
+        assert!(disabled);
     }
 
     /// A copy nothing ever answered gives the button back, whether or not a

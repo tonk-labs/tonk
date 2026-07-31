@@ -20,7 +20,9 @@ pub const BLOCKED_NOT_SYNCED: &str = "not-synced";
 pub const BLOCKED_UNSHAREABLE_REMOTE: &str = "unshareable-remote";
 
 /// The remote carries no revocation relay, so a minted invite would have
-/// nowhere to publish its revocation. Terminal.
+/// nowhere to publish its revocation. Repairable: the bar offers to attach
+/// the relay the spot's own sync server advertises, which is an upsert onto
+/// the existing remote rather than a second one.
 pub const BLOCKED_MISSING_REVOCATION_RELAY: &str = "missing-revocation-relay";
 
 /// This replica is a guest visit: it holds bounded invite authority, not the

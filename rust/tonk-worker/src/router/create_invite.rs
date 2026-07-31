@@ -317,19 +317,26 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
 
 /// Why a spot cannot produce a shareable invite.
 ///
-/// Both variants mean the same thing to the recipient — an invite that can
-/// never sync, so they land in a spot that stays permanently empty — but
-/// only [`Self::NotSynced`] is repairable by attaching a remote, so only it
-/// offers the prompt.
+/// Every variant means an invite that would fail its recipient — one that
+/// can never sync, or one that could never be withdrawn. Only
+/// [`Self::UnshareableRemote`] is terminal; the other two name something the
+/// share prompt can attach, so they offer it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteRefusal {
-    /// `main` has no upstream at all. Repairable.
+    /// `main` has no upstream at all. Repairable by attaching a remote.
     NotSynced,
     /// `main` tracks something that is not a remote, or a remote whose site
     /// address is not a UCAN endpoint. An invite URL has no way to express
     /// either, so there is nothing to offer.
     UnshareableRemote,
-    /// A UCAN remote exists, but no explicit revocation relay was stored.
+    /// A UCAN remote exists, but no explicit revocation relay was stored —
+    /// so an invite could be minted and never revoked.
+    ///
+    /// Repairable, and separately from [`Self::NotSynced`]: the spot is
+    /// already synced, so the repair is an upsert of the relay onto the
+    /// remote that is there, not an attach. Reached by every spot whose
+    /// remote predates in-band revocation, and by any caller that attached
+    /// a remote without naming a relay.
     MissingRevocationRelay,
 }
 
@@ -351,9 +358,7 @@ impl RemoteRefusal {
         match self {
             Self::NotSynced => "This spot only exists on this device.",
             Self::UnshareableRemote => "This spot's sync server can't be shared.",
-            Self::MissingRevocationRelay => {
-                "This spot's sync server needs an explicit revocation relay."
-            }
+            Self::MissingRevocationRelay => "Invites to this spot can't be withdrawn yet.",
         }
     }
 }
