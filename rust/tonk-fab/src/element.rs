@@ -237,6 +237,12 @@ fn apply_membership(host: &HtmlElement, status: &str) {
     }
 }
 
+/// The membership endpoint for the bar's `space` binding, or `None` when the
+/// attribute is absent or still an unresolved view binding.
+fn host_membership_endpoint(host: &HtmlElement) -> Option<String> {
+    membership_endpoint(&host.get_attribute("space")?).ok()
+}
+
 /// Ask the worker what this replica is, and reshape the bar.
 ///
 /// Every path that can change the answer calls this rather than assuming one:
@@ -276,10 +282,7 @@ pub(crate) fn refresh_membership() {
     else {
         return;
     };
-    let Some(space) = host.get_attribute("space") else {
-        return;
-    };
-    let Ok(endpoint) = membership_endpoint(&space) else {
+    let Some(endpoint) = host_membership_endpoint(&host) else {
         return;
     };
     spawn_local(check_membership(host, endpoint));
@@ -320,10 +323,7 @@ fn attach_account_link(host: &HtmlElement) {
 
 /// Show a guest-only durable-join action and promote through the worker.
 fn attach_membership(host: &HtmlElement) {
-    let Some(space) = host.get_attribute("space") else {
-        return;
-    };
-    let Ok(endpoint) = membership_endpoint(&space) else {
+    let Some(endpoint) = host_membership_endpoint(host) else {
         return;
     };
     let Ok(Some(button)) = host.query_selector(".fab__join") else {

@@ -649,28 +649,21 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             } else {
                 name
             };
-            let account = {
+            let has_account = {
                 let tonk = env.state().read().await;
-                super::account::require_account(&tonk).await
+                super::account::require_account(&tonk).await.is_ok()
             };
-            match account {
-                Ok(()) => {}
-                Err(TonkWorkerError::AccountRequired) => {
-                    crate::router::navigate::notify_account_required(
-                        env.client(),
-                        tonk_worker_api::PendingIntent::CreateSpace {
-                            name,
-                            remote,
-                            revocation_url,
-                            template,
-                        },
-                    );
-                    return;
-                }
-                Err(error) => {
-                    log!("CreateSpace account state is unreadable: {error}");
-                    return;
-                }
+            if !has_account {
+                crate::router::navigate::notify_account_required(
+                    env.client(),
+                    tonk_worker_api::PendingIntent::CreateSpace {
+                        name,
+                        remote,
+                        revocation_url,
+                        template,
+                    },
+                );
+                return;
             }
 
             log!("command CreateSpace name={} remote={:?}", name, remote);
@@ -2546,12 +2539,9 @@ pub async fn create_repository(
     // function would notice. The gate belongs here rather than only at the
     // command handler so the HTTP route the gate replays through is held to
     // the same rule.
-    if let Err(error) = super::account::require_account(tonk).await {
-        return Err(match error {
-            TonkWorkerError::AccountRequired => RepositoryError::AccountRequired,
-            error => RepositoryError::Internal(error.to_string()),
-        });
-    }
+    super::account::require_account(tonk)
+        .await
+        .map_err(|_| RepositoryError::AccountRequired)?;
     let local_root = match super::identity::local_root(tonk).await {
         Ok(root) => root,
         Err(TonkWorkerError::RootRequired) => return Err(RepositoryError::RootRequired),
@@ -4517,23 +4507,6 @@ mod tests {
     /// nothing — the test drives seeding / attaching itself. The `main`
     /// branch is created on first write. `label` is only a display
     /// name; every create mints a fresh identity, so runs never collide.
-    /// A profile holding one space, signed out of its account.
-    ///
-    /// The local profile-name override belongs to this state: with an account
-    /// attached, a rename adopts the account's display name instead. Signing
-    /// out is how a device reaches it while still holding spaces — creating
-    /// them without an account is what the account gate refuses.
-    async fn fresh_repo_signed_out(label: &str) -> (Router, AppState, String) {
-        let (app, state, key) = fresh_repo(label).await;
-        {
-            let tonk = state.read().await;
-            crate::router::account::detach_test_account(&tonk)
-                .await
-                .expect("the test account detaches");
-        }
-        (app, state, key)
-    }
-
     async fn fresh_repo(label: &str) -> (Router, AppState, String) {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let response = app
@@ -4559,6 +4532,23 @@ mod tests {
             .unwrap();
         let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
         (app, state, info.name)
+    }
+
+    /// A profile holding one space, signed out of its account.
+    ///
+    /// The local profile-name override belongs to this state: with an account
+    /// attached, a rename adopts the account's display name instead. Signing
+    /// out is how a device reaches it while still holding spaces — creating
+    /// them without an account is what the account gate refuses.
+    async fn fresh_repo_signed_out(label: &str) -> (Router, AppState, String) {
+        let (app, state, key) = fresh_repo(label).await;
+        {
+            let tonk = state.read().await;
+            crate::router::account::detach_test_account(&tonk)
+                .await
+                .expect("the test account detaches");
+        }
+        (app, state, key)
     }
 
     /// A freshly created repo reports exactly its founder as a member,

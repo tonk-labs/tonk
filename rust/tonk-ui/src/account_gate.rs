@@ -140,10 +140,6 @@ fn go_sign_in(intent: PendingIntent) {
 /// that was joined — so a replay ends where the user was trying to get to
 /// rather than back where they were refused.
 pub(crate) async fn replay(intent: PendingIntent) -> Result<(), String> {
-    let origin = web_sys::window()
-        .and_then(|window| window.location().origin().ok())
-        .ok_or_else(|| "window origin is unavailable".to_string())?;
-    let client = reqwest::Client::new();
     match intent {
         PendingIntent::CreateSpace {
             name,
@@ -151,45 +147,51 @@ pub(crate) async fn replay(intent: PendingIntent) -> Result<(), String> {
             revocation_url,
             template,
         } => {
-            let response = client
-                .post(format!("{origin}/api/spaces"))
-                .json(&tonk_worker_api::CreateSpaceRequest {
+            let created: tonk_worker_api::CreateSpaceResponse = post(
+                "/api/spaces",
+                &tonk_worker_api::CreateSpaceRequest {
                     name,
                     remote,
                     revocation_url,
                     template,
-                })
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            if !response.status().is_success() {
-                return Err(format!("operation failed with {}", response.status()));
-            }
-            let created: tonk_worker_api::CreateSpaceResponse =
-                response.json().await.map_err(|error| error.to_string())?;
+                },
+            )
+            .await?;
             tonk_host::navigate_to(&format!("/space/{}", created.key));
-            Ok(())
         }
         PendingIntent::DurableJoin { url } => {
-            let response = client
-                .post(format!("{origin}/api/profile/join"))
-                .json(&tonk_worker_api::JoinRequest { url })
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            if !response.status().is_success() {
-                return Err(format!("operation failed with {}", response.status()));
-            }
-            let joined: JoinResponse = response.json().await.map_err(|error| error.to_string())?;
+            let joined: JoinResponse =
+                post("/api/profile/join", &tonk_worker_api::JoinRequest { url }).await?;
             let repository = match joined {
                 JoinResponse::Joined { repository } | JoinResponse::Renewed { repository } => {
                     repository
                 }
             };
             tonk_host::navigate_to(&format!("/space/{}", repository.name));
-            Ok(())
         }
     }
+    Ok(())
+}
+
+/// POST `body` to this origin's `path` and read the answer, refusing anything
+/// but success — the shape both replays share.
+async fn post<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+    path: &str,
+    body: &B,
+) -> Result<T, String> {
+    let origin = web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .ok_or_else(|| "window origin is unavailable".to_string())?;
+    let response = reqwest::Client::new()
+        .post(format!("{origin}{path}"))
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("operation failed with {}", response.status()));
+    }
+    response.json().await.map_err(|error| error.to_string())
 }
 
 /// Perform the parked intent, if the gate parked one.
