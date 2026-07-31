@@ -1,79 +1,78 @@
 [workspace]
-
-members = [
-    "rust/tonk-access-service",
-    "rust/tonk-account",
-    "rust/tonk-account-service",
-    "rust/tonk-analytics",
-    "rust/tonk-analyzer",
-    "rust/tonk-board",
-    "rust/tonk-code",
-    "rust/tonk-tree",
-    "rust/tonk-common",
-    "rust/tonk-core",
-    "rust/dialog-reactor",
-    "rust/tonk-display",
-    "rust/tonk-evaluator",
-    "rust/tonk-guest",
-    "rust/tonk-host",
-    "rust/tonk-invite",
-    "rust/tonk-identity",
-    "rust/tonk-inspector",
-    "rust/tonk-language-server",
-    "rust/tonk-macros",
-    "rust/tonk-notation",
-    "rust/tonk-fab",
-    "rust/tonk-portal",
-    "rust/tonk-prose",
-    "rust/tonk-table",
-    "rust/tonk-render",
-    "rust/tonk-router",
-    "rust/tonk-template",
-    "rust/tonk-cli",
-    "rust/tonk-schema",
-    "rust/tonk-sigil",
-    "rust/tonk-ui",
-    "rust/tonk-worker",
-    "rust/tonk-worker-api",
-    "rust/tonk-workspace",
-]
 resolver = "2"
+members = [
+  "rust/dialog-reactor",
+  "rust/tonk-access-service",
+  "rust/tonk-account",
+  "rust/tonk-account-service",
+  "rust/tonk-analytics",
+  "rust/tonk-analyzer",
+  "rust/tonk-board",
+  "rust/tonk-cli",
+  "rust/tonk-code",
+  "rust/tonk-common",
+  "rust/tonk-core",
+  "rust/tonk-display",
+  "rust/tonk-evaluator",
+  "rust/tonk-fab",
+  "rust/tonk-guest",
+  "rust/tonk-host",
+  "rust/tonk-identity",
+  "rust/tonk-inspector",
+  "rust/tonk-invite",
+  "rust/tonk-language-server",
+  "rust/tonk-macros",
+  "rust/tonk-notation",
+  "rust/tonk-portal",
+  "rust/tonk-prose",
+  "rust/tonk-render",
+  "rust/tonk-router",
+  "rust/tonk-schema",
+  "rust/tonk-sigil",
+  "rust/tonk-table",
+  "rust/tonk-template",
+  "rust/tonk-tree",
+  "rust/tonk-ui",
+  "rust/tonk-worker",
+  "rust/tonk-worker-api",
+  "rust/tonk-workspace",
+]
 
 [workspace.package]
 version = "0.6.3"
 authors = ["Tonk Labs"]
-license = "MIT"
 edition = "2024"
+license = "MIT"
 
 [workspace.dependencies]
+dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
 tonk-analytics = { path = "./rust/tonk-analytics" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
 tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
-tonk-tree = { path = "./rust/tonk-tree" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
-dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-display = { path = "./rust/tonk-display" }
 tonk-evaluator = { path = "./rust/tonk-evaluator" }
+tonk-fab = { path = "./rust/tonk-fab" }
 tonk-host = { path = "./rust/tonk-host" }
+tonk-identity = { path = "./rust/tonk-identity" }
 tonk-inspector = { path = "./rust/tonk-inspector" }
 tonk-invite = { path = "./rust/tonk-invite" }
-tonk-identity = { path = "./rust/tonk-identity" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
-tonk-fab = { path = "./rust/tonk-fab" }
 tonk-portal = { path = "./rust/tonk-portal" }
 tonk-prose = { path = "./rust/tonk-prose" }
-tonk-table = { path = "./rust/tonk-table" }
 tonk-render = { path = "./rust/tonk-render" }
 tonk-router = { path = "./rust/tonk-router" }
 tonk-schema = { path = "./rust/tonk-schema" }
-tonk-template = { path = "./rust/tonk-template" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
+tonk-table = { path = "./rust/tonk-table" }
+tonk-template = { path = "./rust/tonk-template" }
+tonk-tree = { path = "./rust/tonk-tree" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }
@@ -85,18 +84,18 @@ axum = { version = "0.8", default-features = false }
 axum-wasm-macros = "0.1"
 base58 = "0.2"
 base64 = "0.22"
-multibase = "0.9"
 blake3 = "1.5"
 bs58 = "0.5"
-ciborium = "0.2"
+bytes = "1"
 chrono = { version = "0.4", default-features = false, features = [
-    "clock",
-    "wasmbind",
+  "clock",
+  "wasmbind",
 ] }
+ciborium = "0.2"
 clap = { version = "4", features = ["derive"] }
 console_error_panic_hook = "0.1"
-custom-elements = "0.2"
 crypto-common = "=0.2.0-rc.5"
+custom-elements = "0.2"
 dialoguer = "0.11"
 digest = "=0.11.0-rc.4"
 dirs = "5"
@@ -105,24 +104,29 @@ flate2 = "1"
 futures = "0.3"
 futures-core = "0.3"
 futures-util = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
 getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_0_3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
-getrandom = { version = "0.4", features = ["wasm_js"] }
 hex = "0.4"
 hkdf = "0.12"
+html5gum = "0.7"
+http-body-util = "0.1"
+hyper = "1"
+hyper-util = "0.1"
 idb = "0.6"
+indexmap = { version = "2", features = ["serde"] }
 ipld-core = { version = "0.4", features = ["serde"] }
 keyring = "3.6"
 lsp-types = "0.97"
 matchit = "0.8"
-saphyr = "0.0.6"
-saphyr-parser = "0.0.6"
+multibase = "0.9"
 parking_lot = "0.12"
 port_check = "0.3"
+proc-macro2 = "1"
+quote = "1"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }
 rand_core = "0.9"
-rusqlite = { version = "0.32", features = ["bundled"] }
 # Pinned to 0.12 to match dialog-db's transport crates (dialog-remote-ucan-s3 /
 # dialog-remote-s3) so Cargo unifies features into the same reqwest. `rustls-tls`
 # keeps the embedded webpki roots; `rustls-tls-native-roots` additionally trusts
@@ -131,108 +135,68 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # strict superset, non-breaking. TLS deps are gated off wasm, so this is a no-op
 # for tonk-ui's wasm build. default-features = false avoids pulling in native-tls.
 reqwest = { version = "0.12", default-features = false, features = [
-    "rustls-tls",
-    "rustls-tls-native-roots",
-    "json",
+  "json",
+  "rustls-tls",
+  "rustls-tls-native-roots",
 ] }
-serde = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+saphyr = "0.0.6"
+saphyr-parser = "0.0.6"
 semver = "1"
+serde = "1"
 serde_bytes = "0.11"
-serde_json = "1"
-serde_yaml = "0.9"
 serde_ipld_dagcbor = "0.6"
 serde_ipld_dagjson = "0.2"
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+serde_yaml = "0.9"
+serial_test = "3"
 sha2_0_10 = { package = "sha2", version = "0.10" }
 syn = { version = "2", features = ["full"] }
-quote = "1"
-proc-macro2 = "1"
 tar = "0.4"
 tempfile = "3"
 thirtyfour = "0.36"
 thiserror = "2"
-html5gum = "0.7"
 tokio = "1"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 tower-service = "0.3"
-hyper = "1"
-hyper-util = "0.1"
-bytes = "1"
-http-body-util = "0.1"
-indexmap = { version = "2", features = ["serde"] }
-serde-wasm-bindgen = "0.6"
+ulid = "1"
 url = "2"
 urlencoding = "2"
-ulid = "1"
 wasm-streams = "0.6"
 web-time = "1"
 webbrowser = "1.0"
 worker = "0.8.5"
 worker-macros = "0.8.5"
-serial_test = "3"
 zeroize = "1"
 
-# Bindgen
-wasm-bindgen = "=0.2.126"
-wasm-bindgen-test = "0.3"
-wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 send_wrapper = "0.6"
+# Bindgen
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "dc40c522e8cf50004296cafa53faa9364d3164b1" }
-
-# NOTE — the dialog deps above are pinned to the immutable head of
-# `fix/idb-upgrade-invalidates-sessions`, one commit past dialog-db #411.
-# That compatibility branch starts at `tonk-2026-07-17-storage-clone` and
-# adds structured service errors plus atomic staged installation without
-# taking the unrelated version-control/search-tree migration from dialog main.
-#
-# Why the IndexedDB commit: adding an object store reopens the database a
-# version higher, and the browser grants that only once every other
-# connection closes — so an upgrade destroys the connection every other
-# caller holds. A store session that outlived one upgrade was addressing a
-# closed connection, and the worker reported `Transaction error: idb error`
-# on ordinary reads whenever `POST /account/link`'s background restore grew
-# the schema underneath a request. Fold this into #411 when that PR next
-# moves.
-#
-# Why the extra commit: the worker's presign credential is its operator
-# delegation, and bounding it in time means rotating the operator before it
-# lapses. `OperatorBuilder::build` consumes the `Storage`, so without `Clone` the
-# replacement operator can only be handed a fresh `Storage::new()` — a second
-# pool of connections to the same databases, invisibly divergent from every repo
-# and branch handle the reactor already cached. Cloning shares the pool, which is
-# already how `Storage` is built internally, and makes rotation a contained swap.
-#
-# Why a branch off the tag rather than off dialog `main`: `main` carries the
-# reserved-`dialog.`-namespace change and the version-control redesign, and
-# absorbing those is its own piece of work (tonk #635). Cutting from the tag we
-# already build against keeps this dependency byte-identical to the previous pin
-# apart from that one commit.
-#
-# Repoint to a tag once dialog-db #407 and #410 land on `main` and Tonk is ready
-# to absorb the separately tracked dialog-main migration.
-#
-# Pinning by `rev` rather than `branch` on purpose: a branch pin re-resolves as
-# the branch moves, so a build today and a build tomorrow would not agree.
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "e8bbe462a5ae5c7c71472d618c580b60ab87b88d" }
 
 [profile.dev]
 opt-level = 1
@@ -242,12 +206,12 @@ strip = "debuginfo"
 opt-level = 3
 
 [profile.release]
+strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
-strip = "debuginfo"
 
 [profile.wasm-release]
+inherits = "release"
 opt-level = "s"
 debug = 0
-inherits = "release"
 strip = "debuginfo"

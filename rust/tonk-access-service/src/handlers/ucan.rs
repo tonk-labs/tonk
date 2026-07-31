@@ -22,8 +22,12 @@ fn with_cors_headers(response: Response) -> Response {
 
 /// OPTIONS /ucan/ → Handle CORS preflight
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
-    let response = Response::empty()?.with_status(204);
-    Ok(with_cors_headers(response))
+    let response = with_cors_headers(Response::empty()?.with_status(204));
+    // Only the preflight can be cached, so the lifetime is set here
+    // rather than on every response.
+    let headers = response.headers().clone();
+    let _ = headers.set("Access-Control-Max-Age", crate::PREFLIGHT_MAX_AGE);
+    Ok(response.with_headers(headers))
 }
 
 /// POST /ucan/ → Authorize UCAN invocation and return presigned S3 request
@@ -160,8 +164,31 @@ fn unavailable() -> ServiceError {
     )
 }
 
-/// Create UcanAuthorizer from environment configuration.
+thread_local! {
+    /// The authorizer built by this isolate, if it has built one.
+    static AUTHORIZER: std::cell::OnceCell<UcanAuthorizer> =
+        const { std::cell::OnceCell::new() };
+}
+
+/// The UcanAuthorizer for this isolate.
+///
+/// It is built from deployment configuration — vars and secrets that
+/// an isolate cannot see change — so reading the bindings once and
+/// reusing the result costs nothing in freshness. A failed build is
+/// not cached: the next request tries again.
 fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, ServiceError> {
+    AUTHORIZER.with(|cached| {
+        if let Some(authorizer) = cached.get() {
+            return Ok(authorizer.clone());
+        }
+        let authorizer = build_authorizer(ctx)?;
+        let _ = cached.set(authorizer.clone());
+        Ok(authorizer)
+    })
+}
+
+/// Create UcanAuthorizer from environment configuration.
+fn build_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, ServiceError> {
     // Get R2 configuration from environment
     let account_id = ctx
         .var("R2_ACCOUNT_ID")

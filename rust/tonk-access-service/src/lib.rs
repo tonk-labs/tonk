@@ -32,6 +32,16 @@
 
 use worker::*;
 
+/// How long a browser may cache a CORS preflight for this service, in
+/// seconds.
+///
+/// Every content-addressed fetch is a `POST` carrying
+/// `Content-Type: application/cbor`, which is not CORS-safelisted, so
+/// each one is preflighted. Without a `Max-Age`, Chrome discards the
+/// preflight result after five seconds and re-issues `OPTIONS`
+/// mid-load, roughly doubling the requests a cold load pays for.
+pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
+
 mod error;
 #[cfg(any(target_arch = "wasm32", test))]
 mod expiry;
