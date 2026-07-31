@@ -47,23 +47,14 @@ fn missing_credential(error: &CredentialError) -> bool {
 }
 
 /// Load the provider-neutral local root, if one has been provisioned.
+///
+/// Mounts the profile's account operator first: a bare
+/// `Storage::default()` has no mounts, so performing a credential load
+/// against one fails with "no mount for {did}" before it ever reaches
+/// the store — on every machine, provisioned or not.
 pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
-    let storage = Storage::<NativeSpace>::default();
-    let bytes = match profile
-        .credential()
-        .site(LOCAL_ROOT_SITE)
-        .load::<Vec<u8>>()
-        .perform(&storage)
-        .await
-    {
-        Ok(bytes) if bytes.is_empty() => return Ok(None),
-        Ok(bytes) => bytes,
-        Err(error) if missing_credential(&error) => return Ok(None),
-        Err(error) => return Err(error).context("failed to load the local root"),
-    };
-    let record: LocalRoot =
-        serde_json::from_slice(&bytes).context("stored local root is malformed")?;
-    Ok(Some(record))
+    let operator = crate::account_state::credential_operator(profile).await?;
+    local_root_with_operator(profile, &operator).await
 }
 
 /// Load the local root through an already-mounted site operator.
@@ -122,17 +113,17 @@ pub async fn save_local_root(
     {
         bail!("this device already has a different local root");
     }
-    let storage = Storage::<NativeSpace>::default();
+    let operator = crate::account_state::credential_operator(profile).await?;
     profile
         .save(UcanDelegation(chain))
-        .perform(&storage)
+        .perform(&operator)
         .await
         .context("failed to install the local-root delegation")?;
     profile
         .credential()
         .site(LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record).context("failed to serialize the local root")?)
-        .perform(&storage)
+        .perform(&operator)
         .await
         .context("failed to persist the local root")?;
     Ok(record)
