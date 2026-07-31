@@ -3255,14 +3255,17 @@ name!:
     ///
     /// Asserted as a ratio rather than an absolute: node counts depend on
     /// the tree's fan-out, but the whole point is that the big tree costs
-    /// about what the small one does. Measured at the sizes below, a
-    /// correct diff copies 4 nodes either way while a baseless one copies
-    /// 74 — so the bound discriminates with room to spare, and the 750x
-    /// size gap is what buys that room.
+    /// about what the small one does. A correct diff copies a handful of
+    /// nodes either way while a baseless one copies the tree, so the bound
+    /// discriminates with room to spare, and the 375x size gap is what buys
+    /// that room. The large side is sized to discriminate, not to impress:
+    /// in the browser harness this test runs against Chrome's 30-second
+    /// renderer-liveness check, and a bigger fixture proves nothing more
+    /// while drifting toward that cliff on a loaded runner.
     #[dialog_common::test]
     async fn it_installs_a_claim_without_copying_the_space() {
         let small = claim_install_cost(8).await;
-        let large = claim_install_cost(6000).await;
+        let large = claim_install_cost(3000).await;
 
         assert!(
             small > 0,
@@ -3270,7 +3273,7 @@ name!:
         );
         assert!(
             large <= small * 3,
-            "installing a claim onto a 6000-fact space cost {large} nodes \
+            "installing a claim onto a 3000-fact space cost {large} nodes \
              against {small} for an 8-fact one — the copy is scaling with \
              the space, so the diff has lost its base",
         );
