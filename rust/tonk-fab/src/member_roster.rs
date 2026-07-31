@@ -58,6 +58,26 @@ impl CustomElement for UiMemberRosterElement {
         self.scaffold.connect(this, behaviour);
     }
 
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if name != "space" || old == new {
+            return;
+        }
+        // The space landed (or moved): the roster subscription was opened
+        // against the old value — or skipped entirely while it was blank.
+        // Drop it and subscribe against the space that is actually here.
+        self.scaffold.disconnect();
+        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
+            members: self.members.clone(),
+        });
+        self.scaffold.connect(this, behaviour);
+    }
+
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         self.scaffold.disconnect();
     }

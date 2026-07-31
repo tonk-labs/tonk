@@ -111,6 +111,39 @@ impl CustomElement for UiSpaceNameElement {
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        self.wire(this);
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if name != "space" || old == new {
+            return;
+        }
+        // The space landed (or moved): the name subscription was opened
+        // against the old value — or skipped entirely while it was blank.
+        // Drop it and wire against the space that is actually here, which is
+        // what makes the rename chip come alive on a host whose first
+        // projection carried a blank `{id}`.
+        self.scaffold.disconnect();
+        self.wire(this);
+    }
+
+    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+        self.scaffold.disconnect();
+        self.change.borrow_mut().take();
+    }
+}
+
+impl UiSpaceNameElement {
+    /// Attach the commit listener and open the name subscription — the whole
+    /// of connecting, factored so the `space` attribute callback can re-run
+    /// it once a late-arriving space lands.
+    fn wire(&mut self, this: &HtmlElement) {
         if this
             .get_attribute("space")
             .filter(|s| !s.is_empty())
@@ -124,7 +157,11 @@ impl CustomElement for UiSpaceNameElement {
         // Attach the commit listener to the `<tonk-editable>` child. There is
         // no `tonk-display` event delegation here (this markup is Rust-owned,
         // not a resolved template), so the `change` binding is wired directly.
-        if let Some(editable) = this.query_selector("tonk-editable").ok().flatten() {
+        // Guarded: a re-wire from the attribute callback must not stack a
+        // second listener on the same child.
+        if self.change.borrow().is_none()
+            && let Some(editable) = this.query_selector("tonk-editable").ok().flatten()
+        {
             let claim_target = editable.clone();
             let current_name = self.current_name.clone();
             let host = this.clone();
@@ -140,11 +177,6 @@ impl CustomElement for UiSpaceNameElement {
             current_name: self.current_name.clone(),
         });
         self.scaffold.connect(this, behaviour);
-    }
-
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        self.scaffold.disconnect();
-        self.change.borrow_mut().take();
     }
 }
 
