@@ -4626,6 +4626,7 @@ dependencies = [
  "ipld-core",
  "js-sys",
  "rand 0.9.5",
+ "serde-wasm-bindgen",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",

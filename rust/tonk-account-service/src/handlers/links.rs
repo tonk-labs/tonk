@@ -1,25 +1,12 @@
 //! Native CLI browser-handoff endpoints.
 
-use serde::Deserialize;
+use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 use worker::*;
 
 use crate::auth::{authorize_root, required_string};
 use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateRequest {
-    token_hash: String,
-    device_did: String,
-    device_name: String,
-}
-
-#[derive(Deserialize)]
-struct SecretRequest {
-    secret: String,
-}
 
 /// CORS preflight for every `/links/*` endpoint.
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
@@ -29,7 +16,7 @@ pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Res
 /// Create a pending CLI browser handoff.
 pub async fn handle_create(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match async {
-        let body: CreateRequest = req.json().await.map_err(json_error)?;
+        let body: LinkCreateRequest = req.json().await.map_err(json_error)?;
         let store = build_store(&ctx)?;
         create_link(
             &store,
@@ -53,7 +40,7 @@ pub async fn handle_create(mut req: Request, ctx: RouteContext<()>) -> Result<Re
 /// Resolve a pending handoff using its raw bearer secret.
 pub async fn handle_resolve(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match async {
-        let body: SecretRequest = req.json().await.map_err(json_error)?;
+        let body: LinkSecretRequest = req.json().await.map_err(json_error)?;
         let store = build_store(&ctx)?;
         let link = resolve_link(&store, &body.secret, now())
             .await
@@ -100,7 +87,7 @@ pub async fn handle_complete(mut req: Request, ctx: RouteContext<()>) -> Result<
 /// Consume a completed delegation once, or return `202` while pending.
 pub async fn handle_consume(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match async {
-        let body: SecretRequest = req.json().await.map_err(json_error)?;
+        let body: LinkSecretRequest = req.json().await.map_err(json_error)?;
         let store = build_store(&ctx)?;
         match consume_link(&store, &body.secret, now())
             .await

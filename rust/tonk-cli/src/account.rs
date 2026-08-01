@@ -7,7 +7,8 @@ use dialog_operator::Profile;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan_core::DelegationChain;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use tonk_account::handoff::{ConsumedLink, LinkCreateRequest, LinkSecretRequest};
 use tonk_account::{AccountProviderRecord, AccountStateStatus};
 
 /// Production account API used unless explicitly overridden.
@@ -75,27 +76,6 @@ pub struct LinkOutcome {
     pub account_state: AccountStateStatus,
     /// Diagnostic when the persisted link remains unhydrated.
     pub warning: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateLinkRequest<'a> {
-    token_hash: &'a str,
-    device_did: &'a str,
-    device_name: &'a str,
-}
-
-#[derive(Serialize)]
-struct SecretRequest<'a> {
-    secret: &'a str,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConsumeResponse {
-    delegation_hex: String,
-    credential_id: String,
-    descriptor_hex: String,
 }
 
 async fn decode_provider(
@@ -251,10 +231,10 @@ async fn create_remote(
 ) -> Result<()> {
     let response = client
         .post(format!("{}/links", service_url.trim_end_matches('/')))
-        .json(&CreateLinkRequest {
-            token_hash,
-            device_did,
-            device_name,
+        .json(&LinkCreateRequest {
+            token_hash: token_hash.to_string(),
+            device_did: device_did.to_string(),
+            device_name: device_name.to_string(),
         })
         .send()
         .await
@@ -271,13 +251,15 @@ async fn consume_once(
     client: &reqwest::Client,
     service_url: &str,
     secret: &str,
-) -> Result<Option<ConsumeResponse>> {
+) -> Result<Option<ConsumedLink>> {
     let response = client
         .post(format!(
             "{}/links/consume",
             service_url.trim_end_matches('/')
         ))
-        .json(&SecretRequest { secret })
+        .json(&LinkSecretRequest {
+            secret: secret.to_string(),
+        })
         .send()
         .await
         .context("failed to poll account link request")?;
@@ -289,7 +271,7 @@ async fn consume_once(
         let body = response.text().await.unwrap_or_default();
         bail!("account service rejected the link poll ({status}): {body}");
     }
-    Ok(Some(response.json::<ConsumeResponse>().await.context(
+    Ok(Some(response.json::<ConsumedLink>().await.context(
         "account service returned an invalid link response",
     )?))
 }

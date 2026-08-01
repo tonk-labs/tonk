@@ -7,14 +7,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlButtonElement, HtmlElement, HtmlInputElement, window};
 
-use tonk_account::AccountStateStatus;
+use tonk_account::{AccountStateStatus, handoff::ResolvedLink};
 use tonk_worker_api::{AccountStatus, RevocationProjection, RevokeDeviceAcknowledgement};
 
 use crate::identity_bridge::{
-    CeremonyOutput, CompleteLinkInput, CreateAccountInput, CreateRootInput,
-    EstablishRepositoryInput, LinkDeviceInput, RevocationOutput, SignRevocationInput,
-    complete_link, create_account, create_root, establish_account_repository, link_device,
-    sign_revocation,
+    CeremonyOutput, CreateAccountInput, CreateRootInput, EstablishRepositoryInput, LinkDeviceInput,
+    RevocationOutput, SignRevocationInput, complete_link, create_account, create_root,
+    establish_account_repository, link_device, sign_revocation,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -524,12 +523,7 @@ fn load_handoff(host: HtmlElement) {
             }
         };
         match crate::api::resolve_account_link(&service_url, &secret).await {
-            Ok(link) => {
-                let handoff = CompleteLinkInput {
-                    token_hash: link.token_hash,
-                    device_did: link.device_did,
-                    device_name: link.device_name,
-                };
+            Ok(handoff) => {
                 if let Ok(value) = serde_wasm_bindgen::to_value(&handoff) {
                     let _ = Reflect::set(host.as_ref(), &HANDOFF.into(), &value);
                 }
@@ -957,7 +951,7 @@ fn bind(host: &HtmlElement) {
         clear_error(&host);
         let handoff = Reflect::get(host.as_ref(), &HANDOFF.into())
             .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<CompleteLinkInput>(value).ok());
+            .and_then(|value| serde_wasm_bindgen::from_value::<ResolvedLink>(value).ok());
         let Some(handoff) = handoff else {
             return show_error(
                 &host,

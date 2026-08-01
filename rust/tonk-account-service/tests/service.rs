@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_varsig::Principal;
+use tonk_account::handoff::{ConsumedLink, LinkCreateRequest, LinkSecretRequest, ResolvedLink};
 use tonk_account_service::helpers::AccountServer;
 
 const ROOT_PRF: [u8; 32] = [7u8; 32];
@@ -337,25 +338,28 @@ async fn it_drives_the_full_ceremony_over_http() {
     let cli_did = cli.did().to_string();
     let response = client
         .post(format!("{base}/links"))
-        .json(&serde_json::json!({
-            "tokenHash": token_hash,
-            "deviceDid": cli_did,
-            "deviceName": "terminal"
-        }))
+        .json(&LinkCreateRequest {
+            token_hash: token_hash.clone(),
+            device_did: cli_did.clone(),
+            device_name: "terminal".to_string(),
+        })
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 201);
     let response = client
         .post(format!("{base}/links/resolve"))
-        .json(&serde_json::json!({ "secret": secret }))
+        .json(&LinkSecretRequest {
+            secret: secret.to_string(),
+        })
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let pending: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(pending["deviceDid"], cli_did);
-    assert_eq!(pending["deviceName"], "terminal");
+    let pending: ResolvedLink = response.json().await.unwrap();
+    assert_eq!(pending.token_hash, token_hash);
+    assert_eq!(pending.device_did, cli_did);
+    assert_eq!(pending.device_name, "terminal");
 
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
@@ -374,17 +378,22 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 200);
     let response = client
         .post(format!("{base}/links/consume"))
-        .json(&serde_json::json!({ "secret": secret }))
+        .json(&LinkSecretRequest {
+            secret: secret.to_string(),
+        })
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let consumed: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(consumed["delegationHex"], expected_delegation);
-    assert_eq!(consumed["descriptorHex"], expected_descriptor);
+    let consumed: ConsumedLink = response.json().await.unwrap();
+    assert_eq!(consumed.delegation_hex, expected_delegation);
+    assert_eq!(consumed.credential_id, "cred-1");
+    assert_eq!(consumed.descriptor_hex, expected_descriptor);
     let response = client
         .post(format!("{base}/links/consume"))
-        .json(&serde_json::json!({ "secret": secret }))
+        .json(&LinkSecretRequest {
+            secret: secret.to_string(),
+        })
         .send()
         .await
         .unwrap();
