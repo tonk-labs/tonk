@@ -76,19 +76,20 @@ tonk update
 ```
 
 This upgrades an install made by the install script: it downloads the
-newest release for your channel, verifies it against the release
-checksums, checks the new binary runs, and only then replaces the old
-one — so a failed update leaves your working `tonk` untouched. On
-macOS it re-runs the de-quarantine and ad-hoc re-sign for you.
+newest staging release, matching npm's default `latest` deployment,
+verifies it against the release checksums, checks the new binary runs,
+and only then replaces the old one — so a failed update leaves your
+working `tonk` untouched. On macOS it re-runs the de-quarantine and
+ad-hoc re-sign for you.
 
 `tonk` checks for new releases once a day and prints a one-line notice
 on stderr when one exists. Turn that off with `tonk update
 --disable-check` (or `TONK_NO_UPDATE_CHECK=1`), and back on with `tonk
 update --enable-check`. It never runs in CI.
 
-Check what you have with `tonk --version`. `tonk update` follows the
-channel you installed from, so a `TONK_CHANNEL=staging` install keeps
-tracking staging.
+Check what you have with `tonk --version`. `tonk update` and the daily
+release check always follow staging, regardless of the channel recorded
+at installation or the current value of `TONK_CHANNEL`.
 
 If `tonk` was installed some other way, `tonk update` says so instead
 of interfering: use `npm i -g @tonk/cli` for an npm install (or

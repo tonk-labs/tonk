@@ -1,8 +1,8 @@
 //! Self-update for `install.sh` installs: an explicit `tonk update`
 //! and a once-a-day check that nags when a newer release exists.
 //!
-//! Both release channels are rolling tags, so the version string
-//! cannot identify a build. Releases publish a `manifest.json`
+//! Self-update always follows the rolling staging release, matching
+//! npm's default `latest` deployment. Releases publish a `manifest.json`
 //! carrying version + commit: the nag compares versions (a real
 //! update bumps it, staging churn does not), `tonk update` compares
 //! commits (catching same-version rebuilds).
@@ -48,15 +48,6 @@ impl Channel {
         }
     }
 
-    /// Parse a channel label; `None` for anything unrecognized.
-    pub fn from_label(label: &str) -> Option<Channel> {
-        match label {
-            "stable" => Some(Channel::Stable),
-            "staging" => Some(Channel::Staging),
-            _ => None,
-        }
-    }
-
     /// Directory URL holding this channel's assets. Stable resolves
     /// through GitHub's `/latest/` alias; staging names its tag —
     /// the same two shapes `install.sh` builds.
@@ -90,30 +81,12 @@ pub fn is_newer(local: &str, remote: &str) -> bool {
     remote > local
 }
 
-/// Which channel this copy tracks: the receipt, else `TONK_CHANNEL`,
-/// else stable.
+/// The release channel checked by explicit and background updates.
 ///
-/// The receipt wins because it records what was actually installed;
-/// `TONK_CHANNEL` is what `install.sh` reads, so honouring it lets a
-/// receipt-less copy still be checked against the right release.
+/// npm's default `latest` deployment is cut from staging, so self-update
+/// follows the same channel regardless of the install receipt or environment.
 pub fn resolve_channel() -> Channel {
-    channel_from(
-        receipt::load()
-            .as_ref()
-            .map(|receipt| receipt.channel.as_str()),
-        std::env::var("TONK_CHANNEL").ok().as_deref(),
-    )
-}
-
-/// The precedence [`resolve_channel`] applies, over labels the caller
-/// has already read. Split out so it can be tested without mutating
-/// process-global environment state that every other test in the
-/// binary reads concurrently.
-fn channel_from(receipt_label: Option<&str>, env_label: Option<&str>) -> Channel {
-    receipt_label
-        .and_then(Channel::from_label)
-        .or_else(|| env_label.and_then(Channel::from_label))
-        .unwrap_or(Channel::Stable)
+    Channel::Staging
 }
 
 /// Handle `tonk update`. Returns the line to print on success.
@@ -339,7 +312,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_does_not_report_an_older_version_as_newer() {
-        // A TONK_RELEASE pin to something ahead of stable must never
+        // A pinned install ahead of staging must never
         // be nagged into a downgrade.
         assert!(!is_newer("0.5.0", "0.4.0"));
     }
@@ -369,37 +342,14 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_reads_channel_labels() {
-        assert_eq!(Channel::from_label("staging"), Some(Channel::Staging));
-        assert_eq!(Channel::from_label("stable"), Some(Channel::Stable));
-        assert_eq!(Channel::from_label("nonsense"), None);
+    fn it_names_channels() {
+        assert_eq!(Channel::Stable.as_str(), "stable");
         assert_eq!(Channel::Staging.as_str(), "staging");
     }
 
     #[dialog_common::test]
-    fn it_resolves_the_channel_from_receipt_then_env_then_stable() {
-        // Neither source: stable.
-        assert_eq!(channel_from(None, None), Channel::Stable);
-
-        // Env alone is honoured.
-        assert_eq!(channel_from(None, Some("staging")), Channel::Staging);
-
-        // A receipt wins over the env.
-        assert_eq!(
-            channel_from(Some("stable"), Some("staging")),
-            Channel::Stable
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_falls_through_an_unrecognized_receipt_channel_to_env_then_stable() {
-        // A receipt channel label of "beta" is unrecognized: it must
-        // not win, falling through to the env and then to stable.
-        assert_eq!(channel_from(Some("beta"), None), Channel::Stable);
-        assert_eq!(
-            channel_from(Some("beta"), Some("staging")),
-            Channel::Staging
-        );
+    fn it_always_resolves_staging() {
+        assert_eq!(resolve_channel(), Channel::Staging);
     }
 
     #[dialog_common::test]

@@ -78,7 +78,9 @@ fn run_update(endpoint: &str, state_dir: &std::path::Path, args: &[&str]) -> std
         // Isolated so the test never reads the developer's real
         // telemetry choice; without a key nothing is sent anyway.
         .env("TONK_TELEMETRY_STATE", state_dir)
-        .env_remove("TONK_CHANNEL")
+        // Even an explicit legacy channel selection must not move
+        // self-update away from staging.
+        .env("TONK_CHANNEL", "stable")
         .env_remove("TONK_POSTHOG_KEY")
         .output()
         .expect("run tonk update")
@@ -86,17 +88,18 @@ fn run_update(endpoint: &str, state_dir: &std::path::Path, args: &[&str]) -> std
 
 fn manifest_body(version: &str, commit: &str) -> Vec<u8> {
     format!(
-        r#"{{"version":"{version}","commit":"{commit}","channel":"stable","built_at":"2026-07-16T00:00:00Z"}}"#
+        r#"{{"version":"{version}","commit":"{commit}","channel":"staging","built_at":"2026-07-16T00:00:00Z"}}"#
     )
     .into_bytes()
 }
 
 #[dialog_common::test]
-fn it_reports_already_current_when_the_receipt_matches_the_release() {
+fn it_fetches_staging_even_when_the_matching_receipt_says_stable() {
     let dir = tempfile::tempdir().expect("tempdir");
     // install_dir must name the directory this test's binary actually
     // runs from — the shortcut only fires for a receipt that describes
-    // THIS copy, not just any receipt with a matching commit.
+    // THIS copy, not just any receipt with a matching commit. The stable
+    // channel is deliberately stale metadata and must not select the URL.
     let install_dir = running_install_dir();
     std::fs::write(
         dir.path().join("install.json"),
@@ -107,7 +110,7 @@ fn it_reports_already_current_when_the_receipt_matches_the_release() {
     .expect("write receipt");
 
     let endpoint = serve(vec![(
-        "/releases/latest/download/manifest.json".to_owned(),
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
         manifest_body("0.4.0", "abc1234def"),
     )]);
 
@@ -120,6 +123,7 @@ fn it_reports_already_current_when_the_receipt_matches_the_release() {
     );
     assert!(stdout.contains("already current"), "stdout: {stdout}");
     assert!(stdout.contains("abc1234"), "stdout: {stdout}");
+    assert!(stdout.contains("staging"), "stdout: {stdout}");
 }
 
 #[dialog_common::test]
@@ -135,7 +139,7 @@ fn it_does_not_report_already_current_when_the_receipt_names_a_different_install
     .expect("write receipt");
 
     let endpoint = serve(vec![(
-        "/releases/latest/download/manifest.json".to_owned(),
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
         manifest_body("0.4.0", "abc1234def"),
     )]);
 
@@ -200,7 +204,7 @@ fn run_probe(
         // Keep `tonk telemetry` off the real telemetry.json too.
         .env("TONK_TELEMETRY_STATE", state_dir)
         .env_remove("CI")
-        .env_remove("TONK_CHANNEL")
+        .env("TONK_CHANNEL", "stable")
         .env_remove("TONK_NO_UPDATE_CHECK")
         .env_remove("TONK_POSTHOG_KEY");
     for (key, value) in extra {
@@ -213,7 +217,7 @@ fn run_probe(
 fn it_nags_on_stderr_when_the_release_is_newer() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/latest/download/manifest.json".to_owned(),
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
         manifest_body("99.0.0", "fff9999"),
     )]);
 
@@ -231,7 +235,7 @@ fn it_nags_on_stderr_when_the_release_is_newer() {
 fn it_does_not_nag_when_the_release_is_not_newer() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/latest/download/manifest.json".to_owned(),
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
         manifest_body("0.0.1", "aaa0001"),
     )]);
 
@@ -243,7 +247,7 @@ fn it_does_not_nag_when_the_release_is_not_newer() {
 fn it_does_not_nag_when_opted_out() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/latest/download/manifest.json".to_owned(),
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
         manifest_body("99.0.0", "fff9999"),
     )]);
 
@@ -257,7 +261,7 @@ fn it_does_not_nag_when_opted_out() {
 fn it_does_not_nag_in_ci() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/latest/download/manifest.json".to_owned(),
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
         manifest_body("99.0.0", "fff9999"),
     )]);
 

@@ -159,10 +159,11 @@ fi
 
 say "installed tonk to $dest"
 
-# Record what we installed, so `tonk update` knows which channel to
-# check and can answer "already current" without downloading an
-# archive. Best-effort: an older release has no manifest.json, and a
-# receipt we cannot write is not a reason to fail an install.
+# Record what we installed so `tonk update` can answer "already
+# current" without downloading an archive. Self-update always checks
+# staging; the recorded channel is informational. Best-effort: an older
+# release has no manifest.json, and a receipt we cannot write is not a
+# reason to fail an install.
 #
 # Mirrors `update::receipt::Receipt`; TONK_UPDATE_STATE overrides the
 # directory for tests, matching the CLI.

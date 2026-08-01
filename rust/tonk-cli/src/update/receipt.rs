@@ -2,10 +2,9 @@
 //! manifest taken at install time, plus where it landed.
 //!
 //! `install.sh` writes it best-effort — a failed manifest fetch must
-//! never fail an install, so a missing receipt is normal and means
-//! "assume stable". It is not the basis of detection: it records
-//! which channel to check, and lets `tonk update` answer "already
-//! current" without downloading an archive to find out.
+//! never fail an install, so a missing receipt is normal. Self-update
+//! always checks staging; the receipt lets `tonk update` answer
+//! "already current" without downloading an archive to find out.
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +14,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Receipt {
     /// Channel label (`stable` / `staging`) this copy came from.
+    /// Informational only; self-update always targets staging.
     pub channel: String,
     /// Version of the installed build.
     pub version: String,
