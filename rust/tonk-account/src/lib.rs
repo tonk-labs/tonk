@@ -5,6 +5,8 @@
 //! mounting and projection policy remains with the worker and CLI adapters.
 
 mod descriptor;
+/// Shared wire and browser-ceremony contracts for native account handoffs.
+pub mod handoff;
 mod provider;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};

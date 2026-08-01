@@ -1,5 +1,6 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
+use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus,
     EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse, MembershipResponse,
@@ -8,18 +9,6 @@ use tonk_worker_api::{
 };
 
 use crate::error::TonkUiError;
-
-/// Pending native device metadata resolved through a handoff secret.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingAccountLink {
-    /// Hash the root ceremony binds into its signed completion.
-    pub token_hash: String,
-    /// Native profile DID that will receive the delegation.
-    pub device_did: String,
-    /// Native device name shown for confirmation.
-    pub device_name: String,
-}
 
 /// Mirrors the worker's error envelope so we can decode
 /// structured rejections (analyzer code + range) instead of
@@ -741,10 +730,12 @@ pub async fn submit_account_ceremony(
 pub async fn resolve_account_link(
     service: &str,
     secret: &str,
-) -> Result<PendingAccountLink, TonkUiError> {
+) -> Result<ResolvedLink, TonkUiError> {
     let response = reqwest::Client::new()
         .post(format!("{}/links/resolve", service.trim_end_matches('/')))
-        .json(&serde_json::json!({ "secret": secret }))
+        .json(&LinkSecretRequest {
+            secret: secret.to_string(),
+        })
         .send()
         .await
         .map_err(into_api_error)?;

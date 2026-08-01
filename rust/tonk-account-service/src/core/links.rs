@@ -3,21 +3,10 @@
 use crate::core::CeremonyError;
 use crate::core::delegation::check_device_delegation;
 use crate::store::{Device, DeviceStatus, LinkRequest, Store};
+use tonk_account::handoff::{ConsumedLink, ResolvedLink};
 
 /// Handoffs are deliberately short-lived bearer capabilities.
 pub const LINK_TTL_SECONDS: u64 = 5 * 60;
-
-/// Public device metadata returned to the browser after bearer resolution.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolvedLink {
-    /// Hash bound into the root-signed completion invocation.
-    pub token_hash: String,
-    /// CLI profile DID receiving the delegation.
-    pub device_did: String,
-    /// Human-readable device name shown before confirmation.
-    pub device_name: String,
-}
 
 /// Hash a raw 32-byte handoff secret for storage and lookup.
 pub fn hash_secret(secret: &str) -> Result<String, CeremonyError> {
@@ -167,18 +156,6 @@ pub async fn complete_link<S: Store>(
         ));
     }
     Ok(())
-}
-
-/// Provider-neutral local-root material returned by a completed handoff.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConsumedLink {
-    /// Exact root-to-device delegation bytes, hex encoded.
-    pub delegation_hex: String,
-    /// Opaque credential identifier belonging to the root passkey.
-    pub credential_id: String,
-    /// Exact established account repository descriptor hex.
-    pub descriptor_hex: String,
 }
 
 /// Consume a completed delegation and descriptor once. `None` means the CLI

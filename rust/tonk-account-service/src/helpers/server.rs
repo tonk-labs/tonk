@@ -21,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 
 use crate::auth::{
     authorize, authorize_root, optional_revocation, required_string, string_argument,
@@ -508,19 +509,6 @@ async fn devices_revoke_route(
             "stored": outcome.stored,
         }),
     ))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LinkCreateRequest {
-    token_hash: String,
-    device_did: String,
-    device_name: String,
-}
-
-#[derive(Deserialize)]
-struct LinkSecretRequest {
-    secret: String,
 }
 
 async fn links_create_route(

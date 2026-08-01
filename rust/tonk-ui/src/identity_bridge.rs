@@ -4,6 +4,7 @@ use js_sys::{Function, Promise, Reflect};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
+use tonk_account::handoff::{CompleteLinkCeremony, ResolvedLink};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
@@ -58,15 +59,6 @@ pub(crate) struct EstablishCeremonyOutput {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LinkDeviceInput {
-    pub device_did: String,
-    pub device_name: String,
-}
-
-/// Input for completing a command-line device handoff.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CompleteLinkInput {
-    pub token_hash: String,
     pub device_did: String,
     pub device_name: String,
 }
@@ -180,8 +172,8 @@ pub(crate) async fn link_device(
 }
 
 pub(crate) async fn complete_link(
-    input: CompleteLinkInput,
-) -> Result<CeremonyOutput, IdentityBridgeError> {
+    input: ResolvedLink,
+) -> Result<CompleteLinkCeremony, IdentityBridgeError> {
     call("completeLink", input).await
 }
 
@@ -337,19 +329,21 @@ mod tests {
                 if (input.tokenHash !== "token" || input.deviceDid !== "did:key:device"
                     || input.deviceName !== "CLI")
                     return Promise.reject(new Error("property"));
-                return Promise.resolve({{
-                    rootDid: "did:key:root", credentialId: "credential",
-                    delegationHex: "delegation", invocationHex: "invocation"
-                }});"#
+                return Promise.resolve({{ invocationHex: "invocation" }});"#
             ),
         );
-        complete_link(CompleteLinkInput {
-            token_hash: "token".into(),
-            device_did: "did:key:device".into(),
-            device_name: "CLI".into(),
-        })
-        .await
-        .unwrap();
+        assert_eq!(
+            complete_link(ResolvedLink {
+                token_hash: "token".into(),
+                device_did: "did:key:device".into(),
+                device_name: "CLI".into(),
+            })
+            .await
+            .unwrap(),
+            CompleteLinkCeremony {
+                invocation_hex: "invocation".into(),
+            }
+        );
 
         install_method(
             "signRevocation",
@@ -370,6 +364,32 @@ mod tests {
             .revocation_hex,
             "revocation"
         );
+    }
+
+    /// Completing a CLI handoff only submits the root-signed invocation. The
+    /// account service, not this browser response, supplies the durable passkey
+    /// credential id when the CLI consumes the completed handoff.
+    #[dialog_common::test]
+    async fn it_accepts_the_actual_complete_link_output() {
+        install_method(
+            "completeLink",
+            r#"
+            return Promise.resolve({
+                rootDid: "did:key:root", deviceDid: input.deviceDid,
+                delegationHex: "delegation", invocationHex: "invocation"
+            });
+            "#,
+        );
+
+        let output = complete_link(ResolvedLink {
+            token_hash: "token".into(),
+            device_did: "did:key:device".into(),
+            device_name: "CLI".into(),
+        })
+        .await
+        .expect("the real completeLink response is a valid bridge output");
+
+        assert_eq!(output.invocation_hex, "invocation");
     }
 
     #[dialog_common::test]

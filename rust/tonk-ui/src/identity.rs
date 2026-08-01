@@ -124,13 +124,20 @@ mod tests {
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                window.tonkIdentity.createAccount({
-                    email: "person@example.com",
-                    code: "123456",
+                window.tonkIdentity.createRoot({
                     deviceDid: arguments[0],
-                    deviceName: "test browser",
-                    remote: "https://accounts.example/ucan/",
+                    label: "person@example.com",
                 })
+                    .then((root) => window.tonkIdentity.createAccount({
+                        email: "person@example.com",
+                        code: "123456",
+                        deviceDid: arguments[0],
+                        deviceName: "test browser",
+                        rootDid: root.rootDid,
+                        credentialId: root.credentialId,
+                        delegationHex: root.delegationHex,
+                        remote: "https://accounts.example/ucan/",
+                    }))
                     .then((result) => done({ ok: result }))
                     .catch((error) => done({ error: String(error) }));
                 "#,
@@ -166,27 +173,51 @@ mod tests {
             ))
         );
 
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_a_root_signed_cli_handoff(env: TestEnvironment) -> Result<()> {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_ucan_core::principal::Principal;
+        use dialog_ucan_core::promise::Promised;
+        use dialog_ucan_core::{DelegationChain, InvocationChain};
+        use tonk_account::handoff::CompleteLinkCeremony;
+
+        let driver = driver_with_prf(env).await?;
+        let browser = Ed25519Signer::import(&[8u8; 32]).await?;
         let cli = Ed25519Signer::import(&[9u8; 32]).await?;
+        let browser_did = browser.did().to_string();
         let cli_did = cli.did().to_string();
         let output = driver
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                window.tonkIdentity.completeLink({
-                    tokenHash: "handoff-hash",
-                    deviceDid: arguments[0],
-                    deviceName: "test terminal",
-                })
+                window.tonkIdentity.createRoot({ deviceDid: arguments[0] })
+                    .then(() => window.tonkIdentity.completeLink({
+                        tokenHash: "handoff-hash",
+                        deviceDid: arguments[1],
+                        deviceName: "test terminal",
+                    }))
                     .then((result) => done({ ok: result }))
                     .catch((error) => done({ error: String(error) }));
                 "#,
-                vec![serde_json::Value::String(cli_did.clone())],
+                vec![
+                    serde_json::Value::String(browser_did),
+                    serde_json::Value::String(cli_did.clone()),
+                ],
             )
             .await?;
         let output = output.json().clone();
         assert!(output.get("error").is_none(), "handoff failed: {output:?}");
-        let ceremony = &output["ok"];
-        let invocation = hex::decode(ceremony["invocationHex"].as_str().unwrap())?;
+        let raw = output["ok"].as_object().expect("ceremony is an object");
+        assert_eq!(
+            raw.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["invocationHex"]
+        );
+        let ceremony: CompleteLinkCeremony = serde_json::from_value(output["ok"].clone())?;
+        let invocation = hex::decode(ceremony.invocation_hex)?;
         let invocation = InvocationChain::try_from(invocation.as_slice())?;
         invocation
             .verify(&dialog_credentials::Ed25519KeyResolver)
@@ -203,7 +234,11 @@ mod tests {
             invocation.arguments().get("tokenHash"),
             Some(&Promised::String("handoff-hash".into()))
         );
-        let delegation = hex::decode(ceremony["delegationHex"].as_str().unwrap())?;
+        let delegation_hex = match invocation.arguments().get("delegation") {
+            Some(Promised::String(delegation_hex)) => delegation_hex,
+            other => panic!("expected delegation argument, got {other:?}"),
+        };
+        let delegation = hex::decode(delegation_hex)?;
         let delegation = DelegationChain::try_from(delegation.as_slice())?;
         assert_eq!(delegation.audience().to_string(), cli_did);
 
