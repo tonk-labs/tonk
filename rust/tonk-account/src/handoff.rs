@@ -55,6 +55,17 @@ pub struct ConsumedLink {
 mod tests {
     use super::*;
 
+    fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys
+    }
+
     #[test]
     fn it_round_trips_each_handoff_phase_in_camel_case() {
         let create = LinkCreateRequest {
@@ -64,7 +75,7 @@ mod tests {
         };
         let create_json = serde_json::to_value(&create).unwrap();
         assert_eq!(
-            create_json.as_object().unwrap().keys().collect::<Vec<_>>(),
+            sorted_keys(&create_json),
             vec!["deviceDid", "deviceName", "tokenHash"]
         );
         assert_eq!(
@@ -76,10 +87,7 @@ mod tests {
             secret: "secret".to_string(),
         };
         let secret_json = serde_json::to_value(&secret).unwrap();
-        assert_eq!(
-            secret_json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["secret"]
-        );
+        assert_eq!(sorted_keys(&secret_json), vec!["secret"]);
         assert_eq!(
             serde_json::from_value::<LinkSecretRequest>(secret_json).unwrap(),
             secret
@@ -92,11 +100,7 @@ mod tests {
         };
         let resolved_json = serde_json::to_value(&resolved).unwrap();
         assert_eq!(
-            resolved_json
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
+            sorted_keys(&resolved_json),
             vec!["deviceDid", "deviceName", "tokenHash"]
         );
         assert_eq!(
@@ -108,14 +112,7 @@ mod tests {
             invocation_hex: "invocation".to_string(),
         };
         let ceremony_json = serde_json::to_value(&ceremony).unwrap();
-        assert_eq!(
-            ceremony_json
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
-            vec!["invocationHex"]
-        );
+        assert_eq!(sorted_keys(&ceremony_json), vec!["invocationHex"]);
         assert_eq!(
             serde_json::from_value::<CompleteLinkCeremony>(ceremony_json).unwrap(),
             ceremony
@@ -128,11 +125,7 @@ mod tests {
         };
         let consumed_json = serde_json::to_value(&consumed).unwrap();
         assert_eq!(
-            consumed_json
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
+            sorted_keys(&consumed_json),
             vec!["credentialId", "delegationHex", "descriptorHex"]
         );
         assert_eq!(
