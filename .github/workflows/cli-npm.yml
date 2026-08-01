@@ -33,17 +33,20 @@ jobs:
       dist-tag: ${{ steps.resolve.outputs.dist-tag }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Derive and validate version
         id: resolve
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+
           # Single source of truth: whatever we publish must match the
           # Cargo workspace version of the checked-out ref.
           cargo_version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
+
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             # An empty input just means "publish what this ref says".
             version="${INPUT_VERSION:-$cargo_version}"
@@ -54,24 +57,30 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
             source="tag $GITHUB_REF_NAME"
           fi
+
           if [[ "$version" != "$cargo_version" ]]; then
             echo "::error::$source does not match Cargo workspace version $cargo_version"
             exit 1
           fi
-          # Prereleases (e.g. 0.4.1-rc.1) publish under `next`, releases under `latest`.
+
+          # Prereleases (e.g. 0.4.1-rc.1) publish under `next`,
+          # releases under `latest`.
           if [[ "$version" == *-* ]]; then
             dist_tag="next"
           else
             dist_tag="latest"
           fi
+
           echo "version=$version"   >> "$GITHUB_OUTPUT"
           echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
+
           echo "Publishing $version to npm dist-tag '$dist_tag'"
 
   build:
     name: 'Build ${{ matrix.artifact-name }}'
     needs: ['prepare']
     runs-on: ${{ matrix.os }}
+
     strategy:
       matrix:
         include:
@@ -79,19 +88,25 @@ jobs:
             artifact-name: tonk-linux-x86_64
           - os: macos-latest
             artifact-name: tonk-macos-arm64
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: wimpysworld/nothing-but-nix@main
         if: runner.os == 'Linux'
+
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
+
       - uses: cachix/cachix-action@v16
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
       - name: 'Build tonk'
         run: nix build --accept-flake-config .#tonk-cli
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -101,71 +116,106 @@ jobs:
     name: 'Publish to npm'
     needs: ['prepare', 'build']
     runs-on: ubuntu-latest
+
+    # `id-token: write` allows GitHub to mint the OIDC token that npm
+    # exchanges for a short-lived publishing credential.
     permissions:
       contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # npm Trusted Publishing requires Node >= 22.14.0.
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
+
+      # Trusted Publishing requires npm >= 11.5.1.
+      # Installing npm 11 explicitly keeps the workflow independent of
+      # whichever npm minor version happens to ship with the Node image.
+      - name: Ensure OIDC-capable npm
+        run: |
+          npm install --global 'npm@^11.5.1'
+          node --version
+          npm --version
+
       - uses: actions/download-artifact@v4
         with:
           name: tonk-macos-arm64
           path: artifacts/darwin-arm64
+
       - uses: actions/download-artifact@v4
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x64
+
       - name: Assemble platform packages
         working-directory: rust/tonk-cli/npm
         run: |
           set -euo pipefail
-          install -Dm0755 "$GITHUB_WORKSPACE/artifacts/darwin-arm64/tonk" darwin-arm64/bin/tonk
-          install -Dm0755 "$GITHUB_WORKSPACE/artifacts/linux-x64/tonk"   linux-x64/bin/tonk
+
+          install -Dm0755 \
+            "$GITHUB_WORKSPACE/artifacts/darwin-arm64/tonk" \
+            darwin-arm64/bin/tonk
+
+          install -Dm0755 \
+            "$GITHUB_WORKSPACE/artifacts/linux-x64/tonk" \
+            linux-x64/bin/tonk
+
       - name: Stamp version
         working-directory: rust/tonk-cli/npm
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+
           for dir in darwin-arm64 linux-x64 cli; do
-            (cd "$dir" && npm version "$VERSION" --no-git-tag-version --allow-same-version)
+            (
+              cd "$dir"
+              npm version "$VERSION" \
+                --no-git-tag-version \
+                --allow-same-version
+            )
           done
+
           # Pin the wrapper's optionalDependencies to the same version.
           node -e '
             const fs = require("fs");
             const v = process.env.VERSION;
             const p = "cli/package.json";
             const j = JSON.parse(fs.readFileSync(p, "utf8"));
+
             for (const k of Object.keys(j.optionalDependencies || {})) {
               j.optionalDependencies[k] = v;
             }
-            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+
+            fs.writeFileSync(
+              p,
+              JSON.stringify(j, null, 2) + "\n"
+            );
           '
-      - name: Verify npm auth
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          # An expired or under-scoped token shows up as a bare `404 Not
-          # Found - PUT` partway through publishing, which reads like a
-          # missing package rather than an auth problem. Fail here first.
-          npm whoami
+
       - name: Publish
         working-directory: rust/tonk-cli/npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ needs.prepare.outputs.dist-tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+
           # Platform packages first: the wrapper's optionalDependencies
           # point at them, so they must exist before it resolves.
+          #
+          # npm automatically detects the GitHub Actions OIDC environment
+          # for `npm publish`; no NPM_TOKEN or OTP is required.
+          #
           # The `./` prefix is required — a bare name like `darwin-arm64`
           # is parsed as a registry package spec, not a local directory.
           for dir in darwin-arm64 linux-x64 cli; do
             name="$(node -p "require('./$dir/package.json').name")"
+
             # npm never allows a version to be republished, so a retry
             # after a partial failure has to step over what already
             # landed instead of dying on the first conflict.
@@ -173,5 +223,8 @@ jobs:
               echo "$name@$VERSION already published, skipping"
               continue
             fi
-            npm publish "./$dir" --access public --tag "$TAG"
+
+            npm publish "./$dir" \
+              --access public \
+              --tag "$TAG"
           done
