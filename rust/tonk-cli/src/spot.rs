@@ -452,13 +452,48 @@ pub struct Listing {
     pub active: Option<Resolved>,
 }
 
+/// Register an already-mounted canonical site without binding any directory.
+///
+/// The registry is loaded immediately before the atomic save so a concurrent
+/// name claim is never silently overwritten.
+pub fn register_existing_unbound(
+    store: &SpotStore,
+    name: &str,
+    site: &Path,
+) -> Result<(), SpotError> {
+    validate_name(name)?;
+    let site = site.canonicalize().map_err(|error| {
+        SpotError::Io(format!(
+            "could not canonicalize {}: {error}",
+            site.display()
+        ))
+    })?;
+    let canonical = store.canonical_site(name).canonicalize().map_err(|error| {
+        SpotError::Io(format!(
+            "account spot is not mounted at canonical site {}: {error}",
+            store.canonical_site(name).display()
+        ))
+    })?;
+    if site != canonical {
+        return Err(SpotError::Io(format!(
+            "account spot must be mounted at canonical site {}",
+            canonical.display()
+        )));
+    }
+
+    let mut registry = store.load()?;
+    if registry.spots.contains_key(name) {
+        return Err(SpotError::Exists(name.to_owned()));
+    }
+    registry.spots.insert(name.to_owned(), SpotEntry { site });
+    store.save(&registry)
+}
+
 /// Create (or adopt) a spot: initialize the site, register the name,
 /// and optionally bind a directory to it. The site lands in the
 /// store's canonical `spots/<name>/` unless `site_override` names
-/// another directory;
-/// because [`crate::site::TonkSite::init_at_with`] is idempotent,
-/// an override pointing at existing site storage adopts it — the
-/// migration path for pre-registry `.tonk/` dirs.
+/// another directory; because [`crate::site::TonkSite::init_at_with`]
+/// is idempotent, an override pointing at existing site storage adopts it.
 pub async fn create(
     store: &SpotStore,
     name: &str,

@@ -4,6 +4,8 @@
 //! lifecycle outcomes, and remote initialization primitive. Higher-level
 //! mounting and projection policy remains with the worker and CLI adapters.
 
+/// Provider-neutral account spot backup artifacts.
+pub mod backup;
 mod descriptor;
 /// Shared wire and browser-ceremony contracts for native account handoffs.
 pub mod handoff;

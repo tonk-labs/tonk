@@ -21,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tonk_account::backup::{ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1};
 use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 
 use crate::auth::{
@@ -28,7 +29,7 @@ use crate::auth::{
 };
 use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account};
-use crate::core::backup::{get_chain, list_chains, put_chain};
+use crate::core::backup::{get_chain, list_account_spots, list_chains, put_chain_and_index_spot};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
@@ -151,6 +152,7 @@ async fn handle_request(
         (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
         (Method::POST, "/chains/put") => chains_put_route(req, &backends).await,
         (Method::POST, "/chains/list") => chains_list_route(req, &backends).await,
+        (Method::POST, "/chains/spots") => chains_spots_route(req, &backends).await,
         (Method::POST, "/chains/get") => chains_get_route(req, &backends).await,
         _ => Err(ServiceError::new(
             ErrorCode::NotFound,
@@ -594,7 +596,7 @@ async fn chains_put_route(
         ServiceError::new(ErrorCode::InvalidArgument, format!("bad chain hex: {err}"))
     })?;
 
-    let key = put_chain(&backends.chains, &caller.account, &bytes)
+    let key = put_chain_and_index_spot(&backends.chains, &caller.account, &bytes)
         .await
         .map_err(ceremony_error)?;
 
@@ -619,7 +621,28 @@ async fn chains_list_route(
         .await
         .map_err(ceremony_error)?;
 
-    Ok(json_response(StatusCode::OK, &keys))
+    let mut response = json_response(StatusCode::OK, &keys);
+    response.headers_mut().insert(
+        hyper::header::HeaderName::from_bytes(ACCOUNT_SPOTS_CAPABILITY_HEADER.as_bytes())
+            .expect("capability header name is valid"),
+        ACCOUNT_SPOTS_CAPABILITY_V1.parse().unwrap(),
+    );
+    Ok(response)
+}
+
+/// `POST /chains/spots` → list one semantic row per account spot.
+async fn chains_spots_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize(&backends.store, &body, &["account", "chain", "spots"])
+        .await
+        .map_err(ceremony_error)?;
+    let spots = list_account_spots(&backends.chains, &caller.account)
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &spots))
 }
 
 /// `POST /chains/get` → fetch the bytes backed up under a chain key.
@@ -720,7 +743,7 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     );
     headers.insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
-        "Content-Type".parse().unwrap(),
+        "Content-Type, X-Tonk-Account-Spots".parse().unwrap(),
     );
     response
 }

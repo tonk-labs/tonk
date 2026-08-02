@@ -22,6 +22,7 @@ dialog-effects = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }

@@ -14,9 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use dialog_capability::Subject as CapSubject;
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, key::KeyExport};
-use dialog_effects::space::{Space, SpaceExt as _};
+use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::{Did, Principal};
 use thiserror::Error;
@@ -432,39 +430,11 @@ pub async fn claim(
     let remote_url = claimed.remote_url.clone();
     let revocation_url = claimed.revocation_url.clone();
 
-    profile
-        .access()
-        .save(UcanDelegation(claimed.chain))
-        .perform(&operator)
+    // Install only the reusable root-ending authority and verifier-backed
+    // repository. Invite-specific roster/provenance writes remain below.
+    let joined = site::mount_delegated_with(&root, profile, operator, claimed.chain, config)
         .await
-        .map_err(|e| InviteError::Io(format!("failed to persist delegation chain: {e}")))?;
-
-    // Provision the local space at `main` keyed to the invited
-    // subject's verifier DID. The space credential is verifier-
-    // only; mutating authority flows through the operator chain
-    // we just persisted.
-    let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
-        InviteError::InvalidInvite(format!(
-            "invite subject is not a valid Ed25519 did:key: {e:?}"
-        ))
-    })?;
-    let credential = Credential::from(verifier);
-
-    CapSubject::from(profile.did())
-        .attenuate(Space::new(site::REPO_NAME))
-        .create(credential)
-        .perform(&operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to provision local space: {e}")))?;
-
-    // Open the main branch via the standard load path so the
-    // joined site's structure matches `tonk spot new`'s output.
-    // Errors here would mean the create succeeded but the open
-    // failed — surfaced as Io so the user sees the underlying
-    // dialog message.
-    let joined = TonkSite::open_with(&root, config)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to open joined site: {e}")))?;
+        .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
 
     // Roster facts on the joined repo's meta branch: the invitation
     // (idempotent if the minter recorded it; self-healing otherwise),

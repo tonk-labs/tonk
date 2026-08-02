@@ -461,10 +461,12 @@
               #!${bash}/bin/bash
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
-              CONFIG_FILE=$(mktemp)
-              trap 'rm -f "$CONFIG_FILE"' EXIT
 
-              cat > "$CONFIG_FILE" << EOF
+              echo "Test server live at http://127.0.0.1:$PORT"
+              # `nix run` execs this script, and this exec in turn makes Caddy
+              # the process owned by the test helper. Killing its `Child` then
+              # cannot orphan a grandchild. Stdin avoids leaking a temp config.
+              exec ${caddy}/bin/caddy run --config - --adapter caddyfile << EOF
               :$PORT {
                   handle /ucan/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
@@ -475,9 +477,6 @@
                   }
               }
               EOF
-
-              echo "Test server live at http://127.0.0.1:$PORT"
-              ${caddy}/bin/caddy run --config "$CONFIG_FILE" --adapter caddyfile
             '';
         };
       }

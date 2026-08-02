@@ -22,12 +22,12 @@ use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
@@ -50,8 +50,6 @@ const META_BRANCH: &str = "meta";
 /// bookkeeping), so it uses `main` like any repository's default
 /// branch rather than a separate meta branch.
 const PROFILE_BRANCH: &str = "main";
-
-const SPACE_ROOT_SITE_PREFIX: &str = "tonk-space-root-v1/";
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1662,6 +1660,11 @@ async fn run_rename_repository(
         .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    if let Ok(subject) = repo.parse::<Did>()
+        && let Err(error) = crate::router::account_backup::back_up_subject(&tonk, &subject).await
+    {
+        log!("RenameRepository backup skipped: {error}");
+    }
     Ok(())
 }
 
@@ -2247,18 +2250,14 @@ async fn enable_sync_inner(
     ensure_remote_config(&tonk, &repository, key, &configuration).await?;
 
     // Escrow this owned space's delegation so the account's other devices
-    // can restore it. Best-effort; no-op for unlinked profiles or for a
-    // repository that doesn't hold its signer (i.e. wasn't created here).
-    // The resolved relay, not the caller's: an escrowed space restored on
-    // another device has to come back shareable, which the omitted-relay
-    // record it used to carry would not.
-    crate::router::account_backup::back_up_owned_space(
-        &tonk,
-        &repository,
-        remote,
-        relay.as_deref(),
-    )
-    .await;
+    // can restore it. Resolve the address back through the configuration:
+    // `ensure_remote_config` deliberately preserves an existing upstream,
+    // which may differ from the form-supplied repair URL.
+    if let Err(error) =
+        crate::router::account_backup::back_up_subject(&tonk, &repository.did()).await
+    {
+        log!("enable sync '{}': account backup skipped ({})", key, error);
+    }
 
     Ok(())
 }
@@ -2698,7 +2697,6 @@ pub async fn create_repository(
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -4621,6 +4619,101 @@ mod tests {
     /// attached, a rename adopts the account's display name instead. Signing
     /// out is how a device reaches it while still holding spaces — creating
     /// them without an account is what the account gate refuses.
+    #[dialog_common::test]
+    async fn rename_refreshes_the_named_root_ending_account_artifact() {
+        use wasm_bindgen::JsValue;
+
+        let (app, state, key) = fresh_repo("rename-backup-artifact").await;
+        attach(
+            &app,
+            &key,
+            &origin_config("https://sync.example.test/ucan/"),
+        )
+        .await;
+        crate::router::account_backup::take_backup_artifacts();
+        let fetch = js_sys::Function::new_with_args(
+            "_request",
+            "return Promise.resolve(new Response('{}', { status: 200 }));",
+        );
+        let _fetch_guard =
+            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
+
+        let env = crate::router::CommandEnv::new(state.clone(), Default::default());
+        super::run_rename_repository(&env, &key, "renamed-garden")
+            .await
+            .unwrap();
+        let mut artifact = None;
+        for _ in 0..10 {
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
+                .await
+                .unwrap();
+            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
+                .into_iter()
+                .last()
+            {
+                artifact = Some(produced);
+                break;
+            }
+        }
+        let artifact = artifact.expect("renamed backup artifact was produced");
+        assert_eq!(artifact.name.as_deref(), Some("renamed-garden"));
+        let root = {
+            let tonk = state.read().await;
+            crate::router::identity::root_did(&tonk).await.unwrap()
+        };
+        let validated = artifact.validate_for(&root).await.unwrap();
+        assert_eq!(validated.subject.to_string(), key);
+        assert_eq!(validated.chain.audience(), &root);
+    }
+
+    #[dialog_common::test]
+    async fn enable_sync_backup_uses_the_preserved_configured_upstream() {
+        use wasm_bindgen::JsValue;
+
+        let (app, state, key) = fresh_repo("preserved-backup-upstream").await;
+        attach(
+            &app,
+            &key,
+            &origin_config("https://actual-sync.example.test/ucan/"),
+        )
+        .await;
+        crate::router::account_backup::take_backup_artifacts();
+        let fetch = js_sys::Function::new_with_args(
+            "_request",
+            "return Promise.resolve(new Response('{}', { status: 200 }));",
+        );
+        let _fetch_guard =
+            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
+
+        super::enable_sync_inner(
+            &state,
+            &key,
+            "https://form-repair.example.test/ucan/",
+            Some("https://relay.example.test/revocations"),
+        )
+        .await
+        .unwrap();
+
+        let mut artifact = None;
+        for _ in 0..10 {
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
+                .await
+                .unwrap();
+            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
+                .into_iter()
+                .last()
+            {
+                artifact = Some(produced);
+                break;
+            }
+        }
+        let artifact = artifact.expect("enable-sync backup artifact was produced");
+        assert_eq!(
+            artifact.remote_url.as_deref(),
+            Some("https://actual-sync.example.test/ucan/")
+        );
+    }
+
     async fn fresh_repo_signed_out(label: &str) -> (Router, AppState, String) {
         let (app, state, key) = fresh_repo(label).await;
         {

@@ -2,7 +2,11 @@
 
 #[allow(unused_imports)]
 mod tests {
-    use crate::helpers::TestEnvironment;
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    use crate::helpers::{TestEnvironment, TestServers};
     use anyhow::Result;
     #[cfg(not(target_arch = "wasm32"))]
     use serde_json::json;
@@ -50,10 +54,13 @@ mod tests {
         Ok(driver)
     }
 
-    #[dialog_common::test]
-    async fn it_creates_a_passkey_and_derives_a_stable_root_did(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    #[tokio::test]
+    async fn it_creates_a_passkey_and_derives_a_stable_root_did() -> Result<()> {
+        let (servers, env) = TestServers::start().await?;
         let driver = driver_with_prf(env).await?;
 
         let created = driver
@@ -105,13 +112,17 @@ mod tests {
         );
 
         driver.quit().await?;
+        servers.stop().await?;
         Ok(())
     }
 
-    #[dialog_common::test]
-    async fn it_builds_a_root_signed_account_creation_in_one_browser_ceremony(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    #[tokio::test]
+    async fn it_builds_a_root_signed_account_creation_in_one_browser_ceremony() -> Result<()> {
+        let (servers, env) = TestServers::start().await?;
         use dialog_credentials::Ed25519Signer;
         use dialog_ucan_core::principal::Principal;
         use dialog_ucan_core::promise::Promised;
@@ -174,11 +185,17 @@ mod tests {
         );
 
         driver.quit().await?;
+        servers.stop().await?;
         Ok(())
     }
 
-    #[dialog_common::test]
-    async fn it_builds_a_root_signed_cli_handoff(env: TestEnvironment) -> Result<()> {
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    #[tokio::test]
+    async fn it_builds_a_root_signed_cli_handoff() -> Result<()> {
+        let (servers, env) = TestServers::start().await?;
         use dialog_credentials::Ed25519Signer;
         use dialog_ucan_core::principal::Principal;
         use dialog_ucan_core::promise::Promised;
@@ -243,6 +260,7 @@ mod tests {
         assert_eq!(delegation.audience().to_string(), cli_did);
 
         driver.quit().await?;
+        servers.stop().await?;
         Ok(())
     }
 }

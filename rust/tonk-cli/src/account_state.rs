@@ -146,6 +146,28 @@ async fn operator_with_profile(
 
 /// Build the stable account operator used by both credentials and repository
 /// storage.
+pub(crate) async fn credential_operator_for_store(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<Operator<NativeSpace>> {
+    let root = store.account_dir();
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create account state at {}", root.display()))?;
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", root.display()))?;
+    let root = root
+        .to_str()
+        .with_context(|| format!("non-UTF-8 account state path: {}", root.display()))?;
+    profile
+        .derive(ACCOUNT_OPERATOR_CONTEXT)
+        .allow(Subject::any())
+        .base(Directory::At(root.to_owned()))
+        .build(Storage::<NativeSpace>::default())
+        .await
+        .context("failed to build account-state operator")
+}
+
 pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<NativeSpace>> {
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     operator_with_profile(

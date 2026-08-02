@@ -63,6 +63,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/chains/put", handlers::chains::handle_options)
         .post_async("/chains/list", handlers::chains::handle_list)
         .options_async("/chains/list", handlers::chains::handle_options)
+        .post_async("/chains/spots", handlers::chains::handle_spots)
+        .options_async("/chains/spots", handlers::chains::handle_options)
         .post_async("/chains/get", handlers::chains::handle_get)
         .options_async("/chains/get", handlers::chains::handle_options)
         .run(req, env)
