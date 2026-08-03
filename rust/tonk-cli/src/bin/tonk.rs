@@ -478,9 +478,9 @@ enum AccountCommand {
         after_help = "Examples:\n  tonk account link\n  tonk account link --name workstation"
     )]
     Link {
-        /// Device name shown on the browser confirmation screen.
-        #[arg(long, value_name = "NAME", default_value = "Tonk CLI")]
-        name: String,
+        /// Override the automatically generated OS/version device name.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
         /// Account service base URL (for staging or local development).
         #[arg(
             long,
@@ -1236,7 +1236,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             &account::LinkOptions {
                 service_url,
                 account_url,
-                device_name: name,
+                device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
             },
         )
@@ -2775,6 +2775,31 @@ mod account_spots_parser_tests {
             }),
             "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: ready"
         );
+    }
+
+    #[test]
+    fn account_link_name_is_none_when_omitted() {
+        let cli = Cli::try_parse_from(["tonk", "account", "link"]).unwrap();
+        let Some(Command::Account {
+            command: AccountCommand::Link { name, .. },
+        }) = cli.command
+        else {
+            panic!("expected account link");
+        };
+        assert_eq!(name, None);
+    }
+
+    #[test]
+    fn account_link_name_preserves_an_explicit_override() {
+        let cli =
+            Cli::try_parse_from(["tonk", "account", "link", "--name", "workstation"]).unwrap();
+        let Some(Command::Account {
+            command: AccountCommand::Link { name, .. },
+        }) = cli.command
+        else {
+            panic!("expected account link");
+        };
+        assert_eq!(name.as_deref(), Some("workstation"));
     }
 
     #[test]

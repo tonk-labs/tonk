@@ -24,6 +24,9 @@ pub mod analytics;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod deployment;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod device_name;
+
 /// Error types for the Tonk UI.
 pub mod error;
 

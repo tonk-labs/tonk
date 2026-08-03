@@ -92,6 +92,7 @@ features = [
     "HtmlScriptElement",
     "Location",
     "MessageEvent",
+    "Navigator",
     "Node",
     "ServiceWorkerContainer",
     "Storage",
