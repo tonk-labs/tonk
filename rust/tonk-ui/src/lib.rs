@@ -34,6 +34,10 @@ mod identity_bridge;
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;
 
+/// Real-browser account-panel and CLI roundtrip tests.
+#[cfg(test)]
+mod account_flow;
+
 /// Real-browser passkey ceremony tests.
 #[cfg(test)]
 mod identity;

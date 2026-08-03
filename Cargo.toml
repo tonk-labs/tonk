@@ -48,6 +48,7 @@ license = "MIT"
 dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
+tonk-account-service = { path = "./rust/tonk-account-service" }
 tonk-analytics = { path = "./rust/tonk-analytics" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
 tonk-board = { path = "./rust/tonk-board" }

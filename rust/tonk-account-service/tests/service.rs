@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject;
-use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
+use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::{Did, Principal};
 use tonk_account::backup::{
     ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup,
@@ -64,6 +65,271 @@ async fn container_for(
 
 async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Vec<u8> {
     container_for(ROOT_PRF, DEVICE_SEED, command, args).await
+}
+
+async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) -> Vec<u8> {
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let root_did = root.did();
+    let chain = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+        .await
+        .unwrap();
+    let delegation = chain.proofs().last().unwrap().clone();
+    let cid = delegation.to_cid();
+    let invocation = InvocationBuilder::new()
+        .issuer(device)
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(command)
+        .arguments(BTreeMap::new())
+        .proofs(vec![cid])
+        .expiration(expiration)
+        .try_build()
+        .await
+        .unwrap();
+    let proofs = [(cid, std::sync::Arc::new(delegation))]
+        .into_iter()
+        .collect();
+    InvocationChain::new(invocation, proofs).to_bytes().unwrap()
+}
+
+async fn account_creation(email: &str, code: &str) -> Vec<u8> {
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let grant = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+        .await
+        .unwrap();
+    let ceremony = tonk_identity::ceremony::create_account(
+        root,
+        email.to_string(),
+        code.to_string(),
+        "credential".to_string(),
+        device.did(),
+        "laptop".to_string(),
+        hex::encode(grant.to_bytes().unwrap()),
+        "http://127.0.0.1:8080/ucan/".to_string(),
+    )
+    .await
+    .unwrap();
+    hex::decode(ceremony.invocation_hex).unwrap()
+}
+
+#[dialog_common::test]
+async fn it_exposes_captured_codes_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{}/_test/emails", server.endpoint);
+
+    let response = client
+        .post(format!("{}/codes", server.endpoint))
+        .json(&serde_json::json!({ "email": "person@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let first: serde_json::Value = client
+        .get(&endpoint)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first[0]["address"], "person@example.com");
+    assert!(
+        first[0]["code"]
+            .as_str()
+            .is_some_and(|code| code.len() == 6 && code.bytes().all(|byte| byte.is_ascii_digit()))
+    );
+
+    let second: serde_json::Value = client
+        .get(endpoint)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second, first, "reading the inbox must not drain it");
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_enforces_the_resend_cooldown_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{}/codes", server.endpoint);
+
+    let first = client
+        .post(&endpoint)
+        .json(&serde_json::json!({ "email": "person@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let second = client
+        .post(endpoint)
+        .json(&serde_json::json!({ "email": "person@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 429);
+    let error: serde_json::Value = second.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "RATE_LIMITED");
+    assert_eq!(error["error"]["message"], "rate limited");
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_exhausts_verification_attempts_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let email = "person@example.com";
+    client
+        .post(format!("{}/codes", server.endpoint))
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let correct = server.emails.0.lock().unwrap()[0].1.clone();
+    let wrong = if correct == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
+
+    for _ in 0..tonk_account_service::core::codes::MAX_ATTEMPTS {
+        let response = client
+            .post(format!("{}/accounts", server.endpoint))
+            .header("Content-Type", "application/cbor")
+            .body(account_creation(email, wrong).await)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401);
+        let error: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(error["error"]["code"], "UNAUTHORIZED");
+        assert_eq!(error["error"]["message"], "invalid or expired code");
+    }
+
+    let response = client
+        .post(format!("{}/accounts", server.endpoint))
+        .header("Content-Type", "application/cbor")
+        .body(account_creation(email, &correct).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "UNAUTHORIZED");
+    assert_eq!(error["error"]["message"], "invalid or expired code");
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_rejects_a_mismatched_command() {
+    let server = AccountServer::start().await;
+    let body = container(
+        vec!["account".into(), "device".into(), "list".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/accounts", server.endpoint))
+        .header("Content-Type", "application/cbor")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "FORBIDDEN");
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_rejects_an_expired_invocation() {
+    let server = AccountServer::start().await;
+    let expiration =
+        Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+    let body = container_with_expiration(
+        vec!["account".into(), "device".into(), "list".into()],
+        expiration,
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/devices/list", server.endpoint))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "UNAUTHORIZED");
+    assert_eq!(error["error"]["message"], "invocation has expired");
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_rejects_an_over_long_expiration_window() {
+    let server = AccountServer::start().await;
+    let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(10 * 60)).unwrap();
+    let body = container_with_expiration(
+        vec!["account".into(), "device".into(), "list".into()],
+        expiration,
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/devices/list", server.endpoint))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "UNAUTHORIZED");
+    assert_eq!(
+        error["error"]["message"],
+        "invocation expiration exceeds the five-minute ceremony window plus skew allowance"
+    );
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_answers_preflight_with_cors_headers() {
+    let server = AccountServer::start().await;
+    let response = reqwest::Client::new()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/codes", server.endpoint),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    let headers = response.headers();
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert_eq!(headers["access-control-allow-methods"], "POST, OPTIONS");
+    assert_eq!(headers["access-control-allow-headers"], "Content-Type");
+    assert_eq!(
+        headers["access-control-expose-headers"],
+        "Content-Type, X-Tonk-Account-Spots"
+    );
+
+    server.stop().await;
 }
 
 /// Creating a second account for an already-registered email address

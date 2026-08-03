@@ -9,6 +9,8 @@ pub struct TestEnvironment {
     pub tonk_web: Url,
     /// URL of the ChromeDriver server.
     pub chromedriver: Url,
+    /// Base URL of the live native account service.
+    pub account_service: Url,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,8 +22,14 @@ mod native {
     use port_check::free_local_port;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Stdio};
-    use thirtyfour::{ChromiumLikeCapabilities, DesiredCapabilities, WebDriver};
+    #[cfg(test)]
+    use thirtyfour::extensions::cdp::ChromeDevTools;
+    use thirtyfour::{
+        CapabilitiesHelper, ChromiumLikeCapabilities, DesiredCapabilities, WebDriver,
+    };
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
+    use tonk_account_service::helpers::AccountServer;
+    use tonk_worker_api::DeploymentConfig;
     use url::Url;
 
     /// Reaps a spawned test dependency on every success and failure path.
@@ -69,6 +77,7 @@ mod native {
             }
 
             caps.add_arg("--host-resolver-rules=MAP tonk.spot 127.0.0.1")?;
+            caps.accept_insecure_certs(true)?;
             let secure_origin = format!(
                 "--unsafely-treat-insecure-origin-as-secure={}",
                 self.tonk_web.origin().ascii_serialization()
@@ -85,24 +94,73 @@ mod native {
         }
     }
 
+    /// Creates a WebDriver with a PRF-capable virtual authenticator.
+    #[cfg(test)]
+    pub(crate) async fn driver_with_prf(env: &TestEnvironment) -> Result<WebDriver> {
+        let driver = env.driver().await?;
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools.execute_cdp("WebAuthn.enable").await?;
+        devtools
+            .execute_cdp_with_params(
+                "WebAuthn.addVirtualAuthenticator",
+                serde_json::json!({
+                    "options": {
+                        "protocol": "ctap2",
+                        "ctap2Version": "ctap2_1",
+                        "transport": "internal",
+                        "hasResidentKey": true,
+                        "hasUserVerification": true,
+                        "isUserVerified": true,
+                        "hasPrf": true,
+                        "automaticPresenceSimulation": true,
+                    }
+                }),
+            )
+            .await?;
+        driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                const wait = () =>
+                    window.tonkIdentity ? done(true) : setTimeout(wait, 50);
+                wait();
+                "#,
+                vec![],
+            )
+            .await?;
+        Ok(driver)
+    }
+
     /// Manages test server processes for integration testing.
     pub struct TestServers {
         web_server: ManagedChild,
         chromedriver: ManagedChild,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
+        account_service: Option<AccountServer>,
     }
 
     impl TestServers {
         /// Starts the test servers and returns the server handles and environment configuration.
         ///
         /// Startup order:
-        /// 1. Start access service first to get its port
-        /// 2. Start Caddy web server with access service port (proxies /ucan/*)
-        /// 3. Start ChromeDriver
+        /// 1. Start the account service
+        /// 2. Start the access service with deployment discovery configured
+        /// 3. Start Caddy web server with access service port
+        /// 4. Start ChromeDriver
         pub async fn start() -> Result<(Self, TestEnvironment)> {
-            // Start the access service first to get its port
-            let settings = AccessServiceSettings::default();
+            let account_service = AccountServer::start().await;
+            let account_service_url = Url::parse(&account_service.endpoint)?;
+            let settings = AccessServiceSettings {
+                deployment: Some(DeploymentConfig {
+                    account_service_url: account_service_url.clone(),
+                    revocation_relay_url: Url::parse(&format!(
+                        "{}/revocations",
+                        account_service.endpoint
+                    ))?,
+                }),
+                ..Default::default()
+            };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
             let access_service_address = access_service.address.clone();
 
@@ -143,6 +201,23 @@ mod native {
                     break;
                 }
             }
+            let mut listening = false;
+            for _ in 0..100 {
+                if tokio::net::TcpStream::connect(("127.0.0.1", web_port))
+                    .await
+                    .is_ok()
+                {
+                    listening = true;
+                    break;
+                }
+                if let Some(status) = web_server.child_mut().try_wait()? {
+                    return Err(anyhow!("test web server exited before binding: {status}"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !listening {
+                return Err(anyhow!("test web server did not bind port {web_port}"));
+            }
 
             // Start ChromeDriver
             let chromedriver_port =
@@ -176,10 +251,12 @@ mod native {
                     web_server,
                     chromedriver,
                     access_service: Some(access_service),
+                    account_service: Some(account_service),
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("http://tonk.spot:{web_port}"))?,
+                    tonk_web: Url::parse(&format!("https://tonk.spot:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
+                    account_service: account_service_url,
                 },
             ))
         }
@@ -193,6 +270,9 @@ mod native {
             } else {
                 Ok(())
             };
+            if let Some(account_service) = self.account_service.take() {
+                account_service.stop().await;
+            }
             web_result?;
             chromedriver_result?;
             access_result?;
@@ -204,9 +284,10 @@ mod native {
         fn drop(&mut self) {
             let _ = self.web_server.terminate();
             let _ = self.chromedriver.terminate();
-            // Dropping the access-service provider closes its shutdown senders;
-            // explicit success paths still await orderly shutdown in `stop`.
+            // Dropping providers closes their shutdown senders; explicit
+            // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
+            self.account_service.take();
         }
     }
 
