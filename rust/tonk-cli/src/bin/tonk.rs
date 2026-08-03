@@ -1192,6 +1192,27 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
     }
 }
 
+fn render_account_status(status: account::AccountStatus) -> String {
+    match status {
+        account::AccountStatus::MissingRoot { device_did } => {
+            format!("signed in: no\nroot: missing\nprovider: none\ndevice: {device_did}")
+        }
+        account::AccountStatus::Unregistered {
+            root_did,
+            device_did,
+        } => format!("signed in: no\nroot: {root_did}\nprovider: none\ndevice: {device_did}"),
+        account::AccountStatus::Registered {
+            root_did,
+            device_did,
+            provider,
+            account_state,
+        } => format!(
+            "signed in: yes\nroot: {root_did}\nprovider: {provider}\ndevice: {device_did}\naccount state: {}",
+            account_state_label(account_state)
+        ),
+    }
+}
+
 async fn account_op(command: AccountCommand) -> ExitCode {
     let profile = match identity::open().await {
         Ok(profile) => profile,
@@ -1199,27 +1220,8 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     };
     match command {
         AccountCommand::Status => match account::status(&profile).await {
-            Ok(account::AccountStatus::MissingRoot { device_did }) => {
-                println!("root: missing\nprovider: none\ndevice: {device_did}");
-                ExitCode::Success
-            }
-            Ok(account::AccountStatus::Unregistered {
-                root_did,
-                device_did,
-            }) => {
-                println!("root: {root_did}\nprovider: none\ndevice: {device_did}");
-                ExitCode::Success
-            }
-            Ok(account::AccountStatus::Registered {
-                root_did,
-                device_did,
-                provider,
-                account_state,
-            }) => {
-                println!(
-                    "root: {root_did}\nprovider: {provider}\ndevice: {device_did}\naccount state: {}",
-                    account_state_label(account_state)
-                );
+            Ok(status) => {
+                println!("{}", render_account_status(status));
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -2748,6 +2750,32 @@ fn classify(err: &EvalError) -> ExitCode {
 #[cfg(test)]
 mod account_spots_parser_tests {
     use super::*;
+
+    #[test]
+    fn account_status_makes_sign_in_state_explicit() {
+        assert_eq!(
+            render_account_status(account::AccountStatus::MissingRoot {
+                device_did: "did:device".to_string(),
+            }),
+            "signed in: no\nroot: missing\nprovider: none\ndevice: did:device"
+        );
+        assert_eq!(
+            render_account_status(account::AccountStatus::Unregistered {
+                root_did: "did:root".to_string(),
+                device_did: "did:device".to_string(),
+            }),
+            "signed in: no\nroot: did:root\nprovider: none\ndevice: did:device"
+        );
+        assert_eq!(
+            render_account_status(account::AccountStatus::Registered {
+                root_did: "did:root".to_string(),
+                device_did: "did:device".to_string(),
+                provider: "https://accounts.example".to_string(),
+                account_state: tonk_account::AccountStateStatus::Ready,
+            }),
+            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: ready"
+        );
+    }
 
     #[test]
     fn account_logout_is_a_no_argument_account_operation() {
