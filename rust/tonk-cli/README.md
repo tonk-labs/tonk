@@ -63,6 +63,7 @@ tonk status       # synced | ahead | behind | diverged | no-upstream
 # Link this native profile to a passkey-backed account.
 tonk account status
 tonk account link --name workstation
+tonk account logout
 
 # Delegate access to the space.
 tonk invite                    # audience-open: anyone holding it can claim
@@ -118,6 +119,16 @@ distinct per failure stage (`ParseError`, `AnalyzeError`, `CommitError`,
 When an upstream is configured, a committing eval is wrapped with an automatic
 pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 `tonk push` / `tonk pull` stay available either way.
+
+### Accounts
+
+`tonk account logout` writes only a local provider-detachment tombstone. It
+works offline and keeps the root and device identity, local spots, and account
+repository available for a later `tonk account link`. Logout does not revoke
+the provider-side device. To revoke one, find its DID with
+`tonk account devices` and run `tonk account revoke <DEVICE_DID>`. Use
+`tonk identity --reset` only when destructive local identity rotation is
+intended.
 
 ### Sync and sharing
 

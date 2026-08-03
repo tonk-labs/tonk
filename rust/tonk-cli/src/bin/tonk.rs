@@ -502,6 +502,12 @@ enum AccountCommand {
         no_open: bool,
     },
 
+    /// Disconnect account services on this device
+    ///
+    /// Preserves the local identity, root, and spots without revoking this
+    /// device. Use `tonk account revoke <DID>` to revoke a device instead.
+    Logout,
+
     /// List or pull the spots backed up under this account
     Spots {
         #[command(subcommand)]
@@ -847,6 +853,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             Some(match command {
                 AccountCommand::Status => "status",
                 AccountCommand::Link { .. } => "link",
+                AccountCommand::Logout => "logout",
                 AccountCommand::Spots { command } => match command {
                     None | Some(AccountSpotsCommand::List) => "spots-list",
                     Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
@@ -1244,6 +1251,13 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                     eprintln!("warning: account repository is not synchronized: {warning}");
                 }
                 back_up_all_best_effort(&profile).await;
+                ExitCode::Success
+            }
+            Err(error) => print_failure(error),
+        },
+        AccountCommand::Logout => match account::logout(&profile).await {
+            Ok(()) => {
+                println!("logged out\ndevice: {}", profile.did());
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -2734,6 +2748,20 @@ fn classify(err: &EvalError) -> ExitCode {
 #[cfg(test)]
 mod account_spots_parser_tests {
     use super::*;
+
+    #[test]
+    fn account_logout_is_a_no_argument_account_operation() {
+        let cli = Cli::try_parse_from(["tonk", "account", "logout"]).unwrap();
+        let command = cli.command.as_ref().expect("account command");
+        assert!(matches!(
+            command,
+            Command::Account {
+                command: AccountCommand::Logout
+            }
+        ));
+        assert_eq!(descriptor(command), ("account", Some("logout")));
+        assert!(Cli::try_parse_from(["tonk", "account", "logout", "unexpected"]).is_err());
+    }
 
     #[test]
     fn account_spots_bare_and_list_are_the_same_operation() {

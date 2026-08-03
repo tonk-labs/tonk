@@ -139,6 +139,26 @@ async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderReco
     stored_provider_with_operator(profile, &operator).await
 }
 
+/// Disconnect provider services while preserving this profile's root,
+/// delegations, account repository, and spots.
+pub async fn logout(profile: &Profile) -> Result<()> {
+    let operator = crate::account_state::credential_operator(profile).await?;
+    logout_with_operator(profile, &operator).await
+}
+
+async fn logout_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+) -> Result<()> {
+    profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .save(Vec::<u8>::new())
+        .perform(operator)
+        .await
+        .context("failed to clear the account provider")
+}
+
 fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
     root_did.parse().context("stored local root DID is invalid")
 }
@@ -749,6 +769,120 @@ pub async fn revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    async fn it_logs_out_by_tombstoning_only_the_provider_attachment() {
+        use dialog_capability::Subject;
+        use dialog_effects::storage::Directory;
+        use dialog_storage::provider::storage::Storage;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
+        let profile_name = format!("cli-account-logout-test-{}", rand::random::<u64>());
+        let storage = Storage::<NativeSpace>::default();
+        let profile = Profile::open(&profile_name)
+            .at(profile_dir)
+            .perform(&storage)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(store.account_dir()).unwrap();
+        let account_dir = store.account_dir().canonicalize().unwrap();
+        let operator = profile
+            .derive(b"tonk/account-state/v1")
+            .allow(Subject::any())
+            .base(Directory::At(account_dir.to_string_lossy().into()))
+            .build(storage)
+            .await
+            .unwrap();
+        let device_did = profile.did();
+        let local_root = crate::identity::LocalRoot {
+            credential_id: "credential".to_string(),
+            root_did: device_did.to_string(),
+            delegation_cid: "delegation".to_string(),
+            delegation_hex: "00".to_string(),
+        };
+        let local_root_bytes = serde_json::to_vec(&local_root).unwrap();
+        let provider = AccountProviderRecord::attach_unconfigured("https://accounts.example", 1)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let trusted_base = b"trusted-base".to_vec();
+        profile
+            .credential()
+            .site(crate::identity::LOCAL_ROOT_SITE)
+            .save(local_root_bytes.clone())
+            .perform(&operator)
+            .await
+            .unwrap();
+        profile
+            .credential()
+            .site(ACCOUNT_LINK_SITE)
+            .save(provider)
+            .perform(&operator)
+            .await
+            .unwrap();
+        profile
+            .credential()
+            .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+            .save(trusted_base.clone())
+            .perform(&operator)
+            .await
+            .unwrap();
+        let sentinel = store.account_dir().join("sentinel");
+        std::fs::write(&sentinel, b"keep").unwrap();
+
+        assert!(
+            stored_provider_with_operator(&profile, &operator)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        logout_with_operator(&profile, &operator).await.unwrap();
+
+        assert!(
+            stored_provider_with_operator(&profile, &operator)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        logout_with_operator(&profile, &operator).await.unwrap();
+
+        assert_eq!(
+            profile
+                .credential()
+                .site(ACCOUNT_LINK_SITE)
+                .load::<Vec<u8>>()
+                .perform(&operator)
+                .await
+                .unwrap(),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            profile
+                .credential()
+                .site(crate::identity::LOCAL_ROOT_SITE)
+                .load::<Vec<u8>>()
+                .perform(&operator)
+                .await
+                .unwrap(),
+            local_root_bytes
+        );
+        assert_eq!(
+            profile
+                .credential()
+                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+                .load::<Vec<u8>>()
+                .perform(&operator)
+                .await
+                .unwrap(),
+            trusted_base
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+        assert_eq!(profile.did(), device_did);
+    }
 
     #[test]
     fn it_points_the_revoke_ceremony_at_the_named_device() {
