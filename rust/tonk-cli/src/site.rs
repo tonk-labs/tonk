@@ -16,16 +16,19 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use dialog_capability::Subject;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
+use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
 use dialog_operator::{Operator, Profile};
 use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
-use dialog_varsig::Principal;
+use dialog_varsig::{Did, Principal};
+use tonk_account::backup::{AccountSpotBackup, SPACE_ROOT_SITE_PREFIX};
 
 /// The standard-library notation document seeded into a freshly
 /// created repository: the built-in concepts, views, commands, and
@@ -279,10 +282,21 @@ async fn bootstrap_repository(
         .perform(operator)
         .await
         .context("failed to mint repo→profile delegation")?;
+    let prefix = delegation.into_chain();
+    let prefix_bytes = prefix
+        .to_bytes()
+        .context("failed to serialize repo→root delegation")?;
+    profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", signer_repo.did()))
+        .save(prefix_bytes)
+        .perform(operator)
+        .await
+        .context("failed to persist repo→root delegation")?;
 
     profile
         .access()
-        .save(delegation)
+        .save(UcanDelegation(prefix))
         .perform(operator)
         .await
         .context("failed to persist repo→profile delegation")?;
@@ -293,6 +307,198 @@ async fn bootstrap_repository(
         .perform(operator)
         .await
         .context("failed to reload repository after bootstrap")
+}
+
+/// Mount an exact delegated repository subject at a fresh site directory
+/// without writing membership, role, name, invitation, or provenance facts.
+pub async fn mount_delegated_at(
+    root: &Path,
+    chain: DelegationChain,
+    config: SiteConfig,
+) -> Result<TonkSite> {
+    if root.exists() {
+        anyhow::bail!("a site already exists at {}", root.display());
+    }
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("failed to create {}", root.display()))?;
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("could not canonicalize {}", root.display()))?;
+    let (profile, operator) = build_profile_and_operator(&root, &config).await?;
+    mount_delegated_inner(&root, profile, operator, chain, config, true).await
+}
+
+/// Mount with profile/operator state already prepared by the invite parser.
+///
+/// Existing invites can contain subject-open device authority. It remains
+/// usable for this mount but is never persisted as a reusable account backup.
+pub(crate) async fn mount_delegated_with(
+    root: &Path,
+    profile: Profile,
+    operator: Operator<NativeSpace>,
+    chain: DelegationChain,
+    config: SiteConfig,
+) -> Result<TonkSite> {
+    mount_delegated_inner(root, profile, operator, chain, config, false).await
+}
+
+async fn mount_delegated_inner(
+    root: &Path,
+    profile: Profile,
+    operator: Operator<NativeSpace>,
+    chain: DelegationChain,
+    config: SiteConfig,
+    require_reusable: bool,
+) -> Result<TonkSite> {
+    let local_root = crate::identity::local_root_with_operator(&profile, &operator)
+        .await?
+        .context("local root provisioning did not produce a record")?;
+    if config.require_account {
+        crate::account::require_account_with_operator(&profile, &operator).await?;
+    }
+    let account_root: Did = local_root
+        .root_did
+        .parse()
+        .context("stored root DID is invalid")?;
+    let subject = chain
+        .subject()
+        .cloned()
+        .context("delegated authority has no repository subject")?;
+    let chain_bytes = chain
+        .to_bytes()
+        .context("failed to serialize delegated authority")?;
+    let reusable = AccountSpotBackup {
+        chain_hex: hex::encode(&chain_bytes),
+        remote_url: None,
+        revocation_url: None,
+        name: None,
+    }
+    .validate_for(&account_root)
+    .await;
+    if require_reusable && let Err(error) = &reusable {
+        anyhow::bail!("delegated prefix is not reusable account-root authority: {error}");
+    }
+
+    profile
+        .access()
+        .save(UcanDelegation(chain))
+        .perform(&operator)
+        .await
+        .context("failed to persist delegated authority")?;
+    if let Ok(validated) = reusable {
+        let prefix_bytes = validated
+            .chain
+            .to_bytes()
+            .context("failed to serialize delegated prefix")?;
+        profile
+            .credential()
+            .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+            .save(prefix_bytes)
+            .perform(&operator)
+            .await
+            .context("failed to persist delegated account-root prefix")?;
+    }
+
+    let verifier: Ed25519Verifier = subject
+        .to_string()
+        .parse()
+        .map_err(|error| anyhow::anyhow!("delegated subject is not an Ed25519 DID: {error:?}"))?;
+    Subject::from(profile.did())
+        .attenuate(Space::new(REPO_NAME))
+        .create(Credential::from(verifier))
+        .perform(&operator)
+        .await
+        .context("failed to provision delegated repository")?;
+
+    let repository = profile
+        .repository(REPO_NAME)
+        .load()
+        .perform(&operator)
+        .await
+        .context("failed to load delegated repository")?;
+    let reactor = Reactor::new(profile.clone());
+    Ok(TonkSite {
+        root: root.to_path_buf(),
+        profile,
+        operator,
+        repository,
+        reactor,
+    })
+}
+
+/// Load the exact reusable prefix for a site, recovering it from pre-feature
+/// profile authority when the dedicated credential is absent.
+pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<DelegationChain> {
+    let credential = site
+        .profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", site.repository.did()));
+    match credential.load::<Vec<u8>>().perform(&site.operator).await {
+        Ok(bytes) if !bytes.is_empty() => {
+            let backup = AccountSpotBackup {
+                chain_hex: hex::encode(bytes),
+                remote_url: None,
+                revocation_url: None,
+                name: None,
+            };
+            return Ok(backup
+                .validate_for(account_root)
+                .await
+                .context("stored account-root prefix is invalid")?
+                .chain);
+        }
+        Ok(_) => {}
+        Err(error) if crate::account_state::credential_is_missing(&error) => {}
+        Err(error) => return Err(error).context("failed to load the account-root prefix"),
+    }
+
+    let proof = site
+        .profile
+        .access()
+        .prove(&site.repository)
+        .perform(&site.operator)
+        .await
+        .context("failed to recover repository authority")?;
+    let mut delegations = Vec::new();
+    let mut reached_root = false;
+    for certificate in proof.proofs {
+        let delegation = certificate.0;
+        reached_root = delegation.audience() == account_root;
+        delegations.push(delegation);
+        if reached_root {
+            break;
+        }
+    }
+    if !reached_root {
+        anyhow::bail!("repository authority does not pass through the account root");
+    }
+    let chain = DelegationChain::try_from(delegations)
+        .context("recovered repository authority is not a valid chain")?;
+    let validated = AccountSpotBackup {
+        chain_hex: hex::encode(
+            chain
+                .to_bytes()
+                .context("failed to serialize recovered prefix")?,
+        ),
+        remote_url: None,
+        revocation_url: None,
+        name: None,
+    }
+    .validate_for(account_root)
+    .await
+    .context("recovered account-root prefix is invalid")?;
+    let bytes = validated
+        .chain
+        .to_bytes()
+        .context("failed to serialize recovered prefix")?;
+    site.profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", site.repository.did()))
+        .save(bytes)
+        .perform(&site.operator)
+        .await
+        .context("failed to persist recovered account-root prefix")?;
+    Ok(validated.chain)
 }
 
 /// Knobs for [`TonkSite::open_with`] / [`TonkSite::init_with`].
@@ -350,23 +556,15 @@ pub fn default_config() -> SiteConfig {
 /// site (the join path provisions the space from a verifier
 /// credential rather than via `profile.repository(...).open()`,
 /// but the profile + operator setup is the same).
-pub(crate) async fn build_profile_and_operator(
+async fn derive_operator_for_profile(
     root: &Path,
-    config: &SiteConfig,
-) -> Result<(Profile, Operator<NativeSpace>)> {
-    let storage = Storage::<NativeSpace>::default();
-
-    let profile = Profile::open(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
-        .await
-        .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
-
+    profile: &Profile,
+    storage: Storage<NativeSpace>,
+) -> Result<Operator<NativeSpace>> {
     let root_str = root
         .to_str()
         .with_context(|| format!("non-UTF-8 path: {}", root.display()))?
         .to_owned();
-
     let operator = profile
         .derive(OPERATOR_CONTEXT)
         .base(Directory::At(root_str))
@@ -391,6 +589,20 @@ pub(crate) async fn build_profile_and_operator(
         .perform(&operator)
         .await
         .context("failed to save the native signing session")?;
+    Ok(operator)
+}
+
+pub(crate) async fn build_profile_and_operator(
+    root: &Path,
+    config: &SiteConfig,
+) -> Result<(Profile, Operator<NativeSpace>)> {
+    let storage = Storage::<NativeSpace>::default();
+    let profile = Profile::open(config.profile_name.clone())
+        .at(config.profile_directory.clone())
+        .perform(&storage)
+        .await
+        .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
+    let operator = derive_operator_for_profile(root, &profile, storage).await?;
 
     // Isolated legacy test fixtures opt into a software-generated root so they
     // still exercise the same space → root → device chain shape. Production

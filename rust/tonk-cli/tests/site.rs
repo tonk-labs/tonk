@@ -1229,3 +1229,158 @@ mod when_initializing_at_an_explicit_root {
         Ok(())
     }
 }
+
+mod when_mounting_account_authority {
+    use anyhow::Result;
+    use dialog_credentials::Ed25519Signer;
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Principal as _;
+    use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+    use tonk_cli::site::{self, TonkSite};
+    use tonk_schema::{Invitation, InvitedVia, MemberName, MemberRole, Membership};
+
+    use crate::common;
+
+    async fn local_root(site: &TonkSite) -> Result<dialog_varsig::Did> {
+        let bytes = site
+            .profile
+            .credential()
+            .site(tonk_cli::identity::LOCAL_ROOT_SITE)
+            .load::<Vec<u8>>()
+            .perform(&site.operator)
+            .await?;
+        let root: tonk_cli::identity::LocalRoot = serde_json::from_slice(&bytes)?;
+        Ok(root.root_did.parse()?)
+    }
+
+    async fn delegated_prefix(
+        account_root: &dialog_varsig::Did,
+    ) -> Result<(dialog_varsig::Did, DelegationChain)> {
+        let space = Ed25519Signer::import(&[91; 32]).await?;
+        let subject = space.did();
+        let delegation = DelegationBuilder::new()
+            .issuer(space)
+            .audience(account_root)
+            .subject(Subject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await?;
+        Ok((subject, DelegationChain::new(delegation)))
+    }
+
+    #[dialog_common::test]
+    async fn it_mounts_a_root_delegated_subject_without_inventing_roster_facts() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let parent = tmp.path().canonicalize()?;
+        let config = common::isolated_config(&parent)?;
+        let seed = TonkSite::init_at_with(&parent.join("seed"), config.clone()).await?;
+        let account_root = local_root(&seed).await?;
+        let (subject, chain) = delegated_prefix(&account_root).await?;
+        let expected = chain.to_bytes()?;
+        let root = parent.join("mounted");
+
+        let mounted = site::mount_delegated_at(&root, chain, config).await?;
+        assert_eq!(mounted.repository.did(), subject);
+        let persisted = mounted
+            .profile
+            .credential()
+            .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+            .load::<Vec<u8>>()
+            .perform(&mounted.operator)
+            .await?;
+        assert_eq!(persisted, expected);
+
+        let meta = mounted
+            .repository
+            .branch(tonk_cli::remote::META_BRANCH)
+            .open()
+            .perform(&mounted.operator)
+            .await?;
+        let memberships: Vec<Membership> = meta
+            .query()
+            .select(Query::<Membership> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                member: Term::var("member"),
+            })
+            .perform(&mounted.operator)
+            .try_vec()
+            .await?;
+        let roles: Vec<MemberRole> = meta
+            .query()
+            .select(Query::<MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(&mounted.operator)
+            .try_vec()
+            .await?;
+        let names: Vec<MemberName> = meta
+            .query()
+            .select(Query::<MemberName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&mounted.operator)
+            .try_vec()
+            .await?;
+        let invitations: Vec<Invitation> = meta
+            .query()
+            .select(Query::<Invitation> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                inviter: Term::var("inviter"),
+                audience: Term::var("audience"),
+                target_cid: Term::var("target_cid"),
+                path_hex: Term::var("path_hex"),
+            })
+            .perform(&mounted.operator)
+            .try_vec()
+            .await?;
+        let provenance: Vec<InvitedVia> = meta
+            .query()
+            .select(Query::<InvitedVia> {
+                this: Term::var("this"),
+                invitation: Term::var("invitation"),
+            })
+            .perform(&mounted.operator)
+            .try_vec()
+            .await?;
+        assert!(memberships.is_empty());
+        assert!(roles.is_empty());
+        assert!(names.is_empty());
+        assert!(invitations.is_empty());
+        assert!(provenance.is_empty());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_recovers_a_pre_feature_prefix_from_profile_authority() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let root = local_root(&test.site).await?;
+        let key = format!("{SPACE_ROOT_SITE_PREFIX}{}", test.site.repository.did());
+        test.site
+            .profile
+            .credential()
+            .site(key.clone())
+            .save(Vec::<u8>::new())
+            .perform(&test.site.operator)
+            .await?;
+
+        let recovered = site::account_root_prefix(&test.site, &root).await?;
+        assert_eq!(recovered.subject(), Some(&test.site.repository.did()));
+        assert_eq!(recovered.audience(), &root);
+        let persisted = test
+            .site
+            .profile
+            .credential()
+            .site(key)
+            .load::<Vec<u8>>()
+            .perform(&test.site.operator)
+            .await?;
+        assert_eq!(persisted, recovered.to_bytes()?);
+        Ok(())
+    }
+}

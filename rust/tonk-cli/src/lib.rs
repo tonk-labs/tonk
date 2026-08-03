@@ -9,6 +9,7 @@
 //!
 //! - [`site`] — repo+branch open/init; resolved via the spot registry.
 //! - [`spot`] — spot registry: named spots, canonical storage, selection.
+//! - [`account_spots`] — account inventory, pull, and backup reconciliation.
 //! - [`identity`] — local profile management.
 //! - [`agents`] — claim-backed spot context and `AGENTS.md` projection data.
 //! - [`authoring`] — pure notation builders (concept, view, and the
@@ -30,6 +31,7 @@
 //! - [`update`] — self-update: `tonk update` plus the release check.
 
 pub mod account;
+pub mod account_spots;
 pub mod account_state;
 pub mod agents;
 pub mod authoring;

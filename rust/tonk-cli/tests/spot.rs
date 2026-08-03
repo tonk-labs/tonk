@@ -139,3 +139,35 @@ mod when_binding_and_listing {
         Ok(())
     }
 }
+
+mod when_registering_an_existing_account_spot {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_registers_an_existing_site_without_binding_the_cwd() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpotStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+        let site_path = store.canonical_site("garden");
+        TonkSite::init_at_with(&site_path, config).await?;
+        std::fs::create_dir_all(store.registry_path().parent().unwrap())?;
+        std::fs::write(
+            store.registry_path(),
+            r#"{"spots":{},"futureField":{"kept":true}}"#,
+        )?;
+
+        spot::register_existing_unbound(&store, "garden", &site_path)?;
+        let registry = store.load()?;
+        assert_eq!(registry.spots["garden"].site, site_path.canonicalize()?);
+        assert!(registry.bindings.is_empty());
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(store.registry_path())?)?;
+        assert_eq!(value["futureField"]["kept"], true);
+
+        let error = spot::register_existing_unbound(&store, "garden", &site_path)
+            .expect_err("occupied names are never overwritten");
+        assert!(matches!(error, spot::SpotError::Exists(_)));
+        assert!(spot::register_existing_unbound(&store, "Bad Name", &site_path).is_err());
+        Ok(())
+    }
+}

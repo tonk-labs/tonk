@@ -7,7 +7,13 @@ use std::collections::BTreeMap;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
-use dialog_varsig::Principal;
+use dialog_ucan_core::subject::Subject;
+use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+use dialog_varsig::{Did, Principal};
+use tonk_account::backup::{
+    ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1, AccountSpotBackup,
+    AccountSpotSummary,
+};
 use tonk_account::handoff::{ConsumedLink, LinkCreateRequest, LinkSecretRequest, ResolvedLink};
 use tonk_account_service::helpers::AccountServer;
 
@@ -17,17 +23,47 @@ const DEVICE_SEED: [u8; 32] = [8u8; 32];
 /// Build a device-signed invocation container for the account's first
 /// device, using the production builder against the `root → device`
 /// delegation minted for account creation.
-async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Vec<u8> {
-    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+async fn spot_backup(root: &Did, name: Option<&str>, remote: &str) -> Vec<u8> {
+    let space = Ed25519Signer::import(&[42; 32]).await.unwrap();
+    let subject = space.did();
+    let delegation = DelegationBuilder::new()
+        .issuer(space)
+        .audience(root)
+        .subject(Subject::Specific(subject))
+        .command(vec![])
+        .try_build()
         .await
         .unwrap();
-    let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+    let chain = DelegationChain::new(delegation);
+    serde_json::to_vec(&AccountSpotBackup {
+        chain_hex: hex::encode(chain.to_bytes().unwrap()),
+        remote_url: Some(remote.to_string()),
+        revocation_url: None,
+        name: name.map(str::to_string),
+    })
+    .unwrap()
+}
+
+async fn container_for(
+    root_prf: [u8; 32],
+    device_seed: [u8; 32],
+    command: Vec<String>,
+    args: BTreeMap<String, Promised>,
+) -> Vec<u8> {
+    let root = tonk_identity::derive::derive_root_signer(&root_prf)
+        .await
+        .unwrap();
+    let device = Ed25519Signer::import(&device_seed).await.unwrap();
     let link = tonk_identity::delegation::mint_device_delegation(root, &device.did())
         .await
         .unwrap();
     tonk_identity::request::build_device_invocation(device, &link, command, args)
         .await
         .unwrap()
+}
+
+async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Vec<u8> {
+    container_for(ROOT_PRF, DEVICE_SEED, command, args).await
 }
 
 /// Creating a second account for an already-registered email address
@@ -434,6 +470,23 @@ async fn it_drives_the_full_ceremony_over_http() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some(ACCOUNT_SPOTS_CAPABILITY_V1)
+    );
+    assert!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|name| name
+                .trim()
+                .eq_ignore_ascii_case(ACCOUNT_SPOTS_CAPABILITY_HEADER))),
+        "CORS must expose the account-spots capability header"
+    );
     let keys: Vec<String> = response.json().await.unwrap();
     assert!(keys.contains(&key));
 
@@ -457,4 +510,170 @@ async fn it_drives_the_full_ceremony_over_http() {
     );
     let round_tripped = response.bytes().await.unwrap();
     assert_eq!(round_tripped.as_ref(), chain_bytes.as_slice());
+
+    // Semantic account-spot inventory advances one subject head while the
+    // generic list/get routes remain unchanged.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let named = spot_backup(&root.did(), Some("garden"), "https://one.example/ucan/").await;
+    let mut args = BTreeMap::new();
+    args.insert("chain".to_string(), Promised::String(hex::encode(&named)));
+    let response = client
+        .post(format!("{base}/chains/put"))
+        .body(container(vec!["account".into(), "chain".into(), "put".into()], args).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let spots = || async {
+        let body = container(
+            vec!["account".into(), "chain".into(), "spots".into()],
+            BTreeMap::new(),
+        )
+        .await;
+        client
+            .post(format!("{base}/chains/spots"))
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+    };
+    let rows: Vec<AccountSpotSummary> = spots().await.json().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name.as_deref(), Some("garden"));
+
+    let renamed = spot_backup(&root.did(), Some("orchard"), "https://two.example/ucan/").await;
+    let mut args = BTreeMap::new();
+    args.insert("chain".to_string(), Promised::String(hex::encode(&renamed)));
+    client
+        .post(format!("{base}/chains/put"))
+        .body(container(vec!["account".into(), "chain".into(), "put".into()], args).await)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let rows: Vec<AccountSpotSummary> = spots().await.json().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name.as_deref(), Some("orchard"));
+    let selected_key = rows[0].key.clone().unwrap();
+
+    let unnamed = spot_backup(&root.did(), None, "https://three.example/ucan/").await;
+    let mut args = BTreeMap::new();
+    args.insert("chain".to_string(), Promised::String(hex::encode(&unnamed)));
+    client
+        .post(format!("{base}/chains/put"))
+        .body(container(vec!["account".into(), "chain".into(), "put".into()], args).await)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let rows: Vec<AccountSpotSummary> = spots().await.json().await.unwrap();
+    assert_eq!(rows[0].name.as_deref(), Some("orchard"));
+    assert_eq!(rows[0].key.as_deref(), Some(selected_key.as_str()));
+
+    // A separately registered account on the same service sees no rows from
+    // the first account's root-DID namespace.
+    let other_email = "other@example.com";
+    client
+        .post(format!("{base}/codes"))
+        .json(&serde_json::json!({ "email": other_email }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let other_code = {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .rfind(|(email, _)| email == other_email)
+            .map(|(_, code)| code.clone())
+            .unwrap()
+    };
+    let other_prf = [21; 32];
+    let other_seed = [22; 32];
+    let other_root = tonk_identity::derive::derive_root_signer(&other_prf)
+        .await
+        .unwrap();
+    let other_device = Ed25519Signer::import(&other_seed).await.unwrap();
+    let other_grant =
+        tonk_identity::delegation::mint_device_delegation(other_root.clone(), &other_device.did())
+            .await
+            .unwrap();
+    let other_ceremony = tonk_identity::ceremony::create_account(
+        other_root,
+        other_email.to_string(),
+        other_code,
+        "other-credential".to_string(),
+        other_device.did(),
+        "other-device".to_string(),
+        hex::encode(other_grant.to_bytes().unwrap()),
+        "http://127.0.0.1:8080/ucan/".to_string(),
+    )
+    .await
+    .unwrap();
+    client
+        .post(format!("{base}/accounts"))
+        .body(hex::decode(other_ceremony.invocation_hex).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let response = client
+        .post(format!("{base}/chains/spots"))
+        .body(
+            container_for(
+                other_prf,
+                other_seed,
+                vec!["account".into(), "chain".into(), "spots".into()],
+                BTreeMap::new(),
+            )
+            .await,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        response
+            .json::<Vec<AccountSpotSummary>>()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let body = container(
+        vec!["account".into(), "chain".into(), "get".into()],
+        [("key".to_string(), Promised::String(selected_key))]
+            .into_iter()
+            .collect(),
+    )
+    .await;
+    let fetched = client
+        .post(format!("{base}/chains/get"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fetched.bytes().await.unwrap().as_ref(), renamed.as_slice());
+
+    let revoked_body = tonk_identity::request::build_device_invocation(
+        second,
+        &second_grant,
+        vec!["account".into(), "chain".into(), "spots".into()],
+        BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+    let rejected = client
+        .post(format!("{base}/chains/spots"))
+        .body(revoked_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 403);
 }

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use thiserror::Error;
+use tonk_account::backup::ACCOUNT_SPOTS_CAPABILITY_HEADER;
 use url::Url;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -15,6 +16,8 @@ pub(crate) struct HttpResponse {
     #[allow(dead_code)]
     pub status: u16,
     pub body: Vec<u8>,
+    /// Account-spot capability advertised by a successful legacy list route.
+    pub account_spots_capability: Option<String>,
 }
 
 /// Structured non-success response from an upstream service.
@@ -102,6 +105,11 @@ async fn post_with_timeout(
             }
         })?;
     let status = response.status().as_u16();
+    let account_spots_capability = response
+        .headers()
+        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let bytes = response
         .bytes()
         .await
@@ -113,6 +121,7 @@ async fn post_with_timeout(
     Ok(HttpResponse {
         status,
         body: bytes,
+        account_spots_capability,
     })
 }
 
@@ -200,6 +209,11 @@ async fn post_with_timeout(
         }
     })?;
     let status = response.status();
+    let account_spots_capability = response
+        .headers()
+        .get(ACCOUNT_SPOTS_CAPABILITY_HEADER)
+        .ok()
+        .flatten();
     let buffer = JsFuture::from(
         response
             .array_buffer()
@@ -214,6 +228,7 @@ async fn post_with_timeout(
     Ok(HttpResponse {
         status,
         body: bytes,
+        account_spots_capability,
     })
 }
 
@@ -309,10 +324,11 @@ mod tests {
     #[dialog_common::test]
     async fn it_posts_json_with_an_explicit_media_type() {
         let (endpoint, request) =
-            server(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}");
+            server(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nx-tonk-account-spots: v1\r\nconnection: close\r\n\r\n{}");
         let response = post_json(&endpoint, br#"{"ok":true}"#).await.unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{}");
+        assert_eq!(response.account_spots_capability.as_deref(), Some("v1"));
         let request = request.recv().unwrap();
         let request = String::from_utf8_lossy(&request);
         assert!(
@@ -347,88 +363,89 @@ mod tests {
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn install_fake_fetch(body: &str) -> (JsValue, JsValue) {
-        let global = js_sys::global();
-        let previous = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
+    fn install_fake_fetch(body: &str) -> crate::router::tests::GlobalPropertyGuard {
         let fetch = js_sys::Function::new_with_args("request", body);
-        js_sys::Reflect::set(&global, &"fetch".into(), &fetch).unwrap();
-        (global.into(), previous)
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn restore_fetch(global: &JsValue, previous: &JsValue) {
-        js_sys::Reflect::set(global, &"fetch".into(), previous).unwrap();
+        crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref())
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
     async fn it_preserves_request_and_response_contracts_in_wasm() {
-        let (global, previous) = install_fake_fetch(
-            r#"
-            return request.arrayBuffer().then(buffer => {
-                globalThis.__tonkHttpCapture = {
-                    method: request.method,
-                    contentType: request.headers.get("content-type"),
-                    body: Array.from(new Uint8Array(buffer))
-                };
-                if (request.url.includes("/reject")) {
-                    return new Response(
-                        JSON.stringify({ error: {
-                            code: "CREDENTIAL_REVOKED",
-                            message: "credential revoked"
-                        } }),
-                        { status: 403, headers: { "content-type": "application/json" } }
-                    );
-                }
-                return new Response(new Uint8Array([7, 8, 9]), { status: 201 });
-            });
-            "#,
+        let global = js_sys::global();
+        let _capture = crate::router::tests::GlobalPropertyGuard::replace(
+            "__tonkHttpCapture",
+            &JsValue::UNDEFINED,
         );
+        {
+            let _fetch = install_fake_fetch(
+                r#"
+                return request.arrayBuffer().then(buffer => {
+                    globalThis.__tonkHttpCapture = {
+                        method: request.method,
+                        contentType: request.headers.get("content-type"),
+                        body: Array.from(new Uint8Array(buffer))
+                    };
+                    if (request.url.includes("/reject")) {
+                        return new Response(
+                            JSON.stringify({ error: {
+                                code: "CREDENTIAL_REVOKED",
+                                message: "credential revoked"
+                            } }),
+                            { status: 403, headers: { "content-type": "application/json" } }
+                        );
+                    }
+                    return new Response(new Uint8Array([7, 8, 9]), {
+                        status: 201,
+                        headers: { "X-Tonk-Account-Spots": "v1" }
+                    });
+                });
+                "#,
+            );
 
-        let endpoint = Url::parse("https://service.example.test/ok").unwrap();
-        let response = post_cbor(&endpoint, &[0xd9, 0xd9, 0xf7]).await.unwrap();
-        assert_eq!(response.status, 201);
-        assert_eq!(response.body, [7, 8, 9]);
+            let endpoint = Url::parse("https://service.example.test/ok").unwrap();
+            let response = post_cbor(&endpoint, &[0xd9, 0xd9, 0xf7]).await.unwrap();
+            assert_eq!(response.status, 201);
+            assert_eq!(response.body, [7, 8, 9]);
+            assert_eq!(response.account_spots_capability.as_deref(), Some("v1"));
 
-        let capture = js_sys::Reflect::get(&global, &"__tonkHttpCapture".into()).unwrap();
-        assert_eq!(
-            js_sys::Reflect::get(&capture, &"method".into())
-                .unwrap()
-                .as_string()
-                .as_deref(),
-            Some("POST")
-        );
-        assert_eq!(
-            js_sys::Reflect::get(&capture, &"contentType".into())
-                .unwrap()
-                .as_string()
-                .as_deref(),
-            Some("application/cbor")
-        );
-        let captured_body =
-            js_sys::Array::from(&js_sys::Reflect::get(&capture, &"body".into()).unwrap());
-        assert_eq!(
-            captured_body
-                .iter()
-                .map(|value| value.as_f64().unwrap() as u8)
-                .collect::<Vec<_>>(),
-            [0xd9, 0xd9, 0xf7]
-        );
+            let capture = js_sys::Reflect::get(&global, &"__tonkHttpCapture".into()).unwrap();
+            assert_eq!(
+                js_sys::Reflect::get(&capture, &"method".into())
+                    .unwrap()
+                    .as_string()
+                    .as_deref(),
+                Some("POST")
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&capture, &"contentType".into())
+                    .unwrap()
+                    .as_string()
+                    .as_deref(),
+                Some("application/cbor")
+            );
+            let captured_body =
+                js_sys::Array::from(&js_sys::Reflect::get(&capture, &"body".into()).unwrap());
+            assert_eq!(
+                captured_body
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as u8)
+                    .collect::<Vec<_>>(),
+                [0xd9, 0xd9, 0xf7]
+            );
 
-        let endpoint = Url::parse("https://service.example.test/reject").unwrap();
-        let error = post_json(&endpoint, br#"{"request":true}"#)
-            .await
-            .unwrap_err();
-        let HttpError::Upstream(error) = error else {
-            panic!("expected structured upstream failure");
-        };
-        assert_eq!(error.status, 403);
-        assert_eq!(error.code.as_deref(), Some("CREDENTIAL_REVOKED"));
-        assert_eq!(error.message, "credential revoked");
+            let endpoint = Url::parse("https://service.example.test/reject").unwrap();
+            let error = post_json(&endpoint, br#"{"request":true}"#)
+                .await
+                .unwrap_err();
+            let HttpError::Upstream(error) = error else {
+                panic!("expected structured upstream failure");
+            };
+            assert_eq!(error.status, 403);
+            assert_eq!(error.code.as_deref(), Some("CREDENTIAL_REVOKED"));
+            assert_eq!(error.message, "credential revoked");
+        }
 
-        restore_fetch(&global, &previous);
-
-        let (global, previous) = install_fake_fetch(
+        let _fetch = install_fake_fetch(
             r#"
             return new Promise((_resolve, reject) => {
                 request.signal.addEventListener("abort", () => {
@@ -447,6 +464,5 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(error, HttpError::Timeout));
-        restore_fetch(&global, &previous);
     }
 }

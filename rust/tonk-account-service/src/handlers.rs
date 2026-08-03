@@ -26,7 +26,10 @@ pub fn with_cors_headers(response: worker::Response) -> worker::Response {
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
-    let _ = headers.set("Access-Control-Expose-Headers", "Content-Type");
+    let _ = headers.set(
+        "Access-Control-Expose-Headers",
+        "Content-Type, X-Tonk-Account-Spots",
+    );
     response.with_headers(headers)
 }
 

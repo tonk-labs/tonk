@@ -77,6 +77,11 @@ path = "tests/context.rs"
 name = "agents"
 path = "tests/agents.rs"
 
+[[test]]
+name = "account_spots"
+path = "tests/account_spots.rs"
+required-features = ["integration-tests"]
+
 [features]
 integration-tests = []
 
@@ -153,4 +158,5 @@ rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tonk-access-service = { workspace = true, features = ["helpers"] }
+tonk-account-service = { path = "../tonk-account-service", features = ["helpers"] }
 wasm-bindgen-test = { workspace = true }

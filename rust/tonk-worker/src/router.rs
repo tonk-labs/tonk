@@ -475,6 +475,75 @@ pub mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    /// Failure-safe replacement for one service-worker global used by a test.
+    pub(crate) struct GlobalPropertyGuard {
+        global: js_sys::Object,
+        name: wasm_bindgen::JsValue,
+        previous: Option<wasm_bindgen::JsValue>,
+    }
+
+    impl GlobalPropertyGuard {
+        /// Replace `globalThis[name]` until this guard is dropped.
+        pub(crate) fn replace(name: &str, value: &wasm_bindgen::JsValue) -> Self {
+            let global = js_sys::global();
+            let name = wasm_bindgen::JsValue::from_str(name);
+            let previous = js_sys::Reflect::has(&global, &name)
+                .expect("global property can be inspected")
+                .then(|| {
+                    js_sys::Reflect::get(&global, &name).expect("global property can be read")
+                });
+            js_sys::Reflect::set(&global, &name, value).expect("global property can be replaced");
+            Self {
+                global,
+                name,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for GlobalPropertyGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => {
+                    let _ = js_sys::Reflect::set(&self.global, &self.name, previous);
+                }
+                None => {
+                    let _ = js_sys::Reflect::delete_property(&self.global, &self.name);
+                }
+            }
+        }
+    }
+
+    #[dialog_common::test]
+    async fn global_property_guard_restores_and_deletes_after_an_early_error() {
+        fn replace_then_fail(name: &str) -> Result<(), ()> {
+            let _replacement =
+                GlobalPropertyGuard::replace(name, &wasm_bindgen::JsValue::from_str("temporary"));
+            Err(())
+        }
+
+        let global = js_sys::global();
+        let existing = "__tonkGuardCleanupExisting";
+        let _baseline =
+            GlobalPropertyGuard::replace(existing, &wasm_bindgen::JsValue::from_str("original"));
+        assert_eq!(replace_then_fail(existing), Err(()));
+        assert_eq!(
+            js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str(existing))
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("original")
+        );
+
+        let missing = wasm_bindgen::JsValue::from_str("__tonkGuardCleanupMissing");
+        js_sys::Reflect::delete_property(&global, &missing).unwrap();
+        assert_eq!(replace_then_fail("__tonkGuardCleanupMissing"), Err(()));
+        assert!(
+            !js_sys::Reflect::has(&global, &missing).unwrap(),
+            "a helper global absent before replacement must be deleted"
+        );
+    }
+
     /// A random id minted once per test *process*, mixed into every profile
     /// name so two runs never collide on storage a shared browser profile
     /// kept between them.

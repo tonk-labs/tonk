@@ -1,10 +1,12 @@
-//! `POST /chains/{put,list,get}`: content-addressed delegation chain
-//! backup, over UCAN-authorized invocation containers.
+//! `POST /chains/{put,list,get,spots}`: content-addressed delegation-chain
+//! backup and semantic spot inventory over UCAN-authorized invocations.
 
 use worker::*;
 
+use tonk_account::backup::{ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1};
+
 use crate::auth::{authorize, string_argument};
-use crate::core::backup::{get_chain, list_chains, put_chain};
+use crate::core::backup::{get_chain, list_account_spots, list_chains, put_chain_and_index_spot};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_chains, build_store, ceremony_error, read_body, with_cors_headers};
 
@@ -39,7 +41,7 @@ async fn handle_put_inner(
         ServiceError::new(ErrorCode::InvalidArgument, format!("bad chain hex: {err}"))
     })?;
 
-    let key = put_chain(&chains, &caller.account, &bytes)
+    let key = put_chain_and_index_spot(&chains, &caller.account, &bytes)
         .await
         .map_err(ceremony_error)?;
 
@@ -52,7 +54,11 @@ async fn handle_put_inner(
 /// account.
 pub async fn handle_list(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match handle_list_inner(&mut req, &ctx).await {
-        Ok(response) => response,
+        Ok(response) => {
+            let headers = response.headers().clone();
+            let _ = headers.set(ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABILITY_V1);
+            response.with_headers(headers)
+        }
         Err(err) => err.to_response()?,
     };
     Ok(with_cors_headers(response))
@@ -75,6 +81,33 @@ async fn handle_list_inner(
 
     Response::from_json(&keys).map_err(|err| {
         ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
+    })
+}
+
+/// `POST /chains/spots` → list one semantic row per account spot.
+pub async fn handle_spots(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match handle_spots_inner(&mut req, &ctx).await {
+        Ok(response) => response,
+        Err(err) => err.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+async fn handle_spots_inner(
+    req: &mut Request,
+    ctx: &RouteContext<()>,
+) -> std::result::Result<Response, ServiceError> {
+    let store = build_store(ctx)?;
+    let chains = build_chains(ctx)?;
+    let body = read_body(req).await?;
+    let caller = authorize(&store, &body, &["account", "chain", "spots"])
+        .await
+        .map_err(ceremony_error)?;
+    let spots = list_account_spots(&chains, &caller.account)
+        .await
+        .map_err(ceremony_error)?;
+    Response::from_json(&spots).map_err(|error| {
+        ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
     })
 }
 

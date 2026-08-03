@@ -363,7 +363,7 @@ impl RemoteRefusal {
     }
 }
 
-/// Explicit operational endpoints attached to one configured remote.
+/// Explicit operational endpoints attached to one invite-ready remote.
 #[derive(Debug, Clone)]
 pub(crate) struct RemoteExecutionUrls {
     /// UCAN access-service endpoint advertised in the invite.
@@ -372,44 +372,49 @@ pub(crate) struct RemoteExecutionUrls {
     pub(crate) revocation_url: Url,
 }
 
-/// The outcome of probing a repository for a shareable sync endpoint.
+/// Operational endpoints attached to the actual configured sync upstream.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfiguredRemoteExecutionUrls {
+    /// UCAN access-service endpoint used by synchronization.
+    pub(crate) access_url: Url,
+    /// Optional immutable-artifact relay metadata.
+    pub(crate) revocation_url: Option<Url>,
+}
+
+/// The outcome of probing a repository for a configured UCAN sync endpoint.
+#[derive(Debug, Clone)]
+pub(crate) enum ConfiguredRemoteRequirement {
+    /// A UCAN endpoint suitable for synchronization and backup.
+    Ready(ConfiguredRemoteExecutionUrls),
+    /// No usable configured upstream. See [`RemoteRefusal`].
+    Refused(RemoteRefusal),
+}
+
+/// The outcome of probing a repository for an invite-ready sync endpoint.
 #[derive(Debug, Clone)]
 pub(crate) enum RemoteRequirement {
-    /// A UCAN endpoint an invite can advertise.
+    /// A UCAN endpoint and revocation relay an invite can advertise.
     Ready(RemoteExecutionUrls),
     /// No such endpoint. See [`RemoteRefusal`].
     Refused(RemoteRefusal),
 }
 
-/// Probe `main`'s upstream and, when it points at a remote, pull the
-/// UCAN access-service URL off the remote's site address.
-///
-/// - `Ok(Ready(url))` — the endpoint an invite advertises as `&remote=`.
-/// - `Ok(Refused(reason))` — no such endpoint. Callers refuse to mint:
-///   an invite with no remote lands its recipient in a spot that can never
-///   fill, so it has no use, and returning one silently would mask exactly
-///   the config drift the inviter cannot see.
-/// - `Err(...)` — branch/remote load failed or the stored UCAN endpoint
-///   won't parse. Failing loudly is right for the same reason.
-///
-/// `main` is currently the canonical content branch and is hardcoded here.
-pub(crate) async fn resolve_remote_url<R>(
+/// Resolve the actual UCAN remote tracked by `main`, retaining optional
+/// revocation relay metadata for non-invite consumers such as account backup.
+pub(crate) async fn resolve_configured_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,
-) -> Result<RemoteRequirement, TonkWorkerError>
+) -> Result<ConfiguredRemoteRequirement, TonkWorkerError>
 where
     R: Principal + Clone,
 {
-    resolve_remote_url_with(repository, &tonk.operator).await
+    resolve_configured_remote_url_with(repository, &tonk.operator).await
 }
 
-/// [`resolve_remote_url`] against a bare operator rather than the whole
-/// [`TonkState`] — for callers (e.g. the invite command handler) that
-/// must not hold the state guard across this await.
-pub(crate) async fn resolve_remote_url_with<R>(
+async fn resolve_configured_remote_url_with<R>(
     repository: &dialog_repository::Repository<R>,
     operator: &crate::worker::DefaultOperator,
-) -> Result<RemoteRequirement, TonkWorkerError>
+) -> Result<ConfiguredRemoteRequirement, TonkWorkerError>
 where
     R: Principal + Clone,
 {
@@ -426,9 +431,15 @@ where
 
     let remote_name = match main.upstream() {
         Some(Upstream::Remote { remote, .. }) => remote,
-        None => return Ok(RemoteRequirement::Refused(RemoteRefusal::NotSynced)),
+        None => {
+            return Ok(ConfiguredRemoteRequirement::Refused(
+                RemoteRefusal::NotSynced,
+            ));
+        }
         Some(_) => {
-            return Ok(RemoteRequirement::Refused(RemoteRefusal::UnshareableRemote));
+            return Ok(ConfiguredRemoteRequirement::Refused(
+                RemoteRefusal::UnshareableRemote,
+            ));
         }
     };
 
@@ -450,7 +461,11 @@ where
                 ucan.endpoint()
             ))
         })?,
-        _ => return Ok(RemoteRequirement::Refused(RemoteRefusal::UnshareableRemote)),
+        _ => {
+            return Ok(ConfiguredRemoteRequirement::Refused(
+                RemoteRefusal::UnshareableRemote,
+            ));
+        }
     };
 
     let meta = repository
@@ -478,15 +493,10 @@ where
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to query remote metadata: {error:?}"))
         })?;
-    let Some(remote_entity) = remotes
+    let remote_entity = remotes
         .into_iter()
         .find(|concept| concept.name.0 == remote_name)
-        .map(|concept| concept.this)
-    else {
-        return Ok(RemoteRequirement::Refused(
-            RemoteRefusal::MissingRevocationRelay,
-        ));
-    };
+        .map(|concept| concept.this);
     let executions: Vec<RemoteExecution> = meta
         .query()
         .select(Query::<RemoteExecution> {
@@ -501,24 +511,62 @@ where
                 "failed to query remote execution metadata: {error:?}"
             ))
         })?;
-    let Some(raw_relay) = executions
-        .into_iter()
-        .find(|execution| execution.this == remote_entity)
-        .map(|execution| execution.revocation_url.0)
-    else {
-        return Ok(RemoteRequirement::Refused(
-            RemoteRefusal::MissingRevocationRelay,
-        ));
+    let revocation_url = match remote_entity.and_then(|remote_entity| {
+        executions
+            .into_iter()
+            .find(|execution| execution.this == remote_entity)
+            .map(|execution| execution.revocation_url.0)
+    }) {
+        Some(raw_relay) => Some(Url::parse(&raw_relay).map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "remote '{remote_name}' has an invalid revocation relay: {error}"
+            ))
+        })?),
+        None => None,
     };
-    let revocation_url = Url::parse(&raw_relay).map_err(|error| {
-        TonkWorkerError::Internal(format!(
-            "remote '{remote_name}' has an invalid revocation relay: {error}"
-        ))
-    })?;
-    Ok(RemoteRequirement::Ready(RemoteExecutionUrls {
-        access_url,
-        revocation_url,
-    }))
+    Ok(ConfiguredRemoteRequirement::Ready(
+        ConfiguredRemoteExecutionUrls {
+            access_url,
+            revocation_url,
+        },
+    ))
+}
+
+/// Probe `main` for an invite-ready endpoint. Unlike generic sync and account
+/// backup, invites require an explicit revocation relay.
+pub(crate) async fn resolve_remote_url<R>(
+    tonk: &crate::worker::TonkState,
+    repository: &dialog_repository::Repository<R>,
+) -> Result<RemoteRequirement, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
+    resolve_remote_url_with(repository, &tonk.operator).await
+}
+
+/// [`resolve_remote_url`] against a bare operator rather than the whole
+/// [`TonkState`] — for callers that must not hold state across this await.
+pub(crate) async fn resolve_remote_url_with<R>(
+    repository: &dialog_repository::Repository<R>,
+    operator: &crate::worker::DefaultOperator,
+) -> Result<RemoteRequirement, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
+    match resolve_configured_remote_url_with(repository, operator).await? {
+        ConfiguredRemoteRequirement::Refused(reason) => Ok(RemoteRequirement::Refused(reason)),
+        ConfiguredRemoteRequirement::Ready(remote) => {
+            let Some(revocation_url) = remote.revocation_url else {
+                return Ok(RemoteRequirement::Refused(
+                    RemoteRefusal::MissingRevocationRelay,
+                ));
+            };
+            Ok(RemoteRequirement::Ready(RemoteExecutionUrls {
+                access_url: remote.access_url,
+                revocation_url,
+            }))
+        }
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]

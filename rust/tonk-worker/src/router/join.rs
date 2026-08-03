@@ -82,6 +82,7 @@ use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::{
@@ -1162,17 +1163,11 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
             // escrowed, while an owner's space-root prefix is backed up by
             // the owned-space path. Best-effort, and strictly after the local
             // commit — the join is already complete.
-            if !(prepared.is_self_claim() || prepared.existing && repeated_claim) {
-                crate::router::account_backup::back_up_claim(
-                    tonk,
-                    prepared
-                        .chain
-                        .as_ref()
-                        .expect("a durable join builds its chain during preparation"),
-                    prepared.remote_url.as_deref(),
-                    prepared.revocation_url.as_deref(),
-                )
-                .await;
+            if !(prepared.is_self_claim() || prepared.existing && repeated_claim)
+                && let Err(error) =
+                    crate::router::account_backup::back_up_subject(tonk, &prepared.subject).await
+            {
+                log!("joined-space backup skipped: {error}");
             }
         }
     }
@@ -1220,6 +1215,14 @@ async fn save_authority(
         }
     };
 
+    let prefix_bytes = match prepared.mode {
+        JoinMode::Durable => Some(chain.to_bytes().map_err(|error| {
+            JoinFailure::claim_failed(format!(
+                "failed to serialize the accepted authority: {error}"
+            ))
+        })?),
+        JoinMode::GuestVisit => None,
+    };
     tonk.profile
         .access()
         .save(UcanDelegation(chain))
@@ -1227,7 +1230,21 @@ async fn save_authority(
         .await
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to save the accepted authority: {error}"))
-        })
+        })?;
+    if let Some(prefix_bytes) = prefix_bytes {
+        tonk.profile
+            .credential()
+            .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", prepared.subject))
+            .save(prefix_bytes)
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!(
+                    "failed to persist the accepted root prefix: {error}"
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 /// Give the durable repository the staged revision, then publish it as the
@@ -2115,7 +2132,10 @@ mod tests {
             remote.map(|url| url::Url::parse(url).unwrap()),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .with_revocation_url(
+            remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
+        );
         (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
     }
 
@@ -2349,6 +2369,108 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         value["status"].as_str().unwrap().to_owned()
+    }
+
+    #[dialog_common::test]
+    async fn durable_join_persists_and_builds_a_named_root_ending_backup() {
+        use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+        use tonk_schema::RepositoryName;
+        use tonk_schema::prelude::DidExt as _;
+        use wasm_bindgen::JsValue;
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(105, 106).await;
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let remote = crate::router::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                crate::router::repository::RemoteConfiguration::new(
+                    dialog_repository::SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+                        "https://sync.example.test/ucan/",
+                    )),
+                )
+                .subject(subject.clone())
+                .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                crate::router::repository::BranchConfiguration::default()
+                    .upstream("origin", "main"),
+            );
+        let attached = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&remote).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(attached.status(), StatusCode::OK);
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .transaction()
+                .assert(RepositoryName {
+                    this: subject.this(),
+                    name: tonk_schema::domain::repo::Name("joined-garden".to_string()),
+                })
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+        crate::router::account_backup::take_backup_artifacts();
+        let fetch = js_sys::Function::new_with_args(
+            "_request",
+            "return Promise.resolve(new Response('{}', { status: 200 }));",
+        );
+        let _fetch_guard =
+            crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
+        {
+            let tonk = state.read().await;
+            crate::router::account_backup::back_up_subject(&tonk, &subject)
+                .await
+                .unwrap();
+        }
+        let mut artifact = None;
+        for _ in 0..10 {
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
+                .await
+                .unwrap();
+            if let Some(produced) = crate::router::account_backup::take_backup_artifacts()
+                .into_iter()
+                .last()
+            {
+                artifact = Some(produced);
+                break;
+            }
+        }
+        let artifact = artifact.expect("durable join backup artifact was produced");
+        assert_eq!(artifact.name.as_deref(), Some("joined-garden"));
+        let (root, persisted) = {
+            let tonk = state.read().await;
+            let root = crate::router::identity::root_did(&tonk).await.unwrap();
+            let bytes = tonk
+                .profile
+                .credential()
+                .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+                .load::<Vec<u8>>()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            (root, bytes)
+        };
+        let validated = artifact.validate_for(&root).await.unwrap();
+        assert_eq!(validated.subject, subject);
+        assert_eq!(validated.chain.audience(), &root);
+        assert_eq!(validated.chain.to_bytes().unwrap(), persisted);
     }
 
     /// Joining an invite records the claimer's membership, the
@@ -2911,9 +3033,8 @@ mod tests {
         assert!(!after.guest, "the guest credential is cleared on promotion");
         assert!(after.authority, "the accepted authority is durable");
         assert_eq!(
-            after.backup_dispatches,
-            backups_before + 1,
-            "backup dispatch follows the local commit exactly once",
+            after.backup_dispatches, backups_before,
+            "a local-only promotion has no pullable upstream to back up",
         );
 
         let root_entity = {

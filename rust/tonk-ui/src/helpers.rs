@@ -24,6 +24,36 @@ mod native {
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
     use url::Url;
 
+    /// Reaps a spawned test dependency on every success and failure path.
+    struct ManagedChild(Option<Child>);
+
+    impl ManagedChild {
+        fn new(child: Child) -> Self {
+            Self(Some(child))
+        }
+
+        fn child_mut(&mut self) -> &mut Child {
+            self.0.as_mut().expect("managed child is present")
+        }
+
+        fn terminate(&mut self) -> std::io::Result<()> {
+            let Some(mut child) = self.0.take() else {
+                return Ok(());
+            };
+            if child.try_wait()?.is_none() {
+                child.kill()?;
+                child.wait()?;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for ManagedChild {
+        fn drop(&mut self) {
+            let _ = self.terminate();
+        }
+    }
+
     impl TestEnvironment {
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
@@ -38,6 +68,13 @@ mod native {
                 caps.set_headless()?;
             }
 
+            caps.add_arg("--host-resolver-rules=MAP tonk.spot 127.0.0.1")?;
+            let secure_origin = format!(
+                "--unsafely-treat-insecure-origin-as-secure={}",
+                self.tonk_web.origin().ascii_serialization()
+            );
+            caps.add_arg(&secure_origin)?;
+
             if let Ok(chrome_binary) = std::env::var("CHROME") {
                 caps.set_binary(&chrome_binary)?;
             }
@@ -50,9 +87,10 @@ mod native {
 
     /// Manages test server processes for integration testing.
     pub struct TestServers {
-        web_server: Child,
-        chromedriver: Child,
-        access_service: Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>,
+        web_server: ManagedChild,
+        chromedriver: ManagedChild,
+        access_service:
+            Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
     }
 
     impl TestServers {
@@ -76,19 +114,24 @@ mod native {
             // Start the web server (Caddy) with access service port for /ucan/* proxying
             let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
-            let mut web_server = std::process::Command::new("nix")
-                .args([
-                    "run",
-                    ".#tonk-ui-test-server",
-                    "--",
-                    &format!("{web_port}"),
-                    &format!("{access_service_port}"),
-                ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
+            let mut web_server = ManagedChild::new(
+                std::process::Command::new("nix")
+                    .args([
+                        "run",
+                        ".#tonk-ui-test-server",
+                        "--",
+                        &format!("{web_port}"),
+                        &format!("{access_service_port}"),
+                    ])
+                    .stdout(Stdio::piped())
+                    // Nix writes build progress to stderr. Inheriting it prevents a
+                    // full unread pipe from deadlocking before Caddy starts.
+                    .stderr(Stdio::inherit())
+                    .spawn()?,
+            );
 
             let stdout = web_server
+                .child_mut()
                 .stdout
                 .take()
                 .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
@@ -104,13 +147,18 @@ mod native {
             // Start ChromeDriver
             let chromedriver_port =
                 free_local_port().expect("Could not get a free local port for chromedriver");
-            let mut chromedriver = std::process::Command::new("chromedriver")
-                .args([&format!("--port={chromedriver_port}")])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
+            let chromedriver_binary =
+                std::env::var("CHROMEDRIVER").unwrap_or_else(|_| "chromedriver".to_string());
+            let mut chromedriver = ManagedChild::new(
+                std::process::Command::new(chromedriver_binary)
+                    .args([&format!("--port={chromedriver_port}")])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()?,
+            );
 
             let stdout = chromedriver
+                .child_mut()
                 .stdout
                 .take()
                 .ok_or_else(|| anyhow!("Failed to capture chromedriver stdout"))?;
@@ -127,10 +175,10 @@ mod native {
                 Self {
                     web_server,
                     chromedriver,
-                    access_service,
+                    access_service: Some(access_service),
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("http://127.0.0.1:{web_port}"))?,
+                    tonk_web: Url::parse(&format!("http://tonk.spot:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                 },
             ))
@@ -138,10 +186,27 @@ mod native {
 
         /// Stops all test server processes.
         pub async fn stop(mut self) -> Result<()> {
-            self.web_server.kill()?;
-            self.chromedriver.kill()?;
-            self.access_service.stop().await?;
+            let web_result = self.web_server.terminate();
+            let chromedriver_result = self.chromedriver.terminate();
+            let access_result = if let Some(access_service) = self.access_service.take() {
+                access_service.stop().await
+            } else {
+                Ok(())
+            };
+            web_result?;
+            chromedriver_result?;
+            access_result?;
             Ok(())
+        }
+    }
+
+    impl Drop for TestServers {
+        fn drop(&mut self) {
+            let _ = self.web_server.terminate();
+            let _ = self.chromedriver.terminate();
+            // Dropping the access-service provider closes its shutdown senders;
+            // explicit success paths still await orderly shutdown in `stop`.
+            self.access_service.take();
         }
     }
 

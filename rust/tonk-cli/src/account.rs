@@ -6,6 +6,8 @@ use anyhow::{Context, Result, bail};
 use dialog_operator::Profile;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan_core::DelegationChain;
+use dialog_ucan_core::promise::Promised;
+use dialog_varsig::Did;
 use rand::RngCore;
 use serde::Deserialize;
 use tonk_account::handoff::{ConsumedLink, LinkCreateRequest, LinkSecretRequest};
@@ -358,6 +360,191 @@ pub struct DeviceRow {
     pub delegation_cid: String,
 }
 
+/// Authenticated provider attachment used by account-scoped CLI modules.
+pub(crate) struct AccountConnection {
+    pub(crate) service_url: String,
+    pub(crate) root_did: Did,
+    pub(crate) link: DelegationChain,
+}
+
+async fn connection_from_provider(
+    profile: &Profile,
+    provider: AccountProviderRecord,
+) -> Result<AccountConnection> {
+    let service_url = provider.provider().to_string();
+    let root = crate::identity::local_root(profile)
+        .await?
+        .context("the provider attachment has no local root")?;
+    let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
+    let link = DelegationChain::try_from(bytes.as_slice())
+        .context("stored local-root delegation is invalid")?;
+    let root_did = link.issuer().clone();
+    Ok(AccountConnection {
+        service_url,
+        root_did,
+        link,
+    })
+}
+
+/// Load an attachment through the account directory owned by an explicit
+/// spot store. Account-spots tests and isolated consumers use this without
+/// changing process-global profile paths.
+pub(crate) async fn connection_for_store(
+    profile: &Profile,
+    store: &crate::spot::SpotStore,
+) -> Result<AccountConnection> {
+    #[cfg(feature = "integration-tests")]
+    if let Some((service_url, link, _)) = integration_connections()
+        .lock()
+        .expect("integration connection registry")
+        .get(profile.did().as_ref())
+        .cloned()
+    {
+        return Ok(AccountConnection {
+            service_url,
+            root_did: link.issuer().clone(),
+            link,
+        });
+    }
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let provider = stored_provider_with_operator(profile, &operator)
+        .await?
+        .context("no account provider is attached; run `tonk account link`")?;
+    let root = crate::identity::local_root_with_operator(profile, &operator)
+        .await?
+        .context("the provider attachment has no local root")?;
+    let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
+    let link = DelegationChain::try_from(bytes.as_slice())
+        .context("stored local-root delegation is invalid")?;
+    Ok(AccountConnection {
+        service_url: provider.provider().to_string(),
+        root_did: link.issuer().clone(),
+        link,
+    })
+}
+
+/// Load the attached provider and exact `root → device` link when present.
+pub(crate) async fn optional_connection(profile: &Profile) -> Result<Option<AccountConnection>> {
+    #[cfg(feature = "integration-tests")]
+    if let Some((service_url, link, _)) = integration_connections()
+        .lock()
+        .expect("integration connection registry")
+        .get(profile.did().as_ref())
+        .cloned()
+    {
+        return Ok(Some(AccountConnection {
+            service_url,
+            root_did: link.issuer().clone(),
+            link,
+        }));
+    }
+    let Some(provider) = stored_provider(profile).await? else {
+        return Ok(None);
+    };
+    Ok(Some(connection_from_provider(profile, provider).await?))
+}
+
+#[cfg(feature = "integration-tests")]
+type IntegrationConnection = (String, DelegationChain, crate::site::SiteConfig);
+#[cfg(feature = "integration-tests")]
+type IntegrationConnections =
+    std::sync::Mutex<std::collections::HashMap<String, IntegrationConnection>>;
+
+#[cfg(feature = "integration-tests")]
+fn integration_connections() -> &'static IntegrationConnections {
+    static CONNECTIONS: std::sync::OnceLock<IntegrationConnections> = std::sync::OnceLock::new();
+    CONNECTIONS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(feature = "integration-tests")]
+pub(crate) fn integration_site_config(profile: &Profile) -> Option<crate::site::SiteConfig> {
+    integration_connections()
+        .lock()
+        .expect("integration connection registry")
+        .get(profile.did().as_ref())
+        .map(|(_, _, config)| config.clone())
+}
+
+#[cfg(feature = "integration-tests")]
+/// Install an already-created account attachment into an isolated test profile.
+#[doc(hidden)]
+pub async fn attach_for_integration_test(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    config: crate::site::SiteConfig,
+    service_url: &str,
+    credential_id: &str,
+    link: DelegationChain,
+    descriptor: &[u8],
+) -> Result<()> {
+    use dialog_ucan::UcanDelegation;
+
+    let root_did = link.issuer().clone();
+    let record = crate::identity::LocalRoot {
+        credential_id: credential_id.to_string(),
+        root_did: root_did.to_string(),
+        delegation_cid: link.proof_cids()[0].to_string(),
+        delegation_hex: hex::encode(link.to_bytes()?),
+    };
+    profile
+        .access()
+        .save(UcanDelegation(link.clone()))
+        .perform(operator)
+        .await?;
+    profile
+        .credential()
+        .site(crate::identity::LOCAL_ROOT_SITE)
+        .save(serde_json::to_vec(&record)?)
+        .perform(operator)
+        .await?;
+    let provider = AccountProviderRecord::attach(
+        service_url,
+        descriptor,
+        &root_did,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .await?;
+    profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .save(provider.encode()?)
+        .perform(operator)
+        .await?;
+    integration_connections()
+        .lock()
+        .expect("integration connection registry")
+        .insert(
+            profile.did().to_string(),
+            (service_url.to_string(), link, config),
+        );
+    Ok(())
+}
+
+impl AccountConnection {
+    /// Sign and POST one account invocation, preserving the raw HTTP status
+    /// so callers can implement rolling-deployment fallbacks.
+    pub(crate) async fn signed_post(
+        &self,
+        profile: &Profile,
+        path: &str,
+        command: Vec<String>,
+        arguments: std::collections::BTreeMap<String, Promised>,
+    ) -> Result<reqwest::Response> {
+        let body = tonk_identity::request::build_device_invocation(
+            profile.signer().signer().clone(),
+            &self.link,
+            command,
+            arguments,
+        )
+        .await
+        .context("failed to sign the account-service request")?;
+        post_invocation_raw(&self.service_url, path, body).await
+    }
+}
+
 async fn linked_chain(profile: &Profile) -> Result<DelegationChain> {
     stored_provider(profile)
         .await?
@@ -369,12 +556,12 @@ async fn linked_chain(profile: &Profile) -> Result<DelegationChain> {
     DelegationChain::try_from(bytes.as_slice()).context("stored local-root delegation is invalid")
 }
 
-async fn post_invocation(
+async fn post_invocation_raw(
     service_url: &str,
     path: &str,
     body: Vec<u8>,
 ) -> Result<reqwest::Response> {
-    let response = reqwest::Client::new()
+    reqwest::Client::new()
         .post(format!(
             "{}/{}",
             service_url.trim_end_matches('/'),
@@ -385,7 +572,15 @@ async fn post_invocation(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .with_context(|| format!("failed to reach the account service at {path}"))?;
+        .with_context(|| format!("failed to reach the account service at {path}"))
+}
+
+async fn post_invocation(
+    service_url: &str,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<reqwest::Response> {
+    let response = post_invocation_raw(service_url, path, body).await?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();

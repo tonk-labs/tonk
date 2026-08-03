@@ -24,7 +24,7 @@ use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views::{self, ViewSummary};
-use tonk_cli::{ExitCode, account, agents, context, guide, identity, schema, site};
+use tonk_cli::{ExitCode, account, account_spots, agents, context, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -502,6 +502,12 @@ enum AccountCommand {
         no_open: bool,
     },
 
+    /// List or pull the spots backed up under this account
+    Spots {
+        #[command(subcommand)]
+        command: Option<AccountSpotsCommand>,
+    },
+
     /// List the devices linked to this profile's account
     Devices {
         /// Account service base URL (for staging or local development).
@@ -542,6 +548,21 @@ enum AccountCommand {
         /// Print the approval URL without asking the OS to open it.
         #[arg(long)]
         no_open: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AccountSpotsCommand {
+    /// List remote account spots and local registration state
+    List,
+    /// Pull one exact repository subject into canonical local storage
+    Pull {
+        /// Full repository subject DID.
+        #[arg(value_name = "SUBJECT")]
+        subject: String,
+        /// Explicit local spot slug.
+        #[arg(long, value_name = "SLUG")]
+        name: Option<String>,
     },
 }
 
@@ -826,6 +847,10 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             Some(match command {
                 AccountCommand::Status => "status",
                 AccountCommand::Link { .. } => "link",
+                AccountCommand::Spots { command } => match command {
+                    None | Some(AccountSpotsCommand::List) => "spots-list",
+                    Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
+                },
                 AccountCommand::Devices { .. } => "devices",
                 AccountCommand::Revoke { .. } => "revoke",
             }),
@@ -1218,10 +1243,61 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 if let Some(warning) = outcome.warning {
                     eprintln!("warning: account repository is not synchronized: {warning}");
                 }
+                back_up_all_best_effort(&profile).await;
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
         },
+        AccountCommand::Spots { command } => {
+            let store = match tonk_cli::spot::SpotStore::open() {
+                Ok(store) => store,
+                Err(error) => return print_failure(error),
+            };
+            match command.unwrap_or(AccountSpotsCommand::List) {
+                AccountSpotsCommand::List => match account_spots::list(&profile, &store).await {
+                    Ok(rows) => {
+                        if rows.is_empty() {
+                            println!("(no account spots backed up)");
+                        } else {
+                            for row in rows {
+                                let state = if row.ambiguous {
+                                    "ambiguous"
+                                } else if row.local_name.is_some() {
+                                    "local"
+                                } else {
+                                    "remote"
+                                };
+                                let name = row
+                                    .remote_name
+                                    .as_deref()
+                                    .or(row.local_name.as_deref())
+                                    .unwrap_or("-");
+                                println!("{state}\t{name}\t{}", row.subject);
+                            }
+                        }
+                        ExitCode::Success
+                    }
+                    Err(error) => print_failure(error),
+                },
+                AccountSpotsCommand::Pull { subject, name } => {
+                    match account_spots::pull(&profile, &store, &subject, name.as_deref()).await {
+                        Ok(outcome) => {
+                            if outcome.already_local {
+                                println!("already local\t{}\t{}", outcome.name, outcome.subject);
+                            } else {
+                                println!("pulled\t{}\t{}", outcome.name, outcome.subject);
+                                println!("site: {}", outcome.site.display());
+                            }
+                            if let Some(warning) = outcome.warning {
+                                eprintln!("warning: {warning}");
+                            }
+                            ExitCode::Success
+                        }
+                        Err(error) => print_failure(error),
+                    }
+                }
+            }
+        }
         AccountCommand::Devices { service_url } => {
             match account::devices(&profile, &service_url).await {
                 Ok(rows) => {
@@ -1258,6 +1334,28 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 Err(error) => print_failure(error),
             }
         }
+    }
+}
+
+async fn back_up_all_best_effort(profile: &dialog_operator::Profile) {
+    let store = match tonk_cli::spot::SpotStore::open() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("warning: account spot backup skipped: {error}");
+            return;
+        }
+    };
+    for warning in account_spots::back_up_registered(profile, &store).await {
+        eprintln!(
+            "warning: account spot backup for '{}' failed: {}",
+            warning.name, warning.message
+        );
+    }
+}
+
+async fn back_up_site_best_effort(name: &str, site: &site::TonkSite) {
+    if let Err(error) = account_spots::back_up_site(name, site).await {
+        eprintln!("warning: account spot backup failed: {error:#}");
     }
 }
 
@@ -1347,6 +1445,12 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                     println!("DID: {}", outcome.did);
                     println!("binding: {}", cwd.display());
                     print_active_resolution(&store, flag, Some(&cwd));
+                    match site::TonkSite::open(&outcome.site).await {
+                        Ok(site) => back_up_site_best_effort(&outcome.name, &site).await,
+                        Err(error) => {
+                            eprintln!("warning: account spot backup skipped: {error:#}")
+                        }
+                    }
                     ExitCode::Success
                 }
                 Err(err) => print_failure(err),
@@ -1514,7 +1618,7 @@ enum SyncOp {
 }
 
 async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+    let (resolved, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1527,6 +1631,7 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
     match result {
         Ok(outcome) => {
             print_sync_outcome(op, &outcome);
+            back_up_site_best_effort(&resolved.name, &site).await;
             ExitCode::Success
         }
         Err(err) => {
@@ -1677,7 +1782,7 @@ fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
 }
 
 async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
-    let (_, site) = match open_selected(spot).await {
+    let (resolved, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
@@ -1714,10 +1819,14 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
                     // first remote becomes the upstream by default.
                     // An existing upstream is never touched.
                     match remote::upstream_configured(&site).await {
-                        Ok(true) => ExitCode::Success,
+                        Ok(true) => {
+                            back_up_site_best_effort(&resolved.name, &site).await;
+                            ExitCode::Success
+                        }
                         Ok(false) => match remote::set_upstream(&site, &name).await {
                             Ok(upstream) => {
                                 print_set_upstream_outcome(&upstream);
+                                back_up_site_best_effort(&resolved.name, &site).await;
                                 ExitCode::Success
                             }
                             Err(err) => {
@@ -1757,6 +1866,7 @@ async fn remote_op(command: RemoteCommand, spot: Option<&str>) -> ExitCode {
             match remote::set_upstream(&site, &name).await {
                 Ok(outcome) => {
                     print_set_upstream_outcome(&outcome);
+                    back_up_site_best_effort(&resolved.name, &site).await;
                     ExitCode::Success
                 }
                 Err(err) => {
@@ -2080,6 +2190,10 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
             }
             print_claim_outcome(&name, &root, &cwd, &outcome);
             print_active_resolution(&store, flag, Some(&cwd));
+            match site::TonkSite::open(&root).await {
+                Ok(site) => back_up_site_best_effort(&name, &site).await,
+                Err(error) => eprintln!("warning: account spot backup skipped: {error:#}"),
+            }
             ExitCode::Success
         }
         Err(err) => {
@@ -2615,4 +2729,45 @@ async fn open_selected(
 #[allow(dead_code)]
 fn classify(err: &EvalError) -> ExitCode {
     err.exit_code()
+}
+
+#[cfg(test)]
+mod account_spots_parser_tests {
+    use super::*;
+
+    #[test]
+    fn account_spots_bare_and_list_are_the_same_operation() {
+        for args in [
+            vec!["tonk", "account", "spots"],
+            vec!["tonk", "account", "spots", "list"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Account {
+                command: AccountCommand::Spots { command },
+            }) = cli.command
+            else {
+                panic!("expected account spots");
+            };
+            assert!(command.is_none() || matches!(command, Some(AccountSpotsCommand::List)));
+        }
+    }
+
+    #[test]
+    fn account_spots_pull_captures_the_full_subject_and_optional_name() {
+        let did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL";
+        let cli =
+            Cli::try_parse_from(["tonk", "account", "spots", "pull", did, "--name", "garden"])
+                .unwrap();
+        let Some(Command::Account {
+            command:
+                AccountCommand::Spots {
+                    command: Some(AccountSpotsCommand::Pull { subject, name }),
+                },
+        }) = cli.command
+        else {
+            panic!("expected account spots pull");
+        };
+        assert_eq!(subject, did);
+        assert_eq!(name.as_deref(), Some("garden"));
+    }
 }
