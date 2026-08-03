@@ -155,7 +155,7 @@ The macro detects "function takes a parameter" and generates an *integration* te
 - Spins up chromedriver.
 - Hands you a `TestEnvironment` with the URLs.
 
-Examples in `rust/tonk-ui/src/components.rs` (`it_falls_back_to_index_for_unhandled_routes`, `it_configures_upstream`, `it_syncs_via_sync_route`, etc.).
+Examples in `rust/tonk-ui/src/identity.rs` and `rust/tonk-ui/src/account_flow.rs`.
 
 This is the right harness whenever the test needs to verify *real bundle behavior* — CodeMirror diagnostics rendering, LSP round-tripping, service-worker registration, full SPA navigation. Don't try to fake the bundle with stubs; use the real one.
 
@@ -169,9 +169,10 @@ In the dev shell (`nix develop`):
 | `test:native:release` | Same, release profile. |
 | `test:web:debug` | Workspace, `wasm32-unknown-unknown`, headless Chrome via chromedriver. |
 | `test:web:release` | Same, release profile. |
-| `test:all` | All four. |
+| `test:all` | All four native/wasm configurations. |
+| `test:e2e` | Serialized real-browser `tonk-ui` tests, including account-service and CLI roundtrips. |
 
-`tonk-ui`'s real-browser integration tests are excluded from the default workspace test runs (the flake explicitly `--exclude tonk-ui`). They run via `cargo test -p tonk-ui --features integration-tests` against a separately-spun `tonk-ui-test-server` process. CI doesn't yet wire this up by default; if you add tonk-ui integration tests, document the run command and wire it up.
+`tonk-ui`'s real-browser integration tests are excluded from the four default workspace test runs (the flake explicitly `--exclude tonk-ui`). Run them with `nix develop -c test:e2e`; CI runs the same command in its dedicated e2e job.
 
 ## Common patterns
 
@@ -244,6 +245,6 @@ async fn it_drives_the_editor(env: TestEnvironment) -> Result<()> {
 | Async unit test | `tonk-schema/src/interpret.rs::tests` |
 | Wasm-in-service-worker test | `tonk-worker/src/router.rs::tests` (the entire mod) |
 | Wasm-in-browser test | `tonk-invite/src/lib.rs::tests` |
-| Real-browser integration test | `tonk-ui/src/components.rs::tests` (`it_falls_back_…`, `it_configures_upstream`) |
+| Real-browser integration test | `tonk-ui/src/identity.rs`, `tonk-ui/src/account_flow.rs` |
 | Provider machinery for the integration tests | `tonk-ui/src/helpers.rs` (`TestEnvironment`, `TestServers`) |
 | Flake test commands | `flake.nix` `commands.test:*` |

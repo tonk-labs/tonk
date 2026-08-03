@@ -24,6 +24,10 @@ pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
 /// Credential-store key for optional provider attachment metadata.
 pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
+/// Linking is complete once credentials are durable; repository hydration is
+/// best-effort and must not leave the handoff command waiting indefinitely.
+const ACCOUNT_STATE_ENSURE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Current native profile account-link state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccountStatus {
@@ -348,11 +352,20 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
         &consumed.descriptor_hex,
     )
     .await?;
-    let ensured = match crate::account_state::ensure(profile).await {
-        Ok(outcome) => outcome,
-        Err(error) => crate::account_state::EnsureOutcome {
+    let ensured = match tokio::time::timeout(
+        ACCOUNT_STATE_ENSURE_TIMEOUT,
+        crate::account_state::ensure(profile),
+    )
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => crate::account_state::EnsureOutcome {
             status: AccountStateStatus::Unhydrated,
             warning: Some(error.to_string()),
+        },
+        Err(_) => crate::account_state::EnsureOutcome {
+            status: AccountStateStatus::Unhydrated,
+            warning: Some("account repository hydration timed out".to_string()),
         },
     };
     Ok(LinkOutcome {

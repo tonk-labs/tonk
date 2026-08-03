@@ -4,8 +4,8 @@
 //! `src/handlers/`) onto native backends: a `SqliteStore::in_memory()`,
 //! a `MemoryChainStore`, and a shared `CapturedEmail`. Route paths,
 //! JSON field names, status codes, and CORS headers all match the
-//! worker exactly, so a caller (a test or a bench scenario) can't tell
-//! the difference.
+//! worker exactly, except for the native-only `GET /_test/emails`
+//! captured-email snapshot used by out-of-process tests.
 
 use std::sync::Arc;
 
@@ -136,6 +136,7 @@ async fn handle_request(
     let response = match (req.method().clone(), req.uri().path()) {
         (Method::GET, "/") => return Ok(info_response()),
         (Method::GET, "/health") => return Ok(health_response()),
+        (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/revocations") => revocations_route(req, &backends).await,
@@ -210,6 +211,19 @@ impl From<DeviceView> for DeviceJson {
             created_at: view.created_at,
         }
     }
+}
+
+/// `GET /_test/emails` → a non-draining snapshot of captured codes.
+fn emails_route(backends: &Backends) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let emails =
+        backends.emails.0.lock().map_err(|_| {
+            ServiceError::new(ErrorCode::InternalError, "captured email lock poisoned")
+        })?;
+    let snapshot: Vec<_> = emails
+        .iter()
+        .map(|(address, code)| serde_json::json!({ "address": address, "code": code }))
+        .collect();
+    Ok(json_response(StatusCode::OK, &snapshot))
 }
 
 /// `POST /codes` → request a verification code.

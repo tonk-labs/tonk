@@ -269,6 +269,14 @@
             '';
           };
 
+          "test:e2e" = {
+            description = "Run serialized real-browser account integration tests";
+            command = ''
+              cargo build -p tonk-cli &&
+              cargo test -p tonk-ui --features integration-tests -- --test-threads=1
+            '';
+          };
+
           "test:native:debug" = menuTestCommand {
             description = "Unit and integration tests (${system}, debug)";
             package = "tests-native-debug";
@@ -462,12 +470,23 @@
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
 
-              echo "Test server live at http://127.0.0.1:$PORT"
+              echo "Test server live at https://tonk.spot:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
               # the process owned by the test helper. Killing its `Child` then
               # cannot orphan a grandchild. Stdin avoids leaking a temp config.
               exec ${caddy}/bin/caddy run --config - --adapter caddyfile << EOF
-              :$PORT {
+              {
+                  skip_install_trust
+                  auto_https disable_redirects
+                  servers {
+                      protocols h1 h2
+                  }
+              }
+              https://tonk.spot:$PORT {
+                  tls internal
+                  handle /.well-known/tonk {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
                   handle /ucan/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }

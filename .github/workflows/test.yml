@@ -36,6 +36,31 @@ jobs:
         run: |
           nix --accept-flake-config develop .#ci -c lint
 
+  e2e:
+    name: 'End-to-end account tests'
+    needs: ['lints']
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          root-safe-haven: 40960
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Run end-to-end tests'
+        shell: bash
+        run: |
+          nix develop --accept-flake-config .#ci --command test:e2e
+
   tests:
     name: 'Tests'
     needs: ['lints']

@@ -51,6 +51,7 @@ impl AccessServer {
         bucket: &str,
         access_key: &str,
         secret_key: &str,
+        deployment: Option<tonk_worker_api::DeploymentConfig>,
     ) -> anyhow::Result<Self> {
         // Create S3 credentials for the authorizer
         let address = Address::builder(&s3_server.endpoint)
@@ -71,6 +72,7 @@ impl AccessServer {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
+        let deployment = Arc::new(deployment);
         let authorizer_clone = authorizer.clone();
         let server_handle = tokio::spawn(async move {
             loop {
@@ -80,12 +82,14 @@ impl AccessServer {
                         if let Ok((stream, _)) = result {
                             let authorizer = authorizer_clone.clone();
                             let shortcuts = shortcuts.clone();
+                            let deployment = deployment.clone();
                             tokio::spawn(async move {
                                 let service = hyper::service::service_fn(move |req| {
                                     let authorizer = authorizer.clone();
                                     let shortcuts = shortcuts.clone();
+                                    let deployment = deployment.clone();
                                     async move {
-                                        handle_request(req, authorizer, shortcuts).await
+                                        handle_request(req, authorizer, shortcuts, deployment).await
                                     }
                                 });
                                 let _ = http1::Builder::new()
@@ -113,11 +117,13 @@ impl AccessServer {
 /// - POST /ucan/ → Authorize UCAN and return presigned URL
 /// - PUT /@ → Store a shortcut target, respond with its hash
 /// - GET /@/{hash} → Permanent relative redirect to the stored target
+/// - GET /.well-known/tonk → Deployment configuration, when configured
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
     authorizer: Arc<RwLock<UcanAuthorizer>>,
     shortcuts: Shortcuts,
+    deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
 ) -> Result<Response<http_body_util::Full<bytes::Bytes>>, std::convert::Infallible> {
     use bytes::Bytes;
     use http_body_util::Full;
@@ -138,6 +144,22 @@ async fn handle_request(
         return Ok(response);
     }
 
+    if req.method() == Method::GET && req.uri().path() == "/.well-known/tonk" {
+        let response = match deployment.as_ref() {
+            Some(config) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(config).expect("deployment config serializes"),
+                )))
+                .unwrap(),
+            None => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from("Not Found")))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     if req.method() == Method::PUT && req.uri().path() == "/@" {
         return Ok(cors_response(store_shortcut(req, shortcuts).await));
     }
@@ -349,6 +371,8 @@ pub struct AccessServiceSettings {
     pub access_key_id: String,
     /// AWS secret access key. Defaults to "test-secret-key".
     pub secret_access_key: String,
+    /// Served from `GET /.well-known/tonk` when set; 404 otherwise.
+    pub deployment: Option<tonk_worker_api::DeploymentConfig>,
 }
 
 impl Default for AccessServiceSettings {
@@ -357,6 +381,7 @@ impl Default for AccessServiceSettings {
             bucket: String::new(),
             access_key_id: "test-access-key".to_string(),
             secret_access_key: "test-secret-key".to_string(),
+            deployment: None,
         }
     }
 }
@@ -390,6 +415,7 @@ pub async fn access_service(
         bucket,
         &settings.access_key_id,
         &settings.secret_access_key,
+        settings.deployment,
     )
     .await?;
 

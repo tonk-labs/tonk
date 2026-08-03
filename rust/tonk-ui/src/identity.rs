@@ -6,12 +6,8 @@ mod tests {
         not(target_arch = "wasm32"),
         any(feature = "integration-tests", feature = "web-integration-tests")
     ))]
-    use crate::helpers::{TestEnvironment, TestServers};
-    use anyhow::Result;
-    #[cfg(not(target_arch = "wasm32"))]
-    use serde_json::json;
-    #[cfg(not(target_arch = "wasm32"))]
-    use thirtyfour::extensions::cdp::ChromeDevTools;
+    use crate::helpers::{TestEnvironment, driver_with_prf};
+    use anyhow::{Result, anyhow};
     #[cfg(not(target_arch = "wasm32"))]
     use thirtyfour::prelude::*;
 
@@ -19,49 +15,66 @@ mod tests {
         not(target_arch = "wasm32"),
         any(feature = "integration-tests", feature = "web-integration-tests")
     ))]
-    async fn driver_with_prf(env: TestEnvironment) -> Result<WebDriver> {
-        let driver = env.driver().await?;
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools.execute_cdp("WebAuthn.enable").await?;
-        devtools
-            .execute_cdp_with_params(
-                "WebAuthn.addVirtualAuthenticator",
-                json!({
-                    "options": {
-                        "protocol": "ctap2",
-                        "ctap2Version": "ctap2_1",
-                        "transport": "internal",
-                        "hasResidentKey": true,
-                        "hasUserVerification": true,
-                        "isUserVerified": true,
-                        "hasPrf": true,
-                        "automaticPresenceSimulation": true,
-                    }
-                }),
-            )
-            .await?;
-        driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                const wait = () =>
-                    window.tonkIdentity ? done(true) : setTimeout(wait, 50);
-                wait();
-                "#,
-                vec![],
-            )
-            .await?;
-        Ok(driver)
+    async fn captured_code(env: &TestEnvironment, email: &str) -> Result<String> {
+        let endpoint = env.account_service.join("_test/emails")?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let inbox: Vec<serde_json::Value> =
+                reqwest::get(endpoint.clone()).await?.json().await?;
+            if let Some(code) = inbox.iter().rev().find_map(|entry| {
+                (entry["address"].as_str() == Some(email))
+                    .then(|| entry["code"].as_str().map(str::to_owned))
+                    .flatten()
+            }) {
+                return Ok(code);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for a verification code for {email}"
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     #[cfg(all(
         not(target_arch = "wasm32"),
         any(feature = "integration-tests", feature = "web-integration-tests")
     ))]
-    #[tokio::test]
-    async fn it_creates_a_passkey_and_derives_a_stable_root_did() -> Result<()> {
-        let (servers, env) = TestServers::start().await?;
-        let driver = driver_with_prf(env).await?;
+    #[dialog_common::test]
+    async fn it_serves_deployment_config_on_the_page_origin(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+        let result = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch("/.well-known/tonk")
+                    .then(async response => done({ status: response.status, body: await response.json() }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        let result = result.json();
+        assert_eq!(result["status"], 200);
+        assert_eq!(
+            result["body"]["accountServiceUrl"].as_str(),
+            Some(env.account_service.as_str())
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    #[dialog_common::test]
+    async fn it_creates_a_passkey_and_derives_a_stable_root_did(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
 
         let created = driver
             .execute_async(
@@ -112,7 +125,6 @@ mod tests {
         );
 
         driver.quit().await?;
-        servers.stop().await?;
         Ok(())
     }
 
@@ -120,15 +132,16 @@ mod tests {
         not(target_arch = "wasm32"),
         any(feature = "integration-tests", feature = "web-integration-tests")
     ))]
-    #[tokio::test]
-    async fn it_builds_a_root_signed_account_creation_in_one_browser_ceremony() -> Result<()> {
-        let (servers, env) = TestServers::start().await?;
+    #[dialog_common::test]
+    async fn it_builds_a_root_signed_account_creation_in_one_browser_ceremony(
+        env: TestEnvironment,
+    ) -> Result<()> {
         use dialog_credentials::Ed25519Signer;
         use dialog_ucan_core::principal::Principal;
         use dialog_ucan_core::promise::Promised;
         use dialog_ucan_core::{DelegationChain, InvocationChain};
 
-        let driver = driver_with_prf(env).await?;
+        let driver = driver_with_prf(&env).await?;
         let device = Ed25519Signer::import(&[8u8; 32]).await?;
         let device_did = device.did().to_string();
         let output = driver
@@ -185,7 +198,6 @@ mod tests {
         );
 
         driver.quit().await?;
-        servers.stop().await?;
         Ok(())
     }
 
@@ -193,16 +205,121 @@ mod tests {
         not(target_arch = "wasm32"),
         any(feature = "integration-tests", feature = "web-integration-tests")
     ))]
-    #[tokio::test]
-    async fn it_builds_a_root_signed_cli_handoff() -> Result<()> {
-        let (servers, env) = TestServers::start().await?;
+    #[dialog_common::test]
+    async fn it_creates_an_account_against_the_local_service(env: TestEnvironment) -> Result<()> {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_ucan_core::DelegationChain;
+        use dialog_ucan_core::principal::Principal;
+
+        let client = reqwest::Client::new();
+        let email = "person@example.com";
+        let response = client
+            .post(env.account_service.join("codes")?)
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let code = captured_code(&env, email).await?;
+
+        let driver = driver_with_prf(&env).await?;
+        let device = Ed25519Signer::import(&[8u8; 32]).await?;
+        let device_did = device.did().to_string();
+        let output = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                window.tonkIdentity.createRoot({
+                    deviceDid: arguments[0],
+                    label: arguments[1],
+                })
+                    .then(root => window.tonkIdentity.createAccount({
+                        email: arguments[1],
+                        code: arguments[2],
+                        deviceDid: arguments[0],
+                        deviceName: "test browser",
+                        rootDid: root.rootDid,
+                        credentialId: root.credentialId,
+                        delegationHex: root.delegationHex,
+                        remote: arguments[3],
+                    }))
+                    .then(result => done({ ok: result }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![
+                    serde_json::Value::String(device_did),
+                    serde_json::Value::String(email.to_string()),
+                    serde_json::Value::String(code),
+                    serde_json::Value::String(env.tonk_web.join("ucan/")?.to_string()),
+                ],
+            )
+            .await?;
+        let output = output.json();
+        assert!(output.get("error").is_none(), "ceremony failed: {output:?}");
+        let invocation = hex::decode(output["ok"]["invocationHex"].as_str().unwrap())?;
+        let response = client
+            .post(env.account_service.join("accounts")?)
+            .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+            .body(invocation)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+
+        let response = client
+            .post(env.account_service.join("codes")?)
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let competing_code = captured_code(&env, email).await?;
+        let root = tonk_identity::derive::derive_root_signer(&[10u8; 32]).await?;
+        let competing_device = Ed25519Signer::import(&[12u8; 32]).await?;
+        let delegation = tonk_identity::delegation::mint_device_delegation(
+            root.clone(),
+            &competing_device.did(),
+        )
+        .await?;
+        let ceremony = tonk_identity::ceremony::create_account(
+            root,
+            email.to_string(),
+            competing_code,
+            "competing-credential".to_string(),
+            competing_device.did(),
+            "competing device".to_string(),
+            hex::encode(delegation.to_bytes()?),
+            env.tonk_web.join("ucan/")?.to_string(),
+        )
+        .await?;
+        let response = client
+            .post(env.account_service.join("accounts")?)
+            .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+            .body(hex::decode(ceremony.invocation_hex)?)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        let error: serde_json::Value = response.json().await?;
+        assert_eq!(error["error"]["code"], "CONFLICT");
+        assert_eq!(
+            error["error"]["message"],
+            tonk_account_service::core::accounts::EMAIL_TAKEN
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "integration-tests", feature = "web-integration-tests")
+    ))]
+    #[dialog_common::test]
+    async fn it_builds_a_root_signed_cli_handoff(env: TestEnvironment) -> Result<()> {
         use dialog_credentials::Ed25519Signer;
         use dialog_ucan_core::principal::Principal;
         use dialog_ucan_core::promise::Promised;
         use dialog_ucan_core::{DelegationChain, InvocationChain};
         use tonk_account::handoff::CompleteLinkCeremony;
 
-        let driver = driver_with_prf(env).await?;
+        let driver = driver_with_prf(&env).await?;
         let browser = Ed25519Signer::import(&[8u8; 32]).await?;
         let cli = Ed25519Signer::import(&[9u8; 32]).await?;
         let browser_did = browser.did().to_string();
@@ -260,7 +377,6 @@ mod tests {
         assert_eq!(delegation.audience().to_string(), cli_did);
 
         driver.quit().await?;
-        servers.stop().await?;
         Ok(())
     }
 }
