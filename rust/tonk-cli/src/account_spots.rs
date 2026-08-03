@@ -1,7 +1,8 @@
 //! Native account spot inventory, pull, and best-effort backup reconciliation.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use dialog_operator::Profile;
@@ -244,7 +245,7 @@ async fn local_subjects(
     store: &SpotStore,
 ) -> Result<HashMap<String, LocalSpot>> {
     let registry = store.load()?;
-    let mut subjects = HashMap::new();
+    let mut subjects: HashMap<String, LocalSpot> = HashMap::new();
     for (name, entry) in registry.spots {
         let site = match open_site(&entry.site, profile).await {
             Ok(site) => site,
@@ -254,17 +255,19 @@ async fn local_subjects(
             }
         };
         let subject = site.repository.did().to_string();
-        if let Some(existing) = subjects.insert(
-            subject.clone(),
-            LocalSpot {
-                name: name.clone(),
-                site: entry.site,
-            },
-        ) {
-            bail!(
-                "local spot registry is corrupt: '{}' and '{name}' both resolve to {subject}",
-                existing.name
-            );
+        match subjects.entry(subject) {
+            Entry::Vacant(slot) => {
+                slot.insert(LocalSpot {
+                    name,
+                    site: entry.site,
+                });
+            }
+            Entry::Occupied(slot) => eprintln!(
+                "warning: local spots '{}' and '{name}' both resolve to {}; using '{}'",
+                slot.get().name,
+                slot.key(),
+                slot.get().name
+            ),
         }
     }
     Ok(subjects)
@@ -292,6 +295,38 @@ pub async fn list(profile: &Profile, store: &SpotStore) -> Result<Vec<AccountSpo
 fn name_error(name: Option<&str>, reason: impl std::fmt::Display) -> anyhow::Error {
     let label = name.unwrap_or("(missing)");
     anyhow::anyhow!("account spot name '{label}' cannot be used: {reason}; pass --name <slug>")
+}
+
+struct FreshPullTarget {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl FreshPullTarget {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for FreshPullTarget {
+    fn drop(&mut self) {
+        if self.committed || !self.path.exists() {
+            return;
+        }
+        if let Err(error) = std::fs::remove_dir_all(&self.path) {
+            eprintln!(
+                "warning: failed to clean up incomplete account spot at {}: {error}",
+                self.path.display()
+            );
+        }
+    }
 }
 
 /// Pull exactly one account spot into canonical local storage.
@@ -362,6 +397,7 @@ pub async fn pull(
         .as_deref()
         .context("account spot backup has no usable sync remote")?;
 
+    let mut fresh_target = FreshPullTarget::new(target.clone());
     let site = crate::site::mount_delegated_at(&target, validated.chain, site_config(profile))
         .await
         .context("failed to mount account spot")?;
@@ -377,18 +413,22 @@ pub async fn pull(
     remote::set_upstream(&site, DEFAULT_REMOTE)
         .await
         .context("failed to set the account spot upstream")?;
+    let canonical_target = target
+        .canonicalize()
+        .context("failed to canonicalize the mounted account spot")?;
+    spot::register_existing_unbound(store, &name, &canonical_target)?;
+    fresh_target.commit();
+
     let warning = match crate::sync::pull(&site).await {
         Ok(_) => None,
         Err(error) => Some(format!(
             "initial pull from '{DEFAULT_REMOTE}' failed: {error}; run `tonk pull` before making changes so you don't diverge from upstream"
         )),
     };
-    spot::register_existing_unbound(store, &name, &target)?;
-
     Ok(PullOutcome {
         subject: requested.to_string(),
         name,
-        site: target.canonicalize()?,
+        site: canonical_target,
         already_local: false,
         warning,
     })
@@ -495,25 +535,38 @@ pub async fn back_up_site(registry_name: &str, site: &TonkSite) -> Result<Backup
     back_up_site_with_connection(registry_name, site, &connection).await
 }
 
+fn first_registry_name_for_site<'a>(
+    candidates: impl IntoIterator<Item = (&'a str, &'a Path)>,
+    site_root: &Path,
+) -> Option<&'a str> {
+    candidates
+        .into_iter()
+        .find_map(|(name, path)| (path == site_root).then_some(name))
+}
+
 /// Refresh the registry entry matching an already-open site.
 pub(crate) async fn back_up_current(site: &TonkSite) -> Result<BackupOutcome> {
     let store = SpotStore::open()?;
     let registry = store.load()?;
-    let mut names = registry.spots.into_iter().filter_map(|(name, entry)| {
-        entry
-            .site
-            .canonicalize()
-            .ok()
-            .filter(|path| path == &site.root)
-            .map(|_| name)
-    });
-    let name = names
-        .next()
-        .context("the evaluated site is not registered as a spot")?;
-    if names.next().is_some() {
-        bail!("the evaluated site is registered under more than one name");
-    }
-    back_up_site(&name, site).await
+    let candidates: Vec<_> = registry
+        .spots
+        .iter()
+        .filter_map(|(name, entry)| {
+            entry
+                .site
+                .canonicalize()
+                .ok()
+                .map(|path| (name.as_str(), path))
+        })
+        .collect();
+    let name = first_registry_name_for_site(
+        candidates
+            .iter()
+            .map(|(name, path)| (*name, path.as_path())),
+        &site.root,
+    )
+    .context("the evaluated site is not registered as a spot")?;
+    back_up_site(name, site).await
 }
 
 /// Best-effort sweep of every registered spot.
@@ -537,13 +590,22 @@ pub async fn back_up_registered(profile: &Profile, store: &SpotStore) -> Vec<Bac
         }
     };
     let mut warnings = Vec::new();
+    let mut inspected_subjects = HashSet::new();
     for (name, entry) in registry.spots {
-        let result = async {
-            let site = open_site(&entry.site, profile).await?;
-            back_up_site_with_connection(&name, &site, &connection).await
+        let site = match open_site(&entry.site, profile).await {
+            Ok(site) => site,
+            Err(error) => {
+                warnings.push(BackupWarning {
+                    name,
+                    message: format!("{error:#}"),
+                });
+                continue;
+            }
+        };
+        if !inspected_subjects.insert(site.repository.did().to_string()) {
+            continue;
         }
-        .await;
-        if let Err(error) = result {
+        if let Err(error) = back_up_site_with_connection(&name, &site, &connection).await {
             warnings.push(BackupWarning {
                 name,
                 message: format!("{error:#}"),
@@ -556,6 +618,36 @@ pub async fn back_up_registered(profile: &Profile, store: &SpotStore) -> Vec<Bac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_pull_target_removes_partial_state_unless_committed() {
+        let temp = tempfile::tempdir().unwrap();
+        let incomplete = temp.path().join("incomplete");
+        {
+            let _target = FreshPullTarget::new(incomplete.clone());
+            std::fs::create_dir_all(incomplete.join("nested")).unwrap();
+            std::fs::write(incomplete.join("nested/state"), b"partial").unwrap();
+        }
+        assert!(!incomplete.exists());
+
+        let retained = temp.path().join("retained");
+        {
+            let mut target = FreshPullTarget::new(retained.clone());
+            std::fs::create_dir_all(&retained).unwrap();
+            target.commit();
+        }
+        assert!(retained.exists());
+    }
+
+    #[test]
+    fn current_site_aliases_choose_the_first_registry_name() {
+        let root = PathBuf::from("/canonical/site");
+        let candidates = [("alpha", root.as_path()), ("zeta", root.as_path())];
+        assert_eq!(
+            first_registry_name_for_site(candidates, &root),
+            Some("alpha")
+        );
+    }
 
     #[test]
     fn it_marks_materially_different_legacy_backups_ambiguous() {

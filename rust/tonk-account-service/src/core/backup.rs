@@ -122,35 +122,48 @@ pub async fn list_account_spots<C: ChainStore>(
 ) -> Result<Vec<AccountSpotSummary>, CeremonyError> {
     let root = account_root(account)?;
     let mut rows = Vec::new();
-    let mut headed_subjects = HashSet::new();
+    let mut claimed_subject_keys = HashSet::new();
     let mut selected_keys = HashSet::new();
 
     for slot in [SpotHeadSlot::Named, SpotHeadSlot::Unnamed] {
         for (stored_subject_key, blob_key) in
             chains.list_spot_heads(&account.root_did, slot).await?
         {
-            let bytes = chains
-                .get(&account.root_did, &blob_key)
-                .await?
-                .ok_or_else(|| {
-                    CeremonyError::Internal("spot head points to a missing blob".to_string())
-                })?;
-            let backup: AccountSpotBackup = serde_json::from_slice(&bytes).map_err(|error| {
-                CeremonyError::Internal(format!("spot head points to an invalid artifact: {error}"))
-            })?;
-            let validated = backup.validate_for(&root).await.map_err(|error| {
-                CeremonyError::Internal(format!("spot head points to an invalid artifact: {error}"))
-            })?;
-            if subject_key(&validated.subject) != stored_subject_key {
-                return Err(CeremonyError::Internal(
-                    "spot head subject does not match its storage key".to_string(),
-                ));
-            }
-            if !headed_subjects.insert(validated.subject.to_string()) {
+            selected_keys.insert(blob_key.clone());
+            if !claimed_subject_keys.insert(stored_subject_key.clone()) {
                 continue;
             }
-            selected_keys.insert(blob_key.clone());
-            rows.push(summary(&backup, &validated.subject, Some(blob_key), false));
+
+            let loaded = async {
+                let bytes = chains
+                    .get(&account.root_did, &blob_key)
+                    .await
+                    .map_err(|error| format!("blob fetch failed: {error:?}"))?
+                    .ok_or_else(|| "blob is missing".to_string())?;
+                let backup: AccountSpotBackup = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("artifact JSON is invalid: {error}"))?;
+                let validated = backup
+                    .validate_for(&root)
+                    .await
+                    .map_err(|error| format!("artifact validation failed: {error}"))?;
+                let validated_subject_key = subject_key(&validated.subject);
+                if validated_subject_key != stored_subject_key {
+                    return Err(format!(
+                        "subject-key mismatch: validated subject hashes to {validated_subject_key}"
+                    ));
+                }
+                Ok::<_, String>((backup, validated))
+            }
+            .await;
+
+            match loaded {
+                Ok((backup, validated)) => {
+                    rows.push(summary(&backup, &validated.subject, Some(blob_key), false));
+                }
+                Err(reason) => crate::core::log_detail(&format!(
+                    "omitting unusable account spot head: account_root={root} slot={slot:?} stored_subject_key={stored_subject_key} blob_key={blob_key}: {reason}"
+                )),
+            }
         }
     }
 
@@ -168,12 +181,11 @@ pub async fn list_account_spots<C: ChainStore>(
         let Ok(validated) = backup.validate_for(&root).await else {
             continue;
         };
-        let subject = validated.subject.to_string();
-        if headed_subjects.contains(&subject) {
+        if claimed_subject_keys.contains(&subject_key(&validated.subject)) {
             continue;
         }
         legacy
-            .entry(subject)
+            .entry(validated.subject.to_string())
             .or_default()
             .push((blob_key, backup, validated.subject));
     }
@@ -512,6 +524,80 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name.as_deref(), Some("garden"));
         assert_eq!(rows[0].key.as_deref(), Some(named_key.as_str()));
+    }
+
+    #[dialog_common::test]
+    async fn it_omits_unusable_heads_without_poisoning_healthy_rows_or_reviving_legacy_rows() {
+        let chains = MemoryChainStore::default();
+        let root = signer(57).await.did();
+        let account = account(1, root.as_ref());
+
+        let (healthy_subject, healthy) =
+            backup(&root, 58, Some("healthy"), "https://healthy.example/").await;
+        put_chain_and_index_spot(&chains, &account, &healthy)
+            .await
+            .unwrap();
+
+        let (broken_subject, older_valid) =
+            backup(&root, 59, Some("older"), "https://older.example/").await;
+        let older_valid_key = put_chain(&chains, &account, &older_valid).await.unwrap();
+        let malformed_key = put_chain(&chains, &account, b"not json").await.unwrap();
+        let broken_subject_key = subject_key(&broken_subject);
+        chains
+            .put_spot_head(
+                &account.root_did,
+                &broken_subject_key,
+                SpotHeadSlot::Unnamed,
+                &older_valid_key,
+            )
+            .await
+            .unwrap();
+        chains
+            .put_spot_head(
+                &account.root_did,
+                &broken_subject_key,
+                SpotHeadSlot::Named,
+                &malformed_key,
+            )
+            .await
+            .unwrap();
+
+        let (missing_subject, _) =
+            backup(&root, 63, Some("missing"), "https://missing.example/").await;
+        chains
+            .put_spot_head(
+                &account.root_did,
+                &subject_key(&missing_subject),
+                SpotHeadSlot::Named,
+                "missing-blob",
+            )
+            .await
+            .unwrap();
+
+        let (mismatched_subject, mismatched) =
+            backup(&root, 64, Some("mismatched"), "https://mismatch.example/").await;
+        let mismatched_key = put_chain(&chains, &account, &mismatched).await.unwrap();
+        let (stored_subject, _) =
+            backup(&root, 65, Some("stored"), "https://stored.example/").await;
+        chains
+            .put_spot_head(
+                &account.root_did,
+                &subject_key(&stored_subject),
+                SpotHeadSlot::Named,
+                &mismatched_key,
+            )
+            .await
+            .unwrap();
+
+        let rows = list_account_spots(&chains, &account).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].subject, healthy_subject.to_string());
+        assert!(!rows.iter().any(|row| {
+            row.subject == broken_subject.to_string()
+                || row.subject == missing_subject.to_string()
+                || row.subject == mismatched_subject.to_string()
+                || row.subject == stored_subject.to_string()
+        }));
     }
 
     #[dialog_common::test]

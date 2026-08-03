@@ -120,6 +120,48 @@ async fn list_reports_named_unnamed_and_pullable_rows() -> Result<()> {
 }
 
 #[tokio::test]
+async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    let site = TonkSite::init_at_with(
+        &fixture.tmp.path().join("aliased-site"),
+        fixture.config.clone(),
+    )
+    .await?;
+    configure_upstream(&site, "http://127.0.0.1:9/ucan/").await?;
+    let canonical = site.root.canonicalize()?;
+    let mut registry = fixture.store.load()?;
+    for name in ["zeta", "alpha"] {
+        registry.spots.insert(
+            name.to_string(),
+            SpotEntry {
+                site: canonical.clone(),
+            },
+        );
+    }
+    fixture.store.save(&registry)?;
+    assert!(matches!(
+        account_spots::back_up_site("alpha", &site).await?,
+        account_spots::BackupOutcome::Uploaded { .. }
+    ));
+
+    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].local_name.as_deref(), Some("alpha"));
+
+    let outcome = account_spots::pull(
+        &fixture.profile,
+        &fixture.store,
+        site.repository.did().as_ref(),
+        None,
+    )
+    .await?;
+    assert!(outcome.already_local);
+    assert_eq!(outcome.name, "alpha");
+    assert_eq!(outcome.site, canonical);
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_uses_legacy_routes_when_the_capability_is_absent() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let (subject, backup) = fixture
@@ -631,6 +673,42 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
         .try_vec()
         .await?;
     assert_eq!(names[0].name.0, "primary-still-succeeded");
+    Ok(())
+}
+
+#[tokio::test]
+async fn backup_sweep_uses_the_first_alias_once() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    let site = TonkSite::init_at_with(
+        &fixture.tmp.path().join("sweep-aliased-site"),
+        fixture.config.clone(),
+    )
+    .await?;
+    configure_upstream(&site, "http://127.0.0.1:9/ucan/").await?;
+    let canonical = site.root.canonicalize()?;
+    let mut registry = fixture.store.load()?;
+    for name in ["zeta", "alpha"] {
+        registry.spots.insert(
+            name.to_string(),
+            SpotEntry {
+                site: canonical.clone(),
+            },
+        );
+    }
+    fixture.store.save(&registry)?;
+
+    let warnings = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].subject, site.repository.did().to_string());
+    assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
+
+    let warnings = account_spots::back_up_registered(&fixture.profile, &fixture.store).await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let rows = account_spots::list(&fixture.profile, &fixture.store).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].remote_name.as_deref(), Some("alpha"));
     Ok(())
 }
 
