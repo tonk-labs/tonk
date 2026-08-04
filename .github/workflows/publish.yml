@@ -2,18 +2,27 @@ name: Deploy
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
+  # Cleanup must still run when a PR is closed with merge conflicts. This event
+  # uses the trusted base-branch workflow rather than checking out PR code.
+  pull_request_target:
+    types: [closed]
   push:
     branches: [stable, staging]
 
-# Every job here mutates shared Cloudflare state, and two runs of one pull
-# request would race for the same `--preview-alias`. Superseding the in-flight
-# run is the wanted outcome: the newer commit is the one worth previewing.
+# Two runs of one pull request would race for the same preview aliases and D1
+# database. Superseding the in-flight run is the wanted outcome: the newer
+# commit is the one worth previewing. Different pull requests use different
+# databases, so their migrations cannot invalidate each other's workers. PRs
+# are keyed by number because a merged `closed` event uses the target branch as
+# `github.ref` and must not cancel that branch's push deployment.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref || format('pr-{0}', github.event.pull_request.number) }}
   cancel-in-progress: true
 
 jobs:
   deploy:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,12 +70,57 @@ jobs:
       # a pairing that does not exist anywhere. Both go to the disposable
       # `preview` environment, account worker first, because the access worker
       # has to be told where that one landed.
+      #
+      # Every PR needs its own D1 database. A shared database cannot safely
+      # serve immutable worker versions from branches with different migration
+      # histories: a newer PR schema can make an older PR's queries fail.
+      - name: Prepare preview account database
+        if: github.event_name == 'pull_request'
+        id: account-database
+        run: |
+          set -euo pipefail
+          database="tonk-accounts-pr-${{ github.event.pull_request.number }}"
+          # Wrangler resolves `main` and `migrations_dir` relative to the
+          # config file, so the generated config must stay in the repository
+          # root rather than `$RUNNER_TEMP`.
+          config="$PWD/wrangler.account.preview.toml"
+          database_id="$({
+            nix --accept-flake-config develop .#ci --command wrangler d1 list --json
+          } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
+          if [ -z "$database_id" ]; then
+            nix --accept-flake-config develop .#ci --command \
+              wrangler d1 create "$database" --location weur
+            database_id="$({
+              nix --accept-flake-config develop .#ci --command wrangler d1 list --json
+            } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
+          fi
+          if [ -z "$database_id" ]; then
+            echo "::error::Could not resolve the D1 database id for $database"
+            exit 1
+          fi
+          cp wrangler.account.toml "$config"
+          sed -i \
+            -e "s/database_name = \"tonk-accounts-preview\"/database_name = \"$database\"/" \
+            -e "s/database_id = \"323cb440-c356-4d1d-b238-2ffd11abedcc\"/database_id = \"$database_id\"/" \
+            "$config"
+          if ! grep -Fq "database_name = \"$database\"" "$config" \
+            || ! grep -Fq "database_id = \"$database_id\"" "$config"; then
+            echo "::error::Could not bind the account preview config to $database"
+            exit 1
+          fi
+          echo "database=$database" >> "$GITHUB_OUTPUT"
+          echo "config=$config" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Apply preview account migrations
         if: github.event_name == 'pull_request'
         run: |
           nix --accept-flake-config develop .#ci --command \
-            wrangler d1 migrations apply tonk-accounts-preview \
-              --remote --env preview -c wrangler.account.toml
+            wrangler d1 migrations apply \
+              "${{ steps.account-database.outputs.database }}" --remote \
+              --env preview -c "${{ steps.account-database.outputs.config }}"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -79,7 +133,8 @@ jobs:
           preview_alias="pr-${{ github.event.pull_request.number }}"
           log="$RUNNER_TEMP/account-preview.log"
           nix --accept-flake-config develop .#ci --command \
-            wrangler versions upload --env preview -c wrangler.account.toml \
+            wrangler versions upload --env preview \
+              -c "${{ steps.account-database.outputs.config }}" \
               --preview-alias "$preview_alias" 2>&1 | tee "$log"
           url="$(grep -Eo "https://$preview_alias-tonk-account-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
@@ -164,3 +219,29 @@ jobs:
             ```
 
             </details>
+
+  cleanup-account-preview:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Delete preview account database
+        run: |
+          set -euo pipefail
+          database="tonk-accounts-pr-${{ github.event.pull_request.number }}"
+          database_id="$({
+            nix --accept-flake-config develop .#ci --command wrangler d1 list --json
+          } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
+          if [ -n "$database_id" ]; then
+            nix --accept-flake-config develop .#ci --command \
+              wrangler d1 delete "$database" --skip-confirmation
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
