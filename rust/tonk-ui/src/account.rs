@@ -1440,6 +1440,7 @@ mod tests {
         // affects names generated for new registrations.
         let devices = vec![
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-this".into(),
                 did: "did:key:zThis".into(),
                 delegation_cid: "bafythis".into(),
                 delegation_hex: Some("beef".into()),
@@ -1449,6 +1450,7 @@ mod tests {
                 this_device: true,
             },
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-other".into(),
                 did: "did:key:zOther".into(),
                 delegation_cid: "bafyother".into(),
                 delegation_hex: Some("beef".into()),
@@ -1458,6 +1460,7 @@ mod tests {
                 this_device: false,
             },
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-phone".into(),
                 did: "did:key:zPhone".into(),
                 delegation_cid: "bafyphone".into(),
                 delegation_hex: Some("beef".into()),
@@ -1467,6 +1470,7 @@ mod tests {
                 this_device: false,
             },
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-legacy".into(),
                 did: "did:key:zLegacy".into(),
                 delegation_cid: "bafylegacy".into(),
                 delegation_hex: None,

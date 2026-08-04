@@ -151,6 +151,18 @@ pub(crate) async fn credential_operator_for_store(
     store: &crate::spot::SpotStore,
 ) -> Result<Operator<NativeSpace>> {
     let root = store.account_dir();
+    let default_store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    // Persisted profiles must be remounted before deriving another operator;
+    // isolated test stores use the caller's in-memory profile directly.
+    if root == default_store.account_dir() {
+        return operator_with_profile(
+            profile,
+            &root,
+            crate::site::PROFILE_NAME,
+            Directory::Profile,
+        )
+        .await;
+    }
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create account state at {}", root.display()))?;
     let root = root

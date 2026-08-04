@@ -229,6 +229,7 @@ mod tests {
                 revoke(
                     State(state),
                     Json(RevokeDeviceRequest {
+                        attachment_id: "test-attachment".to_string(),
                         did: "did:key:zOtherDevice".to_string(),
                         revocation: String::new(),
                     })
