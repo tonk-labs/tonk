@@ -833,14 +833,12 @@ fn bind(host: &HtmlElement) {
         let fields = (
             input(&host, "#account-email"),
             input(&host, "#account-code"),
-            input(&host, "#account-create-device-name"),
         );
-        let (email, code, device_name) = match fields {
-            (Ok(email), Ok(code), Ok(name)) => (email, code, name),
-            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-                return show_error(&host, error);
-            }
+        let (email, code) = match fields {
+            (Ok(email), Ok(code)) => (email, code),
+            (Err(error), _) | (_, Err(error)) => return show_error(&host, error),
         };
+        let device_name = crate::device_name::current();
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
@@ -919,10 +917,7 @@ fn bind(host: &HtmlElement) {
 
     on_click(host, "#account-link-submit", |host| {
         clear_error(&host);
-        let device_name = match input(&host, "#account-link-device-name") {
-            Ok(value) => value,
-            Err(error) => return show_error(&host, error),
-        };
+        let device_name = crate::device_name::current();
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
@@ -1301,6 +1296,22 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_does_not_author_fixed_browser_registration_names() {
+        let host = host();
+        assert!(
+            host.query_selector("#account-create-device-name")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            host.query_selector("#account-link-device-name")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!host.inner_html().contains("This browser"));
+    }
+
+    #[dialog_common::test]
     fn it_distinguishes_publication_from_projection_and_self_revocation() {
         let stale = RevokeDeviceAcknowledgement {
             target_did: "did:key:device".into(),
@@ -1409,6 +1420,8 @@ mod tests {
     #[dialog_common::test]
     async fn it_renders_the_device_list_with_a_this_device_marker() {
         let host = mounted_account_host().await;
+        // A legacy persisted label must still render verbatim; this change only
+        // affects names generated for new registrations.
         let devices = vec![
             tonk_worker_api::AccountDevice {
                 did: "did:key:zThis".into(),
