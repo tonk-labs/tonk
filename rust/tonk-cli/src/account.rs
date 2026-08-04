@@ -28,6 +28,33 @@ pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SI
 /// best-effort and must not leave the handoff command waiting indefinitely.
 const ACCOUNT_STATE_ENSURE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Descriptive registration name for a native CLI device.
+pub fn default_device_name() -> String {
+    let info = os_info::get();
+    format_device_name(info.os_type(), info.version())
+}
+
+fn format_device_name(os_type: os_info::Type, version: &os_info::Version) -> String {
+    let os_name = match os_type {
+        os_info::Type::Macos => "macOS".to_string(),
+        os_info::Type::Unknown => "unknown OS".to_string(),
+        os_type => os_type.to_string(),
+    };
+    let version = match version {
+        os_info::Version::Unknown => "(version unknown)".to_string(),
+        version => version.to_string(),
+    };
+    let mut name = format!("Tonk CLI on {os_name} {version}");
+    if name.len() > 100 {
+        let mut end = 100;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name.truncate(end);
+    }
+    name
+}
+
 /// Current native profile account-link state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccountStatus {
@@ -782,6 +809,45 @@ pub async fn revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_formats_the_cli_device_name_with_os_version() {
+        assert_eq!(
+            format_device_name(os_info::Type::Macos, &os_info::Version::Semantic(15, 6, 0)),
+            "Tonk CLI on macOS 15.6.0"
+        );
+        assert_eq!(
+            format_device_name(
+                os_info::Type::Ubuntu,
+                &os_info::Version::Custom("24.04 LTS".to_string())
+            ),
+            "Tonk CLI on Ubuntu 24.04 LTS"
+        );
+    }
+
+    #[test]
+    fn it_falls_back_for_unknown_cli_os_metadata() {
+        assert_eq!(
+            format_device_name(os_info::Type::Linux, &os_info::Version::Unknown),
+            "Tonk CLI on Linux (version unknown)"
+        );
+        assert_eq!(
+            format_device_name(os_info::Type::Unknown, &os_info::Version::Unknown),
+            "Tonk CLI on unknown OS (version unknown)"
+        );
+    }
+
+    #[test]
+    fn it_bounds_the_cli_device_name_without_splitting_utf8() {
+        let label = format_device_name(
+            os_info::Type::Linux,
+            &os_info::Version::Custom("é".repeat(100)),
+        );
+
+        assert!(label.starts_with("Tonk CLI on Linux "));
+        assert!(label.len() <= 100);
+        assert!(!label.is_empty());
+    }
 
     #[dialog_common::test]
     async fn it_logs_out_by_tombstoning_only_the_provider_attachment() {

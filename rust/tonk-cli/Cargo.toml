@@ -133,6 +133,7 @@ futures-util = { workspace = true }
 reqwest = { workspace = true }
 ipld-core = { workspace = true }
 lsp-types = { workspace = true }
+os_info = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }

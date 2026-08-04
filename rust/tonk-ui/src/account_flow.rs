@@ -162,7 +162,7 @@ mod tests {
             .click()
             .await?;
         element(&driver, "tonk-account[data-mode=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "#account-device-list", "This browser").await?;
+        wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
 
         driver.quit().await?;
         Ok(())
@@ -384,7 +384,11 @@ mod tests {
             "devices failed: {}",
             devices.stderr
         );
-        assert!(devices.stdout.contains("active\tThis browser\t"));
+        assert!(
+            devices.stdout.contains("active\tChrome on "),
+            "{}",
+            devices.stdout
+        );
         assert!(devices.stdout.contains("active\te2e terminal\t"));
         assert!(devices.stdout.contains(" (this device)"));
 
