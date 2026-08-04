@@ -99,6 +99,8 @@ pub struct AccountDisplayNameResponse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDevice {
+    /// Exact attachment generation.
+    pub attachment_id: String,
     /// The device's DID.
     pub did: String,
     /// Display name registered at link time.
@@ -120,6 +122,8 @@ pub struct AccountDevice {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeDeviceRequest {
+    /// Exact attachment generation selected by the user.
+    pub attachment_id: String,
     /// DID of the device to revoke.
     pub did: String,
     /// Hex-encoded signed revocation artifact.
@@ -216,6 +220,7 @@ mod tests {
     #[dialog_common::test]
     fn it_serializes_account_devices_in_camel_case() {
         let json = serde_json::to_value(AccountDevice {
+            attachment_id: "generation".into(),
             did: "did:key:device".into(),
             name: "laptop".into(),
             status: "active".into(),
@@ -225,6 +230,7 @@ mod tests {
             this_device: true,
         })
         .unwrap();
+        assert_eq!(json["attachmentId"], "generation");
         assert_eq!(json["createdAt"], 1_753_300_000u64);
         assert_eq!(json["thisDevice"], true);
         assert_eq!(json["delegationCid"], "bafycid");
@@ -234,6 +240,7 @@ mod tests {
     #[dialog_common::test]
     fn it_represents_legacy_device_path_evidence_as_absent() {
         let json = serde_json::to_value(AccountDevice {
+            attachment_id: "legacy-generation".into(),
             did: "did:key:legacy".into(),
             name: "old laptop".into(),
             status: "active".into(),

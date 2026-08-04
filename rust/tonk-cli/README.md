@@ -122,13 +122,28 @@ pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 
 ### Accounts
 
-`tonk account logout` writes only a local provider-detachment tombstone. It
-works offline and keeps the root and device identity, local spots, and account
-repository available for a later `tonk account link`. Logout does not revoke
-the provider-side device. To revoke one, find its DID with
-`tonk account devices` and run `tonk account revoke <DEVICE_DID>`. Use
-`tonk identity --reset` only when destructive local identity rotation is
-intended.
+The CLI has at most one active remote account. Every `tonk account link`
+requires a fresh browser/passkey handoff; switching accounts is logout followed
+by link. Historical certificates remain available for local spot writes, but
+only the latest active attachment can authorize a remote request.
+
+`tonk account logout` commits locally first, so it works offline. Existing
+spots remain readable and editable, while fetch, pull, push, account sync, and
+other access-service requests are denied before HTTP. Logout queues a
+signed, generation-specific detach intent; the device list may remain stale
+until a later account operation reaches the provider and flushes that outbox.
+
+Detach is not revocation. It hides the exact attachment and permits a later
+fresh handoff without publishing an immutable revocation. `tonk account revoke
+<DEVICE_DID>` permanently revokes the selected grant, which can never be
+reactivated. Use `tonk identity --reset` only for destructive local identity
+rotation.
+
+| State | Local query/edit/commit | Remote sync |
+| --- | --- | --- |
+| Logged out | allowed | denied before HTTP |
+| Active account, spot delegated to it | allowed | allowed with only that account's grant |
+| Active account, spot delegated only to another account | allowed | denied before HTTP |
 
 ### Sync and sharing
 

@@ -7,6 +7,8 @@
 /// Provider-neutral account spot backup artifacts.
 pub mod backup;
 mod descriptor;
+/// Canonical device-signed account attachment detach intents.
+pub mod detach;
 /// Shared wire and browser-ceremony contracts for native account handoffs.
 pub mod handoff;
 mod provider;

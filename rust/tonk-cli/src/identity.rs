@@ -108,11 +108,8 @@ pub async fn save_local_root(
         delegation_cid: chain.proof_cids()[0].to_string(),
         delegation_hex,
     };
-    if let Some(existing) = local_root(profile).await?
-        && existing != record
-    {
-        bail!("this device already has a different local root");
-    }
+    // The latest handoff replaces this compatibility projection. Historical
+    // UCAN certificates remain installed for local repository writes.
     let operator = crate::account_state::credential_operator(profile).await?;
     profile
         .save(UcanDelegation(chain))

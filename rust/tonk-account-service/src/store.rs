@@ -27,10 +27,14 @@ pub struct Account {
 /// A device delegated under an account's root DID.
 #[derive(Debug, Clone)]
 pub struct Device {
+    /// Attachment row id; zero for a row not inserted yet.
+    pub id: i64,
     /// The owning account's row id.
     pub account_id: i64,
     /// The device's DID.
     pub device_did: String,
+    /// Random identifier for this exact attachment generation.
+    pub attachment_id: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
     /// Exact public delegation path bytes, hex-encoded. Empty only for a
@@ -52,6 +56,8 @@ pub struct Device {
 pub struct NewDevice {
     /// The device's DID.
     pub device_did: String,
+    /// Random identifier for this exact attachment generation.
+    pub attachment_id: String,
     /// CID of the root → device delegation.
     pub delegation_cid: String,
     /// Exact public delegation path bytes, hex-encoded.
@@ -65,6 +71,8 @@ pub struct NewDevice {
 pub enum DeviceStatus {
     /// The device's delegation is valid and usable.
     Active,
+    /// The attachment was hidden by a signed device detach intent.
+    Detached,
     /// The device's delegation has been revoked.
     Revoked,
 }
@@ -74,6 +82,7 @@ impl DeviceStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             DeviceStatus::Active => "active",
+            DeviceStatus::Detached => "detached",
             DeviceStatus::Revoked => "revoked",
         }
     }
@@ -82,6 +91,7 @@ impl DeviceStatus {
     pub fn parse(s: &str) -> Result<Self, StoreError> {
         match s {
             "active" => Ok(DeviceStatus::Active),
+            "detached" => Ok(DeviceStatus::Detached),
             "revoked" => Ok(DeviceStatus::Revoked),
             other => Err(StoreError::Internal(format!(
                 "unknown device status: {other}"
@@ -114,7 +124,13 @@ pub struct LinkRequest {
     pub device_did: String,
     /// Human-readable CLI device name.
     pub device_name: String,
-    /// Completed root-to-device delegation, until it is consumed once.
+    /// Account selected by browser completion.
+    pub account_id: Option<i64>,
+    /// Service-generated attachment generation.
+    pub attachment_id: Option<String>,
+    /// CID of the completed root-to-device grant.
+    pub delegation_cid: Option<String>,
+    /// Completed root-to-device delegation.
     pub delegation_hex: Option<String>,
     /// Account repository descriptor copied alongside the delegation.
     pub descriptor_hex: Option<String>,
@@ -122,8 +138,46 @@ pub struct LinkRequest {
     pub created_at: u64,
     /// Expiry time, as unix seconds.
     pub expires_at: u64,
-    /// Consumption time, if the CLI has retrieved the delegation.
+    /// Browser completion time.
+    pub completed_at: Option<u64>,
+    /// First consumption time. Consumption remains replayable.
     pub consumed_at: Option<u64>,
+    /// Successful activation time.
+    pub activated_at: Option<u64>,
+    /// Signed cancellation time.
+    pub cancelled_at: Option<u64>,
+}
+
+/// Result of idempotently activating a completed handoff.
+#[derive(Debug, Clone)]
+pub enum ActivateOutcome {
+    /// The attachment is active (newly inserted or replayed).
+    Active(Device),
+    /// Another active attachment owns this device DID.
+    ActiveDeviceConflict,
+    /// This delegation CID was previously revoked.
+    RevokedDelegation,
+    /// The completed attachment was cancelled by detach.
+    Cancelled,
+    /// No matching completed handoff exists.
+    Unknown,
+}
+
+/// Storage-level result of detaching one exact generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetachStoreOutcome {
+    /// An active row changed to detached.
+    Detached,
+    /// The exact row was already detached.
+    AlreadyDetached,
+    /// A completed link was cancelled before activation.
+    CancelledPendingActivation,
+    /// Another active generation supersedes this one.
+    Superseded,
+    /// The exact row is permanently revoked.
+    Revoked,
+    /// Neither a device row nor completed link has this ID.
+    UnknownAttachment,
 }
 
 /// Errors surfaced by a [`Store`] implementation.
@@ -181,10 +235,10 @@ pub trait Store {
     /// Atomically create a new account and register its first device.
     ///
     /// Either both rows are created or neither is: a conflict on the
-    /// email, root DID, *or* the device DID rolls back the whole
-    /// operation, so a device-registration failure can never strand an
-    /// account with zero devices. Returns `StoreError::Conflict` in that
-    /// case.
+    /// email, root DID, or account-scoped device registration rolls back
+    /// the whole operation, so a device-registration failure can never
+    /// strand an account with zero devices. Returns `StoreError::Conflict`
+    /// in that case.
     async fn create_account_with_device(
         &self,
         email: &str,
@@ -203,16 +257,27 @@ pub trait Store {
     ) -> Result<(Vec<u8>, bool), StoreError>;
 
     /// Register a device under an account. Returns `StoreError::Conflict`
-    /// if the device DID is already registered.
+    /// if the device DID is already registered under that account.
     async fn insert_device(&self, device: &Device) -> Result<(), StoreError>;
 
     /// List all devices registered under an account.
     async fn devices(&self, account_id: i64) -> Result<Vec<Device>, StoreError>;
 
-    /// Look up a device by its DID.
-    async fn device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError>;
+    /// Look up the active generation for a device DID, globally.
+    async fn active_device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError>;
 
-    /// Mark a device as revoked by DID. Returns `false` if no match was found.
+    /// Look up the actionable generation for an account and DID (active first,
+    /// otherwise newest history).
+    async fn device_for_account(
+        &self,
+        account_id: i64,
+        device_did: &str,
+    ) -> Result<Option<Device>, StoreError>;
+
+    /// Look up one exact attachment generation.
+    async fn attachment(&self, attachment_id: &str) -> Result<Option<Device>, StoreError>;
+
+    /// Mark the active generation for an account/device DID revoked.
     async fn revoke_device(&self, account_id: i64, device_did: &str) -> Result<bool, StoreError>;
 
     /// Project a verified revocation onto the row matching its delegation CID.
@@ -228,22 +293,46 @@ pub trait Store {
     /// Look up a handoff by its secret hash.
     async fn link(&self, token_hash: &str) -> Result<Option<LinkRequest>, StoreError>;
 
-    /// Atomically register a device and complete its pending handoff.
+    /// Durably complete a handoff without activating its attachment.
     async fn complete_link(
         &self,
         token_hash: &str,
-        device: &Device,
+        account_id: i64,
+        attachment_id: &str,
+        delegation_cid: &str,
         delegation_hex: &str,
         descriptor_hex: &str,
         now: u64,
     ) -> Result<bool, StoreError>;
 
-    /// Atomically retrieve and consume a completed handoff once.
+    /// Retrieve a completed handoff, recording first consumption while
+    /// preserving the result for crash-safe replay.
     async fn consume_link(
         &self,
         token_hash: &str,
         now: u64,
-    ) -> Result<Option<(String, String)>, StoreError>;
+    ) -> Result<Option<LinkRequest>, StoreError>;
+
+    /// Look up a completed handoff by attachment generation.
+    async fn completed_link_by_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<Option<LinkRequest>, StoreError>;
+
+    /// Idempotently insert the active device row for a completed handoff.
+    async fn activate_completed_link(
+        &self,
+        token_hash: &str,
+        attachment_id: &str,
+        now: u64,
+    ) -> Result<ActivateOutcome, StoreError>;
+
+    /// Detach or cancel exactly one attachment generation.
+    async fn detach_attachment(
+        &self,
+        attachment_id: &str,
+        now: u64,
+    ) -> Result<DetachStoreOutcome, StoreError>;
 }
 
 /// SQL: look up the pending code row for an email.
@@ -293,8 +382,8 @@ pub const SELECT_ACCOUNT_BY_EMAIL: &str = "SELECT id, email, root_did, credentia
     repository_descriptor, created_at FROM accounts WHERE email = ?1";
 
 /// SQL: register a device under an account.
-pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
 
 /// SQL: register a device under the account just created by a preceding
 /// `INSERT_ACCOUNT` statement in the same batch/transaction on this
@@ -302,20 +391,27 @@ pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, de
 /// [`Store::create_account_with_device`]'s D1 batch, where the new
 /// account's id is not otherwise known until the batch commits. Always
 /// registers the device as `active`.
-pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
-     VALUES (last_insert_rowid(), ?1, ?2, ?3, ?4, 'active', ?5)";
+pub const INSERT_DEVICE_FOR_NEW_ACCOUNT: &str = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \
+     VALUES (last_insert_rowid(), ?1, ?2, ?3, ?4, ?5, 'active', ?6)";
 
 /// SQL: list the devices registered under an account.
-pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT account_id, device_did, delegation_cid, delegation_hex, name, status, created_at \
-     FROM devices WHERE account_id = ?1";
+pub const SELECT_DEVICES_BY_ACCOUNT: &str = "SELECT id, account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at \
+     FROM devices WHERE account_id = ?1 ORDER BY created_at DESC, id DESC";
 
-/// SQL: look up a device by its DID.
-pub const SELECT_DEVICE_BY_DID: &str = "SELECT account_id, device_did, delegation_cid, delegation_hex, name, status, created_at \
-     FROM devices WHERE device_did = ?1";
+/// SQL: look up the globally active generation for a device DID.
+pub const SELECT_ACTIVE_DEVICE_BY_DID: &str = "SELECT id, account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at \
+     FROM devices WHERE device_did = ?1 AND status = 'active'";
+
+/// SQL: look up the actionable generation by account and DID.
+pub const SELECT_DEVICE_FOR_ACCOUNT: &str = "SELECT id, account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at \
+     FROM devices WHERE account_id = ?1 AND device_did = ?2 ORDER BY status = 'active' DESC, created_at DESC, id DESC LIMIT 1";
+
+/// SQL: look up one exact attachment generation.
+pub const SELECT_ATTACHMENT: &str = "SELECT id, account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at \
+     FROM devices WHERE attachment_id = ?1";
 
 /// SQL: mark a device as revoked.
-pub const UPDATE_DEVICE_REVOKE: &str =
-    "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2";
+pub const UPDATE_DEVICE_REVOKE: &str = "UPDATE devices SET status = 'revoked' WHERE account_id = ?1 AND device_did = ?2 AND status = 'active'";
 
 /// SQL: project revocation by the exact registered delegation CID.
 pub const UPDATE_DEVICE_REVOKE_BY_CID: &str =
@@ -323,30 +419,23 @@ pub const UPDATE_DEVICE_REVOKE_BY_CID: &str =
 
 /// SQL: create a pending browser handoff.
 pub const INSERT_LINK: &str = "INSERT INTO link_requests \
-    (token_hash, device_did, device_name, delegation_hex, descriptor_hex, created_at, expires_at, consumed_at) \
-    VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, NULL)";
+    (token_hash, device_did, device_name, delegation_hex, descriptor_hex, created_at, expires_at, consumed_at, account_id, attachment_id, delegation_cid, completed_at, activated_at, cancelled_at) \
+    VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL)";
+
+/// SQL: common link projection.
+pub const LINK_COLUMNS: &str = "token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at";
 
 /// SQL: load a browser handoff by token hash.
-pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, delegation_hex, \
-    descriptor_hex, created_at, expires_at, consumed_at FROM link_requests WHERE token_hash = ?1";
+pub const SELECT_LINK: &str = "SELECT token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at FROM link_requests WHERE token_hash = ?1";
 
-/// SQL: insert a handoff device only while its request is pending and live.
-pub const INSERT_DEVICE_FOR_LINK: &str = "INSERT INTO devices \
-    (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) \
-    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM link_requests \
-    WHERE token_hash = ?8 AND delegation_hex IS NULL AND consumed_at IS NULL AND expires_at >= ?9)";
+/// SQL: load a completed handoff by attachment generation.
+pub const SELECT_LINK_BY_ATTACHMENT: &str = "SELECT token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at FROM link_requests WHERE attachment_id = ?1";
 
-/// SQL: attach the delegation to a live, still-pending handoff.
-pub const COMPLETE_LINK: &str = "UPDATE link_requests \
-    SET delegation_hex = ?1, descriptor_hex = ?2 \
-    WHERE token_hash = ?3 AND delegation_hex IS NULL AND descriptor_hex IS NULL \
-    AND consumed_at IS NULL AND expires_at >= ?4";
+/// SQL: attach recoverable completion material without activating a device.
+pub const COMPLETE_LINK: &str = "UPDATE link_requests SET account_id = ?1, attachment_id = ?2, delegation_cid = ?3, delegation_hex = ?4, descriptor_hex = ?5, completed_at = ?6, expires_at = ?7 WHERE token_hash = ?8 AND delegation_hex IS NULL AND descriptor_hex IS NULL AND cancelled_at IS NULL AND expires_at >= ?9";
 
-/// SQL: retrieve a completed handoff and mark it consumed in one statement.
-pub const CONSUME_LINK: &str = "UPDATE link_requests SET consumed_at = ?1 \
-    WHERE token_hash = ?2 AND delegation_hex IS NOT NULL AND descriptor_hex IS NOT NULL \
-    AND consumed_at IS NULL AND expires_at >= ?3 \
-    RETURNING delegation_hex, descriptor_hex";
+/// SQL: record first consumption while returning the replayable row.
+pub const CONSUME_LINK: &str = "UPDATE link_requests SET consumed_at = COALESCE(consumed_at, ?1) WHERE token_hash = ?2 AND delegation_hex IS NOT NULL AND descriptor_hex IS NOT NULL AND activated_at IS NULL AND cancelled_at IS NULL AND expires_at >= ?3 RETURNING token_hash, device_did, device_name, account_id, attachment_id, delegation_cid, delegation_hex, descriptor_hex, created_at, expires_at, completed_at, consumed_at, activated_at, cancelled_at";
 
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;

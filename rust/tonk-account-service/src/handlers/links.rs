@@ -3,8 +3,8 @@
 use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 use worker::*;
 
-use crate::auth::{authorize_root, required_string};
-use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
+use crate::auth::{authorize_link_activation, authorize_root, required_string};
+use crate::core::links::{activate_link, complete_link, consume_link, create_link, resolve_link};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
 
@@ -80,6 +80,42 @@ pub async fn handle_complete(mut req: Request, ctx: RouteContext<()>) -> Result<
     {
         Ok(response) => response,
         Err(err) => err.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+/// Activate a completed handoff after the native client durably stored it.
+pub async fn handle_activate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match async {
+        let body = read_body(&mut req).await?;
+        let caller = authorize_link_activation(&body)
+            .await
+            .map_err(ceremony_error)?;
+        let token_hash = required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?;
+        let attachment_id =
+            required_string(&caller.arguments, "attachmentId").map_err(ceremony_error)?;
+        let store = build_store(&ctx)?;
+        let device = activate_link(
+            &store,
+            &token_hash,
+            &attachment_id,
+            &caller.root_did,
+            &caller.device_did,
+            &caller.delegation_cid,
+            now(),
+        )
+        .await
+        .map_err(ceremony_error)?;
+        Response::from_json(&serde_json::json!({
+            "attachmentId": device.attachment_id,
+            "activated": true,
+        }))
+        .map_err(response_error)
+    }
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => error.to_response()?,
     };
     Ok(with_cors_headers(response))
 }

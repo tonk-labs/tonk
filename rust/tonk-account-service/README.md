@@ -17,8 +17,9 @@ routes are wasm-only adapters (see `src/store/d1.rs`, `src/chains/r2.rs`,
 
 Every registry endpoint is invoked as a signed UCAN invocation container. Most
 requests are signed by an active device delegated under the account root. The
-service verifies the container and command before resolving its subject and
-issuer to an account and device. Account creation and browser self-link are
+service verifies the container and command, requires exactly one proof whose
+CID equals the active attachment's grant, then resolves its subject and issuer
+to that account and device. Account creation and browser self-link are
 instead signed directly by the passkey-derived root: successful verification,
 with issuer equal to subject, proves root-key control before the service writes
 the first account or another device. Account creation additionally consumes an
@@ -69,15 +70,21 @@ permissive CORS headers).
   old account without an established descriptor receives `409`.
 - `POST /devices/list`: list the devices registered under the caller's
   account. Body: a UCAN invocation container (CBOR bytes) with command
-  `["account", "device", "list"]`. Returns an array of device rows (`did`,
-  `name`, `status`, `delegationCid`, `createdAt`).
+  `["account", "device", "list"]`. Detached generations are omitted. Returns
+  actionable device rows (`attachmentId`, `did`, `name`, `status`,
+  `delegationCid`, `createdAt`).
 - `POST /devices/register`: register a new device under the caller's
   account. Body: a UCAN invocation container with command
   `["account", "device", "register"]` and arguments `did`, `name`,
   `delegation` (the new device's DID, name, and hex-encoded `root → device`
   delegation).
+- `POST /devices/detach`: validate a canonical device-signed JSON detach
+  intent and detach only its exact `attachmentId` generation. It carries no
+  reusable account delegation and returns a typed terminal outcome. Replays
+  are idempotent; stale intents cannot affect newer attachments.
 - `POST /devices/revoke`: publish the required witnessed, root-signed
-  revocation artifact, then project the matching device row to revoked. R2
+  revocation artifact, then project the exact requested `attachmentId` row to
+  revoked. R2
   publication happens before D1 projection. A successful response includes
   `targetDid`, `targetCid`, `published: true`, and `projection: "updated" |
   "stale"`. Compatibility fields `artifactCid`, `stored`, and `attestation`
@@ -89,13 +96,16 @@ permissive CORS headers).
   CLI; D1 receives only its BLAKE3 hash.
 - `POST /links/resolve`: resolve pending device metadata with `{ "secret": … }`
   so the browser can display exactly what it will approve.
-- `POST /links/complete`: atomically register the device and attach its
-  delegation. Body: a root-signed invocation with command
-  `["account", "link", "complete"]`, binding `tokenHash`, `deviceDid`,
-  `deviceName`, and `delegation`.
-- `POST /links/consume`: retrieve delegation and descriptor together with
+- `POST /links/complete`: durably record a fresh delegation, descriptor, and
+  random attachment generation without activating it. Body: a root-signed
+  invocation with command `["account", "link", "complete"]`, binding
+  `tokenHash`, `deviceDid`, `deviceName`, and `delegation`.
+- `POST /links/consume`: retrieve replayable completion material with
   `{ "secret": … }`. Returns `202` while pending; a successful `200` returns
-  `delegationHex` + `descriptorHex` and consumes both.
+  `attachmentId`, `delegationHex`, and `descriptorHex` for crash recovery.
+- `POST /links/activate`: device-signed idempotent activation of the consumed
+  generation. The exact proof, token hash, root, device DID, attachment ID,
+  and delegation CID must match the completed handoff.
 - `POST /chains/put`: back up a delegation chain, keyed by content address.
   Body: a UCAN invocation container with command
   `["account", "chain", "put"]` and argument `chain` (hex-encoded chain
@@ -276,9 +286,10 @@ on every pull request, so its schema is whatever the branch under review says it
 is, and drift there is the expected state rather than a fault.
 
 Both must show `0001_init.sql`, `0002_link_requests.sql`,
-`0003_device_delegation_path.sql`, `0004_account_repository_descriptor.sql`, and
-`0005_normalize_devices.sql` as applied; apply any pending ones with the
-matching `d1 migrations apply` command. Migration 0003 deliberately leaves the
+`0003_device_delegation_path.sql`, `0004_account_repository_descriptor.sql`,
+`0005_normalize_devices.sql`, and `0006_device_attachment_lifecycle.sql` as applied;
+apply any pending ones with the matching `d1 migrations apply` command.
+Migration 0003 deliberately leaves the
 new column null for legacy devices because a delegation CID cannot reconstruct
 its signed path bytes. Those rows remain visible and may self-revoke, but a
 different device cannot revoke them through the account UI until they relink.

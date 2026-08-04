@@ -16,7 +16,7 @@ use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 
 use crate::core::CeremonyError;
-use crate::store::{Account, Device, DeviceStatus, Store};
+use crate::store::{Account, Device, Store};
 
 /// An authenticated caller: the account and device bound by a verified
 /// UCAN invocation, plus the invocation's arguments.
@@ -34,6 +34,18 @@ pub struct RootCaller {
     /// The root DID that signed and subjects the invocation.
     pub root_did: String,
     /// The invocation's signed arguments.
+    pub arguments: BTreeMap<String, Promised>,
+}
+
+/// Cryptographically verified activation caller before an active row exists.
+pub struct ActivationCaller {
+    /// Account root subject of the returned grant.
+    pub root_did: String,
+    /// Persistent device DID signing activation.
+    pub device_did: String,
+    /// CID of the invocation's sole root-to-device proof.
+    pub delegation_cid: String,
+    /// Signed activation arguments.
     pub arguments: BTreeMap<String, Promised>,
 }
 
@@ -120,12 +132,18 @@ pub async fn authorize<S: Store>(
         .ok_or_else(|| CeremonyError::Unauthorized("unknown account".to_string()))?;
 
     let device = store
-        .device_by_did(chain.issuer().as_ref())
+        .active_device_by_did(chain.issuer().as_ref())
         .await?
-        .filter(|device| device.account_id == account.id && device.status == DeviceStatus::Active)
+        .filter(|device| device.account_id == account.id)
         .ok_or_else(|| {
             CeremonyError::Forbidden("device is not an active member of this account".to_string())
         })?;
+    let proofs = chain.proofs();
+    if proofs.len() != 1 || proofs[0].to_string() != device.delegation_cid {
+        return Err(CeremonyError::Forbidden(
+            "invocation must use the exact active account delegation".to_string(),
+        ));
+    }
 
     Ok(Caller {
         account,
@@ -154,6 +172,25 @@ pub async fn authorize_root(
 
     Ok(RootCaller {
         root_did: chain.subject().to_string(),
+        arguments: chain.arguments().clone(),
+    })
+}
+
+/// Verify a completed-link activation without consulting normal active-device
+/// authorization, which cannot exist until this call succeeds.
+pub async fn authorize_link_activation(body: &[u8]) -> Result<ActivationCaller, CeremonyError> {
+    let chain = verified_chain(body, &["account", "link", "activate"]).await?;
+    require_ceremony_expiration(&chain)?;
+    let proofs = chain.proofs();
+    if proofs.len() != 1 {
+        return Err(CeremonyError::Unauthorized(
+            "link activation must carry exactly one account grant".to_string(),
+        ));
+    }
+    Ok(ActivationCaller {
+        root_did: chain.subject().to_string(),
+        device_did: chain.issuer().to_string(),
+        delegation_cid: proofs[0].to_string(),
         arguments: chain.arguments().clone(),
     })
 }
@@ -196,6 +233,7 @@ pub fn optional_revocation(caller: &Caller) -> Result<Option<Vec<u8>>, CeremonyE
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::store::DeviceStatus;
     use crate::store::sqlite::SqliteStore;
     use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::InvocationBuilder;
@@ -243,22 +281,32 @@ mod tests {
         container_with_expiration(command, args, Some(Timestamp::five_minutes_from_now())).await
     }
 
-    async fn seed_device(
+    async fn seed_device_with_cid(
         store: &SqliteStore,
         root_did: &str,
         device_did: &str,
         status: DeviceStatus,
+        delegation_cid: String,
     ) -> i64 {
         let account_id = store
             .create_account("a@x.com", root_did, "cred", 0)
             .await
             .unwrap();
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+            .await
+            .unwrap();
         store
             .insert_device(&Device {
+                id: 0,
                 account_id,
                 device_did: device_did.to_string(),
-                delegation_cid: "cid".to_string(),
-                delegation_hex: "beef".to_string(),
+                attachment_id: "01".repeat(32),
+                delegation_cid,
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
                 name: "laptop".to_string(),
                 status,
                 created_at: 0,
@@ -266,6 +314,36 @@ mod tests {
             .await
             .unwrap();
         account_id
+    }
+
+    async fn seed_device(
+        store: &SqliteStore,
+        root_did: &str,
+        device_did: &str,
+        status: DeviceStatus,
+    ) -> i64 {
+        let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = Ed25519Signer::import(&DEVICE_SEED).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &device.did())
+            .await
+            .unwrap();
+        seed_device_with_cid(
+            store,
+            root_did,
+            device_did,
+            status,
+            grant.proof_cids()[0].to_string(),
+        )
+        .await
+    }
+
+    fn invocation_proof_cid(bytes: &[u8]) -> String {
+        InvocationChain::<Ed25519Signature>::try_from(bytes)
+            .unwrap()
+            .proofs()[0]
+            .to_string()
     }
 
     #[dialog_common::test]
@@ -276,7 +354,14 @@ mod tests {
             BTreeMap::new(),
         )
         .await;
-        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+        seed_device_with_cid(
+            &store,
+            &root_did,
+            &device_did,
+            DeviceStatus::Active,
+            invocation_proof_cid(&bytes),
+        )
+        .await;
 
         let caller = authorize(&store, &bytes, &["account", "device", "list"])
             .await
@@ -359,8 +444,10 @@ mod tests {
             .unwrap();
         store
             .insert_device(&Device {
+                id: 0,
                 account_id: account_b,
                 device_did: device_b_did.to_string(),
+                attachment_id: "02".repeat(32),
                 delegation_cid: "cid".to_string(),
                 delegation_hex: "beef".to_string(),
                 name: "phone".to_string(),
@@ -603,7 +690,14 @@ mod tests {
             BTreeMap::new(),
         )
         .await;
-        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+        seed_device_with_cid(
+            &store,
+            &root_did,
+            &device_did,
+            DeviceStatus::Active,
+            invocation_proof_cid(&bytes),
+        )
+        .await;
         let caller = authorize(&store, &bytes, &["account", "device", "revoke"])
             .await
             .unwrap();
@@ -624,7 +718,14 @@ mod tests {
                 .collect(),
         )
         .await;
-        seed_device(&store, &root_did, &device_did, DeviceStatus::Active).await;
+        seed_device_with_cid(
+            &store,
+            &root_did,
+            &device_did,
+            DeviceStatus::Active,
+            invocation_proof_cid(&bytes),
+        )
+        .await;
         let caller = authorize(&store, &bytes, &["account", "device", "revoke"])
             .await
             .unwrap();

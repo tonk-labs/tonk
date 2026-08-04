@@ -26,6 +26,8 @@ pub enum CeremonyError {
     CodeInvalid,
     /// The requested operation would violate a uniqueness constraint.
     Conflict(String),
+    /// A generation-bound resource does not exist.
+    NotFound(String),
     /// Malformed input, or a failed delegation check.
     Invalid(String),
     /// The request lacks valid authentication credentials.
@@ -82,6 +84,7 @@ impl CeremonyError {
             CeremonyError::RateLimited => ErrorCode::RateLimited,
             CeremonyError::CodeInvalid => ErrorCode::Unauthorized,
             CeremonyError::Conflict(_) => ErrorCode::Conflict,
+            CeremonyError::NotFound(_) => ErrorCode::NotFound,
             CeremonyError::Invalid(_) => ErrorCode::InvalidArgument,
             CeremonyError::Unauthorized(_) => ErrorCode::Unauthorized,
             CeremonyError::Forbidden(_) => ErrorCode::Forbidden,

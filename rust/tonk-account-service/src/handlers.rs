@@ -53,6 +53,7 @@ pub fn ceremony_error(err: crate::core::CeremonyError) -> crate::error::ServiceE
         CeremonyError::RateLimited => "rate limited".to_string(),
         CeremonyError::CodeInvalid => "invalid or expired code".to_string(),
         CeremonyError::Conflict(msg)
+        | CeremonyError::NotFound(msg)
         | CeremonyError::Invalid(msg)
         | CeremonyError::Unauthorized(msg)
         | CeremonyError::Forbidden(msg) => msg.clone(),

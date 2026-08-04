@@ -28,7 +28,7 @@ use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 use dialog_varsig::{Did, Principal};
-use tonk_account::backup::{AccountSpotBackup, SPACE_ROOT_SITE_PREFIX};
+use tonk_account::backup::{AccountSpotBackup, SPACE_ROOT_SITE_PREFIX, space_root_site};
 
 /// The standard-library notation document seeded into a freshly
 /// created repository: the built-in concepts, views, commands, and
@@ -91,7 +91,7 @@ pub struct TonkSite {
     /// The user's profile (shared identity).
     pub profile: Profile,
     /// Operator rooted at [`Self::root`].
-    pub operator: Operator<NativeSpace>,
+    pub operator: crate::account_authority::AccountBoundOperator,
     /// The `main` repository handle. Verifier-typed (`Credential`):
     /// commits flow through the operator's authority chain, so the
     /// repo handle itself doesn't need to carry a signer.
@@ -132,6 +132,12 @@ impl TonkSite {
             })?;
 
         let reactor = Reactor::new(profile.clone());
+        let operator = crate::account_authority::wrap(
+            operator,
+            profile.clone(),
+            crate::spot::SpotStore::open().context("failed to locate account state")?,
+        )
+        .await?;
 
         Ok(Self {
             root,
@@ -192,6 +198,12 @@ impl TonkSite {
         };
 
         let reactor = Reactor::new(profile.clone());
+        let operator = crate::account_authority::wrap(
+            operator,
+            profile.clone(),
+            crate::spot::SpotStore::open().context("failed to locate account state")?,
+        )
+        .await?;
 
         let site = Self {
             root,
@@ -278,7 +290,7 @@ async fn bootstrap_repository(
     let delegation = signer_repo
         .access()
         .claim(&signer_repo)
-        .delegate(durable_did)
+        .delegate(durable_did.clone())
         .perform(operator)
         .await
         .context("failed to mint repo→profile delegation")?;
@@ -288,7 +300,7 @@ async fn bootstrap_repository(
         .context("failed to serialize repo→root delegation")?;
     profile
         .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", signer_repo.did()))
+        .site(space_root_site(&signer_repo.did(), &durable_did))
         .save(prefix_bytes)
         .perform(operator)
         .await
@@ -392,7 +404,7 @@ async fn mount_delegated_inner(
             .context("failed to serialize delegated prefix")?;
         profile
             .credential()
-            .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+            .site(space_root_site(&subject, &account_root))
             .save(prefix_bytes)
             .perform(&operator)
             .await
@@ -417,6 +429,12 @@ async fn mount_delegated_inner(
         .await
         .context("failed to load delegated repository")?;
     let reactor = Reactor::new(profile.clone());
+    let operator = crate::account_authority::wrap(
+        operator,
+        profile.clone(),
+        crate::spot::SpotStore::open().context("failed to locate account state")?,
+    )
+    .await?;
     Ok(TonkSite {
         root: root.to_path_buf(),
         profile,
@@ -432,7 +450,7 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
     let credential = site
         .profile
         .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", site.repository.did()));
+        .site(space_root_site(&site.repository.did(), account_root));
     match credential.load::<Vec<u8>>().perform(&site.operator).await {
         Ok(bytes) if !bytes.is_empty() => {
             let backup = AccountSpotBackup {
@@ -450,6 +468,36 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
         Ok(_) => {}
         Err(error) if crate::account_state::credential_is_missing(&error) => {}
         Err(error) => return Err(error).context("failed to load the account-root prefix"),
+    }
+
+    // A v1 credential is copied only when its signatures and terminal root
+    // validate for the explicitly requested account.
+    let legacy = site
+        .profile
+        .credential()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", site.repository.did()));
+    match legacy.load::<Vec<u8>>().perform(&site.operator).await {
+        Ok(bytes) if !bytes.is_empty() => {
+            let backup = AccountSpotBackup {
+                chain_hex: hex::encode(&bytes),
+                remote_url: None,
+                revocation_url: None,
+                name: None,
+            };
+            if let Ok(validated) = backup.validate_for(account_root).await {
+                site.profile
+                    .credential()
+                    .site(space_root_site(&site.repository.did(), account_root))
+                    .save(bytes)
+                    .perform(&site.operator)
+                    .await
+                    .context("failed to migrate the account-root prefix")?;
+                return Ok(validated.chain);
+            }
+        }
+        Ok(_) => {}
+        Err(error) if crate::account_state::credential_is_missing(&error) => {}
+        Err(error) => return Err(error).context("failed to load the legacy account-root prefix"),
     }
 
     let proof = site
@@ -493,7 +541,7 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
         .context("failed to serialize recovered prefix")?;
     site.profile
         .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", site.repository.did()))
+        .site(space_root_site(&site.repository.did(), account_root))
         .save(bytes)
         .perform(&site.operator)
         .await

@@ -43,6 +43,8 @@ pub struct CompleteLinkCeremony {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsumedLink {
+    /// Service-generated attachment generation bound to this handoff.
+    pub attachment_id: String,
     /// Exact root-to-device delegation bytes, hex encoded.
     pub delegation_hex: String,
     /// Opaque credential identifier belonging to the root passkey.
@@ -122,15 +124,27 @@ mod tests {
             delegation_hex: "delegation".to_string(),
             credential_id: "credential".to_string(),
             descriptor_hex: "descriptor".to_string(),
+            attachment_id: "attachment".to_string(),
         };
         let consumed_json = serde_json::to_value(&consumed).unwrap();
         assert_eq!(
             sorted_keys(&consumed_json),
-            vec!["credentialId", "delegationHex", "descriptorHex"]
+            vec![
+                "attachmentId",
+                "credentialId",
+                "delegationHex",
+                "descriptorHex",
+            ]
         );
         assert_eq!(
-            serde_json::from_value::<ConsumedLink>(consumed_json).unwrap(),
+            serde_json::from_value::<ConsumedLink>(consumed_json.clone()).unwrap(),
             consumed
         );
+        let mut missing_attachment = consumed_json;
+        missing_attachment
+            .as_object_mut()
+            .unwrap()
+            .remove("attachmentId");
+        assert!(serde_json::from_value::<ConsumedLink>(missing_attachment).is_err());
     }
 }

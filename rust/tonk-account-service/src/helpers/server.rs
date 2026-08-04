@@ -25,15 +25,18 @@ use tonk_account::backup::{ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABI
 use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 
 use crate::auth::{
-    authorize, authorize_root, optional_revocation, required_string, string_argument,
+    authorize, authorize_link_activation, authorize_root, optional_revocation, required_string,
+    string_argument,
 };
 use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::core::backup::{get_chain, list_account_spots, list_chains, put_chain_and_index_spot};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::descriptor::establish_descriptor;
-use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
-use crate::core::links::{complete_link, consume_link, create_link, resolve_link};
+use crate::core::devices::{
+    DeviceView, detach_device, list_devices, register_device, revoke_device,
+};
+use crate::core::links::{activate_link, complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
@@ -146,10 +149,12 @@ async fn handle_request(
         (Method::POST, "/devices/list") => devices_list_route(req, &backends).await,
         (Method::POST, "/devices/register") => devices_register_route(req, &backends).await,
         (Method::POST, "/devices/link") => devices_link_route(req, &backends).await,
+        (Method::POST, "/devices/detach") => devices_detach_route(req, &backends).await,
         (Method::POST, "/devices/revoke") => devices_revoke_route(req, &backends).await,
         (Method::POST, "/links") => links_create_route(req, &backends).await,
         (Method::POST, "/links/resolve") => links_resolve_route(req, &backends).await,
         (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
+        (Method::POST, "/links/activate") => links_activate_route(req, &backends).await,
         (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
         (Method::POST, "/chains/put") => chains_put_route(req, &backends).await,
         (Method::POST, "/chains/list") => chains_list_route(req, &backends).await,
@@ -192,6 +197,7 @@ fn health_response() -> Response<Full<Bytes>> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceJson {
+    attachment_id: String,
     did: String,
     name: String,
     status: String,
@@ -203,6 +209,7 @@ struct DeviceJson {
 impl From<DeviceView> for DeviceJson {
     fn from(view: DeviceView) -> Self {
         DeviceJson {
+            attachment_id: view.attachment_id,
             did: view.did,
             name: view.name,
             status: view.status,
@@ -358,7 +365,7 @@ async fn devices_link_route(
     })?;
     let descriptor_hex = hex::encode(descriptor);
 
-    register_device(
+    let attachment_id = register_device(
         &backends.store,
         &account,
         &device_did,
@@ -371,7 +378,10 @@ async fn devices_link_route(
 
     Ok(json_response(
         StatusCode::OK,
-        &serde_json::json!({ "descriptorHex": descriptor_hex }),
+        &serde_json::json!({
+            "attachmentId": attachment_id,
+            "descriptorHex": descriptor_hex,
+        }),
     ))
 }
 
@@ -409,7 +419,7 @@ async fn devices_register_route(
     let device_name = string_argument(&caller, "name").map_err(ceremony_error)?;
     let delegation_hex = string_argument(&caller, "delegation").map_err(ceremony_error)?;
 
-    register_device(
+    let attachment_id = register_device(
         &backends.store,
         &caller.account,
         &device_did,
@@ -420,7 +430,10 @@ async fn devices_register_route(
     .await
     .map_err(ceremony_error)?;
 
-    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "attachmentId": attachment_id }),
+    ))
 }
 
 /// `POST /revocations` → publish a self-certifying immutable artifact.
@@ -483,6 +496,21 @@ async fn revocations_route(
     ))
 }
 
+/// `POST /devices/detach` → detach one exact signed generation.
+async fn devices_detach_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let intent: tonk_account::detach::SignedDetachIntent = parse_json(req).await?;
+    let outcome = detach_device(&backends.store, &intent, unix_now())
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "outcome": outcome }),
+    ))
+}
+
 /// `POST /devices/revoke` → revoke a device under an account.
 async fn devices_revoke_route(
     req: Request<Incoming>,
@@ -493,6 +521,7 @@ async fn devices_revoke_route(
         .await
         .map_err(ceremony_error)?;
 
+    let attachment_id = string_argument(&caller, "attachmentId").map_err(ceremony_error)?;
     let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
     let revocation = optional_revocation(&caller)
         .map_err(ceremony_error)?
@@ -507,6 +536,7 @@ async fn devices_revoke_route(
         &backends.revocations,
         &caller.account,
         &caller.device.device_did,
+        &attachment_id,
         &device_did,
         &revocation,
     )
@@ -575,6 +605,37 @@ async fn links_complete_route(
     .await
     .map_err(ceremony_error)?;
     Ok(json_response(StatusCode::OK, &serde_json::json!({})))
+}
+
+async fn links_activate_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize_link_activation(&body)
+        .await
+        .map_err(ceremony_error)?;
+    let token_hash = required_string(&caller.arguments, "tokenHash").map_err(ceremony_error)?;
+    let attachment_id =
+        required_string(&caller.arguments, "attachmentId").map_err(ceremony_error)?;
+    let device = activate_link(
+        &backends.store,
+        &token_hash,
+        &attachment_id,
+        &caller.root_did,
+        &caller.device_did,
+        &caller.delegation_cid,
+        unix_now(),
+    )
+    .await
+    .map_err(ceremony_error)?;
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({
+            "attachmentId": device.attachment_id,
+            "activated": true,
+        }),
+    ))
 }
 
 async fn links_consume_route(

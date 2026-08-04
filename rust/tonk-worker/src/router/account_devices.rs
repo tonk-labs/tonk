@@ -19,6 +19,7 @@ use crate::worker::TonkState;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ServiceDevice {
+    attachment_id: String,
     did: String,
     name: String,
     status: String,
@@ -66,6 +67,7 @@ async fn fetch_devices(
         .into_iter()
         .map(|row| AccountDevice {
             this_device: row.did == this_did,
+            attachment_id: row.attachment_id,
             did: row.did,
             name: row.name,
             status: row.status,
@@ -125,6 +127,10 @@ pub async fn revoke(
     };
     let device = state.profile.signer().signer().clone();
     let arguments = [
+        (
+            "attachmentId".to_owned(),
+            Promised::String(request.attachment_id),
+        ),
         ("did".to_owned(), Promised::String(request.did)),
         ("revocation".to_owned(), Promised::String(revocation)),
     ]
