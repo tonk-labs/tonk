@@ -235,50 +235,25 @@ async fn dispatch_backup(
     remote_url: Option<String>,
     revocation_url: Option<String>,
     name: Option<String>,
-) {
+) -> Result<(), TonkWorkerError> {
     let Some(link) = crate::router::account::account_link(tonk).await else {
-        return;
+        return Ok(());
     };
     let Some(service) = account_service_url(tonk).await else {
-        return;
+        return Ok(());
     };
     let device = tonk.profile.signer().signer().clone();
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(error) = run_backup(
-                device,
-                link,
-                service,
-                chain,
-                remote_url,
-                revocation_url,
-                name,
-            )
-            .await
-            {
-                log!("{context} backup failed: {error}");
-            }
-        });
-    }
-
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        if let Err(error) = run_backup(
-            device,
-            link,
-            service,
-            chain,
-            remote_url,
-            revocation_url,
-            name,
-        )
-        .await
-        {
-            log!("{context} backup failed: {error}");
-        }
-    }
+    run_backup(
+        device,
+        link,
+        service,
+        chain,
+        remote_url,
+        revocation_url,
+        name,
+    )
+    .await
+    .map_err(|error| TonkWorkerError::Internal(format!("{context} backup failed: {error}")))
 }
 
 async fn content_name<R>(tonk: &TonkState, repository: &Repository<R>) -> Option<String>
@@ -337,7 +312,7 @@ pub(crate) async fn back_up_subject(
         remote.revocation_url.map(|url| url.to_string()),
         name,
     )
-    .await;
+    .await?;
     Ok(())
 }
 
@@ -369,13 +344,13 @@ mod tests {
     use dialog_remote_ucan_s3::UcanAddress;
     use dialog_repository::SiteAddress;
     use tower::ServiceExt as _;
-    use wasm_bindgen::JsValue;
+    use wasm_bindgen::{JsCast as _, JsValue};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     use crate::router::repository::{
         BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
     };
-    use crate::router::tests::{GlobalPropertyGuard, put_repo, test_state};
+    use crate::router::tests::{GlobalPropertyGuard, attach_remote, put_repo, test_state};
     use crate::router::{api_router_with_state, tests};
 
     wasm_bindgen_test_configure!(run_in_service_worker);
@@ -390,6 +365,16 @@ mod tests {
             }
         }
         None
+    }
+
+    async fn next_task() {
+        let promise: js_sys::Promise =
+            js_sys::Function::new_no_args("return new Promise(resolve => setTimeout(resolve, 0));")
+                .call0(&JsValue::UNDEFINED)
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
     }
 
     #[dialog_common::test]
@@ -537,6 +522,78 @@ mod tests {
             crate::router::identity::root_did(&tonk).await.unwrap()
         };
         assert_eq!(artifact.validate_for(&root).await.unwrap().subject, subject);
+    }
+
+    #[dialog_common::test]
+    async fn backup_does_not_finish_before_the_account_service_accepts_it() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let immediate = js_sys::Function::new_with_args(
+            "_request",
+            "return Promise.resolve(new Response('{}', { status: 200 }));",
+        );
+        let _initial_fetch = GlobalPropertyGuard::replace("fetch", immediate.as_ref());
+        let key = put_repo(&app, "backup-awaits-upload").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+
+        let started = JsValue::FALSE;
+        let _started = GlobalPropertyGuard::replace("__tonkUploadStarted", &started);
+        let resolver = JsValue::UNDEFINED;
+        let _resolver = GlobalPropertyGuard::replace("__tonkResolveUpload", &resolver);
+        let pending = js_sys::Function::new_with_args(
+            "_request",
+            r#"
+            globalThis.__tonkUploadStarted = true;
+            return new Promise(resolve => {
+                globalThis.__tonkResolveUpload = () =>
+                    resolve(new Response('{}', { status: 200 }));
+            });
+            "#,
+        );
+        let _pending_fetch = GlobalPropertyGuard::replace("fetch", pending.as_ref());
+
+        let completed = Rc::new(Cell::new(false));
+        let completed_task = Rc::clone(&completed);
+        let state_task = state.clone();
+        let subject: Did = key.parse().unwrap();
+        wasm_bindgen_futures::spawn_local(async move {
+            let tonk = state_task.read().await;
+            back_up_subject(&tonk, &subject).await.unwrap();
+            completed_task.set(true);
+        });
+
+        let mut upload_started = false;
+        for _ in 0..100 {
+            next_task().await;
+            if js_sys::Reflect::get(&js_sys::global(), &"__tonkUploadStarted".into())
+                .unwrap()
+                .is_truthy()
+            {
+                upload_started = true;
+                break;
+            }
+        }
+        assert!(upload_started, "backup reached the mocked account service");
+        assert!(
+            !completed.get(),
+            "backup returned before its upload settled"
+        );
+
+        let resolve: js_sys::Function =
+            js_sys::Reflect::get(&js_sys::global(), &"__tonkResolveUpload".into())
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+        resolve.call0(&JsValue::UNDEFINED).unwrap();
+        for _ in 0..100 {
+            next_task().await;
+            if completed.get() {
+                break;
+            }
+        }
+        assert!(completed.get(), "backup finishes after upload acceptance");
     }
 
     #[dialog_common::test]
