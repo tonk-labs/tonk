@@ -16,7 +16,7 @@ use crate::store::{
     Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
     DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
     INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK,
-    LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
+    LinkCompletion, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
     SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
     SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
     SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
@@ -509,29 +509,20 @@ impl Store for D1Store {
         Ok(row.map(LinkRequest::from))
     }
 
-    async fn complete_link(
-        &self,
-        token_hash: &str,
-        account_id: i64,
-        attachment_id: &str,
-        delegation_cid: &str,
-        delegation_hex: &str,
-        descriptor_hex: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
+    async fn complete_link(&self, completion: &LinkCompletion<'_>) -> Result<bool, StoreError> {
         let result = self
             .0
             .prepare(COMPLETE_LINK)
             .bind(&[
-                JsValue::from_f64(account_id as f64),
-                JsValue::from(attachment_id),
-                JsValue::from(delegation_cid),
-                JsValue::from(delegation_hex),
-                JsValue::from(descriptor_hex),
-                JsValue::from_f64(now as f64),
-                JsValue::from_f64((now + 24 * 60 * 60) as f64),
-                JsValue::from(token_hash),
-                JsValue::from_f64(now as f64),
+                JsValue::from_f64(completion.account_id as f64),
+                JsValue::from(completion.attachment_id),
+                JsValue::from(completion.delegation_cid),
+                JsValue::from(completion.delegation_hex),
+                JsValue::from(completion.descriptor_hex),
+                JsValue::from_f64(completion.now as f64),
+                JsValue::from_f64((completion.now + 24 * 60 * 60) as f64),
+                JsValue::from(completion.token_hash),
+                JsValue::from_f64(completion.now as f64),
             ])
             .map_err(map_err)?
             .run()

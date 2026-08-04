@@ -9,8 +9,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{
     Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
     DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
-    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_LINK, LinkRequest, NewDevice,
-    SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
+    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_LINK, LinkCompletion, LinkRequest,
+    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
     SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
     SELECT_LINK, SELECT_LINK_BY_ATTACHMENT, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
     UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
@@ -415,30 +415,21 @@ impl Store for SqliteStore {
             .map_err(map_err)
     }
 
-    async fn complete_link(
-        &self,
-        token_hash: &str,
-        account_id: i64,
-        attachment_id: &str,
-        delegation_cid: &str,
-        delegation_hex: &str,
-        descriptor_hex: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
+    async fn complete_link(&self, completion: &LinkCompletion<'_>) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(
                 COMPLETE_LINK,
                 params![
-                    account_id,
-                    attachment_id,
-                    delegation_cid,
-                    delegation_hex,
-                    descriptor_hex,
-                    now as i64,
-                    (now + 24 * 60 * 60) as i64,
-                    token_hash,
-                    now as i64,
+                    completion.account_id,
+                    completion.attachment_id,
+                    completion.delegation_cid,
+                    completion.delegation_hex,
+                    completion.descriptor_hex,
+                    completion.now as i64,
+                    (completion.now + 24 * 60 * 60) as i64,
+                    completion.token_hash,
+                    completion.now as i64,
                 ],
             )
             .map_err(map_err)?;

@@ -115,6 +115,7 @@ fn lock_file(store: &SpotStore) -> Result<File> {
         .with_context(|| format!("failed to create account state at {}", dir.display()))?;
     OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(dir.join(LOCK_FILE))
@@ -469,7 +470,7 @@ pub(crate) async fn flush_pending_for_store(
 ) -> Result<FlushOutcome> {
     let guard = exclusive_transition_guard(store)?;
     ensure_initialized(profile, operator, &guard).await?;
-    let mut state = load_raw(profile, operator, &store)
+    let mut state = load_raw(profile, operator, store)
         .await?
         .unwrap_or_default();
     if state.pending_detaches.is_empty() {
@@ -530,6 +531,6 @@ pub(crate) async fn flush_pending_for_store(
     }
     outcome.pending = retained.len();
     state.pending_detaches = retained;
-    save_raw(profile, operator, &store, &state).await?;
+    save_raw(profile, operator, store, &state).await?;
     Ok(outcome)
 }

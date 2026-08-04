@@ -175,15 +175,15 @@ pub async fn complete_link<S: Store>(
     let delegation_cid = check_device_delegation(delegation_hex, root_did, device_did).await?;
     let attachment_id = crate::core::devices::random_attachment_id();
     let completed = store
-        .complete_link(
+        .complete_link(&crate::store::LinkCompletion {
             token_hash,
-            account.id,
-            &attachment_id,
-            &delegation_cid,
+            account_id: account.id,
+            attachment_id: &attachment_id,
+            delegation_cid: &delegation_cid,
             delegation_hex,
-            &descriptor_hex,
+            descriptor_hex: &descriptor_hex,
             now,
-        )
+        })
         .await?;
     if !completed {
         let replay = store.link(token_hash).await?;
@@ -271,7 +271,6 @@ pub async fn activate_link<S: Store>(
         .ok_or_else(|| CeremonyError::Invalid("unknown completed link".to_string()))?;
     let account = link
         .account_id
-        .and_then(|id| Some(id))
         .ok_or_else(|| CeremonyError::Conflict("link is not complete".to_string()))?;
     let stored_account = store
         .account_by_root(root_did)

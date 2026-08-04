@@ -148,6 +148,25 @@ pub struct LinkRequest {
     pub cancelled_at: Option<u64>,
 }
 
+/// Material persisted when a pending handoff is completed.
+#[derive(Debug, Clone, Copy)]
+pub struct LinkCompletion<'a> {
+    /// Hash identifying the pending handoff.
+    pub token_hash: &'a str,
+    /// Account selected by browser completion.
+    pub account_id: i64,
+    /// Service-generated attachment generation.
+    pub attachment_id: &'a str,
+    /// CID of the completed root-to-device grant.
+    pub delegation_cid: &'a str,
+    /// Completed root-to-device delegation.
+    pub delegation_hex: &'a str,
+    /// Account repository descriptor copied alongside the delegation.
+    pub descriptor_hex: &'a str,
+    /// Browser completion time, as unix seconds.
+    pub now: u64,
+}
+
 /// Result of idempotently activating a completed handoff.
 #[derive(Debug, Clone)]
 pub enum ActivateOutcome {
@@ -294,16 +313,7 @@ pub trait Store {
     async fn link(&self, token_hash: &str) -> Result<Option<LinkRequest>, StoreError>;
 
     /// Durably complete a handoff without activating its attachment.
-    async fn complete_link(
-        &self,
-        token_hash: &str,
-        account_id: i64,
-        attachment_id: &str,
-        delegation_cid: &str,
-        delegation_hex: &str,
-        descriptor_hex: &str,
-        now: u64,
-    ) -> Result<bool, StoreError>;
+    async fn complete_link(&self, completion: &LinkCompletion<'_>) -> Result<bool, StoreError>;
 
     /// Retrieve a completed handoff, recording first consumption while
     /// preserving the result for crash-safe replay.
