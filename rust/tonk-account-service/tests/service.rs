@@ -67,6 +67,17 @@ async fn container(command: Vec<String>, args: BTreeMap<String, Promised>) -> Ve
     container_for(ROOT_PRF, DEVICE_SEED, command, args).await
 }
 
+async fn container_with_link(
+    device: &Ed25519Signer,
+    link: &DelegationChain,
+    command: Vec<String>,
+    args: BTreeMap<String, Promised>,
+) -> Vec<u8> {
+    tonk_identity::request::build_device_invocation(device.clone(), link, command, args)
+        .await
+        .unwrap()
+}
+
 async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) -> Vec<u8> {
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
@@ -515,7 +526,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(linked["descriptorHex"], expected_descriptor);
 
     // POST /devices/list -> the newly registered device shows up.
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "device".into(), "list".into()],
         BTreeMap::new(),
     )
@@ -530,15 +543,16 @@ async fn it_drives_the_full_ceremony_over_http() {
     let devices: serde_json::Value = response.json().await.unwrap();
     let devices = devices.as_array().unwrap();
     assert_eq!(devices.len(), 2);
-    assert_eq!(devices[0]["did"], device_did);
-    assert_eq!(devices[0]["name"], "laptop");
-    assert_eq!(devices[0]["status"], "active");
-    assert_eq!(devices[1]["did"], second_did);
-    assert_eq!(devices[1]["name"], "phone");
+    let first_row = devices.iter().find(|row| row["did"] == device_did).unwrap();
+    let second_row = devices.iter().find(|row| row["did"] == second_did).unwrap();
+    assert_eq!(first_row["name"], "laptop");
+    assert_eq!(first_row["status"], "active");
+    assert_eq!(second_row["name"], "phone");
 
     // The worker and CLI parse exactly these keys; renaming one is a
     // breaking wire change.
     for key in [
+        "attachmentId",
         "did",
         "name",
         "status",
@@ -547,19 +561,19 @@ async fn it_drives_the_full_ceremony_over_http() {
         "createdAt",
     ] {
         assert!(
-            devices[0].get(key).is_some(),
+            first_row.get(key).is_some(),
             "device list row is missing `{key}`"
         );
     }
-    assert!(devices[0].get("created_at").is_none());
-    assert!(devices[0].get("delegation_cid").is_none());
-    assert_eq!(devices[1]["delegationHex"], ceremony.delegation_hex);
+    assert!(first_row.get("created_at").is_none());
+    assert!(first_row.get("delegation_cid").is_none());
+    assert_eq!(second_row["delegationHex"], ceremony.delegation_hex);
 
     // POST /devices/revoke -> the first device cuts off the second,
     // carrying a root-signed revocation of the second device's grant.
     // Cross-device revocation needs root attestation; a device-signed
     // artifact only ever names its own grant.
-    let second_grant_cid = devices[1]["delegationCid"].as_str().unwrap().to_string();
+    let second_grant_cid = second_row["delegationCid"].as_str().unwrap().to_string();
     assert_eq!(second_grant_cid, second_grant.proof_cids()[0].to_string());
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
@@ -571,9 +585,15 @@ async fn it_drives_the_full_ceremony_over_http() {
     )
     .await
     .unwrap();
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "device".into(), "revoke".into()],
         [
+            (
+                "attachmentId".to_owned(),
+                Promised::String(second_row["attachmentId"].as_str().unwrap().to_string()),
+            ),
             ("did".to_owned(), Promised::String(second_did.clone())),
             (
                 "revocation".to_owned(),
@@ -613,7 +633,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(published["artifactCid"], revoked["artifactCid"]);
     assert_eq!(published["stored"], false);
 
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "device".into(), "list".into()],
         BTreeMap::new(),
     )
@@ -626,8 +648,14 @@ async fn it_drives_the_full_ceremony_over_http() {
         .unwrap();
     let devices: serde_json::Value = response.json().await.unwrap();
     let devices = devices.as_array().unwrap();
-    assert_eq!(devices[0]["status"], "active");
-    assert_eq!(devices[1]["status"], "revoked");
+    assert_eq!(
+        devices.iter().find(|row| row["did"] == device_did).unwrap()["status"],
+        "active"
+    );
+    assert_eq!(
+        devices.iter().find(|row| row["did"] == second_did).unwrap()["status"],
+        "revoked"
+    );
 
     // A native profile creates a bearer-secret handoff. The browser
     // resolves its metadata, completes it with the passkey root, and
@@ -666,10 +694,14 @@ async fn it_drives_the_full_ceremony_over_http() {
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
-    let ceremony =
-        tonk_identity::ceremony::complete_link(root, token_hash, cli.did(), "terminal".into())
-            .await
-            .unwrap();
+    let ceremony = tonk_identity::ceremony::complete_link(
+        root,
+        token_hash.clone(),
+        cli.did(),
+        "terminal".into(),
+    )
+    .await
+    .unwrap();
     let expected_delegation = ceremony.delegation_hex.clone();
     let response = client
         .post(format!("{base}/links/complete"))
@@ -691,6 +723,47 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(consumed.delegation_hex, expected_delegation);
     assert_eq!(consumed.credential_id, "cred-1");
     assert_eq!(consumed.descriptor_hex, expected_descriptor);
+    assert_eq!(consumed.attachment_id.len(), 64);
+    let response = client
+        .post(format!("{base}/links/consume"))
+        .json(&LinkSecretRequest {
+            secret: secret.to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<ConsumedLink>().await.unwrap(), consumed);
+
+    let completed_link =
+        DelegationChain::try_from(hex::decode(&consumed.delegation_hex).unwrap().as_slice())
+            .unwrap();
+    let activation = container_with_link(
+        &cli,
+        &completed_link,
+        vec!["account".into(), "link".into(), "activate".into()],
+        [
+            (
+                "tokenHash".to_string(),
+                Promised::String(token_hash.clone()),
+            ),
+            (
+                "attachmentId".to_string(),
+                Promised::String(consumed.attachment_id.clone()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/links/activate"))
+        .body(activation)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
     let response = client
         .post(format!("{base}/links/consume"))
         .json(&LinkSecretRequest {
@@ -701,6 +774,44 @@ async fn it_drives_the_full_ceremony_over_http() {
         .unwrap();
     assert_eq!(response.status(), 401);
 
+    // Logout detaches the exact generation without presenting the reusable
+    // account grant, and replay is idempotent.
+    let root_did = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap()
+        .did();
+    let detach = tonk_account::detach::SignedDetachIntent::sign(
+        &dialog_credentials::SignerCredential::from(cli.clone()),
+        &root_did,
+        &consumed.attachment_id,
+        &completed_link.proof_cids()[0].to_string(),
+        1,
+    )
+    .await
+    .unwrap();
+    let response = client
+        .post(format!("{base}/devices/detach"))
+        .json(&detach)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["outcome"],
+        "detached"
+    );
+    let response = client
+        .post(format!("{base}/devices/detach"))
+        .json(&detach)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["outcome"],
+        "alreadyDetached"
+    );
+
     // POST /chains/put then POST /chains/get -> round-trip chain bytes.
     let chain_bytes = b"a delegation chain, backed up".to_vec();
     let mut put_args = BTreeMap::new();
@@ -708,7 +819,9 @@ async fn it_drives_the_full_ceremony_over_http() {
         "chain".to_string(),
         Promised::String(hex::encode(&chain_bytes)),
     );
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "chain".into(), "put".into()],
         put_args,
     )
@@ -724,7 +837,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     let key = put_result["key"].as_str().unwrap().to_string();
 
     // POST /chains/list -> the key we just put shows up.
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "chain".into(), "list".into()],
         BTreeMap::new(),
     )
@@ -758,7 +873,9 @@ async fn it_drives_the_full_ceremony_over_http() {
 
     let mut get_args = BTreeMap::new();
     get_args.insert("key".to_string(), Promised::String(key));
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "chain".into(), "get".into()],
         get_args,
     )
@@ -787,14 +904,24 @@ async fn it_drives_the_full_ceremony_over_http() {
     args.insert("chain".to_string(), Promised::String(hex::encode(&named)));
     let response = client
         .post(format!("{base}/chains/put"))
-        .body(container(vec!["account".into(), "chain".into(), "put".into()], args).await)
+        .body(
+            container_with_link(
+                &device,
+                &first_grant,
+                vec!["account".into(), "chain".into(), "put".into()],
+                args,
+            )
+            .await,
+        )
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
 
     let spots = || async {
-        let body = container(
+        let body = container_with_link(
+            &device,
+            &first_grant,
             vec!["account".into(), "chain".into(), "spots".into()],
             BTreeMap::new(),
         )
@@ -815,7 +942,15 @@ async fn it_drives_the_full_ceremony_over_http() {
     args.insert("chain".to_string(), Promised::String(hex::encode(&renamed)));
     client
         .post(format!("{base}/chains/put"))
-        .body(container(vec!["account".into(), "chain".into(), "put".into()], args).await)
+        .body(
+            container_with_link(
+                &device,
+                &first_grant,
+                vec!["account".into(), "chain".into(), "put".into()],
+                args,
+            )
+            .await,
+        )
         .send()
         .await
         .unwrap()
@@ -831,7 +966,15 @@ async fn it_drives_the_full_ceremony_over_http() {
     args.insert("chain".to_string(), Promised::String(hex::encode(&unnamed)));
     client
         .post(format!("{base}/chains/put"))
-        .body(container(vec!["account".into(), "chain".into(), "put".into()], args).await)
+        .body(
+            container_with_link(
+                &device,
+                &first_grant,
+                vec!["account".into(), "chain".into(), "put".into()],
+                args,
+            )
+            .await,
+        )
         .send()
         .await
         .unwrap()
@@ -892,9 +1035,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     let response = client
         .post(format!("{base}/chains/spots"))
         .body(
-            container_for(
-                other_prf,
-                other_seed,
+            container_with_link(
+                &other_device,
+                &other_grant,
                 vec!["account".into(), "chain".into(), "spots".into()],
                 BTreeMap::new(),
             )
@@ -912,7 +1055,9 @@ async fn it_drives_the_full_ceremony_over_http() {
             .is_empty()
     );
 
-    let body = container(
+    let body = container_with_link(
+        &device,
+        &first_grant,
         vec!["account".into(), "chain".into(), "get".into()],
         [("key".to_string(), Promised::String(selected_key))]
             .into_iter()

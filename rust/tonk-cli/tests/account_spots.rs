@@ -519,7 +519,7 @@ async fn configure_upstream(site: &TonkSite, endpoint: &str) -> Result<()> {
 
 #[tokio::test]
 async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Result<()> {
-    use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+    use tonk_account::backup::space_root_site;
     use tonk_cli::account_spots::BackupOutcome;
 
     let fixture = common::AccountFixture::new().await?;
@@ -568,10 +568,11 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
     configure_upstream(&recovered, dead_remote).await?;
     tonk_cli::spot::register_existing_unbound(&fixture.store, "recovered-alias", &recovered.root)?;
     let recovered_subject = recovered.repository.did();
+    let recovered_key = space_root_site(&recovered_subject, fixture.link.issuer());
     recovered
         .profile
         .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{recovered_subject}"))
+        .site(recovered_key.clone())
         .save(Vec::<u8>::new())
         .perform(&recovered.operator)
         .await?;
@@ -582,7 +583,7 @@ async fn backup_reconciles_owned_joined_recovered_and_newly_remote_sites() -> Re
     let recovered_prefix = recovered
         .profile
         .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{recovered_subject}"))
+        .site(recovered_key)
         .load::<Vec<u8>>()
         .perform(&recovered.operator)
         .await?;

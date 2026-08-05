@@ -3,6 +3,16 @@
 /// Credential site holding the exact reusable `space → … → account-root`
 /// delegation prefix for a repository subject.
 pub const SPACE_ROOT_SITE_PREFIX: &str = "tonk-space-root-v1/";
+/// Credential prefix for account-root-specific reusable space authority.
+pub const SPACE_ROOT_SITE_V2_PREFIX: &str = "tonk-space-root-v2/";
+
+/// Credential key for one repository's prefix ending at one exact account root.
+pub fn space_root_site(
+    repository_did: &dialog_varsig::Did,
+    account_root: &dialog_varsig::Did,
+) -> String {
+    format!("{SPACE_ROOT_SITE_V2_PREFIX}{repository_did}/{account_root}")
+}
 /// Credential site holding the content key of the last account backup a
 /// native client successfully uploaded for a repository subject.
 pub const ACCOUNT_SPOT_BACKUP_MARKER_PREFIX: &str = "tonk-account-spot-backup-v1/";

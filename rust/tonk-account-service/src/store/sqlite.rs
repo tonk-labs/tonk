@@ -7,11 +7,12 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
-    DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR,
-    INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_LINK, LinkRequest, NewDevice,
-    SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
+    Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
+    DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
+    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_LINK, LinkCompletion, LinkRequest,
+    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
+    SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
+    SELECT_LINK, SELECT_LINK_BY_ATTACHMENT, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
     UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
@@ -48,6 +49,10 @@ impl SqliteStore {
         .map_err(map_err)?;
         conn.execute_batch(include_str!("../../migrations/0005_normalize_devices.sql"))
             .map_err(map_err)?;
+        conn.execute_batch(include_str!(
+            "../../migrations/0006_device_attachment_lifecycle.sql"
+        ))
+        .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
 }
@@ -70,18 +75,73 @@ fn map_err(err: rusqlite::Error) -> StoreError {
 
 /// A device row as read straight off a `devices` query, before the
 /// status column is parsed.
-type DeviceRow = (i64, String, String, Option<String>, String, String, i64);
+type DeviceRow = (
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+);
 
 fn device_from_row(row: DeviceRow) -> Result<Device, StoreError> {
-    let (account_id, device_did, delegation_cid, delegation_hex, name, status, created_at) = row;
-    Ok(Device {
+    let (
+        id,
         account_id,
         device_did,
+        attachment_id,
+        delegation_cid,
+        delegation_hex,
+        name,
+        status,
+        created_at,
+    ) = row;
+    Ok(Device {
+        id,
+        account_id,
+        device_did,
+        attachment_id,
         delegation_cid,
         delegation_hex: delegation_hex.unwrap_or_default(),
         name,
         status: DeviceStatus::parse(&status)?,
         created_at: created_at as u64,
+    })
+}
+
+fn device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+    ))
+}
+
+fn link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRequest> {
+    Ok(LinkRequest {
+        token_hash: row.get(0)?,
+        device_did: row.get(1)?,
+        device_name: row.get(2)?,
+        account_id: row.get(3)?,
+        attachment_id: row.get(4)?,
+        delegation_cid: row.get(5)?,
+        delegation_hex: row.get(6)?,
+        descriptor_hex: row.get(7)?,
+        created_at: row.get::<_, i64>(8)? as u64,
+        expires_at: row.get::<_, i64>(9)? as u64,
+        completed_at: row.get::<_, Option<i64>>(10)?.map(|v| v as u64),
+        consumed_at: row.get::<_, Option<i64>>(11)?.map(|v| v as u64),
+        activated_at: row.get::<_, Option<i64>>(12)?.map(|v| v as u64),
+        cancelled_at: row.get::<_, Option<i64>>(13)?.map(|v| v as u64),
     })
 }
 
@@ -173,6 +233,7 @@ impl Store for SqliteStore {
             params![
                 account_id,
                 device.device_did,
+                device.attachment_id,
                 device.delegation_cid,
                 device.delegation_hex,
                 device.name,
@@ -250,6 +311,7 @@ impl Store for SqliteStore {
             params![
                 device.account_id,
                 device.device_did,
+                device.attachment_id,
                 device.delegation_cid,
                 device.delegation_hex,
                 device.name,
@@ -265,37 +327,43 @@ impl Store for SqliteStore {
         let conn = self.0.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(SELECT_DEVICES_BY_ACCOUNT).map_err(map_err)?;
         let rows: Vec<DeviceRow> = stmt
-            .query_map(params![account_id], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })
+            .query_map(params![account_id], device_row)
             .map_err(map_err)?
             .collect::<rusqlite::Result<_>>()
             .map_err(map_err)?;
         rows.into_iter().map(device_from_row).collect()
     }
 
-    async fn device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
+    async fn active_device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let row = conn
+            .query_row(SELECT_ACTIVE_DEVICE_BY_DID, params![device_did], device_row)
+            .optional()
+            .map_err(map_err)?;
+        row.map(device_from_row).transpose()
+    }
+
+    async fn device_for_account(
+        &self,
+        account_id: i64,
+        device_did: &str,
+    ) -> Result<Option<Device>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let row: Option<DeviceRow> = conn
-            .query_row(SELECT_DEVICE_BY_DID, params![device_did], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })
+            .query_row(
+                SELECT_DEVICE_FOR_ACCOUNT,
+                params![account_id, device_did],
+                device_row,
+            )
+            .optional()
+            .map_err(map_err)?;
+        row.map(device_from_row).transpose()
+    }
+
+    async fn attachment(&self, attachment_id: &str) -> Result<Option<Device>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let row = conn
+            .query_row(SELECT_ATTACHMENT, params![attachment_id], device_row)
             .optional()
             .map_err(map_err)?;
         row.map(device_from_row).transpose()
@@ -342,74 +410,183 @@ impl Store for SqliteStore {
 
     async fn link(&self, token_hash: &str) -> Result<Option<LinkRequest>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        conn.query_row(SELECT_LINK, params![token_hash], |row| {
-            Ok(LinkRequest {
-                token_hash: row.get(0)?,
-                device_did: row.get(1)?,
-                device_name: row.get(2)?,
-                delegation_hex: row.get(3)?,
-                descriptor_hex: row.get(4)?,
-                created_at: row.get::<_, i64>(5)? as u64,
-                expires_at: row.get::<_, i64>(6)? as u64,
-                consumed_at: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-            })
-        })
-        .optional()
-        .map_err(map_err)
+        conn.query_row(SELECT_LINK, params![token_hash], link_row)
+            .optional()
+            .map_err(map_err)
     }
 
-    async fn complete_link(
-        &self,
-        token_hash: &str,
-        device: &Device,
-        delegation_hex: &str,
-        descriptor_hex: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
-        let mut conn = self.0.lock().expect("store mutex poisoned");
-        let tx = conn.transaction().map_err(map_err)?;
-        let inserted = tx
+    async fn complete_link(&self, completion: &LinkCompletion<'_>) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
             .execute(
-                INSERT_DEVICE_FOR_LINK,
+                COMPLETE_LINK,
                 params![
-                    device.account_id,
-                    device.device_did,
-                    device.delegation_cid,
-                    device.delegation_hex,
-                    device.name,
-                    device.status.as_str(),
-                    device.created_at as i64,
-                    token_hash,
-                    now as i64,
+                    completion.account_id,
+                    completion.attachment_id,
+                    completion.delegation_cid,
+                    completion.delegation_hex,
+                    completion.descriptor_hex,
+                    completion.now as i64,
+                    (completion.now + 24 * 60 * 60) as i64,
+                    completion.token_hash,
+                    completion.now as i64,
                 ],
             )
             .map_err(map_err)?;
-        let completed = tx
-            .execute(
-                COMPLETE_LINK,
-                params![delegation_hex, descriptor_hex, token_hash, now as i64],
-            )
-            .map_err(map_err)?;
-        if inserted != 1 || completed != 1 {
-            return Ok(false);
-        }
-        tx.commit().map_err(map_err)?;
-        Ok(true)
+        Ok(changed == 1)
     }
 
     async fn consume_link(
         &self,
         token_hash: &str,
         now: u64,
-    ) -> Result<Option<(String, String)>, StoreError> {
+    ) -> Result<Option<LinkRequest>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         conn.query_row(
             CONSUME_LINK,
             params![now as i64, token_hash, now as i64],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            link_row,
         )
         .optional()
         .map_err(map_err)
+    }
+
+    async fn completed_link_by_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<Option<LinkRequest>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        conn.query_row(SELECT_LINK_BY_ATTACHMENT, params![attachment_id], link_row)
+            .optional()
+            .map_err(map_err)
+    }
+
+    async fn activate_completed_link(
+        &self,
+        token_hash: &str,
+        attachment_id: &str,
+        now: u64,
+    ) -> Result<ActivateOutcome, StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        let link = tx
+            .query_row(SELECT_LINK, params![token_hash], link_row)
+            .optional()
+            .map_err(map_err)?;
+        let Some(link) = link else {
+            return Ok(ActivateOutcome::Unknown);
+        };
+        if link.attachment_id.as_deref() != Some(attachment_id)
+            || link.account_id.is_none()
+            || link.delegation_cid.is_none()
+            || link.delegation_hex.is_none()
+        {
+            return Ok(ActivateOutcome::Unknown);
+        }
+        if link.cancelled_at.is_some() {
+            return Ok(ActivateOutcome::Cancelled);
+        }
+        if let Some(row) = tx
+            .query_row(SELECT_ATTACHMENT, params![attachment_id], device_row)
+            .optional()
+            .map_err(map_err)?
+        {
+            let device = device_from_row(row)?;
+            return Ok(match device.status {
+                DeviceStatus::Active => ActivateOutcome::Active(device),
+                DeviceStatus::Detached => ActivateOutcome::Cancelled,
+                DeviceStatus::Revoked => ActivateOutcome::RevokedDelegation,
+            });
+        }
+        let delegation_cid = link.delegation_cid.as_deref().unwrap();
+        let revoked: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM devices WHERE delegation_cid = ?1 AND status = 'revoked')",
+                params![delegation_cid],
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        if revoked {
+            return Ok(ActivateOutcome::RevokedDelegation);
+        }
+        let active = tx
+            .query_row(
+                SELECT_ACTIVE_DEVICE_BY_DID,
+                params![link.device_did],
+                device_row,
+            )
+            .optional()
+            .map_err(map_err)?;
+        if active.is_some() {
+            return Ok(ActivateOutcome::ActiveDeviceConflict);
+        }
+        tx.execute(
+            INSERT_DEVICE,
+            params![
+                link.account_id.unwrap(),
+                link.device_did,
+                attachment_id,
+                delegation_cid,
+                link.delegation_hex.unwrap(),
+                link.device_name,
+                DeviceStatus::Active.as_str(),
+                now as i64,
+            ],
+        )
+        .map_err(map_err)?;
+        tx.execute(
+            "UPDATE link_requests SET activated_at = COALESCE(activated_at, ?1) WHERE token_hash = ?2 AND attachment_id = ?3 AND cancelled_at IS NULL",
+            params![now as i64, token_hash, attachment_id],
+        )
+        .map_err(map_err)?;
+        let row = tx
+            .query_row(SELECT_ATTACHMENT, params![attachment_id], device_row)
+            .map_err(map_err)?;
+        let device = device_from_row(row)?;
+        tx.commit().map_err(map_err)?;
+        Ok(ActivateOutcome::Active(device))
+    }
+
+    async fn detach_attachment(
+        &self,
+        attachment_id: &str,
+        now: u64,
+    ) -> Result<DetachStoreOutcome, StoreError> {
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        if let Some(row) = tx
+            .query_row(SELECT_ATTACHMENT, params![attachment_id], device_row)
+            .optional()
+            .map_err(map_err)?
+        {
+            let device = device_from_row(row)?;
+            let outcome = match device.status {
+                DeviceStatus::Active => {
+                    tx.execute(
+                        "UPDATE devices SET status = 'detached' WHERE attachment_id = ?1 AND status = 'active'",
+                        params![attachment_id],
+                    )
+                    .map_err(map_err)?;
+                    DetachStoreOutcome::Detached
+                }
+                DeviceStatus::Detached => DetachStoreOutcome::AlreadyDetached,
+                DeviceStatus::Revoked => DetachStoreOutcome::Revoked,
+            };
+            tx.commit().map_err(map_err)?;
+            return Ok(outcome);
+        }
+        let cancelled = tx
+            .execute(
+                "UPDATE link_requests SET cancelled_at = COALESCE(cancelled_at, ?1) WHERE attachment_id = ?2 AND completed_at IS NOT NULL AND activated_at IS NULL",
+                params![now as i64, attachment_id],
+            )
+            .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        Ok(if cancelled == 1 {
+            DetachStoreOutcome::CancelledPendingActivation
+        } else {
+            DetachStoreOutcome::UnknownAttachment
+        })
     }
 }
 
@@ -448,8 +625,10 @@ mod tests {
             .await
             .unwrap();
         let device = Device {
+            id: 0,
             account_id: id,
             device_did: "did:key:zDev".into(),
+            attachment_id: "05".repeat(32),
             delegation_cid: "bafyCid".into(),
             delegation_hex: "beef".into(),
             name: "laptop".into(),
@@ -465,7 +644,7 @@ mod tests {
         assert!(store.revoke_device(id, "did:key:zDev").await.unwrap());
         assert_eq!(
             store
-                .device_by_did("did:key:zDev")
+                .device_for_account(id, "did:key:zDev")
                 .await
                 .unwrap()
                 .unwrap()
@@ -473,6 +652,43 @@ mod tests {
             DeviceStatus::Revoked
         );
         assert!(!store.revoke_device(id, "did:key:zAbsent").await.unwrap());
+
+        let other_id = store
+            .create_account("b@x.com", "did:key:zRoot2", "cred2", 3)
+            .await
+            .unwrap();
+        store
+            .insert_device(&Device {
+                id: 0,
+                account_id: other_id,
+                attachment_id: "07".repeat(32),
+                delegation_cid: "bafyCid2".into(),
+                delegation_hex: "cafe".into(),
+                name: "other account".into(),
+                status: DeviceStatus::Active,
+                created_at: 4,
+                ..device
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .device_for_account(id, "did:key:zDev")
+                .await
+                .unwrap()
+                .unwrap()
+                .delegation_cid,
+            "bafyCid"
+        );
+        assert_eq!(
+            store
+                .device_for_account(other_id, "did:key:zDev")
+                .await
+                .unwrap()
+                .unwrap()
+                .delegation_cid,
+            "bafyCid2"
+        );
     }
 
     #[dialog_common::test]
@@ -486,8 +702,8 @@ mod tests {
             let conn = store.0.lock().expect("store mutex poisoned");
             conn.execute(
                 "INSERT INTO devices \
-                 (account_id, device_did, delegation_cid, name, status, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+                 (account_id, device_did, attachment_id, delegation_cid, name, status, created_at) \
+                 VALUES (?1, ?2, ?3, ?3, ?4, 'active', ?5)",
                 params![id, "did:key:zLegacyDevice", "bafyLegacy", "old laptop", 2],
             )
             .unwrap();
@@ -524,11 +740,17 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_normalizes_a_deployed_devices_table_and_keeps_delegation_bytes() {
+    fn it_migrates_deployed_devices_to_account_scoped_registration() {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
             .unwrap();
+        conn.execute_batch(include_str!("../../migrations/0002_link_requests.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0004_account_repository_descriptor.sql"
+        ))
+        .unwrap();
         conn.execute_batch(
             "ALTER TABLE devices ADD COLUMN delegation_hex TEXT NOT NULL DEFAULT '';\
              INSERT INTO accounts (email, root_did, credential_id, created_at)\
@@ -540,6 +762,10 @@ mod tests {
 
         conn.execute_batch(include_str!("../../migrations/0005_normalize_devices.sql"))
             .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0006_device_attachment_lifecycle.sql"
+        ))
+        .unwrap();
 
         let columns = conn
             .prepare("PRAGMA table_info(devices)")
@@ -554,6 +780,7 @@ mod tests {
                 "id",
                 "account_id",
                 "device_did",
+                "attachment_id",
                 "delegation_cid",
                 "delegation_hex",
                 "name",
@@ -575,14 +802,50 @@ mod tests {
             retained,
             ("did:key:zDev".into(), "bafyCid".into(), "obsolete".into())
         );
+
+        conn.execute_batch(
+            "INSERT INTO accounts (email, root_did, credential_id, created_at)\
+             VALUES ('b@x.com', 'did:key:zRoot2', 'cred2', 3);",
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO devices \
+                 (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \
+                 VALUES (2, ?1, 'new-attachment', 'bafyCid2', 'cafe', 'other account', 'active', 4)",
+                params!["did:key:zDev"],
+            )
+            .is_err());
+        conn.execute(
+            "UPDATE devices SET status = 'detached' WHERE device_did = ?1",
+            params!["did:key:zDev"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO devices \
+             (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \
+             VALUES (2, ?1, 'new-attachment', 'bafyCid2', 'cafe', 'other account', 'active', 4)",
+            params!["did:key:zDev"],
+        )
+        .unwrap();
+        let registrations: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM devices WHERE device_did = ?1",
+                params!["did:key:zDev"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(registrations, 2);
     }
 
     #[dialog_common::test]
     async fn it_enforces_the_device_account_foreign_key() {
         let store = SqliteStore::in_memory().unwrap();
         let orphan = Device {
+            id: 0,
             account_id: 999,
             device_did: "did:key:zOrphan".into(),
+            attachment_id: "06".repeat(32),
             delegation_cid: "bafyCid".into(),
             delegation_hex: "beef".into(),
             name: "ghost".into(),

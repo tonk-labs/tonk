@@ -15,10 +15,6 @@ pub const EMAIL_TAKEN: &str = "an account already exists for this email address"
 /// Returned when the calling root DID already has an account.
 pub const ROOT_TAKEN: &str = "an account already exists for this passkey";
 
-/// Returned when the first device's DID is already registered, under
-/// this account or another.
-pub const DEVICE_TAKEN: &str = "this browser profile is already registered to an account";
-
 /// A request to create a new account and register its first device.
 pub struct CreateAccount {
     /// The account's verified email address.
@@ -46,11 +42,10 @@ pub struct CreateAccount {
 /// one-shot: validating after it would let a malformed request burn the
 /// user's code and leave them waiting out the resend cooldown for a new
 /// one. The email address is lowercased before being stored. The account
-/// and its first device are created atomically: a conflict on the device
-/// DID (for example, an attacker who has pre-registered a delegation to
-/// the victim's device DID under a different account) rolls back the
-/// account row too, rather than stranding a zero-device account that
-/// has permanently burned the email and root DID.
+/// and its first device are created atomically, so an insertion failure
+/// cannot strand a zero-device account that has permanently burned the
+/// email and root DID. Device registrations are account-scoped: one local
+/// device identity may be linked to multiple accounts over its lifetime.
 pub async fn create_account<S: Store>(
     store: &S,
     request: &CreateAccount,
@@ -75,6 +70,7 @@ pub async fn create_account<S: Store>(
             &repository_descriptor,
             &NewDevice {
                 device_did: request.device_did.clone(),
+                attachment_id: crate::core::devices::random_attachment_id(),
                 delegation_cid,
                 delegation_hex: request.delegation_hex.clone(),
                 name: request.device_name.clone(),
@@ -94,7 +90,7 @@ pub async fn create_account<S: Store>(
 
 /// Turn a uniqueness conflict from
 /// [`Store::create_account_with_device`] into a message the caller can
-/// act on, by asking which of the three unique columns is already taken.
+/// act on, by asking which account column is already taken.
 ///
 /// Naming the taken column is safe here and only here: reaching this
 /// point means the caller both verified an emailed code (proving control
@@ -121,8 +117,6 @@ async fn explain_conflict<S: Store>(
         ROOT_TAKEN
     } else if taken(store.account_by_email(email).await) {
         EMAIL_TAKEN
-    } else if taken(store.device_by_did(&request.device_did).await) {
-        DEVICE_TAKEN
     } else {
         crate::core::GENERIC_CONFLICT
     };
@@ -485,7 +479,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_does_not_strand_an_account_when_the_device_insert_conflicts() {
+    async fn it_rejects_account_creation_while_the_device_is_active_elsewhere() {
         let store = SqliteStore::in_memory().unwrap();
         let sender = CapturedEmail::default();
         request_code(&store, &sender, "a@x.com", "123456", 100)
@@ -493,40 +487,42 @@ mod tests {
             .unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
 
-        // Pre-register the fixture's device DID under a different
-        // account, as an attacker front-running the victim's device DID
-        // would. Without atomicity, the account insert below would
-        // still succeed and the device insert would fail, permanently
-        // burning the email and root DID with zero devices registered.
         let other_id = store
             .create_account("other@x.com", "did:key:zOther", "cred-other", 1)
             .await
             .unwrap();
         store
             .insert_device(&Device {
+                id: 0,
                 account_id: other_id,
                 device_did: device_did.clone(),
-                delegation_cid: "bafyStolen".into(),
+                attachment_id: "04".repeat(32),
+                delegation_cid: "bafyOther".into(),
                 delegation_hex: "beef".into(),
-                name: "attacker".into(),
+                name: "old registration".into(),
                 status: DeviceStatus::Active,
                 created_at: 1,
             })
             .await
             .unwrap();
 
-        let request = CreateAccount {
-            email: "a@x.com".into(),
-            code: "123456".into(),
-            root_did: root_did.clone(),
-            credential_id: "cred".into(),
-            device_did,
-            device_name: "laptop".into(),
-            delegation_hex,
-            repository_descriptor_hex,
-        };
-        let error = create_account(&store, &request, 200).await;
-        assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == DEVICE_TAKEN));
-        assert!(store.account_by_root(&root_did).await.unwrap().is_none());
+        let outcome = create_account(
+            &store,
+            &CreateAccount {
+                email: "a@x.com".into(),
+                code: "123456".into(),
+                root_did,
+                credential_id: "cred".into(),
+                device_did,
+                device_name: "new registration".into(),
+                delegation_hex,
+                repository_descriptor_hex,
+            },
+            200,
+        )
+        .await;
+
+        assert!(matches!(outcome, Err(CeremonyError::Conflict(_))));
+        assert_eq!(store.devices(other_id).await.unwrap().len(), 1);
     }
 }

@@ -6,7 +6,9 @@ use worker::*;
 use crate::auth::{
     authorize, authorize_root, optional_revocation, required_string, string_argument,
 };
-use crate::core::devices::{DeviceView, list_devices, register_device, revoke_device};
+use crate::core::devices::{
+    DeviceView, detach_device, list_devices, register_device, revoke_device,
+};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{
     build_revocations, build_store, ceremony_error, read_body, with_cors_headers,
@@ -17,6 +19,7 @@ use crate::store::Store;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceJson {
+    attachment_id: String,
     did: String,
     name: String,
     status: String,
@@ -28,6 +31,7 @@ struct DeviceJson {
 impl From<DeviceView> for DeviceJson {
     fn from(view: DeviceView) -> Self {
         DeviceJson {
+            attachment_id: view.attachment_id,
             did: view.did,
             name: view.name,
             status: view.status,
@@ -120,7 +124,7 @@ async fn handle_link_inner(
     let descriptor_hex = hex::encode(descriptor);
     let now = Date::now().as_millis() / 1000;
 
-    register_device(
+    let attachment_id = register_device(
         &store,
         &account,
         &device_did,
@@ -131,9 +135,11 @@ async fn handle_link_inner(
     .await
     .map_err(ceremony_error)?;
 
-    Response::from_json(&serde_json::json!({ "descriptorHex": descriptor_hex })).map_err(|err| {
-        ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
-    })
+    Response::from_json(&serde_json::json!({
+        "attachmentId": attachment_id,
+        "descriptorHex": descriptor_hex,
+    }))
+    .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
 }
 
 async fn handle_register_inner(
@@ -151,7 +157,7 @@ async fn handle_register_inner(
     let delegation_hex = string_argument(&caller, "delegation").map_err(ceremony_error)?;
     let now = Date::now().as_millis() / 1000;
 
-    register_device(
+    let attachment_id = register_device(
         &store,
         &caller.account,
         &device_did,
@@ -162,9 +168,34 @@ async fn handle_register_inner(
     .await
     .map_err(ceremony_error)?;
 
-    Response::from_json(&serde_json::json!({})).map_err(|err| {
+    Response::from_json(&serde_json::json!({ "attachmentId": attachment_id })).map_err(|err| {
         ServiceError::new(ErrorCode::InternalError, format!("response error: {err}"))
     })
+}
+
+/// `POST /devices/detach` → detach one exact generation without a UCAN.
+pub async fn handle_detach(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match async {
+        let intent: tonk_account::detach::SignedDetachIntent =
+            req.json().await.map_err(|error| {
+                ServiceError::new(
+                    ErrorCode::InvalidArgument,
+                    format!("failed to parse detach intent: {error}"),
+                )
+            })?;
+        let store = build_store(&ctx)?;
+        let outcome = detach_device(&store, &intent, Date::now().as_millis() / 1000)
+            .await
+            .map_err(ceremony_error)?;
+        Response::from_json(&serde_json::json!({ "outcome": outcome }))
+            .map_err(|error| ServiceError::new(ErrorCode::InternalError, error.to_string()))
+    }
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => error.to_response()?,
+    };
+    Ok(with_cors_headers(response))
 }
 
 /// `POST /devices/revoke` → revoke a device under an account.
@@ -187,6 +218,7 @@ async fn handle_revoke_inner(
         .await
         .map_err(ceremony_error)?;
 
+    let attachment_id = string_argument(&caller, "attachmentId").map_err(ceremony_error)?;
     let device_did = string_argument(&caller, "did").map_err(ceremony_error)?;
     let revocation = optional_revocation(&caller)
         .map_err(ceremony_error)?
@@ -201,6 +233,7 @@ async fn handle_revoke_inner(
         &revocations,
         &caller.account,
         &caller.device.device_did,
+        &attachment_id,
         &device_did,
         &revocation,
     )

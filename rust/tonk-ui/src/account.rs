@@ -273,6 +273,7 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
             let _ = button.set_attribute("type", "button");
             let _ = button.set_attribute("class", "account__button account__button--quiet");
             let _ = button.set_attribute("data-revoke", &device.did);
+            let _ = button.set_attribute("data-attachment-id", &device.attachment_id);
             let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
             if let Some(delegation_hex) = &device.delegation_hex {
                 let _ = button.set_attribute("data-delegation-hex", delegation_hex);
@@ -322,23 +323,28 @@ fn disable_authority_actions(host: &HtmlElement) {
 /// this page pointed at the device it wants cut off. The page still asks
 /// for confirmation and still runs the ceremony — the link chooses the
 /// target, it does not authorize anything.
-fn revoke_target_from_url() -> Option<String> {
+fn query_value(name: &str) -> Option<String> {
     let search = window()?.location().search().ok()?;
     let query = search.strip_prefix('?')?;
     query.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=')?;
-        if name != "revoke" || value.is_empty() {
+        let (candidate, value) = pair.split_once('=')?;
+        if candidate != name || value.is_empty() {
             return None;
         }
-        // A browser may percent-encode the DID; decode before matching
-        // registry rows, falling back to the raw value if decoding
-        // fails.
         Some(
             js_sys::decode_uri_component(value)
                 .map(String::from)
                 .unwrap_or_else(|_| value.to_owned()),
         )
     })
+}
+
+fn revoke_target_from_url() -> Option<String> {
+    query_value("revoke")
+}
+
+fn revoke_attachment_from_url() -> Option<String> {
+    query_value("attachment")
 }
 
 /// Strip the query once the deep link has been acted on, mirroring what
@@ -363,14 +369,19 @@ fn load_devices(host: HtmlElement) {
                 render_devices(&host, &devices);
                 set_mode(&host, "devices");
                 if let Some(did) = revoke_target_from_url() {
+                    let attachment_id = revoke_attachment_from_url();
                     consume_revoke_target();
-                    match devices
-                        .iter()
-                        .find(|device| device.did == did && device.status == "active")
-                    {
+                    match devices.iter().find(|device| {
+                        device.did == did
+                            && device.status == "active"
+                            && attachment_id
+                                .as_deref()
+                                .is_none_or(|expected| device.attachment_id == expected)
+                    }) {
                         Some(device) if device.this_device || device.delegation_hex.is_some() => {
                             begin_revoke(
                                 host.clone(),
+                                device.attachment_id.clone(),
                                 device.did.clone(),
                                 device.delegation_cid.clone(),
                                 device.delegation_hex.clone().unwrap_or_default(),
@@ -1030,6 +1041,9 @@ fn bind(host: &HtmlElement) {
             let Some(did) = target.get_attribute("data-revoke") else {
                 return;
             };
+            let attachment_id = target
+                .get_attribute("data-attachment-id")
+                .unwrap_or_default();
             let delegation_cid = target
                 .get_attribute("data-delegation-cid")
                 .unwrap_or_default();
@@ -1039,6 +1053,7 @@ fn bind(host: &HtmlElement) {
             let self_revoke = target.get_attribute("data-self-revoke").is_some();
             begin_revoke(
                 host_for_revoke.clone(),
+                attachment_id,
                 did,
                 delegation_cid,
                 delegation_hex,
@@ -1058,6 +1073,7 @@ fn bind(host: &HtmlElement) {
 /// list's button and the CLI's `?revoke=` handoff.
 fn begin_revoke(
     host: HtmlElement,
+    attachment_id: String,
     did: String,
     delegation_cid: String,
     delegation_hex: String,
@@ -1104,7 +1120,7 @@ fn begin_revoke(
             }
         };
         set_busy(&host, true, "Revoking device…");
-        match crate::api::revoke_account_device(did, revocation_hex).await {
+        match crate::api::revoke_account_device(attachment_id, did, revocation_hex).await {
             Ok(acknowledgement) => {
                 clear_error(&host);
                 set_busy(
@@ -1424,6 +1440,7 @@ mod tests {
         // affects names generated for new registrations.
         let devices = vec![
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-this".into(),
                 did: "did:key:zThis".into(),
                 delegation_cid: "bafythis".into(),
                 delegation_hex: Some("beef".into()),
@@ -1433,6 +1450,7 @@ mod tests {
                 this_device: true,
             },
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-other".into(),
                 did: "did:key:zOther".into(),
                 delegation_cid: "bafyother".into(),
                 delegation_hex: Some("beef".into()),
@@ -1442,6 +1460,7 @@ mod tests {
                 this_device: false,
             },
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-phone".into(),
                 did: "did:key:zPhone".into(),
                 delegation_cid: "bafyphone".into(),
                 delegation_hex: Some("beef".into()),
@@ -1451,6 +1470,7 @@ mod tests {
                 this_device: false,
             },
             tonk_worker_api::AccountDevice {
+                attachment_id: "attachment-legacy".into(),
                 did: "did:key:zLegacy".into(),
                 delegation_cid: "bafylegacy".into(),
                 delegation_hex: None,

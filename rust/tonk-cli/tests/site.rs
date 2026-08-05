@@ -1237,7 +1237,7 @@ mod when_mounting_account_authority {
     use dialog_ucan_core::subject::Subject;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal as _;
-    use tonk_account::backup::SPACE_ROOT_SITE_PREFIX;
+    use tonk_account::backup::space_root_site;
     use tonk_cli::site::{self, TonkSite};
     use tonk_schema::{Invitation, InvitedVia, MemberName, MemberRole, Membership};
 
@@ -1286,7 +1286,7 @@ mod when_mounting_account_authority {
         let persisted = mounted
             .profile
             .credential()
-            .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+            .site(space_root_site(&subject, &account_root))
             .load::<Vec<u8>>()
             .perform(&mounted.operator)
             .await?;
@@ -1360,7 +1360,7 @@ mod when_mounting_account_authority {
     async fn it_recovers_a_pre_feature_prefix_from_profile_authority() -> Result<()> {
         let test = common::TestSite::new().await?;
         let root = local_root(&test.site).await?;
-        let key = format!("{SPACE_ROOT_SITE_PREFIX}{}", test.site.repository.did());
+        let key = space_root_site(&test.site.repository.did(), &root);
         test.site
             .profile
             .credential()

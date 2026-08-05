@@ -611,13 +611,18 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
 /// acknowledgement. Refreshing the mutable device list is a separate,
 /// best-effort operation.
 pub async fn revoke_account_device(
+    attachment_id: String,
     did: String,
     revocation: String,
 ) -> Result<RevokeDeviceAcknowledgement, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
-        .json(&RevokeDeviceRequest { did, revocation })
+        .json(&RevokeDeviceRequest {
+            attachment_id,
+            did,
+            revocation,
+        })
         .send()
         .await
         .map_err(into_api_error)?;

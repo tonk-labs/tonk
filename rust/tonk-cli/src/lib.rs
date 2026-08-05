@@ -31,6 +31,8 @@
 //! - [`update`] — self-update: `tonk update` plus the release check.
 
 pub mod account;
+mod account_authority;
+mod account_session;
 pub mod account_spots;
 pub mod account_state;
 pub mod agents;

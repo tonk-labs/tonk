@@ -151,6 +151,18 @@ pub(crate) async fn credential_operator_for_store(
     store: &crate::spot::SpotStore,
 ) -> Result<Operator<NativeSpace>> {
     let root = store.account_dir();
+    let default_store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    // Persisted profiles must be remounted before deriving another operator;
+    // isolated test stores use the caller's in-memory profile directly.
+    if root == default_store.account_dir() {
+        return operator_with_profile(
+            profile,
+            &root,
+            crate::site::PROFILE_NAME,
+            Directory::Profile,
+        )
+        .await;
+    }
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create account state at {}", root.display()))?;
     let root = root
@@ -268,7 +280,10 @@ async fn mount(
     Ok(repository)
 }
 
-async fn hydrate(repository: &Repository, operator: &Operator<NativeSpace>) -> Result<()> {
+async fn hydrate(
+    repository: &Repository,
+    operator: &crate::account_authority::AccountBoundOperator,
+) -> Result<()> {
     let branch = repository
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -328,8 +343,18 @@ async fn ensure_with_operator(
         });
     };
     let repository = mount(profile, &operator, &descriptor).await?;
+    let operator = crate::account_authority::wrap(
+        operator,
+        profile.clone(),
+        crate::spot::SpotStore::open().context("failed to locate account state")?,
+        true,
+    )
+    .await?;
 
-    if marker_matches(marker(profile, &operator).await?.as_deref(), &descriptor) {
+    if marker_matches(
+        marker(profile, operator.local()).await?.as_deref(),
+        &descriptor,
+    ) {
         // Ready remains ready offline. A best-effort normal sync catches up
         // without clearing the durable trust marker on failure.
         let branch = repository
@@ -354,7 +379,7 @@ async fn ensure_with_operator(
 
     match hydrate(&repository, &operator).await {
         Ok(()) => {
-            save_marker(profile, &operator, &descriptor).await?;
+            save_marker(profile, operator.local(), &descriptor).await?;
             Ok(EnsureOutcome {
                 status: AccountStateStatus::Ready,
                 warning: None,
@@ -493,7 +518,12 @@ mod tests {
         let outcome = ensure_with_operator(&profile, ensure_operator)
             .await
             .unwrap();
-        assert_eq!(outcome.status, AccountStateStatus::Ready);
+        assert_eq!(
+            outcome.status,
+            AccountStateStatus::Ready,
+            "ensure warning: {:?}",
+            outcome.warning
+        );
         assert!(store.account_dir().is_dir());
         assert!(!store.registry_path().exists());
         assert!(!store.canonical_site("account").exists());

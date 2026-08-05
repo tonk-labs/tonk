@@ -13,12 +13,14 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    Account, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE, Device,
-    DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT, INSERT_ACCOUNT_WITH_DESCRIPTOR,
-    INSERT_DEVICE, INSERT_DEVICE_FOR_LINK, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK, LinkRequest,
-    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_CODE, SELECT_DEVICE_BY_DID,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
-    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
+    DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
+    INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK,
+    LinkCompletion, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
+    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
+    SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
+    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -93,8 +95,10 @@ impl From<AccountRowD1> for Account {
 /// status column is parsed.
 #[derive(Deserialize)]
 struct DeviceRowD1 {
+    id: f64,
     account_id: f64,
     device_did: String,
+    attachment_id: String,
     delegation_cid: String,
     delegation_hex: Option<String>,
     name: String,
@@ -107,8 +111,10 @@ impl TryFrom<DeviceRowD1> for Device {
 
     fn try_from(row: DeviceRowD1) -> Result<Self, StoreError> {
         Ok(Device {
+            id: row.id as i64,
             account_id: row.account_id as i64,
             device_did: row.device_did,
+            attachment_id: row.attachment_id,
             delegation_cid: row.delegation_cid,
             delegation_hex: row.delegation_hex.unwrap_or_default(),
             name: row.name,
@@ -123,11 +129,17 @@ struct LinkRequestD1 {
     token_hash: String,
     device_did: String,
     device_name: String,
+    account_id: Option<f64>,
+    attachment_id: Option<String>,
+    delegation_cid: Option<String>,
     delegation_hex: Option<String>,
     descriptor_hex: Option<String>,
     created_at: f64,
     expires_at: f64,
+    completed_at: Option<f64>,
     consumed_at: Option<f64>,
+    activated_at: Option<f64>,
+    cancelled_at: Option<f64>,
 }
 
 impl From<LinkRequestD1> for LinkRequest {
@@ -136,19 +148,19 @@ impl From<LinkRequestD1> for LinkRequest {
             token_hash: row.token_hash,
             device_did: row.device_did,
             device_name: row.device_name,
+            account_id: row.account_id.map(|value| value as i64),
+            attachment_id: row.attachment_id,
+            delegation_cid: row.delegation_cid,
             delegation_hex: row.delegation_hex,
             descriptor_hex: row.descriptor_hex,
             created_at: row.created_at as u64,
             expires_at: row.expires_at as u64,
+            completed_at: row.completed_at.map(|value| value as u64),
             consumed_at: row.consumed_at.map(|value| value as u64),
+            activated_at: row.activated_at.map(|value| value as u64),
+            cancelled_at: row.cancelled_at.map(|value| value as u64),
         }
     }
-}
-
-#[derive(Deserialize)]
-struct ConsumedLinkD1 {
-    delegation_hex: String,
-    descriptor_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -265,6 +277,7 @@ impl Store for D1Store {
             .prepare(INSERT_DEVICE_FOR_NEW_ACCOUNT)
             .bind(&[
                 JsValue::from(device.device_did.as_str()),
+                JsValue::from(device.attachment_id.as_str()),
                 JsValue::from(device.delegation_cid.as_str()),
                 JsValue::from(device.delegation_hex.as_str()),
                 JsValue::from(device.name.as_str()),
@@ -353,6 +366,7 @@ impl Store for D1Store {
             .bind(&[
                 JsValue::from_f64(device.account_id as f64),
                 JsValue::from(device.device_did.as_str()),
+                JsValue::from(device.attachment_id.as_str()),
                 JsValue::from(device.delegation_cid.as_str()),
                 JsValue::from(device.delegation_hex.as_str()),
                 JsValue::from(device.name.as_str()),
@@ -379,11 +393,42 @@ impl Store for D1Store {
         rows.into_iter().map(Device::try_from).collect()
     }
 
-    async fn device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
+    async fn active_device_by_did(&self, device_did: &str) -> Result<Option<Device>, StoreError> {
         let row: Option<DeviceRowD1> = self
             .0
-            .prepare(SELECT_DEVICE_BY_DID)
+            .prepare(SELECT_ACTIVE_DEVICE_BY_DID)
             .bind(&[JsValue::from(device_did)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        row.map(Device::try_from).transpose()
+    }
+
+    async fn device_for_account(
+        &self,
+        account_id: i64,
+        device_did: &str,
+    ) -> Result<Option<Device>, StoreError> {
+        let row: Option<DeviceRowD1> = self
+            .0
+            .prepare(SELECT_DEVICE_FOR_ACCOUNT)
+            .bind(&[
+                JsValue::from_f64(account_id as f64),
+                JsValue::from(device_did),
+            ])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        row.map(Device::try_from).transpose()
+    }
+
+    async fn attachment(&self, attachment_id: &str) -> Result<Option<Device>, StoreError> {
+        let row: Option<DeviceRowD1> = self
+            .0
+            .prepare(SELECT_ATTACHMENT)
+            .bind(&[JsValue::from(attachment_id)])
             .map_err(map_err)?
             .first(None)
             .await
@@ -464,60 +509,39 @@ impl Store for D1Store {
         Ok(row.map(LinkRequest::from))
     }
 
-    async fn complete_link(
-        &self,
-        token_hash: &str,
-        device: &Device,
-        delegation_hex: &str,
-        descriptor_hex: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
-        let insert = self
-            .0
-            .prepare(INSERT_DEVICE_FOR_LINK)
-            .bind(&[
-                JsValue::from_f64(device.account_id as f64),
-                JsValue::from(device.device_did.as_str()),
-                JsValue::from(device.delegation_cid.as_str()),
-                JsValue::from(device.delegation_hex.as_str()),
-                JsValue::from(device.name.as_str()),
-                JsValue::from(device.status.as_str()),
-                JsValue::from_f64(device.created_at as f64),
-                JsValue::from(token_hash),
-                JsValue::from_f64(now as f64),
-            ])
-            .map_err(map_err)?;
-        let complete = self
+    async fn complete_link(&self, completion: &LinkCompletion<'_>) -> Result<bool, StoreError> {
+        let result = self
             .0
             .prepare(COMPLETE_LINK)
             .bind(&[
-                JsValue::from(delegation_hex),
-                JsValue::from(descriptor_hex),
-                JsValue::from(token_hash),
-                JsValue::from_f64(now as f64),
+                JsValue::from_f64(completion.account_id as f64),
+                JsValue::from(completion.attachment_id),
+                JsValue::from(completion.delegation_cid),
+                JsValue::from(completion.delegation_hex),
+                JsValue::from(completion.descriptor_hex),
+                JsValue::from_f64(completion.now as f64),
+                JsValue::from_f64((completion.now + 24 * 60 * 60) as f64),
+                JsValue::from(completion.token_hash),
+                JsValue::from_f64(completion.now as f64),
             ])
-            .map_err(map_err)?;
-        let results = self
-            .0
-            .batch(vec![insert, complete])
+            .map_err(map_err)?
+            .run()
             .await
             .map_err(map_err)?;
-        let changes = |index: usize| {
-            results
-                .get(index)
-                .and_then(|result| result.meta().ok().flatten())
-                .and_then(|meta| meta.changes)
-                .unwrap_or(0)
-        };
-        Ok(changes(0) == 1 && changes(1) == 1)
+        Ok(result
+            .meta()
+            .map_err(map_err)?
+            .and_then(|m| m.changes)
+            .unwrap_or(0)
+            == 1)
     }
 
     async fn consume_link(
         &self,
         token_hash: &str,
         now: u64,
-    ) -> Result<Option<(String, String)>, StoreError> {
-        let row: Option<ConsumedLinkD1> = self
+    ) -> Result<Option<LinkRequest>, StoreError> {
+        let row: Option<LinkRequestD1> = self
             .0
             .prepare(CONSUME_LINK)
             .bind(&[
@@ -529,6 +553,135 @@ impl Store for D1Store {
             .first(None)
             .await
             .map_err(map_err)?;
-        Ok(row.map(|row| (row.delegation_hex, row.descriptor_hex)))
+        Ok(row.map(LinkRequest::from))
+    }
+
+    async fn completed_link_by_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<Option<LinkRequest>, StoreError> {
+        let row: Option<LinkRequestD1> = self
+            .0
+            .prepare(SELECT_LINK_BY_ATTACHMENT)
+            .bind(&[JsValue::from(attachment_id)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(LinkRequest::from))
+    }
+
+    async fn activate_completed_link(
+        &self,
+        token_hash: &str,
+        attachment_id: &str,
+        now: u64,
+    ) -> Result<ActivateOutcome, StoreError> {
+        if let Some(device) = self.attachment(attachment_id).await? {
+            return Ok(match device.status {
+                DeviceStatus::Active => ActivateOutcome::Active(device),
+                DeviceStatus::Detached => ActivateOutcome::Cancelled,
+                DeviceStatus::Revoked => ActivateOutcome::RevokedDelegation,
+            });
+        }
+        let Some(link) = self.link(token_hash).await? else {
+            return Ok(ActivateOutcome::Unknown);
+        };
+        if link.attachment_id.as_deref() != Some(attachment_id) {
+            return Ok(ActivateOutcome::Unknown);
+        }
+        if link.cancelled_at.is_some() {
+            return Ok(ActivateOutcome::Cancelled);
+        }
+        let insert_sql = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) SELECT account_id, device_did, attachment_id, delegation_cid, delegation_hex, device_name, 'active', ?1 FROM link_requests l WHERE token_hash = ?2 AND attachment_id = ?3 AND completed_at IS NOT NULL AND cancelled_at IS NULL AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_did = l.device_did AND d.status = 'active') AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.delegation_cid = l.delegation_cid AND d.status = 'revoked')";
+        let insert = self
+            .0
+            .prepare(insert_sql)
+            .bind(&[
+                JsValue::from_f64(now as f64),
+                JsValue::from(token_hash),
+                JsValue::from(attachment_id),
+            ])
+            .map_err(map_err)?;
+        let mark = self
+            .0
+            .prepare("UPDATE link_requests SET activated_at = COALESCE(activated_at, ?1) WHERE token_hash = ?2 AND attachment_id = ?3 AND EXISTS (SELECT 1 FROM devices WHERE attachment_id = ?3)")
+            .bind(&[
+                JsValue::from_f64(now as f64),
+                JsValue::from(token_hash),
+                JsValue::from(attachment_id),
+            ])
+            .map_err(map_err)?;
+        self.0.batch(vec![insert, mark]).await.map_err(map_err)?;
+        if let Some(device) = self.attachment(attachment_id).await? {
+            return Ok(match device.status {
+                DeviceStatus::Active => ActivateOutcome::Active(device),
+                DeviceStatus::Detached => ActivateOutcome::Cancelled,
+                DeviceStatus::Revoked => ActivateOutcome::RevokedDelegation,
+            });
+        }
+        if self.active_device_by_did(&link.device_did).await?.is_some() {
+            return Ok(ActivateOutcome::ActiveDeviceConflict);
+        }
+        let revoked: Option<DeviceRowD1> = self
+            .0
+            .prepare("SELECT id, account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at FROM devices WHERE delegation_cid = ?1 AND status = 'revoked'")
+            .bind(&[JsValue::from(link.delegation_cid.as_deref().unwrap_or_default())])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        Ok(if revoked.is_some() {
+            ActivateOutcome::RevokedDelegation
+        } else {
+            ActivateOutcome::Unknown
+        })
+    }
+
+    async fn detach_attachment(
+        &self,
+        attachment_id: &str,
+        now: u64,
+    ) -> Result<DetachStoreOutcome, StoreError> {
+        if let Some(device) = self.attachment(attachment_id).await? {
+            return match device.status {
+                DeviceStatus::Detached => Ok(DetachStoreOutcome::AlreadyDetached),
+                DeviceStatus::Revoked => Ok(DetachStoreOutcome::Revoked),
+                DeviceStatus::Active => {
+                    self.0
+                        .prepare("UPDATE devices SET status = 'detached' WHERE attachment_id = ?1 AND status = 'active'")
+                        .bind(&[JsValue::from(attachment_id)])
+                        .map_err(map_err)?
+                        .run()
+                        .await
+                        .map_err(map_err)?;
+                    Ok(DetachStoreOutcome::Detached)
+                }
+            };
+        }
+        let result = self
+            .0
+            .prepare("UPDATE link_requests SET cancelled_at = COALESCE(cancelled_at, ?1) WHERE attachment_id = ?2 AND completed_at IS NOT NULL AND activated_at IS NULL")
+            .bind(&[
+                JsValue::from_f64(now as f64),
+                JsValue::from(attachment_id),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(
+            if result
+                .meta()
+                .map_err(map_err)?
+                .and_then(|m| m.changes)
+                .unwrap_or(0)
+                == 1
+            {
+                DetachStoreOutcome::CancelledPendingActivation
+            } else {
+                DetachStoreOutcome::UnknownAttachment
+            },
+        )
     }
 }
