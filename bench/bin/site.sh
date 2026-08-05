@@ -34,7 +34,8 @@ setup() {
     echo "site: could not parse repository DID from 'tonk spot new' output" >&2
     exit 1
   fi
-  "$TONK" remote add origin "$BENCH_URL/ucan/"
+  "$TONK" remote add origin "$BENCH_URL/ucan/" \
+    --revocation-url "$BENCH_URL/revocations"
   "$TONK" remote set-upstream origin
   # Publish the seeded stdlib to the remote now, so a joiner (or an
   # inspector) sees current state even before an invite is minted.

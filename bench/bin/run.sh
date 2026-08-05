@@ -22,6 +22,11 @@ export TONK_NO_UPDATE_CHECK=1
 # trip entirely.
 export TONK_NO_SHORTEN=1
 
+# Bench runs use an isolated, disposable profile and local access service. They
+# deliberately exercise the accountless development path so a developer's real
+# account is never read or attached to benchmark data.
+export TONK_UNSAFE_ALLOW_DEVICE_ROOT=1
+
 SCENARIO_NAME="${1:?usage: run.sh <scenario> [--scripted] [--runs N] [--variant NAME] [--spot-agents]}"; shift
 SCRIPTED=0
 RUNS=1
@@ -152,6 +157,19 @@ for i in $(seq 1 "$RUNS"); do
   fi
   echo "{\"episode_exit\": $episode_status}" > "$RUN_DIR/episode-exit.json"
 
+  "$ROOT/bench/bin/browser.sh" start
+  bridge_status=0
+  "$ROOT/bench/bin/bridge.sh" || bridge_status=$?
+  echo "{\"bridge_exit\": $bridge_status}" > "$RUN_DIR/bridge-exit.json"
+
+  interaction_status=0
+  if [ -x "$SCENARIO/interact.sh" ]; then
+    "$SCENARIO/interact.sh" || interaction_status=$?
+  else
+    jq -n '{available: false, passed: null}' > "$RUN_DIR/browser.json"
+  fi
+  echo "{\"interaction_exit\": $interaction_status}" > "$RUN_DIR/interaction-exit.json"
+
   verifier_status=0
   if [ -x "$SCENARIO/verify.sh" ]; then
     TONK="$ROOT/target/release/tonk" "$SCENARIO/verify.sh" > "$RUN_DIR/verify.json" \
@@ -161,10 +179,6 @@ for i in $(seq 1 "$RUNS"); do
   fi
   echo "{\"verifier_exit\": $verifier_status}" > "$RUN_DIR/verifier-exit.json"
 
-  "$ROOT/bench/bin/browser.sh" start
-  bridge_status=0
-  "$ROOT/bench/bin/bridge.sh" || bridge_status=$?
-  echo "{\"bridge_exit\": $bridge_status}" > "$RUN_DIR/bridge-exit.json"
   "$ROOT/bench/bin/shots.sh"
 
   if [ "$SCRIPTED" != 1 ]; then

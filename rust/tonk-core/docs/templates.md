@@ -262,6 +262,13 @@ to `data-state="ready"` → the list shows and the launchpad hides, live,
 because the same mounted view reconciled rather than being torn down and
 rebuilt.
 
+The `onclick=create` reference resolves through the branch's nominal binding
+catalog. `create` must name either a stored `projection!:` or a `command!:`
+with one projection (or one unique default). Event extraction and synchronous
+actions belong to that projection; semantic command fields must not use
+`dom.event/*` identifiers. See `tonk guide events` for a complete form-submit
+example and a headless `tonk project` fixture.
+
 ### `<tonk-fallback>`: the launchpad without the CSS
 
 `<tonk-fallback>` packages the "show only when empty" half. It finds its
