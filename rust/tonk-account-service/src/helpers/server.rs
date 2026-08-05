@@ -25,8 +25,8 @@ use tonk_account::backup::{ACCOUNT_SPOTS_CAPABILITY_HEADER, ACCOUNT_SPOTS_CAPABI
 use tonk_account::handoff::{LinkCreateRequest, LinkSecretRequest};
 
 use crate::auth::{
-    authorize, authorize_link_activation, authorize_root, optional_revocation, required_string,
-    string_argument,
+    authorize, authorize_link_activation, authorize_root, optional_passkey_metadata,
+    optional_revocation, required_string, string_argument,
 };
 use crate::chains::MemoryChainStore;
 use crate::core::accounts::{CreateAccount, create_account};
@@ -143,6 +143,7 @@ async fn handle_request(
         (Method::GET, "/_test/spots") => spots_route(req, &backends).await,
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
+        (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
         (Method::POST, "/revocations") => revocations_route(req, &backends).await,
         (Method::POST, "/account/repository/establish") => {
             repository_establish_route(req, &backends).await
@@ -171,6 +172,28 @@ async fn handle_request(
         Ok(response) => response,
         Err(err) => error_response(err),
     }))
+}
+
+/// `POST /account/summary` → verified account facts for an active device.
+async fn account_summary_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let body = body_bytes(req).await?;
+    let caller = authorize(&backends.store, &body, &["account", "summary"])
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({
+            "email": caller.account.email,
+            "passkey": caller.account.passkey_created_at.zip(caller.account.passkey_created_on)
+                .map(|(created_at, created_on)| serde_json::json!({
+                    "createdAt": created_at,
+                    "createdOn": created_on,
+                })),
+        }),
+    ))
 }
 
 /// `GET /` → service info. Not CORS-wrapped, matching the worker.
@@ -298,6 +321,8 @@ async fn accounts_route(
     let caller = authorize_root(&body, &["account", "create"])
         .await
         .map_err(ceremony_error)?;
+    let now = unix_now();
+    let passkey = optional_passkey_metadata(&caller.arguments, now).map_err(ceremony_error)?;
     let request = CreateAccount {
         email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
         code: required_string(&caller.arguments, "code").map_err(ceremony_error)?,
@@ -309,8 +334,9 @@ async fn accounts_route(
         repository_descriptor_hex: required_string(&caller.arguments, "repositoryDescriptor")
             .map_err(ceremony_error)?,
         root_did: caller.root_did,
+        passkey,
     };
-    let account_id = create_account(&backends.store, &request, unix_now())
+    let account_id = create_account(&backends.store, &request, now)
         .await
         .map_err(ceremony_error)?;
     let account = backends

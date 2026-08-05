@@ -238,6 +238,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(account::establish_repository),
         )
         .route("/api/account/devices", get(account_devices::list))
+        .route("/api/account/summary", get(account_devices::summary))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
         // Profile-as-repository routes. The profile is its own
@@ -649,6 +650,7 @@ pub mod tests {
             tonk_worker_api::SaveRootRequest {
                 credential_id: "test-credential".to_string(),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
             },
         )
         .await

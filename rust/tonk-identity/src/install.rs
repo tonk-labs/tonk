@@ -130,6 +130,16 @@ fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsVal
         &"delegationHex".into(),
         &ceremony.delegation_hex.into(),
     )?;
+    if let Some(passkey) = ceremony.passkey {
+        let metadata = Object::new();
+        Reflect::set(
+            &metadata,
+            &"createdAt".into(),
+            &JsValue::from_f64(passkey.created_at as f64),
+        )?;
+        Reflect::set(&metadata, &"createdOn".into(), &passkey.created_on.into())?;
+        Reflect::set(&result, &"passkey".into(), &metadata)?;
+    }
     Ok(result.into())
 }
 
@@ -141,8 +151,9 @@ async fn create_root(input: JsValue) -> Result<JsValue, JsValue> {
     // sends the address it just verified; a spot creating a root sends
     // nothing, because no account exists to name.
     let label = optional_string_property(&input, "label");
+    let created_on = optional_string_property(&input, "createdOn");
     root_result(
-        crate::ceremony::create_root(device_did, label.as_deref())
+        crate::ceremony::create_root(device_did, label.as_deref(), created_on.as_deref())
             .await
             .map_err(js_error)?,
     )
@@ -189,6 +200,21 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     let expected_root = string_property(&input, "rootDid")?;
     let credential_id = string_property(&input, "credentialId")?;
     let delegation_hex = string_property(&input, "delegationHex")?;
+    let passkey = Reflect::get(&input, &"passkey".into())
+        .ok()
+        .filter(|value| !value.is_null() && !value.is_undefined())
+        .map(|value| {
+            let created_at = Reflect::get(&value, &"createdAt".into())?
+                .as_f64()
+                .ok_or_else(|| JsValue::from_str("passkey.createdAt must be a timestamp"))?
+                as u64;
+            let created_on = string_property(&value, "createdOn")?;
+            Ok::<_, JsValue>(crate::ceremony::PasskeyCreationMetadata {
+                created_at,
+                created_on,
+            })
+        })
+        .transpose()?;
     let evaluated = crate::passkey::evaluate_passkey().await.map_err(js_error)?;
     if hex::encode(evaluated.id) != credential_id {
         return Err(JsValue::from_str(
@@ -218,6 +244,7 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
             device_name,
             delegation_hex,
             remote,
+            passkey,
         )
         .await
         .map_err(js_error)?,

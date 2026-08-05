@@ -2,7 +2,7 @@
 
 use worker::*;
 
-use crate::auth::{authorize_root, required_string};
+use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
 use crate::core::accounts::{CreateAccount, create_account};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
@@ -11,6 +11,36 @@ use crate::store::Store;
 /// `OPTIONS /accounts` → CORS preflight.
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
     Ok(with_cors_headers(Response::empty()?.with_status(204)))
+}
+
+/// `POST /account/summary` → verified email and passkey creation facts.
+pub async fn handle_summary(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match handle_summary_inner(&mut req, &ctx).await {
+        Ok(response) => response,
+        Err(err) => err.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+async fn handle_summary_inner(
+    req: &mut Request,
+    ctx: &RouteContext<()>,
+) -> std::result::Result<Response, ServiceError> {
+    let store = build_store(ctx)?;
+    let body = read_body(req).await?;
+    let caller = authorize(&store, &body, &["account", "summary"])
+        .await
+        .map_err(ceremony_error)?;
+
+    Response::from_json(&serde_json::json!({
+        "email": caller.account.email,
+        "passkey": caller.account.passkey_created_at.zip(caller.account.passkey_created_on)
+            .map(|(created_at, created_on)| serde_json::json!({
+                "createdAt": created_at,
+                "createdOn": created_on,
+            })),
+    }))
+    .map_err(|err| ServiceError::new(ErrorCode::InternalError, format!("response error: {err}")))
 }
 
 /// `POST /accounts` → create a new account.
@@ -30,6 +60,8 @@ async fn handle_inner(
     let caller = authorize_root(&body, &["account", "create"])
         .await
         .map_err(ceremony_error)?;
+    let now = Date::now().as_millis() / 1000;
+    let passkey = optional_passkey_metadata(&caller.arguments, now).map_err(ceremony_error)?;
     let request = CreateAccount {
         email: required_string(&caller.arguments, "email").map_err(ceremony_error)?,
         code: required_string(&caller.arguments, "code").map_err(ceremony_error)?,
@@ -41,9 +73,9 @@ async fn handle_inner(
         repository_descriptor_hex: required_string(&caller.arguments, "repositoryDescriptor")
             .map_err(ceremony_error)?,
         root_did: caller.root_did,
+        passkey,
     };
     let store = build_store(ctx)?;
-    let now = Date::now().as_millis() / 1000;
     let account_id = create_account(&store, &request, now)
         .await
         .map_err(ceremony_error)?;

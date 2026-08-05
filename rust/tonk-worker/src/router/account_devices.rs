@@ -8,7 +8,9 @@ use dialog_ucan_core::{DelegationChain, promise::Promised};
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_worker_api::{AccountDevice, RevokeDeviceAcknowledgement, RevokeDeviceRequest};
+use tonk_worker_api::{
+    AccountDevice, AccountSummary, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+};
 
 use super::AppState;
 use super::account_backup::account_service_url;
@@ -29,7 +31,7 @@ struct ServiceDevice {
 }
 
 /// Resolve the stored link and service URL, or explain what's missing.
-async fn linked_service(
+pub(super) async fn linked_service(
     state: &TonkState,
 ) -> Result<(dialog_ucan_core::DelegationChain, String), TonkWorkerError> {
     let link = super::account::account_link(state).await.ok_or_else(|| {
@@ -86,6 +88,34 @@ pub async fn list(
     let state = state.read().await;
     let (link, service) = linked_service(&state).await?;
     Ok(Json(fetch_devices(&state, &link, &service).await?))
+}
+
+/// Return verified account facts authorized by this profile's active grant.
+#[wasm_compat]
+pub async fn summary(
+    State(state): State<AppState>,
+) -> Result<Json<AccountSummary>, TonkWorkerError> {
+    let state = state.read().await;
+    let (link, service) = linked_service(&state).await?;
+    let body = tonk_identity::request::build_device_invocation(
+        state.profile.signer().signer().clone(),
+        &link,
+        vec!["account".into(), "summary".into()],
+        BTreeMap::new(),
+    )
+    .await
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("build account-summary invocation: {error}"))
+    })?;
+    let endpoint = url::Url::parse(&format!(
+        "{}/account/summary",
+        service.trim_end_matches('/')
+    ))
+    .map_err(|error| TonkWorkerError::Internal(format!("invalid account provider URL: {error}")))?;
+    let response = super::http::post_cbor(&endpoint, &body).await?;
+    let summary = serde_json::from_slice(&response.body)
+        .map_err(|error| TonkWorkerError::Internal(format!("parse account summary: {error}")))?;
+    Ok(Json(summary))
 }
 
 async fn self_revocation(
@@ -187,6 +217,15 @@ mod tests {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
         assert!(matches!(
             list(State(state)).await,
+            Err(TonkWorkerError::NotFound(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_summary_for_an_unlinked_profile() {
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        assert!(matches!(
+            summary(State(state)).await,
             Err(TonkWorkerError::NotFound(_))
         ));
     }

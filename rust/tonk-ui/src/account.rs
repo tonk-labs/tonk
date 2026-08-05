@@ -116,7 +116,6 @@ fn set_mode(host: &HtmlElement, mode: &str) {
         ("handoff", "#account-handoff"),
         ("setup", "#account-setup"),
         ("success", "#account-success"),
-        ("devices", "#account-devices"),
     ] {
         if let Ok(Some(panel)) = host.query_selector(selector) {
             if name == mode {
@@ -135,7 +134,6 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-link-submit",
         "#account-handoff-submit",
         "#account-setup-submit",
-        "#account-manage-devices",
         "#account-unlink",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
@@ -175,6 +173,53 @@ fn show_success(host: &HtmlElement) {
     clear_error(host);
     set_busy(host, false, "");
     set_mode(host, "success");
+    load_summary(host.clone());
+    load_devices(host.clone());
+}
+
+fn set_text(host: &HtmlElement, selector: &str, value: &str) {
+    if let Ok(Some(element)) = host.query_selector(selector) {
+        element.set_text_content(Some(value));
+    }
+}
+
+fn render_summary(host: &HtmlElement, summary: &tonk_worker_api::AccountSummary) {
+    set_text(host, "#account-email-value", &summary.email);
+    match &summary.passkey {
+        Some(passkey) => {
+            let date = js_sys::Date::new(&JsValue::from_f64(passkey.created_at as f64 * 1000.0))
+                .to_locale_date_string("default", &JsValue::UNDEFINED);
+            set_text(host, "#account-passkey-created-value", &String::from(date));
+            set_text(host, "#account-passkey-device-value", &passkey.created_on);
+        }
+        None => {
+            set_text(host, "#account-passkey-created-value", "Unavailable");
+            set_text(host, "#account-passkey-device-value", "Unavailable");
+            set_text(
+                host,
+                "#account-passkey-detail",
+                "This passkey was made before Tonk started recording creation details. Tonk cannot reliably reconstruct them.",
+            );
+        }
+    }
+}
+
+fn load_summary(host: HtmlElement) {
+    spawn_local(async move {
+        match crate::api::account_summary().await {
+            Ok(summary) => render_summary(&host, &summary),
+            Err(error) => {
+                for selector in [
+                    "#account-email-value",
+                    "#account-passkey-created-value",
+                    "#account-passkey-device-value",
+                ] {
+                    set_text(&host, selector, "Unavailable");
+                }
+                web_sys::console::warn_1(&format!("account summary unavailable: {error}").into());
+            }
+        }
+    });
 }
 
 /// Land a signed-in device where it was going.
@@ -192,7 +237,7 @@ fn settle(host: &HtmlElement) {
     settle_with(host, crate::account_gate::finish());
 }
 
-/// Show the account page to a device that already had an account.
+/// Show the account dashboard to a device that already had an account.
 ///
 /// Same shape as [`settle`], minus the return-to-`next` step. A gated user who
 /// signed in on another tab still gets their interrupted operation replayed;
@@ -244,26 +289,44 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
         };
         let _ = item.set_attribute("class", "account__device-row");
 
+        let Ok(identity) = document.create_element("div") else {
+            continue;
+        };
+        let _ = identity.set_attribute("class", "account__device-identity");
+
         let Ok(name) = document.create_element("span") else {
             continue;
         };
+        let _ = name.set_attribute("class", "account__device-name");
         name.set_text_content(Some(&device.name));
+        let _ = identity.append_child(&name);
+
+        if device.this_device {
+            let Ok(marker) = document.create_element("span") else {
+                continue;
+            };
+            let _ = marker.set_attribute("class", "account__device-current");
+            marker.set_text_content(Some("This device"));
+            let _ = identity.append_child(&marker);
+        }
 
         let Ok(meta) = document.create_element("span") else {
             continue;
         };
         let _ = meta.set_attribute("class", "account__device-meta");
-        let registered = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
+        let date = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
             .to_locale_date_string("default", &JsValue::UNDEFINED);
-        let mut details = format!("{} · {}", device.status, String::from(registered));
-        if device.this_device {
-            details.push_str(" · this device");
-        } else if device.status == "active" && device.delegation_hex.is_none() {
-            details.push_str(" · relink required to revoke");
+        let mut details = if device.status == "revoked" {
+            format!("Access removed · Added {}", String::from(date))
+        } else {
+            format!("Added {}", String::from(date))
+        };
+        if !device.this_device && device.status == "active" && device.delegation_hex.is_none() {
+            details.push_str(" · Sign in again on this device to enable removal");
         }
         meta.set_text_content(Some(&details));
 
-        let _ = item.append_child(&name);
+        let _ = item.append_child(&identity);
         let _ = item.append_child(&meta);
 
         if device.status == "active" && (device.this_device || device.delegation_hex.is_some()) {
@@ -271,17 +334,19 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
                 continue;
             };
             let _ = button.set_attribute("type", "button");
-            let _ = button.set_attribute("class", "account__button account__button--quiet");
+            let _ = button.set_attribute("class", "account__button account__button--remove");
             let _ = button.set_attribute("data-revoke", &device.did);
             let _ = button.set_attribute("data-attachment-id", &device.attachment_id);
             let _ = button.set_attribute("data-delegation-cid", &device.delegation_cid);
+            let _ =
+                button.set_attribute("aria-label", &format!("Remove access for {}", device.name));
             if let Some(delegation_hex) = &device.delegation_hex {
                 let _ = button.set_attribute("data-delegation-hex", delegation_hex);
             }
             if device.this_device {
                 let _ = button.set_attribute("data-self-revoke", "true");
             }
-            button.set_text_content(Some("Revoke"));
+            button.set_text_content(Some("Remove access"));
             let _ = item.append_child(&button);
         }
         let _ = list.append_child(&item);
@@ -293,11 +358,11 @@ fn revocation_status(
     self_revoke: bool,
 ) -> &'static str {
     if self_revoke {
-        "This device has been revoked. Its remote authority is permanently withdrawn."
+        "Access removed from this device."
     } else if acknowledgement.projection == RevocationProjection::Stale {
-        "Device revoked. The account device list has not caught up yet."
+        "Access removed. The device list may take a moment to update."
     } else {
-        "Device revoked."
+        "Access removed."
     }
 }
 
@@ -349,7 +414,7 @@ fn revoke_attachment_from_url() -> Option<String> {
 
 /// Strip the query once the deep link has been acted on, mirroring what
 /// [`load_handoff`] does with the fragment secret. Without this a
-/// cancelled confirm re-fires on every later visit to the device list
+/// cancelled confirm re-fires on every later dashboard visit
 /// in this tab.
 fn consume_revoke_target() {
     let Some(window) = window() else { return };
@@ -361,13 +426,13 @@ fn consume_revoke_target() {
 }
 
 fn load_devices(host: HtmlElement) {
+    set_mode(&host, "success");
     set_busy(&host, true, "Loading devices…");
     spawn_local(async move {
         match crate::api::account_devices().await {
             Ok(devices) => {
                 set_busy(&host, false, "");
                 render_devices(&host, &devices);
-                set_mode(&host, "devices");
                 if let Some(did) = revoke_target_from_url() {
                     let attachment_id = revoke_attachment_from_url();
                     consume_revoke_target();
@@ -390,13 +455,12 @@ fn load_devices(host: HtmlElement) {
                         }
                         Some(_) => show_error(
                             &host,
-                            "This device was registered before revocation evidence was retained. \
-                             Relink it before revoking it from another device.",
+                            "This device was added before remote removal was supported. \
+                             Sign in again on that device, then try removing it here.",
                         ),
                         None => show_error(
                             &host,
-                            "The device named by this link is not an active device \
-                             of this account.",
+                            "The device in this link is no longer connected to this account.",
                         ),
                     }
                 }
@@ -412,12 +476,12 @@ fn load_devices(host: HtmlElement) {
 /// Where a fresh page load lands once the account status is known.
 #[derive(Debug, PartialEq, Eq)]
 enum Landing {
-    /// Straight to the device list: a `?revoke=` deep link names a
-    /// device, and the revoke ceremony lives there.
+    /// Straight to the dashboard and load its devices: a `?revoke=` deep link
+    /// names a device, and the removal ceremony lives there.
     Devices,
     /// Explicit one-time descriptor ceremony for a legacy raw link.
     Setup,
-    /// The signed-in success screen.
+    /// The signed-in dashboard.
     Success,
     /// The link/create choice, with a hint when a revoke deep link
     /// cannot proceed because this browser is not linked.
@@ -570,6 +634,7 @@ async fn persist(
             crate::api::save_root(
                 ceremony.credential_id.clone(),
                 ceremony.delegation_hex.clone(),
+                None,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -856,14 +921,15 @@ fn bind(host: &HtmlElement) {
                 let status = crate::api::root_status()
                     .await
                     .map_err(|error| error.to_string())?;
-                let (root_did, device_did, credential_id, delegation_hex) = match status {
+                let (root_did, device_did, credential_id, delegation_hex, passkey) = match status {
                     tonk_worker_api::RootStatus::Ready {
                         root_did,
                         device_did,
                         credential_id,
                         delegation_hex,
+                        passkey,
                         ..
-                    } => (root_did, device_did, credential_id, delegation_hex),
+                    } => (root_did, device_did, credential_id, delegation_hex, passkey),
                     tonk_worker_api::RootStatus::Missing { device_did } => {
                         // This ceremony is what creates the passkey, and it
                         // knows the address the code just verified — so the
@@ -874,12 +940,14 @@ fn bind(host: &HtmlElement) {
                         let created = create_root(CreateRootInput {
                             device_did,
                             label: Some(email.clone()),
+                            created_on: Some(device_name.clone()),
                         })
                         .await
                         .map_err(|error| error.to_string())?;
                         crate::api::save_root(
                             created.credential_id.clone(),
                             created.delegation_hex.clone(),
+                            created.passkey.clone(),
                         )
                         .await
                         .map_err(|error| error.to_string())?;
@@ -888,6 +956,7 @@ fn bind(host: &HtmlElement) {
                             created.device_did,
                             created.credential_id,
                             created.delegation_hex,
+                            created.passkey,
                         )
                     }
                 };
@@ -899,6 +968,7 @@ fn bind(host: &HtmlElement) {
                     root_did,
                     credential_id,
                     delegation_hex,
+                    passkey,
                     remote: proposed_remote()?,
                 })
                 .await
@@ -989,21 +1059,13 @@ fn bind(host: &HtmlElement) {
         });
     });
 
-    on_click(host, "#account-manage-devices", |host| {
-        clear_error(&host);
-        load_devices(host);
-    });
-    on_click(host, "#account-devices-back", |host| {
-        clear_error(&host);
-        set_mode(&host, "success");
-    });
     on_click(host, "#account-unlink", |host| {
         clear_error(&host);
         let confirmed = window()
             .map(|window| {
                 window
                     .confirm_with_message(
-                        "Disconnect account services on this device? Your local identity and space authority remain available.",
+                        "Sign out on this device? Your existing spots will stay here, but account syncing will stop until you sign in again.",
                     )
                     .unwrap_or(false)
             })
@@ -1080,9 +1142,9 @@ fn begin_revoke(
     self_revoke: bool,
 ) {
     let message = if self_revoke {
-        "Revoke this device? This permanently withdraws its remote access. Returning requires provisioning a new device grant."
+        "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add it as a new device."
     } else {
-        "Revoke this device? This permanently withdraws its root grant and remote access. Returning requires provisioning a new device grant.\n\nYou will be asked for your passkey to authorize this."
+        "Remove access for this device? This permanently disconnects it from your Tonk account. To use it again, sign in to add a new device.\n\nYou will be asked to confirm with your passkey."
     };
     let confirmed = window()
         .map(|window| window.confirm_with_message(message).unwrap_or(false))
@@ -1249,7 +1311,7 @@ mod tests {
         bind_return_links(&host);
 
         let back = host
-            .query_selector("#account-success [data-return]")
+            .query_selector(".account__masthead [data-return]")
             .unwrap()
             .expect("the success panel offers a way back");
         assert_eq!(
@@ -1271,7 +1333,7 @@ mod tests {
         bind_return_links(&host);
 
         assert_eq!(
-            host.query_selector("#account-success [data-return]")
+            host.query_selector(".account__masthead [data-return]")
                 .unwrap()
                 .expect("the success panel offers a way back")
                 .get_attribute("href")
@@ -1312,6 +1374,120 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_authors_a_single_signed_in_dashboard() {
+        let host = host();
+        assert_eq!(
+            host.query_selector(".account > h1")
+                .unwrap()
+                .expect("account heading")
+                .text_content()
+                .as_deref(),
+            Some("Account")
+        );
+
+        let dashboard = host
+            .query_selector("#account-success")
+            .unwrap()
+            .expect("signed-in dashboard");
+        for selector in [
+            "#account-device-list",
+            "#account-unlink",
+            "#account-email-value",
+            "#account-passkey-created-value",
+            "#account-passkey-device-value",
+            ".account__passkey",
+            ".account__signout",
+        ] {
+            assert!(
+                dashboard.query_selector(selector).unwrap().is_some(),
+                "the signed-in dashboard is missing {selector}"
+            );
+        }
+        assert!(
+            host.query_selector(".account__masthead [data-return]")
+                .unwrap()
+                .is_some(),
+            "the account masthead should offer a conventional return link"
+        );
+
+        let copy = dashboard.text_content().unwrap();
+        assert!(copy.contains("device, browser profile, or password manager"));
+        assert!(copy.contains("do not tell Tonk which passkey manager currently stores it"));
+        assert!(copy.contains("syncing will stop until you sign in again"));
+        for technical in ["authority", "grant", "relink required"] {
+            assert!(
+                !copy.contains(technical),
+                "signed-in copy exposes technical term {technical}"
+            );
+        }
+        assert!(
+            host.query_selector("#account-manage-devices")
+                .unwrap()
+                .is_none(),
+            "device management should not sit behind an interstitial"
+        );
+        assert!(
+            host.query_selector("#account-devices").unwrap().is_none(),
+            "the signed-in dashboard should be the only device-management surface"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renders_recorded_and_legacy_passkey_facts_without_guessing() {
+        let host = host();
+        render_summary(
+            &host,
+            &tonk_worker_api::AccountSummary {
+                email: "person@example.com".into(),
+                passkey: Some(tonk_worker_api::PasskeyMetadata {
+                    created_at: 1_754_380_800,
+                    created_on: "Chrome on macOS".into(),
+                }),
+            },
+        );
+        assert_eq!(
+            host.query_selector("#account-email-value")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("person@example.com")
+        );
+        assert_eq!(
+            host.query_selector("#account-passkey-device-value")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Chrome on macOS")
+        );
+
+        render_summary(
+            &host,
+            &tonk_worker_api::AccountSummary {
+                email: "legacy@example.com".into(),
+                passkey: None,
+            },
+        );
+        assert_eq!(
+            host.query_selector("#account-passkey-created-value")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Unavailable")
+        );
+        assert!(
+            host.query_selector("#account-passkey-detail")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap()
+                .contains("cannot reliably reconstruct")
+        );
+    }
+
+    #[dialog_common::test]
     fn it_does_not_author_fixed_browser_registration_names() {
         let host = host();
         assert!(
@@ -1337,11 +1513,11 @@ mod tests {
         };
         assert_eq!(
             revocation_status(&stale, false),
-            "Device revoked. The account device list has not caught up yet."
+            "Access removed. The device list may take a moment to update."
         );
         assert_eq!(
             revocation_status(&stale, true),
-            "This device has been revoked. Its remote authority is permanently withdrawn."
+            "Access removed from this device."
         );
     }
 
@@ -1490,9 +1666,10 @@ mod tests {
         assert_eq!(items.length(), 4);
         let text = list.text_content().unwrap();
         assert!(text.contains("This browser"));
-        assert!(text.contains("this device"));
-        assert!(text.contains("revoked"));
-        assert!(text.contains("relink required to revoke"));
+        assert!(text.contains("This device"));
+        assert!(text.contains("Access removed"));
+        assert!(text.contains("Added"));
+        assert!(text.contains("Sign in again on this device to enable removal"));
         // Self-revocation is device-signed and the current row does not need
         // provider path bytes. Another device needs retained path evidence;
         // the legacy row remains visible but has no unsafe revoke action.
@@ -1514,6 +1691,7 @@ mod tests {
             .query_selector("button[data-revoke=\"did:key:zPhone\"]")
             .unwrap()
             .expect("the active, non-self row has a revoke button");
+        assert_eq!(button.text_content().as_deref(), Some("Remove access"));
         assert_eq!(
             button.get_attribute("data-delegation-cid").as_deref(),
             Some("bafyphone")

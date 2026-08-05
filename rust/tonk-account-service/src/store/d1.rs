@@ -16,9 +16,9 @@ use crate::store::{
     Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
     DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
     INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_DEVICE_FOR_NEW_ACCOUNT, INSERT_LINK,
-    LinkCompletion, LinkRequest, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
-    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
-    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
+    LinkCompletion, LinkRequest, NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL,
+    SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE,
+    SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
     SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
     UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
@@ -75,6 +75,8 @@ struct AccountRowD1 {
     root_did: String,
     credential_id: String,
     repository_descriptor: Option<Vec<u8>>,
+    passkey_created_at: Option<f64>,
+    passkey_created_on: Option<String>,
     created_at: f64,
 }
 
@@ -86,6 +88,8 @@ impl From<AccountRowD1> for Account {
             root_did: row.root_did,
             credential_id: row.credential_id,
             repository_descriptor: row.repository_descriptor,
+            passkey_created_at: row.passkey_created_at.map(|value| value as u64),
+            passkey_created_on: row.passkey_created_on,
             created_at: row.created_at as u64,
         }
     }
@@ -248,28 +252,32 @@ impl Store for D1Store {
 
     async fn create_account_with_device(
         &self,
-        email: &str,
-        root_did: &str,
-        credential_id: &str,
-        repository_descriptor: &[u8],
+        account: &NewAccount<'_>,
         device: &NewDevice,
-        created_at: u64,
     ) -> Result<i64, StoreError> {
         // D1 batches run as a single transaction: either every statement
         // commits or none does. The device insert reaches back for the
         // account id it needs via SQLite's `last_insert_rowid()` rather
         // than a value threaded in from Rust, since the account id isn't
         // known until the first statement in this same batch executes.
-        let descriptor = js_sys::Uint8Array::from(repository_descriptor);
+        let descriptor = js_sys::Uint8Array::from(account.repository_descriptor);
         let insert_account = self
             .0
             .prepare(INSERT_ACCOUNT_WITH_DESCRIPTOR)
             .bind(&[
-                JsValue::from(email),
-                JsValue::from(root_did),
-                JsValue::from(credential_id),
+                JsValue::from(account.email),
+                JsValue::from(account.root_did),
+                JsValue::from(account.credential_id),
                 descriptor.into(),
-                JsValue::from_f64(created_at as f64),
+                account
+                    .passkey
+                    .map(|metadata| JsValue::from_f64(metadata.created_at as f64))
+                    .unwrap_or(JsValue::NULL),
+                account
+                    .passkey
+                    .map(|metadata| JsValue::from(metadata.created_on.as_str()))
+                    .unwrap_or(JsValue::NULL),
+                JsValue::from_f64(account.created_at as f64),
             ])
             .map_err(map_err)?;
         let insert_device = self
@@ -281,7 +289,7 @@ impl Store for D1Store {
                 JsValue::from(device.delegation_cid.as_str()),
                 JsValue::from(device.delegation_hex.as_str()),
                 JsValue::from(device.name.as_str()),
-                JsValue::from_f64(created_at as f64),
+                JsValue::from_f64(account.created_at as f64),
             ])
             .map_err(map_err)?;
         let results = self

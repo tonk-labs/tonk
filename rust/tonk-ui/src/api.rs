@@ -3,9 +3,9 @@ use serde::Deserialize;
 use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus,
-    EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse, MembershipResponse,
-    QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus,
-    SaveRootRequest, SyncResponse, SyncStatusResponse,
+    AccountSummary, EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse,
+    MembershipResponse, QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement,
+    RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -495,6 +495,7 @@ pub async fn root_status() -> Result<RootStatus, TonkUiError> {
 pub async fn save_root(
     credential_id: String,
     delegation_hex: String,
+    passkey: Option<tonk_worker_api::PasskeyMetadata>,
 ) -> Result<RootStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
@@ -502,6 +503,7 @@ pub async fn save_root(
         .json(&SaveRootRequest {
             credential_id,
             delegation_hex,
+            passkey,
         })
         .send()
         .await
@@ -603,6 +605,25 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "GET /api/account/devices returned {status}: {text}"
+        )))
+    }
+}
+
+/// Load verified account and passkey facts for the linked account.
+pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/account/summary", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/account/summary returned {status}: {text}"
         )))
     }
 }

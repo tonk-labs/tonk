@@ -1156,6 +1156,7 @@ mod tests {
             tonk_worker_api::SaveRootRequest {
                 credential_id: credential_id.clone(),
                 delegation_hex: delegation_hex.clone(),
+                passkey: None,
             },
         )
         .await

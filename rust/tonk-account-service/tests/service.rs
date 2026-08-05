@@ -123,6 +123,7 @@ async fn account_creation(email: &str, code: &str) -> Vec<u8> {
         "laptop".to_string(),
         hex::encode(grant.to_bytes().unwrap()),
         "http://127.0.0.1:8080/ucan/".to_string(),
+        None,
     )
     .await
     .unwrap();
@@ -385,6 +386,7 @@ async fn it_explains_an_already_registered_email_over_http() {
             "laptop".into(),
             hex::encode(grant.to_bytes().unwrap()),
             "http://127.0.0.1:8080/ucan/".into(),
+            None,
         )
         .await
         .unwrap();
@@ -463,6 +465,10 @@ async fn it_drives_the_full_ceremony_over_http() {
         "laptop".into(),
         hex::encode(first_grant.to_bytes().unwrap()),
         "http://127.0.0.1:8080/ucan/".into(),
+        Some(tonk_identity::ceremony::PasskeyCreationMetadata {
+            created_at: 1_754_380_800,
+            created_on: "Chrome on macOS".into(),
+        }),
     )
     .await
     .unwrap();
@@ -478,6 +484,28 @@ async fn it_drives_the_full_ceremony_over_http() {
     let created: serde_json::Value = response.json().await.unwrap();
     assert!(created["accountId"].is_i64());
     assert_eq!(created["descriptorHex"], expected_descriptor);
+
+    // The account summary reveals verified account facts only to an active
+    // device. Passkey facts are the values witnessed at credential creation,
+    // not inferred from this account or device registration time.
+    let body = container_with_link(
+        &device,
+        &first_grant,
+        vec!["account".into(), "summary".into()],
+        BTreeMap::new(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base}/account/summary"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let summary: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(summary["email"], "person@example.com");
+    assert_eq!(summary["passkey"]["createdAt"], 1_754_380_800_u64);
+    assert_eq!(summary["passkey"]["createdOn"], "Chrome on macOS");
 
     // Establishment is set-if-absent: a later valid candidate receives
     // the stored creation winner, never its own bytes.
@@ -1021,6 +1049,7 @@ async fn it_drives_the_full_ceremony_over_http() {
         "other-device".to_string(),
         hex::encode(other_grant.to_bytes().unwrap()),
         "http://127.0.0.1:8080/ucan/".to_string(),
+        None,
     )
     .await
     .unwrap();

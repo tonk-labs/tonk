@@ -16,7 +16,7 @@ use dialog_ucan_core::time::timestamp::{Duration, SystemTime, Timestamp};
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 
 use crate::core::CeremonyError;
-use crate::store::{Account, Device, Store};
+use crate::store::{Account, Device, PasskeyMetadata, Store};
 
 /// An authenticated caller: the account and device bound by a verified
 /// UCAN invocation, plus the invocation's arguments.
@@ -208,6 +208,47 @@ pub fn required_string(
     }
 }
 
+/// Extract optional passkey ceremony metadata, requiring the timestamp and
+/// browser/OS label to appear as one valid pair.
+pub fn optional_passkey_metadata(
+    arguments: &BTreeMap<String, Promised>,
+    now: u64,
+) -> Result<Option<PasskeyMetadata>, CeremonyError> {
+    match (
+        arguments.get("passkeyCreatedAt"),
+        arguments.get("passkeyCreatedOn"),
+    ) {
+        (None, None) => Ok(None),
+        (Some(Promised::Integer(created_at)), Some(Promised::String(created_on))) => {
+            let created_at = u64::try_from(*created_at).map_err(|_| {
+                CeremonyError::Invalid("passkeyCreatedAt must be a positive timestamp".into())
+            })?;
+            let created_on = created_on.trim();
+            if created_at == 0 || created_at > now.saturating_add(300) {
+                return Err(CeremonyError::Invalid(
+                    "passkeyCreatedAt is outside the allowed range".into(),
+                ));
+            }
+            if created_on.is_empty()
+                || created_on.chars().count() > 120
+                || created_on.chars().any(char::is_control)
+            {
+                return Err(CeremonyError::Invalid(
+                    "passkeyCreatedOn must be a short browser and operating system label".into(),
+                ));
+            }
+            Ok(Some(PasskeyMetadata {
+                created_at,
+                created_on: created_on.to_string(),
+            }))
+        }
+        _ => Err(CeremonyError::Invalid(
+            "passkey creation metadata must include both passkeyCreatedAt and passkeyCreatedOn"
+                .into(),
+        )),
+    }
+}
+
 /// Extract a required string argument.
 pub fn string_argument(caller: &Caller, name: &str) -> Result<String, CeremonyError> {
     required_string(&caller.arguments, name)
@@ -238,6 +279,45 @@ mod tests {
     use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::InvocationBuilder;
     use dialog_varsig::Principal;
+
+    #[dialog_common::test]
+    fn it_accepts_complete_passkey_creation_metadata() {
+        let arguments = [
+            ("passkeyCreatedAt".into(), Promised::Integer(100)),
+            (
+                "passkeyCreatedOn".into(),
+                Promised::String("  Chrome on macOS  ".into()),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            optional_passkey_metadata(&arguments, 200).unwrap(),
+            Some(PasskeyMetadata {
+                created_at: 100,
+                created_on: "Chrome on macOS".into(),
+            })
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_partial_or_future_passkey_creation_metadata() {
+        let partial = [("passkeyCreatedAt".into(), Promised::Integer(100))]
+            .into_iter()
+            .collect();
+        assert!(optional_passkey_metadata(&partial, 200).is_err());
+
+        let future = [
+            ("passkeyCreatedAt".into(), Promised::Integer(501)),
+            (
+                "passkeyCreatedOn".into(),
+                Promised::String("Chrome on macOS".into()),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert!(optional_passkey_metadata(&future, 200).is_err());
+    }
 
     const ROOT_PRF: [u8; 32] = [7u8; 32];
     const DEVICE_SEED: [u8; 32] = [8u8; 32];

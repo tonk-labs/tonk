@@ -158,11 +158,13 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
-        element(&driver, "#account-manage-devices")
+        wait_for_text_containing(&driver, "#account-email-value", EMAIL).await?;
+        let created = element(&driver, "#account-passkey-created-value")
             .await?
-            .click()
+            .text()
             .await?;
-        element(&driver, "tonk-account[data-mode=\"devices\"]").await?;
+        assert!(!created.is_empty() && created != "Loading…" && created != "Unavailable");
+        wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
 
         driver.quit().await?;
@@ -612,15 +614,11 @@ mod tests {
 
         driver.goto(env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        element(&driver, "#account-manage-devices")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"devices\"]").await?;
+        wait_for_text_containing(&driver, "#account-device-list", "e2e terminal").await?;
         let selector = format!("#account-device-list button[data-revoke=\"{cli_did}\"]");
         element(&driver, &selector).await?.click().await?;
         driver.accept_alert().await?;
-        wait_for_text_containing(&driver, "#account-working", "Device revoked").await?;
+        wait_for_text_containing(&driver, "#account-working", "Access removed").await?;
 
         let rejected = devices(&linked.profile, &env).await?;
         assert_eq!(rejected.status.code(), Some(4), "{}", rejected.stderr);

@@ -20,7 +20,37 @@ pub struct Account {
     pub credential_id: String,
     /// Exact root-signed account repository descriptor, when established.
     pub repository_descriptor: Option<Vec<u8>>,
+    /// Passkey ceremony time, when Tonk recorded it.
+    pub passkey_created_at: Option<u64>,
+    /// Browser and operating system where the passkey ceremony ran.
+    pub passkey_created_on: Option<String>,
     /// Creation time, as a unix timestamp in seconds.
+    pub created_at: u64,
+}
+
+/// Facts Tonk recorded during a passkey creation ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyMetadata {
+    /// Ceremony time, as a unix timestamp in seconds.
+    pub created_at: u64,
+    /// Browser and operating system where the ceremony ran.
+    pub created_on: String,
+}
+
+/// An account to insert as part of atomically creating its first device.
+#[derive(Debug, Clone, Copy)]
+pub struct NewAccount<'a> {
+    /// Verified, normalized email address.
+    pub email: &'a str,
+    /// Root DID controlled by the passkey.
+    pub root_did: &'a str,
+    /// Opaque WebAuthn credential identifier.
+    pub credential_id: &'a str,
+    /// Exact root-signed account repository descriptor.
+    pub repository_descriptor: &'a [u8],
+    /// Facts Tonk recorded during passkey creation, when available.
+    pub passkey: Option<&'a PasskeyMetadata>,
+    /// Account creation time, as a Unix timestamp in seconds.
     pub created_at: u64,
 }
 
@@ -260,12 +290,8 @@ pub trait Store {
     /// in that case.
     async fn create_account_with_device(
         &self,
-        email: &str,
-        root_did: &str,
-        credential_id: &str,
-        repository_descriptor: &[u8],
+        account: &NewAccount<'_>,
         device: &NewDevice,
-        created_at: u64,
     ) -> Result<i64, StoreError>;
 
     /// Establish one immutable repository descriptor and return `(winner, created)`.
@@ -371,12 +397,12 @@ pub const INSERT_ACCOUNT: &str =
 
 /// SQL: insert a new account with its repository descriptor.
 pub const INSERT_ACCOUNT_WITH_DESCRIPTOR: &str = "INSERT INTO accounts \
-    (email, root_did, credential_id, repository_descriptor, created_at) \
-    VALUES (?1, ?2, ?3, ?4, ?5)";
+    (email, root_did, credential_id, repository_descriptor, passkey_created_at, passkey_created_on, created_at) \
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 /// SQL: look up an account by root DID.
 pub const SELECT_ACCOUNT_BY_ROOT: &str = "SELECT id, email, root_did, credential_id, \
-    repository_descriptor, created_at FROM accounts WHERE root_did = ?1";
+    repository_descriptor, passkey_created_at, passkey_created_on, created_at FROM accounts WHERE root_did = ?1";
 
 /// SQL: install a descriptor only while the account has none.
 pub const ESTABLISH_REPOSITORY_DESCRIPTOR: &str = "UPDATE accounts \
@@ -389,7 +415,7 @@ pub const SELECT_REPOSITORY_DESCRIPTOR: &str =
 
 /// SQL: look up an account by email address.
 pub const SELECT_ACCOUNT_BY_EMAIL: &str = "SELECT id, email, root_did, credential_id, \
-    repository_descriptor, created_at FROM accounts WHERE email = ?1";
+    repository_descriptor, passkey_created_at, passkey_created_on, created_at FROM accounts WHERE email = ?1";
 
 /// SQL: register a device under an account.
 pub const INSERT_DEVICE: &str = "INSERT INTO devices (account_id, device_did, attachment_id, delegation_cid, delegation_hex, name, status, created_at) \

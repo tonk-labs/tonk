@@ -56,6 +56,17 @@ pub struct RootCeremony {
     pub delegation_cid: String,
     /// Exact hex-encoded root → device delegation bytes.
     pub delegation_hex: String,
+    /// Creation details when this ceremony created the passkey.
+    pub passkey: Option<PasskeyCreationMetadata>,
+}
+
+/// Informational metadata captured by the browser that created a passkey.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyCreationMetadata {
+    /// Browser-reported Unix time immediately after credential creation.
+    pub created_at: u64,
+    /// Browser and operating-system label where creation ran.
+    pub created_on: String,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -63,6 +74,7 @@ async fn root_ceremony(
     root: Ed25519Signer,
     credential_id: String,
     device_did: dialog_varsig::Did,
+    passkey: Option<PasskeyCreationMetadata>,
 ) -> Result<RootCeremony> {
     let root_did = root.did().to_string();
     let delegation = mint_device_delegation(root, &device_did).await?;
@@ -78,6 +90,7 @@ async fn root_ceremony(
         credential_id,
         delegation_cid,
         delegation_hex,
+        passkey,
     })
 }
 
@@ -91,15 +104,20 @@ async fn root_ceremony(
 pub async fn create_root(
     device_did: dialog_varsig::Did,
     label: Option<&str>,
+    created_on: Option<&str>,
 ) -> Result<RootCeremony> {
     let created = crate::passkey::create_passkey(label).await?;
     let credential_id = hex::encode(created.id);
+    let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
+        created_at: (js_sys::Date::now() / 1000.0) as u64,
+        created_on: created_on.to_string(),
+    });
     let prf = match created.prf_output {
         Some(output) => output,
         None => crate::passkey::prf_output().await?,
     };
     let root = crate::derive::derive_root_signer(&prf).await?;
-    root_ceremony(root, credential_id, device_did).await
+    root_ceremony(root, credential_id, device_did, passkey).await
 }
 
 /// Evaluate an existing discoverable passkey and delegate its root to `device_did`.
@@ -111,7 +129,7 @@ pub async fn evaluate_root(device_did: dialog_varsig::Did) -> Result<RootCeremon
         .prf_output
         .context("the authenticator returned no PRF output")?;
     let root = crate::derive::derive_root_signer(&prf).await?;
-    root_ceremony(root, credential_id, device_did).await
+    root_ceremony(root, credential_id, device_did, None).await
 }
 
 fn strings(values: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, Promised> {
@@ -185,6 +203,7 @@ pub async fn create_account(
     device_name: String,
     delegation_hex: String,
     remote: String,
+    passkey: Option<PasskeyCreationMetadata>,
 ) -> Result<AccountCeremony> {
     let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, &remote)
         .await
@@ -197,18 +216,29 @@ pub async fn create_account(
     if delegation.issuer() != &root.did() || delegation.audience() != &device_did {
         anyhow::bail!("existing delegation does not match the evaluated root and device");
     }
+    let mut arguments = strings([
+        ("email", email),
+        ("code", code),
+        ("credentialId", credential_id),
+        ("deviceDid", device_did.to_string()),
+        ("deviceName", device_name),
+        ("delegation", delegation_hex.clone()),
+        ("repositoryDescriptor", descriptor_hex.clone()),
+    ]);
+    if let Some(passkey) = passkey {
+        arguments.insert(
+            "passkeyCreatedAt".into(),
+            Promised::Integer(passkey.created_at as i128),
+        );
+        arguments.insert(
+            "passkeyCreatedOn".into(),
+            Promised::String(passkey.created_on),
+        );
+    }
     build(
         root,
         vec!["account".into(), "create".into()],
-        strings([
-            ("email", email),
-            ("code", code),
-            ("credentialId", credential_id),
-            ("deviceDid", device_did.to_string()),
-            ("deviceName", device_name),
-            ("delegation", delegation_hex.clone()),
-            ("repositoryDescriptor", descriptor_hex.clone()),
-        ]),
+        arguments,
         device_did_string,
         delegation_hex,
         Some(descriptor_hex),
@@ -340,6 +370,10 @@ mod tests {
             "laptop".into(),
             delegation_hex,
             "https://accounts.example/ucan/".into(),
+            Some(PasskeyCreationMetadata {
+                created_at: 1_754_380_800,
+                created_on: "Chrome on macOS".into(),
+            }),
         )
         .await
         .unwrap();
@@ -364,6 +398,14 @@ mod tests {
             chain.arguments().get("email"),
             Some(&Promised::String("a@x.com".into()))
         );
+        assert_eq!(
+            chain.arguments().get("passkeyCreatedAt"),
+            Some(&Promised::Integer(1_754_380_800))
+        );
+        assert_eq!(
+            chain.arguments().get("passkeyCreatedOn"),
+            Some(&Promised::String("Chrome on macOS".into()))
+        );
         let descriptor_hex = output.descriptor_hex.unwrap();
         assert_eq!(
             chain.arguments().get("repositoryDescriptor"),
@@ -375,6 +417,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(descriptor.account_subject(), &expected_root);
+
+        let (root, device) = fixture().await;
+        let delegation = crate::delegation::mint_device_delegation(root.clone(), &device)
+            .await
+            .unwrap();
+        let legacy = create_account(
+            root,
+            "legacy@x.com".into(),
+            "123456".into(),
+            "legacy-credential".into(),
+            device,
+            "old browser".into(),
+            hex::encode(delegation.to_bytes().unwrap()),
+            "https://accounts.example/ucan/".into(),
+            None,
+        )
+        .await
+        .unwrap();
+        let bytes = hex::decode(legacy.invocation_hex).unwrap();
+        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
+        assert!(!chain.arguments().contains_key("passkeyCreatedAt"));
+        assert!(!chain.arguments().contains_key("passkeyCreatedOn"));
     }
 
     #[dialog_common::test]

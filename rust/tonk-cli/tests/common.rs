@@ -112,6 +112,7 @@ impl AccountFixture {
             "fixture-device".to_string(),
             hex::encode(link.to_bytes()?),
             "http://127.0.0.1:9/ucan/".to_string(),
+            None,
         )
         .await?;
         reqwest::Client::new()

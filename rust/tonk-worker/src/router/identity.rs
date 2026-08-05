@@ -7,7 +7,7 @@ use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_worker_api::{RootStatus, SaveRootRequest};
+use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -20,6 +20,8 @@ struct LocalRootRecord {
     version: u8,
     credential_id: String,
     delegation: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    passkey: Option<PasskeyMetadata>,
 }
 
 /// A validated local root record.
@@ -35,6 +37,8 @@ pub(crate) struct LocalRoot {
     pub delegation: DelegationChain,
     /// Exact serialized delegation bytes.
     pub bytes: Vec<u8>,
+    /// Informational creation details recorded by the creating browser.
+    pub passkey: Option<PasskeyMetadata>,
 }
 
 pub(crate) async fn validate_grant(
@@ -115,6 +119,7 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
         credential_id: record.credential_id,
         delegation,
         bytes: record.delegation,
+        passkey: record.passkey,
     })
 }
 
@@ -131,6 +136,7 @@ fn status(root: LocalRoot) -> RootStatus {
         credential_id: root.credential_id,
         delegation_cid: root.delegation.proof_cids()[0].to_string(),
         delegation_hex: hex::encode(root.bytes),
+        passkey: root.passkey,
     }
 }
 
@@ -155,6 +161,26 @@ pub(crate) async fn persist_root(
             "credentialId must not be empty".to_string(),
         ));
     }
+    let passkey = request
+        .passkey
+        .map(|mut metadata| {
+            metadata.created_on = metadata.created_on.trim().to_string();
+            if metadata.created_at == 0 {
+                return Err(TonkWorkerError::Router(
+                    "passkey createdAt must be greater than zero".to_string(),
+                ));
+            }
+            if metadata.created_on.is_empty()
+                || metadata.created_on.chars().count() > 120
+                || metadata.created_on.chars().any(char::is_control)
+            {
+                return Err(TonkWorkerError::Router(
+                    "passkey createdOn must be a readable device label".to_string(),
+                ));
+            }
+            Ok(metadata)
+        })
+        .transpose()?;
     let bytes = hex::decode(&request.delegation_hex)
         .map_err(|error| TonkWorkerError::Router(format!("invalid delegation hex: {error}")))?;
     let chain = validate_grant(bytes.clone(), &state.profile.did()).await?;
@@ -162,6 +188,7 @@ pub(crate) async fn persist_root(
         version: 1,
         credential_id: request.credential_id,
         delegation: bytes.clone(),
+        passkey,
     };
     if let Some(existing) = load_record(state).await? {
         if existing != record {
@@ -201,6 +228,7 @@ pub(crate) async fn persist_root(
         credential_id: record.credential_id,
         delegation: chain,
         bytes,
+        passkey: record.passkey,
     }))
 }
 
@@ -239,6 +267,7 @@ mod tests {
             SaveRootRequest {
                 credential_id: format!("credential-{root_seed}"),
                 delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
             },
             grant,
         )
@@ -261,6 +290,25 @@ mod tests {
         let Json(result) = get(State(state)).await.unwrap();
         assert!(matches!(result, RootStatus::Ready { delegation_cid, .. }
             if delegation_cid == grant.proof_cids()[0].to_string()));
+    }
+
+    #[dialog_common::test]
+    async fn it_preserves_passkey_creation_metadata_with_the_local_root() {
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let device = state.read().await.profile.did();
+        let (request, _) = request_for(1, &device).await;
+        let mut request = serde_json::to_value(request).unwrap();
+        request["passkey"] = serde_json::json!({
+            "createdAt": 1_754_380_800,
+            "createdOn": "Chrome on macOS",
+        });
+        let request = serde_json::from_value(request).unwrap();
+
+        let _ = save(State(state.clone()), Json(request)).await.unwrap();
+        let Json(result) = get(State(state)).await.unwrap();
+        let result = serde_json::to_value(result).unwrap();
+        assert_eq!(result["passkey"]["createdAt"], 1_754_380_800u64);
+        assert_eq!(result["passkey"]["createdOn"], "Chrome on macOS");
     }
 
     #[dialog_common::test]

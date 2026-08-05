@@ -6,7 +6,7 @@ use crate::core::CeremonyError;
 use crate::core::codes::verify_code;
 use crate::core::delegation::check_device_delegation;
 use crate::core::descriptor::validate_descriptor;
-use crate::store::{NewDevice, Store, StoreError};
+use crate::store::{NewAccount, NewDevice, PasskeyMetadata, Store, StoreError};
 
 /// Returned when the verified email address already belongs to an
 /// account under a different root DID.
@@ -33,6 +33,8 @@ pub struct CreateAccount {
     pub delegation_hex: String,
     /// Hex-encoded root-signed account repository descriptor.
     pub repository_descriptor_hex: String,
+    /// Facts recorded when Tonk created the passkey, if available.
+    pub passkey: Option<PasskeyMetadata>,
 }
 
 /// Create a new account and register its first device.
@@ -62,22 +64,22 @@ pub async fn create_account<S: Store>(
     verify_code(store, &request.email, &request.code, now).await?;
 
     let email = request.email.to_lowercase();
-    let created = store
-        .create_account_with_device(
-            &email,
-            &request.root_did,
-            &request.credential_id,
-            &repository_descriptor,
-            &NewDevice {
-                device_did: request.device_did.clone(),
-                attachment_id: crate::core::devices::random_attachment_id(),
-                delegation_cid,
-                delegation_hex: request.delegation_hex.clone(),
-                name: request.device_name.clone(),
-            },
-            now,
-        )
-        .await;
+    let account = NewAccount {
+        email: &email,
+        root_did: &request.root_did,
+        credential_id: &request.credential_id,
+        repository_descriptor: &repository_descriptor,
+        passkey: request.passkey.as_ref(),
+        created_at: now,
+    };
+    let device = NewDevice {
+        device_did: request.device_did.clone(),
+        attachment_id: crate::core::devices::random_attachment_id(),
+        delegation_cid,
+        delegation_hex: request.delegation_hex.clone(),
+        name: request.device_name.clone(),
+    };
+    let created = store.create_account_with_device(&account, &device).await;
 
     match created {
         Ok(account_id) => Ok(account_id),
@@ -188,10 +190,19 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex,
+            passkey: Some(PasskeyMetadata {
+                created_at: 150,
+                created_on: "Chrome on macOS".into(),
+            }),
         };
         let id = create_account(&store, &request, 200).await.unwrap();
         let account = store.account_by_root(&root_did).await.unwrap().unwrap();
         assert_eq!((account.id, account.email.as_str()), (id, "a@x.com"));
+        assert_eq!(account.passkey_created_at, Some(150));
+        assert_eq!(
+            account.passkey_created_on.as_deref(),
+            Some("Chrome on macOS")
+        );
         assert_eq!(store.devices(id).await.unwrap().len(), 1);
     }
 
@@ -222,6 +233,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex,
+            passkey: None,
         };
         assert!(matches!(
             create_account(&store, &request, 200).await,
@@ -242,6 +254,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex,
+            passkey: None,
         };
         assert!(matches!(
             create_account(&store, &request, 200).await,
@@ -269,6 +282,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex,
+            passkey: None,
         };
         let good_descriptor = request.repository_descriptor_hex.clone();
         request.repository_descriptor_hex = "not hex".into();
@@ -301,6 +315,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex,
+            passkey: None,
         };
         request.device_did = {
             use dialog_varsig::Principal;
@@ -337,6 +352,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex,
+            passkey: None,
         };
         create_account(&store, &first, 200).await.unwrap();
 
@@ -377,6 +393,7 @@ mod tests {
             device_name: "phone".into(),
             delegation_hex: hex::encode(chain2.to_bytes().unwrap()),
             repository_descriptor_hex: hex::encode(descriptor2.bytes()),
+            passkey: None,
         };
         // The message names the email, not the database's own
         // "UNIQUE constraint failed: accounts.email" text.
@@ -406,6 +423,7 @@ mod tests {
                 device_name: "laptop".into(),
                 delegation_hex: delegation_hex.clone(),
                 repository_descriptor_hex: descriptor_hex.clone(),
+                passkey: None,
             },
             200,
         )
@@ -424,6 +442,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex: descriptor_hex,
+            passkey: None,
         };
         let error = create_account(&store, &again, 500).await;
         assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == ROOT_TAKEN));
@@ -449,6 +468,7 @@ mod tests {
             device_name: "laptop".into(),
             delegation_hex,
             repository_descriptor_hex: descriptor_hex,
+            passkey: None,
         };
         create_account(&store, &request, 200).await.unwrap();
 
@@ -517,6 +537,7 @@ mod tests {
                 device_name: "new registration".into(),
                 delegation_hex,
                 repository_descriptor_hex,
+                passkey: None,
             },
             200,
         )
