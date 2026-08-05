@@ -9,6 +9,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 /// Input for creating or evaluating a root credential.
+#[cfg(test)]
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateRootInput {
@@ -40,6 +41,18 @@ pub(crate) struct CreateAccountInput {
     pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
     /// Account repository remote this browser proposes for the new account.
     pub remote: String,
+}
+
+/// Input for a fresh account whose passkey root does not exist yet.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateFreshAccountInput {
+    pub email: String,
+    pub code: String,
+    pub device_did: String,
+    pub device_name: String,
+    pub remote: String,
+    pub created_on: String,
 }
 
 /// Input for the one-time account repository establishment ceremony.
@@ -78,6 +91,7 @@ pub(crate) struct SignRevocationInput {
 }
 
 /// Root ceremony output persisted by the service worker.
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RootOutput {
@@ -96,6 +110,19 @@ pub(crate) struct CeremonyOutput {
     pub root_did: String,
     pub credential_id: String,
     pub delegation_hex: String,
+    pub invocation_hex: String,
+}
+
+/// Fresh-root account output, carrying both local persistence and remote
+/// submission material from one passkey ceremony.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FreshAccountOutput {
+    pub root_did: String,
+    pub device_did: String,
+    pub credential_id: String,
+    pub delegation_hex: String,
+    pub passkey: tonk_worker_api::PasskeyMetadata,
     pub invocation_hex: String,
 }
 
@@ -186,6 +213,7 @@ async fn call<I: Serialize, O: DeserializeOwned>(
     serde_wasm_bindgen::from_value(output).map_err(|_| IdentityBridgeError::MalformedOutput)
 }
 
+#[cfg(test)]
 pub(crate) async fn create_root(input: CreateRootInput) -> Result<RootOutput, IdentityBridgeError> {
     call("createRoot", input).await
 }
@@ -194,6 +222,12 @@ pub(crate) async fn create_account(
     input: CreateAccountInput,
 ) -> Result<CeremonyOutput, IdentityBridgeError> {
     call("createAccount", input).await
+}
+
+pub(crate) async fn create_fresh_account(
+    input: CreateFreshAccountInput,
+) -> Result<FreshAccountOutput, IdentityBridgeError> {
+    call("createFreshAccount", input).await
 }
 
 pub(crate) async fn establish_account_repository(
@@ -309,6 +343,36 @@ mod tests {
             if (!(Object.getPrototypeOf(input) === Object.prototype || Object.getPrototypeOf(input) === null))
                 return Promise.reject(new Error("prototype"));
         "#;
+
+        install_method(
+            "createFreshAccount",
+            &format!(
+                r#"{plain_object_guard}
+                if (input.email !== "fresh@example.test" || input.code !== "123456"
+                    || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
+                    || input.createdOn !== "Chrome on macOS"
+                    || input.remote !== "https://tonk.spot/ucan/")
+                    return Promise.reject(new Error("property"));
+                return Promise.resolve({{
+                    rootDid: "did:key:root", deviceDid: input.deviceDid,
+                    credentialId: "credential", delegationHex: "delegation",
+                    passkey: {{ createdAt: 1754380800, createdOn: input.createdOn }},
+                    invocationHex: "invocation"
+                }});"#
+            ),
+        );
+        let fresh = create_fresh_account(CreateFreshAccountInput {
+            email: "fresh@example.test".into(),
+            code: "123456".into(),
+            device_did: "did:key:device".into(),
+            device_name: "Browser".into(),
+            remote: "https://tonk.spot/ucan/".into(),
+            created_on: "Chrome on macOS".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(fresh.invocation_hex, "invocation");
+        assert_eq!(fresh.passkey.created_at, 1_754_380_800);
 
         install_method(
             "createAccount",
