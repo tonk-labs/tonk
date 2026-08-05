@@ -35,7 +35,24 @@ pub struct PasskeyCredential {
 }
 
 fn ceremony_error(context: &str, value: JsValue) -> anyhow::Error {
-    anyhow!("{context}: {value:?}")
+    let property = |name: &str| {
+        Reflect::get(&value, &name.into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|value| !value.trim().is_empty())
+    };
+    let detail = if let Some(message) = value.as_string() {
+        message
+    } else {
+        match (property("name"), property("message")) {
+            (Some(name), Some(message)) => format!("{name}: {message}"),
+            (Some(name), None) => name,
+            (None, Some(message)) => message,
+            (None, None) => "unknown browser error".to_string(),
+        }
+    };
+    let detail: String = detail.chars().take(512).collect();
+    anyhow!("{context}: {detail}")
 }
 
 fn credentials() -> Result<CredentialsContainer> {
@@ -217,6 +234,17 @@ mod tests {
         let eval = Reflect::get(&prf, &"eval".into()).unwrap();
         let first = Reflect::get(&eval, &"first".into()).unwrap();
         assert_eq!(Uint8Array::new(&first).to_vec(), ROOT_KEY_CONTEXT);
+    }
+
+    #[dialog_common::test]
+    fn it_preserves_browser_error_names_and_messages() {
+        let error = js_sys::Error::new("phone authenticator returned no PRF");
+        error.set_name("NotSupportedError");
+
+        assert_eq!(
+            ceremony_error("passkey assertion failed", error.into()).to_string(),
+            "passkey assertion failed: NotSupportedError: phone authenticator returned no PRF"
+        );
     }
 
     #[dialog_common::test]

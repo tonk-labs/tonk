@@ -333,14 +333,13 @@ pub(crate) async fn persist_link(
     Ok(())
 }
 
-/// Attach provider services and start best-effort backup/restore.
+/// Attach provider services and finish bounded backup/restore before reporting
+/// the account as linked.
 #[wasm_compat]
 pub async fn link(
     State(state): State<AppState>,
     Json(request): Json<AccountLinkRequest>,
 ) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let app_state = state.clone();
     let state = state.read().await;
     persist_link(&state, &request).await?;
     if request.initialize_name
@@ -349,20 +348,13 @@ pub async fn link(
         log!("new-account display-name seed did not complete: {error}");
     }
 
+    // Mount/hydrate the hidden account repository before touching user
+    // spaces. Each account-service request is bounded by the shared HTTP
+    // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
+    super::account_state::ensure_account_state(&state).await;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_futures::spawn_local(async move {
-        let state = app_state.read().await;
-        // Mount/hydrate the hidden account repository before touching user
-        // spaces. Remote failure leaves it retryable and unready.
-        super::account_state::ensure_account_state(&state).await;
-        crate::router::account_backup::back_up_existing_spaces(&state).await;
-        crate::router::restore::restore_spaces(&state).await;
-    });
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        super::account_state::ensure_account_state(&state).await;
-        crate::router::restore::restore_spaces(&state).await;
-    }
+    crate::router::account_backup::back_up_existing_spaces(&state).await;
+    crate::router::restore::restore_spaces(&state).await;
 
     Ok(Json(status(&state).await?))
 }

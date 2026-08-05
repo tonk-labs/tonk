@@ -4,8 +4,8 @@
 //! `src/handlers/`) onto native backends: a `SqliteStore::in_memory()`,
 //! a `MemoryChainStore`, and a shared `CapturedEmail`. Route paths,
 //! JSON field names, status codes, and CORS headers all match the
-//! worker exactly, except for the native-only `GET /_test/emails`
-//! captured-email snapshot used by out-of-process tests.
+//! worker exactly, except for native-only `GET /_test/*` inspection routes
+//! used by out-of-process tests.
 
 use std::sync::Arc;
 
@@ -137,6 +137,7 @@ async fn handle_request(
         (Method::GET, "/") => return Ok(info_response()),
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
+        (Method::GET, "/_test/spots") => spots_route(req, &backends).await,
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/revocations") => revocations_route(req, &backends).await,
@@ -224,6 +225,36 @@ fn emails_route(backends: &Backends) -> Result<Response<Full<Bytes>>, ServiceErr
         .map(|(address, code)| serde_json::json!({ "address": address, "code": code }))
         .collect();
     Ok(json_response(StatusCode::OK, &snapshot))
+}
+
+/// `GET /_test/spots` → the semantic inventory for the root named by the
+/// `X-Test-Root` header, without a device invocation. Native test server only;
+/// lets browser integration tests inspect whether a prior browser actually
+/// uploaded an artifact before simulating a new device.
+async fn spots_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let root = req
+        .headers()
+        .get("x-test-root")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ServiceError::new(ErrorCode::InvalidArgument, "missing test root".to_string())
+        })?;
+    let account = backends
+        .store
+        .account_by_root(root)
+        .await
+        .map_err(|error| ServiceError::new(ErrorCode::InternalError, format!("{error:?}")))?
+        .ok_or_else(|| {
+            ServiceError::new(ErrorCode::NotFound, "unknown test account".to_string())
+        })?;
+    let spots = list_account_spots(&backends.chains, &account)
+        .await
+        .map_err(|error| ServiceError::new(ErrorCode::InternalError, format!("{error:?}")))?;
+    Ok(json_response(StatusCode::OK, &spots))
 }
 
 /// `POST /codes` → request a verification code.
