@@ -347,6 +347,7 @@ async fn ensure_with_operator(
         operator,
         profile.clone(),
         crate::spot::SpotStore::open().context("failed to locate account state")?,
+        true,
     )
     .await?;
 

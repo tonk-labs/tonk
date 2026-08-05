@@ -22,15 +22,22 @@ pub struct AccountBoundOperator {
     inner: Operator<NativeSpace>,
     profile: Profile,
     store: SpotStore,
+    require_account: bool,
 }
 
 impl AccountBoundOperator {
     /// Wrap a raw local operator after canonical session initialization.
-    pub fn new(inner: Operator<NativeSpace>, profile: Profile, store: SpotStore) -> Self {
+    pub fn new(
+        inner: Operator<NativeSpace>,
+        profile: Profile,
+        store: SpotStore,
+        require_account: bool,
+    ) -> Self {
         Self {
             inner,
             profile,
             store,
+            require_account,
         }
     }
 
@@ -73,6 +80,9 @@ impl AccountBoundOperator {
         input: Capability<Authorize<Ucan>>,
         guard: &AccountSessionReadGuard,
     ) -> Result<UcanAuthorization, AuthorizeError> {
+        if !self.require_account {
+            return input.perform(&self.inner).await;
+        }
         // Reuse only the fresh signer/scope/duration and current
         // profile→operator session suffix. Historical account authority is
         // deliberately discarded.
@@ -312,11 +322,17 @@ pub async fn wrap(
     inner: Operator<NativeSpace>,
     profile: Profile,
     store: SpotStore,
+    require_account: bool,
 ) -> Result<AccountBoundOperator> {
     let guard = crate::account_session::exclusive_transition_guard(&store)?;
     crate::account_session::ensure_initialized(&profile, &inner, &guard)
         .await
         .context("failed to initialize account-session state")?;
     drop(guard);
-    Ok(AccountBoundOperator::new(inner, profile, store))
+    Ok(AccountBoundOperator::new(
+        inner,
+        profile,
+        store,
+        require_account,
+    ))
 }

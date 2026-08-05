@@ -136,6 +136,7 @@ impl TonkSite {
             operator,
             profile.clone(),
             crate::spot::SpotStore::open().context("failed to locate account state")?,
+            config.require_account,
         )
         .await?;
 
@@ -202,6 +203,7 @@ impl TonkSite {
             operator,
             profile.clone(),
             crate::spot::SpotStore::open().context("failed to locate account state")?,
+            config.require_account,
         )
         .await?;
 
@@ -433,6 +435,7 @@ async fn mount_delegated_inner(
         operator,
         profile.clone(),
         crate::spot::SpotStore::open().context("failed to locate account state")?,
+        config.require_account,
     )
     .await?;
     Ok(TonkSite {
