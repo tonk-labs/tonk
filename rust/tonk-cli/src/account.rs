@@ -584,6 +584,12 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
         eprintln!("Could not open a browser; use the URL above.");
     }
 
+    // Keep one listener alive for the whole wait. Once Tokio installs its
+    // SIGINT handler, dropping a per-poll listener leaves the default handler
+    // replaced and swallows Ctrl-C during the backoff between polls.
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+
     let mut delay = Duration::from_millis(500);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5 * 60);
     let consumed = if activating.is_some() {
@@ -599,12 +605,18 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
                         break consumed;
                     }
                 }
-                signal = tokio::signal::ctrl_c() => {
+                signal = &mut ctrl_c => {
                     signal.context("failed to listen for Ctrl-C")?;
                     bail!("account link cancelled");
                 }
             }
-            tokio::time::sleep(delay).await;
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                signal = &mut ctrl_c => {
+                    signal.context("failed to listen for Ctrl-C")?;
+                    bail!("account link cancelled");
+                }
+            }
             delay = (delay * 2).min(Duration::from_secs(5));
         })
     };

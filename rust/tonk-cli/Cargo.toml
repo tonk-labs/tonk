@@ -82,6 +82,11 @@ name = "account_spots"
 path = "tests/account_spots.rs"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "account_interrupt"
+path = "tests/account_interrupt.rs"
+required-features = ["integration-tests"]
+
 [features]
 integration-tests = []
 
