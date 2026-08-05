@@ -4,6 +4,16 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Informational metadata recorded when Tonk creates a passkey.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyMetadata {
+    /// Browser-reported Unix time immediately after credential creation.
+    pub created_at: u64,
+    /// Browser and operating-system label where creation ran.
+    pub created_on: String,
+}
+
 /// Current local passkey-root state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -29,6 +39,9 @@ pub enum RootStatus {
         delegation_cid: String,
         /// Exact hex-encoded delegation bytes.
         delegation_hex: String,
+        /// Creation details when this Tonk client created the passkey.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passkey: Option<PasskeyMetadata>,
     },
 }
 
@@ -40,6 +53,9 @@ pub struct SaveRootRequest {
     pub credential_id: String,
     /// Exact hex-encoded root → device delegation bytes.
     pub delegation_hex: String,
+    /// Creation details when this request follows passkey creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey: Option<PasskeyMetadata>,
 }
 
 /// Request to create a durable space through the local root.

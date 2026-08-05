@@ -1,10 +1,13 @@
 <main class="account">
-  <a class="account__brand" href="/" data-return aria-label="Back to Tonk">
-    <span class="account__wordmark">tonk</span>
-    <span class="account__badge">account</span>
-  </a>
+  <header class="account__masthead">
+    <a class="account__brand" href="/" aria-label="Tonk home">
+      <span class="account__wordmark">tonk</span>
+      <span class="account__badge">account</span>
+    </a>
+    <a class="account__return" href="/" data-return>Back to Tonk</a>
+  </header>
 
-  <h1>Your Tonk account</h1>
+  <h1>Account</h1>
 
   <section id="account-choice" class="account__panel" hidden>
     <p class="account__lede">Create an account to keep your spots and access them on any device.</p>
@@ -69,21 +72,48 @@
     <p class="account__hint">The first accepted setup chooses one repository location for every device. Retries always recover that same choice.</p>
   </section>
 
-  <section id="account-success" class="account__panel" hidden>
-    <p id="account-success-message" class="account__status">You're logged in.</p>
-    <button id="account-manage-devices" class="account__button account__button--secondary" type="button">Manage devices</button>
-    <a class="account__button account__button--secondary" href="/" data-return>Back to Tonk</a>
-  </section>
+  <div id="account-success" class="account__panel account__dashboard" hidden>
+    <p id="account-success-message" class="account__status">Signed in on this device.</p>
 
-  <section id="account-devices" class="account__panel" hidden>
-    <h2>Your devices</h2>
-    <p class="account__hint">Revoking a device permanently cuts off authority through that device grant. Disconnecting account services leaves local space authority unchanged.</p>
-    <ul id="account-device-list" class="account__devices"></ul>
-    <div class="account__actions">
-      <button id="account-unlink" class="account__button account__button--quiet" type="button">Disconnect account services on this device</button>
-      <button id="account-devices-back" class="account__button account__button--secondary" type="button">Back</button>
-    </div>
-  </section>
+    <section class="account__section account__passkey" aria-labelledby="account-passkey-title">
+      <div class="account__section-heading">
+        <h2 id="account-passkey-title">Account and passkey</h2>
+        <p>Your passkey replaces a password and may be saved to a device, browser profile, or password manager.</p>
+      </div>
+      <dl class="account__facts" aria-label="Account and passkey details">
+        <div>
+          <dt>Account email</dt>
+          <dd id="account-email-value">Loading…</dd>
+        </div>
+        <div>
+          <dt>Passkey created</dt>
+          <dd id="account-passkey-created-value">Loading…</dd>
+        </div>
+        <div>
+          <dt>Created on</dt>
+          <dd id="account-passkey-device-value">Loading…</dd>
+        </div>
+      </dl>
+      <p id="account-passkey-detail" class="account__hint">“Created on” identifies the browser and operating system used to make this passkey. Browsers do not tell Tonk which passkey manager currently stores it.</p>
+      <p class="account__hint">Before using Tonk on another device or browser, check that the passkey is available there.</p>
+    </section>
+
+    <section class="account__section account__device-section" aria-labelledby="account-devices-title">
+      <div class="account__section-heading">
+        <h2 id="account-devices-title">Devices</h2>
+        <p>These devices can open and sync your Tonk spots. Remove any device you no longer use or recognise.</p>
+      </div>
+      <ul id="account-device-list" class="account__devices"></ul>
+    </section>
+
+    <section class="account__signout" aria-labelledby="account-signout-title">
+      <div>
+        <h2 id="account-signout-title">Sign out on this device</h2>
+        <p>Your existing spots will stay on this device, but syncing will stop until you sign in again.</p>
+      </div>
+      <button id="account-unlink" class="account__button account__button--secondary account__button--compact" type="button">Sign out</button>
+    </section>
+  </div>
 
   <p id="account-working" class="account__hint" role="status" aria-live="polite">Checking this browser…</p>
   <p id="account-error" class="account__error" role="alert" hidden></p>

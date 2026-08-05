@@ -29,8 +29,8 @@ mod sync;
 
 pub use account::{
     AccountConvergenceReport, AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse,
-    AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus, RevocationProjection,
-    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus, AccountSummary,
+    RevocationProjection, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
@@ -38,8 +38,8 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    ACCOUNT_REQUIRED, AccountRequired, CreateSpaceRequest, CreateSpaceResponse, PendingIntent,
-    RootStatus, SaveRootRequest,
+    ACCOUNT_REQUIRED, AccountRequired, CreateSpaceRequest, CreateSpaceResponse, PasskeyMetadata,
+    PendingIntent, RootStatus, SaveRootRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,

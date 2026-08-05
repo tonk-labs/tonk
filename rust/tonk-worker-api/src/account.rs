@@ -2,6 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::PasskeyMetadata;
+
+/// Verified facts shown on the linked account dashboard.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummary {
+    /// Email address verified when the account was created.
+    pub email: String,
+    /// Facts Tonk recorded during passkey creation, absent for legacy roots.
+    pub passkey: Option<PasskeyMetadata>,
+}
+
 /// Attach provider services to an already persisted local root, naming the
 /// account repository this root owns.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,6 +170,21 @@ pub struct RevokeDeviceAcknowledgement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    fn it_serializes_account_summary_passkey_facts_in_camel_case() {
+        let json = serde_json::to_value(AccountSummary {
+            email: "person@example.com".into(),
+            passkey: Some(PasskeyMetadata {
+                created_at: 1_754_380_800,
+                created_on: "Chrome on macOS".into(),
+            }),
+        })
+        .unwrap();
+        assert_eq!(json["email"], "person@example.com");
+        assert_eq!(json["passkey"]["createdAt"], 1_754_380_800_u64);
+        assert_eq!(json["passkey"]["createdOn"], "Chrome on macOS");
+    }
 
     #[dialog_common::test]
     fn it_serializes_repository_setup_requests_in_camel_case() {

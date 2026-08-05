@@ -19,6 +19,9 @@ pub(crate) struct CreateRootInput {
     /// metadata only — no delegation depends on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Browser/OS label recorded only for a newly created passkey.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
 }
 
 /// Input for creating an account and its first device registration.
@@ -32,6 +35,9 @@ pub(crate) struct CreateAccountInput {
     pub root_did: String,
     pub credential_id: String,
     pub delegation_hex: String,
+    /// Creation facts retained with the local root, when this browser made it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
     /// Account repository remote this browser proposes for the new account.
     pub remote: String,
 }
@@ -79,6 +85,8 @@ pub(crate) struct RootOutput {
     pub device_did: String,
     pub credential_id: String,
     pub delegation_hex: String,
+    #[serde(default)]
+    pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
 }
 
 /// Account ceremony output sent to the account service.
@@ -246,6 +254,7 @@ mod tests {
         let output = create_root(CreateRootInput {
             device_did: "did:key:device".into(),
             label: None,
+            created_on: None,
         })
         .await
         .unwrap();
@@ -279,6 +288,7 @@ mod tests {
         create_root(CreateRootInput {
             device_did: "did:key:labelled".into(),
             label: Some("someone@example.com".into()),
+            created_on: Some("Chrome on macOS".into()),
         })
         .await
         .expect("an account ceremony sends its verified address");
@@ -286,6 +296,7 @@ mod tests {
         create_root(CreateRootInput {
             device_did: "did:key:plain".into(),
             label: None,
+            created_on: None,
         })
         .await
         .expect("a spot-created root sends no label at all");
@@ -307,6 +318,8 @@ mod tests {
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.rootDid !== "did:key:root" || input.credentialId !== "credential"
                     || input.delegationHex !== "delegation"
+                    || input.passkey.createdAt !== 1754380800
+                    || input.passkey.createdOn !== "Chrome on macOS"
                     || input.remote !== "https://tonk.spot/ucan/")
                     return Promise.reject(new Error("property"));
                 return Promise.resolve({{
@@ -324,6 +337,10 @@ mod tests {
                 root_did: "did:key:root".into(),
                 credential_id: "credential".into(),
                 delegation_hex: "delegation".into(),
+                passkey: Some(tonk_worker_api::PasskeyMetadata {
+                    created_at: 1_754_380_800,
+                    created_on: "Chrome on macOS".into(),
+                }),
                 remote: "https://tonk.spot/ucan/".into(),
             })
             .await
@@ -429,6 +446,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),
@@ -440,6 +458,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),
@@ -453,6 +472,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),
@@ -464,6 +484,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),
@@ -478,6 +499,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),
@@ -494,6 +516,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),
@@ -505,6 +528,7 @@ mod tests {
             create_root(CreateRootInput {
                 device_did: "device".into(),
                 label: None,
+                created_on: None,
             })
             .await
             .unwrap_err(),

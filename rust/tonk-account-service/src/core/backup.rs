@@ -295,6 +295,8 @@ mod tests {
             root_did: root_did.to_string(),
             credential_id: "cred".to_string(),
             repository_descriptor: None,
+            passkey_created_at: None,
+            passkey_created_on: None,
             created_at: 100,
         }
     }

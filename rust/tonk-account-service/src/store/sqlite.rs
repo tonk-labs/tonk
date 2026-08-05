@@ -10,10 +10,11 @@ use super::{
     Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
     DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
     INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_LINK, LinkCompletion, LinkRequest,
-    NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT, SELECT_ACTIVE_DEVICE_BY_DID,
-    SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT, SELECT_DEVICES_BY_ACCOUNT,
-    SELECT_LINK, SELECT_LINK_BY_ATTACHMENT, SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError,
-    UPDATE_DEVICE_REVOKE, UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
+    NewDevice, PasskeyMetadata, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
+    SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
+    SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
+    SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
+    UPDATE_DEVICE_REVOKE_BY_CID, UPSERT_CODE,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -53,6 +54,8 @@ impl SqliteStore {
             "../../migrations/0006_device_attachment_lifecycle.sql"
         ))
         .map_err(map_err)?;
+        conn.execute_batch(include_str!("../../migrations/0007_passkey_metadata.sql"))
+            .map_err(map_err)?;
         Ok(Self(Mutex::new(conn)))
     }
 }
@@ -211,6 +214,7 @@ impl Store for SqliteStore {
         root_did: &str,
         credential_id: &str,
         repository_descriptor: &[u8],
+        passkey: Option<&PasskeyMetadata>,
         device: &NewDevice,
         created_at: u64,
     ) -> Result<i64, StoreError> {
@@ -223,6 +227,8 @@ impl Store for SqliteStore {
                 root_did,
                 credential_id,
                 repository_descriptor,
+                passkey.map(|metadata| metadata.created_at as i64),
+                passkey.map(|metadata| metadata.created_on.as_str()),
                 created_at as i64
             ],
         )
@@ -255,7 +261,9 @@ impl Store for SqliteStore {
                 root_did: row.get(2)?,
                 credential_id: row.get(3)?,
                 repository_descriptor: row.get(4)?,
-                created_at: row.get::<_, i64>(5)? as u64,
+                passkey_created_at: row.get::<_, Option<i64>>(5)?.map(|value| value as u64),
+                passkey_created_on: row.get(6)?,
+                created_at: row.get::<_, i64>(7)? as u64,
             })
         })
         .optional()
@@ -271,7 +279,9 @@ impl Store for SqliteStore {
                 root_did: row.get(2)?,
                 credential_id: row.get(3)?,
                 repository_descriptor: row.get(4)?,
-                created_at: row.get::<_, i64>(5)? as u64,
+                passkey_created_at: row.get::<_, Option<i64>>(5)?.map(|value| value as u64),
+                passkey_created_on: row.get(6)?,
+                created_at: row.get::<_, i64>(7)? as u64,
             })
         })
         .optional()
@@ -836,6 +846,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(registrations, 2);
+    }
+
+    #[dialog_common::test]
+    fn it_migrates_nullable_passkey_creation_metadata() {
+        let store = SqliteStore::in_memory().unwrap();
+        let conn = store.0.lock().expect("store mutex poisoned");
+        let columns = conn
+            .prepare("PRAGMA table_info(accounts)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(columns.contains(&"passkey_created_at".to_string()));
+        assert!(columns.contains(&"passkey_created_on".to_string()));
     }
 
     #[dialog_common::test]

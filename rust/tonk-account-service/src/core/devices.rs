@@ -378,6 +378,8 @@ mod tests {
             root_did: root.did().to_string(),
             credential_id: "cred".into(),
             repository_descriptor: None,
+            passkey_created_at: None,
+            passkey_created_on: None,
             created_at: 1,
         };
         let device = Device {

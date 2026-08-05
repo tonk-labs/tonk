@@ -287,6 +287,7 @@ mod tests {
             "competing device".to_string(),
             hex::encode(delegation.to_bytes()?),
             env.tonk_web.join("ucan/")?.to_string(),
+            None,
         )
         .await?;
         let response = client
