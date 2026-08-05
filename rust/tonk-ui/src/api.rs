@@ -724,6 +724,24 @@ pub async fn request_account_code(service: &str, email: &str) -> Result<(), Tonk
     }
 }
 
+/// Verify control of an available account email before starting WebAuthn.
+pub async fn preflight_account(service: &str, email: &str, code: &str) -> Result<(), TonkUiError> {
+    let path = "/accounts/preflight";
+    let response = reqwest::Client::new()
+        .post(format!("{}{}", service.trim_end_matches('/'), path))
+        .json(&serde_json::json!({ "email": email, "code": code }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    let status = response.status();
+    let text = response.text().await.map_err(into_api_error)?;
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(account_service_error(path, status, &text))
+    }
+}
+
 /// Submit a signed ceremony container to the account service.
 pub async fn submit_account_ceremony(
     service: &str,
