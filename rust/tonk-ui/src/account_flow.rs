@@ -16,7 +16,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     use tokio::process::{Child, Command};
 
-    use crate::helpers::{TestEnvironment, driver_with_prf};
+    use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator};
 
     const EMAIL: &str = "person@example.com";
 
@@ -95,6 +95,20 @@ mod tests {
         }
     }
 
+    async fn credential_count(driver: &WebDriver, authenticator_id: &str) -> Result<usize> {
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        let result = devtools
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": authenticator_id }),
+            )
+            .await?;
+        result["credentials"]
+            .as_array()
+            .map(Vec::len)
+            .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))
+    }
+
     pub(crate) async fn sign_up(
         driver: &WebDriver,
         env: &TestEnvironment,
@@ -166,6 +180,102 @@ mod tests {
         assert!(!created.is_empty() && created != "Loading…" && created != "Unavailable");
         wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_an_existing_email_before_creating_a_passkey_and_can_retry(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let existing_email = "existing@example.com";
+        let available_email = "available@example.com";
+
+        let creator = driver_with_prf(&env).await?;
+        sign_up(&creator, &env, existing_email).await?;
+        creator.quit().await?;
+
+        let (driver, authenticator_id) = driver_with_prf_authenticator(&env).await?;
+        driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                navigator.serviceWorker.ready.then(() => {
+                    if (navigator.serviceWorker.controller) {
+                        done(true);
+                    } else {
+                        navigator.serviceWorker.addEventListener(
+                            "controllerchange",
+                            () => done(true),
+                            { once: true },
+                        );
+                    }
+                }).catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        element(&driver, "#account-choose-create")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "#account-email")
+            .await?
+            .send_keys(existing_email)
+            .await?;
+        element(&driver, "#account-send-code")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "tonk-account[data-mode=\"verify\"]").await?;
+        element(&driver, "#account-code")
+            .await?
+            .send_keys(captured_code(&env, existing_email).await?)
+            .await?;
+        element(&driver, "#account-create-submit")
+            .await?
+            .click()
+            .await?;
+
+        wait_for_text(
+            &driver,
+            "#account-error",
+            "an account already exists for this email address",
+        )
+        .await?;
+        assert_eq!(
+            credential_count(&driver, &authenticator_id).await?,
+            0,
+            "email conflicts must be reported before WebAuthn creates a credential"
+        );
+
+        element(&driver, "#account-verify-back")
+            .await?
+            .click()
+            .await?;
+        let code = element(&driver, "#account-code").await?;
+        assert_eq!(code.prop("value").await?.as_deref(), Some(""));
+        let email = element(&driver, "#account-email").await?;
+        email.clear().await?;
+        email.send_keys(available_email).await?;
+        element(&driver, "#account-send-code")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "tonk-account[data-mode=\"verify\"]").await?;
+        element(&driver, "#account-code")
+            .await?
+            .send_keys(captured_code(&env, available_email).await?)
+            .await?;
+        element(&driver, "#account-create-submit")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
 
         driver.quit().await?;
         Ok(())

@@ -60,6 +60,16 @@ pub struct RootCeremony {
     pub passkey: Option<PasskeyCreationMetadata>,
 }
 
+/// A fresh passkey root and its account-creation invocation, produced from
+/// one in-memory root signer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreshAccountCeremony {
+    /// Material the browser persists only after credential creation succeeds.
+    pub root: RootCeremony,
+    /// Root-signed request submitted to the account service.
+    pub account: AccountCeremony,
+}
+
 /// Informational metadata captured by the browser that created a passkey.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasskeyCreationMetadata {
@@ -94,6 +104,25 @@ async fn root_ceremony(
     })
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_root_material(
+    label: Option<&str>,
+    created_on: Option<&str>,
+) -> Result<(Ed25519Signer, String, Option<PasskeyCreationMetadata>)> {
+    let created = crate::passkey::create_passkey(label).await?;
+    let credential_id = hex::encode(created.id);
+    let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
+        created_at: (js_sys::Date::now() / 1000.0) as u64,
+        created_on: created_on.to_string(),
+    });
+    let prf = match created.prf_output {
+        Some(output) => output,
+        None => crate::passkey::prf_output().await?,
+    };
+    let root = crate::derive::derive_root_signer(&prf).await?;
+    Ok((root, credential_id, passkey))
+}
+
 /// Create a passkey root and delegate it to `device_did`.
 ///
 /// `label` names the credential in the user's passkey manager: the account
@@ -106,17 +135,7 @@ pub async fn create_root(
     label: Option<&str>,
     created_on: Option<&str>,
 ) -> Result<RootCeremony> {
-    let created = crate::passkey::create_passkey(label).await?;
-    let credential_id = hex::encode(created.id);
-    let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
-        created_at: (js_sys::Date::now() / 1000.0) as u64,
-        created_on: created_on.to_string(),
-    });
-    let prf = match created.prf_output {
-        Some(output) => output,
-        None => crate::passkey::prf_output().await?,
-    };
-    let root = crate::derive::derive_root_signer(&prf).await?;
+    let (root, credential_id, passkey) = create_root_material(label, created_on).await?;
     root_ceremony(root, credential_id, device_did, passkey).await
 }
 
@@ -244,6 +263,44 @@ pub async fn create_account(
         Some(descriptor_hex),
     )
     .await
+}
+
+/// Create a passkey root and sign its account request without immediately
+/// asking the new passkey for a second assertion.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn create_fresh_account(
+    email: String,
+    code: String,
+    device_did: dialog_varsig::Did,
+    device_name: String,
+    remote: String,
+    created_on: Option<&str>,
+) -> Result<FreshAccountCeremony> {
+    let (root, credential_id, passkey) = create_root_material(Some(&email), created_on).await?;
+    let root_ceremony = root_ceremony(
+        root.clone(),
+        credential_id.clone(),
+        device_did.clone(),
+        passkey.clone(),
+    )
+    .await?;
+    let account = create_account(
+        root,
+        email,
+        code,
+        credential_id,
+        device_did,
+        device_name,
+        root_ceremony.delegation_hex.clone(),
+        remote,
+        passkey,
+    )
+    .await?;
+    Ok(FreshAccountCeremony {
+        root: root_ceremony,
+        account,
+    })
 }
 
 /// Build the root-signed request that links a new device to an existing account.

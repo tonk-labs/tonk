@@ -29,7 +29,7 @@ use crate::auth::{
     optional_revocation, required_string, string_argument,
 };
 use crate::chains::MemoryChainStore;
-use crate::core::accounts::{CreateAccount, create_account};
+use crate::core::accounts::{CreateAccount, create_account, preflight_account};
 use crate::core::backup::{get_chain, list_account_spots, list_chains, put_chain_and_index_spot};
 use crate::core::codes::{generate_code, request_code};
 use crate::core::descriptor::establish_descriptor;
@@ -143,6 +143,7 @@ async fn handle_request(
         (Method::GET, "/_test/spots") => spots_route(req, &backends).await,
         (Method::POST, "/codes") => codes_route(req, &backends).await,
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
+        (Method::POST, "/accounts/preflight") => accounts_preflight_route(req, &backends).await,
         (Method::POST, "/account/summary") => account_summary_route(req, &backends).await,
         (Method::POST, "/revocations") => revocations_route(req, &backends).await,
         (Method::POST, "/account/repository/establish") => {
@@ -357,6 +358,24 @@ async fn accounts_route(
             "descriptorHex": descriptor_hex,
         }),
     ))
+}
+
+/// `POST /accounts/preflight` → verify email control and availability.
+async fn accounts_preflight_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    #[derive(Deserialize)]
+    struct PreflightRequest {
+        email: String,
+        code: String,
+    }
+
+    let body: PreflightRequest = parse_json(req).await?;
+    preflight_account(&backends.store, &body.email, &body.code, unix_now())
+        .await
+        .map_err(ceremony_error)?;
+    Ok(json_response(StatusCode::OK, &serde_json::json!({})))
 }
 
 /// `POST /account/repository/establish` → establish one descriptor winner.

@@ -11,9 +11,9 @@ use tonk_account::{AccountStateStatus, handoff::ResolvedLink};
 use tonk_worker_api::{AccountStatus, RevocationProjection, RevokeDeviceAcknowledgement};
 
 use crate::identity_bridge::{
-    CeremonyOutput, CreateAccountInput, CreateRootInput, EstablishRepositoryInput, LinkDeviceInput,
-    RevocationOutput, SignRevocationInput, complete_link, create_account, create_root,
-    establish_account_repository, link_device, sign_revocation,
+    CeremonyOutput, CreateAccountInput, CreateFreshAccountInput, EstablishRepositoryInput,
+    LinkDeviceInput, RevocationOutput, SignRevocationInput, complete_link, create_account,
+    create_fresh_account, establish_account_repository, link_device, sign_revocation,
 };
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -101,6 +101,12 @@ fn input(host: &HtmlElement, selector: &str) -> Result<String, String> {
     let value = input.value().trim().to_string();
     if value.is_empty() {
         Err(format!("{} is required", input.name()))
+    } else if !input.check_validity() {
+        Err(input
+            .validation_message()
+            .ok()
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| format!("{} is invalid", input.name())))
     } else {
         Ok(value)
     }
@@ -129,9 +135,14 @@ fn set_mode(host: &HtmlElement, mode: &str) {
 
 fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
     for selector in [
+        "#account-choose-create",
+        "#account-choose-link",
         "#account-send-code",
         "#account-create-submit",
+        "#account-create-back",
+        "#account-verify-back",
         "#account-link-submit",
+        "#account-link-back",
         "#account-handoff-submit",
         "#account-setup-submit",
         "#account-unlink",
@@ -862,6 +873,14 @@ fn bind(host: &HtmlElement) {
     on_click(host, "#account-verify-back", |host| {
         clear_error(&host);
         set_busy(&host, false, "");
+        if let Ok(Some(code)) = host.query_selector("#account-code")
+            && let Ok(code) = code.dyn_into::<HtmlInputElement>()
+        {
+            code.set_value("");
+        }
+        if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
+            destination.set_text_content(None);
+        }
         set_mode(&host, "create");
         focus_input(&host, "#account-email");
     });
@@ -915,13 +934,18 @@ fn bind(host: &HtmlElement) {
             (Err(error), _) | (_, Err(error)) => return show_error(&host, error),
         };
         let device_name = crate::device_name::current();
-        set_busy(&host, true, "Waiting for your passkey…");
+        set_busy(&host, true, "Checking verification code…");
         spawn_local(async move {
             let result = async {
+                let service_url = service(&host).await?;
+                crate::api::preflight_account(&service_url, &email, &code)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                set_busy(&host, true, "Waiting for your passkey…");
                 let status = crate::api::root_status()
                     .await
                     .map_err(|error| error.to_string())?;
-                let (root_did, device_did, credential_id, delegation_hex, passkey) = match status {
+                let ceremony = match status {
                     tonk_worker_api::RootStatus::Ready {
                         root_did,
                         device_did,
@@ -929,50 +953,45 @@ fn bind(host: &HtmlElement) {
                         delegation_hex,
                         passkey,
                         ..
-                    } => (root_did, device_did, credential_id, delegation_hex, passkey),
+                    } => create_account(CreateAccountInput {
+                        email,
+                        code,
+                        device_did,
+                        device_name,
+                        root_did,
+                        credential_id,
+                        delegation_hex,
+                        passkey,
+                        remote: proposed_remote()?,
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?,
                     tonk_worker_api::RootStatus::Missing { device_did } => {
-                        // This ceremony is what creates the passkey, and it
-                        // knows the address the code just verified — so the
-                        // credential gets a name its owner will recognise in a
-                        // passkey manager instead of an opaque handle. Only
-                        // here: a root created by anything else has no account
-                        // to name.
-                        let created = create_root(CreateRootInput {
+                        let created = create_fresh_account(CreateFreshAccountInput {
+                            email,
+                            code,
                             device_did,
-                            label: Some(email.clone()),
-                            created_on: Some(device_name.clone()),
+                            device_name,
+                            remote: proposed_remote()?,
+                            created_on: crate::device_name::current(),
                         })
                         .await
                         .map_err(|error| error.to_string())?;
                         crate::api::save_root(
                             created.credential_id.clone(),
                             created.delegation_hex.clone(),
-                            created.passkey.clone(),
+                            Some(created.passkey.clone()),
                         )
                         .await
                         .map_err(|error| error.to_string())?;
-                        (
-                            created.root_did,
-                            created.device_did,
-                            created.credential_id,
-                            created.delegation_hex,
-                            created.passkey,
-                        )
+                        CeremonyOutput {
+                            root_did: created.root_did,
+                            credential_id: created.credential_id,
+                            delegation_hex: created.delegation_hex,
+                            invocation_hex: created.invocation_hex,
+                        }
                     }
                 };
-                let ceremony = create_account(CreateAccountInput {
-                    email,
-                    code,
-                    device_did,
-                    device_name,
-                    root_did,
-                    credential_id,
-                    delegation_hex,
-                    passkey,
-                    remote: proposed_remote()?,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Creating your account…");
                 complete_remote(&host, "/accounts", ceremony, true).await
             }
@@ -1370,6 +1389,88 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "local persistence recovery must not be exposed in the account UI"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_invalid_authored_fields_before_network_work() {
+        let host = host();
+        let email: HtmlInputElement = host
+            .query_selector("#account-email")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        email.set_value("not-an-email");
+        assert!(input(&host, "#account-email").is_err());
+        email.set_value("person@example.com");
+        assert_eq!(
+            input(&host, "#account-email").as_deref(),
+            Ok("person@example.com")
+        );
+
+        let code: HtmlInputElement = host
+            .query_selector("#account-code")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        code.set_value("12");
+        assert!(input(&host, "#account-code").is_err());
+        code.set_value("123456");
+        assert_eq!(input(&host, "#account-code").as_deref(), Ok("123456"));
+    }
+
+    #[dialog_common::test]
+    fn it_disables_in_panel_navigation_while_account_work_is_in_flight() {
+        let host = host();
+        set_busy(&host, true, "Checking verification code…");
+
+        for selector in [
+            "#account-choose-create",
+            "#account-choose-link",
+            "#account-create-back",
+            "#account-verify-back",
+            "#account-link-back",
+        ] {
+            let button: HtmlButtonElement = host
+                .query_selector(selector)
+                .unwrap()
+                .unwrap()
+                .unchecked_into();
+            assert!(button.disabled(), "{selector} remained interactive");
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_clears_verification_state_before_trying_another_email() {
+        let host = host();
+        bind(&host);
+        let code: HtmlInputElement = host
+            .query_selector("#account-code")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        code.set_value("123456");
+        host.query_selector("#account-code-email")
+            .unwrap()
+            .unwrap()
+            .set_text_content(Some("old@example.com"));
+        set_mode(&host, "verify");
+
+        let back: HtmlElement = host
+            .query_selector("#account-verify-back")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        back.click();
+
+        assert_eq!(host.get_attribute("data-mode").as_deref(), Some("create"));
+        assert_eq!(code.value(), "");
+        assert_eq!(
+            host.query_selector("#account-code-email")
+                .unwrap()
+                .unwrap()
+                .text_content(),
+            Some(String::new())
         );
     }
 

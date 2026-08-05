@@ -249,6 +249,102 @@ async fn it_exhausts_verification_attempts_over_http() {
 }
 
 #[dialog_common::test]
+async fn it_checks_email_availability_only_after_a_valid_code() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let existing = "existing@example.com";
+
+    client
+        .post(format!("{}/codes", server.endpoint))
+        .json(&serde_json::json!({ "email": existing }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let first_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
+    let created = client
+        .post(format!("{}/accounts", server.endpoint))
+        .header("Content-Type", "application/cbor")
+        .body(account_creation(existing, &first_code).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+
+    client
+        .post(format!("{}/codes", server.endpoint))
+        .json(&serde_json::json!({ "email": existing }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let existing_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
+    let conflict = client
+        .post(format!("{}/accounts/preflight", server.endpoint))
+        .json(&serde_json::json!({
+            "email": existing,
+            "code": existing_code,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), 409);
+    let error: serde_json::Value = conflict.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "CONFLICT");
+    assert_eq!(
+        error["error"]["message"],
+        tonk_account_service::core::accounts::EMAIL_TAKEN
+    );
+
+    let available = "available@example.com";
+    client
+        .post(format!("{}/codes", server.endpoint))
+        .json(&serde_json::json!({ "email": available }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let available_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
+    for _ in 0..2 {
+        let response = client
+            .post(format!("{}/accounts/preflight", server.endpoint))
+            .json(&serde_json::json!({
+                "email": available,
+                "code": available_code,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "a successful preflight must not consume the code"
+        );
+    }
+
+    let wrong_code = if available_code == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
+    let wrong = client
+        .post(format!("{}/accounts/preflight", server.endpoint))
+        .json(&serde_json::json!({
+            "email": available,
+            "code": wrong_code,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
 async fn it_rejects_a_mismatched_command() {
     let server = AccountServer::start().await;
     let body = container(

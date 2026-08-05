@@ -97,10 +97,19 @@ mod native {
     /// Creates a WebDriver with a PRF-capable virtual authenticator.
     #[cfg(test)]
     pub(crate) async fn driver_with_prf(env: &TestEnvironment) -> Result<WebDriver> {
+        Ok(driver_with_prf_authenticator(env).await?.0)
+    }
+
+    /// Creates a WebDriver and returns the PRF-capable virtual authenticator's
+    /// id so tests can inspect credential side effects.
+    #[cfg(test)]
+    pub(crate) async fn driver_with_prf_authenticator(
+        env: &TestEnvironment,
+    ) -> Result<(WebDriver, String)> {
         let driver = env.driver().await?;
         let devtools = ChromeDevTools::new(driver.handle.clone());
         devtools.execute_cdp("WebAuthn.enable").await?;
-        devtools
+        let authenticator = devtools
             .execute_cdp_with_params(
                 "WebAuthn.addVirtualAuthenticator",
                 serde_json::json!({
@@ -117,6 +126,10 @@ mod native {
                 }),
             )
             .await?;
+        let authenticator_id = authenticator["authenticatorId"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator id"))?
+            .to_string();
         driver
             .execute_async(
                 r#"
@@ -128,7 +141,7 @@ mod native {
                 vec![],
             )
             .await?;
-        Ok(driver)
+        Ok((driver, authenticator_id))
     }
 
     /// Manages test server processes for integration testing.

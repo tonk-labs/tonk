@@ -253,6 +253,37 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result)
 }
 
+async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
+    let email = string_property(&input, "email")?;
+    let code = string_property(&input, "code")?;
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let device_name = string_property(&input, "deviceName")?;
+    let remote = string_property(&input, "remote")?;
+    let created_on = optional_string_property(&input, "createdOn");
+    let ceremony = crate::ceremony::create_fresh_account(
+        email,
+        code,
+        device_did,
+        device_name,
+        remote,
+        created_on.as_deref(),
+    )
+    .await
+    .map_err(js_error)?;
+    let result = root_result(ceremony.root)?;
+    Reflect::set(
+        &result,
+        &"invocationHex".into(),
+        &ceremony.account.invocation_hex.into(),
+    )?;
+    if let Some(descriptor_hex) = ceremony.account.descriptor_hex {
+        Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
+    }
+    Ok(result)
+}
+
 async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
     let device_did = string_property(&input, "deviceDid")?
         .parse()
@@ -393,6 +424,16 @@ pub fn install() {
         create_account.as_ref().unchecked_ref(),
     );
     create_account.forget();
+
+    let create_fresh_account = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_fresh_account(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createFreshAccount".into(),
+        create_fresh_account.as_ref().unchecked_ref(),
+    );
+    create_fresh_account.forget();
 
     let link_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(link_device(input))

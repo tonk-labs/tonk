@@ -24,8 +24,9 @@ instead signed directly by the passkey-derived root: successful verification,
 with issuer equal to subject, proves root-key control before the service writes
 the first account or another device. Account creation additionally consumes an
 email verification code. `POST /codes` and creation of a pending CLI handoff
-are unauthenticated and edge-rate-limited; resolving and consuming a handoff
-requires its 256-bit bearer secret.
+are unauthenticated and edge-rate-limited. Account preflight is authenticated
+by the submitted email code and edge-rate-limited; resolving and consuming a
+handoff requires its 256-bit bearer secret.
 
 ## RP ID invariants
 
@@ -54,6 +55,9 @@ permissive CORS headers).
 - `GET /`: service info as JSON (`service`, `version`).
 - `GET /health`: liveness check (`OK`).
 - `POST /codes`: request an email verification code. Body: `{ "email": string }`.
+- `POST /accounts/preflight`: verify a submitted `{ "email", "code" }` and
+  reject an already-registered address before WebAuthn. A successful check
+  does not consume the code; `POST /accounts` remains authoritative.
 - `POST /accounts`: create an account and register its first device, consuming
   a verification code. Body: a root-signed UCAN invocation container with
   command `["account", "create"]` and arguments `email`, `code`,
@@ -138,6 +142,11 @@ then the access worker, then the UI/service worker. Account acknowledgements
 are response supersets and clients accept both `CREDENTIAL_REVOKED` and legacy
 `DEVICE_REVOKED` during the mixed-version window.
 
+The preflight route is a hard dependency of this account UI: deploy the account
+worker containing `/accounts/preflight` before the UI that calls it. The UI
+fails closed if the route is absent rather than creating a passkey before email
+availability has been verified.
+
 First deploy, in order:
 
 1. `wrangler d1 create tonk-accounts` and paste the returned database id into
@@ -156,7 +165,7 @@ First deploy, in order:
 7. Add a WAF rate limiting rule for unauthenticated request creation (zone `tonk.xyz`,
    Security > WAF > Rate limiting rules): expression
    `(http.host eq "accounts.tonk.xyz" and http.request.method eq "POST" and
-   (http.request.uri.path eq "/codes" or http.request.uri.path eq "/links"))`,
+   http.request.uri.path in {"/codes" "/accounts/preflight" "/links"})`,
    counting by IP, 3 requests per 10 seconds, action Block. The service
    enforces a per-email cooldown but nothing per-IP, so without this rule an
    unauthenticated caller can fan out email sends or pending D1 rows.
@@ -255,17 +264,18 @@ resend cooldown, 10-minute code TTL, five verification attempts per code.
 Everything IP-shaped is enforced at the Cloudflare edge, not in code:
 
 - **Rate rule** (zone `tonk.xyz`, and the staging host): one rate-limiting
-  rule per environment covering the two unauthenticated write paths.
-  Each rule's expression should match both `/codes` and `/links`:
+  rule per environment covering the unauthenticated and code-authenticated
+  bootstrap paths. Each rule's expression should match `/codes`,
+  `/accounts/preflight`, and `/links`:
 
   ```
   (http.host eq "accounts.tonk.xyz" and http.request.method eq "POST" and
-   http.request.uri.path in {"/codes" "/links"})
+   http.request.uri.path in {"/codes" "/accounts/preflight" "/links"})
   ```
 
   Deployed threshold: 3 requests per 10 seconds per IP, action Block.
-  Verify each environment's existing rule covers both paths in the expression,
-  and extend the path set if `/links` is missing.
+  Verify each environment's existing rule covers all three paths in the
+  expression.
   `/links/resolve|complete|consume` need no rule: they demand the 256-bit
   bearer secret and cheap lookups fail closed.
 - **Turnstile**: deliberately not deployed. Revisit only if the rate rule
