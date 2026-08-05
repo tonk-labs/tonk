@@ -39,14 +39,16 @@ use tonk_schema::rule::{Rule, RuleResolveError};
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
     DeclaredApplication, attribute_application, build_concept_retractions, concept_application,
-    parse_attribute_body, parse_concept_body,
+    parse_attribute_body, parse_command_body, parse_concept_body, parse_projection_body,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
 use super::scope::Scope;
 use tonk_core::claim::ConceptDescriptor as DurableConceptDescriptor;
 use tonk_core::meta::AnchorName;
+use tonk_schema::command_definition::{CommandDefinition, CommandResolveError};
 use tonk_schema::prelude::EntityExt;
+use tonk_schema::projection::{ProjectionDefinition, ProjectionResolveError};
 use tonk_schema::resolution::{AttributeDefinition as AttrDef, ConceptDefinition as ConceptDef};
 use tonk_schema::transact::{ThisIntent, derive_this};
 
@@ -61,6 +63,17 @@ enum Need {
     /// concept. Resolves to a [`ConceptDefinition`].
     Concept {
         name: String,
+        range: lsp_types::Range,
+    },
+    /// A nominal command referenced by a standalone application or
+    /// projection declaration.
+    Command {
+        name: String,
+        range: lsp_types::Range,
+    },
+    /// A nominal command referenced by its stable kind URI.
+    CommandByEntity {
+        entity: Entity,
         range: lsp_types::Range,
     },
     /// A bare-symbol field value (`field: alice`). Resolves first
@@ -117,6 +130,8 @@ enum DeclarationKind {
     /// A `command!:` head — parsed exactly like `Concept` but
     /// always transient (a command *is* a transient concept).
     Command,
+    /// A stored DOM/event adapter for a nominal command.
+    Projection,
 }
 
 /// The dependency graph `push` builds: the external needs to
@@ -150,6 +165,21 @@ pub(crate) struct Resolved {
 /// during the declaration registration or `expand`.
 pub(crate) trait Resolve {
     async fn concept(&self, name: &str) -> Result<Option<ConceptDefinition>, ResolveError>;
+    async fn command(&self, _name: &str) -> Result<Option<CommandDefinition>, CommandResolveError> {
+        Ok(None)
+    }
+    async fn command_by_entity(
+        &self,
+        _entity: &Entity,
+    ) -> Result<Option<CommandDefinition>, CommandResolveError> {
+        Ok(None)
+    }
+    async fn projections_for_command(
+        &self,
+        _command: &Entity,
+    ) -> Result<Vec<ProjectionDefinition>, ProjectionResolveError> {
+        Ok(Vec::new())
+    }
     /// Resolve a concept by its entity URI (e.g. a `this:`-pinned
     /// concept like `tonk:binder`). Used by field retraction to read
     /// the concept's stored fields off the branch.
@@ -192,6 +222,21 @@ impl Resolve for LocalOnly {
         _: &Entity,
     ) -> Result<Option<ConceptDefinition>, ResolveError> {
         Ok(None)
+    }
+    async fn command(&self, _: &str) -> Result<Option<CommandDefinition>, CommandResolveError> {
+        Ok(None)
+    }
+    async fn command_by_entity(
+        &self,
+        _: &Entity,
+    ) -> Result<Option<CommandDefinition>, CommandResolveError> {
+        Ok(None)
+    }
+    async fn projections_for_command(
+        &self,
+        _: &Entity,
+    ) -> Result<Vec<ProjectionDefinition>, ProjectionResolveError> {
+        Ok(Vec::new())
     }
     async fn attribute(&self, _: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
         Ok(None)
@@ -247,6 +292,27 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
         ConceptReference::from(entity.clone())
             .resolve(self.source.clone())
             .perform(self.env)
+            .await
+    }
+    async fn command(&self, name: &str) -> Result<Option<CommandDefinition>, CommandResolveError> {
+        CommandDefinition::by_name(name)
+            .resolve(&self.source, self.env)
+            .await
+    }
+    async fn command_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<CommandDefinition>, CommandResolveError> {
+        CommandDefinition::by_entity(entity.clone())
+            .resolve(&self.source, self.env)
+            .await
+    }
+    async fn projections_for_command(
+        &self,
+        command: &Entity,
+    ) -> Result<Vec<ProjectionDefinition>, ProjectionResolveError> {
+        ProjectionDefinition::for_command(command.clone())
+            .resolve(&self.source, self.env)
             .await
     }
     async fn attribute(&self, name: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
@@ -339,6 +405,16 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
                     });
                     continue;
                 }
+                "projection" => {
+                    if let Expression::Claim(Effectful { inner: a, .. }) = expression {
+                        collect_projection_command_need(a, &mut needs);
+                    }
+                    declarations.push(PendingDeclaration {
+                        index,
+                        kind: DeclarationKind::Projection,
+                    });
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -358,9 +434,16 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
 
         // Head concept name (non-meta) — may be a branch concept.
         if let HeadName::Concept(name) = &head.name
-            && !matches!(name.as_str(), "attribute" | "concept" | "command")
+            && !matches!(
+                name.as_str(),
+                "attribute" | "concept" | "command" | "projection"
+            )
         {
             needs.push(Need::Concept {
+                name: name.clone(),
+                range: head.range,
+            });
+            needs.push(Need::Command {
                 name: name.clone(),
                 range: head.range,
             });
@@ -403,7 +486,11 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
             && matches!(&c.inner.predicate.name, HeadName::Concept(n) if n == "rule")
         {
             for (name, range) in collect_rule_concepts(&c.inner) {
-                needs.push(Need::Concept { name, range });
+                needs.push(Need::Concept {
+                    name: name.clone(),
+                    range,
+                });
+                needs.push(Need::Command { name, range });
             }
             if is_rule_retract_body(&c.inner)
                 && let Some(entity) = parse_rule_this_entity(&c.inner)?
@@ -421,6 +508,33 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
         declarations,
         pending_anchors,
     })
+}
+
+fn collect_projection_command_need(assertion: &tonk_notation::Application, needs: &mut Vec<Need>) {
+    let Some(field) = assertion
+        .fields
+        .iter()
+        .find(|field| field.name == "command")
+    else {
+        return;
+    };
+    match &field.value {
+        FieldValue::Symbol(name) | FieldValue::Literal(tonk_notation::Scalar::String(name)) => {
+            needs.push(Need::Command {
+                name: name.clone(),
+                range: field.value_range,
+            });
+        }
+        FieldValue::Uri(uri) => {
+            if let Ok(entity) = uri.parse() {
+                needs.push(Need::CommandByEntity {
+                    entity,
+                    range: field.value_range,
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Gather the attribute references a `concept!`'s `with:` and
@@ -504,6 +618,40 @@ impl Graph {
         // Pass 1 — attribute needs (concept `with:` dependencies).
         for need in &self.needs {
             match need {
+                Need::Command { name, range } => {
+                    if scope.command(name).is_some() {
+                        continue;
+                    }
+                    let found = resolver.command(name).await.map_err(|error| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("command {name:?}"),
+                                reason: error.to_string(),
+                            },
+                            *range,
+                        )
+                    })?;
+                    if let Some(definition) = found {
+                        scope.record_command(Some(name), definition);
+                    }
+                }
+                Need::CommandByEntity { entity, range } => {
+                    if scope.command_by_entity(entity).is_some() {
+                        continue;
+                    }
+                    let found = resolver.command_by_entity(entity).await.map_err(|error| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("command entity {entity}"),
+                                reason: error.to_string(),
+                            },
+                            *range,
+                        )
+                    })?;
+                    if let Some(definition) = found {
+                        scope.record_command(None, definition);
+                    }
+                }
                 Need::Attribute { name, range } => {
                     if scope.attribute(name).is_some() {
                         continue;
@@ -639,14 +787,10 @@ impl Graph {
                         },
                     );
                 }
-                kind @ (DeclarationKind::Concept | DeclarationKind::Command) => {
+                DeclarationKind::Concept => {
                     let plan = parse_concept_body(a, scope)?;
                     let entity = plan.entity.clone();
-                    // `command!:` is transient by definition; a
-                    // `concept!:` reads its `transient:` tag. An
-                    // explicit `transient:` inside a `command!:`
-                    // body is redundant and silently ignored.
-                    let transient = matches!(kind, DeclarationKind::Command) || plan.transient;
+                    let transient = plan.transient;
                     let (this, name) = derive_head_intent(&a.fields, anchor, scope)?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
@@ -718,6 +862,110 @@ impl Graph {
                             application,
                             inline_attributes,
                             retractions,
+                        },
+                    );
+                }
+                DeclarationKind::Command => {
+                    let plan = parse_command_body(a, scope)?;
+                    let (intent, name) = derive_head_intent(&a.fields, anchor, scope)?;
+                    let kind = match (&intent, &name) {
+                        (ThisIntent::Uri(entity), _) => entity.clone(),
+                        (ThisIntent::Derived, Some(name)) => Entity::from(name),
+                        _ => {
+                            return Err(AnalyzeError::at(
+                                AnalyzeErrorKind::InvalidCommandBody {
+                                    reason: "a nominal command must have an `&anchor` or explicit `this:` URI"
+                                        .into(),
+                                },
+                                a.predicate.range,
+                            ));
+                        }
+                    };
+                    let anchor_range = anchor.map(|value| value.range).unwrap_or(a.predicate.range);
+                    if let Some(name) = &name {
+                        scope.declare(name.as_str(), kind.clone(), anchor_range)?;
+                    }
+                    let definition = CommandDefinition::asserting(kind.clone(), plan.schema);
+                    scope.record_command(name.as_ref().map(AnchorName::as_str), definition.clone());
+                    declared.insert(
+                        pending.index,
+                        DeclaredApplication {
+                            application: Some(
+                                tonk_schema::transact::Application::CommandDefinition {
+                                    definition: Box::new(definition),
+                                    this: ThisIntent::Uri(kind),
+                                    name,
+                                },
+                            ),
+                            // Command schemas own their descriptors. Inline
+                            // argument shapes are not structural attribute
+                            // declarations and must not leak extra claims.
+                            inline_attributes: Vec::new(),
+                            retractions: Vec::new(),
+                        },
+                    );
+                }
+                DeclarationKind::Projection => {
+                    let plan = parse_projection_body(a, scope)?;
+                    let (intent, name) = derive_head_intent(&a.fields, anchor, scope)?;
+                    let this = match (&intent, &name) {
+                        (ThisIntent::Uri(entity), _) => entity.clone(),
+                        (ThisIntent::Derived, Some(name)) => Entity::from(name),
+                        _ => {
+                            return Err(AnalyzeError::at(
+                                AnalyzeErrorKind::InvalidProjectionBody {
+                                    reason: "a projection must have an `&anchor` or explicit `this:` URI"
+                                        .into(),
+                                },
+                                a.predicate.range,
+                            ));
+                        }
+                    };
+                    let anchor_range = anchor.map(|value| value.range).unwrap_or(a.predicate.range);
+                    if let Some(name) = &name {
+                        scope.declare(name.as_str(), this.clone(), anchor_range)?;
+                    }
+                    let definition = ProjectionDefinition::asserting(this.clone(), plan.descriptor);
+                    if definition.descriptor().default {
+                        let existing = resolver
+                            .projections_for_command(&definition.descriptor().command)
+                            .await
+                            .map_err(|error| {
+                                AnalyzeError::at(
+                                    AnalyzeErrorKind::InvalidProjectionBody {
+                                        reason: error.to_string(),
+                                    },
+                                    a.range,
+                                )
+                            })?;
+                        if existing.iter().any(|projection| {
+                            projection.descriptor().default
+                                && projection.this() != definition.this()
+                        }) {
+                            return Err(AnalyzeError::at(
+                                AnalyzeErrorKind::InvalidProjectionBody {
+                                    reason: format!(
+                                        "command {} already has a default projection on the branch",
+                                        definition.descriptor().command
+                                    ),
+                                },
+                                a.range,
+                            ));
+                        }
+                    }
+                    scope.record_projection(definition.clone(), a.range)?;
+                    declared.insert(
+                        pending.index,
+                        DeclaredApplication {
+                            application: Some(
+                                tonk_schema::transact::Application::ProjectionDefinition {
+                                    definition: Box::new(definition),
+                                    this: ThisIntent::Uri(this),
+                                    name,
+                                },
+                            ),
+                            inline_attributes: Vec::new(),
+                            retractions: Vec::new(),
                         },
                     );
                 }
@@ -807,7 +1055,9 @@ impl Graph {
                     }
                 }
                 // Resolved in Pass 1 (before declaration bodies emit).
-                Need::Attribute { .. }
+                Need::Command { .. }
+                | Need::CommandByEntity { .. }
+                | Need::Attribute { .. }
                 | Need::AttributeByEntity { .. }
                 | Need::AttributeById { .. }
                 | Need::ConceptByEntity { .. } => {}

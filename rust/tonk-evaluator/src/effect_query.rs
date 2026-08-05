@@ -50,6 +50,9 @@ pub async fn validate_effect<Env: EffectEnv>(
     use tonk_schema::concept::TransientConcept;
     use tonk_schema::query_source::Source;
 
+    if !effect.when_command_kinds().is_empty() {
+        return Ok(());
+    }
     let concepts = effect.when_concept_entities();
     let source = Source::from(branch);
     for entity in concepts {
@@ -252,6 +255,45 @@ impl EffectsByOn {
     }
 }
 
+/// Look up effects whose private nominal-command premise reads the
+/// supplied stable command kind.
+pub fn effects_by_command(command: Entity) -> EffectsByCommand {
+    EffectsByCommand { command }
+}
+
+/// Builder for [`effects_by_command`].
+pub struct EffectsByCommand {
+    command: Entity,
+}
+
+impl EffectsByCommand {
+    /// Resolve every effect indexed by `dialog.effect/command` for
+    /// this stable kind.
+    pub async fn resolve<Env: EffectEnv>(
+        self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<Vec<Entity>, EffectLookupError> {
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "command"))
+                    .of(Term::<Entity>::var("effect"))
+                    .is(Term::<Entity>::from(self.command)),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                EffectLookupError::Query(format!("command-index query failed: {error:?}"))
+            })?;
+        let mut effects = claims.into_iter().map(|claim| claim.of).collect::<Vec<_>>();
+        effects.sort();
+        effects.dedup();
+        Ok(effects)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +391,26 @@ mod tests {
                 .expect("Sum::apply should succeed")
                 .into(),
         ]
+    }
+
+    fn nominal_command_premise(kind: Entity) -> DialogPremise {
+        let predicate = ConceptDescriptor::try_from(vec![(
+            "__command_kind",
+            AttributeDescriptor::new(
+                the!("dialog.command/kind"),
+                "",
+                Cardinality::One,
+                Some(Type::Entity),
+            ),
+        )])
+        .unwrap();
+        let mut terms = Parameters::new();
+        terms.insert(
+            "this".into(),
+            Term::Constant(Value::Entity(Entity::new().unwrap())),
+        );
+        terms.insert("__command_kind".into(), Term::Constant(Value::Entity(kind)));
+        DialogPremise::Assert(Proposition::Concept(ConceptQuery { terms, predicate }))
     }
 
     #[dialog_common::test]
@@ -480,6 +542,33 @@ mod tests {
         let rule = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
         let effect = Effect::asserting(rule);
         validate_effect(&effect, &branch, &operator).await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_trigger_accepts_positive_command_premise() -> anyhow::Result<()> {
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let mut body = increment_body();
+        body.push(nominal_command_premise("id:todo/add".parse().unwrap()));
+        let effect = Effect::asserting(InductiveRule::new(counter_head(), body).unwrap());
+        validate_effect(&effect, &branch, &operator).await?;
+        let this = effect.this();
+        branch
+            .transaction()
+            .assert(tonk_schema::rule::Rule::asserting(effect))
+            .commit()
+            .perform(&operator)
+            .await?;
+        assert_eq!(
+            effects_by_command("id:todo/add".parse().unwrap())
+                .resolve(&branch, &operator)
+                .await?,
+            vec![this]
+        );
         Ok(())
     }
 

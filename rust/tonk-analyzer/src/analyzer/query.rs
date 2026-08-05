@@ -26,6 +26,15 @@ pub(crate) fn build_query_application(
     let head_range = query.predicate.range;
     match &query.predicate.name {
         HeadName::Concept(concept_name) => {
+            if scope.command(concept_name).is_some() {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidCommandBody {
+                        reason: "nominal commands cannot be used as ordinary top-level queries"
+                            .into(),
+                    },
+                    head_range,
+                ));
+            }
             let resolved = scope.concept(concept_name).ok_or_else(|| {
                 AnalyzeError::at(
                     AnalyzeErrorKind::UnknownConcept {

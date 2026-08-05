@@ -25,6 +25,7 @@ parking_lot = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tonk-core = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-schema = { workspace = true }
 web-time = { workspace = true }

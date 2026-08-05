@@ -74,7 +74,7 @@ use std::sync::LazyLock;
 use base58::ToBase58;
 use dialog_artifacts::Entity;
 use dialog_common::Blake3Hash;
-use dialog_query::{Attribute, InductiveRule, InductiveRuleDescriptor, Proposition};
+use dialog_query::{Attribute, InductiveRule, InductiveRuleDescriptor, Proposition, Term};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -131,6 +131,13 @@ pub struct Polarity(pub String);
 #[cardinality(many)]
 #[domain("dialog.effect")]
 pub struct On(pub Entity);
+
+/// Stable nominal command kind read by this effect. Cardinality-many:
+/// one claim per distinct private command predicate in the body.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cardinality(many)]
+#[domain("dialog.effect")]
+pub struct Command(pub Entity);
 
 // ---------------------------------------------------------------- //
 // Effect type                                                      //
@@ -307,6 +314,12 @@ impl Effect {
             if let Proposition::Concept(concept_query) = proposition {
                 for (_, attribute) in concept_query.predicate.with().iter() {
                     let the = attribute.the();
+                    let relation = the.to_string();
+                    if relation == crate::command::COMMAND_KIND_RELATION
+                        || relation.starts_with(crate::command::COMMAND_ARGUMENT_RELATION_PREFIX)
+                    {
+                        continue;
+                    }
                     let uri = format!("on:{}/{}", the.domain(), the.name());
                     if let Ok(entity) = uri.parse::<Entity>() {
                         entities.insert(entity);
@@ -315,6 +328,30 @@ impl Effect {
             }
         }
         entities
+    }
+
+    /// Stable nominal command kinds read by positive or negative body
+    /// premises. Only analyzer-produced private predicates carrying a
+    /// constant `dialog.command/kind` term are recognized.
+    pub fn command_kinds(&self) -> BTreeSet<Entity> {
+        let descriptor = self.rule.descriptor();
+        descriptor
+            .when
+            .iter()
+            .chain(descriptor.unless.iter())
+            .filter_map(command_kind)
+            .collect()
+    }
+
+    /// Stable command kinds read by positive `when` premises. These
+    /// qualify as transaction triggers; negative premises do not.
+    pub fn when_command_kinds(&self) -> BTreeSet<Entity> {
+        self.rule
+            .descriptor()
+            .when
+            .iter()
+            .filter_map(command_kind)
+            .collect()
     }
 
     /// Concept entities referenced by the body's positive `when`
@@ -329,6 +366,19 @@ impl Effect {
             }
         }
         entities
+    }
+}
+
+fn command_kind(proposition: &Proposition) -> Option<Entity> {
+    let Proposition::Concept(query) = proposition else {
+        return None;
+    };
+    let (field, _) = query.predicate.with().iter().find(|(_, attribute)| {
+        attribute.the().to_string() == crate::command::COMMAND_KIND_RELATION
+    })?;
+    match query.terms.get(field) {
+        Some(Term::Constant(dialog_artifacts::Value::Entity(kind))) => Some(kind.clone()),
+        _ => None,
     }
 }
 

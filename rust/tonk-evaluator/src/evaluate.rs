@@ -417,6 +417,15 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 // constant set: marker + source +
                                 // conclusion (no polarity, no `on:`).
                                 claim_count += 3;
+                            } else if let ApplicationPlan::CommandDefinition(command) = &plan {
+                                claim_count += 3 + usize::from(command.name.is_some());
+                            } else if let ApplicationPlan::ProjectionDefinition(projection) = &plan
+                            {
+                                claim_count += 4 + usize::from(projection.name.is_some());
+                            } else if let ApplicationPlan::CommandInvocation(_) = &plan {
+                                return Err(EvaluateError::Plan(
+                                    "nominal command runtime is not installed".into(),
+                                ));
                             }
                             txn = txn.assert(plan);
                         }
@@ -449,6 +458,19 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                     // supports dissociation for completeness.
                                     claim_count += 3;
                                     txn = txn.retract(*rule);
+                                }
+                                ApplicationPlan::CommandDefinition(command) => {
+                                    claim_count += 3 + usize::from(command.name.is_some());
+                                    txn = txn.retract(*command);
+                                }
+                                ApplicationPlan::ProjectionDefinition(projection) => {
+                                    claim_count += 4 + usize::from(projection.name.is_some());
+                                    txn = txn.retract(*projection);
+                                }
+                                ApplicationPlan::CommandInvocation(_) => {
+                                    return Err(EvaluateError::Plan(
+                                        "nominal command invocations cannot be retracted".into(),
+                                    ));
                                 }
                             }
                         }
@@ -919,7 +941,11 @@ fn render_block(
     let descriptor = match application {
         Application::Concept { query: q, .. } => q.predicate.clone(),
         Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
-        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+        Application::Rule { .. }
+        | Application::DeductiveRule { .. }
+        | Application::CommandDefinition { .. }
+        | Application::ProjectionDefinition { .. }
+        | Application::CommandInvocation { .. } => {
             // Rules never appear as a query expression — they are
             // write-only via Statement::Assert/Retract — so the
             // renderer's per-expression block path doesn't reach
@@ -936,7 +962,11 @@ fn render_block(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+        Application::Rule { .. }
+        | Application::DeductiveRule { .. }
+        | Application::CommandDefinition { .. }
+        | Application::ProjectionDefinition { .. }
+        | Application::CommandInvocation { .. } => {
             unreachable!("filtered above")
         }
     };
@@ -979,8 +1009,12 @@ fn render_one_result(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } | Application::DeductiveRule { .. } => {
-            unreachable!("render_one_result is not called for rule applications")
+        Application::Rule { .. }
+        | Application::DeductiveRule { .. }
+        | Application::CommandDefinition { .. }
+        | Application::ProjectionDefinition { .. }
+        | Application::CommandInvocation { .. } => {
+            unreachable!("render_one_result is only called for concept applications")
         }
     };
 

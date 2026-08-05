@@ -29,12 +29,15 @@ use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
+use crate::command_definition::CommandDefinition;
 use crate::deductive_rule::DeductiveRule;
 use crate::prelude::EntityExt;
+use crate::projection::ProjectionDefinition;
 use crate::rule::Rule;
 use indexmap::IndexMap;
 use serde::Serialize;
 use tonk_core::claim::{ConceptDescriptor, PredicateApplication, ValueMap};
+use tonk_core::command::SourceInvocation;
 use tonk_core::meta::{AnchorName, Name, name};
 
 /// Project a wire-format [`PredicateApplication`] into the
@@ -199,6 +202,30 @@ pub enum Application {
         /// the content-addressed default, `Uri(entity)` when pinned.
         this: ThisIntent,
     },
+    /// `command!:` nominal definition stored under a stable kind.
+    CommandDefinition {
+        /// Definition and exact schema source.
+        definition: Box<CommandDefinition>,
+        /// Stable command-kind selection intent.
+        this: ThisIntent,
+        /// Optional alias published for an explicit `this:` kind.
+        name: Option<AnchorName>,
+    },
+    /// `projection!:` definition stored at a stable entity.
+    ProjectionDefinition {
+        /// Projection and exact descriptor source.
+        definition: Box<ProjectionDefinition>,
+        /// Stable projection-entity selection intent.
+        this: ThisIntent,
+        /// Optional alias published for an explicit `this:` entity.
+        name: Option<AnchorName>,
+    },
+    /// Standalone nominal command invocation. It is carried to the
+    /// command runtime and never emitted as ordinary concept facts.
+    CommandInvocation {
+        /// Wire-neutral nominal payload.
+        invocation: SourceInvocation,
+    },
 }
 
 impl Application {
@@ -211,17 +238,24 @@ impl Application {
         match self {
             Self::Concept { query, .. } => &query.terms,
             Self::Domain { application, .. } => &application.parameters,
-            Self::Rule { .. } | Self::DeductiveRule { .. } => empty_parameters(),
+            Self::Rule { .. }
+            | Self::DeductiveRule { .. }
+            | Self::CommandDefinition { .. }
+            | Self::ProjectionDefinition { .. }
+            | Self::CommandInvocation { .. } => empty_parameters(),
         }
     }
 
     /// Where the entity in `terms["this"]` was selected from.
-    pub fn this(&self) -> &ThisIntent {
+    pub fn this(&self) -> Option<&ThisIntent> {
         match self {
             Self::Concept { this, .. }
             | Self::Domain { this, .. }
             | Self::Rule { this, .. }
-            | Self::DeductiveRule { this, .. } => this,
+            | Self::DeductiveRule { this, .. }
+            | Self::CommandDefinition { this, .. }
+            | Self::ProjectionDefinition { this, .. } => Some(this),
+            Self::CommandInvocation { .. } => None,
         }
     }
 
@@ -232,7 +266,10 @@ impl Application {
             Self::Concept { name, .. } | Self::Domain { name, .. } => {
                 name.as_ref().map(AnchorName::as_str)
             }
-            Self::Rule { .. } | Self::DeductiveRule { .. } => None,
+            Self::CommandDefinition { name, .. } | Self::ProjectionDefinition { name, .. } => {
+                name.as_ref().map(AnchorName::as_str)
+            }
+            Self::Rule { .. } | Self::DeductiveRule { .. } | Self::CommandInvocation { .. } => None,
         }
     }
 
@@ -408,6 +445,19 @@ impl Planner for Application {
             }))),
             Self::Rule { rule, .. } => Ok(ApplicationPlan::Rule(rule)),
             Self::DeductiveRule { rule, .. } => Ok(ApplicationPlan::DeductiveRule(rule)),
+            Self::CommandDefinition {
+                definition, name, ..
+            } => Ok(ApplicationPlan::CommandDefinition(Box::new(
+                CommandDefinitionPlan { definition, name },
+            ))),
+            Self::ProjectionDefinition {
+                definition, name, ..
+            } => Ok(ApplicationPlan::ProjectionDefinition(Box::new(
+                ProjectionDefinitionPlan { definition, name },
+            ))),
+            Self::CommandInvocation { invocation } => {
+                Ok(ApplicationPlan::CommandInvocation(invocation))
+            }
         }
     }
 }
@@ -436,6 +486,28 @@ pub enum ApplicationPlan {
     /// `db.rule/*` deductive-rule storage. Boxed for the same
     /// size reason as [`ApplicationPlan::Rule`].
     DeductiveRule(Box<DeductiveRule>),
+    /// Persisted nominal command definition and optional alias.
+    CommandDefinition(Box<CommandDefinitionPlan>),
+    /// Persisted event projection definition and optional alias.
+    ProjectionDefinition(Box<ProjectionDefinitionPlan>),
+    /// Nominal invocation carried to the command runtime.
+    CommandInvocation(SourceInvocation),
+}
+
+/// Ready-to-commit command definition plus optional published alias.
+pub struct CommandDefinitionPlan {
+    /// Persisted definition.
+    pub definition: Box<CommandDefinition>,
+    /// Alias to publish when the anchor differs from the kind.
+    pub name: Option<AnchorName>,
+}
+
+/// Ready-to-commit projection definition plus optional published alias.
+pub struct ProjectionDefinitionPlan {
+    /// Persisted definition.
+    pub definition: Box<ProjectionDefinition>,
+    /// Alias to publish when the anchor differs from the projection entity.
+    pub name: Option<AnchorName>,
 }
 
 /// Concept-side [`ApplicationPlan`] payload — a substituted
@@ -459,6 +531,11 @@ impl ArtifactsStatement for ApplicationPlan {
             Self::Concept(plan) => plan.assert(update),
             Self::Rule(rule) => (*rule).assert(update),
             Self::DeductiveRule(rule) => (*rule).assert(update),
+            Self::CommandDefinition(plan) => plan.assert(update),
+            Self::ProjectionDefinition(plan) => plan.assert(update),
+            Self::CommandInvocation(_) => {
+                panic!("nominal command invocation reached structural statement emission")
+            }
         }
     }
     fn retract(self, update: &mut impl Update) {
@@ -466,7 +543,40 @@ impl ArtifactsStatement for ApplicationPlan {
             Self::Concept(plan) => plan.retract(update),
             Self::Rule(rule) => (*rule).retract(update),
             Self::DeductiveRule(rule) => (*rule).retract(update),
+            Self::CommandDefinition(plan) => plan.retract(update),
+            Self::ProjectionDefinition(plan) => plan.retract(update),
+            Self::CommandInvocation(_) => {
+                panic!("nominal command invocation cannot be retracted as branch data")
+            }
         }
+    }
+}
+
+impl ArtifactsStatement for CommandDefinitionPlan {
+    fn assert(self, update: &mut impl Update) {
+        let target = self.definition.kind().clone();
+        (*self.definition).assert(update);
+        emit_definition_name(self.name.as_ref(), target, update, true);
+    }
+
+    fn retract(self, update: &mut impl Update) {
+        let target = self.definition.kind().clone();
+        (*self.definition).retract(update);
+        emit_definition_name(self.name.as_ref(), target, update, false);
+    }
+}
+
+impl ArtifactsStatement for ProjectionDefinitionPlan {
+    fn assert(self, update: &mut impl Update) {
+        let target = self.definition.this().clone();
+        (*self.definition).assert(update);
+        emit_definition_name(self.name.as_ref(), target, update, true);
+    }
+
+    fn retract(self, update: &mut impl Update) {
+        let target = self.definition.this().clone();
+        (*self.definition).retract(update);
+        emit_definition_name(self.name.as_ref(), target, update, false);
     }
 }
 
@@ -529,6 +639,32 @@ fn emit_name_assertion<U: Update>(
     // built, so this conversion is infallible — no re-parse, no skip.
     let claim = Name {
         this: name.into(),
+        entity: name::Referent(target),
+    };
+    if assert {
+        claim.assert(update);
+    } else {
+        claim.retract(update);
+    }
+}
+
+fn emit_definition_name<U: Update>(
+    name: Option<&AnchorName>,
+    target: Entity,
+    update: &mut U,
+    assert: bool,
+) {
+    use dialog_artifacts::Statement as _;
+
+    let Some(name) = name else {
+        return;
+    };
+    let name_entity: Entity = name.into();
+    if name_entity == target {
+        return;
+    }
+    let claim = Name {
+        this: name_entity,
         entity: name::Referent(target),
     };
     if assert {
@@ -632,11 +768,61 @@ mod tests {
     use dialog_artifacts::{Changes, Instruction};
     use dialog_query::ConceptDescriptor;
     use tonk_core::claim::SourceApplication;
+    use tonk_core::command::{CommandSchema, SourceInvocation};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn nominal_artifacts_have_distinct_plan_variants() {
+        let command: Entity = "id:todo/add".parse().unwrap();
+        let command_definition = Application::CommandDefinition {
+            definition: Box::new(CommandDefinition::asserting(
+                command.clone(),
+                CommandSchema::default(),
+            )),
+            this: ThisIntent::Uri(command.clone()),
+            name: None,
+        }
+        .plan(&Parameters::new())
+        .unwrap();
+        assert!(matches!(
+            command_definition,
+            ApplicationPlan::CommandDefinition(_)
+        ));
+
+        let projection_definition = Application::ProjectionDefinition {
+            definition: Box::new(ProjectionDefinition::asserting(
+                "id:todo/add-form".parse().unwrap(),
+                crate::projection::ProjectionDescriptor {
+                    command: command.clone(),
+                    default: true,
+                    arguments: IndexMap::new(),
+                    actions: Vec::new(),
+                },
+            )),
+            this: ThisIntent::Uri("id:todo/add-form".parse().unwrap()),
+            name: None,
+        }
+        .plan(&Parameters::new())
+        .unwrap();
+        assert!(matches!(
+            projection_definition,
+            ApplicationPlan::ProjectionDefinition(_)
+        ));
+
+        let invocation = Application::CommandInvocation {
+            invocation: SourceInvocation {
+                command,
+                arguments: ValueMap::new(),
+            },
+        }
+        .plan(&Parameters::new())
+        .unwrap();
+        assert!(matches!(invocation, ApplicationPlan::CommandInvocation(_)));
+    }
 
     /// Build an `ApplicationPlan::Concept` for a one-field concept
     /// whose `this` is a constant entity. Used by the anchor-desugar

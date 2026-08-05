@@ -48,6 +48,12 @@ pub mod transact;
 
 pub mod concept;
 
+/// Persisted nominal command definitions and resolvers.
+pub mod command_definition;
+
+/// Typed event projections and branch-local resolvers.
+pub mod projection;
+
 pub mod resolution;
 
 pub mod rule_query;

@@ -332,7 +332,7 @@ fn expand(
                         .map(|app| predicate_of(app, false))
                         .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
                     this = probe
-                        .map(|app| app.this().clone())
+                        .and_then(|app| app.this().cloned())
                         .unwrap_or(ThisIntent::Derived);
                     anchor = declaration
                         .application
@@ -458,7 +458,7 @@ fn expand(
                         .map(|app| predicate_of(app, plan.transient))
                         .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
                     this = probe
-                        .map(|app| app.this().clone())
+                        .and_then(|app| app.this().cloned())
                         .unwrap_or(ThisIntent::Derived);
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
                     if let Some(retract_app) = plan.retract {
@@ -582,6 +582,10 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
         Application::Rule { .. } | Application::DeductiveRule { .. } => {
             Predicate::Domain("rule".to_owned())
         }
+        Application::CommandDefinition { .. } | Application::CommandInvocation { .. } => {
+            Predicate::Domain("command".to_owned())
+        }
+        Application::ProjectionDefinition { .. } => Predicate::Domain("projection".to_owned()),
     }
 }
 
@@ -629,7 +633,11 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
         let application = planned.statement.application();
         if matches!(
             application,
-            Application::Rule { .. } | Application::DeductiveRule { .. }
+            Application::Rule { .. }
+                | Application::DeductiveRule { .. }
+                | Application::CommandDefinition { .. }
+                | Application::ProjectionDefinition { .. }
+                | Application::CommandInvocation { .. }
         ) {
             continue;
         }
@@ -724,8 +732,12 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
             // Rules were filtered out above; the rule-snapshot path
             // is the read-side `rule:` query, not a per-write
             // synthesised one.
-            Application::Rule { .. } | Application::DeductiveRule { .. } => unreachable!(
-                "rule applications should have been filtered out by the matches! check"
+            Application::Rule { .. }
+            | Application::DeductiveRule { .. }
+            | Application::CommandDefinition { .. }
+            | Application::ProjectionDefinition { .. }
+            | Application::CommandInvocation { .. } => unreachable!(
+                "non-concept applications should have been filtered out by the matches! check"
             ),
         };
         // Reuse the assertion's head name so the rendered
@@ -4629,62 +4641,324 @@ pong!:
         );
     }
 
-    /// `command!:` is a transient concept: the same body written as
-    /// `command!:` and as `concept!:` + `transient:` must derive the
-    /// same concept entity and the same transient classification, so
-    /// the committed facts (and the wire shape) are identical.
     #[dialog_common::test]
-    async fn it_defines_command_as_transient_concept() {
-        let command_doc = must_parse(
+    async fn nominal_command_uses_anchor_as_stable_kind() {
+        let syntax = must_parse(
             r#"
-command!: &ping
+command!: &todo/add
   with:
-    tag:
-      description: "Tag"
-      the:         io.gozala.ping/tag
+    title:
+      description: "Todo title"
+      the:         xyz.tonk.todo/title
       as:          Text
       cardinality: one
-ping!:
-  this: did:key:zPingSubject
-  tag:  "hi"
 "#,
         );
-        let concept_doc = must_parse(
+        let tree = analyze_empty(&syntax).await.unwrap();
+        let command = tree
+            .analysis
+            .statements()
+            .into_iter()
+            .find_map(|planned| match planned.statement {
+                Statement::Assert(Application::CommandDefinition { definition, .. }) => {
+                    Some(*definition)
+                }
+                _ => None,
+            })
+            .expect("nominal command definition");
+        assert_eq!(command.kind().to_string(), "id:todo/add");
+        assert!(command.schema().required.contains_key("title"));
+        assert!(tree.analysis.transient_entities().is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn nominal_command_explicit_this_wins_over_anchor() {
+        let syntax = must_parse(
             r#"
-concept!: &ping
-  transient:
+command!: &todo/add
+  this: did:key:zStableTodoAdd
   with:
-    tag:
-      description: "Tag"
-      the:         io.gozala.ping/tag
+    title:
+      description: "Todo title"
+      the:         xyz.tonk.todo/title
       as:          Text
       cardinality: one
-ping!:
-  this: did:key:zPingSubject
-  tag:  "hi"
 "#,
         );
-
-        let command_transient = analyze_empty(&command_doc)
-            .await
-            .unwrap()
+        let tree = analyze_empty(&syntax).await.unwrap();
+        let (definition, name) = tree
             .analysis
-            .transient_entities();
-        let concept_transient = analyze_empty(&concept_doc)
-            .await
-            .unwrap()
-            .analysis
-            .transient_entities();
+            .statements()
+            .into_iter()
+            .find_map(|planned| match planned.statement {
+                Statement::Assert(Application::CommandDefinition {
+                    definition, name, ..
+                }) => Some((definition, name)),
+                _ => None,
+            })
+            .expect("command definition");
+        assert_eq!(definition.kind().to_string(), "did:key:zStableTodoAdd");
+        assert_eq!(name.as_ref().map(AnchorName::as_str), Some("todo/add"));
+        assert_eq!(
+            tree.analysis.declarations.get("todo/add").unwrap(),
+            definition.kind()
+        );
+    }
 
-        assert_eq!(
-            command_transient.len(),
-            1,
-            "the command's concept entity is transient; got {command_transient:?}"
+    #[dialog_common::test]
+    async fn nominal_command_requires_stable_identity() {
+        let syntax = must_parse(
+            r#"
+command!:
+  with:
+    title:
+      description: "Todo title"
+      the:         xyz.tonk.todo/title
+      as:          Text
+      cardinality: one
+"#,
         );
-        assert_eq!(
-            command_transient, concept_transient,
-            "command!: and concept!: + transient: derive the same transient concept entity"
+        let error = analyze_empty(&syntax)
+            .await
+            .expect_err("identity is required");
+        assert!(matches!(
+            error.kind,
+            AnalyzeErrorKind::InvalidCommandBody { .. }
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn nominal_command_schema_edit_preserves_kind() {
+        let first = must_parse(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+"#,
         );
+        let second = must_parse(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+  maybe:
+    note: { description: "Note", the: xyz.tonk.todo/note, as: Text }
+"#,
+        );
+        fn command(tree: Tree<Syntax>) -> tonk_schema::command_definition::CommandDefinition {
+            tree.analysis
+                .statements()
+                .into_iter()
+                .find_map(|planned| match planned.statement {
+                    Statement::Assert(Application::CommandDefinition { definition, .. }) => {
+                        Some(*definition)
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let first = command(analyze_empty(&first).await.unwrap());
+        let second = command(analyze_empty(&second).await.unwrap());
+        assert_eq!(first.kind(), second.kind());
+        assert_ne!(first.schema_entity(), second.schema_entity());
+    }
+
+    #[dialog_common::test]
+    async fn nominal_projection_and_invocation_lower_distinctly() {
+        let syntax = must_parse(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/add-form
+  command: todo/add
+  default: true
+  arguments:
+    title: { control: title }
+  actions:
+    - prevent-default
+todo/add!:
+  title: "Buy milk"
+"#,
+        );
+        let tree = analyze_empty(&syntax).await.unwrap();
+        assert!(tree.analysis.statements().iter().any(|planned| matches!(
+            planned.statement,
+            Statement::Assert(Application::ProjectionDefinition { .. })
+        )));
+        assert!(tree.analysis.statements().iter().any(|planned| matches!(
+            planned.statement,
+            Statement::Assert(Application::CommandInvocation { .. })
+        )));
+        let request = tree.analysis.lower_to_claims().unwrap();
+        assert!(matches!(
+            &request.claims[..],
+            [tonk_core::claim::SourceClaim::Invoke(invocation)]
+                if invocation.command.to_string() == "id:todo/add"
+                    && invocation.arguments.get("title") == Some(&Value::String("Buy milk".into()))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn nominal_projection_rejects_invalid_contracts_with_ranges() {
+        let cases = [
+            (
+                "unknown command",
+                r#"
+projection!: &todo/form
+  command: todo/missing
+  arguments: {}
+"#,
+            ),
+            (
+                "unknown argument",
+                r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form
+  command: todo/add
+  arguments:
+    title: { control: title }
+    extra: { literal: "no" }
+"#,
+            ),
+            (
+                "missing required source",
+                r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form
+  command: todo/add
+  arguments: {}
+"#,
+            ),
+            (
+                "unsupported event member",
+                r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form
+  command: todo/add
+  arguments:
+    title: { event: composedPath }
+"#,
+            ),
+            (
+                "unsupported action",
+                r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form
+  command: todo/add
+  arguments:
+    title: { control: title }
+  actions: [prevent-default, submit]
+"#,
+            ),
+            (
+                "unanchored projection",
+                r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!:
+  command: todo/add
+  arguments:
+    title: { control: title }
+"#,
+            ),
+            (
+                "multiple source keys",
+                r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form
+  command: todo/add
+  arguments:
+    title: { control: title, event: key }
+"#,
+            ),
+        ];
+        for (label, source) in cases {
+            let syntax = must_parse(source);
+            let error = analyze_empty(&syntax).await.expect_err(label);
+            assert!(
+                matches!(error.kind, AnalyzeErrorKind::InvalidProjectionBody { .. }),
+                "{label}: {error:?}"
+            );
+            assert!(error.range.is_some(), "{label} must carry a source range");
+        }
+    }
+
+    #[dialog_common::test]
+    async fn nominal_projection_rejects_duplicate_default() {
+        let syntax = must_parse(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form-a
+  command: todo/add
+  default: true
+  arguments:
+    title: { control: title }
+projection!: &todo/form-b
+  command: todo/add
+  default: true
+  arguments:
+    title: { control: title }
+"#,
+        );
+        let error = analyze_empty(&syntax)
+            .await
+            .expect_err("duplicate default must fail");
+        assert!(matches!(
+            error.kind,
+            AnalyzeErrorKind::InvalidProjectionBody { .. }
+        ));
+        assert!(error.range.is_some());
+    }
+
+    #[dialog_common::test]
+    async fn nominal_command_rejects_retraction_and_query_forms() {
+        let retraction = must_parse(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+todo/add!:
+  title: _
+"#,
+        );
+        let error = analyze_empty(&retraction)
+            .await
+            .expect_err("command retraction must fail");
+        assert!(matches!(
+            error.kind,
+            AnalyzeErrorKind::InvalidCommandBody { .. }
+        ));
+
+        let query = must_parse(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+todo/add:
+  title: ?title
+"#,
+        );
+        let error = analyze_empty(&query)
+            .await
+            .expect_err("command query must fail");
+        assert!(matches!(
+            error.kind,
+            AnalyzeErrorKind::InvalidCommandBody { .. }
+        ));
     }
 
     /// `has_statements()` is the `/evaluate` route's commit

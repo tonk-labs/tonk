@@ -1469,6 +1469,100 @@ mod tests {
         assert_eq!(diag["range"]["start"]["line"], json!(0));
     }
 
+    #[dialog_common::test]
+    async fn it_publishes_projection_source_diagnostic_with_range() {
+        let mut server = Server::new();
+        let env = new_test_env().await;
+        let _ = run_with(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+            &env,
+        )
+        .await;
+        let text = r#"command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form
+  command: todo/add
+  arguments:
+    title: { selector: "input[name=title]" }
+"#;
+        run_with(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": "tonk-buffer:///repo/main/projection-source",
+                    "languageId": "carry-asserted",
+                    "version": 1,
+                    "text": text
+                }}
+            }),
+            &env,
+        )
+        .await;
+        let outbound = server.take_outbound();
+        let diagnostics = outbound[0].params["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["code"], json!("E_INVALID_PROJECTION_BODY"));
+        assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(6));
+    }
+
+    #[dialog_common::test]
+    async fn it_publishes_duplicate_projection_default_diagnostic() {
+        let mut server = Server::new();
+        let env = new_test_env().await;
+        let _ = run_with(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+            &env,
+        )
+        .await;
+        let text = r#"command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+projection!: &todo/form-a
+  command: todo/add
+  default: true
+  arguments: { title: { control: title } }
+projection!: &todo/form-b
+  command: todo/add
+  default: true
+  arguments: { title: { control: title } }
+"#;
+        run_with(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": "tonk-buffer:///repo/main/projection-default",
+                    "languageId": "carry-asserted",
+                    "version": 1,
+                    "text": text
+                }}
+            }),
+            &env,
+        )
+        .await;
+        let outbound = server.take_outbound();
+        let diagnostics = outbound[0].params["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["code"], json!("E_INVALID_PROJECTION_BODY"));
+        assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(7));
+    }
+
     /// Open an empty document, ask for completions at column 0
     /// — the head position should surface every built-in
     /// concept (`attribute`, `concept`, `name`, `branch`,

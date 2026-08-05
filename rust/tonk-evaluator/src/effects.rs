@@ -23,7 +23,7 @@
 //! let revision = txn.commit().perform(env).await?;
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dialog_artifacts::{Attribute, Changes, Entity, Instruction, Select, Statement, Update, Value};
 use dialog_capability::{Fork, Provider};
@@ -39,7 +39,13 @@ use dialog_query::{Cardinality, InductiveRule, Output as _, Parameters, Proposit
 use dialog_repository::{RemoteSite, Transaction};
 use thiserror::Error;
 
+use tonk_core::command::{
+    COMMAND_ARGUMENT_RELATION_PREFIX, COMMAND_KIND_RELATION, CommandBatch, CommandOccurrence,
+    InvocationMetadata, SourceInvocation,
+};
 use tonk_core::effect::{Effect, EffectError, EffectPolarity};
+use tonk_schema::command_definition::CommandDefinition;
+use tonk_schema::query_source::Source;
 
 /// Upper bound on fixpoint rounds. A rule set whose cascade
 /// keeps emitting fresh transients beyond this is rejected as
@@ -57,6 +63,31 @@ pub enum InduceError {
     /// A query against the transaction's overlay failed.
     #[error("query failed during induction: {0}")]
     Query(String),
+    /// A command-emitting rule produced an invalid nominal payload.
+    #[error("effect {effect} emitted an invalid command: {reason}")]
+    InvalidCommandOutput {
+        /// Installed effect that emitted the invalid head.
+        effect: Entity,
+        /// Schema-resolution or validation failure.
+        reason: String,
+    },
+}
+
+/// Per-occurrence command preflight and firing counts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InduceSummary {
+    /// Installed nominal rules selected by the occurrence's kind.
+    pub registered_rules_by_occurrence: BTreeMap<Entity, usize>,
+    /// Selected rules whose bodies produced at least one match.
+    pub fired_rules_by_occurrence: BTreeMap<Entity, usize>,
+}
+
+/// Post-fixpoint transaction paired with command induction evidence.
+pub struct InduceReport<'a> {
+    /// Transaction ready for durable commit.
+    pub transaction: Transaction<'a>,
+    /// Per-occurrence preflight and firing counts.
+    pub summary: InduceSummary,
 }
 
 /// Provider bound the induction loop needs. Effect lookup
@@ -105,6 +136,9 @@ pub trait TransactionExt<'a> {
     /// emits a matching retract for each so the assert+retract
     /// pair cancels at commit.
     fn induce(self, transients: Changes) -> Induce<'a>;
+    /// Run induction with a separate batch of nominal command
+    /// occurrences that never enters durable branch facts.
+    fn induce_commands(self, transients: Changes, commands: CommandBatch) -> Induce<'a>;
 }
 
 impl<'a> TransactionExt<'a> for Transaction<'a> {
@@ -112,6 +146,15 @@ impl<'a> TransactionExt<'a> for Transaction<'a> {
         Induce {
             transaction: self,
             transients,
+            commands: CommandBatch::default(),
+        }
+    }
+
+    fn induce_commands(self, transients: Changes, commands: CommandBatch) -> Induce<'a> {
+        Induce {
+            transaction: self,
+            transients,
+            commands,
         }
     }
 }
@@ -122,6 +165,7 @@ impl<'a> TransactionExt<'a> for Transaction<'a> {
 pub struct Induce<'a> {
     transaction: Transaction<'a>,
     transients: Changes,
+    commands: CommandBatch,
 }
 
 impl<'a> Induce<'a> {
@@ -152,9 +196,18 @@ impl<'a> Induce<'a> {
     /// Both `assert!:` and `retract!:` rule polarities are
     /// dispatched (see [`fire_effect`]).
     pub async fn perform<Env: InduceEnv>(self, env: &Env) -> Result<Transaction<'a>, InduceError> {
+        Ok(self.perform_report(env).await?.transaction)
+    }
+
+    /// Execute induction and retain per-command occurrence evidence.
+    pub async fn perform_report<Env: InduceEnv>(
+        self,
+        env: &Env,
+    ) -> Result<InduceReport<'a>, InduceError> {
         let Induce {
             mut transaction,
             transients,
+            commands,
         } = self;
 
         // Each round's transient bucket — the user-submitted seed
@@ -165,8 +218,10 @@ impl<'a> Induce<'a> {
         // one-shot trigger, by design).
         let mut round: u32 = 0;
         let mut stimulus = transients;
+        let mut command_stimulus = commands;
+        let mut summary = InduceSummary::default();
 
-        while !stimulus.is_empty() {
+        while !stimulus.is_empty() || !command_stimulus.is_empty() {
             if round >= MAX_ROUNDS {
                 return Err(InduceError::NonTerminating(MAX_ROUNDS));
             }
@@ -211,7 +266,7 @@ impl<'a> Induce<'a> {
             let mut transients = Changes::new();
             let mut novelty = Changes::new();
             for entity in effect_entities {
-                let Some(effect) = load_effect(&transaction, entity, env).await? else {
+                let Some(effect) = load_effect(&transaction, entity.clone(), env).await? else {
                     // The reverse index pointed at an entity
                     // whose source claim is missing or
                     // unparseable. Skip — the install path is
@@ -220,9 +275,39 @@ impl<'a> Induce<'a> {
                     // commit.
                     continue;
                 };
-                let outcome = fire_effect(effect, &transaction, env).await?;
+                let outcome = fire_effect(entity, effect, &transaction, env).await?;
                 merge_changes(&mut novelty, outcome.novelty);
                 merge_changes(&mut transients, outcome.transients);
+            }
+
+            let mut next_commands = Vec::new();
+            for occurrence in command_stimulus.into_occurrences() {
+                let occurrence_entity = occurrence.occurrence().clone();
+                let overlay = CommandBatch::new(vec![occurrence.clone()]).encode();
+                transaction = transaction.integrate(overlay.clone());
+                let effect_entities =
+                    effects_for_command(&transaction, occurrence.command(), env).await?;
+                summary
+                    .registered_rules_by_occurrence
+                    .insert(occurrence_entity.clone(), effect_entities.len());
+                let mut fired = 0usize;
+                for entity in effect_entities {
+                    let Some(effect) = load_effect(&transaction, entity.clone(), env).await? else {
+                        continue;
+                    };
+                    let effect = constrain_effect_to_occurrence(effect, &occurrence)?;
+                    let outcome = fire_effect(entity, effect, &transaction, env).await?;
+                    if outcome.firings > 0 {
+                        fired += 1;
+                    }
+                    merge_changes(&mut novelty, outcome.novelty);
+                    merge_changes(&mut transients, outcome.transients);
+                    next_commands.extend(outcome.commands);
+                }
+                summary
+                    .fired_rules_by_occurrence
+                    .insert(occurrence_entity, fired);
+                transaction = sweep_transients(overlay, transaction);
             }
 
             // 4. Sweep the round's incoming transients — they've
@@ -243,10 +328,64 @@ impl<'a> Induce<'a> {
             //    next round's stimulus bucket. Empty → loop ends:
             //    no new triggers means no further rules can fire.
             stimulus = transients;
+            command_stimulus = CommandBatch::new(next_commands);
         }
 
-        Ok(transaction)
+        Ok(InduceReport {
+            transaction,
+            summary,
+        })
     }
+}
+
+fn constrain_effect_to_occurrence(
+    effect: Effect,
+    occurrence: &CommandOccurrence,
+) -> Result<Effect, InduceError> {
+    let polarity = effect.polarity();
+    let mut descriptor = effect.descriptor();
+    let mut occurrence_terms = Vec::new();
+    for proposition in descriptor
+        .when
+        .iter_mut()
+        .chain(descriptor.unless.iter_mut())
+    {
+        let Proposition::Concept(query) = proposition else {
+            continue;
+        };
+        let Some((kind_field, _)) = query
+            .predicate
+            .with()
+            .iter()
+            .find(|(_, attribute)| attribute.the().to_string() == COMMAND_KIND_RELATION)
+        else {
+            continue;
+        };
+        if !matches!(
+            query.terms.get(kind_field),
+            Some(Term::Constant(Value::Entity(kind))) if kind == occurrence.command()
+        ) {
+            continue;
+        }
+        if let Some(term) = query.terms.get("this") {
+            occurrence_terms.push(term.clone());
+        }
+    }
+    for term in occurrence_terms {
+        let equality = dialog_query::constraint::Equality::new(
+            term,
+            Term::<dialog_query::Any>::Constant(Value::Entity(occurrence.occurrence().clone())),
+        );
+        descriptor
+            .when
+            .push(Proposition::Constraint(equality.into()));
+    }
+    let rule = descriptor.compile().map_err(|error| {
+        InduceError::Query(format!(
+            "occurrence-constrained effect did not compile: {error}"
+        ))
+    })?;
+    Ok(Effect::new(rule, polarity))
 }
 
 /// Sweep this round's transient instructions by emitting each
@@ -344,6 +483,28 @@ async fn effects_on<Env: InduceEnv>(
     Ok(out)
 }
 
+async fn effects_for_command<Env: InduceEnv>(
+    txn: &Transaction<'_>,
+    command: &Entity,
+    env: &Env,
+) -> Result<Vec<Entity>, InduceError> {
+    let claims: Vec<dialog_query::Claim> = txn
+        .query()
+        .select(dialog_query::AttributeQuery::from(
+            Term::<dialog_query::attribute::The>::from(the("dialog.effect", "command"))
+                .of(Term::<Entity>::var("effect"))
+                .is(Term::<Entity>::from(command.clone())),
+        ))
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|error| InduceError::Query(format!("command-index query failed: {error:?}")))?;
+    let mut effects = claims.into_iter().map(|claim| claim.of).collect::<Vec<_>>();
+    effects.sort();
+    effects.dedup();
+    Ok(effects)
+}
+
 /// Query the transaction's overlay for an effect's `source`
 /// and `polarity` claims, rehydrating it. Mirrors
 /// [`Effect::by_entity`](crate::effect_query::effect_by_entity)'s
@@ -429,6 +590,10 @@ struct FireOutcome {
     /// the cascade loop can promote them to the next round's
     /// stimulus bucket.
     transients: Changes,
+    /// Nominal command heads promoted to the next fixpoint round.
+    commands: Vec<CommandOccurrence>,
+    /// Number of body frames produced by this rule.
+    firings: usize,
 }
 
 /// Evaluate one effect's body against the transaction overlay
@@ -449,6 +614,7 @@ struct FireOutcome {
 /// — so the `transients` bucket is always empty for this
 /// polarity.
 async fn fire_effect<Env: InduceEnv>(
+    effect_entity: Entity,
     effect: Effect,
     txn: &Transaction<'_>,
     env: &Env,
@@ -470,14 +636,24 @@ async fn fire_effect<Env: InduceEnv>(
     // assert-polarity heads (transient retracts have no
     // observable effect). One overlay query per fire — cheaper
     // than per-match since the head's concept is fixed.
+    let head_is_command = rule
+        .conclusion()
+        .with()
+        .iter()
+        .any(|(_, attribute)| attribute.the().to_string() == COMMAND_KIND_RELATION);
     let head_is_transient = match polarity {
-        EffectPolarity::Assert => is_transient(txn, rule.conclusion().this(), env).await?,
+        EffectPolarity::Assert if !head_is_command => {
+            is_transient(txn, rule.conclusion().this(), env).await?
+        }
         EffectPolarity::Retract => false,
+        EffectPolarity::Assert => false,
     };
 
     let head = rule.conclusion().clone();
     let mut transients = Changes::new();
     let mut novelty = Changes::new();
+    let mut commands = Vec::new();
+    let firings = matches.len();
     for frame in matches {
         // Project the match into a `Parameters` map of the head's
         // operands. The conclusion-variable check at rule-compile
@@ -514,6 +690,10 @@ async fn fire_effect<Env: InduceEnv>(
         // heads also accumulate in the bucket the caller
         // propagates to the next round.
         if let Proposition::Concept(concept_query) = proposition {
+            if head_is_command {
+                commands.push(decode_command_head(&effect_entity, &concept_query, txn, env).await?);
+                continue;
+            }
             match polarity {
                 EffectPolarity::Assert => {
                     if head_is_transient {
@@ -531,7 +711,68 @@ async fn fire_effect<Env: InduceEnv>(
     Ok(FireOutcome {
         novelty,
         transients,
+        commands,
+        firings,
     })
+}
+
+async fn decode_command_head<Env: InduceEnv>(
+    effect: &Entity,
+    query: &ConceptQuery,
+    txn: &Transaction<'_>,
+    env: &Env,
+) -> Result<CommandOccurrence, InduceError> {
+    let mut kind = None;
+    let mut arguments = tonk_core::claim::ValueMap::new();
+    for (field, attribute) in query.predicate.with().iter() {
+        let relation = attribute.the().to_string();
+        let value = query.terms.get(field).and_then(|term| match term {
+            Term::Constant(value) => Some(value.clone()),
+            _ => None,
+        });
+        if relation == COMMAND_KIND_RELATION {
+            if let Some(Value::Entity(entity)) = value {
+                kind = Some(entity);
+            }
+        } else if relation.starts_with(COMMAND_ARGUMENT_RELATION_PREFIX)
+            && let Some(value) = value
+        {
+            arguments.insert(field.to_owned(), value);
+        }
+    }
+    let kind = kind.ok_or_else(|| InduceError::InvalidCommandOutput {
+        effect: effect.clone(),
+        reason: "private command head omitted its stable kind".into(),
+    })?;
+    let definition = CommandDefinition::by_entity(kind.clone())
+        .resolve(&Source::from(txn), env)
+        .await
+        .map_err(|error| InduceError::InvalidCommandOutput {
+            effect: effect.clone(),
+            reason: format!("schema resolution failed for {kind}: {error}"),
+        })?
+        .ok_or_else(|| InduceError::InvalidCommandOutput {
+            effect: effect.clone(),
+            reason: format!("command schema {kind} is not installed"),
+        })?;
+    let validated = definition
+        .schema()
+        .validate(SourceInvocation {
+            command: kind,
+            arguments,
+        })
+        .map_err(|error| InduceError::InvalidCommandOutput {
+            effect: effect.clone(),
+            reason: error.to_string(),
+        })?;
+    let occurrence = Entity::new().map_err(|error| InduceError::InvalidCommandOutput {
+        effect: effect.clone(),
+        reason: format!("could not allocate occurrence: {error}"),
+    })?;
+    Ok(CommandOccurrence::new(
+        validated,
+        InvocationMetadata::new(occurrence.clone(), format!("rule:{effect}:{occurrence}")),
+    ))
 }
 
 /// Query the transaction overlay for the
@@ -734,7 +975,9 @@ mod tests {
     use dialog_query::concept::query::ConceptQuery;
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::{AttributeDescriptor, InductiveRule, Parameters as DialogParameters};
+    use tonk_core::command::{CommandSchema, InvocationMetadata, SourceInvocation};
     use tonk_core::effect::{Effect, EffectPolarity};
+    use tonk_schema::command_definition::CommandDefinition;
     use tonk_schema::concept::{AnonymousConcept, TransientConcept};
     use tonk_schema::rule::Rule;
 
@@ -757,6 +1000,503 @@ mod tests {
     /// tests below.
     fn one_text_field_concept(domain: &str, name: &str) -> ConceptDescriptor {
         one_field_concept(domain, name, Type::String)
+    }
+
+    fn nominal_schema() -> CommandSchema {
+        CommandSchema {
+            required: [(
+                "title".into(),
+                AttributeDescriptor::new(
+                    "xyz.tonk.todo/title".parse().unwrap(),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            optional: Default::default(),
+        }
+    }
+
+    fn evolved_nominal_schema() -> CommandSchema {
+        let mut schema = nominal_schema();
+        schema.required.insert(
+            "note".into(),
+            AttributeDescriptor::new(
+                "xyz.tonk.todo/note".parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::String),
+            ),
+        );
+        schema
+    }
+
+    fn nominal_premise(kind: Entity) -> DialogPremise {
+        let predicate = nominal_private_predicate();
+        let mut terms = DialogParameters::new();
+        terms.insert("this".into(), Term::var("this"));
+        terms.insert("__command_kind".into(), Term::Constant(Value::Entity(kind)));
+        terms.insert("title".into(), Term::var("title"));
+        DialogPremise::Assert(Proposition::Concept(ConceptQuery { terms, predicate }))
+    }
+
+    fn nominal_private_predicate() -> ConceptDescriptor {
+        ConceptDescriptor::try_from(vec![
+            (
+                "__command_kind",
+                AttributeDescriptor::new(
+                    COMMAND_KIND_RELATION.parse().unwrap(),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::Entity),
+                ),
+            ),
+            (
+                "title",
+                AttributeDescriptor::new(
+                    "dialog.command.argument/title".parse().unwrap(),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                ),
+            ),
+        ])
+        .unwrap()
+    }
+
+    fn command_to_command_effect(from: Entity, to: Entity) -> Effect {
+        let equality = dialog_query::constraint::Equality::new(
+            Term::<dialog_query::Any>::var("__command_kind"),
+            Term::<dialog_query::Any>::Constant(Value::Entity(to)),
+        );
+        Effect::asserting(
+            InductiveRule::new(
+                nominal_private_predicate(),
+                vec![
+                    nominal_premise(from),
+                    DialogPremise::Assert(Proposition::Constraint(equality.into())),
+                ],
+            )
+            .unwrap(),
+        )
+    }
+
+    fn nominal_occurrence(kind: Entity, title: &str) -> CommandOccurrence {
+        let validated = nominal_schema()
+            .validate(SourceInvocation {
+                command: kind,
+                arguments: [("title".into(), Value::String(title.into()))]
+                    .into_iter()
+                    .collect(),
+            })
+            .unwrap();
+        let occurrence = Entity::new().unwrap();
+        CommandOccurrence::new(
+            validated,
+            InvocationMetadata::new(occurrence.clone(), format!("test:{occurrence}")),
+        )
+    }
+
+    #[dialog_common::test]
+    async fn nominal_command_appends_durable_fact_and_leaves_no_private_facts() -> anyhow::Result<()>
+    {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let kind: Entity = "id:todo/add".parse()?;
+        let target = one_text_field_concept("xyz.tonk.todo", "title");
+        let effect = Effect::asserting(
+            InductiveRule::new(target.clone(), vec![nominal_premise(kind.clone())]).unwrap(),
+        );
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &target);
+        install = install.assert(AnonymousConcept::new(target));
+        install = install.assert(CommandDefinition::asserting(kind.clone(), nominal_schema()));
+        install = install.assert(Rule::asserting(effect));
+        install.commit().perform(&operator).await?;
+
+        let occurrence = nominal_occurrence(kind, "Buy milk");
+        let occurrence_entity = occurrence.occurrence().clone();
+        let report = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![occurrence]))
+            .perform_report(&operator)
+            .await?;
+        assert_eq!(
+            report
+                .summary
+                .registered_rules_by_occurrence
+                .get(&occurrence_entity),
+            Some(&1)
+        );
+        assert_eq!(
+            report
+                .summary
+                .fired_rules_by_occurrence
+                .get(&occurrence_entity),
+            Some(&1)
+        );
+        report.transaction.commit().perform(&operator).await?;
+
+        let titles: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.todo/title"))
+                    .of(Term::from(occurrence_entity.clone()))
+                    .is(Term::<String>::var("title")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(titles.len(), 1);
+        let kind_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(
+                    COMMAND_KIND_RELATION
+                        .parse::<dialog_query::attribute::The>()
+                        .unwrap(),
+                )
+                .of(Term::from(occurrence_entity.clone()))
+                .is(Term::<Entity>::var("kind")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let argument_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(
+                    "dialog.command.argument/title"
+                        .parse::<dialog_query::attribute::The>()
+                        .unwrap(),
+                )
+                .of(Term::from(occurrence_entity.clone()))
+                .is(Term::<String>::var("title")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(kind_claims.is_empty(), "private command kind leaked");
+        assert!(
+            argument_claims.is_empty(),
+            "private command argument leaked"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_repeated_occurrences_fire_independently() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let kind: Entity = "id:todo/add".parse()?;
+        let target = one_text_field_concept("xyz.tonk.todo", "title");
+        let effect = Effect::asserting(
+            InductiveRule::new(target.clone(), vec![nominal_premise(kind.clone())]).unwrap(),
+        );
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &target);
+        install = install.assert(AnonymousConcept::new(target));
+        install = install.assert(CommandDefinition::asserting(kind.clone(), nominal_schema()));
+        install = install.assert(Rule::asserting(effect));
+        install.commit().perform(&operator).await?;
+
+        let first = nominal_occurrence(kind.clone(), "Same title");
+        let second = nominal_occurrence(kind, "Same title");
+        let ids = [first.occurrence().clone(), second.occurrence().clone()];
+        let report = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![first, second]))
+            .perform_report(&operator)
+            .await?;
+        for id in &ids {
+            assert_eq!(
+                report.summary.registered_rules_by_occurrence.get(id),
+                Some(&1)
+            );
+            assert_eq!(report.summary.fired_rules_by_occurrence.get(id), Some(&1));
+        }
+        report.transaction.commit().perform(&operator).await?;
+        for id in ids {
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::from(
+                    Term::from(the!("xyz.tonk.todo/title"))
+                        .of(Term::from(id))
+                        .is(Term::<String>::var("title")),
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            assert_eq!(claims.len(), 1);
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_command_to_command_runs_two_rounds() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let command_a: Entity = "id:command/a".parse()?;
+        let command_b: Entity = "id:command/b".parse()?;
+        let target = one_text_field_concept("xyz.tonk.final", "title");
+        let finish = Effect::asserting(
+            InductiveRule::new(target.clone(), vec![nominal_premise(command_b.clone())]).unwrap(),
+        );
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &target);
+        install = install.assert(AnonymousConcept::new(target));
+        install = install.assert(CommandDefinition::asserting(
+            command_a.clone(),
+            nominal_schema(),
+        ));
+        install = install.assert(CommandDefinition::asserting(
+            command_b.clone(),
+            nominal_schema(),
+        ));
+        install = install.assert(Rule::asserting(command_to_command_effect(
+            command_a.clone(),
+            command_b,
+        )));
+        install = install.assert(Rule::asserting(finish));
+        install.commit().perform(&operator).await?;
+
+        let seed = nominal_occurrence(command_a, "Two rounds");
+        let seed_id = seed.occurrence().clone();
+        let report = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![seed]))
+            .perform_report(&operator)
+            .await?;
+        assert_eq!(
+            report.summary.registered_rules_by_occurrence.get(&seed_id),
+            Some(&1)
+        );
+        assert_eq!(
+            report.summary.fired_rules_by_occurrence.get(&seed_id),
+            Some(&1)
+        );
+        assert_eq!(report.summary.registered_rules_by_occurrence.len(), 2);
+        report.transaction.commit().perform(&operator).await?;
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.final/title"))
+                    .of(Term::<Entity>::var("occurrence"))
+                    .is(Term::<String>::var("title")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].is, Value::String("Two rounds".into()));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_registered_rule_can_have_zero_matches() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let kind: Entity = "id:todo/add".parse()?;
+        let target = one_text_field_concept("xyz.tonk.target", "title");
+        let guard = one_text_field_concept("xyz.tonk.guard", "present");
+        let mut guard_terms = DialogParameters::new();
+        guard_terms.insert("this".into(), Term::var("this"));
+        guard_terms.insert("present".into(), Term::<dialog_query::Any>::blank());
+        let guard_premise = DialogPremise::Assert(Proposition::Concept(ConceptQuery {
+            terms: guard_terms,
+            predicate: guard.clone(),
+        }));
+        let effect = Effect::asserting(
+            InductiveRule::new(
+                target.clone(),
+                vec![nominal_premise(kind.clone()), guard_premise],
+            )
+            .unwrap(),
+        );
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &target);
+        install = install_attribute_facts(install, &guard);
+        install = install.assert(AnonymousConcept::new(target));
+        install = install.assert(AnonymousConcept::new(guard));
+        install = install.assert(CommandDefinition::asserting(kind.clone(), nominal_schema()));
+        install = install.assert(Rule::asserting(effect));
+        install.commit().perform(&operator).await?;
+
+        let occurrence = nominal_occurrence(kind, "No guard");
+        let id = occurrence.occurrence().clone();
+        let report = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![occurrence]))
+            .perform_report(&operator)
+            .await?;
+        assert_eq!(
+            report.summary.registered_rules_by_occurrence.get(&id),
+            Some(&1)
+        );
+        assert_eq!(report.summary.fired_rules_by_occurrence.get(&id), Some(&0));
+        report.transaction.commit().perform(&operator).await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_kind_isolation_excludes_sibling_and_legacy_rules() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let command_a: Entity = "id:command/a".parse()?;
+        let command_b: Entity = "id:command/b".parse()?;
+        let target_a = one_text_field_concept("xyz.tonk.output-a", "title");
+        let target_b = one_text_field_concept("xyz.tonk.output-b", "title");
+        let legacy_target = one_text_field_concept("xyz.tonk.output-legacy", "title");
+        let effect_a = Effect::asserting(
+            InductiveRule::new(target_a.clone(), vec![nominal_premise(command_a.clone())]).unwrap(),
+        );
+        let effect_b = Effect::asserting(
+            InductiveRule::new(target_b.clone(), vec![nominal_premise(command_b.clone())]).unwrap(),
+        );
+        let legacy_input = one_text_field_concept("xyz.tonk.todo", "title");
+        let mut legacy_terms = DialogParameters::new();
+        legacy_terms.insert("this".into(), Term::var("this"));
+        legacy_terms.insert("title".into(), Term::var("title"));
+        let legacy_effect = Effect::asserting(
+            InductiveRule::new(
+                legacy_target.clone(),
+                vec![DialogPremise::Assert(Proposition::Concept(ConceptQuery {
+                    terms: legacy_terms,
+                    predicate: legacy_input.clone(),
+                }))],
+            )
+            .unwrap(),
+        );
+        let mut install = branch.transaction();
+        for descriptor in [&target_a, &target_b, &legacy_target, &legacy_input] {
+            install = install_attribute_facts(install, descriptor);
+            install = install.assert(AnonymousConcept::new(descriptor.clone()));
+        }
+        install = install.assert(CommandDefinition::asserting(
+            command_a.clone(),
+            nominal_schema(),
+        ));
+        install = install.assert(CommandDefinition::asserting(command_b, nominal_schema()));
+        install = install.assert(Rule::asserting(effect_a));
+        install = install.assert(Rule::asserting(effect_b));
+        install = install.assert(Rule::asserting(legacy_effect));
+        install.commit().perform(&operator).await?;
+
+        let occurrence = nominal_occurrence(command_a, "Only A");
+        let id = occurrence.occurrence().clone();
+        let report = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![occurrence]))
+            .perform_report(&operator)
+            .await?;
+        assert_eq!(
+            report.summary.registered_rules_by_occurrence.get(&id),
+            Some(&1)
+        );
+        report.transaction.commit().perform(&operator).await?;
+        for (relation, expected) in [
+            ("xyz.tonk.output-a/title", 1usize),
+            ("xyz.tonk.output-b/title", 0),
+            ("xyz.tonk.output-legacy/title", 0),
+        ] {
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::from(
+                    Term::from(relation.parse::<dialog_query::attribute::The>().unwrap())
+                        .of(Term::<Entity>::var("entity"))
+                        .is(Term::<String>::var("title")),
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            assert_eq!(claims.len(), expected, "{relation}");
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_command_cycle_fails_without_commit() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let command_a: Entity = "id:command/a".parse()?;
+        let command_b: Entity = "id:command/b".parse()?;
+        let mut install = branch.transaction();
+        install = install.assert(CommandDefinition::asserting(
+            command_a.clone(),
+            nominal_schema(),
+        ));
+        install = install.assert(CommandDefinition::asserting(
+            command_b.clone(),
+            nominal_schema(),
+        ));
+        install = install.assert(Rule::asserting(command_to_command_effect(
+            command_a.clone(),
+            command_b.clone(),
+        )));
+        install = install.assert(Rule::asserting(command_to_command_effect(
+            command_b,
+            command_a.clone(),
+        )));
+        install.commit().perform(&operator).await?;
+        let before = branch.revision();
+        let seed = nominal_occurrence(command_a, "Cycle");
+        let result = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![seed]))
+            .perform_report(&operator)
+            .await;
+        match result {
+            Err(InduceError::NonTerminating(MAX_ROUNDS)) => {}
+            Err(other) => panic!("expected NonTerminating, got {other:?}"),
+            Ok(_) => panic!("expected command cycle to fail"),
+        }
+        assert_eq!(branch.revision(), before);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn nominal_rule_output_is_validated_against_current_schema() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let command_a: Entity = "id:command/a".parse()?;
+        let command_b: Entity = "id:command/b".parse()?;
+        let effect = command_to_command_effect(command_a.clone(), command_b.clone());
+        let effect_entity = effect.this();
+        let mut install = branch.transaction();
+        install = install.assert(CommandDefinition::asserting(
+            command_a.clone(),
+            nominal_schema(),
+        ));
+        install = install.assert(CommandDefinition::asserting(
+            command_b,
+            evolved_nominal_schema(),
+        ));
+        install = install.assert(Rule::asserting(effect));
+        install.commit().perform(&operator).await?;
+        let seed = nominal_occurrence(command_a, "Missing note");
+        let result = branch
+            .transaction()
+            .induce_commands(Changes::new(), CommandBatch::new(vec![seed]))
+            .perform_report(&operator)
+            .await;
+        match result {
+            Err(InduceError::InvalidCommandOutput { effect, reason }) => {
+                assert_eq!(effect, effect_entity);
+                assert!(reason.contains("note"), "{reason}");
+            }
+            Err(other) => panic!("expected InvalidCommandOutput, got {other:?}"),
+            Ok(_) => panic!("invalid rule output should fail induction"),
+        }
+        Ok(())
     }
 
     /// The string form dialog stores in `dialog.attribute/type`

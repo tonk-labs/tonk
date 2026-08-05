@@ -11,6 +11,7 @@
 //! - [`meta`] — names and attributes for facts on a repository's meta branch.
 
 pub mod claim;
+pub mod command;
 pub mod conclusion;
 pub mod effect;
 pub mod meta;

@@ -15,6 +15,7 @@ use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute}
 use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::claim::ValueMap;
+use tonk_core::command::{CommandValidationError, SourceInvocation};
 use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent, derive_this};
@@ -68,6 +69,78 @@ pub(crate) fn build_assertion_application(
             AnalyzeErrorKind::AssertionWithoutFields { head: head_label },
             head_range,
         ));
+    }
+
+    if let HeadName::Concept(command_name) = &assertion.predicate.name
+        && let Some(command) = scope.command(command_name)
+    {
+        if anchor.is_some() {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidCommandBody {
+                    reason: "a command invocation cannot publish an anchor".into(),
+                },
+                head_range,
+            ));
+        }
+        let mut arguments = ValueMap::new();
+        for field in &assertion.fields {
+            if matches!(field.value, FieldValue::Blank) || field.name == ".." {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidCommandBody {
+                        reason: "nominal command invocations cannot retract fields".into(),
+                    },
+                    field.value_range,
+                ));
+            }
+            if is_meta_field(&field.name) {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidCommandBody {
+                        reason: format!("command invocation argument {:?} is reserved", field.name),
+                    },
+                    field.name_range,
+                ));
+            }
+            let descriptor = command
+                .schema()
+                .required
+                .get(&field.name)
+                .or_else(|| command.schema().optional.get(&field.name));
+            let term = field_value_to_term(
+                &field.name,
+                &field.value,
+                field.value_range,
+                scope,
+                analysis,
+                descriptor.and_then(|descriptor| descriptor.content_type()),
+            )?;
+            let Term::Constant(value) = term else {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnboundMutationVariable {
+                        name: match &field.value {
+                            FieldValue::Variable(name) => name.clone(),
+                            _ => field.name.clone(),
+                        },
+                    },
+                    field.value_range,
+                ));
+            };
+            arguments.insert(field.name.clone(), value);
+        }
+        let validated = command
+            .schema()
+            .validate(SourceInvocation {
+                command: command.kind().clone(),
+                arguments,
+            })
+            .map_err(|error| command_validation_error(error, assertion))?;
+        let (command, arguments) = validated.into_parts();
+        return Ok(AssertionPlan {
+            assert: Some(Application::CommandInvocation {
+                invocation: SourceInvocation { command, arguments },
+            }),
+            retract: None,
+            transient: false,
+        });
     }
 
     let (this, name) = derive_head_intent(&assertion.fields, anchor, scope)?;
@@ -360,6 +433,30 @@ pub(crate) fn build_assertion_application(
     }
 }
 
+fn command_validation_error(
+    error: CommandValidationError,
+    assertion: &SyntaxApplication,
+) -> AnalyzeError {
+    let field = match &error {
+        CommandValidationError::UnknownArgument { field }
+        | CommandValidationError::MissingRequiredArgument { field }
+        | CommandValidationError::ReservedArgument { field }
+        | CommandValidationError::TypeMismatch { field, .. } => field,
+    };
+    let range = assertion
+        .fields
+        .iter()
+        .find(|candidate| candidate.name == *field)
+        .map(|candidate| candidate.value_range)
+        .unwrap_or(assertion.predicate.range);
+    AnalyzeError::at(
+        AnalyzeErrorKind::InvalidCommandBody {
+            reason: error.to_string(),
+        },
+        range,
+    )
+}
+
 /// Derive the head's source-form intent — `(ThisIntent, name)`
 /// — from an expression's body and optional value-side anchor.
 ///
@@ -441,7 +538,8 @@ pub(crate) fn derive_head_intent(
             FieldValue::Literal(_)
             | FieldValue::Blank
             | FieldValue::Nested(_)
-            | FieldValue::Premises(_) => {
+            | FieldValue::Premises(_)
+            | FieldValue::List(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: "this".into(),
@@ -588,7 +686,8 @@ pub(super) fn body_digest(fields: &[Field], scope: &Scope) -> Result<ValueMap, A
             FieldValue::Variable(_)
             | FieldValue::Blank
             | FieldValue::Premises(_)
-            | FieldValue::Nested(_) => continue,
+            | FieldValue::Nested(_)
+            | FieldValue::List(_) => continue,
         };
         out.insert(field.name.clone(), value);
     }

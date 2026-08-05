@@ -11,6 +11,7 @@
 //! before durable write). The reactor reads this classification
 //! to bucket transients without re-querying the schema.
 
+use crate::command::SourceInvocation;
 use crate::meta::AnchorName;
 use dialog_artifacts::{Attribute, Value, ValueDataType};
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
@@ -54,6 +55,16 @@ pub enum TransactError {
         /// The undeclared parameter name.
         field: String,
     },
+    /// Nominal invocations need the target branch's current command
+    /// schema and consumer indexes, so they cannot be converted through
+    /// the structural predicate path.
+    #[error(
+        "command {command} requires authoritative branch resolution before it can be transacted"
+    )]
+    InvocationRequiresResolution {
+        /// The nominal command kind that still needs resolving.
+        command: dialog_artifacts::Entity,
+    },
 }
 
 /// Coerce `value` to the field's declared type `expected`, accepting
@@ -77,7 +88,7 @@ pub enum TransactError {
 /// `expected == None` means the field accepts any type (untyped
 /// claim attributes, the `this` slot) and the value passes through
 /// untouched.
-fn cast(
+pub fn coerce_value(
     field: &str,
     expected: Option<ValueDataType>,
     value: Value,
@@ -287,7 +298,7 @@ impl TryFrom<SourceApplication> for PredicateApplication {
     ///
     /// Every supplied parameter (other than the reserved `this`)
     /// must name a field the predicate's `with:` map declares
-    /// ([`TransactError::UnknownField`] otherwise) and must [`cast`]
+    /// ([`TransactError::UnknownField`] otherwise) and must [`coerce_value`]
     /// to that field's declared type ([`TransactError::TypeMismatch`]
     /// otherwise).
     ///
@@ -318,7 +329,7 @@ impl TryFrom<SourceApplication> for PredicateApplication {
             let Some(attr) = with.iter().find(|(name, _)| *name == key).map(|(_, a)| a) else {
                 return Err(TransactError::UnknownField { field: key });
             };
-            let coerced = cast(&key, attr.content_type(), value)?;
+            let coerced = coerce_value(&key, attr.content_type(), value)?;
             validated.insert(key, coerced);
         }
 
@@ -332,21 +343,85 @@ impl TryFrom<SourceApplication> for PredicateApplication {
 
 /// One assertion or retraction in a [`TransactRequest`] — the
 /// **source** write-unit decoded from the wire, before validation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", content = "application", rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum SourceClaim {
     /// Assert the facts produced by this predicate application.
     Assert(SourceApplication),
     /// Retract the facts produced by this predicate
     /// application.
     Retract(SourceApplication),
+    /// Invoke a nominal command. The worker resolves and validates it
+    /// against authoritative branch data before building a transaction.
+    Invoke(SourceInvocation),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+enum SourceClaimWire {
+    Assert {
+        application: SourceApplication,
+    },
+    Retract {
+        application: SourceApplication,
+    },
+    Invoke {
+        command: dialog_artifacts::Entity,
+        #[serde(default)]
+        arguments: ValueMap,
+    },
+}
+
+impl Serialize for SourceClaim {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Assert(application) => SourceClaimWire::Assert {
+                application: application.clone(),
+            },
+            Self::Retract(application) => SourceClaimWire::Retract {
+                application: application.clone(),
+            },
+            Self::Invoke(invocation) => SourceClaimWire::Invoke {
+                command: invocation.command.clone(),
+                arguments: invocation.arguments.clone(),
+            },
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceClaim {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match SourceClaimWire::deserialize(deserializer)? {
+            SourceClaimWire::Assert { application } => Self::Assert(application),
+            SourceClaimWire::Retract { application } => Self::Retract(application),
+            SourceClaimWire::Invoke { command, arguments } => {
+                Self::Invoke(SourceInvocation { command, arguments })
+            }
+        })
+    }
 }
 
 impl SourceClaim {
-    /// Borrow the inner [`SourceApplication`], regardless of variant.
-    pub fn application(&self) -> &SourceApplication {
+    /// Borrow the structural application, or return `None` for a
+    /// nominal invocation.
+    pub fn application(&self) -> Option<&SourceApplication> {
         match self {
-            Self::Assert(a) | Self::Retract(a) => a,
+            Self::Assert(a) | Self::Retract(a) => Some(a),
+            Self::Invoke(_) => None,
+        }
+    }
+
+    /// Borrow the nominal invocation, if this is an `invoke` claim.
+    pub fn invocation(&self) -> Option<&SourceInvocation> {
+        match self {
+            Self::Invoke(invocation) => Some(invocation),
+            Self::Assert(_) | Self::Retract(_) => None,
         }
     }
 }
@@ -379,6 +454,11 @@ impl TryFrom<SourceClaim> for Claim {
         Ok(match source {
             SourceClaim::Assert(a) => Claim::Assert(a.try_into()?),
             SourceClaim::Retract(a) => Claim::Retract(a.try_into()?),
+            SourceClaim::Invoke(invocation) => {
+                return Err(TransactError::InvocationRequiresResolution {
+                    command: invocation.command,
+                });
+            }
         })
     }
 }
@@ -412,6 +492,7 @@ impl TransactRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::SourceInvocation;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -441,7 +522,62 @@ mod tests {
         }
     }
 
-    // -------- cast: numeric coercion --------
+    #[dialog_common::test]
+    fn source_claim_invoke_uses_command_specific_shape() {
+        let invoke = TransactRequest {
+            claims: vec![SourceClaim::Invoke(SourceInvocation {
+                command: "id:todo/add".parse().unwrap(),
+                arguments: [("title".into(), Value::String("Buy milk".into()))]
+                    .into_iter()
+                    .collect(),
+            })],
+        };
+        let invoke_json = serde_json::to_string(&invoke).unwrap();
+        assert_eq!(
+            invoke_json,
+            r#"{"claims":[{"op":"invoke","command":"id:todo/add","arguments":{"title":"Buy milk"}}]}"#
+        );
+
+        let application = source(
+            one_field("title", "Text"),
+            &[("title", Value::String("Buy milk".into()))],
+        );
+        let assert = SourceClaim::Assert(application.clone());
+        let retract = SourceClaim::Retract(application);
+        let assert_json = serde_json::to_string(&assert).unwrap();
+        let retract_json = serde_json::to_string(&retract).unwrap();
+        assert_eq!(
+            assert_json,
+            r#"{"op":"assert","application":{"predicate":{"kind":"durable","concept":{"with":{"title":{"the":"xyz.tonk.thing/title","description":"","cardinality":"one","as":"Text"}}}},"parameters":{"title":"Buy milk"}}}"#
+        );
+        assert_eq!(
+            retract_json,
+            r#"{"op":"retract","application":{"predicate":{"kind":"durable","concept":{"with":{"title":{"the":"xyz.tonk.thing/title","description":"","cardinality":"one","as":"Text"}}}},"parameters":{"title":"Buy milk"}}}"#
+        );
+
+        let decoded: TransactRequest = serde_json::from_str(&invoke_json).unwrap();
+        let decoded = decoded.claims[0].invocation().unwrap();
+        assert_eq!(decoded.command.to_string(), "id:todo/add");
+        assert_eq!(
+            decoded.arguments.get("title"),
+            Some(&Value::String("Buy milk".into()))
+        );
+    }
+
+    #[dialog_common::test]
+    fn source_claim_invoke_requires_authoritative_resolution() {
+        let source = SourceClaim::Invoke(SourceInvocation {
+            command: "id:todo/add".parse().unwrap(),
+            arguments: ValueMap::new(),
+        });
+        assert!(matches!(
+            Claim::try_from(source),
+            Err(TransactError::InvocationRequiresResolution { command })
+                if command.to_string() == "id:todo/add"
+        ));
+    }
+
+    // -------- coercion: numeric values --------
 
     #[dialog_common::test]
     fn it_coerces_integral_float_into_signed_integer_field() {
@@ -499,7 +635,7 @@ mod tests {
         assert_eq!(app.parameters().get("s"), Some(&Value::String("hi".into())));
     }
 
-    // -------- cast: entity / symbol widening and parsing --------
+    // -------- coercion: entity / symbol widening and parsing --------
 
     #[dialog_common::test]
     fn it_parses_string_into_entity_field() {

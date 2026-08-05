@@ -12,7 +12,9 @@ use dialog_artifacts::Entity;
 use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
+use tonk_schema::command_definition::CommandDefinition;
 use tonk_schema::deductive_rule::DeductiveRule;
+use tonk_schema::projection::ProjectionDefinition;
 use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
 use tonk_schema::rule::Rule;
 
@@ -44,6 +46,12 @@ pub(crate) struct Scope {
     /// the anchor/variable name on the head. Used by later
     /// `person!: &alice` heads in the same document.
     pub(crate) in_doc_concepts: Mutex<HashMap<String, ConceptDefinition>>,
+    /// Nominal commands declared or resolved for this document.
+    pub(crate) in_doc_commands: Mutex<HashMap<String, CommandDefinition>>,
+    /// Stable command kind to definition.
+    pub(crate) in_doc_commands_by_entity: Mutex<HashMap<String, CommandDefinition>>,
+    /// Projections declared in this document, used for default uniqueness.
+    pub(crate) in_doc_projections: Mutex<Vec<ProjectionDefinition>>,
     /// Reverse index: attribute entity → resolved attribute.
     /// Used when a concept body references an attribute via URI
     /// instead of by name.
@@ -91,6 +99,9 @@ impl Scope {
             variables: Mutex::new(HashMap::new()),
             in_doc_attributes: Mutex::new(HashMap::new()),
             in_doc_concepts: Mutex::new(HashMap::new()),
+            in_doc_commands: Mutex::new(HashMap::new()),
+            in_doc_commands_by_entity: Mutex::new(HashMap::new()),
+            in_doc_projections: Mutex::new(Vec::new()),
             in_doc_attributes_by_entity: Mutex::new(HashMap::new()),
             attributes_by_id: Mutex::new(HashMap::new()),
             in_doc_concepts_by_entity: Mutex::new(HashMap::new()),
@@ -197,6 +208,57 @@ impl Scope {
             .insert(concept.entity.to_string(), concept);
     }
 
+    /// Record a nominal command by optional source name and stable kind.
+    pub(crate) fn record_command(&self, name: Option<&str>, command: CommandDefinition) {
+        if let Some(name) = name {
+            self.in_doc_commands
+                .lock()
+                .insert(name.to_owned(), command.clone());
+        }
+        self.in_doc_commands_by_entity
+            .lock()
+            .insert(command.kind().to_string(), command);
+    }
+
+    /// Resolve a nominal command from the populated in-document table.
+    pub(crate) fn command(&self, name: &str) -> Option<CommandDefinition> {
+        self.in_doc_commands.lock().get(name).cloned()
+    }
+
+    /// Resolve a nominal command by stable kind.
+    pub(crate) fn command_by_entity(&self, kind: &Entity) -> Option<CommandDefinition> {
+        self.in_doc_commands_by_entity
+            .lock()
+            .get(&kind.to_string())
+            .cloned()
+    }
+
+    /// Record a projection and reject a second in-document default.
+    pub(crate) fn record_projection(
+        &self,
+        projection: ProjectionDefinition,
+        range: lsp_types::Range,
+    ) -> Result<(), AnalyzeError> {
+        if projection.descriptor().default
+            && self.in_doc_projections.lock().iter().any(|existing| {
+                existing.descriptor().command == projection.descriptor().command
+                    && existing.descriptor().default
+            })
+        {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidProjectionBody {
+                    reason: format!(
+                        "command {} already has a default projection in this document",
+                        projection.descriptor().command
+                    ),
+                },
+                range,
+            ));
+        }
+        self.in_doc_projections.lock().push(projection);
+        Ok(())
+    }
+
     /// Look up the entity bound to an anchor or `?var` name,
     /// regardless of which side it lives on. Returns `None` if
     /// the name isn't known yet.
@@ -277,6 +339,9 @@ impl Scope {
         }
         if let Some(concept) = self.in_doc_concepts.lock().get(name) {
             return Some(concept.entity.clone());
+        }
+        if let Some(command) = self.in_doc_commands.lock().get(name) {
+            return Some(command.kind().clone());
         }
         self.named_entities.lock().get(name).cloned()
     }

@@ -238,6 +238,10 @@ impl DocumentAnalysis {
                     | Statement::Retract(Application::Rule { .. })
                     | Statement::Assert(Application::DeductiveRule { .. })
                     | Statement::Retract(Application::DeductiveRule { .. })
+                    | Statement::Assert(Application::CommandDefinition { .. })
+                    | Statement::Retract(Application::CommandDefinition { .. })
+                    | Statement::Assert(Application::ProjectionDefinition { .. })
+                    | Statement::Retract(Application::ProjectionDefinition { .. })
             ) {
                 continue;
             }
@@ -295,6 +299,10 @@ pub enum AnalyzeLowerError {
     /// to carry on the predicate.
     #[error("domain applications cannot be lowered to a transact claim")]
     Domain,
+    /// A stored schema artifact or nominal invocation reached the
+    /// structural predicate lowering path.
+    #[error("schema artifacts and command invocations require their dedicated transact path")]
+    SchemaArtifact,
     /// A parameter slot held a logic variable or blank rather than
     /// a concrete value, so it can't be carried on the wire.
     #[error("parameter {field:?} is not a concrete value (got {term:?})")]
@@ -316,11 +324,22 @@ fn lower_statement(
         Statement::Assert(app) => (app, true),
         Statement::Retract(app) => (app, false),
     };
+    if let Application::CommandInvocation { invocation } = application {
+        if is_assert {
+            return Ok(SourceClaim::Invoke(invocation.clone()));
+        }
+        return Err(AnalyzeLowerError::SchemaArtifact);
+    }
     let (query, name) = match application {
         Application::Concept { query, name, .. } => (query, name.clone()),
         Application::Domain { .. } => return Err(AnalyzeLowerError::Domain),
         Application::Rule { .. } | Application::DeductiveRule { .. } => {
             return Err(AnalyzeLowerError::Rule);
+        }
+        Application::CommandDefinition { .. }
+        | Application::ProjectionDefinition { .. }
+        | Application::CommandInvocation { .. } => {
+            return Err(AnalyzeLowerError::SchemaArtifact);
         }
     };
     let this = query.terms.get("this").and_then(term_entity);

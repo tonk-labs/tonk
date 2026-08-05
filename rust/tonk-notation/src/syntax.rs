@@ -271,6 +271,9 @@ pub enum FieldValue {
     /// with field-named nesting) so the analyzer can rely on
     /// per-premise ranges for diagnostics.
     Premises(Vec<Premise>),
+    /// A sequence of scalar names. Used by finite enumerations such
+    /// as `projection!.actions`; analyzers for other heads reject it.
+    List(Vec<Spanned<String>>),
 }
 
 /// A primitive value. Mirrors the shapes saphyr produces for

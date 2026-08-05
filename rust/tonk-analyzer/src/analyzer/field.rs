@@ -126,6 +126,15 @@ pub(crate) fn field_value_to_term(
                 range,
             ));
         }
+        FieldValue::List(_) => {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: field_name.into(),
+                    form: "scalar list (only valid for projection actions)",
+                },
+                range,
+            ));
+        }
     })
 }
 
