@@ -6,7 +6,7 @@ use crate::core::CeremonyError;
 use crate::core::codes::check_code;
 use crate::core::delegation::check_device_delegation;
 use crate::core::descriptor::validate_descriptor;
-use crate::store::{NewDevice, PasskeyMetadata, Store, StoreError};
+use crate::store::{NewAccount, NewDevice, PasskeyMetadata, Store, StoreError};
 
 /// Returned when the verified email address already belongs to an
 /// account under a different root DID.
@@ -86,23 +86,22 @@ pub async fn create_account<S: Store>(
     check_code(store, &request.email, &request.code, now).await?;
 
     let email = request.email.to_lowercase();
-    let created = store
-        .create_account_with_device(
-            &email,
-            &request.root_did,
-            &request.credential_id,
-            &repository_descriptor,
-            request.passkey.as_ref(),
-            &NewDevice {
-                device_did: request.device_did.clone(),
-                attachment_id: crate::core::devices::random_attachment_id(),
-                delegation_cid,
-                delegation_hex: request.delegation_hex.clone(),
-                name: request.device_name.clone(),
-            },
-            now,
-        )
-        .await;
+    let account = NewAccount {
+        email: &email,
+        root_did: &request.root_did,
+        credential_id: &request.credential_id,
+        repository_descriptor: &repository_descriptor,
+        passkey: request.passkey.as_ref(),
+        created_at: now,
+    };
+    let device = NewDevice {
+        device_did: request.device_did.clone(),
+        attachment_id: crate::core::devices::random_attachment_id(),
+        delegation_cid,
+        delegation_hex: request.delegation_hex.clone(),
+        name: request.device_name.clone(),
+    };
+    let created = store.create_account_with_device(&account, &device).await;
 
     match created {
         Ok(account_id) => Ok(account_id),

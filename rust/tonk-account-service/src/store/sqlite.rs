@@ -10,7 +10,7 @@ use super::{
     Account, ActivateOutcome, BUMP_ATTEMPTS, COMPLETE_LINK, CONSUME_LINK, CodeRow, DELETE_CODE,
     DetachStoreOutcome, Device, DeviceStatus, ESTABLISH_REPOSITORY_DESCRIPTOR, INSERT_ACCOUNT,
     INSERT_ACCOUNT_WITH_DESCRIPTOR, INSERT_DEVICE, INSERT_LINK, LinkCompletion, LinkRequest,
-    NewDevice, PasskeyMetadata, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
+    NewAccount, NewDevice, SELECT_ACCOUNT_BY_EMAIL, SELECT_ACCOUNT_BY_ROOT,
     SELECT_ACTIVE_DEVICE_BY_DID, SELECT_ATTACHMENT, SELECT_CODE, SELECT_DEVICE_FOR_ACCOUNT,
     SELECT_DEVICES_BY_ACCOUNT, SELECT_LINK, SELECT_LINK_BY_ATTACHMENT,
     SELECT_REPOSITORY_DESCRIPTOR, Store, StoreError, UPDATE_DEVICE_REVOKE,
@@ -210,26 +210,21 @@ impl Store for SqliteStore {
 
     async fn create_account_with_device(
         &self,
-        email: &str,
-        root_did: &str,
-        credential_id: &str,
-        repository_descriptor: &[u8],
-        passkey: Option<&PasskeyMetadata>,
+        account: &NewAccount<'_>,
         device: &NewDevice,
-        created_at: u64,
     ) -> Result<i64, StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
         tx.execute(
             INSERT_ACCOUNT_WITH_DESCRIPTOR,
             params![
-                email,
-                root_did,
-                credential_id,
-                repository_descriptor,
-                passkey.map(|metadata| metadata.created_at as i64),
-                passkey.map(|metadata| metadata.created_on.as_str()),
-                created_at as i64
+                account.email,
+                account.root_did,
+                account.credential_id,
+                account.repository_descriptor,
+                account.passkey.map(|metadata| metadata.created_at as i64),
+                account.passkey.map(|metadata| metadata.created_on.as_str()),
+                account.created_at as i64
             ],
         )
         .map_err(map_err)?;
@@ -244,11 +239,12 @@ impl Store for SqliteStore {
                 device.delegation_hex,
                 device.name,
                 DeviceStatus::Active.as_str(),
-                created_at as i64,
+                account.created_at as i64,
             ],
         )
         .map_err(map_err)?;
-        tx.execute(DELETE_CODE, params![email]).map_err(map_err)?;
+        tx.execute(DELETE_CODE, params![account.email])
+            .map_err(map_err)?;
         tx.commit().map_err(map_err)?;
         Ok(account_id)
     }

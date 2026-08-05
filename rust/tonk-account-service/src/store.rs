@@ -37,6 +37,23 @@ pub struct PasskeyMetadata {
     pub created_on: String,
 }
 
+/// An account to insert as part of atomically creating its first device.
+#[derive(Debug, Clone, Copy)]
+pub struct NewAccount<'a> {
+    /// Verified, normalized email address.
+    pub email: &'a str,
+    /// Root DID controlled by the passkey.
+    pub root_did: &'a str,
+    /// Opaque WebAuthn credential identifier.
+    pub credential_id: &'a str,
+    /// Exact root-signed account repository descriptor.
+    pub repository_descriptor: &'a [u8],
+    /// Facts Tonk recorded during passkey creation, when available.
+    pub passkey: Option<&'a PasskeyMetadata>,
+    /// Account creation time, as a Unix timestamp in seconds.
+    pub created_at: u64,
+}
+
 /// A device delegated under an account's root DID.
 #[derive(Debug, Clone)]
 pub struct Device {
@@ -272,16 +289,10 @@ pub trait Store {
     /// whole operation, including code consumption, so a failed transaction
     /// cannot strand either a zero-device account or a spent verification
     /// code. Returns `StoreError::Conflict` in that case.
-    #[allow(clippy::too_many_arguments)]
     async fn create_account_with_device(
         &self,
-        email: &str,
-        root_did: &str,
-        credential_id: &str,
-        repository_descriptor: &[u8],
-        passkey: Option<&PasskeyMetadata>,
+        account: &NewAccount<'_>,
         device: &NewDevice,
-        created_at: u64,
     ) -> Result<i64, StoreError>;
 
     /// Establish one immutable repository descriptor and return `(winner, created)`.
