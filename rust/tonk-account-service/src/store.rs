@@ -272,6 +272,7 @@ pub trait Store {
     /// whole operation, including code consumption, so a failed transaction
     /// cannot strand either a zero-device account or a spent verification
     /// code. Returns `StoreError::Conflict` in that case.
+    #[allow(clippy::too_many_arguments)]
     async fn create_account_with_device(
         &self,
         email: &str,
