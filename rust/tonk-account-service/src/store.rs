@@ -264,13 +264,14 @@ pub trait Store {
     /// [`crate::core::accounts::create_account`].
     async fn account_by_email(&self, email: &str) -> Result<Option<Account>, StoreError>;
 
-    /// Atomically create a new account and register its first device.
+    /// Atomically create a new account, register its first device, and consume
+    /// the email's verified code.
     ///
     /// Either both rows are created or neither is: a conflict on the
-    /// email, root DID, or account-scoped device registration rolls back
-    /// the whole operation, so a device-registration failure can never
-    /// strand an account with zero devices. Returns `StoreError::Conflict`
-    /// in that case.
+    /// email, root DID, or account-scoped device registration rolls back the
+    /// whole operation, including code consumption, so a failed transaction
+    /// cannot strand either a zero-device account or a spent verification
+    /// code. Returns `StoreError::Conflict` in that case.
     async fn create_account_with_device(
         &self,
         email: &str,

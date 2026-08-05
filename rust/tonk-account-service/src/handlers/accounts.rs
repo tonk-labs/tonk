@@ -2,8 +2,10 @@
 
 use worker::*;
 
+use serde::Deserialize;
+
 use crate::auth::{authorize, authorize_root, optional_passkey_metadata, required_string};
-use crate::core::accounts::{CreateAccount, create_account};
+use crate::core::accounts::{CreateAccount, create_account, preflight_account};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::{build_store, ceremony_error, read_body, with_cors_headers};
 use crate::store::Store;
@@ -11,6 +13,41 @@ use crate::store::Store;
 /// `OPTIONS /accounts` → CORS preflight.
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
     Ok(with_cors_headers(Response::empty()?.with_status(204)))
+}
+
+#[derive(Deserialize)]
+struct PreflightRequest {
+    email: String,
+    code: String,
+}
+
+/// `POST /accounts/preflight` → verify email control and availability.
+pub async fn handle_preflight(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match handle_preflight_inner(&mut req, &ctx).await {
+        Ok(response) => response,
+        Err(err) => err.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+async fn handle_preflight_inner(
+    req: &mut Request,
+    ctx: &RouteContext<()>,
+) -> std::result::Result<Response, ServiceError> {
+    let input: PreflightRequest = req.json().await.map_err(|error| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("failed to parse request body: {error}"),
+        )
+    })?;
+    let store = build_store(ctx)?;
+    let now = Date::now().as_millis() / 1000;
+    preflight_account(&store, &input.email, &input.code, now)
+        .await
+        .map_err(ceremony_error)?;
+    Response::from_json(&serde_json::json!({})).map_err(|error| {
+        ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
+    })
 }
 
 /// `POST /account/summary` → verified email and passkey creation facts.

@@ -3,7 +3,7 @@
 //! register the account and its first device.
 
 use crate::core::CeremonyError;
-use crate::core::codes::verify_code;
+use crate::core::codes::check_code;
 use crate::core::delegation::check_device_delegation;
 use crate::core::descriptor::validate_descriptor;
 use crate::store::{NewDevice, PasskeyMetadata, Store, StoreError};
@@ -14,6 +14,28 @@ pub const EMAIL_TAKEN: &str = "an account already exists for this email address"
 
 /// Returned when the calling root DID already has an account.
 pub const ROOT_TAKEN: &str = "an account already exists for this passkey";
+
+/// Prove control of an email address and reject a known uniqueness conflict
+/// before the browser creates or evaluates a passkey.
+///
+/// A correct code is deliberately not consumed when the address is available:
+/// [`create_account`] remains the authoritative boundary that consumes it and
+/// atomically inserts the account and first device. A known conflict consumes
+/// the code because no account can be created from that attempt.
+pub async fn preflight_account<S: Store>(
+    store: &S,
+    email: &str,
+    code: &str,
+    now: u64,
+) -> Result<(), CeremonyError> {
+    check_code(store, email, code, now).await?;
+    let email = email.to_lowercase();
+    if store.account_by_email(&email).await?.is_some() {
+        store.delete_code(&email).await?;
+        return Err(CeremonyError::Conflict(EMAIL_TAKEN.to_string()));
+    }
+    Ok(())
+}
 
 /// A request to create a new account and register its first device.
 pub struct CreateAccount {
@@ -61,7 +83,7 @@ pub async fn create_account<S: Store>(
         &request.device_did,
     )
     .await?;
-    verify_code(store, &request.email, &request.code, now).await?;
+    check_code(store, &request.email, &request.code, now).await?;
 
     let email = request.email.to_lowercase();
     let created = store
@@ -129,7 +151,7 @@ async fn explain_conflict<S: Store>(
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::core::codes::request_code;
+    use crate::core::codes::{request_code, verify_code};
     use crate::email::CapturedEmail;
     use crate::store::sqlite::SqliteStore;
     use crate::store::{Device, DeviceStatus};
@@ -205,6 +227,42 @@ mod tests {
             Some("Chrome on macOS")
         );
         assert_eq!(store.devices(id).await.unwrap().len(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn it_preflights_only_after_email_control_and_preserves_an_available_code() {
+        let store = SqliteStore::in_memory().unwrap();
+        let sender = CapturedEmail::default();
+        store
+            .create_account("taken@x.com", "did:key:zTaken", "credential", 1)
+            .await
+            .unwrap();
+
+        request_code(&store, &sender, "taken@x.com", "123456", 100)
+            .await
+            .unwrap();
+        let conflict = preflight_account(&store, "TAKEN@x.com", "123456", 200).await;
+        assert!(
+            matches!(&conflict, Err(CeremonyError::Conflict(message)) if message == EMAIL_TAKEN)
+        );
+        assert!(matches!(
+            verify_code(&store, "taken@x.com", "123456", 200).await,
+            Err(CeremonyError::CodeInvalid)
+        ));
+
+        request_code(&store, &sender, "available@x.com", "654321", 100)
+            .await
+            .unwrap();
+        assert!(matches!(
+            preflight_account(&store, "available@x.com", "000000", 200).await,
+            Err(CeremonyError::CodeInvalid)
+        ));
+        preflight_account(&store, "AVAILABLE@x.com", "654321", 200)
+            .await
+            .unwrap();
+        verify_code(&store, "available@x.com", "654321", 200)
+            .await
+            .unwrap();
     }
 
     #[dialog_common::test]
@@ -447,6 +505,10 @@ mod tests {
         };
         let error = create_account(&store, &again, 500).await;
         assert!(matches!(&error, Err(CeremonyError::Conflict(msg)) if msg == ROOT_TAKEN));
+
+        verify_code(&store, "b@x.com", "654321", 500)
+            .await
+            .expect("a rejected account transaction must not consume the email code");
     }
 
     #[dialog_common::test]

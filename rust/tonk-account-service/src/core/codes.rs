@@ -63,14 +63,14 @@ pub async fn request_code<S: Store, E: EmailSender>(
     Ok(())
 }
 
-/// Verify a previously requested code, consuming it on success.
+/// Check a previously requested code without consuming it.
 ///
 /// Returns [`CeremonyError::CodeInvalid`] uniformly when there is no
 /// pending code, the code has expired, attempts are exhausted, or the
 /// supplied code does not match — so responses don't reveal which
 /// check failed. The email address is lowercased before every store
 /// access.
-pub async fn verify_code<S: Store>(
+pub async fn check_code<S: Store>(
     store: &S,
     email: &str,
     code: &str,
@@ -87,6 +87,18 @@ pub async fn verify_code<S: Store>(
         store.bump_attempts(&email).await?;
         return Err(CeremonyError::CodeInvalid);
     }
+    Ok(())
+}
+
+/// Verify a previously requested code, consuming it on success.
+pub async fn verify_code<S: Store>(
+    store: &S,
+    email: &str,
+    code: &str,
+    now: u64,
+) -> Result<(), CeremonyError> {
+    check_code(store, email, code, now).await?;
+    let email = email.to_lowercase();
     store.delete_code(&email).await?;
     Ok(())
 }

@@ -33,6 +33,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/codes", handlers::codes::handle_options)
         .post_async("/accounts", handlers::accounts::handle)
         .options_async("/accounts", handlers::accounts::handle_options)
+        .post_async("/accounts/preflight", handlers::accounts::handle_preflight)
+        .options_async("/accounts/preflight", handlers::accounts::handle_options)
         .post_async("/account/summary", handlers::accounts::handle_summary)
         .options_async("/account/summary", handlers::accounts::handle_options)
         .post_async("/revocations", handlers::revocations::handle)

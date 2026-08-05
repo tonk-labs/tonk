@@ -248,6 +248,7 @@ impl Store for SqliteStore {
             ],
         )
         .map_err(map_err)?;
+        tx.execute(DELETE_CODE, params![email]).map_err(map_err)?;
         tx.commit().map_err(map_err)?;
         Ok(account_id)
     }

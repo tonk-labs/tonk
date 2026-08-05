@@ -295,9 +295,14 @@ impl Store for D1Store {
                 JsValue::from_f64(created_at as f64),
             ])
             .map_err(map_err)?;
+        let consume_code = self
+            .0
+            .prepare(DELETE_CODE)
+            .bind(&[JsValue::from(email)])
+            .map_err(map_err)?;
         let results = self
             .0
-            .batch(vec![insert_account, insert_device])
+            .batch(vec![insert_account, insert_device, consume_code])
             .await
             .map_err(map_err)?;
         results
