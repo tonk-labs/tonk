@@ -121,15 +121,21 @@ impl AccountSpotBackup {
             .proofs()
             .next()
             .ok_or_else(|| AccountSpotBackupError::InvalidChain("empty chain".to_string()))?;
+        // Dialog powerline delegations carry `Subject::Any`; for a root
+        // delegation their effective subject is the issuer. Repository invite
+        // chains minted through an account use that shape, while an owned
+        // space's direct `space -> root` prefix carries `Specific(space)`.
+        // Both name the same stable authority as long as an explicit root
+        // subject, when present, agrees with its issuer.
         let subject = match first.subject() {
-            dialog_ucan_core::subject::Subject::Specific(subject) => subject.clone(),
-            dialog_ucan_core::subject::Subject::Any => {
-                return Err(AccountSpotBackupError::MissingSubject);
+            dialog_ucan_core::subject::Subject::Specific(subject) => {
+                if subject != first.issuer() {
+                    return Err(AccountSpotBackupError::SubjectIssuerMismatch);
+                }
+                subject.clone()
             }
+            dialog_ucan_core::subject::Subject::Any => first.issuer().clone(),
         };
-        if &subject != first.issuer() {
-            return Err(AccountSpotBackupError::SubjectIssuerMismatch);
-        }
 
         let now = dialog_ucan_core::time::Timestamp::now();
         for (index, delegation) in chain.proofs().enumerate() {
@@ -139,9 +145,10 @@ impl AccountSpotBackup {
                 dialog_ucan_core::subject::Subject::Specific(_) => {
                     return Err(AccountSpotBackupError::SubjectChanged);
                 }
-                dialog_ucan_core::subject::Subject::Any => {
-                    return Err(AccountSpotBackupError::MissingSubject);
-                }
+                // A powerline proof preserves the root delegation's
+                // effective subject; it does not broaden this artifact to a
+                // different repository.
+                dialog_ucan_core::subject::Subject::Any => {}
             }
             if delegation.issuer() == account_root
                 || delegation.audience() == account_root && index + 1 != proof_count
@@ -282,7 +289,7 @@ mod tests {
         let space_did = space.did();
         let account = signer(2).await.did();
         let other = signer(3).await.did();
-        let valid_chain = space_chain(space, &account, &space_did).await;
+        let valid_chain = space_chain(space.clone(), &account, &space_did).await;
         let validated = artifact(&valid_chain).validate_for(&account).await.unwrap();
         assert_eq!(validated.subject, space_did);
         assert_eq!(validated.chain, valid_chain);
@@ -293,20 +300,19 @@ mod tests {
         };
         assert!(malformed.validate_for(&account).await.is_err());
 
-        let open = dialog_ucan_core::DelegationBuilder::new()
-            .issuer(signer(4).await)
+        let powerline = dialog_ucan_core::DelegationBuilder::new()
+            .issuer(space)
             .audience(&account)
             .subject(dialog_ucan_core::subject::Subject::Any)
             .command(vec![])
             .try_build()
             .await
             .unwrap();
-        assert!(
-            artifact(&dialog_ucan_core::DelegationChain::new(open))
-                .validate_for(&account)
-                .await
-                .is_err()
-        );
+        let powerline = artifact(&dialog_ucan_core::DelegationChain::new(powerline))
+            .validate_for(&account)
+            .await
+            .unwrap();
+        assert_eq!(powerline.subject, space_did);
 
         let wrong_subject_issuer = signer(5).await;
         let wrong_subject = space_chain(wrong_subject_issuer, &account, &other).await;

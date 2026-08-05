@@ -11,6 +11,7 @@ mod tests {
 
     use anyhow::{Context, Result, anyhow};
     use tempfile::TempDir;
+    use thirtyfour::extensions::cdp::ChromeDevTools;
     use thirtyfour::prelude::*;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     use tokio::process::{Child, Command};
@@ -349,12 +350,214 @@ mod tests {
         .await
     }
 
+    async fn post_json(
+        driver: &WebDriver,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch(arguments[0], {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify(arguments[1]),
+                }).then(async response => done({
+                    status: response.status,
+                    body: await response.json(),
+                })).catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(path), body],
+            )
+            .await?;
+        Ok(result.json().clone())
+    }
+
+    async fn get_json(driver: &WebDriver, path: &str) -> Result<serde_json::Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch(arguments[0]).then(async response => done({
+                    status: response.status,
+                    body: await response.json(),
+                })).catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(path)],
+            )
+            .await?;
+        Ok(result.json().clone())
+    }
+
+    fn successful_body<'a>(
+        operation: &str,
+        result: &'a serde_json::Value,
+    ) -> &'a serde_json::Value {
+        assert!(
+            result.get("error").is_none(),
+            "{operation} transport failed: {result}"
+        );
+        assert!(
+            result["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status)),
+            "{operation} failed: {result}"
+        );
+        &result["body"]
+    }
+
     fn did_for_device<'a>(output: &'a str, name: &str) -> Option<&'a str> {
         output.lines().find_map(|line| {
             let fields: Vec<_> = line.split('\t').collect();
             (fields.len() == 3 && fields[1] == name)
                 .then(|| fields[2].trim_end_matches(" (this device)"))
         })
+    }
+
+    #[dialog_common::test]
+    async fn it_backs_up_a_claimed_spot_for_another_account_device(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let creator = driver_with_prf(&env).await?;
+        sign_up(&creator, &env, "creator@example.com").await?;
+
+        let created = post_json(
+            &creator,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "Shared Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create synced spot", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+        let pushed = post_json(
+            &creator,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push synced spot", &pushed);
+        let invited = post_json(
+            &creator,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite_url = successful_body("mint invite", &invited)["url"]
+            .as_str()
+            .context("invite response omitted its URL")?
+            .to_string();
+        creator.quit().await?;
+
+        let claimer = driver_with_prf(&env).await?;
+        sign_up(&claimer, &env, "claimer@example.com").await?;
+        let visited = post_json(
+            &claimer,
+            "/api/profile/visit",
+            serde_json::json!({ "url": invite_url }),
+        )
+        .await?;
+        successful_body("visit shared spot", &visited);
+        let promoted = post_json(
+            &claimer,
+            &format!("/api/repository/{key}/membership"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("promote guest membership", &promoted);
+
+        let account = get_json(&claimer, "/api/account").await?;
+        let root = successful_body("read claiming account", &account)["rootDid"]
+            .as_str()
+            .context("claiming account status omitted its root DID")?;
+        let snapshot: Vec<serde_json::Value> = reqwest::Client::new()
+            .get(env.account_service.join("_test/spots")?)
+            .header("X-Test-Root", root)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            snapshot.iter().any(|spot| spot["subject"] == key),
+            "promotion completed without uploading the claimed spot: {snapshot:?}"
+        );
+
+        let devtools = ChromeDevTools::new(claimer.handle.clone());
+        devtools
+            .execute_cdp_with_params(
+                "Storage.clearDataForOrigin",
+                serde_json::json!({
+                    "origin": env.tonk_web.origin().ascii_serialization(),
+                    "storageTypes": "all",
+                }),
+            )
+            .await?;
+        claimer.goto(env.tonk_web.as_str()).await?;
+        claimer
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                navigator.serviceWorker.ready.then(() => {
+                    if (navigator.serviceWorker.controller) {
+                        done(true);
+                    } else {
+                        navigator.serviceWorker.addEventListener(
+                            "controllerchange",
+                            () => done(true),
+                            { once: true },
+                        );
+                    }
+                }).catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        claimer.goto(env.tonk_web.join("account")?.as_str()).await?;
+        element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
+        element(&claimer, "#account-choose-link")
+            .await?
+            .click()
+            .await?;
+        element(&claimer, "#account-link-submit")
+            .await?
+            .click()
+            .await?;
+        if let Err(wait_error) = element(&claimer, "tonk-account[data-mode=\"success\"]").await {
+            let host = element(&claimer, "tonk-account").await?;
+            let mode = host.attr("data-mode").await?.unwrap_or_default();
+            let error = element(&claimer, "#account-error").await?.text().await?;
+            return Err(wait_error).context(format!(
+                "second-device sign-in stopped in mode {mode:?}: {error:?}"
+            ));
+        }
+
+        let restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        let restored = successful_body("load claimed spot on second device", &restored);
+        assert_eq!(restored["subject"], key);
+
+        let pulled = post_json(
+            &claimer,
+            &format!("/api/repository/{key}/branch/main/sync/pull"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("pull claimed spot on second device", &pulled);
+        let hydrated = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            successful_body("load pulled spot on second device", &hydrated)["label"],
+            "Shared Garden"
+        );
+
+        claimer.quit().await?;
+        Ok(())
     }
 
     #[dialog_common::test]

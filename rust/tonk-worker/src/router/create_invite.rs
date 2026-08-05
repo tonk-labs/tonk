@@ -21,9 +21,11 @@ use ::axum::{
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{RepositoryExt as _, SiteAddress, Upstream};
+use dialog_repository::{
+    LoadRemoteError, RemoteRepository, RepositoryExt as _, SiteAddress, Upstream,
+};
 use dialog_ucan::UcanDelegation;
-use dialog_varsig::Principal;
+use dialog_varsig::{Did, Principal};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
@@ -443,31 +445,6 @@ where
         }
     };
 
-    let remote = repository
-        .remote(remote_name.as_str())
-        .load()
-        .perform(operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "branch 'main' upstream names remote '{remote_name}' but it failed to load: {e}"
-            ))
-        })?;
-
-    let access_url = match remote.address().site() {
-        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
-                ucan.endpoint()
-            ))
-        })?,
-        _ => {
-            return Ok(ConfiguredRemoteRequirement::Refused(
-                RemoteRefusal::UnshareableRemote,
-            ));
-        }
-    };
-
     let meta = repository
         .branch("meta")
         .open()
@@ -493,10 +470,32 @@ where
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to query remote metadata: {error:?}"))
         })?;
-    let remote_entity = remotes
+    let remote_concept = remotes
         .into_iter()
-        .find(|concept| concept.name.0 == remote_name)
-        .map(|concept| concept.this);
+        .find(|concept| concept.name.0 == remote_name);
+    let remote = load_or_recover_remote(
+        repository,
+        operator,
+        remote_name.as_str(),
+        remote_concept.as_ref(),
+    )
+    .await?;
+
+    let access_url = match remote.address().site() {
+        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
+                ucan.endpoint()
+            ))
+        })?,
+        _ => {
+            return Ok(ConfiguredRemoteRequirement::Refused(
+                RemoteRefusal::UnshareableRemote,
+            ));
+        }
+    };
+
+    let remote_entity = remote_concept.map(|concept| concept.this);
     let executions: Vec<RemoteExecution> = meta
         .query()
         .select(Query::<RemoteExecution> {
@@ -530,6 +529,60 @@ where
             revocation_url,
         },
     ))
+}
+
+/// Load the named dialog remote, rebuilding a missing address cell only from
+/// the replica's persisted remote concept. The metadata is the same signed
+/// configuration mirrored by `ensure_remote_config`; the current deployment
+/// origin is deliberately not used as a fallback.
+async fn load_or_recover_remote<R>(
+    repository: &dialog_repository::Repository<R>,
+    operator: &crate::worker::DefaultOperator,
+    remote_name: &str,
+    concept: Option<&RemoteConcept>,
+) -> Result<RemoteRepository, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
+    match repository
+        .remote(remote_name)
+        .load()
+        .perform(operator)
+        .await
+    {
+        Ok(remote) => Ok(remote),
+        Err(LoadRemoteError::NotFound { .. }) => {
+            let concept = concept.ok_or_else(|| {
+                TonkWorkerError::Internal(format!(
+                    "branch 'main' upstream names missing remote '{remote_name}', and meta has no recovery record"
+                ))
+            })?;
+            let subject: Did = concept.subject.0.to_string().parse().map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "remote '{remote_name}' has an invalid subject in meta: {error}"
+                ))
+            })?;
+            let address = concept.address.decode().map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "remote '{remote_name}' has an invalid address in meta: {error:?}"
+                ))
+            })?;
+            repository
+                .remote(remote_name)
+                .create(address)
+                .subject(subject)
+                .perform(operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!(
+                        "failed to recover remote '{remote_name}' from meta: {error}"
+                    ))
+                })
+        }
+        Err(error) => Err(TonkWorkerError::Internal(format!(
+            "branch 'main' upstream names remote '{remote_name}' but it failed to load: {error}"
+        ))),
+    }
 }
 
 /// Probe `main` for an invite-ready endpoint. Unlike generic sync and account
@@ -576,7 +629,8 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use dialog_repository::RepositoryExt as _;
+    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_repository::{RepositoryExt as _, SiteAddress};
     use tower::ServiceExt;
 
     use tonk_invite::Invite;
@@ -586,6 +640,39 @@ mod tests {
     use crate::axum::RequestOrigin;
     use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
     use crate::router::{CreateInviteResponse, api_router_with_state};
+
+    #[dialog_common::test]
+    async fn it_recovers_a_missing_dialog_remote_from_replica_metadata() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "recover-missing-dialog-remote").await;
+        let tonk = state.read().await;
+        let repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let address = SiteAddress::from(UcanAddress::new("https://sync.example.test/ucan/"));
+        let replica = tonk_schema::Replica::new(tonk.profile.did(), repository.did());
+        let concept = replica.remote("origin", repository.did(), &address);
+
+        let recovered =
+            super::load_or_recover_remote(&repository, &tonk.operator, "origin", Some(&concept))
+                .await
+                .expect("signed replica metadata repairs the missing address cell");
+
+        assert_eq!(recovered.address().site(), &address);
+        assert_eq!(recovered.did(), repository.did());
+        assert!(
+            repository
+                .remote("origin")
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .is_ok()
+        );
+    }
 
     /// Minting an invite records an `Invitation` on the repo's content
     /// branch whose entity matches what a claimer derives from the

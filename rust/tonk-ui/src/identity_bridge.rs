@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
 use tonk_account::handoff::{CompleteLinkCeremony, ResolvedLink};
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 /// Input for creating or evaluating a root credential.
@@ -111,10 +111,39 @@ pub(crate) enum IdentityBridgeError {
     InvalidInput,
     #[error("identity ceremony did not return a promise")]
     NotPromise,
-    #[error("identity ceremony was cancelled or failed")]
-    Rejected,
+    #[error("identity ceremony failed: {0}")]
+    Rejected(String),
     #[error("identity ceremony returned an invalid response")]
     MalformedOutput,
+}
+
+const MAX_REJECTION_REASON_CHARS: usize = 512;
+
+/// Preserve the browser/provider reason without attempting to serialize an
+/// arbitrary rejected object. wasm-bindgen ceremonies reject with strings;
+/// browser APIs usually reject with an `Error` or `DOMException` carrying a
+/// stable `name` and human-readable `message`.
+fn rejection_reason(value: JsValue) -> String {
+    fn bounded(value: String) -> String {
+        value.chars().take(MAX_REJECTION_REASON_CHARS).collect()
+    }
+
+    if let Some(reason) = value.as_string() {
+        return bounded(reason);
+    }
+
+    let property = |name: &str| {
+        Reflect::get(&value, &name.into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|value| !value.trim().is_empty())
+    };
+    match (property("name"), property("message")) {
+        (Some(name), Some(message)) => bounded(format!("{name}: {message}")),
+        (Some(name), None) => bounded(name),
+        (None, Some(message)) => bounded(message),
+        (None, None) => "unknown browser error".to_string(),
+    }
 }
 
 async fn call<I: Serialize, O: DeserializeOwned>(
@@ -140,12 +169,12 @@ async fn call<I: Serialize, O: DeserializeOwned>(
         .map_err(|_| IdentityBridgeError::InvalidInput)?;
     let promise: Promise = function
         .call1(&identity, &input)
-        .map_err(|_| IdentityBridgeError::Rejected)?
+        .map_err(|error| IdentityBridgeError::Rejected(rejection_reason(error)))?
         .dyn_into()
         .map_err(|_| IdentityBridgeError::NotPromise)?;
     let output = JsFuture::from(promise)
         .await
-        .map_err(|_| IdentityBridgeError::Rejected)?;
+        .map_err(|error| IdentityBridgeError::Rejected(rejection_reason(error)))?;
     serde_wasm_bindgen::from_value(output).map_err(|_| IdentityBridgeError::MalformedOutput)
 }
 
@@ -441,7 +470,10 @@ mod tests {
             IdentityBridgeError::NotPromise
         );
 
-        install_method("createRoot", "return Promise.reject(new Error('no')); ");
+        install_method(
+            "createRoot",
+            "return Promise.reject(new DOMException('phone authenticator returned no PRF', 'NotSupportedError')); ",
+        );
         assert_eq!(
             create_root(CreateRootInput {
                 device_did: "device".into(),
@@ -449,7 +481,23 @@ mod tests {
             })
             .await
             .unwrap_err(),
-            IdentityBridgeError::Rejected
+            IdentityBridgeError::Rejected(
+                "NotSupportedError: phone authenticator returned no PRF".into()
+            )
+        );
+
+        install_method(
+            "createRoot",
+            "return Promise.reject('provider unavailable'); ",
+        );
+        assert_eq!(
+            create_root(CreateRootInput {
+                device_did: "device".into(),
+                label: None,
+            })
+            .await
+            .unwrap_err(),
+            IdentityBridgeError::Rejected("provider unavailable".into())
         );
 
         install_method("createRoot", "return Promise.resolve({});");
