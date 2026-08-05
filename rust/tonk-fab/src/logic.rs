@@ -359,34 +359,19 @@ pub fn dock_claim_json(dock: Dock) -> Value {
 
 /// Build a `TransactRequest` JSON body for the `tonk:pause-sync` command.
 ///
-/// A transient command asserting the target `space` (the DID to pause) with a
-/// per-click `time` so each dispatch is a distinct transient, plus the `marker`
-/// (the command URI) that keeps the shape distinct from `tonk:invite`. `this`
-/// is omitted so the worker mints it from `(descriptor, parameters)`. Dispatched
-/// routeless via `window.tonk.transact`, so it lands on the FAB portal's own
+/// A nominal invocation carrying the target `space` (the DID to pause).
+/// Stable kind selection keeps it distinct from `tonk:invite`; the worker
+/// assigns a fresh occurrence identity. Dispatched routeless via
+/// `window.tonk.transact`, so it lands on the FAB portal's own
 /// `main@profile:tonk` context where the command lives; the worker's handler
 /// reads `space` to flip that replica — nothing space-side is required.
-pub fn pause_claim_json(command: &str, space: &str, time: f64) -> Value {
+pub fn pause_claim_json(command: &str, space: &str, _time: f64) -> Value {
     json!({
         "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "Toggle auto-sync (pause ⇄ resume) for a space.",
-                        "with": {
-                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
-                            "space":  { "the": "xyz.tonk.pause-sync/space", "as": "Entity" },
-                            "marker": { "the": "dom.event.current-target.dataset/pause-sync", "as": "Entity" }
-                        }
-                    }
-                },
-                "parameters": {
-                    "time": time,
-                    "space": space,
-                    "marker": command
-                }
+            "op": "invoke",
+            "command": command,
+            "arguments": {
+                "space": space
             }
         }]
     })
@@ -815,22 +800,16 @@ mod persist {
     #[test]
     fn pause_claim_carries_the_space_and_is_transient() {
         let v = pause_claim_json("tonk:pause-sync", "did:key:zSpace", 123.0);
-        let app = &v["claims"][0]["application"];
-        assert_eq!(v["claims"][0]["op"], "assert");
-        // A command is a one-timestep transient, not a durable fact.
-        assert_eq!(app["predicate"]["kind"], "transient");
+        let claim = &v["claims"][0];
+        assert_eq!(claim["op"], "invoke");
+        assert_eq!(claim["command"], "tonk:pause-sync");
         // The target space rides the command so the handler needn't read it
         // from the dispatch origin — this is what lets pause dispatch from the
         // profile branch and depend on nothing seeded per-space.
-        assert_eq!(app["parameters"]["space"], "did:key:zSpace");
-        assert_eq!(app["parameters"]["marker"], "tonk:pause-sync");
-        assert_eq!(app["parameters"]["time"], 123.0);
-        assert_eq!(
-            app["predicate"]["concept"]["with"]["space"]["the"],
-            "xyz.tonk.pause-sync/space"
-        );
-        // `this` is omitted so the worker mints it from (descriptor, params).
-        assert!(app["parameters"].get("this").is_none());
+        assert_eq!(claim["arguments"]["space"], "did:key:zSpace");
+        assert!(claim["arguments"].get("marker").is_none());
+        assert!(claim["arguments"].get("time").is_none());
+        assert!(claim["arguments"].get("this").is_none());
     }
 
     #[test]
@@ -1175,39 +1154,25 @@ mod profile_name {
 
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
-/// A transient carrying the target `space` and the new `value`. Dispatched
+/// A nominal invocation carrying the target `space` and new `name`. Dispatched
 /// routeless via `window.tonk.transact`, so it lands on the FAB's own
 /// `main@profile:tonk`; the worker's handler reads `space` to rename that
-/// repository — nothing space-side is required. `this` is omitted so the
-/// worker mints it from `(descriptor, parameters)`.
+/// repository — nothing space-side is required.
 ///
 /// An empty `name` is omitted entirely: the extractor drops empty fields, so
 /// a blank would store no fact and the command would never fire.
 pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
-    let mut parameters = json!({
-        "space": space,
-        "rename-repository": "tonk:repository"
+    let mut arguments = json!({
+        "space": space
     });
     if !name.is_empty() {
-        parameters["value"] = json!(name);
+        arguments["name"] = json!(name);
     }
     json!({
         "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "Rename a space's repository from the FAB.",
-                        "with": {
-                            "value":            { "the": "dom.event.current-target/value", "as": "Text" },
-                            "space":            { "the": "xyz.tonk.rename-repository/space", "as": "Entity" },
-                            "rename-repository": { "the": "dom.event.current-target.dataset/rename-repository", "as": "Entity" }
-                        }
-                    }
-                },
-                "parameters": parameters
-            }
+            "op": "invoke",
+            "command": "tonk:rename-repository",
+            "arguments": arguments
         }]
     })
 }
@@ -1219,12 +1184,10 @@ mod rename_repo {
     #[test]
     fn it_inlines_the_rename_descriptor_and_names_its_target_space() {
         let claim = rename_repo_claim_json("did:key:z6Mk", "Renamed");
-        let text = claim.to_string();
-        // The descriptor rides WITH the claim — nothing seeded is consulted.
-        assert!(text.contains("xyz.tonk.rename-repository/space"));
-        assert!(text.contains("dom.event.current-target/value"));
-        assert!(text.contains("did:key:z6Mk"));
-        assert!(text.contains("Renamed"));
+        assert_eq!(claim["claims"][0]["op"], "invoke");
+        assert_eq!(claim["claims"][0]["command"], "tonk:rename-repository");
+        assert_eq!(claim["claims"][0]["arguments"]["space"], "did:key:z6Mk");
+        assert_eq!(claim["claims"][0]["arguments"]["name"], "Renamed");
     }
 
     #[test]
@@ -1234,27 +1197,20 @@ mod rename_repo {
         // schema metadata and stays present regardless — what must be absent
         // is the `value` PARAMETER, the thing that actually becomes a fact.
         let claim = rename_repo_claim_json("did:key:z6Mk", "");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("value")
-                .is_none()
-        );
+        assert!(claim["claims"][0]["arguments"].get("name").is_none());
     }
 }
 
 /// Build a `TransactRequest` JSON body for the `space/create` command.
 ///
-/// Inlines the descriptor `profile.yaml` declares for `command!: &space/create`
-/// — the same shape, verbatim attribute URIs (`dom.event.current-target.
-/// elements.<field>/value`, matching what a real form submit's read-path would
-/// have produced) — so nothing seeded on the profile branch is consulted.
-/// `this` is omitted so the worker mints it from `(descriptor, parameters)`.
+/// Emits the exact stable kind and semantic arguments declared by
+/// `profile.yaml`'s `command!: &space/create`.
 ///
 /// `name` is always sent (the wizard's hidden input always carries the
 /// `Untitled` sentinel, and `CreateSpaceHandler` triggers on this field
 /// alone — an absent `name` fact means the command never fires at all).
 /// `remote`, `revocation` and `template` are read directly off the
-/// transient's facts by the handler (not decoded as typed `CreateSpace`
+/// invocation arguments by the compatibility adapter (not decoded as typed `CreateSpace`
 /// fields), so an empty value is omitted rather than sent as `""` — an
 /// omitted fact and a filtered-empty fact land the same way handler-side,
 /// but omitting mirrors what the browser's own event extractor would have
@@ -1269,34 +1225,21 @@ pub fn create_space_claim_json(
     revocation: &str,
     template: &str,
 ) -> Value {
-    let mut parameters = json!({ "name": name });
+    let mut arguments = json!({ "name": name });
     if !remote.is_empty() {
-        parameters["remote"] = json!(remote);
+        arguments["remote"] = json!(remote);
     }
     if !revocation.is_empty() {
-        parameters["revocation"] = json!(revocation);
+        arguments["revocation"] = json!(revocation);
     }
     if !template.is_empty() {
-        parameters["template"] = json!(template);
+        arguments["template"] = json!(template);
     }
     json!({
         "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "A request to create a new space from the wizard form.",
-                        "with": {
-                            "name":       { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                            "remote":     { "the": "dom.event.current-target.elements.remote/value", "as": "Text" },
-                            "revocation": { "the": "dom.event.current-target.elements.revocation/value", "as": "Text" },
-                            "template":   { "the": "dom.event.current-target.elements.template/value", "as": "Text" }
-                        }
-                    }
-                },
-                "parameters": parameters
-            }
+            "op": "invoke",
+            "command": "id:space/create",
+            "arguments": arguments
         }]
     })
 }
@@ -1306,19 +1249,11 @@ mod create_space {
     use super::*;
 
     #[test]
-    fn it_uses_the_declared_form_attribute_uris_for_create_space() {
+    fn it_emits_a_nominal_create_space_invocation() {
         let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "wiki");
-        let text = claim.to_string();
-        // Verbatim, kebab-cased as declared — the handler matches on these.
-        // Every control is read at `/value`: the segment after the control
-        // name is the JS property the browser's extractor would have read,
-        // so a descriptive leaf resolves to `undefined` there and the
-        // handler would never see the field here.
-        assert!(text.contains("dom.event.current-target.elements.name/value"));
-        assert!(text.contains("dom.event.current-target.elements.remote/value"));
-        assert!(text.contains("dom.event.current-target.elements.revocation/value"));
-        assert!(text.contains("dom.event.current-target.elements.template/value"));
-        let params = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(claim["claims"][0]["op"], "invoke");
+        assert_eq!(claim["claims"][0]["command"], "id:space/create");
+        let params = &claim["claims"][0]["arguments"];
         assert_eq!(params["name"], "Untitled");
         assert_eq!(params["remote"], "https://x");
         assert_eq!(params["revocation"], "https://x/rev");
@@ -1330,11 +1265,7 @@ mod create_space {
         // A deployment with no relay configured leaves the hidden input
         // blank; the remote must still attach, just without a relay.
         let claim = create_space_claim_json("Untitled", "https://x", "", "blank");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("revocation")
-                .is_none()
-        );
+        assert!(claim["claims"][0]["arguments"].get("revocation").is_none());
     }
 
     #[test]
@@ -1345,30 +1276,20 @@ mod create_space {
         // the thing that actually becomes a fact. Asserting on a bare
         // substring of the whole claim would also match the `with.remote`
         // key and pass even if the parameter were still being sent.
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("remote")
-                .is_none()
-        );
+        assert!(claim["claims"][0]["arguments"].get("remote").is_none());
     }
 
     #[test]
     fn it_omits_a_blank_template_rather_than_sending_an_empty_string() {
         let claim = create_space_claim_json("Untitled", "https://x", "https://x/rev", "");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("template")
-                .is_none()
-        );
+        assert!(claim["claims"][0]["arguments"].get("template").is_none());
     }
 }
 
 /// Build a `TransactRequest` JSON body for the `profile/rename` command.
 ///
-/// Inlines the descriptor `profile.yaml` declares for `command!:
-/// &profile/rename` — so renaming the signed-in member depends on nothing
-/// seeded on the profile branch. `this` is omitted so the worker mints it
-/// from `(descriptor, parameters)`.
+/// Emits the exact stable kind and semantic argument declared by
+/// `profile.yaml`'s `command!: &profile/rename`.
 ///
 /// An empty `name` is omitted entirely, mirroring [`rename_repo_claim_json`]:
 /// the extractor drops empty fields, and `ProfileRename`'s `name` field is
@@ -1376,26 +1297,15 @@ mod create_space {
 /// same "commit a blank, nothing changes" behaviour `ProfileRenameHandler`
 /// itself would otherwise have to special-case.
 pub fn profile_rename_claim_json(name: &str) -> Value {
-    let mut parameters = json!({ "marker": "tonk:profile" });
+    let mut arguments = json!({});
     if !name.is_empty() {
-        parameters["name"] = json!(name);
+        arguments["name"] = json!(name);
     }
     json!({
         "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "Rename the signed-in member (set their display name).",
-                        "with": {
-                            "name":   { "the": "dom.event.current-target/value", "as": "Text" },
-                            "marker": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
-                        }
-                    }
-                },
-                "parameters": parameters
-            }
+            "op": "invoke",
+            "command": "id:profile/rename",
+            "arguments": arguments
         }]
     })
 }
@@ -1405,70 +1315,37 @@ mod profile_rename {
     use super::*;
 
     #[test]
-    fn it_inlines_the_rename_descriptor_and_marks_the_profile() {
+    fn it_emits_a_nominal_profile_rename() {
         let claim = profile_rename_claim_json("Ada");
-        let with = &claim["claims"][0]["application"]["predicate"]["concept"]["with"];
-        // Assert the EXACT attribute, not a substring: `contains` on
-        // "…dataset/rename" also matches "…dataset/rename-repository", so a
-        // marker silently pointed at the repo-rename attribute would still
-        // pass. That collision is not hypothetical — both commands once
-        // derived `dataset/rename` and every spot rename also renamed the
-        // profile, because decoding matches on which attributes are present
-        // and never on their values. `dialog-reactor`'s
-        // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
-        // invariant; this pins the claim this crate actually builds.
-        assert_eq!(with["name"]["the"], "dom.event.current-target/value");
-        assert_eq!(
-            with["marker"]["the"],
-            "dom.event.current-target.dataset/rename"
-        );
-        let params = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(claim["claims"][0]["op"], "invoke");
+        assert_eq!(claim["claims"][0]["command"], "id:profile/rename");
+        let params = &claim["claims"][0]["arguments"];
         assert_eq!(params["name"], "Ada");
-        assert_eq!(params["marker"], "tonk:profile");
+        assert!(params.get("marker").is_none());
     }
 
     #[test]
     fn it_omits_an_empty_name_rather_than_sending_a_blank() {
         let claim = profile_rename_claim_json("");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("name")
-                .is_none()
-        );
+        assert!(claim["claims"][0]["arguments"].get("name").is_none());
     }
 }
 
 /// Build a `TransactRequest` JSON body for the `tonk:invite` command.
 ///
-/// Inlines the descriptor (mirroring `core.yaml`'s `command!: &tonk/invite`)
-/// plus a `space` field — mirroring [`pause_claim_json`]'s `space` — so the
+/// Emits the stable kind declared by `core.yaml` plus a `space` argument, so the
 /// handler mints for the named repository instead of reading the dispatch
 /// origin, which is empty when `<tonk-share>` dispatches routeless from the
-/// FAB's own profile-branch context. `this` is omitted so the worker mints
-/// it from `(descriptor, parameters)`; `time` makes each click a distinct
-/// transient so repeated Share clicks reliably re-fire the handler and
-/// rotate the credential.
+/// FAB's own profile-branch context. `time` is retained because refusal
+/// diagnostics echo it to correlate the user's latest share request.
 pub fn invite_claim_json(space: &str, time: f64) -> Value {
     json!({
         "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "Mint a repo invite — generates a membership keypair and delegation.",
-                        "with": {
-                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
-                            "space":  { "the": "xyz.tonk.invite/space", "as": "Entity" },
-                            "marker": { "the": "dom.event.current-target.dataset/invite", "as": "Entity" }
-                        }
-                    }
-                },
-                "parameters": {
-                    "time": time,
-                    "space": space,
-                    "marker": "tonk:invite"
-                }
+            "op": "invoke",
+            "command": "tonk:invite",
+            "arguments": {
+                "time": time,
+                "space": space
             }
         }]
     })
@@ -1488,39 +1365,22 @@ pub fn enable_sync_claim_json(
     share: bool,
     time: f64,
 ) -> Value {
-    let mut with = json!({
-        "time":   { "the": "dom.event/time-stamp", "as": "Float" },
-        "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
-        "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
-        "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" }
-    });
-    let mut parameters = json!({
+    let mut arguments = json!({
         "time": time,
         "space": space,
-        "remote": remote,
-        "marker": "tonk:enable-sync"
+        "remote": remote
     });
     if let Some(revocation_url) = revocation_url {
-        with["revocation"] = json!({ "the": "xyz.tonk.enable-sync/revocation-url", "as": "Text" });
-        parameters["revocation"] = json!(revocation_url);
+        arguments["revocation"] = json!(revocation_url);
     }
     if share {
-        with["share"] = json!({ "the": "xyz.tonk.enable-sync/share", "as": "Entity" });
-        parameters["share"] = json!("tonk:share");
+        arguments["share"] = json!("tonk:share");
     }
     json!({
         "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "Attach a sync remote to a spot, and share it.",
-                        "with": with
-                    }
-                },
-                "parameters": parameters
-            }
+            "op": "invoke",
+            "command": "tonk:enable-sync",
+            "arguments": arguments
         }]
     })
 }
@@ -1532,13 +1392,13 @@ mod invite {
     #[test]
     fn it_names_the_target_space_on_the_invite() {
         let claim = invite_claim_json("did:key:z6Mk", 1.0);
-        assert!(claim.to_string().contains("xyz.tonk.invite/space"));
-        assert!(claim.to_string().contains("did:key:z6Mk"));
-        let app = &claim["claims"][0]["application"];
-        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
-        assert_eq!(app["parameters"]["marker"], "tonk:invite");
-        assert_eq!(app["parameters"]["time"], 1.0);
-        assert!(app["parameters"].get("this").is_none());
+        let invocation = &claim["claims"][0];
+        assert_eq!(invocation["op"], "invoke");
+        assert_eq!(invocation["command"], "tonk:invite");
+        assert_eq!(invocation["arguments"]["space"], "did:key:z6Mk");
+        assert!(invocation["arguments"].get("marker").is_none());
+        assert_eq!(invocation["arguments"]["time"], 1.0);
+        assert!(invocation["arguments"].get("this").is_none());
     }
 }
 
@@ -1643,47 +1503,27 @@ mod enable_sync_claim {
             true,
             7.0,
         );
-        let app = &claim["claims"][0]["application"];
-        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
-        assert_eq!(app["parameters"]["remote"], "https://tonk.spot/ucan/");
+        let app = &claim["claims"][0];
+        assert_eq!(app["op"], "invoke");
+        assert_eq!(app["command"], "tonk:enable-sync");
+        assert_eq!(app["arguments"]["space"], "did:key:z6Mk");
+        assert_eq!(app["arguments"]["remote"], "https://tonk.spot/ucan/");
         assert_eq!(
-            app["parameters"]["revocation"],
+            app["arguments"]["revocation"],
             "https://accounts.tonk.xyz/revocations"
         );
-        assert_eq!(app["parameters"]["share"], "tonk:share");
-        assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
-        assert_eq!(app["parameters"]["time"], 7.0);
-
-        // The `with` declaration is what the worker actually matches on: a
-        // typo here compiles and passes every assertion on `parameters`
-        // above, then silently no-ops at runtime because the transient
-        // commits and matches no handler. Pin every declared attribute name.
-        let with = &app["predicate"]["concept"]["with"];
-        assert_eq!(with["time"]["the"], "dom.event/time-stamp");
-        assert_eq!(with["space"]["the"], "xyz.tonk.enable-sync/space");
-        assert_eq!(with["remote"]["the"], "xyz.tonk.enable-sync/remote");
-        assert_eq!(
-            with["revocation"]["the"],
-            "xyz.tonk.enable-sync/revocation-url"
-        );
-        assert_eq!(
-            with["marker"]["the"],
-            "dom.event.current-target.dataset/enable-sync"
-        );
-        assert_eq!(with["share"]["the"], "xyz.tonk.enable-sync/share");
+        assert_eq!(app["arguments"]["share"], "tonk:share");
+        assert!(app["arguments"].get("marker").is_none());
+        assert_eq!(app["arguments"]["time"], 7.0);
     }
 
     #[test]
     fn it_omits_the_share_marker_when_not_sharing() {
         let claim =
             enable_sync_claim_json("did:key:z6Mk", "https://x.test/ucan/", None, false, 1.0);
-        let app = &claim["claims"][0]["application"];
-        assert!(app["parameters"].get("share").is_none());
-        assert!(
-            app["predicate"]["concept"]["with"].get("share").is_none(),
-            "an omitted parameter must not be declared, or the assert is incomplete"
-        );
-        assert!(app["parameters"].get("revocation").is_none());
+        let app = &claim["claims"][0];
+        assert!(app["arguments"].get("share").is_none());
+        assert!(app["arguments"].get("revocation").is_none());
     }
 }
 

@@ -178,8 +178,8 @@ view!:
       </div>
     </div>
 
-# The Enable-sync command. Submitting the sync chip's "Enable sync" form
-# asserts this transient command; the worker's `CreateSpaceHandler`
+# The Enable-sync command. Submitting the sync chip's form projects this
+# nominal invocation; the worker's `CreateSpaceHandler`
 # (which serves both this and `space/create`, keyed on the shared `name`
 # attribute) idempotently attaches the remote to the named space — the
 # repo already exists, so the create step no-ops and only the attach
@@ -195,15 +195,21 @@ command!: &space/enable-sync
   with:
     name:
       description: The space's local repository name, stamped into the hidden `name` input
-      the: dom.event.current-target.elements.name/value
+      the: xyz.tonk.command.space.enable-sync/name
       as: text
     remote:
       description: The sync URL, read from the form's `remote` input on submit
-      the: dom.event.current-target.elements.remote/value
+      the: xyz.tonk.command.space.enable-sync/remote
       as: text
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
+
+projection!: &space/enable-sync-default
+  command: space/enable-sync
+  default: true
+  arguments:
+    name: { control: "name" }
+    remote: { control: "remote" }
+  actions:
+    - prevent-default
 
 # Mint a repository invite. Clicking Share submits this transient; the
 # worker's `InviteHandler` generates a fresh membership keypair, delegates
@@ -220,19 +226,21 @@ command!: &tonk/invite
   with:
     time:
       description: The submit event's timestamp; makes each click distinct.
-      the: dom.event/time-stamp
+      the: xyz.tonk.command.tonk.invite/time
       as: float
-    marker:
-      description: |
-          Per-command marker read from the share form's `data-invite`. Gives
-          `tonk:invite` an attribute no other command carries, so a
-          `tonk:pause-sync` transient (otherwise an identical {this, time}
-          shape) does not also decode as an invite.
-      the: dom.event.current-target.dataset/invite
+  maybe:
+    space:
+      description: Explicit target space for a profile-routed share request.
+      the: xyz.tonk.command.tonk.invite/space
       as: entity
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
+
+projection!: &tonk/invite-default
+  command: tonk/invite
+  default: true
+  arguments:
+    time: { event: timeStamp }
+  actions:
+    - prevent-default
 
 # Load the requesting tab's site for its current path. Asserted transiently by
 # `<tonk-site>` (via the regular transact API) instead of a `/site` fetch: the
@@ -247,6 +255,10 @@ command!: &tonk/load
   this: tonk:load
   description: Stamp the requesting tab's site for its current path on this branch.
   with:
+    site:
+      description: The page-minted site entity to stamp.
+      the: xyz.tonk.command.tonk.load/site
+      as: entity
     path:
       description: The route path the tab is at, matched against the route table.
       the: xyz.tonk.site/path
@@ -780,14 +792,20 @@ concept!: &tonk/agents
 command!: &tonk/rename-repository
   description: Rename the repository.
   with:
-    subject:
-      description: The repository's subject DID, stamped on the banner element.
-      the: dom.event.current-target.dataset/subject
-      as: entity
     name:
       description: The new name, read from the banner input's value on commit.
-      the: dom.event.current-target/value
+      the: xyz.tonk.command.tonk.rename-repository/name
       as: text
+    subject:
+      description: The repository subject supplied by the mounted banner projection.
+      the: xyz.tonk.command.tonk.rename-repository/subject
+      as: entity
+projection!: &tonk/rename-repository-default
+  command: tonk/rename-repository
+  default: true
+  arguments:
+    subject: { data: "subject" }
+    name: { target: value }
 
 # Apply the rename: assert the new `tonk/repository` name against the
 # repository entity named by the command's `subject`. Binding `subject`
@@ -806,8 +824,8 @@ rule!:
 # plain title text until focused. It shows the current `{name}` and
 # carries the repository's identity (`{this}` is the subject DID) on
 # `data-subject` so the `tonk/rename-repository` command can read it.
-# `onchange` fires on commit (blur or Enter), reading the new value from
-# `dom.event.current-target/value`; the rename rule above then writes it
+# `onchange` fires on commit (blur or Enter), and the default projection reads
+# the target value; the rename rule above then writes it
 # back. The banner mounts this via `<tonk-display model=tonk:repository
 # entity={subject}>`; a repo whose name fact has not landed yet resolves
 # no model, and the mount's `slot="no-model"` renders "Untitled" until it
@@ -859,12 +877,14 @@ command!: &profile/rename
   with:
     name:
       description: The new name, read from the editable's value on commit.
-      the: dom.event.current-target/value
+      the: xyz.tonk.command.profile.rename/name
       as: text
-    marker:
-      description: Per-command marker (data-rename) distinguishing this from repo rename.
-      the: dom.event.current-target.dataset/rename
-      as: entity
+
+projection!: &profile/rename-default
+  command: profile/rename
+  default: true
+  arguments:
+    name: { target: value }
 
 # A read-only label view kind. Its `display` template lives under a
 # distinct attribute (`xyz.tonk.view/label`) so a model can carry both

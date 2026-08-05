@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 custom-elements = { workspace = true }
+dialog-artifacts = { workspace = true }
 indexmap = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
@@ -20,6 +21,7 @@ serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
 serde_ipld_dagjson = { workspace = true }
 tonk-host = { workspace = true }
+tonk-core = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-template = { workspace = true }

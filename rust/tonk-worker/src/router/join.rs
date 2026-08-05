@@ -2267,7 +2267,7 @@ impl JoinHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for JoinHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -2285,7 +2285,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
 
         // Decode the full location synchronously while the caller holds the

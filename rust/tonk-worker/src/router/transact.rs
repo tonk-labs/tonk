@@ -21,13 +21,48 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_core::command::{
+    CommandBatch, CommandOccurrence, CommandValidationError, InvocationMetadata,
+};
+use tonk_evaluator::effect_query::effects_by_command;
 use tonk_evaluator::evaluate::CommitSummary;
-use tonk_schema::claim::{Claim, TransactRequest};
+use tonk_schema::claim::{Claim, SourceClaim, TransactRequest};
+use tonk_schema::command_definition::CommandDefinition;
+use tonk_schema::query_source::Source;
 
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::broadcast::{LOCAL_COMMIT_CHANNEL, Notification, broadcast};
 use crate::reactor::{BranchReference, ReactorError};
+
+/// Request-level disposition of a successfully committed invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvocationStatus {
+    /// At least one declarative rule or native handler was registered.
+    Handled,
+}
+
+/// Per-claim nominal command evidence returned by `/transact`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvocationOutcome {
+    /// Zero-based source claim index.
+    pub claim: usize,
+    /// Stable nominal command kind.
+    pub command: dialog_artifacts::Entity,
+    /// Successful request-level status.
+    pub status: InvocationStatus,
+    /// Declarative rules registered for this kind at preflight.
+    pub registered_rules: usize,
+    /// Declarative rules whose durable premises matched this occurrence.
+    pub fired_rules: usize,
+    /// Native handlers registered for this exact kind at preflight.
+    pub registered_handlers: usize,
+    /// Native handlers decoded and scheduled after commit.
+    pub scheduled_handlers: usize,
+    /// Opaque correlation identifier for diagnostic status lookup.
+    pub correlation: String,
+}
 
 /// Path parameters for the repository-scoped route.
 #[derive(Debug, Deserialize)]
@@ -59,6 +94,22 @@ pub struct TransactResponse {
     /// (asserts + retracts) submitted to the builder. Effect
     /// evaluation may grow this once it lands.
     pub commits: CommitSummary,
+    /// Nominal invocation results in source claim order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invocations: Vec<InvocationOutcome>,
+}
+
+struct PreparedInvocation {
+    claim: usize,
+    occurrence: CommandOccurrence,
+    registered_rules: usize,
+    registered_handlers: usize,
+}
+
+#[derive(Default)]
+struct DispatchWork {
+    legacy: dialog_artifacts::Changes,
+    nominal: Vec<super::PendingInvocation>,
 }
 
 /// `POST /api/repository/{repo}/branch/{branch}/transact`
@@ -76,13 +127,19 @@ pub async fn transact(
     // per-branch transactor lock (taken inside `transact_on_branch`); sync
     // coordinates via the head CAS. So a tab's commit never blocks behind an
     // in-flight sync (the bug that made pause-mid-sync feel dead).
-    let (response, transients) = {
+    let origin = super::CommandOrigin {
+        repo: path.repo.clone(),
+        branch: path.branch.clone(),
+        client: client.map(|Extension(id)| id),
+    };
+    let command_env = super::CommandEnv::new(state.clone(), origin.clone());
+    let (response, dispatch) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state
             .reactor
             .repository(&path.repo)
             .branch(&path.branch);
-        transact_on_branch(&tonk_state, tonk_branch, body).await?
+        transact_on_branch(&tonk_state, tonk_branch, body, &command_env).await?
     };
     // Mark the repo dirty so the next sync drain pushes its new commits — but
     // ONLY if the commit actually moved the tree. The SW owns the sync
@@ -109,11 +166,6 @@ pub async fn transact(
     // out. The origin is the repo + branch this commit landed in, plus the
     // client that asked, so a handler can post a page-capability effect
     // (e.g. navigation) back to it.
-    let origin = super::CommandOrigin {
-        repo: path.repo,
-        branch: path.branch,
-        client: client.map(|Extension(id)| id),
-    };
     // Run the transient command providers (route stamping, invite, join, …) and
     // the post-commit poll drain WITHOUT blocking this response. A command's
     // `execute` can be slow — `tonk:load`'s route match + site stamp is ~1s on a
@@ -123,7 +175,7 @@ pub async fn transact(
     // Awaiting the dispatch here serialized the iframe boot behind the command;
     // detaching it returns the commit (~40ms) immediately and lets the command
     // finish in the background, like an `event.waitUntil`.
-    spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
+    spawn_dispatch(state, origin, dispatch).await;
     Ok(response)
 }
 
@@ -145,10 +197,16 @@ pub async fn transact_profile(
             ));
         }
     }
-    let (response, transients) = {
+    let origin = super::CommandOrigin {
+        repo: String::new(),
+        branch: path.branch.clone(),
+        client: client.map(|Extension(id)| id),
+    };
+    let command_env = super::CommandEnv::new(state.clone(), origin.clone());
+    let (response, dispatch) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-        transact_on_branch(&tonk_state, tonk_branch, body).await?
+        transact_on_branch(&tonk_state, tonk_branch, body, &command_env).await?
     };
     announce_local_commit(&path.branch, &response.0);
     // Profile-branch commits carry an empty `repo` origin: the profile
@@ -158,15 +216,10 @@ pub async fn transact_profile(
     // back to the exact tab that asked. `dispatch` always drains the
     // scheduled polls, even with no transients, so the durable commit fans
     // out.
-    let origin = super::CommandOrigin {
-        repo: String::new(),
-        branch: path.branch,
-        client: client.map(|Extension(id)| id),
-    };
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    spawn_dispatch(state, origin, transients.unwrap_or_default()).await;
+    spawn_dispatch(state, origin, dispatch).await;
     Ok(response)
 }
 
@@ -205,24 +258,21 @@ fn now_millis() -> f64 {
     }
 }
 
-async fn spawn_dispatch(
-    state: AppState,
-    origin: super::CommandOrigin,
-    transients: dialog_artifacts::Changes,
-) {
+async fn spawn_dispatch(state: AppState, origin: super::CommandOrigin, dispatch: DispatchWork) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_futures::spawn_local(async move {
-        super::dispatch(&state, origin, transients).await;
+        super::dispatch_with_nominal(&state, origin, dispatch.legacy, dispatch.nominal).await;
     });
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    super::dispatch(&state, origin, transients).await;
+    super::dispatch_with_nominal(&state, origin, dispatch.legacy, dispatch.nominal).await;
 }
 
 async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
     body: Bytes,
-) -> Result<(Json<TransactResponse>, Option<dialog_artifacts::Changes>), TonkWorkerError> {
+    command_env: &super::CommandEnv,
+) -> Result<(Json<TransactResponse>, DispatchWork), TonkWorkerError> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
@@ -242,19 +292,83 @@ async fn transact_on_branch<'a>(
                 revision_before: revision_before.clone(),
                 revision_after: revision_before,
                 commits: CommitSummary::default(),
+                invocations: Vec::new(),
             }),
-            None,
+            DispatchWork::default(),
         ));
     }
 
-    let mut builder = tonk_branch.transaction();
-    for source in request.claims {
-        // Validate and type-coerce the wire claim against its
-        // predicate's declared types before it can emit any facts. A
-        // mismatch (e.g. a string into an `as: signed-integer` field
-        // that isn't an integral float) is the caller's error.
-        let claim = Claim::try_from(source)
-            .map_err(|e| TonkWorkerError::Router(format!("invalid claim: {e}")))?;
+    // Preflight every source claim before the transaction builder emits any
+    // facts. Nominal commands resolve against this branch's authoritative
+    // current schema and must have at least one exact-kind consumer.
+    let mut structural = Vec::new();
+    let mut prepared = Vec::new();
+    for (claim_index, source) in request.claims.into_iter().enumerate() {
+        match source {
+            SourceClaim::Invoke(source) => {
+                let command = CommandDefinition::by_entity(source.command.clone())
+                    .resolve(&Source::from(session.handle()), &tonk_state.operator)
+                    .await
+                    .map_err(|error| {
+                        TonkWorkerError::Internal(format!("command resolution failed: {error}"))
+                    })?
+                    .ok_or_else(|| command_error("command_unknown", "unknown command kind"))?;
+                let invocation = command
+                    .schema()
+                    .validate(source)
+                    .map_err(validation_error)?;
+                let correlation = format!("invoke:{}", hex::encode(rand::random::<[u8; 16]>()));
+                let occurrence_entity = dialog_artifacts::Entity::new().map_err(|error| {
+                    TonkWorkerError::Internal(format!(
+                        "could not assign command occurrence: {error}"
+                    ))
+                })?;
+                let occurrence = CommandOccurrence::new(
+                    invocation,
+                    InvocationMetadata::new(occurrence_entity, correlation),
+                );
+                let registered_rules = effects_by_command(occurrence.command().clone())
+                    .resolve(session.handle(), &tonk_state.operator)
+                    .await
+                    .map_err(|error| {
+                        TonkWorkerError::Internal(format!(
+                            "command consumer lookup failed: {error}"
+                        ))
+                    })?
+                    .len();
+                let registered_handlers = tonk_state.commands.registrations(occurrence.command());
+                if registered_rules == 0 && registered_handlers == 0 {
+                    return Err(command_error(
+                        "command_unhandled",
+                        "command has no registered rule or native handler",
+                    ));
+                }
+                prepared.push(PreparedInvocation {
+                    claim: claim_index,
+                    occurrence,
+                    registered_rules,
+                    registered_handlers,
+                });
+            }
+            structural_source => {
+                // Validate and type-coerce structural claims before any commit.
+                structural.push(
+                    Claim::try_from(structural_source).map_err(|error| {
+                        TonkWorkerError::Router(format!("invalid claim: {error}"))
+                    })?,
+                );
+            }
+        }
+    }
+
+    let commands = CommandBatch::new(
+        prepared
+            .iter()
+            .map(|invocation| invocation.occurrence.clone())
+            .collect(),
+    );
+    let mut builder = tonk_branch.transaction().command_batch(commands);
+    for claim in structural {
         builder = builder.apply(claim);
     }
 
@@ -263,29 +377,111 @@ async fn transact_on_branch<'a>(
     // is the only post-commit view of which commands arrived. Empty →
     // no command dispatch.
     let transients = builder.transients.clone();
-    let to_dispatch = (!transients.is_empty()).then_some(transients);
+    let legacy = transients;
 
     // The per-branch transactor lock that serializes commits is taken INSIDE
     // the reactor's `commit().perform()` (so no commit path — route or direct
     // handler — can sidestep it). Taking it here too would deadlock: the
     // mutex is not re-entrant.
-    let revision_after = builder
+    let report = builder
         .commit()
-        .perform(&tonk_state.operator)
+        .perform_report(&tonk_state.operator)
         .await
         .map_err(reactor_to_error)?;
+
+    // Native work is decoded and scheduled only after the declarative commit
+    // succeeds. Create the diagnostic record before any future is polled.
+    let mut outcomes = Vec::with_capacity(prepared.len());
+    let mut nominal = Vec::with_capacity(prepared.len());
+    for invocation in prepared {
+        let correlation = invocation.occurrence.correlation().to_string();
+        let command = invocation.occurrence.command().clone();
+        let handlers = tonk_state
+            .commands
+            .schedule(&invocation.occurrence, command_env);
+        let scheduled_handlers = handlers.len();
+        let fired_rules = report
+            .induction
+            .fired_rules_by_occurrence
+            .get(invocation.occurrence.occurrence())
+            .copied()
+            .unwrap_or_default();
+        tonk_state
+            .invocations
+            .insert(super::InvocationRecord {
+                correlation: correlation.clone(),
+                command: command.clone(),
+                handlers: handlers
+                    .iter()
+                    .map(|handler| super::HandlerOutcome {
+                        handler: handler.name.to_string(),
+                        state: super::HandlerState::Scheduled,
+                        message: None,
+                    })
+                    .collect(),
+            })
+            .await;
+        outcomes.push(InvocationOutcome {
+            claim: invocation.claim,
+            command: command.clone(),
+            status: InvocationStatus::Handled,
+            registered_rules: invocation.registered_rules,
+            fired_rules,
+            registered_handlers: invocation.registered_handlers,
+            scheduled_handlers,
+            correlation: correlation.clone(),
+        });
+        nominal.push(super::PendingInvocation {
+            correlation,
+            command,
+            handlers,
+        });
+    }
 
     Ok((
         Json(TransactResponse {
             revision_before,
-            revision_after: Some(revision_after),
+            revision_after: Some(report.revision),
             commits: CommitSummary {
                 claims: claim_count,
                 entities: Default::default(),
             },
+            invocations: outcomes,
         }),
-        to_dispatch,
+        DispatchWork { legacy, nominal },
     ))
+}
+
+fn command_error(code: &'static str, message: impl Into<String>) -> TonkWorkerError {
+    TonkWorkerError::Command {
+        code,
+        message: message.into(),
+    }
+}
+
+fn validation_error(error: CommandValidationError) -> TonkWorkerError {
+    match error {
+        CommandValidationError::UnknownArgument { field } => command_error(
+            "command_argument_unknown",
+            format!("command argument {field:?} is not declared"),
+        ),
+        CommandValidationError::MissingRequiredArgument { field } => command_error(
+            "command_argument_missing",
+            format!("required command argument {field:?} is missing"),
+        ),
+        CommandValidationError::ReservedArgument { field } => command_error(
+            "command_argument_reserved",
+            format!("command argument {field:?} is reserved"),
+        ),
+        CommandValidationError::TypeMismatch {
+            field,
+            expected,
+            found,
+        } => command_error(
+            "command_argument_type",
+            format!("command argument {field:?} expects {expected} but received {found}"),
+        ),
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]

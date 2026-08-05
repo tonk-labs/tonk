@@ -280,6 +280,7 @@ mod tests {
             bridges: Default::default(),
             sync_queue: Default::default(),
             commands: crate::router::command_registry(),
+            invocations: Default::default(),
             clients: Default::default(),
             account_keys: Default::default(),
         }

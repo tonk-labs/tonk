@@ -1141,11 +1141,19 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
             .unwrap_or_else(|_| serde_json::Value::String(descriptor_json.clone()));
         let next = (model_entity.clone(), next_descriptor);
         if s.resolved_model.as_ref() == Some(&next) {
-            return;
+            None
+        } else {
+            s.resolved_model = Some(next);
+            s.downstream_generation = s.downstream_generation.wrapping_add(1);
+            Some(s.downstream_generation)
         }
-        s.resolved_model = Some(next);
-        s.downstream_generation = s.downstream_generation.wrapping_add(1);
-        s.downstream_generation
+    };
+    let Some(downstream_generation) = downstream_generation else {
+        // The phase-1 model subscription is also the branch-revision pulse
+        // used to invalidate command/projection/name bindings. Rebuild only
+        // the delegate catalog; keep the rendered downstream flows mounted.
+        schedule_delegate_refresh(host, state);
+        return;
     };
     let host = host.clone();
     let state = state.clone();
@@ -1569,7 +1577,7 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
 }
 
 async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_generation: u64) {
-    use crate::events::delegate::{Delegate, Descriptors};
+    use crate::events::delegate::{BindingsCatalog, Delegate, load_binding};
 
     // Snapshot the view elements so we don't hold the borrow
     // across awaits. The delegate's `claim` calls dispatch on the
@@ -1626,7 +1634,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     // `tonk-query` event. The host annotates space/branch. The
     // descriptor JSON is parsed once here so click-time event
     // handlers don't pay the parse cost.
-    let mut descriptors: Descriptors = Descriptors::new();
+    let mut catalog = BindingsCatalog::default();
     for name in &concept_names {
         // Bail mid-loop if a newer refresh has started — no point
         // resolving descriptors for a snapshot we won't install.
@@ -1636,34 +1644,24 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
                 return;
             }
         }
-        // Resolve through the same name-first path as the model/view
-        // (`resolve_model`), so an event-handler concept named after a
-        // pinned-`this` concept resolves via the Name index too.
-        match resolve_model(host, name).await {
-            Ok((_entity, descriptor_json)) => {
-                match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
-                    Ok(value) => {
-                        descriptors.insert(name.clone(), value);
-                    }
-                    Err(e) => {
-                        web_sys::console::warn_1(&JsValue::from_str(&format!(
-                            "<tonk-display>: descriptor for `{name}` is not valid JSON: {e}",
-                        )));
-                    }
-                }
+        match load_binding(host, name).await {
+            Ok(binding) => {
+                catalog.commands.extend(binding.commands);
+                catalog.projections.extend(binding.projections);
+                catalog
+                    .legacy_descriptors
+                    .extend(binding.legacy_descriptors);
             }
-            Err(_) => {
-                // Concept didn't resolve — bindings referencing
-                // it will silently no-op on click. Continue with
-                // the rest so partial failures don't break the
-                // whole delegate.
-            }
+            Err(error) => web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "<tonk-display>: binding catalog for `{name}`: {}",
+                error.message
+            ))),
         }
     }
 
     // Build the delegate before acquiring the borrow so its
     // `addEventListener` calls don't run inside the lock.
-    let delegate = Delegate::install(host.clone(), event_types.into_iter(), descriptors);
+    let delegate = Delegate::install(host.clone(), event_types.into_iter(), catalog);
     // Re-check the per-refresh generation: if a newer refresh has
     // started while we were resolving descriptors, drop our delegate
     // rather than overwrite the newer one. `delegate`'s `Drop` impl

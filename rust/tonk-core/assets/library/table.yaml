@@ -183,136 +183,186 @@ command!: &table/create-sheet
   with:
     table:
       description: The workbook gaining the sheet
-      the: dom.event.detail/sheet-table
+      the: xyz.tonk.command.table.create-sheet/table
       as: entity
     name:
       description: The new sheet's name
-      the: dom.event.detail/sheet-name
+      the: xyz.tonk.command.table.create-sheet/name
       as: text
     order:
       description: Tab-strip order key, computed by the element
-      the: dom.event.detail/sheet-order
+      the: xyz.tonk.command.table.create-sheet/order
       as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &table/create-sheet-default
+  command: table/create-sheet
+  default: true
+  arguments:
+    table: { detail: "sheet-table" }
+    name: { detail: "sheet-name" }
+    order: { detail: "sheet-order" }
 
 command!: &table/rename-sheet
   description: Rename `sheet` to `name`.
   with:
     sheet:
       description: The sheet being renamed
-      the: dom.event.detail/rename-sheet
+      the: xyz.tonk.command.table.rename-sheet/sheet
       as: entity
     name:
       description: The new name
-      the: dom.event.detail/rename-name
+      the: xyz.tonk.command.table.rename-sheet/name
       as: text
+
+projection!: &table/rename-sheet-default
+  command: table/rename-sheet
+  default: true
+  arguments:
+    sheet: { detail: "rename-sheet" }
+    name: { detail: "rename-name" }
 
 command!: &table/create-cell
   description: Set a previously-empty cell (mints its claim).
   with:
     sheet:
       description: The sheet the cell is on
-      the: dom.event.detail/cell-sheet
+      the: xyz.tonk.command.table.create-cell/sheet
       as: entity
     at:
       description: A1-style address
-      the: dom.event.detail/cell-at
+      the: xyz.tonk.command.table.create-cell/at
       as: text
     content:
       description: The raw input
-      the: dom.event.detail/cell-content
+      the: xyz.tonk.command.table.create-cell/content
       as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &table/create-cell-default
+  command: table/create-cell
+  default: true
+  arguments:
+    sheet: { detail: "cell-sheet" }
+    at: { detail: "cell-at" }
+    content: { detail: "cell-content" }
 
 command!: &table/edit-cell
   description: Replace `cell`'s raw input.
   with:
     cell:
       description: The edited cell
-      the: dom.event.detail/edit-cell
+      the: xyz.tonk.command.table.edit-cell/cell
       as: entity
     content:
       description: The new raw input
-      the: dom.event.detail/edit-content
+      the: xyz.tonk.command.table.edit-cell/content
       as: text
+
+projection!: &table/edit-cell-default
+  command: table/edit-cell
+  default: true
+  arguments:
+    cell: { detail: "edit-cell" }
+    content: { detail: "edit-content" }
 
 command!: &table/clear-cell
   description: Empty `cell` (retracts it from the sheet).
   with:
     cell:
       description: The cleared cell
-      the: dom.event.detail/clear-cell
+      the: xyz.tonk.command.table.clear-cell/cell
       as: entity
+
+projection!: &table/clear-cell-default
+  command: table/clear-cell
+  default: true
+  arguments:
+    cell: { detail: "clear-cell" }
 
 command!: &table/create-column
   description: Size a previously-default column (mints its claim).
   with:
     sheet:
       description: The sheet the column is on
-      the: dom.event.detail/column-sheet
+      the: xyz.tonk.command.table.create-column/sheet
       as: entity
     at:
       description: Column letters
-      the: dom.event.detail/column-at
+      the: xyz.tonk.command.table.create-column/at
       as: text
     width:
       description: Width px, as decimal text
-      the: dom.event.detail/column-width
+      the: xyz.tonk.command.table.create-column/width
       as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &table/create-column-default
+  command: table/create-column
+  default: true
+  arguments:
+    sheet: { detail: "column-sheet" }
+    at: { detail: "column-at" }
+    width: { detail: "column-width" }
 
 command!: &table/resize-column
   description: Change `column`'s width.
   with:
     column:
       description: The resized column
-      the: dom.event.detail/resize-column
+      the: xyz.tonk.command.table.resize-column/column
       as: entity
     width:
       description: The new width px, as decimal text
-      the: dom.event.detail/resize-width
+      the: xyz.tonk.command.table.resize-column/width
       as: text
+
+projection!: &table/resize-column-default
+  command: table/resize-column
+  default: true
+  arguments:
+    column: { detail: "resize-column" }
+    width: { detail: "resize-width" }
 
 command!: &table/create-row
   description: Size a previously-default row (mints its claim).
   with:
     sheet:
       description: The sheet the row is on
-      the: dom.event.detail/row-sheet
+      the: xyz.tonk.command.table.create-row/sheet
       as: entity
     at:
       description: The row number, as text
-      the: dom.event.detail/row-at
+      the: xyz.tonk.command.table.create-row/at
       as: text
     height:
       description: Height px, as decimal text
-      the: dom.event.detail/row-height
+      the: xyz.tonk.command.table.create-row/height
       as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &table/create-row-default
+  command: table/create-row
+  default: true
+  arguments:
+    sheet: { detail: "row-sheet" }
+    at: { detail: "row-at" }
+    height: { detail: "row-height" }
 
 command!: &table/resize-row
   description: Change `row`'s height.
   with:
     row:
       description: The resized row
-      the: dom.event.detail/resize-row
+      the: xyz.tonk.command.table.resize-row/row
       as: entity
     height:
       description: The new height px, as decimal text
-      the: dom.event.detail/resize-height
+      the: xyz.tonk.command.table.resize-row/height
       as: text
+
+projection!: &table/resize-row-default
+  command: table/resize-row
+  default: true
+  arguments:
+    row: { detail: "resize-row" }
+    height: { detail: "resize-height" }
 
 # ---------------------------------------------------------------------------
 # Rules

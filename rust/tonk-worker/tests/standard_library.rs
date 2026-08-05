@@ -40,6 +40,10 @@ const WIKI_LIBRARY: &str = include_str!("../../tonk-core/assets/library/wiki.yam
 /// The board template — seeded on top of core when chosen, like sheets.
 const BOARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/board.yaml");
 
+const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
+
+const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
+
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
 fn assert_library_lowers(label: &str, document: &str) {
@@ -73,6 +77,98 @@ fn it_lowers_the_standard_library() {
 #[test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+}
+
+#[test]
+fn nominal_command_inventory_has_no_dom_arguments_or_marker_payloads() {
+    use std::collections::{BTreeMap, BTreeSet};
+    use tonk_schema::transact::{Application, Statement};
+
+    // Templates are seeded after core and intentionally reuse its declarations.
+    // Audit the same combined document that the worker evaluates instead of
+    // attempting to analyze the template fragments in isolation.
+    let seeded_templates = [
+        ("sheets", format!("{STANDARD_LIBRARY}\n{SHEETS_LIBRARY}")),
+        ("wiki", format!("{STANDARD_LIBRARY}\n{WIKI_LIBRARY}")),
+        ("board", format!("{STANDARD_LIBRARY}\n{BOARD_LIBRARY}")),
+        ("table", format!("{STANDARD_LIBRARY}\n{TABLE_LIBRARY}")),
+        ("prose", format!("{STANDARD_LIBRARY}\n{PROSE_LIBRARY}")),
+    ];
+    let libraries = std::iter::once(("core", STANDARD_LIBRARY))
+        .chain(std::iter::once(("profile", PROFILE_LIBRARY)))
+        .chain(
+            seeded_templates
+                .iter()
+                .map(|(label, document)| (*label, document.as_str())),
+        );
+    let mut commands = BTreeMap::new();
+    let mut projected = BTreeSet::new();
+    for (label, document) in libraries {
+        let parsed = tonk_notation::parse(document);
+        let syntax = parsed.syntax.unwrap_or_else(|| panic!("{label} parses"));
+        let tree = tonk_analyzer::analyzer::analyze_local(&syntax)
+            .unwrap_or_else(|error| panic!("{label} analyzes: {error:#?}"));
+        for planned in tree.analysis.statements() {
+            match planned.statement {
+                Statement::Assert(Application::CommandDefinition { definition, .. }) => {
+                    for (field, descriptor) in definition
+                        .schema()
+                        .required
+                        .iter()
+                        .chain(&definition.schema().optional)
+                    {
+                        assert_ne!(
+                            field,
+                            "marker",
+                            "{} retains a marker payload",
+                            definition.kind()
+                        );
+                        if field == "time" {
+                            assert!(
+                                matches!(
+                                    definition.kind().to_string().as_str(),
+                                    "tonk:invite" | "tonk:enable-sync"
+                                ),
+                                "{} retains a uniqueness-only timestamp",
+                                definition.kind()
+                            );
+                        }
+                        assert!(
+                            !descriptor.domain().starts_with("dom.event"),
+                            "{} field {field:?} retains DOM identity {}",
+                            definition.kind(),
+                            descriptor.the()
+                        );
+                    }
+                    commands.insert(definition.kind().to_string(), label);
+                }
+                Statement::Assert(Application::ProjectionDefinition { definition, .. }) => {
+                    projected.insert(definition.descriptor().command.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(
+        commands.len(),
+        47,
+        "captured unique command-kind inventory drifted"
+    );
+    let programmatic = BTreeSet::from([
+        "tonk:enable-sync".to_owned(),
+        "tonk:load".to_owned(),
+        "tonk:pause-sync".to_owned(),
+        "tonk:rename-repository".to_owned(),
+    ]);
+    let missing = commands
+        .keys()
+        .filter(|kind| !projected.contains(*kind) && !programmatic.contains(*kind))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "event commands without a projection: {missing:?}"
+    );
 }
 
 /// Form controls expose their submitted value at `.value` (a

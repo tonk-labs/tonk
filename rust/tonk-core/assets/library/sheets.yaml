@@ -122,8 +122,14 @@ command!: &workspace/activate-sheet
   with:
     sheet:
       description: The sheet to activate, from the binder's `activate` event detail
-      the: dom.event.detail/sheet
+      the: xyz.tonk.command.workspace.activate-sheet/sheet
       as: entity
+
+projection!: &workspace/activate-sheet-default
+  command: workspace/activate-sheet
+  default: true
+  arguments:
+    sheet: { detail: "sheet" }
 
 # Tab close. Clicking a tab's close button fires the transient
 # `close-sheet` command carrying just the closed sheet. The rule below
@@ -139,13 +145,17 @@ command!: &workspace/close-sheet
     sheet:
       description: |
         The sheet to close, from the binder's `close` event detail.
-        Carried on a close-specific attribute (`dom.event.detail/closed`),
-        NOT `dom.event.detail/sheet` - the latter is what the
-        `activate-sheet` command reads, so reusing it here would make a
-        close also read as an activate request and select the closed
-        tab.
-      the: dom.event.detail/closed
+        The close projection reads the exact `closed` detail member. Stable
+        command identity keeps this distinct from `activate-sheet` even
+        though both arguments are entities.
+      the: xyz.tonk.command.workspace.close-sheet/sheet
       as: entity
+
+projection!: &workspace/close-sheet-default
+  command: workspace/close-sheet
+  default: true
+  arguments:
+    sheet: { detail: "closed" }
 
 # A minimal projection of a sheet's `order` key - the one field a
 # `tonk:sheet` carries over a plain `artifact`. A `retract!:` rule over
@@ -311,26 +321,22 @@ command!: &workspace/create-sheet
   with:
     name:
       description: Name of the artifact, from the binder's `create` event detail
-      the: dom.event.detail/name
+      the: xyz.tonk.command.workspace.create-sheet/name
       as: text
     order:
       description: |
         Lexicographic order key for the new tab, computed by the binder
         (after the last existing tab) and carried on the `create` event
         detail.
-      the: dom.event.detail/order
+      the: xyz.tonk.command.workspace.create-sheet/order
       as: text
-    # The command entity is derived from its fields, so a per-event
-    # nonce keeps successive creates (same name/order) distinct. The
-    # binder stamps it on the event detail as a whole-number token;
-    # `dom.event/time-stamp` itself is fractional and won't coerce to an
-    # unsigned integer. Not ideal, but it mints unique entities and lets
-    # us switch to a revision-based approach later.
-    time:
-      description: A monotonic integer nonce, from the binder's event detail
-      the: dom.event.detail/time
-      as: unsigned-integer
 
+projection!: &workspace/create-sheet-default
+  command: workspace/create-sheet
+  default: true
+  arguments:
+    name: { detail: "name" }
+    order: { detail: "order" }
 
 # A created sheet is self-describing: its `entity` is the sheet entity
 # itself (`?this`), its `model` is `tonk:empty-artifact`, and its `view`

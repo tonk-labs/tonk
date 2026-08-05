@@ -473,6 +473,55 @@ fn site_param_claim(
 /// branch overlay. A profile-branch commit carries an empty `origin.repo` (see
 /// `transact_profile`), which is exactly the `profile` flag `stamp_site_on` wants.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct NominalLoadHandler {
+    kind: dialog_artifacts::Entity,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl NominalLoadHandler {
+    pub(crate) fn new() -> Self {
+        Self {
+            kind: "tonk:load".parse().expect("load command kind"),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for NominalLoadHandler {
+    fn kind(&self) -> &dialog_artifacts::Entity {
+        &self.kind
+    }
+
+    fn name(&self) -> &'static str {
+        "LoadHandler"
+    }
+
+    fn decode(
+        &self,
+        occurrence: &tonk_core::command::CommandOccurrence,
+    ) -> Option<crate::reactor::BoxedCommandRun<crate::router::CommandEnv>> {
+        let site = match occurrence.arguments().get("site")? {
+            dialog_artifacts::Value::Entity(site) => site.to_string(),
+            dialog_artifacts::Value::String(site) => {
+                site.parse::<dialog_artifacts::Entity>().ok()?.to_string()
+            }
+            _ => return None,
+        };
+        let dialog_artifacts::Value::String(path) = occurrence.arguments().get("path")? else {
+            return None;
+        };
+        let path = path.clone();
+        Some(Box::new(move |env| {
+            let env = env.clone();
+            Box::pin(async move {
+                run_load_command(&env, site, path).await;
+                Ok(())
+            })
+        }))
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct LoadHandler {
     attributes: Vec<String>,
 }
@@ -490,7 +539,7 @@ impl LoadHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for LoadHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -508,7 +557,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
 
         // Decode synchronously (the caller still holds the lock); carry owned
@@ -525,48 +574,43 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
             let Some((site, path)) = decoded else {
                 return;
             };
-            // An empty `origin.repo` means the commit landed on the profile
-            // branch (the profile is outside the named-repo namespace).
-            let repo = env.origin().repo.clone();
-            let branch = env.origin().branch.clone();
-            let profile = repo.is_empty();
-            // The site entity here is page-minted (`site:<uuid>`), so the
-            // commit's origin is what names the client the stamp serves.
-            // An absent client leaves the site unregistered — its facts then
-            // outlive the client (the pre-sweep behaviour) rather than being
-            // attributed to the wrong one.
-            let client = env
-                .origin()
-                .client
-                .clone()
-                .unwrap_or(crate::router::ClientId(String::new()));
-            dialog_common::log!(
-                "command Load site={} path={} repo={} branch={} profile={}",
-                site,
-                path,
-                repo,
-                branch,
-                profile
-            );
-
-            let tonk = env.state().read().await;
-            // The command's `path` is already the route-relative path the tab
-            // routes (a nested `<tonk-site path={rest}>`), so it is both the
-            // recorded `path` and the `rest` matched against the route table.
-            stamp_site_on(
-                &tonk,
-                &site,
-                client,
-                &repo,
-                &branch,
-                profile,
-                &path,
-                &path,
-                String::new(),
-            )
-            .await;
+            run_load_command(&env, site, path).await;
         })
     }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_load_command(env: &crate::router::CommandEnv, site: String, path: String) {
+    let repo = env.origin().repo.clone();
+    let branch = env.origin().branch.clone();
+    let profile = repo.is_empty();
+    let client = env
+        .origin()
+        .client
+        .clone()
+        .unwrap_or(crate::router::ClientId(String::new()));
+    dialog_common::log!(
+        "command Load site={} path={} repo={} branch={} profile={}",
+        site,
+        path,
+        repo,
+        branch,
+        profile
+    );
+
+    let tonk = env.state().read().await;
+    stamp_site_on(
+        &tonk,
+        &site,
+        client,
+        &repo,
+        &branch,
+        profile,
+        &path,
+        &path,
+        String::new(),
+    )
+    .await;
 }
 
 /// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for

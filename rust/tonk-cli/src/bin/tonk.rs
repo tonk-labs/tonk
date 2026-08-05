@@ -121,6 +121,31 @@ enum Command {
         concept: Option<String>,
     },
 
+    /// Evaluate an event projection against a headless YAML fixture
+    Project {
+        /// Projection or nominal command name/entity.
+        #[arg(value_name = "PROJECTION_OR_COMMAND")]
+        reference: String,
+        /// YAML maps named controls, data, event, detail, and target.
+        #[arg(long, value_name = "PATH")]
+        fixture: PathBuf,
+        /// Emit structured JSON instead of YAML.
+        #[arg(long)]
+        json: bool,
+        /// Replace values while retaining field/source trace names.
+        #[arg(long)]
+        redact: bool,
+        /// Submit the projected invocation after declarative preflight.
+        #[arg(long)]
+        transact: bool,
+    },
+
+    /// Inspect nominal and compatibility command declarations
+    Commands {
+        #[command(subcommand)]
+        command: CommandsCommand,
+    },
+
     /// Report how local main relates to its upstream
     ///
     /// Prints `synced`, `ahead`, `behind`, `diverged`, or
@@ -452,6 +477,16 @@ enum Command {
         /// Resume checking for new releases in the background.
         #[arg(long)]
         enable_check: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CommandsCommand {
+    /// Emit a revision-pinned migration inventory
+    Inventory {
+        /// Emit JSON. Reserved for future human renderings; currently required.
+        #[arg(long, required = true)]
+        json: bool,
     },
 }
 
@@ -869,6 +904,13 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Eval(_) => ("eval", None),
         Command::Guide { .. } => ("guide", None),
         Command::Schema { .. } => ("schema", None),
+        Command::Project { .. } => ("project", None),
+        Command::Commands { command } => (
+            "commands",
+            Some(match command {
+                CommandsCommand::Inventory { .. } => "inventory",
+            }),
+        ),
         Command::Query { .. } => ("query", None),
         Command::Assert { .. } => ("assert", None),
         Command::Retract { .. } => ("retract", None),
@@ -926,6 +968,8 @@ fn uses_active_spot(command: &Command) -> bool {
             | Command::Agents { .. }
             | Command::Eval(_)
             | Command::Schema { .. }
+            | Command::Project { .. }
+            | Command::Commands { .. }
             | Command::Query { .. }
             | Command::Assert { .. }
             | Command::Retract { .. }
@@ -989,6 +1033,24 @@ async fn main() {
         Command::Eval(args) => eval(args, spot.as_deref()).await,
         Command::Guide { topic, item } => print_guide(topic.as_deref(), item.as_deref()),
         Command::Schema { concept } => print_schema(concept, spot.as_deref()).await,
+        Command::Project {
+            reference,
+            fixture,
+            json,
+            redact,
+            transact,
+        } => {
+            project_op(
+                &reference,
+                &fixture,
+                json,
+                redact,
+                transact,
+                spot.as_deref(),
+            )
+            .await
+        }
+        Command::Commands { command } => commands_op(command, spot.as_deref()).await,
         Command::Query {
             concept,
             entity,
@@ -2588,6 +2650,67 @@ async fn print_schema(concept: Option<String>, spot: Option<&str>) -> ExitCode {
         return print_error(format!("failed to write stdout: {e}"));
     }
     ExitCode::Success
+}
+
+async fn project_op(
+    reference: &str,
+    fixture: &std::path::Path,
+    json: bool,
+    redact: bool,
+    transact: bool,
+    spot: Option<&str>,
+) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let fixture = match tonk_cli::project::FixtureInput::read(fixture) {
+        Ok(fixture) => fixture,
+        Err(error) => return print_failure(error),
+    };
+    let mut report = match tonk_cli::project::run(&site, reference, &fixture, transact).await {
+        Ok(report) => report,
+        Err(error) => return print_failure(error),
+    };
+    if redact {
+        report = report.redact();
+    }
+    let rendered: Result<String, String> = if json {
+        serde_json::to_string_pretty(&report)
+            .map(|value| format!("{value}\n"))
+            .map_err(|error| error.to_string())
+    } else {
+        serde_yaml::to_string(&report).map_err(|error| error.to_string())
+    };
+    match rendered {
+        Ok(rendered) => {
+            print!("{rendered}");
+            ExitCode::Success
+        }
+        Err(error) => print_error(format!("could not encode projection report: {error}")),
+    }
+}
+
+async fn commands_op(command: CommandsCommand, spot: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    match command {
+        CommandsCommand::Inventory { json: _ } => {
+            let inventory = match tonk_cli::commands::inventory(&site).await {
+                Ok(inventory) => inventory,
+                Err(error) => return print_failure(error),
+            };
+            match serde_json::to_string_pretty(&inventory) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::Success
+                }
+                Err(error) => print_error(format!("could not encode command inventory: {error}")),
+            }
+        }
+    }
 }
 
 fn telemetry_op(action: Option<TelemetryAction>) -> ExitCode {

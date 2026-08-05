@@ -57,6 +57,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tonk-account = { workspace = true }
 tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
+tonk-core = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-invite = { workspace = true }
