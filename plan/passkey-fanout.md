@@ -108,6 +108,43 @@ Smallest stable slice first; each step is independently shippable and useful.
 4. **Anchor normalization and email-gated recovery** in the account service.
 5. **v1 opt-in fan-out** (`subject → recovery` minting at sign-in) and the revocation walk UX.
 
+## Status
+
+Landed on `feat/passkey-fanout`:
+
+- **Step 1.** `RevocationAuthority::Peer` in `tonk-identity/src/revocation.rs`, plus
+  `mint_peer_revocation`. Gated on the witnessed path being subject-open, so
+  space invites keep the narrower classes.
+- **Step 2, enabling half.** `tonk-identity/src/credential.rs` mints the
+  `credential → peer` enrollment link and composes chains under it;
+  `delegation::validate_account_grant` replaces the five separate
+  "exactly one proof" checks in the account service, worker and CLI, so a
+  device may present `root → credential → device` at any depth. The
+  registry now records the device's own hop rather than the chain root —
+  identical for a one-hop grant, so no migration.
+
+Not started: the browser enrollment ceremony and wherever the enrollment link
+is served from (a device holding only the second passkey has no way to obtain
+`root → C2` today), and steps 3–5.
+
+Two decisions the implementation surfaced, both left open deliberately:
+
+- **Peer at the account service's device-revocation gate.** `revoke_device`
+  admits only `Delegated` (a device revoking itself) and `PathIssuer` (the
+  account root). Admitting `Peer` would also let any *device* revoke any other
+  device, because the service cannot tell a credential from a device — both
+  hold subject-open chains from the root. That drops the current requirement
+  that cross-device revocation re-derive the root from the passkey. Wants a
+  decision before it is written.
+- **Revocation artifacts are screened globally by target CID.** An artifact is
+  authorized relative to its witnessed path, but `tonk-access-service` and the
+  R2 key record only the target CID. Anyone who holds a delegation's bytes can
+  mint `attacker → issuer`, prepend it to make the target sit at index 1, and
+  qualify as `PathIssuer` — which globally revokes it. Reachable today by any
+  invitee against their inviter's link. Predates this work and is untouched by
+  it; subject-scoping the screen does not fix it, because subject-open grants
+  are meant to apply across subjects.
+
 ## Open questions
 
 - Whether dialog-ucan policy predicates could scope `root → recovery` tighter than "full, by convention" without breaking the attenuation argument — revisit when policies land; do not block on it.

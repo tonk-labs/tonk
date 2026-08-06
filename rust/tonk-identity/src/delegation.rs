@@ -1,10 +1,11 @@
-//! The `root → device` delegation.
+//! The delegation from an account root down to one device.
 
 use anyhow::Result;
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519KeyResolver, Ed25519Signer};
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
+use ipld_core::cid::Cid;
 
 /// Mint the `root → device` delegation: subject-open, audience-specific —
 /// "this device may act as me, for anything". Deliberately the opposite
@@ -19,6 +20,72 @@ pub async fn mint_device_delegation(root: Ed25519Signer, device: &Did) -> Result
         .await
         .map_err(|e| anyhow::anyhow!("failed to mint the device delegation: {e}"))?;
     Ok(DelegationChain::new(delegation))
+}
+
+/// A validated chain of account authority ending at one device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountGrant {
+    /// Account root the chain starts from — the account subject.
+    pub root_did: Did,
+    /// Device the chain ends at.
+    pub device_did: Did,
+    /// CID of the device's own inbound link, the hop a revocation of this
+    /// device names. For a one-hop grant this is the whole chain.
+    pub delegation_cid: Cid,
+}
+
+/// Why a presented chain is not an account grant.
+#[derive(Debug, thiserror::Error)]
+pub enum GrantError {
+    /// The chain is not shaped like account authority.
+    #[error("{0}")]
+    Shape(String),
+    /// The chain does not end at the expected device.
+    #[error("{0}")]
+    Audience(String),
+    /// A hop's signature failed to verify.
+    #[error("{0}")]
+    Signature(String),
+}
+
+/// Validate a chain running from an account root to `device`.
+///
+/// One hop is the common case — the root delegating straight to a device —
+/// but a device whose credential was enrolled as a peer presents
+/// `root → credential → device`, and a peer of a peer presents more. Every
+/// hop must keep the account shape: subject-open, command-open, and signed.
+pub async fn validate_account_grant(
+    chain: &DelegationChain,
+    device: &Did,
+) -> std::result::Result<AccountGrant, GrantError> {
+    if chain.audience() != device {
+        return Err(GrantError::Audience(
+            "account grant audience is not this device".to_string(),
+        ));
+    }
+    for delegation in chain.proofs() {
+        if !delegation.command().0.is_empty() {
+            return Err(GrantError::Shape(
+                "account grant must be command-open".to_string(),
+            ));
+        }
+        if !matches!(delegation.subject(), UcanSubject::Any) {
+            return Err(GrantError::Shape(
+                "every hop of an account grant must be subject-open".to_string(),
+            ));
+        }
+        delegation
+            .verify_signature(&Ed25519KeyResolver)
+            .await
+            .map_err(|error| {
+                GrantError::Signature(format!("invalid account grant signature: {error}"))
+            })?;
+    }
+    Ok(AccountGrant {
+        root_did: chain.issuer().clone(),
+        device_did: device.clone(),
+        delegation_cid: chain.proof_cids()[chain.proof_cids().len() - 1],
+    })
 }
 
 #[cfg(test)]

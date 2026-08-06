@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use dialog_effects::credential::CredentialError;
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -88,24 +88,13 @@ pub async fn save_local_root(
     let bytes = hex::decode(&delegation_hex).context("invalid local-root delegation hex")?;
     let chain = DelegationChain::try_from(bytes.as_slice())
         .context("invalid local-root delegation container")?;
-    if chain.proof_cids().len() != 1 || chain.subject().is_some() {
-        bail!("local-root delegation has an invalid shape");
-    }
-    if chain.audience() != &profile.did() {
-        bail!("local-root delegation targets another device");
-    }
-    let proof = chain
-        .proofs()
-        .next()
-        .context("local-root delegation is missing its proof")?;
-    proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+    let grant = tonk_identity::delegation::validate_account_grant(&chain, &profile.did())
         .await
-        .context("local-root delegation signature is invalid")?;
+        .context("local-root delegation is not usable account authority")?;
     let record = LocalRoot {
         credential_id,
-        root_did: chain.issuer().to_string(),
-        delegation_cid: chain.proof_cids()[0].to_string(),
+        root_did: grant.root_did.to_string(),
+        delegation_cid: grant.delegation_cid.to_string(),
         delegation_hex,
     };
     // The latest handoff replaces this compatibility projection. Historical

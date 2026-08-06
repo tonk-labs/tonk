@@ -7,6 +7,7 @@ use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_identity::delegation::GrantError;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
@@ -47,32 +48,14 @@ pub(crate) async fn validate_grant(
 ) -> Result<DelegationChain, TonkWorkerError> {
     let chain = DelegationChain::try_from(bytes.as_slice())
         .map_err(|error| TonkWorkerError::Router(format!("invalid root delegation: {error}")))?;
-    if chain.proof_cids().len() != 1 {
-        return Err(TonkWorkerError::Router(
-            "root delegation must contain exactly one proof".to_string(),
-        ));
-    }
-    if chain.audience() != device_did {
-        return Err(TonkWorkerError::Forbidden(
-            "root delegation audience is not the current profile".to_string(),
-        ));
-    }
-    if chain.subject().is_some() {
-        return Err(TonkWorkerError::Router(
-            "root delegation must be subject-open".to_string(),
-        ));
-    }
-    let proof = chain.proofs().next().expect("one-proof chain");
-    if !proof.command().0.is_empty() {
-        return Err(TonkWorkerError::Router(
-            "root delegation must be command-open".to_string(),
-        ));
-    }
-    proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+    tonk_identity::delegation::validate_account_grant(&chain, device_did)
         .await
-        .map_err(|error| {
-            TonkWorkerError::Forbidden(format!("invalid root delegation signature: {error}"))
+        .map_err(|error| match error {
+            GrantError::Shape(message) => TonkWorkerError::Router(message),
+            GrantError::Audience(_) => TonkWorkerError::Forbidden(
+                "root delegation audience is not the current profile".to_string(),
+            ),
+            GrantError::Signature(message) => TonkWorkerError::Forbidden(message),
         })?;
     Ok(chain)
 }

@@ -7,6 +7,7 @@
 //! delegation; day-to-day operation never touches the root key.
 
 pub mod ceremony;
+pub mod credential;
 pub mod delegation;
 pub mod derive;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -273,21 +273,10 @@ async fn active_from_consumed(
         hex::decode(&consumed.delegation_hex).context("invalid local-root delegation hex")?;
     let chain = DelegationChain::try_from(bytes.as_slice())
         .context("invalid local-root delegation container")?;
-    if chain.proof_cids().len() != 1
-        || chain.subject().is_some()
-        || chain.audience() != &profile.did()
-    {
-        bail!("local-root delegation has an invalid shape");
-    }
-    let proof = chain
-        .proofs()
-        .next()
-        .context("local-root delegation is missing its proof")?;
-    proof
-        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+    let root_did = tonk_identity::delegation::validate_account_grant(&chain, &profile.did())
         .await
-        .context("local-root delegation signature is invalid")?;
-    let root_did = chain.issuer().clone();
+        .context("local-root delegation is not usable account authority")?
+        .root_did;
     let descriptor = hex::decode(&consumed.descriptor_hex)
         .context("invalid descriptor hex from account service")?;
     let now = std::time::SystemTime::now()
@@ -955,7 +944,10 @@ impl AccountConnection {
             hex::decode(&active.delegation_hex).context("active account grant hex is invalid")?;
         let link = DelegationChain::try_from(bytes.as_slice())
             .context("active account grant is invalid")?;
-        if link.proof_cids().len() != 1 || link.proof_cids()[0].to_string() != active.delegation_cid
+        if link
+            .proof_cids()
+            .last()
+            .is_none_or(|cid| cid.to_string() != active.delegation_cid)
         {
             bail!("active account grant does not match canonical session state");
         }
