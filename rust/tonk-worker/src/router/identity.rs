@@ -191,14 +191,21 @@ pub(crate) async fn persist_root(
         passkey,
     };
     if let Some(existing) = load_record(state).await? {
-        if existing != record {
+        if existing == record {
+            return Ok(status(local_root(state).await?));
+        }
+        if super::account::provider(state).await.is_some() {
             return Err(TonkWorkerError::Conflict(
                 "a different local root is already persisted".to_string(),
             ));
         }
-        return Ok(status(local_root(state).await?));
     }
 
+    // The local-root site is the latest account projection, not the only
+    // authority this profile has ever held. After sign-out there is no active
+    // provider attachment, so a successful ceremony for another passkey may
+    // replace it. Saving the new grant below leaves earlier access
+    // certificates in the profile store intact.
     state
         .profile
         .access()
@@ -251,7 +258,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    use crate::router::tests::test_state_without_root;
+    use crate::router::tests::{test_state, test_state_without_root};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -325,16 +332,42 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_replacing_a_ready_root_with_another_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(RwLock::new(test_state().await));
         let device = state.read().await.profile.did();
-        let (first, _) = request_for(1, &device).await;
         let (second, _) = request_for(2, &device).await;
-        let _ = save(State(state.clone()), Json(first)).await.unwrap();
 
         assert!(matches!(
             save(State(state), Json(second)).await,
             Err(TonkWorkerError::Conflict(_))
         ));
+    }
+
+    #[dialog_common::test]
+    async fn it_replaces_the_local_root_after_signing_out() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let previous_root = {
+            let state = state.read().await;
+            local_root(&state).await.unwrap().root_did
+        };
+        let device = state.read().await.profile.did();
+        let (replacement, replacement_grant) = request_for(2, &device).await;
+
+        let _ = super::super::account::unlink(State(state.clone()))
+            .await
+            .unwrap();
+        let Json(status) = save(State(state.clone()), Json(replacement)).await.unwrap();
+
+        assert!(matches!(
+            status,
+            RootStatus::Ready { root_did, delegation_cid, .. }
+                if root_did == replacement_grant.issuer().to_string()
+                    && delegation_cid == replacement_grant.proof_cids()[0].to_string()
+        ));
+        let current_root = {
+            let state = state.read().await;
+            local_root(&state).await.unwrap().root_did
+        };
+        assert_ne!(current_root, previous_root);
     }
 
     #[dialog_common::test]

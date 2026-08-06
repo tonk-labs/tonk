@@ -658,8 +658,7 @@ pub async fn revoke_account_device(
     }
 }
 
-/// Sign out on this device: revoke it in the registry (best-effort,
-/// reported in the response) and rotate onto a fresh key.
+/// Sign out on this device while preserving its local profile and spots.
 pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()

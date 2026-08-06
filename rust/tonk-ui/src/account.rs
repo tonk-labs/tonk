@@ -637,20 +637,17 @@ async fn persist(
     descriptor_hex: String,
     initialize_name: bool,
 ) -> Result<AccountStatus, String> {
-    match crate::api::root_status()
+    let root_status = crate::api::root_status()
         .await
-        .map_err(|error| error.to_string())?
-    {
-        tonk_worker_api::RootStatus::Missing { .. } => {
-            crate::api::save_root(
-                ceremony.credential_id.clone(),
-                ceremony.delegation_hex.clone(),
-                None,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        }
-        tonk_worker_api::RootStatus::Ready { .. } => {}
+        .map_err(|error| error.to_string())?;
+    if root_needs_persist(&root_status, &ceremony.root_did) {
+        crate::api::save_root(
+            ceremony.credential_id.clone(),
+            ceremony.delegation_hex.clone(),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     }
     crate::api::save_account_link(
         provider.to_string(),
@@ -662,6 +659,15 @@ async fn persist(
     )
     .await
     .map_err(|error| error.to_string())
+}
+
+fn root_needs_persist(status: &tonk_worker_api::RootStatus, root_did: &str) -> bool {
+    match status {
+        tonk_worker_api::RootStatus::Missing { .. } => true,
+        tonk_worker_api::RootStatus::Ready {
+            root_did: current, ..
+        } => current != root_did,
+    }
 }
 
 /// What to tell someone whose account predates the repository descriptor.
@@ -1417,6 +1423,21 @@ mod tests {
         assert!(input(&host, "#account-code").is_err());
         code.set_value("123456");
         assert_eq!(input(&host, "#account-code").as_deref(), Ok("123456"));
+    }
+
+    #[dialog_common::test]
+    fn it_persists_a_different_passkey_root_after_signing_out() {
+        let status = tonk_worker_api::RootStatus::Ready {
+            root_did: "did:key:zOldRoot".into(),
+            device_did: "did:key:zDevice".into(),
+            credential_id: "old-credential".into(),
+            delegation_cid: "bafyold".into(),
+            delegation_hex: "00".into(),
+            passkey: None,
+        };
+
+        assert!(root_needs_persist(&status, "did:key:zNewRoot"));
+        assert!(!root_needs_persist(&status, "did:key:zOldRoot"));
     }
 
     #[dialog_common::test]
