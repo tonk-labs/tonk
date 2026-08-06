@@ -16,7 +16,7 @@ use crate::worker::TonkState;
 const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct LocalRootRecord {
+pub(crate) struct LocalRootRecord {
     version: u8,
     credential_id: String,
     delegation: Vec<u8>,
@@ -77,7 +77,9 @@ pub(crate) async fn validate_grant(
     Ok(chain)
 }
 
-async fn load_record(state: &TonkState) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
+pub(crate) async fn load_record(
+    state: &TonkState,
+) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match state
         .profile
         .credential()
@@ -194,18 +196,27 @@ pub(crate) async fn persist_root(
         if existing == record {
             return Ok(status(local_root(state).await?));
         }
-        if super::account::provider(state).await.is_some() {
+        // Same root, different record — a re-minted grant or refreshed
+        // metadata — updates in place; that covers signing back in after
+        // sign-out. A DIFFERENT root is another account's passkey: each
+        // account keeps its own profile, so it lands through add-account
+        // and never overwrites the root this profile's spaces hang off.
+        // An unreadable stored delegation refuses too — the roots can't
+        // be proven equal.
+        let stored_root = DelegationChain::try_from(existing.delegation.as_slice())
+            .ok()
+            .map(|stored| stored.issuer().clone());
+        if stored_root.as_ref() != Some(chain.issuer()) {
             return Err(TonkWorkerError::Conflict(
-                "a different local root is already persisted".to_string(),
+                "a different account is already signed in on this profile; \
+                 use \"Add account\" to sign in with another account"
+                    .to_string(),
             ));
         }
     }
 
-    // The local-root site is the latest account projection, not the only
-    // authority this profile has ever held. After sign-out there is no active
-    // provider attachment, so a successful ceremony for another passkey may
-    // replace it. Saving the new grant below leaves earlier access
-    // certificates in the profile store intact.
+    // Saving the new grant below leaves earlier access certificates in
+    // the profile store intact.
     state
         .profile
         .access()
@@ -342,32 +353,72 @@ mod tests {
         ));
     }
 
+    /// Sign-out keeps the profile's root, data, and certificates; a
+    /// later ceremony that resolves a DIFFERENT passkey is another
+    /// account arriving, and each account gets its own profile via
+    /// add-account. Persisting it here would silently rebind this
+    /// profile's spaces to a root that never owned them.
     #[dialog_common::test]
-    async fn it_replaces_the_local_root_after_signing_out() {
+    async fn it_rejects_a_different_root_on_a_previously_linked_profile() {
         let state = Arc::new(RwLock::new(test_state().await));
         let previous_root = {
             let state = state.read().await;
             local_root(&state).await.unwrap().root_did
         };
         let device = state.read().await.profile.did();
-        let (replacement, replacement_grant) = request_for(2, &device).await;
+        let (replacement, _) = request_for(2, &device).await;
 
         let _ = super::super::account::unlink(State(state.clone()))
             .await
             .unwrap();
-        let Json(status) = save(State(state.clone()), Json(replacement)).await.unwrap();
+        let error = save(State(state.clone()), Json(replacement))
+            .await
+            .unwrap_err();
 
-        assert!(matches!(
-            status,
-            RootStatus::Ready { root_did, delegation_cid, .. }
-                if root_did == replacement_grant.issuer().to_string()
-                    && delegation_cid == replacement_grant.proof_cids()[0].to_string()
-        ));
+        assert!(matches!(error, TonkWorkerError::Conflict(_)));
         let current_root = {
             let state = state.read().await;
             local_root(&state).await.unwrap().root_did
         };
-        assert_ne!(current_root, previous_root);
+        assert_eq!(
+            current_root, previous_root,
+            "the refused ceremony must leave the persisted root untouched"
+        );
+    }
+
+    /// The same root signing back in after sign-out updates in place —
+    /// tightening the different-root path must not break re-sign-in.
+    #[dialog_common::test]
+    async fn it_accepts_the_same_root_again_after_signing_out() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let (device, profile_name) = {
+            let state = state.read().await;
+            (state.profile.did(), state.profile_name.clone())
+        };
+        // Re-derive the fixture's own root and mint a FRESH grant for it:
+        // same root, different record bytes — what a real re-sign-in
+        // ceremony produces.
+        let root = Ed25519Signer::import(&crate::router::tests::test_root_seed(&profile_name))
+            .await
+            .unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &device)
+            .await
+            .unwrap();
+        let request = SaveRootRequest {
+            credential_id: "renewed-credential".to_string(),
+            delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+            passkey: None,
+        };
+
+        let _ = super::super::account::unlink(State(state.clone()))
+            .await
+            .unwrap();
+        let Json(status) = save(State(state.clone()), Json(request)).await.unwrap();
+
+        assert!(matches!(
+            status,
+            RootStatus::Ready { root_did, .. } if root_did == grant.issuer().to_string()
+        ));
     }
 
     #[dialog_common::test]

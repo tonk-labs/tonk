@@ -146,6 +146,8 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
         "#account-handoff-submit",
         "#account-setup-submit",
         "#account-unlink",
+        "#account-add-profile",
+        "#account-use-different-account",
     ] {
         if let Ok(Some(button)) = host.query_selector(selector)
             && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
@@ -186,6 +188,7 @@ fn show_success(host: &HtmlElement) {
     set_mode(host, "success");
     load_summary(host.clone());
     load_devices(host.clone());
+    load_profiles(host.clone());
 }
 
 fn set_text(host: &HtmlElement, selector: &str, value: &str) {
@@ -364,6 +367,160 @@ fn render_devices(host: &HtmlElement, devices: &[tonk_worker_api::AccountDevice]
     }
 }
 
+/// What a switcher row is titled: the roster's display name, else the
+/// profile's storage name — never blank.
+fn profile_row_label(entry: &tonk_worker_api::ProfileRosterEntry) -> String {
+    entry
+        .display_name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| entry.profile_name.clone())
+}
+
+/// Render roster rows into `list_selector`. The active row is marked and
+/// inert; every other row carries a Switch button with
+/// `data-activate="{profile_name}"` for the shared click delegation.
+/// `others_only` drops the active row entirely — the Choice panel's
+/// compact list describes the profiles the user could go to, not the
+/// fresh one they are on.
+fn render_profile_rows(
+    host: &HtmlElement,
+    list_selector: &str,
+    profiles: &tonk_worker_api::ProfilesResponse,
+    others_only: bool,
+) {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Ok(Some(list)) = host.query_selector(list_selector) else {
+        return;
+    };
+    list.set_inner_html("");
+    for entry in &profiles.profiles {
+        if others_only && entry.active {
+            continue;
+        }
+        let Ok(item) = document.create_element("li") else {
+            continue;
+        };
+        let _ = item.set_attribute("class", "account__profile-row");
+        if entry.active {
+            let _ = item.set_attribute("data-active", "true");
+        }
+
+        let Ok(identity) = document.create_element("div") else {
+            continue;
+        };
+        let _ = identity.set_attribute("class", "account__profile-identity");
+        let Ok(name) = document.create_element("span") else {
+            continue;
+        };
+        let _ = name.set_attribute("class", "account__profile-name");
+        let label = profile_row_label(entry);
+        name.set_text_content(Some(&label));
+        let _ = identity.append_child(&name);
+        if entry.active {
+            let Ok(marker) = document.create_element("span") else {
+                continue;
+            };
+            let _ = marker.set_attribute("class", "account__profile-current");
+            marker.set_text_content(Some("Current"));
+            let _ = identity.append_child(&marker);
+        }
+
+        let Ok(meta) = document.create_element("span") else {
+            continue;
+        };
+        let _ = meta.set_attribute("class", "account__profile-meta");
+        meta.set_text_content(Some(match &entry.email {
+            Some(email) => email,
+            None if entry.provider.is_some() => "Signed in",
+            None => "Local workspace",
+        }));
+
+        let _ = item.append_child(&identity);
+        let _ = item.append_child(&meta);
+
+        if !entry.active {
+            let Ok(button) = document.create_element("button") else {
+                continue;
+            };
+            let _ = button.set_attribute("type", "button");
+            let _ = button.set_attribute("class", "account__button account__button--switch");
+            let _ = button.set_attribute("data-activate", &entry.profile_name);
+            let _ = button.set_attribute("aria-label", &format!("Switch to {label}"));
+            button.set_text_content(Some("Switch"));
+            let _ = item.append_child(&button);
+        }
+        let _ = list.append_child(&item);
+    }
+}
+
+/// Fill the signed-in dashboard's switcher section.
+fn render_profiles(host: &HtmlElement, profiles: &tonk_worker_api::ProfilesResponse) {
+    render_profile_rows(host, "#account-profile-list", profiles, false);
+}
+
+/// Fill the Choice panel's compact switcher: the other roster entries,
+/// plus the "Use a different account" affordance when this profile has a
+/// persisted root — logging in here with another passkey would be
+/// refused, so the way to another account is a fresh profile.
+fn render_choice_profiles(
+    host: &HtmlElement,
+    profiles: &tonk_worker_api::ProfilesResponse,
+    root_persisted: bool,
+) {
+    render_profile_rows(host, "#account-choice-profile-list", profiles, true);
+    let has_others = profiles.profiles.iter().any(|entry| !entry.active);
+    if let Ok(Some(section)) = host.query_selector("#account-choice-profiles") {
+        if has_others {
+            let _ = section.remove_attribute("hidden");
+        } else {
+            let _ = section.set_attribute("hidden", "");
+        }
+    }
+    if let Ok(Some(button)) = host.query_selector("#account-use-different-account") {
+        if root_persisted {
+            let _ = button.remove_attribute("hidden");
+        } else {
+            let _ = button.set_attribute("hidden", "");
+        }
+    }
+}
+
+fn load_profiles(host: HtmlElement) {
+    spawn_local(async move {
+        match crate::api::list_profiles().await {
+            Ok(profiles) => render_profiles(&host, &profiles),
+            Err(error) => {
+                web_sys::console::warn_1(&format!("profile roster unavailable: {error}").into());
+            }
+        }
+    });
+}
+
+fn load_choice_profiles(host: HtmlElement, root_persisted: bool) {
+    spawn_local(async move {
+        match crate::api::list_profiles().await {
+            Ok(profiles) => render_choice_profiles(&host, &profiles, root_persisted),
+            Err(error) => {
+                web_sys::console::warn_1(&format!("profile roster unavailable: {error}").into());
+            }
+        }
+    });
+}
+
+/// Reload so every surface re-renders the profile the worker now serves.
+fn reload_into_switched_profile(host: &HtmlElement) {
+    match window().map(|window| window.location().reload()) {
+        Some(Ok(())) => {}
+        _ => {
+            set_busy(host, false, "");
+            load_status(host.clone());
+        }
+    }
+}
+
 fn revocation_status(
     acknowledgement: &RevokeDeviceAcknowledgement,
     self_revoke: bool,
@@ -533,6 +690,10 @@ fn load_status(host: HtmlElement) {
         }
         match crate::api::account_status().await {
             Ok(status) => {
+                // A persisted root with no provider is a signed-out
+                // profile: logging in here with a DIFFERENT passkey is
+                // refused, so the Choice panel offers a fresh profile.
+                let root_persisted = matches!(status, AccountStatus::Unregistered { .. });
                 let account_state = match status {
                     AccountStatus::Registered { account_state, .. } => Some(account_state),
                     AccountStatus::RootMissing { .. } | AccountStatus::Unregistered { .. } => None,
@@ -555,6 +716,7 @@ fn load_status(host: HtmlElement) {
                     Landing::Choice { revoke_hint } => {
                         set_busy(&host, false, "");
                         set_mode(&host, "choice");
+                        load_choice_profiles(host.clone(), root_persisted);
                         if revoke_hint {
                             show_error(
                                 &host,
@@ -1116,6 +1278,60 @@ fn bind(host: &HtmlElement) {
         });
     });
 
+    // "Add account" (dashboard) and "Use a different account" (Choice)
+    // are the same move: rotate onto a fresh profile and land on the
+    // normal sign-in flow there, leaving this profile intact.
+    for selector in ["#account-add-profile", "#account-use-different-account"] {
+        on_click(host, selector, |host| {
+            clear_error(&host);
+            set_busy(&host, true, "Preparing another sign-in…");
+            spawn_local(async move {
+                match crate::api::add_account_profile().await {
+                    Ok(_) => reload_into_switched_profile(&host),
+                    Err(error) => {
+                        set_busy(&host, false, "");
+                        show_error(&host, error.to_string());
+                    }
+                }
+            });
+        });
+    }
+
+    // Switch rows are re-rendered wholesale, so both lists get one
+    // delegated listener keyed off `data-activate` — the same pattern
+    // the device list uses for `data-revoke`.
+    for selector in ["#account-profile-list", "#account-choice-profile-list"] {
+        let Ok(Some(list)) = host.query_selector(selector) else {
+            continue;
+        };
+        let host_for_switch = host.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            let Some(profile) = target.get_attribute("data-activate") else {
+                return;
+            };
+            let host = host_for_switch.clone();
+            clear_error(&host);
+            set_busy(&host, true, "Switching account…");
+            spawn_local(async move {
+                match crate::api::activate_profile(profile).await {
+                    Ok(_) => reload_into_switched_profile(&host),
+                    Err(error) => {
+                        set_busy(&host, false, "");
+                        show_error(&host, error.to_string());
+                    }
+                }
+            });
+        });
+        let _ = list.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+        closure.forget();
+    }
+
     if let Ok(Some(list)) = host.query_selector("#account-device-list") {
         let host_for_revoke = host.clone();
         let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
@@ -1517,6 +1733,8 @@ mod tests {
             "#account-email-value",
             "#account-passkey-created-value",
             "#account-passkey-device-value",
+            "#account-profile-list",
+            "#account-add-profile",
             ".account__passkey",
             ".account__signout",
         ] {
@@ -1551,6 +1769,125 @@ mod tests {
         assert!(
             host.query_selector("#account-devices").unwrap().is_none(),
             "the signed-in dashboard should be the only device-management surface"
+        );
+    }
+
+    fn roster_fixture() -> tonk_worker_api::ProfilesResponse {
+        tonk_worker_api::ProfilesResponse {
+            active: "tonk".into(),
+            profiles: vec![
+                tonk_worker_api::ProfileRosterEntry {
+                    profile_name: "tonk".into(),
+                    root_did: Some("did:key:zRootA".into()),
+                    provider: Some("https://accounts.example".into()),
+                    email: Some("person@example.com".into()),
+                    display_name: Some("Alice".into()),
+                    last_active_at: 1_754_380_800,
+                    active: true,
+                },
+                tonk_worker_api::ProfileRosterEntry {
+                    profile_name: "tonk-0a12".into(),
+                    root_did: None,
+                    provider: None,
+                    email: None,
+                    display_name: Some("brave-otter".into()),
+                    last_active_at: 1_754_000_000,
+                    active: false,
+                },
+            ],
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_renders_local_and_account_roster_rows() {
+        let host = host();
+        render_profiles(&host, &roster_fixture());
+
+        let list = host
+            .query_selector("#account-profile-list")
+            .unwrap()
+            .unwrap();
+        assert_eq!(list.query_selector_all("li").unwrap().length(), 2);
+        let text = list.text_content().unwrap();
+        assert!(
+            text.contains("person@example.com"),
+            "an account row shows its email"
+        );
+        assert!(
+            text.contains("Local workspace"),
+            "a never-signed-in row says what it is"
+        );
+        assert!(text.contains("Alice") && text.contains("brave-otter"));
+
+        let button = list
+            .query_selector("button[data-activate=\"tonk-0a12\"]")
+            .unwrap()
+            .expect("the other profile's row offers a switch");
+        assert_eq!(button.text_content().as_deref(), Some("Switch"));
+    }
+
+    #[dialog_common::test]
+    fn it_marks_the_active_profile_row_inert() {
+        let host = host();
+        render_profiles(&host, &roster_fixture());
+
+        let list = host
+            .query_selector("#account-profile-list")
+            .unwrap()
+            .unwrap();
+        let active = list
+            .query_selector("li[data-active]")
+            .unwrap()
+            .expect("the active profile renders a marked row");
+        assert!(active.text_content().unwrap().contains("Current"));
+        assert!(
+            active.query_selector("button").unwrap().is_none(),
+            "the active row must not offer an action"
+        );
+        assert_eq!(
+            list.query_selector_all("button[data-activate]")
+                .unwrap()
+                .length(),
+            1,
+            "only the other rows are switch targets"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_offers_a_different_account_from_the_choice_panel_when_a_root_is_persisted() {
+        let host = host();
+
+        render_choice_profiles(&host, &roster_fixture(), true);
+        let button = host
+            .query_selector("#account-use-different-account")
+            .unwrap()
+            .unwrap();
+        assert!(
+            !button.has_attribute("hidden"),
+            "a persisted root must surface the way to another account"
+        );
+        let section = host
+            .query_selector("#account-choice-profiles")
+            .unwrap()
+            .unwrap();
+        assert!(
+            !section.has_attribute("hidden"),
+            "other roster entries render on the choice panel"
+        );
+        let list = host
+            .query_selector("#account-choice-profile-list")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            list.query_selector_all("li").unwrap().length(),
+            1,
+            "the compact list shows only the OTHER profiles"
+        );
+
+        render_choice_profiles(&host, &roster_fixture(), false);
+        assert!(
+            button.has_attribute("hidden"),
+            "without a persisted root, plain log-in suffices"
         );
     }
 

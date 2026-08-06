@@ -372,7 +372,8 @@ tonk-account {
     margin-bottom: 18px;
 }
 
-.account__devices {
+.account__devices,
+.account__profiles {
     display: grid;
     margin: 0;
     padding: 0;
@@ -380,7 +381,8 @@ tonk-account {
     list-style: none;
 }
 
-.account__device-row {
+.account__device-row,
+.account__profile-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -389,21 +391,24 @@ tonk-account {
     border-bottom: 1px solid var(--account-divider);
 }
 
-.account__device-identity {
+.account__device-identity,
+.account__profile-identity {
     display: flex;
     min-width: 0;
     align-items: center;
     gap: 10px;
 }
 
-.account__device-name {
+.account__device-name,
+.account__profile-name {
     overflow: hidden;
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.account__device-current {
+.account__device-current,
+.account__profile-current {
     flex: none;
     padding: 3px 8px;
     background: var(--account-field);
@@ -413,7 +418,8 @@ tonk-account {
     letter-spacing: 0.02em;
 }
 
-.account__device-meta {
+.account__device-meta,
+.account__profile-meta {
     grid-column: 1;
     min-width: 0;
     margin-top: 4px;
@@ -423,9 +429,22 @@ tonk-account {
     text-wrap: pretty;
 }
 
-.account__device-row .account__button--remove {
+.account__device-row .account__button--remove,
+.account__profile-row .account__button--switch {
     grid-column: 2;
     grid-row: 1 / span 2;
+}
+
+.account__profiles-section .account__button--compact {
+    margin-top: 16px;
+}
+
+.account__choice-profiles {
+    margin-top: 20px;
+}
+
+#account-use-different-account {
+    margin-top: 12px;
 }
 
 .account__signout {
@@ -490,12 +509,14 @@ tonk-account {
     }
 
     .account__device-row,
+    .account__profile-row,
     .account__signout {
         grid-template-columns: minmax(0, 1fr);
         gap: 8px;
     }
 
-    .account__device-row .account__button--remove {
+    .account__device-row .account__button--remove,
+    .account__profile-row .account__button--switch {
         grid-column: 1;
         grid-row: auto;
     }
