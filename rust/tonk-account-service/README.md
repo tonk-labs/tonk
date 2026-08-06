@@ -147,6 +147,12 @@ worker containing `/accounts/preflight` before the UI that calls it. The UI
 fails closed if the route is absent rather than creating a passkey before email
 availability has been verified.
 
+Releases are not manual. `.github/workflows/publish.yml` applies this
+crate's migrations and deploys the worker on every push to `staging` and
+`stable`, alongside the access worker, so the two never drift apart. The
+steps below are the one-time bootstrap of the resources that deploy needs —
+database, buckets, secrets, and WAF rules — not a release procedure.
+
 First deploy, in order:
 
 1. `wrangler d1 create tonk-accounts` and paste the returned database id into

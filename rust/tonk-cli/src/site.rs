@@ -450,106 +450,157 @@ async fn mount_delegated_inner(
 /// Load the exact reusable prefix for a site, recovering it from pre-feature
 /// profile authority when the dedicated credential is absent.
 pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<DelegationChain> {
-    let credential = site
-        .profile
-        .credential()
-        .site(space_root_site(&site.repository.did(), account_root));
-    match credential.load::<Vec<u8>>().perform(&site.operator).await {
-        Ok(bytes) if !bytes.is_empty() => {
-            let backup = AccountSpotBackup {
-                chain_hex: hex::encode(bytes),
-                remote_url: None,
-                revocation_url: None,
-                name: None,
-            };
-            return Ok(backup
-                .validate_for(account_root)
-                .await
-                .context("stored account-root prefix is invalid")?
-                .chain);
-        }
-        Ok(_) => {}
-        Err(error) if crate::account_state::credential_is_missing(&error) => {}
-        Err(error) => return Err(error).context("failed to load the account-root prefix"),
-    }
+    account_root_prefix_for(
+        &site.profile,
+        site.operator.local(),
+        &site.repository.did(),
+        account_root,
+    )
+    .await
+}
 
-    // A v1 credential is copied only when its signatures and terminal root
-    // validate for the explicitly requested account.
-    let legacy = site
-        .profile
-        .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", site.repository.did()));
-    match legacy.load::<Vec<u8>>().perform(&site.operator).await {
-        Ok(bytes) if !bytes.is_empty() => {
-            let backup = AccountSpotBackup {
-                chain_hex: hex::encode(&bytes),
-                remote_url: None,
-                revocation_url: None,
-                name: None,
-            };
-            if let Ok(validated) = backup.validate_for(account_root).await {
-                site.profile
-                    .credential()
-                    .site(space_root_site(&site.repository.did(), account_root))
-                    .save(bytes)
-                    .perform(&site.operator)
-                    .await
-                    .context("failed to migrate the account-root prefix")?;
-                return Ok(validated.chain);
-            }
-        }
-        Ok(_) => {}
-        Err(error) if crate::account_state::credential_is_missing(&error) => {}
-        Err(error) => return Err(error).context("failed to load the legacy account-root prefix"),
-    }
-
-    let proof = site
-        .profile
-        .access()
-        .prove(&site.repository)
-        .perform(&site.operator)
-        .await
-        .context("failed to recover repository authority")?;
-    let mut delegations = Vec::new();
-    let mut reached_root = false;
-    for certificate in proof.proofs {
-        let delegation = certificate.0;
-        reached_root = delegation.audience() == account_root;
-        delegations.push(delegation);
-        if reached_root {
-            break;
-        }
-    }
-    if !reached_root {
-        anyhow::bail!("repository authority does not pass through the account root");
-    }
-    let chain = DelegationChain::try_from(delegations)
-        .context("recovered repository authority is not a valid chain")?;
-    let validated = AccountSpotBackup {
-        chain_hex: hex::encode(
-            chain
-                .to_bytes()
-                .context("failed to serialize recovered prefix")?,
-        ),
+/// Decode a stored prefix artifact for `account_root`.
+async fn validate_prefix(bytes: Vec<u8>, account_root: &Did) -> Result<DelegationChain> {
+    Ok(AccountSpotBackup {
+        chain_hex: hex::encode(bytes),
         remote_url: None,
         revocation_url: None,
         name: None,
     }
     .validate_for(account_root)
-    .await
-    .context("recovered account-root prefix is invalid")?;
-    let bytes = validated
-        .chain
-        .to_bytes()
-        .context("failed to serialize recovered prefix")?;
-    site.profile
+    .await?
+    .chain)
+}
+
+/// Read one credential site, treating absence and emptiness alike.
+async fn optional_credential(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    site: String,
+) -> Result<Option<Vec<u8>>> {
+    match profile
         .credential()
-        .site(space_root_site(&site.repository.did(), account_root))
-        .save(bytes)
-        .perform(&site.operator)
+        .site(site)
+        .load::<Vec<u8>>()
+        .perform(operator)
         .await
-        .context("failed to persist recovered account-root prefix")?;
-    Ok(validated.chain)
+    {
+        Ok(bytes) if bytes.is_empty() => Ok(None),
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if crate::account_state::credential_is_missing(&error) => Ok(None),
+        Err(error) => Err(error).context("failed to load a stored authority prefix"),
+    }
+}
+
+/// Resolve the reusable `subject → … → account_root` prefix, minting it
+/// when this profile holds the subject's authority but no chain to the
+/// account reaches it yet.
+///
+/// Every path that authorizes a remote request for a spot needs this exact
+/// prefix, so all of them recover the same way. A spot created before the
+/// account existed — or by a release that stored no prefix at all — has
+/// repository authority that stops at the profile, and refusing it would
+/// strand data the device demonstrably owns. Extending that authority to
+/// the account root is local bookkeeping: it delegates to the root this
+/// profile already holds a grant from, and publishes nothing.
+pub(crate) async fn account_root_prefix_for(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &Did,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    let current = space_root_site(subject, account_root);
+    if let Some(bytes) = optional_credential(profile, operator, current.clone()).await? {
+        return validate_prefix(bytes, account_root)
+            .await
+            .context("stored account-root prefix is invalid");
+    }
+
+    // A v1 credential is copied only when its signatures and terminal root
+    // validate for the explicitly requested account.
+    let legacy = format!("{SPACE_ROOT_SITE_PREFIX}{subject}");
+    if let Some(bytes) = optional_credential(profile, operator, legacy).await?
+        && let Ok(chain) = validate_prefix(bytes.clone(), account_root).await
+    {
+        save_prefix(profile, operator, &current, bytes)
+            .await
+            .context("failed to migrate the account-root prefix")?;
+        return Ok(chain);
+    }
+
+    let chain = match recover_prefix(profile, operator, subject, account_root).await? {
+        Some(chain) => chain,
+        None => mint_prefix(profile, operator, subject, account_root).await?,
+    };
+    let bytes = chain
+        .to_bytes()
+        .context("failed to serialize the account-root prefix")?;
+    let validated = validate_prefix(bytes.clone(), account_root)
+        .await
+        .context("recovered account-root prefix is invalid")?;
+    save_prefix(profile, operator, &current, bytes)
+        .await
+        .context("failed to persist the account-root prefix")?;
+    Ok(validated)
+}
+
+async fn save_prefix(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    site: &str,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    profile
+        .credential()
+        .site(site.to_string())
+        .save(bytes)
+        .perform(operator)
+        .await?;
+    Ok(())
+}
+
+/// Rebuild the prefix from certificates this profile already holds.
+async fn recover_prefix(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &Did,
+    account_root: &Did,
+) -> Result<Option<DelegationChain>> {
+    let proof = profile
+        .access()
+        .prove(Subject::from(subject.clone()))
+        .perform(operator)
+        .await
+        .context("failed to recover repository authority")?;
+    let mut delegations = Vec::new();
+    for certificate in proof.proofs {
+        let delegation = certificate.0;
+        let reached_root = delegation.audience() == account_root;
+        delegations.push(delegation);
+        if reached_root {
+            return DelegationChain::try_from(delegations)
+                .context("recovered repository authority is not a valid chain")
+                .map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// Extend held authority over `subject` to the account root.
+async fn mint_prefix(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &Did,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    let delegation: UcanDelegation = profile
+        .access()
+        .claim(Subject::from(subject.clone()))
+        .delegate(account_root.clone())
+        .perform(operator)
+        .await
+        .context("this profile cannot delegate the spot to the account root")?;
+    Ok(delegation.into_chain())
 }
 
 /// Knobs for [`TonkSite::open_with`] / [`TonkSite::init_with`].

@@ -67,6 +67,9 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
 
 #[cfg(feature = "integration-tests")]
 pub struct AccountFixture {
+    /// A site this profile created before the account existed, so its
+    /// repository authority reaches no account root.
+    pub pre_account_site: TonkSite,
     pub server: tonk_account_service::helpers::AccountServer,
     pub profile: dialog_operator::Profile,
     pub store: tonk_cli::spot::SpotStore,
@@ -138,6 +141,7 @@ impl AccountFixture {
         )
         .await?;
         Ok(Self {
+            pre_account_site: test.site,
             server,
             profile,
             store,

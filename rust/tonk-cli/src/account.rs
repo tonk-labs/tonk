@@ -95,6 +95,8 @@ pub struct LinkOptions {
     pub device_name: String,
     /// Whether to ask the OS to open the handoff URL.
     pub open_browser: bool,
+    /// Whether to drop undeliverable detach intents and link anyway.
+    pub abandon_detach: bool,
 }
 
 /// Successful browser handoff.
@@ -485,6 +487,44 @@ async fn activate_remote(
     Ok(())
 }
 
+/// Deliver queued detach intents before a handoff opens on `provider`.
+///
+/// Only an undelivered detach at the same provider can block a handoff:
+/// the service's one-active-generation rule rejects activation while an
+/// earlier generation of this device is still active there. A detach
+/// queued for a different provider says nothing about this one, and one
+/// the provider can never accept is dropped by the flush itself.
+async fn clear_detach_for(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    provider: &str,
+    abandon: bool,
+) -> Result<()> {
+    let flushed = crate::account_session::flush_pending(profile, operator).await?;
+    if !flushed.retains(provider) {
+        if let Some(warning) = flushed.warning {
+            eprintln!("warning: {warning}");
+        }
+        return Ok(());
+    }
+    if abandon {
+        let abandoned = crate::account_session::abandon_pending(profile, operator).await?;
+        eprintln!(
+            "warning: abandoned {abandoned} undelivered detach intent(s); \
+             earlier devices may still be listed on the account page"
+        );
+        return Ok(());
+    }
+    bail!(
+        "cannot link while a detach for {provider} is undelivered: {}\n\
+         retry once the account service is reachable, or run \
+         `tonk account link --abandon-detach` to link anyway",
+        flushed
+            .warning
+            .unwrap_or_else(|| "provider retry required".to_string())
+    );
+}
+
 /// Start or resume a browser handoff and activate its fresh generation.
 pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcome> {
     let operator = crate::account_state::credential_operator(profile).await?;
@@ -500,17 +540,14 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
     if state.active.is_some() {
         bail!("an account is already active; run `tonk account logout` before linking another");
     }
-    if !state.pending_detaches.is_empty() {
-        let flushed = crate::account_session::flush_pending(profile, &operator).await?;
-        if flushed.pending > 0 {
-            bail!(
-                "cannot resume account linking while a prior detach is pending: {}",
-                flushed
-                    .warning
-                    .unwrap_or_else(|| "provider retry required".to_string())
-            );
+    let target_provider = match &state.pending_login {
+        Some(crate::account_session::PendingLogin::Waiting { provider, .. }) => provider.clone(),
+        Some(crate::account_session::PendingLogin::Activating { account, .. }) => {
+            account.provider.clone()
         }
-    }
+        None => options.service_url.trim_end_matches('/').to_string(),
+    };
+    clear_detach_for(profile, &operator, &target_provider, options.abandon_detach).await?;
     let device_did = profile.did().to_string();
     let client = reqwest::Client::new();
     let (service_url, secret, token_hash, activating) = match state.pending_login {
@@ -537,15 +574,6 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
             (account.provider.clone(), secret, token_hash, Some(account))
         }
         None => {
-            let flushed = crate::account_session::flush_pending(profile, &operator).await?;
-            if flushed.pending > 0 {
-                bail!(
-                    "cannot start a new account handoff while a prior detach is pending: {}",
-                    flushed
-                        .warning
-                        .unwrap_or_else(|| "provider retry required".to_string())
-                );
-            }
             let (secret, token_hash) = new_secret();
             crate::account_session::begin_login(
                 profile,

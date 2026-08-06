@@ -1383,4 +1383,44 @@ mod when_mounting_account_authority {
         assert_eq!(persisted, recovered.to_bytes()?);
         Ok(())
     }
+
+    /// A spot created before this account existed has repository authority
+    /// that stops at the profile and reaches no account root at all. The
+    /// profile holds that authority, so it can extend it rather than
+    /// stranding the spot with nothing that can authorize its remote.
+    #[dialog_common::test]
+    async fn it_adopts_a_spot_whose_authority_reaches_no_account_root() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let account_root = Ed25519Signer::import(&[73; 32]).await?.did();
+        assert_ne!(local_root(&test.site).await?, account_root);
+
+        let adopted = site::account_root_prefix(&test.site, &account_root).await?;
+
+        assert_eq!(adopted.subject(), Some(&test.site.repository.did()));
+        assert_eq!(adopted.audience(), &account_root);
+        let persisted = test
+            .site
+            .profile
+            .credential()
+            .site(space_root_site(&test.site.repository.did(), &account_root))
+            .load::<Vec<u8>>()
+            .perform(&test.site.operator)
+            .await?;
+        assert_eq!(persisted, adopted.to_bytes()?);
+        Ok(())
+    }
+
+    /// Adoption happens once: the second call must read the stored prefix
+    /// rather than mint a second, differently-signed one.
+    #[dialog_common::test]
+    async fn it_reuses_an_adopted_prefix_on_later_authorizations() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let account_root = Ed25519Signer::import(&[74; 32]).await?.did();
+
+        let first = site::account_root_prefix(&test.site, &account_root).await?;
+        let second = site::account_root_prefix(&test.site, &account_root).await?;
+
+        assert_eq!(first.to_bytes()?, second.to_bytes()?);
+        Ok(())
+    }
 }
