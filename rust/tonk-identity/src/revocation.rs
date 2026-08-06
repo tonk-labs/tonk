@@ -30,6 +30,9 @@ pub enum RevocationAuthority {
     PathIssuer,
     /// The signer exercised authority delegated through the target.
     Delegated,
+    /// The signer holds its own currently-valid chain from the same
+    /// subject-open authority the target answers to.
+    Peer,
 }
 
 /// Facts derived from a verified revocation artifact.
@@ -108,6 +111,16 @@ fn subject(path: &DelegationChain) -> Did {
         .unwrap_or_else(|| path.issuer().clone())
 }
 
+/// Whether `signer_subject` is the subject-open authority `path` answers to.
+///
+/// Account delegations are subject-open, so every credential enrolled under
+/// an account holds a chain from the same root and each is the others' peer.
+/// Space invites are subject-specific and stay on the narrower path-issuer
+/// and delegated classes: the two shapes must not blur.
+fn is_account_peer(path: &DelegationChain, signer_subject: &Did) -> bool {
+    path.subject().is_none() && signer_subject == path.issuer()
+}
+
 async fn mint(
     issuer: Ed25519Signer,
     path: &DelegationChain,
@@ -158,6 +171,30 @@ pub async fn mint_self_revocation(
     target: &Cid,
 ) -> Result<Vec<u8>> {
     mint(device, grant, target, Some(grant)).await
+}
+
+/// Mint a revocation signed by a peer credential of the same account.
+///
+/// `proofs` is the signer's own chain from the account subject; unlike a
+/// delegated revocation it need not run through the target. This is how a
+/// credential anchored one way (`root → recovery → safari`) withdraws a link
+/// it does not itself depend on (`root → chrome`).
+pub async fn mint_peer_revocation(
+    credential: Ed25519Signer,
+    path: &DelegationChain,
+    target: &Cid,
+    proofs: &DelegationChain,
+) -> Result<Vec<u8>> {
+    if path.subject().is_some() {
+        anyhow::bail!("peer revocation requires a subject-open account path");
+    }
+    if subject(proofs) != subject(path) {
+        anyhow::bail!("peer proofs do not chain from the account subject");
+    }
+    if proofs.audience() != &credential.did() {
+        anyhow::bail!("peer proofs do not reach the signing credential");
+    }
+    mint(credential, path, target, Some(proofs)).await
 }
 
 /// Mint a revocation signed under an attached delegation proof chain.
@@ -248,12 +285,16 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         chain.verify(&Ed25519KeyResolver).await.map_err(|err| {
             VerifyError::Unauthorized(format!("delegated authority failed to verify: {err}"))
         })?;
-        if !chain.proofs().contains(&target) {
+        if chain.proofs().contains(&target) {
+            RevocationAuthority::Delegated
+        } else if is_account_peer(&path, chain.subject()) {
+            RevocationAuthority::Peer
+        } else {
             return Err(VerifyError::Unauthorized(
-                "delegated revocation does not attach the target as a proof".to_string(),
+                "revocation neither attaches the target as a proof nor proves peer authority"
+                    .to_string(),
             ));
         }
-        RevocationAuthority::Delegated
     };
 
     let canonical_bytes = chain.to_bytes().map_err(|err| {
@@ -329,6 +370,41 @@ mod tests {
             .unwrap();
         let path = DelegationChain::new(first).push(second).unwrap();
         (space, member, invite, path)
+    }
+
+    /// One account whose credentials are anchored differently:
+    /// `root → recovery → safari` and `root → chrome`. Neither credential's
+    /// chain contains the other's link.
+    struct FannedOutAccount {
+        safari: Ed25519Signer,
+        safari_chain: DelegationChain,
+        chrome: Ed25519Signer,
+        chrome_chain: DelegationChain,
+    }
+
+    async fn fanned_out_account() -> FannedOutAccount {
+        let root = signer(1).await;
+        let recovery = signer(10).await;
+        let safari = signer(11).await;
+        let chrome = signer(12).await;
+        let anchor = crate::delegation::mint_device_delegation(root.clone(), &recovery.did())
+            .await
+            .unwrap();
+        let enrollment = crate::delegation::mint_device_delegation(recovery, &safari.did())
+            .await
+            .unwrap();
+        let safari_chain = anchor
+            .push(enrollment.proofs().next().unwrap().clone())
+            .unwrap();
+        let chrome_chain = crate::delegation::mint_device_delegation(root, &chrome.did())
+            .await
+            .unwrap();
+        FannedOutAccount {
+            safari,
+            safari_chain,
+            chrome,
+            chrome_chain,
+        }
     }
 
     async fn raw_revocation(
@@ -415,6 +491,128 @@ mod tests {
 
         assert_eq!(verified.issuer, member.did());
         assert_eq!(verified.authority, RevocationAuthority::PathIssuer);
+    }
+
+    #[dialog_common::test]
+    async fn it_verifies_a_peer_revocation_of_a_link_the_signer_does_not_hold() {
+        let account = fanned_out_account().await;
+        let target = account.chrome_chain.proof_cids()[0];
+        let verified = verify(
+            &mint_peer_revocation(
+                account.safari.clone(),
+                &account.chrome_chain,
+                &target,
+                &account.safari_chain,
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.target_cid, target.to_string());
+        assert_eq!(verified.issuer, account.safari.did());
+        assert_eq!(verified.authority, RevocationAuthority::Peer);
+    }
+
+    #[dialog_common::test]
+    async fn it_verifies_a_peer_revocation_of_the_recovery_anchor() {
+        let account = fanned_out_account().await;
+        let target = account.safari_chain.proof_cids()[0];
+        let verified = verify(
+            &mint_peer_revocation(
+                account.chrome.clone(),
+                &account.safari_chain,
+                &target,
+                &account.chrome_chain,
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.issuer, account.chrome.did());
+        assert_eq!(verified.authority, RevocationAuthority::Peer);
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_peer_authority_from_another_account() {
+        let account = fanned_out_account().await;
+        let outsider = signer(20).await;
+        let other_root = signer(21).await;
+        let other_chain = crate::delegation::mint_device_delegation(other_root, &outsider.did())
+            .await
+            .unwrap();
+        let target = account.chrome_chain.proof_cids()[0];
+        let bytes =
+            mint_delegated_revocation(outsider, &account.chrome_chain, &target, &other_chain)
+                .await
+                .unwrap();
+
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_peer_authority_over_a_subject_specific_invite() {
+        let (space, _, _, path) = invite_path().await;
+        let bystander = signer(7).await;
+        let membership = DelegationBuilder::new()
+            .issuer(space.clone())
+            .audience(&bystander.did())
+            .subject(Subject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let membership = DelegationChain::new(membership);
+        let target = path.proof_cids()[0];
+
+        assert!(
+            mint_peer_revocation(bystander.clone(), &path, &target, &membership)
+                .await
+                .is_err(),
+            "an invite path is subject-specific and has no peers"
+        );
+
+        let bytes = mint_delegated_revocation(bystander, &path, &target, &membership)
+            .await
+            .unwrap();
+        assert!(matches!(
+            verify(&bytes).await,
+            Err(VerifyError::Unauthorized(_))
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_mint_a_peer_revocation_without_account_proofs() {
+        let account = fanned_out_account().await;
+        let outsider = signer(20).await;
+        let other_root = signer(21).await;
+        let other_chain = crate::delegation::mint_device_delegation(other_root, &outsider.did())
+            .await
+            .unwrap();
+        let target = account.chrome_chain.proof_cids()[0];
+
+        assert!(
+            mint_peer_revocation(outsider, &account.chrome_chain, &target, &other_chain)
+                .await
+                .is_err()
+        );
+        assert!(
+            mint_peer_revocation(
+                account.chrome.clone(),
+                &account.chrome_chain,
+                &target,
+                &account.safari_chain,
+            )
+            .await
+            .is_err(),
+            "proofs must reach the signing credential"
+        );
     }
 
     #[dialog_common::test]
