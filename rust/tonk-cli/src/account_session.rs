@@ -302,6 +302,16 @@ pub async fn begin_login(
     let allowed = match (&state.pending_login, &pending) {
         (None, PendingLogin::Waiting { .. }) => true,
         (Some(existing), candidate) if existing == candidate => true,
+        // Replacing one waiting handoff with another at the same provider
+        // strands nothing: a waiting handoff holds no grant material, only a
+        // one-time secret the service may already have retired.
+        (
+            Some(PendingLogin::Waiting {
+                provider: old_provider,
+                ..
+            }),
+            PendingLogin::Waiting { provider, .. },
+        ) => old_provider == provider,
         (
             Some(PendingLogin::Waiting {
                 provider: old_provider,
