@@ -15,6 +15,11 @@ use crate::site::TonkSite;
 use crate::spot::Resolved;
 
 /// Version of the structured `tonk context --json` contract.
+///
+/// The version changes only when a field is removed or its meaning
+/// reinterpreted. Consumers must ignore unknown fields; additive growth
+/// keeps the version, so a new lane of workflow steps is not a break and
+/// a strict pinner is not forced to move for one.
 pub const SCHEMA_VERSION: &str = "tonk.context.v1";
 
 /// Maximum number of concepts expanded in the default text response.
@@ -33,6 +38,11 @@ pub struct ContextReport {
     pub concepts: Vec<ConceptContext>,
     /// Commands for an empty application vocabulary.
     pub empty_spot_workflow: Vec<WorkflowStep>,
+    /// Commands for making a concept respond to DOM events. Independent
+    /// of the live schema — the nominal loop is the same on every spot,
+    /// and an agent that needs interactivity otherwise has no signal
+    /// that `project` and `commands` exist.
+    pub interactivity_workflow: Vec<WorkflowStep>,
 }
 
 /// Selected spot information.
@@ -213,16 +223,41 @@ pub async fn inspect(resolved: &Resolved, site: &TonkSite) -> Result<ContextRepo
                 command: "tonk assert note --title \"example\" --body \"example\"".to_string(),
                 mutates: true,
             },
+            // `view add` auto-surfaces onto an unset home, so no
+            // separate `tonk home note` step: it would be a no-op here
+            // and reads as required when it isn't.
             WorkflowStep {
-                purpose: "give it a visible view",
+                purpose: "give it a visible view, surfaced on the space home",
                 command:
                     "tonk view add note --template '<article><h2>{title}</h2><p>{body}</p></article>'"
                         .to_string(),
                 mutates: true,
             },
             WorkflowStep {
-                purpose: "surface it on the space home",
-                command: "tonk home note".to_string(),
+                purpose: "confirm it renders",
+                command: "tonk render note".to_string(),
+                mutates: false,
+            },
+        ],
+        interactivity_workflow: vec![
+            WorkflowStep {
+                purpose: "learn the command/projection/rule declarations",
+                command: "tonk guide events".to_string(),
+                mutates: false,
+            },
+            WorkflowStep {
+                purpose: "see what a branch already declares",
+                command: "tonk commands inventory --json".to_string(),
+                mutates: false,
+            },
+            WorkflowStep {
+                purpose: "dry-run a projection against a headless fixture",
+                command: "tonk project <PROJECTION> --fixture fixture.yaml --json".to_string(),
+                mutates: false,
+            },
+            WorkflowStep {
+                purpose: "submit it, running the declarative rule",
+                command: "tonk project <PROJECTION> --fixture fixture.yaml --transact".to_string(),
                 mutates: true,
             },
         ],
@@ -265,6 +300,7 @@ impl ContextReport {
         if self.concepts.is_empty() {
             out.push_str("\n## Build a first visible model\n");
             render_steps(&mut out, &self.empty_spot_workflow);
+            self.render_interactivity(&mut out);
             return out;
         }
 
@@ -315,7 +351,16 @@ impl ContextReport {
                 self.concepts.len() - DEFAULT_CONCEPT_LIMIT
             );
         }
+        self.render_interactivity(&mut out);
         out
+    }
+
+    /// Append the interactivity lane. Rendered on every spot, empty or
+    /// not: nothing else in this report mentions that DOM events are
+    /// expressible at all.
+    fn render_interactivity(&self, out: &mut String) {
+        out.push_str("\n## Make a concept respond to DOM events\n");
+        render_steps(out, &self.interactivity_workflow);
     }
 
     /// Render the stable structured contract.

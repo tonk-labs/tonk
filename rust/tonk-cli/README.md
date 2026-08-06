@@ -14,16 +14,21 @@ drive the same code paths as the binary.
 ## Usage
 
 ```sh
+# Link an account first: creating a spot bootstraps a repository, which
+# requires one. Once per machine.
+tonk account link
 # Create a spot (stored canonically, e.g. ~/Library/Application Support/tonk/spots/garden).
 tonk spot new garden
 # Use an existing spot in another project directory:
 tonk use garden
 
-# Evaluate a notation document: inline, from a file, or piped.
-tonk eval -c 'person:'
+# Evaluate a notation document: inline, from a file, or piped. A bare
+# `<concept>:` is a query, so the concept has to be declared already —
+# `concept` is built in; your own come from `tonk concept add` below.
+tonk eval -c 'concept:'
 tonk eval ./doc.notation
 cat doc.notation | tonk eval -
-tonk eval -c 'person:' --format json --quiet
+tonk eval ./doc.notation --format json --quiet
 
 # Inspect the branch.
 tonk schema       # every named attribute + concept as re-submittable notation
@@ -39,7 +44,7 @@ tonk assert habit --help                      # the concept's real flags (fields
 tonk assert habit --name "Run" --target "5k"  # mint a new instance (typed flags from the branch schema)
 tonk assert habit <entity> --target "10k"     # assert superseding claims on an existing instance
 tonk query habit                              # every instance (add --json for machine output)
-tonk get habit <entity>                       # one instance
+tonk query habit <entity>                     # one instance
 tonk retract habit <entity> --field target    # retract one field (a many field loses every value)
 tonk retract habit <entity>                   # retract the whole instance
 

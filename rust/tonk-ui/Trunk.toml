@@ -68,22 +68,3 @@ watch = [
 # points both at the access service it started (or, for /ucan/, at
 # UCAN_ENDPOINT). Their backend is only known at runtime, and trunk's TOML
 # does not interpolate, so they cannot be written here.
-
-# Serve the user guide at /guide/, matching the path it ships at on the
-# deployed site. The `dev:web` command launches `mdbook serve` on port
-# 3001 (its own live-reload server); trunk proxies `/guide/*` to it.
-# `rewrite` strips the `/guide/` prefix so a request for
-# `/guide/introduction.html` reaches mdbook as `/introduction.html`.
-# Editing files under `guide/src` reloads through mdbook's own watcher,
-# independent of the trunk rebuild.
-[[proxies]]
-backend = "http://127.0.0.1:3001/"
-rewrite = "/guide/"
-
-# mdbook's live-reload client connects a WebSocket to `/__livereload`
-# (a fixed path at the page host, not under /guide/), so it needs its
-# own proxy entry. Without this, editing the guide would not hot-reload.
-[[proxies]]
-backend = "http://127.0.0.1:3001/__livereload"
-rewrite = "/__livereload"
-ws = true

@@ -32,7 +32,7 @@ use tonk_cli::{ExitCode, account, account_spots, agents, context, guide, identit
     about = "CLI for a synced fact store: inspect live state, run explicit workflows, verify every write",
     version,
     propagate_version = true,
-    after_help = "Start with live state, not documentation:\n  tonk context\n  tonk query <CONCEPT> --json\n  tonk assert <CONCEPT> <ENTITY> --<field> <value>\n  tonk query <CONCEPT> <ENTITY> --json\n\nBare `tonk` runs `tonk context`. Use `tonk help <COMMAND>` for more workflows."
+    after_help = "Start with live state, not documentation:\n  tonk context\n\nRead and write what is already there:\n  tonk query <CONCEPT> --json\n  tonk assert <CONCEPT> <ENTITY> --<field> <value>\n  tonk query <CONCEPT> <ENTITY> --json\n\nMake something visible (a build nobody can see isn't done):\n  tonk concept add <CONCEPT> --attr <field>:text:one\n  tonk view add <CONCEPT> --template '<b>{<field>}</b>'\n  tonk render <CONCEPT>\n\nAdd interactivity:\n  tonk guide events\n  tonk project <PROJECTION> --fixture fixture.yaml --json\n  tonk project <PROJECTION> --fixture fixture.yaml --transact\n\nBare `tonk` runs `tonk context`. Use `tonk help <COMMAND>` for more workflows."
 )]
 struct Cli {
     /// Operate on this spot instead of the active directory binding.
@@ -107,9 +107,10 @@ enum Command {
 
     /// Print the branch's schema as re-submittable notation
     ///
-    /// Every named attribute and concept, or just one concept's
-    /// subset when `<CONCEPT>` is given. The human field/type view
-    /// lives in `tonk assert <concept> --help`.
+    /// Every named attribute, concept, `command!:`, and stored
+    /// `projection!:`, or just one concept's subset when `<CONCEPT>`
+    /// is given. The human field/type view lives in `tonk assert
+    /// <concept> --help`.
     #[command(
         after_help = "Examples:\n  tonk schema\n  tonk schema task\n  tonk schema > schema.notation"
     )]
@@ -122,6 +123,15 @@ enum Command {
     },
 
     /// Evaluate an event projection against a headless YAML fixture
+    ///
+    /// A projection maps one DOM event shape onto a nominal command's
+    /// typed arguments. The fixture stands in for the browser: every
+    /// source the projection declares (`control`, `data`, `event`,
+    /// `detail`, `target`) reads from the matching top-level map.
+    /// `tonk guide events` has the full declaration reference.
+    #[command(
+        after_help = "Fixture shape — supply only the sources the projection declares:\n  controls:\n    title:\n      value: \"Buy milk\"\n      checked: false\n  data:\n    subject: \"did:key:…\"\n  event:\n    key: Enter\n  detail:\n    href: \"/space\"\n  target:\n    value: \"Buy milk\"\n\nExamples:\n  tonk project todo/add-form --fixture fixture.yaml --json   # read-only: what would be sent\n  tonk project todo/add-form --fixture fixture.yaml --redact # same, values replaced\n  tonk project todo/add-form --fixture fixture.yaml --transact # submit it; the rule runs\n\nStart read-only and add --transact once the trace shows the arguments you expect."
+    )]
     Project {
         /// Projection or nominal command name/entity.
         #[arg(value_name = "PROJECTION_OR_COMMAND")]
@@ -141,6 +151,14 @@ enum Command {
     },
 
     /// Inspect nominal and compatibility command declarations
+    ///
+    /// Reports what a branch can already be driven by: `command!:`
+    /// kinds with their typed arguments and stored `projection!:`
+    /// mappings, alongside any legacy structural `dom.event/*`
+    /// descriptors still present.
+    #[command(
+        after_help = "Examples:\n  tonk commands inventory --json\n  tonk commands inventory --json | jq '.nominal[].name'\n\nThe output pins the observed branch revision, so a migration review\ncan tell which revision it read."
+    )]
     Commands {
         #[command(subcommand)]
         command: CommandsCommand,
@@ -483,6 +501,13 @@ enum Command {
 #[derive(Subcommand, Debug)]
 enum CommandsCommand {
     /// Emit a revision-pinned migration inventory
+    ///
+    /// Nominal `command!:` kinds with their arguments and stored
+    /// projections, plus any compatibility structural commands, at one
+    /// pinned revision.
+    #[command(
+        after_help = "Examples:\n  tonk commands inventory --json\n  tonk commands inventory --json | jq '.compatibility'   # what still needs migrating"
+    )]
     Inventory {
         /// Emit JSON. Reserved for future human renderings; currently required.
         #[arg(long, required = true)]

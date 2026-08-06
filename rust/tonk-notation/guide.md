@@ -117,14 +117,20 @@ A **symbol** is a sequence of ASCII characters that:
 
 - Starts with a lowercase letter (`a`–`z`).
 - Continues with lowercase letters, digits, `-`, `.`, `+`.
-- May contain at most one `/` for namespace separation.
-  Neither the prefix nor the name part can contain a further
-  `/`.
 
-Symbols intended for use as **anchor names** (and thus as the
-local part of `id:` URIs) follow a stricter rule: no `/` is
-permitted, since the resulting URI must be a valid scheme-form
-identifier.
+A **qualified symbol** joins two or more symbols with `/`
+(`issue/title`, `space/route/view`). The `/` is a namespace
+separator, not a URI marker, and there is no limit of one: every
+`/`-separated segment is an ordinary symbol. A `/` whose left
+side contains a `.` (`io.gozala.issue/title`) is read as a URI
+instead. Both forms resolve identically — a name lookup against
+the anchor table.
+
+**Anchor names** take the same shape, qualified included, so
+`&todo/add` and `&todo/item` are valid and publish the `id:`
+URIs `id:todo/add` and `id:todo/item`. Keeping an anchor inside
+the symbol charset is what lets the rest of the document refer
+back to it as a bare name.
 
 A **string** is any value that:
 

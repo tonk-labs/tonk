@@ -64,8 +64,6 @@
             esbuild
             imagemagick
             jq
-            mdbook
-            mdbook-mermaid
             python3
             tailwindcss_4
             trunk
@@ -208,25 +206,6 @@
                 ENDPOINT="$ENDPOINT/ucan/"
                 echo "dev:web: local access service ready; proxying /ucan/ and /@ to $SHORTCUT_ORIGIN"
               fi
-              # Serve the user guide at /guide/ via mdbook's own live-reload
-              # server, proxied by trunk (see the [[proxies]] entry in
-              # Trunk.toml).
-              #
-              # Call mdbook and mdbook-mermaid by absolute nix-store path. A
-              # `~/.cargo/bin/mdbook` on PATH would otherwise shadow the nix
-              # one, and a version-mismatched mdbook driving the mermaid
-              # preprocessor silently kills `mdbook serve` mid-session.
-              # Putting the matched mermaid binary first on PATH lets mdbook
-              # find the preprocessor without disturbing the rest of PATH.
-              #
-              # Reclaim port 3001 from any mdbook left by a previous run,
-              # otherwise the new mdbook fails to bind and /guide/ goes dead.
-              GUIDE_PORT=3001
-              pkill -f "mdbook serve ./guide" 2>/dev/null || true
-              PATH="${pkgs.mdbook-mermaid}/bin:$PATH" \
-                ${pkgs.mdbook}/bin/mdbook serve ./guide --port "$GUIDE_PORT" --hostname 127.0.0.1 &
-              GUIDE_PID=$!
-
               # Trunk takes only one `--proxy-backend`, and its TOML proxies do
               # not interpolate, so `/@` (the invite shortcut) cannot be written
               # into Trunk.toml — the access service's port is only known now.
@@ -250,7 +229,7 @@
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
               fi
-              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
+              trap 'kill "$ACCESS_PID" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
 
               trunk serve --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
             '';
@@ -416,28 +395,6 @@
             '';
           };
 
-          # The user guide (mdBook), built to static HTML. Served under
-          # /guide/ on the deployed site, so `site-url` in book.toml must
-          # match that prefix.
-          tonk-guide = pkgs.stdenv.mkDerivation {
-            pname = "tonk-guide";
-            version = "0.1.0";
-            src = filter {
-              root = ./guide;
-            };
-            nativeBuildInputs = [
-              pkgs.mdbook
-              pkgs.mdbook-mermaid
-            ];
-            buildPhase = ''
-              mdbook build --dest-dir ./book
-            '';
-            installPhase = ''
-              mkdir -p $out
-              cp -r ./book/* $out/
-            '';
-          };
-
           tonk-cloudflare-artifacts = buildWasmCrate {
             pname = "tonk-cloudflare-assets";
             buildPhase = ''
@@ -445,14 +402,6 @@
               cp -r ${tonk-access-service} ./build/tonk-access-service
               cp -r ${tonk-account-service} ./build/tonk-account-service
               cp -r ${tonk-ui} ./build/tonk-ui
-              # Files copied from the read-only nix store keep their
-              # read-only perms, so make the tonk-ui tree writable before
-              # adding the guide subdirectory into it.
-              chmod -R u+w ./build/tonk-ui
-              # Ship the guide as static assets under tonk-ui/guide so the
-              # Cloudflare asset layer serves it at /guide/ directly.
-              mkdir -p ./build/tonk-ui/guide
-              cp -r ${tonk-guide}/* ./build/tonk-ui/guide/
             '';
             installPhase = ''
               mkdir -p $out

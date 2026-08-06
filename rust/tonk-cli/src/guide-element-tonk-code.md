@@ -17,10 +17,10 @@ edits by firing a command on `change`:
   placeholder="Type here…"></tonk-code>
 ```
 
-The `change` event's `event.detail.value` is the new document text; read
-it in the command with `dom.event.detail/value` and write it back onto
-the entity with a rule. (`value` is also a live property:
-`el.value` round-trips the document.)
+The `change` event's `event.detail.value` is the new document text: the
+projection bound above sources its argument from `{ detail: "value" }`,
+and a rule writes that back onto the entity. (`value` is also a live
+property: `el.value` round-trips the document.)
 
 ## Attributes
 

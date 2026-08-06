@@ -419,7 +419,33 @@ mod when_introspecting_the_schema {
 }
 
 mod when_serving_the_guide {
+    use anyhow::Result;
     use tonk_cli::guide;
+
+    use crate::common;
+
+    /// Extract the first fenced `yaml` block from guide prose.
+    ///
+    /// Mirrors the awk program in `bench/bin/guide-example.sh`, which
+    /// pulls the same block out of `tonk guide events` for the bench.
+    /// Both exist so the list-append example has exactly one copy —
+    /// the one in `guide-events.md` that agents read.
+    fn first_yaml_block(text: &str) -> String {
+        let mut block = String::new();
+        let mut inside = false;
+        for line in text.lines() {
+            if !inside {
+                inside = line == "```yaml";
+                continue;
+            }
+            if line == "```" {
+                break;
+            }
+            block.push_str(line);
+            block.push('\n');
+        }
+        block
+    }
 
     #[dialog_common::test]
     fn it_returns_the_index_for_no_topic() {
@@ -445,6 +471,33 @@ mod when_serving_the_guide {
         let all = guide::resolve(Some("all"), None).expect("all resolves");
         assert!(all.starts_with("# Asserted-notation guide"));
         assert_eq!(all, guide::GUIDE);
+    }
+
+    #[dialog_common::test]
+    async fn it_evaluates_the_canonical_list_append_example() -> Result<()> {
+        // The events guide's copy-runnable block is the one definition
+        // of the nominal loop: the bench pipes this same block into
+        // `tonk eval -`, and the README quick start walks it. Assert it
+        // is executable, not merely present, so the guide cannot drift
+        // into teaching notation the binary rejects.
+        let example = first_yaml_block(guide::EVENTS);
+        assert!(
+            example.contains("projection!: &todo/add-form")
+                && example.contains("rule!:")
+                && example.contains("view/directory!:"),
+            "the first yaml block of `tonk guide events` is no longer the \
+             list-append example; `bench/bin/guide-example.sh` extracts the \
+             same block and would silently feed the bench the wrong text:\n{example}"
+        );
+
+        let test = common::TestSite::new().await?;
+        let outcome = test.eval_inline(&example).await?;
+        assert!(
+            outcome.committed,
+            "guide example evaluated without committing: {:#?}",
+            outcome.response,
+        );
+        Ok(())
     }
 
     #[dialog_common::test]
