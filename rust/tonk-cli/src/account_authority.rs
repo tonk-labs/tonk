@@ -1,9 +1,10 @@
 //! Account-bound authorization and remote-dispatch boundary.
 
 use anyhow::{Context, Result};
-use dialog_capability::access::{Authorize, AuthorizeError, Prove, Retain};
+use dialog_capability::access::{Access, Authorize, AuthorizeError, Prove, Retain, TimeRange};
 use dialog_capability::{
-    Capability, Command, Effect, Fork, ForkInvocation, Provider, Site, SiteFork,
+    Capability, Command, Effect, Fork, ForkInvocation, Policy as _, Provider, Site, SiteFork,
+    Subject,
 };
 use dialog_common::{ConditionalSend, ConditionalSync};
 use dialog_effects::authority::Identify;
@@ -15,6 +16,8 @@ use dialog_ucan_core::DelegationChain;
 
 use crate::account_session::{AccountSessionReadGuard, ActiveAccount};
 use crate::spot::SpotStore;
+
+const REMOTE_AUTHORIZATION_MARGIN_SECONDS: u64 = 60;
 
 /// Operator wrapper that forwards local effects but exclusively owns UCAN
 /// authorization and every remote network fork.
@@ -80,6 +83,7 @@ impl AccountBoundOperator {
         input: Capability<Authorize<Ucan>>,
         guard: &AccountSessionReadGuard,
     ) -> Result<UcanAuthorization, AuthorizeError> {
+        let input = require_current_window(input, current_unix_seconds());
         if !self.require_account {
             return input.perform(&self.inner).await;
         }
@@ -171,6 +175,39 @@ impl AccountBoundOperator {
         authorization.chain = Some(chain);
         Ok(authorization)
     }
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn require_current_window(
+    input: Capability<Authorize<Ucan>>,
+    now: u64,
+) -> Capability<Authorize<Ucan>> {
+    let subject = input.subject().clone();
+    let request = Authorize::<Ucan>::of(&input);
+    let margin = now.saturating_add(REMOTE_AUTHORIZATION_MARGIN_SECONDS);
+    let duration = TimeRange {
+        not_before: Some(
+            request
+                .duration
+                .not_before
+                .map_or(now, |bound| bound.min(now)),
+        ),
+        expiration: Some(
+            request
+                .duration
+                .expiration
+                .map_or(margin, |bound| bound.max(margin)),
+        ),
+    };
+    Subject::from(subject).attenuate(Access).invoke(
+        Authorize::<Ucan>::new(request.principal.clone(), request.access.clone()).during(duration),
+    )
 }
 
 impl dialog_varsig::Principal for AccountBoundOperator {
@@ -335,4 +372,112 @@ pub async fn wrap(
         store,
         require_account,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dialog_capability::access::{Certificate as _, CertificateStore};
+    use dialog_credentials::Ed25519Signer;
+    use dialog_ucan::{Parameters, Scope, UcanCertificate, UcanDelegation, UcanProof};
+    use dialog_ucan_core::command::Command as UcanCommand;
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+    use dialog_ucan_core::time::Timestamp;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Principal as _;
+
+    struct OrderedStore(Vec<UcanCertificate>);
+
+    #[async_trait::async_trait]
+    impl CertificateStore<Ucan> for OrderedStore {
+        async fn list(
+            &self,
+            audience: &dialog_varsig::Did,
+            subject: Option<&dialog_varsig::Did>,
+        ) -> Result<Vec<UcanCertificate>, AuthorizeError> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|certificate| {
+                    certificate.audience() == audience && certificate.subject() == subject
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn save(&self, _delegation: &UcanDelegation) -> Result<(), AuthorizeError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn remote_authorization_requires_a_current_in_flight_window() {
+        let resource = dialog_capability::did!("key:zResource");
+        let input = Subject::from(dialog_capability::did!("key:zProfile"))
+            .attenuate(Access)
+            .invoke(Authorize::<Ucan>::new(
+                dialog_capability::did!("key:zOperator"),
+                Scope {
+                    subject: UcanSubject::Specific(resource),
+                    command: UcanCommand::new(vec!["storage".to_string()]),
+                    parameters: Parameters::default(),
+                },
+            ));
+
+        let bounded = require_current_window(input, 1_000);
+        let request = Authorize::<Ucan>::of(&bounded);
+
+        assert_eq!(request.duration.not_before, Some(1_000));
+        assert_eq!(request.duration.expiration, Some(1_060));
+    }
+
+    #[dialog_common::test]
+    async fn remote_authorization_skips_an_expired_historical_session() {
+        let resource = Ed25519Signer::import(&[21; 32])
+            .await
+            .expect("resource signer should import");
+        let operator = Ed25519Signer::import(&[22; 32])
+            .await
+            .expect("operator signer should import");
+        let session = |expiration| {
+            DelegationBuilder::new()
+                .issuer(resource.clone())
+                .audience(&operator.did())
+                .subject(UcanSubject::Specific(resource.did()))
+                .command(vec![])
+                .expiration(Timestamp::try_from(expiration as i128).unwrap())
+        };
+        let expired = session(900)
+            .try_build()
+            .await
+            .expect("expired session should build");
+        let fresh = session(2_000)
+            .try_build()
+            .await
+            .expect("fresh session should build");
+        let expected = fresh.to_cid();
+        let store = OrderedStore(vec![UcanCertificate(expired), UcanCertificate(fresh)]);
+        let input = Subject::from(resource.did())
+            .attenuate(Access)
+            .invoke(Authorize::<Ucan>::new(
+                operator.did(),
+                Scope {
+                    subject: UcanSubject::Specific(resource.did()),
+                    command: UcanCommand::new(vec![]),
+                    parameters: Parameters::default(),
+                },
+            ));
+        let bounded = require_current_window(input, 1_000);
+        let request = Authorize::<Ucan>::of(&bounded);
+        let proof_request = Prove::<Ucan>::new(request.principal.clone(), request.access.clone())
+            .during(request.duration);
+
+        let proof: UcanProof = store
+            .prove(proof_request)
+            .await
+            .expect("a fresh session should prove access");
+        let selected = DelegationChain::new(proof.proofs[0].0.clone());
+
+        assert_eq!(selected.proof_cids()[0], expected);
+    }
 }
