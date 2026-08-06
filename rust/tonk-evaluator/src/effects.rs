@@ -66,8 +66,11 @@ pub enum InduceError {
     /// A command-emitting rule produced an invalid nominal payload.
     #[error("effect {effect} emitted an invalid command: {reason}")]
     InvalidCommandOutput {
-        /// Installed effect that emitted the invalid head.
-        effect: Entity,
+        /// Installed effect that emitted the invalid head. Boxed: an
+        /// `Entity` dwarfs every other payload in this enum, and this
+        /// is the rare variant, so inlining it would widen every
+        /// `Result` on the induction path.
+        effect: Box<Entity>,
         /// Schema-resolution or validation failure.
         reason: String,
     },
@@ -741,18 +744,18 @@ async fn decode_command_head<Env: InduceEnv>(
         }
     }
     let kind = kind.ok_or_else(|| InduceError::InvalidCommandOutput {
-        effect: effect.clone(),
+        effect: Box::new(effect.clone()),
         reason: "private command head omitted its stable kind".into(),
     })?;
     let definition = CommandDefinition::by_entity(kind.clone())
         .resolve(&Source::from(txn), env)
         .await
         .map_err(|error| InduceError::InvalidCommandOutput {
-            effect: effect.clone(),
+            effect: Box::new(effect.clone()),
             reason: format!("schema resolution failed for {kind}: {error}"),
         })?
         .ok_or_else(|| InduceError::InvalidCommandOutput {
-            effect: effect.clone(),
+            effect: Box::new(effect.clone()),
             reason: format!("command schema {kind} is not installed"),
         })?;
     let validated = definition
@@ -762,11 +765,11 @@ async fn decode_command_head<Env: InduceEnv>(
             arguments,
         })
         .map_err(|error| InduceError::InvalidCommandOutput {
-            effect: effect.clone(),
+            effect: Box::new(effect.clone()),
             reason: error.to_string(),
         })?;
     let occurrence = Entity::new().map_err(|error| InduceError::InvalidCommandOutput {
-        effect: effect.clone(),
+        effect: Box::new(effect.clone()),
         reason: format!("could not allocate occurrence: {error}"),
     })?;
     Ok(CommandOccurrence::new(
@@ -1490,7 +1493,7 @@ mod tests {
             .await;
         match result {
             Err(InduceError::InvalidCommandOutput { effect, reason }) => {
-                assert_eq!(effect, effect_entity);
+                assert_eq!(*effect, effect_entity);
                 assert!(reason.contains("note"), "{reason}");
             }
             Err(other) => panic!("expected InvalidCommandOutput, got {other:?}"),

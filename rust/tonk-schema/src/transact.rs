@@ -456,7 +456,7 @@ impl Planner for Application {
                 ProjectionDefinitionPlan { definition, name },
             ))),
             Self::CommandInvocation { invocation } => {
-                Ok(ApplicationPlan::CommandInvocation(invocation))
+                Ok(ApplicationPlan::CommandInvocation(Box::new(invocation)))
             }
         }
     }
@@ -490,8 +490,9 @@ pub enum ApplicationPlan {
     CommandDefinition(Box<CommandDefinitionPlan>),
     /// Persisted event projection definition and optional alias.
     ProjectionDefinition(Box<ProjectionDefinitionPlan>),
-    /// Nominal invocation carried to the command runtime.
-    CommandInvocation(SourceInvocation),
+    /// Nominal invocation carried to the command runtime. Boxed for
+    /// the same size reason as every other variant here.
+    CommandInvocation(Box<SourceInvocation>),
 }
 
 /// Ready-to-commit command definition plus optional published alias.

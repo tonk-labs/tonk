@@ -63,7 +63,12 @@ pub enum TransactError {
     )]
     InvocationRequiresResolution {
         /// The nominal command kind that still needs resolving.
-        command: dialog_artifacts::Entity,
+        ///
+        /// Boxed: an [`Entity`](dialog_artifacts::Entity) is far larger
+        /// than any other payload here, and this variant is the rare
+        /// one, so inlining it would widen every `Result` on the
+        /// transact path.
+        command: Box<dialog_artifacts::Entity>,
     },
 }
 
@@ -456,7 +461,7 @@ impl TryFrom<SourceClaim> for Claim {
             SourceClaim::Retract(a) => Claim::Retract(a.try_into()?),
             SourceClaim::Invoke(invocation) => {
                 return Err(TransactError::InvocationRequiresResolution {
-                    command: invocation.command,
+                    command: Box::new(invocation.command),
                 });
             }
         })

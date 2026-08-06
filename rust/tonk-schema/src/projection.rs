@@ -271,7 +271,7 @@ pub fn project(
     projection: &ProjectionDefinition,
     schema: &CommandSchema,
     input: &impl ProjectionInput,
-) -> Result<ProjectionResult, ProjectionError> {
+) -> Result<ProjectionResult, Box<ProjectionError>> {
     let descriptor = projection.descriptor();
     let mut arguments = ValueMap::new();
     let mut trace = Vec::with_capacity(descriptor.arguments.len());
@@ -297,30 +297,30 @@ pub fn project(
                 omitted_optional.push(field.clone());
             }
             SourceRead::Missing if schema.required.contains_key(field) => {
-                return Err(ProjectionError::MissingRequired {
+                return Err(Box::new(ProjectionError::MissingRequired {
                     projection: projection.this().clone(),
                     command: descriptor.command.clone(),
                     field: field.clone(),
                     input: Some(source.clone()),
-                });
+                }));
             }
             SourceRead::Missing => {
-                return Err(invalid_invocation(
+                return Err(Box::new(invalid_invocation(
                     projection,
                     Some(source.clone()),
                     CommandValidationError::UnknownArgument {
                         field: field.clone(),
                     },
-                ));
+                )));
             }
             SourceRead::ReadFailed(message) => {
-                return Err(ProjectionError::ReadFailed {
+                return Err(Box::new(ProjectionError::ReadFailed {
                     projection: projection.this().clone(),
                     command: descriptor.command.clone(),
                     field: field.clone(),
                     input: source.clone(),
                     message,
-                });
+                }));
             }
         }
     }
@@ -335,7 +335,7 @@ pub fn project(
             let input = field
                 .and_then(|field| descriptor.arguments.get(field))
                 .cloned();
-            match error {
+            Box::new(match error {
                 CommandValidationError::MissingRequiredArgument { field } => {
                     ProjectionError::MissingRequired {
                         projection: projection.this().clone(),
@@ -345,7 +345,7 @@ pub fn project(
                     }
                 }
                 error => invalid_invocation(projection, input, error),
-            }
+            })
         })?;
     let (command, arguments) = invocation.into_parts();
 
@@ -957,7 +957,8 @@ mod tests {
                 &projection,
                 &schema(&[("title", Type::String)], &[]),
                 &FixtureInput::default()
-            ),
+            )
+            .map_err(|error| *error),
             Err(ProjectionError::MissingRequired { field, .. }) if field == "title"
         ));
     }
@@ -982,7 +983,7 @@ mod tests {
             SourceRead::ReadFailed("detached target".into()),
         );
         assert!(matches!(
-            project(&projection, &schema, &failed),
+            project(&projection, &schema, &failed).map_err(|error| *error),
             Err(ProjectionError::ReadFailed { .. })
         ));
 
@@ -992,7 +993,7 @@ mod tests {
             SourceRead::Present(Value::String("not an integer".into())),
         );
         assert!(matches!(
-            project(&projection, &schema, &wrong_type),
+            project(&projection, &schema, &wrong_type).map_err(|error| *error),
             Err(ProjectionError::InvalidInvocation {
                 error: CommandValidationError::TypeMismatch { .. },
                 ..
