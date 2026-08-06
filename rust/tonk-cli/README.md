@@ -133,6 +133,16 @@ other access-service requests are denied before HTTP. Logout queues a
 signed, generation-specific detach intent; the device list may remain stale
 until a later account operation reaches the provider and flushes that outbox.
 
+A detach intent is signed once and never edited, so a client-error response
+is a permanent verdict on it: an unknown attachment, a payload the service
+disagrees with, or a service with no detach route can never accept that
+intent, and the CLI drops it rather than retrying forever. Timeouts, rate
+limits, and server errors are retried instead, and while one is still
+queued for a provider, linking to that same provider is refused because its
+one-active-generation rule would reject the activation. `tonk account link
+--abandon-detach` drops those undelivered intents and links anyway; the
+earlier device can stay listed until `tonk account revoke` removes it.
+
 Detach is not revocation. It hides the exact attachment and permits a later
 fresh handoff without publishing an immutable revocation. `tonk account revoke
 <DEVICE_DID>` permanently revokes the selected grant, which can never be

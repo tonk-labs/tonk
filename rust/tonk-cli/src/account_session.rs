@@ -447,11 +447,118 @@ pub(crate) async fn install_for_integration_test(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FlushOutcome {
     /// Number of entries removed after terminal provider outcomes.
-    pub flushed: usize,
-    /// Number retained for a later retry.
-    pub pending: usize,
-    /// Bounded warning for the first retained failure.
+    pub delivered: usize,
+    /// Number dropped because the provider can never accept them.
+    pub abandoned: usize,
+    /// Providers whose detach is still queued after this attempt.
+    pub retained: Vec<String>,
+    /// Bounded warning for the first entry that was not delivered.
     pub warning: Option<String>,
+}
+
+impl FlushOutcome {
+    /// Whether a detach for `provider` is still undelivered.
+    pub fn retains(&self, provider: &str) -> bool {
+        let provider = provider.trim_end_matches('/');
+        self.retained
+            .iter()
+            .any(|queued| queued.trim_end_matches('/') == provider)
+    }
+}
+
+/// What one delivery attempt proved about a queued detach.
+enum Disposition {
+    /// The provider confirmed a terminal lifecycle outcome.
+    Delivered,
+    /// The provider can never accept this intent, so keeping it only
+    /// blocks the device. The account row may stay visible until the
+    /// account page revokes it.
+    Abandoned(String),
+    /// The attempt was inconclusive: the generation may still be active.
+    Retained(String),
+}
+
+/// Classify one provider response.
+///
+/// A detach intent is immutable and signed once, so a `4xx` is a permanent
+/// verdict on this exact payload rather than a transient condition: the
+/// service reports an unknown attachment as `404`, a payload disagreeing
+/// with the stored row as `409`, and a malformed or forged intent as
+/// `400`/`403`. Retrying any of those forever cannot change the answer, and
+/// a queue that never drains blocks `tonk account link` permanently. The
+/// timeout and rate-limit statuses are the exceptions: they describe the
+/// attempt, not the payload.
+fn classify(status: reqwest::StatusCode) -> Option<Disposition> {
+    if status.is_client_error()
+        && !matches!(
+            status,
+            reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::TOO_MANY_REQUESTS
+        )
+    {
+        return Some(Disposition::Abandoned(format!(
+            "gave up delivering a device detach after provider status {status}; \
+             the device may still be listed on the account page"
+        )));
+    }
+    if !status.is_success() {
+        return Some(Disposition::Retained(format!(
+            "detach retry retained after provider status {status}"
+        )));
+    }
+    None
+}
+
+/// Whether a success response names a terminal lifecycle outcome.
+async fn terminal_outcome(response: reqwest::Response) -> bool {
+    response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|value| {
+            value
+                .get("outcome")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .is_some_and(|value| {
+            matches!(
+                value.as_str(),
+                "detached"
+                    | "alreadyDetached"
+                    | "cancelledPendingActivation"
+                    | "superseded"
+                    | "revoked"
+            )
+        })
+}
+
+/// Drop every undelivered detach intent under the exclusive transition
+/// lock, returning how many were dropped.
+///
+/// The escape hatch for a provider whose failures never resolve. Delivery
+/// is best effort already, and an outbox that cannot drain otherwise blocks
+/// every later login on this device with no way out.
+pub async fn abandon_pending(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<usize> {
+    let store = SpotStore::open().context("failed to locate account state")?;
+    abandon_pending_for_store(profile, operator, &store).await
+}
+
+pub(crate) async fn abandon_pending_for_store(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpotStore,
+) -> Result<usize> {
+    let guard = exclusive_transition_guard(store)?;
+    ensure_initialized(profile, operator, &guard).await?;
+    let mut state = load_raw(profile, operator, store)
+        .await?
+        .unwrap_or_default();
+    let abandoned = state.pending_detaches.len();
+    if abandoned > 0 {
+        state.pending_detaches.clear();
+        save_raw(profile, operator, store, &state).await?;
+    }
+    Ok(abandoned)
 }
 
 /// Retry detach outbox entries under the exclusive transition lock.
@@ -488,49 +595,280 @@ pub(crate) async fn flush_pending_for_store(
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await;
-        let terminal = match result {
-            Ok(response) if response.status().is_success() => response
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("outcome")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_owned)
-                })
-                .is_some_and(|value| {
-                    matches!(
-                        value.as_str(),
-                        "detached"
-                            | "alreadyDetached"
-                            | "cancelledPendingActivation"
-                            | "superseded"
-                            | "revoked"
-                    )
-                }),
+        let disposition = match result {
             Ok(response) => {
-                let status = response.status();
-                outcome.warning.get_or_insert_with(|| {
-                    format!("detach retry retained after provider status {status}")
-                });
-                false
+                if let Some(disposition) = classify(response.status()) {
+                    disposition
+                } else if terminal_outcome(response).await {
+                    // A success status still has to name a terminal lifecycle
+                    // outcome; anything else leaves this generation's fate
+                    // unknown, which is a retry rather than a delivery.
+                    Disposition::Delivered
+                } else {
+                    Disposition::Retained(
+                        "detach retry retained after an unrecognized provider outcome".to_string(),
+                    )
+                }
             }
-            Err(error) => {
-                outcome
-                    .warning
-                    .get_or_insert_with(|| format!("detach retry retained: {error}"));
-                false
-            }
+            Err(error) => Disposition::Retained(format!("detach retry retained: {error}")),
         };
-        if terminal {
-            outcome.flushed += 1;
-        } else {
-            retained.push(pending);
+        match disposition {
+            Disposition::Delivered => outcome.delivered += 1,
+            Disposition::Abandoned(warning) => {
+                outcome.abandoned += 1;
+                outcome.warning.get_or_insert(warning);
+            }
+            Disposition::Retained(warning) => {
+                outcome.warning.get_or_insert(warning);
+                outcome.retained.push(pending.provider.clone());
+                retained.push(pending);
+            }
         }
     }
-    outcome.pending = retained.len();
     state.pending_detaches = retained;
     save_raw(profile, operator, store, &state).await?;
     Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    use dialog_capability::Subject;
+    use dialog_effects::storage::Directory;
+    use dialog_storage::provider::storage::Storage;
+
+    use super::*;
+
+    /// Answer every detach request with one fixed status and body.
+    fn detach_server(status: &'static str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind detach service");
+        let endpoint = format!("http://{}", listener.local_addr().expect("service address"));
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { return };
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.flush();
+            }
+        });
+        endpoint
+    }
+
+    /// A port nothing is listening on, so delivery cannot even connect.
+    fn unreachable_provider() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a port");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("reserved address")
+        );
+        drop(listener);
+        endpoint
+    }
+
+    struct Fixture {
+        profile: Profile,
+        operator: Operator<NativeSpace>,
+        store: SpotStore,
+        _directory: tempfile::TempDir,
+    }
+
+    async fn fixture() -> Fixture {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = SpotStore::at(directory.path().join("state"));
+        let storage = Storage::<NativeSpace>::default();
+        let profile = Profile::open(format!("cli-detach-outbox-{}", rand::random::<u64>()))
+            .at(Directory::At(
+                directory.path().join("profiles").to_string_lossy().into(),
+            ))
+            .perform(&storage)
+            .await
+            .expect("open profile");
+        std::fs::create_dir_all(store.account_dir()).expect("create account directory");
+        let account_dir = store.account_dir().canonicalize().expect("account path");
+        let operator = profile
+            .derive(b"tonk/account-state/v1")
+            .allow(Subject::any())
+            .base(Directory::At(account_dir.to_string_lossy().into()))
+            .build(storage)
+            .await
+            .expect("derive operator");
+        Fixture {
+            profile,
+            operator,
+            store,
+            _directory: directory,
+        }
+    }
+
+    /// Queue one detach intent addressed to `provider`.
+    async fn queue(fixture: &Fixture, provider: &str) {
+        let intent = SignedDetachIntent::sign(
+            fixture.profile.signer(),
+            &fixture.profile.did(),
+            "attachment",
+            "delegation",
+            1,
+        )
+        .await
+        .expect("sign detach intent");
+        let state = AccountSessionState {
+            pending_detaches: vec![PendingDetach {
+                provider: provider.to_string(),
+                intent,
+            }],
+            ..AccountSessionState::default()
+        };
+        save_raw(&fixture.profile, &fixture.operator, &fixture.store, &state)
+            .await
+            .expect("seed the outbox");
+    }
+
+    async fn outbox(fixture: &Fixture) -> Vec<PendingDetach> {
+        load_raw(&fixture.profile, &fixture.operator, &fixture.store)
+            .await
+            .expect("load state")
+            .unwrap_or_default()
+            .pending_detaches
+    }
+
+    async fn flush(fixture: &Fixture) -> FlushOutcome {
+        flush_pending_for_store(&fixture.profile, &fixture.operator, &fixture.store)
+            .await
+            .expect("flush the outbox")
+    }
+
+    #[dialog_common::test]
+    async fn it_removes_a_detach_the_provider_terminally_confirmed() {
+        let fixture = fixture().await;
+        let provider = detach_server("200 OK", r#"{"outcome":"alreadyDetached"}"#);
+        queue(&fixture, &provider).await;
+
+        let outcome = flush(&fixture).await;
+
+        assert_eq!(outcome.delivered, 1);
+        assert_eq!(outcome.abandoned, 0);
+        assert!(outcome.retained.is_empty());
+        assert_eq!(outcome.warning, None);
+        assert!(outbox(&fixture).await.is_empty());
+    }
+
+    /// A `2xx` whose body names no lifecycle outcome leaves the generation's
+    /// fate unknown, so the intent has to survive for a later attempt.
+    #[dialog_common::test]
+    async fn it_retains_a_detach_after_an_unrecognized_success_body() {
+        let fixture = fixture().await;
+        let provider = detach_server("200 OK", r#"{"outcome":"somethingElse"}"#);
+        queue(&fixture, &provider).await;
+
+        let outcome = flush(&fixture).await;
+
+        assert_eq!(outcome.delivered, 0);
+        assert!(outcome.retains(&provider));
+        assert_eq!(outbox(&fixture).await.len(), 1);
+    }
+
+    /// The lockout this prevents: an account service with no detach route
+    /// (or no such attachment) answers `404` forever, and a retained entry
+    /// blocks every later `tonk account link` on the device.
+    #[dialog_common::test]
+    async fn it_abandons_a_detach_the_provider_can_never_accept() {
+        let fixture = fixture().await;
+        let provider = detach_server("404 Not Found", "{}");
+        queue(&fixture, &provider).await;
+
+        let outcome = flush(&fixture).await;
+
+        assert_eq!(outcome.abandoned, 1);
+        assert_eq!(outcome.delivered, 0);
+        assert!(!outcome.retains(&provider));
+        assert!(
+            outcome
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("may still be listed")),
+            "an abandoned detach must say the device can remain listed: {:?}",
+            outcome.warning
+        );
+        assert!(outbox(&fixture).await.is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn it_abandons_a_detach_whose_payload_the_provider_rejects() {
+        let fixture = fixture().await;
+        let provider = detach_server("409 Conflict", "{}");
+        queue(&fixture, &provider).await;
+
+        assert_eq!(flush(&fixture).await.abandoned, 1);
+        assert!(outbox(&fixture).await.is_empty());
+    }
+
+    /// Retryable failures describe the attempt rather than the signed
+    /// payload, so these must outlive the attempt even though two of them
+    /// are client-error statuses.
+    #[dialog_common::test]
+    async fn it_retains_a_detach_after_a_retryable_failure() {
+        for status in [
+            "503 Service Unavailable",
+            "429 Too Many Requests",
+            "408 Request Timeout",
+        ] {
+            let fixture = fixture().await;
+            let provider = detach_server(status, "{}");
+            queue(&fixture, &provider).await;
+
+            let outcome = flush(&fixture).await;
+
+            assert_eq!(outcome.abandoned, 0, "{status} must not be abandoned");
+            assert!(outcome.retains(&provider), "{status} must be retried");
+            assert_eq!(outbox(&fixture).await.len(), 1, "{status} must persist");
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_retains_a_detach_the_provider_never_answered() {
+        let fixture = fixture().await;
+        let provider = unreachable_provider();
+        queue(&fixture, &provider).await;
+
+        let outcome = flush(&fixture).await;
+
+        assert!(outcome.retains(&provider));
+        assert_eq!(outbox(&fixture).await.len(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn it_abandons_every_queued_detach_on_demand() {
+        let fixture = fixture().await;
+        queue(&fixture, &unreachable_provider()).await;
+
+        let abandoned =
+            abandon_pending_for_store(&fixture.profile, &fixture.operator, &fixture.store)
+                .await
+                .expect("abandon the outbox");
+
+        assert_eq!(abandoned, 1);
+        assert!(outbox(&fixture).await.is_empty());
+    }
+
+    /// A detach queued for one provider says nothing about linking to
+    /// another, so it must not report itself as blocking that handoff.
+    #[dialog_common::test]
+    async fn it_reports_a_retained_detach_only_for_its_own_provider() {
+        let fixture = fixture().await;
+        let provider = detach_server("503 Service Unavailable", "{}");
+        queue(&fixture, &provider).await;
+
+        let outcome = flush(&fixture).await;
+
+        assert!(outcome.retains(&format!("{provider}/")));
+        assert!(!outcome.retains("https://accounts.example"));
+    }
 }
