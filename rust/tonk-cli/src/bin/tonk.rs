@@ -500,6 +500,10 @@ enum AccountCommand {
         /// Print the approval URL without asking the OS to open it.
         #[arg(long)]
         no_open: bool,
+        /// Link even though an earlier logout's detach never reached the
+        /// account service. Those devices may stay listed until revoked.
+        #[arg(long)]
+        abandon_detach: bool,
     },
 
     /// Disconnect account services on this device
@@ -1231,6 +1235,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             service_url,
             account_url,
             no_open,
+            abandon_detach,
         } => match account::link(
             &profile,
             &account::LinkOptions {
@@ -1238,6 +1243,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 account_url,
                 device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
+                abandon_detach,
             },
         )
         .await
