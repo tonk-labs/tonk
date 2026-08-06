@@ -21,6 +21,7 @@
 use dialog_effects::storage::Directory;
 use dialog_operator::Profile;
 use dialog_storage::provider::storage::Storage;
+use serde::{Deserialize, Serialize};
 use tonk_common::log;
 
 use crate::TonkWorkerError;
@@ -38,22 +39,68 @@ pub const REGISTRY_PROFILE: &str = "tonk";
 /// name as UTF-8.
 const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 
+/// Credential site on the registry profile holding the roster of every
+/// profile this browser knows, as a JSON-serialized `Vec<RosterEntry>`.
+///
+/// A switcher menu has to describe profiles it has not opened, and
+/// opening each one just to render a row would cost key-material load
+/// and credential reads per profile per render. The roster is one
+/// credential load, maintained by the worker at the moments it already
+/// has the facts in hand (boot, link, unlink, rename, switch).
+const PROFILE_ROSTER_SITE: &str = "tonk-profile-roster-v1";
+
+/// One profile this browser knows about, as the switcher renders it.
+///
+/// Inactive entries are as-of their profile's last activation; only the
+/// active profile's entry is refreshed from live state. A display name
+/// renamed on another device converges the next time that account's
+/// profile is activated here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RosterEntry {
+    /// Storage name the profile opens under.
+    pub profile_name: String,
+    /// Account root the profile is attached to. `None` marks a local
+    /// workspace — never signed in, or signed out.
+    pub root_did: Option<String>,
+    /// Attached provider base URL.
+    pub provider: Option<String>,
+    /// Account email, captured best-effort at link time. May lag.
+    pub email: Option<String>,
+    /// Display name at last refresh.
+    pub display_name: Option<String>,
+    /// When the profile was last activated, unix seconds.
+    pub last_active_at: u64,
+}
+
 /// Where the pointer lives: a profile name and the directory it is
 /// opened in. The worker uses [`Registry::device`]; tests point at a
 /// scratch directory under their own name so they neither collide with
 /// each other nor touch the real profile store.
-struct Registry {
-    profile: String,
-    directory: Directory,
+///
+/// Reads and writes go directly against storage — never through the
+/// active profile — so they work regardless of which profile is
+/// active. That is what lets an activation write the pointer for a
+/// profile it has not swapped in yet.
+#[derive(Clone)]
+pub(crate) struct Registry {
+    pub(crate) profile: String,
+    pub(crate) directory: Directory,
 }
 
 impl Registry {
     /// The one this device actually uses.
-    fn device() -> Self {
+    pub(crate) fn device() -> Self {
         Self {
             profile: REGISTRY_PROFILE.to_string(),
             directory: Directory::Profile,
         }
+    }
+
+    /// The name of the profile a device starts with — the registry's
+    /// own. Valid as an activation target even when no roster entry
+    /// names it.
+    pub(crate) fn initial_profile(&self) -> &str {
+        &self.profile
     }
 
     async fn open_self(&self, storage: &Storage<DefaultSpace>) -> Result<Profile, TonkWorkerError> {
@@ -98,7 +145,7 @@ impl Registry {
     }
 
     /// Open the profile this device currently signs as.
-    async fn open_active(
+    pub(crate) async fn open_active(
         &self,
         storage: &Storage<DefaultSpace>,
     ) -> Result<(String, Profile), TonkWorkerError> {
@@ -117,18 +164,119 @@ impl Registry {
             return Ok((name, registry));
         }
 
-        let profile = Profile::open(&name)
+        let profile = self.open_profile(storage, &name).await?;
+        Ok((name, profile))
+    }
+
+    /// Open a profile by name in the registry's directory.
+    ///
+    /// `Profile::open` is open-or-create, so callers activating a
+    /// user-supplied name must validate it against the roster first —
+    /// an unvalidated name would silently mint a garbage key.
+    pub(crate) async fn open_profile(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        name: &str,
+    ) -> Result<Profile, TonkWorkerError> {
+        Profile::open(name)
             .at(self.directory.clone())
             .perform(storage)
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to open profile '{name}': {error}"))
-            })?;
-        Ok((name, profile))
+            })
+    }
+
+    /// Point the active-profile pointer at `name`.
+    ///
+    /// Callers repoint only after the target profile opened (and its
+    /// state built) successfully, so a failed activation never strands
+    /// the next boot on a profile that does not work.
+    pub(crate) async fn set_active(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        name: &str,
+    ) -> Result<(), TonkWorkerError> {
+        let registry = self.open_self(storage).await?;
+        registry
+            .credential()
+            .site(ACTIVE_PROFILE_SITE)
+            .save(name.as_bytes().to_vec())
+            .perform(storage)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("failed to record the active profile: {error}"))
+            })
+    }
+
+    /// The stored roster, or empty when none was ever written.
+    pub(crate) async fn read_roster(
+        &self,
+        storage: &Storage<DefaultSpace>,
+    ) -> Result<Vec<RosterEntry>, TonkWorkerError> {
+        let registry = self.open_self(storage).await?;
+        let bytes = match registry
+            .credential()
+            .site(PROFILE_ROSTER_SITE)
+            .load::<Vec<u8>>()
+            .perform(storage)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) if crate::credential::is_missing(&error) => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(TonkWorkerError::Internal(format!(
+                    "failed to read the profile roster: {error}"
+                )));
+            }
+        };
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_slice(&bytes).map_err(|error| {
+            TonkWorkerError::Internal(format!("stored profile roster is malformed: {error}"))
+        })
+    }
+
+    /// Insert or replace the roster entry named by `entry.profile_name`.
+    pub(crate) async fn upsert_roster(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        entry: RosterEntry,
+    ) -> Result<(), TonkWorkerError> {
+        let mut roster = self.read_roster(storage).await?;
+        match roster
+            .iter_mut()
+            .find(|existing| existing.profile_name == entry.profile_name)
+        {
+            Some(existing) => *existing = entry,
+            None => roster.push(entry),
+        }
+        self.write_roster(storage, &roster).await
+    }
+
+    async fn write_roster(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        roster: &[RosterEntry],
+    ) -> Result<(), TonkWorkerError> {
+        let bytes = serde_json::to_vec(roster).map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to serialize the profile roster: {error}"))
+        })?;
+        let registry = self.open_self(storage).await?;
+        registry
+            .credential()
+            .site(PROFILE_ROSTER_SITE)
+            .save(bytes)
+            .perform(storage)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("failed to save the profile roster: {error}"))
+            })
     }
 
     /// Generate a fresh profile and make it the active one.
-    async fn rotate(
+    pub(crate) async fn rotate(
         &self,
         storage: &Storage<DefaultSpace>,
     ) -> Result<(String, Profile), TonkWorkerError> {
@@ -255,6 +403,53 @@ mod tests {
             "the pointer has to survive a restart, or a rotated device reverts \
              to the key it revoked"
         );
+    }
+
+    fn entry(name: &str, display_name: &str) -> RosterEntry {
+        RosterEntry {
+            profile_name: name.to_string(),
+            root_did: None,
+            provider: None,
+            email: None,
+            display_name: Some(display_name.to_string()),
+            last_active_at: 0,
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_an_empty_roster_before_any_entry_is_written() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+
+        assert_eq!(registry.read_roster(&storage).await.unwrap(), Vec::new());
+    }
+
+    #[dialog_common::test]
+    async fn it_upserts_a_roster_entry_by_profile_name() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+
+        registry
+            .upsert_roster(&storage, entry("one", "first"))
+            .await
+            .unwrap();
+        registry
+            .upsert_roster(&storage, entry("two", "second"))
+            .await
+            .unwrap();
+        registry
+            .upsert_roster(&storage, entry("one", "renamed"))
+            .await
+            .unwrap();
+
+        let roster = registry.read_roster(&storage).await.unwrap();
+        assert_eq!(roster.len(), 2, "an upsert replaces, never duplicates");
+        assert_eq!(
+            roster[0].display_name.as_deref(),
+            Some("renamed"),
+            "the entry keeps its position and takes the new value"
+        );
+        assert_eq!(roster[1].profile_name, "two");
     }
 
     #[dialog_common::test]

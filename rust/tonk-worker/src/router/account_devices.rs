@@ -90,13 +90,12 @@ pub async fn list(
     Ok(Json(fetch_devices(&state, &link, &service).await?))
 }
 
-/// Return verified account facts authorized by this profile's active grant.
-#[wasm_compat]
-pub async fn summary(
-    State(state): State<AppState>,
-) -> Result<Json<AccountSummary>, TonkWorkerError> {
-    let state = state.read().await;
-    let (link, service) = linked_service(&state).await?;
+/// Fetch the provider's verified account facts for the linked profile.
+///
+/// Shared by the HTTP route and the roster hooks that capture the
+/// account email best-effort at link time.
+pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary, TonkWorkerError> {
+    let (link, service) = linked_service(state).await?;
     let body = tonk_identity::request::build_device_invocation(
         state.profile.signer().signer().clone(),
         &link,
@@ -113,9 +112,17 @@ pub async fn summary(
     ))
     .map_err(|error| TonkWorkerError::Internal(format!("invalid account provider URL: {error}")))?;
     let response = super::http::post_cbor(&endpoint, &body).await?;
-    let summary = serde_json::from_slice(&response.body)
-        .map_err(|error| TonkWorkerError::Internal(format!("parse account summary: {error}")))?;
-    Ok(Json(summary))
+    serde_json::from_slice(&response.body)
+        .map_err(|error| TonkWorkerError::Internal(format!("parse account summary: {error}")))
+}
+
+/// Return verified account facts authorized by this profile's active grant.
+#[wasm_compat]
+pub async fn summary(
+    State(state): State<AppState>,
+) -> Result<Json<AccountSummary>, TonkWorkerError> {
+    let state = state.read().await;
+    Ok(Json(account_summary(&state).await?))
 }
 
 async fn self_revocation(

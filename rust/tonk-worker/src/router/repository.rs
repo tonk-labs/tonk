@@ -1814,7 +1814,34 @@ async fn remove_space_inner(state: &AppState, subject: &Did) -> Result<(), Repos
     }
     // Storage cleanup after the lock is released — the delete awaits
     // browser IO and must not stall other requests.
-    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(subject.repo_key())).await;
+    //
+    // A space's storage is keyed by routing key alone, with no profile
+    // prefix, so two profiles replicating one space SHARE its storage.
+    // With more than one profile on this browser the delete is skipped
+    // (the replica rows above are still removed): the failure mode is
+    // leaked storage, never data loss — blocks are re-fetchable for
+    // sync-enabled spaces. A precise guard that consults the other
+    // profiles' replica indexes is deferred. An unreadable roster skips
+    // too, since sharing can't be ruled out.
+    let other_profiles = {
+        let tonk = state.read().await;
+        match tonk.registry.read_roster(&tonk.storage).await {
+            Ok(roster) => roster.len() > 1,
+            Err(error) => {
+                log!("profile roster unreadable before storage delete: {error}");
+                true
+            }
+        }
+    };
+    if other_profiles {
+        log!(
+            "keeping storage for '{}': another profile on this browser may replicate it",
+            subject.repo_key()
+        );
+    } else {
+        let _ =
+            wasm_bindgen_futures::JsFuture::from(delete_space_storage(subject.repo_key())).await;
+    }
 
     // The delete ran unlocked, so a concurrent `drain_sync` could have
     // reached in and re-acquired the repo (e.g. to pull) while it was in

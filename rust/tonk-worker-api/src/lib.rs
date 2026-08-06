@@ -22,6 +22,7 @@ mod identity;
 mod invite;
 mod join;
 mod profile;
+mod profiles;
 mod query;
 mod repository;
 pub mod share;
@@ -49,6 +50,7 @@ pub use join::{
     JoinFailureKind, JoinRequest, JoinResponse, MembershipResponse, VisitRequest, VisitResponse,
 };
 pub use profile::{ProfileInfo, SpaceEntry};
+pub use profiles::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 pub use query::Query;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,

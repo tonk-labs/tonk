@@ -281,6 +281,16 @@ pub async fn establish_repository(
     } else {
         super::account_state::ensure_account_state(&tonk).await;
     }
+
+    // Roster upkeep: this profile just became an account row. The email
+    // comes best-effort from the provider; a failed fetch leaves it
+    // blank until a later refresh.
+    let email = super::account_devices::account_summary(&tonk)
+        .await
+        .ok()
+        .map(|summary| summary.email);
+    super::profiles::upsert_active_entry(&tonk, email).await;
+
     Ok(Json(status(&tonk).await?))
 }
 
@@ -356,6 +366,15 @@ pub async fn link(
     crate::router::account_backup::back_up_existing_spaces(&state).await;
     crate::router::restore::restore_spaces(&state).await;
 
+    // Roster upkeep: this profile just became an account row. The email
+    // comes best-effort from the provider; a failed fetch leaves it
+    // blank until a later refresh.
+    let email = super::account_devices::account_summary(&state)
+        .await
+        .ok()
+        .map(|summary| summary.email);
+    super::profiles::upsert_active_entry(&state, email).await;
+
     Ok(Json(status(&state).await?))
 }
 
@@ -375,6 +394,11 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
         })?;
     // The account repository is no longer this profile's to hide.
     state.account_keys.invalidate();
+    // Roster upkeep: with no provider attached the entry's account
+    // fields clear, so the switcher renders this row as a local
+    // workspace. The persisted root stays, so signing back in with the
+    // same passkey still short-circuits in place.
+    super::profiles::upsert_active_entry(&state, None).await;
     Ok(Json(status(&state).await?))
 }
 
@@ -500,6 +524,39 @@ mod tests {
         };
         let error = link(State(state.clone()), Json(request)).await.unwrap_err();
         assert!(matches!(error, TonkWorkerError::Forbidden(_)));
+    }
+
+    #[dialog_common::test]
+    async fn it_marks_the_profile_local_in_the_roster_after_unlink() {
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let request = {
+            let state = state.read().await;
+            matching_request(&state).await
+        };
+        let _ = link(State(state.clone()), Json(request)).await.unwrap();
+        {
+            let tonk = state.read().await;
+            let roster = tonk.registry.read_roster(&tonk.storage).await.unwrap();
+            let entry = roster
+                .iter()
+                .find(|entry| entry.profile_name == tonk.profile_name)
+                .expect("link writes the profile's roster entry");
+            assert!(entry.root_did.is_some());
+            assert_eq!(entry.provider.as_deref(), Some(TEST_ACCOUNT_PROVIDER));
+        }
+
+        let _ = unlink(State(state.clone())).await.unwrap();
+
+        let tonk = state.read().await;
+        let roster = tonk.registry.read_roster(&tonk.storage).await.unwrap();
+        let entry = roster
+            .iter()
+            .find(|entry| entry.profile_name == tonk.profile_name)
+            .expect("unlink keeps the roster entry");
+        assert!(
+            entry.root_did.is_none() && entry.provider.is_none() && entry.email.is_none(),
+            "a signed-out profile renders as a local workspace"
+        );
     }
 
     #[dialog_common::test]
