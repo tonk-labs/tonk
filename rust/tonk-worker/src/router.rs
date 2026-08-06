@@ -1280,6 +1280,85 @@ pub mod tests {
         );
     }
 
+    /// Hand-craft an audience-open invite URL for a synthetic repository
+    /// subject. The subject signer doubles as root issuer. Distinct tag
+    /// bytes give distinct subjects/ephemerals. Returns the URL plus the
+    /// subject's routing key (the repo a join mounts the claimer's
+    /// replica under).
+    ///
+    /// `remote` advertises an access service. Every host used in tests
+    /// is unresolvable, so a staged pull against one fails the way a
+    /// remote outage does; `None` makes the invite local-only.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) async fn open_invite_url(
+        subject_tag: u8,
+        ephemeral_tag: u8,
+        remote: Option<&str>,
+    ) -> (String, String) {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+        use dialog_varsig::Principal as _;
+        use tonk_invite::{Invite, InviteAudience};
+        use tonk_schema::prelude::DidExt as _;
+
+        let subject_signer = Ed25519Signer::import(&[subject_tag; 32]).await.unwrap();
+        let subject = subject_signer.did();
+        let key = subject.repo_key().to_owned();
+        let ephemeral_seed = [ephemeral_tag; 32];
+        let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(subject_signer)
+            .audience(&ephemeral.did())
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let invite = Invite::new(
+            DelegationChain::new(delegation),
+            InviteAudience::Open {
+                seed: ephemeral_seed,
+            },
+            remote.map(|url| url::Url::parse(url).unwrap()),
+        )
+        .await
+        .unwrap()
+        .with_revocation_url(
+            remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
+        );
+        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
+    }
+
+    /// `POST /api/profile/visit` — an accountless guest visit.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) async fn visit_invite(app: &Router, url: &str) -> StatusCode {
+        post_invite_url(app, "/api/profile/visit", url).await
+    }
+
+    /// `POST /api/profile/join` — a durable claim to the local root.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) async fn join_invite_url(app: &Router, url: &str) -> StatusCode {
+        post_invite_url(app, "/api/profile/join", url).await
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn post_invite_url(app: &Router, path: &str, url: &str) -> StatusCode {
+        let body = serde_json::json!({ "url": url }).to_string();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
     /// Drive the `tonk:invite` command end to end on a fresh, synced repo
     /// and return the minted invite. Attaches a remote before minting —
     /// a local-only repo now refuses to mint at all.
