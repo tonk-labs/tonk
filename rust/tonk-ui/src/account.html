@@ -61,13 +61,15 @@
 
   <section id="account-handoff" class="account__panel" hidden>
     <p class="account__eyebrow">Link a command-line profile</p>
-    <dl class="account__device">
+    <dl class="account__device" aria-label="Command-line profile details">
       <div><dt>Device</dt><dd id="account-handoff-name"></dd></div>
       <div><dt>Profile DID</dt><dd id="account-handoff-did"></dd></div>
     </dl>
     <p class="account__hint">Only continue if you started this link from your own terminal.</p>
-    <button id="account-handoff-submit" class="account__button" type="button">Approve with passkey</button>
-    <a class="account__button account__button--quiet" href="/account">Cancel</a>
+    <div class="account__actions account__actions--inline">
+      <button id="account-handoff-submit" class="account__button" type="button">Approve with passkey</button>
+      <a class="account__button account__button--quiet" href="/account">Cancel</a>
+    </div>
   </section>
 
   <section id="account-setup" class="account__panel" hidden>

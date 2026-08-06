@@ -149,6 +149,25 @@ tonk-account {
     gap: 12px;
 }
 
+/* A bare `<button>` shrinks to fit while a block `<a>` fills the line, so the
+   two controls only line up once they share an explicit grid track. */
+.account__actions--inline {
+    grid-auto-flow: column;
+    align-items: center;
+    justify-content: start;
+    column-gap: 20px;
+    margin-top: 20px;
+}
+
+.account__actions--inline .account__button {
+    min-width: 208px;
+}
+
+.account__actions--inline .account__button--quiet {
+    min-width: 0;
+    justify-self: start;
+}
+
 .account__eyebrow {
     margin: 0 0 18px;
     color: var(--account-muted);
@@ -158,31 +177,40 @@ tonk-account {
     text-transform: uppercase;
 }
 
+/* Label and value share one pair of gridlines across every row, flush with the
+   panel edges, so the block reads as a table rather than a stack of cards. */
 .account__device {
     display: grid;
-    gap: 1px;
-    margin: 0 0 16px;
-    background: var(--account-divider);
+    grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+    margin: 0;
+    border-block: 1px solid var(--account-divider);
 }
 
-.account__device div {
+.account__device > div {
     display: grid;
-    gap: 6px;
-    padding: 13px 14px;
-    background: var(--account-field);
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    column-gap: 24px;
+    padding: 14px 0;
+}
+
+.account__device > div + div {
+    border-top: 1px solid var(--account-divider);
 }
 
 .account__device dt {
     color: var(--account-muted);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
 }
 
 .account__device dd {
+    min-height: 1.45em;
     margin: 0;
     overflow-wrap: anywhere;
     font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.45;
 }
 
@@ -506,6 +534,24 @@ tonk-account {
 
     .account__facts > div + div {
         border-top: 1px solid var(--account-divider);
+    }
+
+    .account__device {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .account__device > div {
+        row-gap: 5px;
+        padding: 12px 0;
+    }
+
+    .account__actions--inline {
+        grid-auto-flow: row;
+        row-gap: 4px;
+    }
+
+    .account__actions--inline .account__button {
+        min-width: 0;
     }
 
     .account__device-row,
