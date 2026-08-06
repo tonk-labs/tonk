@@ -67,6 +67,38 @@ The router's shared state is `Arc<RwLock<TonkState>>`. `TonkState` owns:
 re-exported here as `tonk_worker::reactor` (and flattened), so `Reactor`,
 `CommandRegistry`, and friends are usable directly off this crate.
 
+## Guest authority
+
+An accountless guest holds no membership. What it holds is an audience-open
+invite URL, retained locally, and one bounded delegation minted from it —
+`subject -> ... -> operator`, capped at `VISIT_TTL_SECONDS` (one hour) by
+`Invite::visit`. That bound never moves.
+
+Because the bound never moves, the delegation is renewed rather than extended.
+Before any remote operation presigns (`pull`, `push`, `sync`, `sync_status`, and
+the sync drain), `ensure_session_authority` checks the signing session and every
+retained guest record. If the session or any guest is due, it rotates the
+operator once and replays every still-valid guest invite onto the new one: a
+fresh key means a fresh audience, which is what keeps the retired chain from
+being picked out of a content-addressed store that never deletes and never
+consults the clock. Durable spaces need no replay — they reach the operator
+through `space -> root -> device -> operator`, whose last hop the rotation
+re-mints anyway.
+
+Each guest record therefore stores which operator its live chain is addressed to
+and when that chain lapses, alongside the URL. A record naming any other
+operator is due immediately, whatever its expiry says, which is what makes a
+service-worker restart heal on the next request instead of taking a 401. An
+invite that has itself expired is not replayed: a guest hop cannot outlive the
+chain it extends.
+
+Renewal is local — parse, mint, retain — and adds no request to the account or
+access service. Expiry and revocation stay where they were: the access service
+checks them on the next ordinary remote call. Renewal only decides which
+credential that call presents. And it is still not membership: explicit
+promotion (`POST /api/repository/{repo}/membership`) remains the only path from
+a guest to a durable member.
+
 ## Host/guest routing model
 
 A view is rendered in a sandboxed iframe. Routing policy lives entirely in

@@ -98,7 +98,10 @@ use super::repository::{
     UpstreamConfiguration, build_repository_info, record_initialized_replica_in_profile,
     record_replica_local_meta,
 };
-use crate::{TonkWorkerError, worker::TonkState};
+use crate::{
+    TonkWorkerError,
+    worker::{DefaultOperator, TonkState},
+};
 
 /// The single branch the profile repository lives on (`main`; the
 /// profile has no content/meta split).
@@ -644,57 +647,121 @@ pub(crate) struct JoinOutcome {
     pub renewed: bool,
 }
 
+/// The record shape written today: the retained bearer URL plus which
+/// operator the live guest delegation was minted for and when it lapses.
+///
+/// Version 1 carried the URL alone. That was enough to replay an invite
+/// on demand, but not to tell whether the delegation currently in the
+/// certificate store is still usable — which is what renewal has to
+/// decide before every remote operation. A v1 record is therefore read
+/// as "metadata unknown", which forces one refresh and rewrites it in
+/// this shape.
+const GUEST_RECORD_VERSION: u8 = 2;
+
+/// The on-disk form. Both metadata fields are absent in version 1 and
+/// required in version 2; [`decode_guest_record`] is what enforces that,
+/// so nothing downstream has to re-check the pairing.
 #[derive(Serialize, Deserialize)]
 struct GuestRecord {
     version: u8,
     url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audience: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
+}
+
+/// A retained guest record, decoded.
+///
+/// `audience` and `expires_at` are `None` only for a legacy version 1
+/// record. They are read together or not at all: an audience without an
+/// expiry says nothing about whether the delegation is still good, and an
+/// expiry without an audience says nothing about which chain it describes.
+pub(crate) struct GuestLease {
+    /// The subject whose replica this guest holds.
+    pub subject: Did,
+    /// The retained open-invite URL. Bearer authority — never logged.
+    pub url: String,
+    /// Operator the live delegation was minted for.
+    pub audience: Option<Did>,
+    /// Effective expiry of that delegation, unix seconds.
+    pub expires_at: Option<u64>,
+}
+
+impl std::fmt::Debug for GuestLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuestLease")
+            .field("subject", &self.subject)
+            .field("audience", &self.audience)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A freshly minted guest delegation, with the two facts the retained
+/// record has to agree with: who it is addressed to, and when it lapses.
+///
+/// The expiry is read off the chain rather than computed as `now + TTL`,
+/// so an invite that expires sooner than the guest hop would carries
+/// through instead of being overstated.
+pub(crate) struct GuestGrant {
+    /// The bounded `subject -> ... -> operator` chain.
+    pub chain: DelegationChain,
+    /// The operator the chain terminates at.
+    pub audience: Did,
+    /// Effective expiration of the chain, unix seconds.
+    pub expires_at: u64,
 }
 
 fn guest_site(subject: &Did) -> String {
     format!("tonk-guest-invite-v1:{}", subject.repo_key())
 }
 
-/// Retain the invite a guest visit was opened with, so an explicit
-/// promotion can replay it without the page holding the URL.
-pub(crate) async fn save_guest(
+/// Decode a stored guest record into its URL and, when the record
+/// carries them, the audience and expiry of the delegation it describes.
+///
+/// A record this cannot read is local corruption, not authority to
+/// invent: it comes back as an error and the caller preserves the bytes.
+fn decode_guest_record(
+    subject: &Did,
+    bytes: &[u8],
+) -> Result<(String, Option<Did>, Option<u64>), TonkWorkerError> {
+    let record: GuestRecord = serde_json::from_slice(bytes).map_err(|error| {
+        TonkWorkerError::Internal(format!("stored guest record is invalid: {error}"))
+    })?;
+    match record.version {
+        // Legacy: the URL is all it kept. Treated as "metadata unknown",
+        // which reads as due on the next check.
+        1 => Ok((record.url, None, None)),
+        GUEST_RECORD_VERSION => {
+            let (Some(audience), Some(expires_at)) = (record.audience, record.expires_at) else {
+                return Err(TonkWorkerError::Internal(format!(
+                    "stored guest record for {subject} is missing its delegation metadata"
+                )));
+            };
+            let audience = audience.parse::<Did>().map_err(|error| {
+                TonkWorkerError::Internal(format!(
+                    "stored guest record for {subject} names an unparseable audience: {error}"
+                ))
+            })?;
+            Ok((record.url, Some(audience), Some(expires_at)))
+        }
+        version => Err(TonkWorkerError::Internal(format!(
+            "stored guest record for {subject} has unsupported version {version}"
+        ))),
+    }
+}
+
+/// Read the retained guest record for `subject`, if there is one.
+///
+/// An absent or cleared site is not a guest — promotion clears by
+/// writing empty bytes, which has to read the same as never having
+/// visited.
+pub(crate) async fn guest_lease(
     tonk: &TonkState,
     subject: &Did,
-    url: &str,
-) -> Result<(), JoinFailure> {
-    let record = serde_json::to_vec(&GuestRecord {
-        version: 1,
-        url: url.to_string(),
-    })
-    .map_err(|error| {
-        JoinFailure::claim_failed(format!("failed to serialize the guest record: {error}"))
-    })?;
-    tonk.profile
-        .credential()
-        .site(guest_site(subject))
-        .save(record)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to save the guest record: {error}"))
-        })
-}
-
-/// Drop the retained guest invite. Part of the durable commit, never a
-/// preflight write: until it runs, a promotion that fails still leaves
-/// the guest with working bounded access.
-async fn clear_guest(tonk: &TonkState, subject: &Did) -> Result<(), JoinFailure> {
-    tonk.profile
-        .credential()
-        .site(guest_site(subject))
-        .save(Vec::<u8>::new())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to clear the guest record: {error}"))
-        })
-}
-
-async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, TonkWorkerError> {
+) -> Result<Option<GuestLease>, TonkWorkerError> {
     let bytes = match tonk
         .profile
         .credential()
@@ -714,10 +781,362 @@ async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, To
     if bytes.is_empty() {
         return Ok(None);
     }
-    let record: GuestRecord = serde_json::from_slice(&bytes).map_err(|error| {
-        TonkWorkerError::Internal(format!("stored guest record is invalid: {error}"))
+    let (url, audience, expires_at) = decode_guest_record(subject, &bytes)?;
+    Ok(Some(GuestLease {
+        subject: subject.clone(),
+        url,
+        audience,
+        expires_at,
+    }))
+}
+
+/// Every guest this profile currently holds, in subject order.
+///
+/// The operator is shared by all mounted repositories, so rotating it
+/// invalidates every guest delegation at once — which makes the whole
+/// set, not the one guest that triggered a rotation, the unit renewal
+/// works on. Sorted so that batch behaves the same on every pass.
+pub(crate) async fn guest_leases(tonk: &TonkState) -> Result<Vec<GuestLease>, TonkWorkerError> {
+    let profile_meta = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open profile meta branch: {error}"))
+        })?;
+
+    let rows: Vec<Replica> = profile_meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            profile: Term::from(tonk_schema::domain::replica::Profile(
+                tonk.profile.did().this(),
+            )),
+            kind: Term::from(Replica::repository_kind()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("replica query on profile meta failed: {error:?}"))
+        })?;
+
+    let mut subjects: Vec<Did> = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row.subject.0.to_string().parse::<Did>() {
+            Ok(subject) => subjects.push(subject),
+            // A single unreadable index row is not a reason to refuse to
+            // renew every other guest; the profile route skips it the
+            // same way.
+            Err(error) => log!(
+                "replica subject {:?} is unparseable: {error:?}",
+                row.subject.0
+            ),
+        }
+    }
+    subjects.sort_by_key(|subject| subject.to_string());
+    subjects.dedup();
+
+    let mut leases = Vec::new();
+    for subject in subjects {
+        if let Some(lease) = guest_lease(tonk, &subject).await? {
+            leases.push(lease);
+        }
+    }
+    Ok(leases)
+}
+
+/// Parse a lease's retained invite, unless replaying it could not
+/// produce usable authority.
+///
+/// `Ok(None)` means the invite itself has lapsed. A guest hop is bounded
+/// by the chain it extends, so replaying an expired invite would mint a
+/// chain that is already dead — and, because the record would then name
+/// an audience whose delegation is inside the renewal margin forever, it
+/// would ask for a rotation on every single sync boundary. Declining
+/// here is what keeps a dead invite from becoming a rotation loop; the
+/// guest simply stays as it is until someone hands it a live link.
+///
+/// A URL that does not parse is a different thing: local corruption. It
+/// comes back as an error so the caller can refuse to rotate and leave
+/// the record in place for diagnosis.
+pub(crate) async fn renewable_invite(
+    lease: &GuestLease,
+    now: u64,
+) -> Result<Option<Invite>, JoinFailure> {
+    let invite = Invite::parse_url(&lease.url).await.map_err(|error| {
+        JoinFailure::malformed(format!(
+            "retained guest invite for {} did not parse: {error}",
+            lease.subject
+        ))
     })?;
-    Ok(Some(record.url))
+    if invite
+        .chain
+        .expiration()
+        .is_some_and(|expiration| expiration.to_unix() <= now)
+    {
+        return Ok(None);
+    }
+    Ok(Some(invite))
+}
+
+/// Mint one bounded guest delegation from `invite` to `audience`.
+///
+/// The single place a guest hop is created: staging, the initial visit,
+/// and renewal all come through here, so the TTL and chain shape cannot
+/// drift between what a test exercises and what renewal replays. The
+/// expiry returned is the chain's effective one — an invite that lapses
+/// before the guest hop would bounds the result, and no hop can extend
+/// past it.
+pub(crate) async fn mint_guest_grant(
+    invite: Invite,
+    audience: &Did,
+) -> Result<GuestGrant, JoinFailure> {
+    let chain = invite
+        .visit(audience)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("invite did not extend to a guest: {error}"))
+        })?
+        .chain;
+    let expires_at = chain
+        .expiration()
+        .ok_or_else(|| JoinFailure::claim_failed("a guest delegation must expire"))?
+        .to_unix();
+    Ok(GuestGrant {
+        chain,
+        audience: audience.clone(),
+        expires_at,
+    })
+}
+
+/// Install a minted guest chain in the durable certificate store.
+///
+/// Split from [`save_guest`] so a batch renewal can retain every
+/// replacement chain before it writes any metadata: the operator swap
+/// then happens with no guest left holding a record that names an
+/// audience it has no chain for.
+pub(crate) async fn retain_guest_grant(
+    tonk: &TonkState,
+    operator: &DefaultOperator,
+    grant: &GuestGrant,
+) -> Result<(), JoinFailure> {
+    tonk.profile
+        .access()
+        .save(UcanDelegation(grant.chain.clone()))
+        .perform(operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to save the guest authority: {error}"))
+        })
+}
+
+/// Retain the invite a guest visit was opened with, together with the
+/// audience and expiry of the delegation currently standing on it.
+///
+/// The URL is the renewable half: it is what a promotion replays, and
+/// what renewal replays onto a rotated operator. The metadata is the
+/// half that says whether replaying is due.
+pub(crate) async fn save_guest(
+    tonk: &TonkState,
+    operator: &DefaultOperator,
+    subject: &Did,
+    url: &str,
+    grant: &GuestGrant,
+) -> Result<(), JoinFailure> {
+    write_guest_record(
+        tonk,
+        operator,
+        subject,
+        url,
+        &grant.audience,
+        grant.expires_at,
+    )
+    .await
+}
+
+async fn write_guest_record(
+    tonk: &TonkState,
+    operator: &DefaultOperator,
+    subject: &Did,
+    url: &str,
+    audience: &Did,
+    expires_at: u64,
+) -> Result<(), JoinFailure> {
+    let record = serde_json::to_vec(&GuestRecord {
+        version: GUEST_RECORD_VERSION,
+        url: url.to_string(),
+        audience: Some(audience.to_string()),
+        expires_at: Some(expires_at),
+    })
+    .map_err(|error| {
+        JoinFailure::claim_failed(format!("failed to serialize the guest record: {error}"))
+    })?;
+    tonk.profile
+        .credential()
+        .site(guest_site(subject))
+        .save(record)
+        .perform(operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to save the guest record: {error}"))
+        })
+}
+
+/// Overwrite a retained guest record with chosen metadata, bypassing the
+/// mint that normally produces it.
+///
+/// Test-only. Renewal is driven entirely by what is stored, so the
+/// alternative to writing that directly is waiting an hour for a real
+/// delegation to approach its expiry.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn store_guest_record(
+    tonk: &TonkState,
+    subject: &Did,
+    url: &str,
+    audience: &Did,
+    expires_at: u64,
+) -> Result<(), JoinFailure> {
+    write_guest_record(tonk, &tonk.operator, subject, url, audience, expires_at).await
+}
+
+/// The raw retained bytes for `subject`, for tests that assert a failed
+/// renewal left the record exactly as it found it.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn guest_record_bytes(tonk: &TonkState, subject: &Did) -> Option<Vec<u8>> {
+    tonk.profile
+        .credential()
+        .site(guest_site(subject))
+        .load::<Vec<u8>>()
+        .perform(&tonk.operator)
+        .await
+        .ok()
+        .filter(|bytes| !bytes.is_empty())
+}
+
+/// The stored record is the only thing renewal reads before it decides
+/// whether a guest's authority is still good, so decoding it is pure
+/// data and runs on both targets.
+#[cfg(test)]
+mod guest_record {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use dialog_credentials::ed25519::Ed25519Signer;
+    use dialog_varsig::{Did, Principal as _};
+
+    use super::{GUEST_RECORD_VERSION, decode_guest_record};
+
+    async fn subject() -> Did {
+        Ed25519Signer::import(&[9u8; 32]).await.unwrap().did()
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_a_v1_guest_record_as_a_legacy_lease() {
+        let subject = subject().await;
+        let bytes = serde_json::json!({ "version": 1, "url": "https://hub.tonk.xyz/join?x=1#s" })
+            .to_string()
+            .into_bytes();
+
+        let (url, audience, expires_at) = decode_guest_record(&subject, &bytes).unwrap();
+
+        assert_eq!(
+            url, "https://hub.tonk.xyz/join?x=1#s",
+            "the retained URL is what a legacy record still carries",
+        );
+        assert!(
+            audience.is_none() && expires_at.is_none(),
+            "a v1 record knows nothing about the live delegation, which is \
+             what makes it due for one refresh",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_a_v2_guest_record_with_its_delegation_metadata() {
+        let subject = subject().await;
+        let audience = Ed25519Signer::import(&[11u8; 32]).await.unwrap().did();
+        let bytes = serde_json::json!({
+            "version": GUEST_RECORD_VERSION,
+            "url": "https://hub.tonk.xyz/join?x=1#s",
+            "audience": audience.to_string(),
+            "expires_at": 1_700_000_000u64,
+        })
+        .to_string()
+        .into_bytes();
+
+        let decoded = decode_guest_record(&subject, &bytes).unwrap();
+
+        assert_eq!(
+            decoded,
+            (
+                "https://hub.tonk.xyz/join?x=1#s".to_string(),
+                Some(audience),
+                Some(1_700_000_000),
+            )
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_v2_guest_record_missing_its_metadata() {
+        let subject = subject().await;
+        for partial in [
+            serde_json::json!({
+                "version": GUEST_RECORD_VERSION,
+                "url": "https://hub.tonk.xyz/join",
+                "expires_at": 1_700_000_000u64,
+            }),
+            serde_json::json!({
+                "version": GUEST_RECORD_VERSION,
+                "url": "https://hub.tonk.xyz/join",
+                "audience": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP",
+            }),
+        ] {
+            assert!(
+                decode_guest_record(&subject, partial.to_string().as_bytes()).is_err(),
+                "half the metadata says nothing about whether the stored \
+                 delegation is still usable, so it must not be read as if it did",
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_guest_record_from_an_unsupported_version() {
+        let subject = subject().await;
+        let bytes = serde_json::json!({ "version": 99, "url": "https://hub.tonk.xyz/join" })
+            .to_string()
+            .into_bytes();
+
+        assert!(
+            decode_guest_record(&subject, &bytes).is_err(),
+            "a record this build cannot read is corruption to report, not \
+             authority to guess at",
+        );
+    }
+}
+
+/// Drop the retained guest invite. Part of the durable commit, never a
+/// preflight write: until it runs, a promotion that fails still leaves
+/// the guest with working bounded access.
+async fn clear_guest(tonk: &TonkState, subject: &Did) -> Result<(), JoinFailure> {
+    tonk.profile
+        .credential()
+        .site(guest_site(subject))
+        .save(Vec::<u8>::new())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to clear the guest record: {error}"))
+        })
+}
+
+async fn guest_url(tonk: &TonkState, subject: &Did) -> Result<Option<String>, TonkWorkerError> {
+    Ok(guest_lease(tonk, subject).await?.map(|lease| lease.url))
 }
 
 /// Whether this replica is a guest visit rather than a durable member.
@@ -959,14 +1378,8 @@ async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJo
         // attempt gets its own bounded delegation and the real operator
         // only receives one once this stage has passed.
         None => {
-            prepared
-                .invite
-                .clone()
-                .visit(&staging.operator().did())
-                .await
-                .map_err(|error| {
-                    JoinFailure::claim_failed(format!("invite did not extend to a guest: {error}"))
-                })?
+            mint_guest_grant(prepared.invite.clone(), &staging.operator().did())
+                .await?
                 .chain
         }
     };
@@ -1142,7 +1555,7 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         .await?;
     }
 
-    save_authority(tonk, &prepared, chain).await?;
+    let grant = save_authority(tonk, &prepared, chain).await?;
 
     if prepared.installs_replica() {
         record_initialized_replica_in_profile(tonk, &prepared.subject)
@@ -1153,7 +1566,19 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
     }
 
     match prepared.mode {
-        JoinMode::GuestVisit => save_guest(tonk, &prepared.subject, &prepared.url).await?,
+        JoinMode::GuestVisit => {
+            let grant = grant.ok_or_else(|| {
+                JoinFailure::claim_failed("a guest visit installed no bounded authority")
+            })?;
+            save_guest(
+                tonk,
+                &tonk.operator,
+                &prepared.subject,
+                &prepared.url,
+                &grant,
+            )
+            .await?;
+        }
         JoinMode::Durable => {
             if prepared.guest {
                 clear_guest(tonk, &prepared.subject).await?;
@@ -1192,27 +1617,27 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
 /// Idempotent at the dialog layer — re-saving the same chain is a no-op,
 /// re-saving an extended one adds a fresh proof. Either way the
 /// recipient's effective access can only grow, never shrink, by joining.
+///
+/// Returns the minted grant for a guest visit, so the caller writes a
+/// retained record that describes the chain actually installed rather
+/// than an independently recomputed one.
 async fn save_authority(
     tonk: &TonkState,
     prepared: &PreparedJoin,
     staged_chain: DelegationChain,
-) -> Result<(), JoinFailure> {
-    let chain = match prepared.mode {
-        JoinMode::Durable => staged_chain,
-        // The staged guest delegation is addressed to the staging
-        // operator and dies with it, so the durable one is minted here —
-        // after staging proved the invite is good for it.
+) -> Result<Option<GuestGrant>, JoinFailure> {
+    // The staged guest delegation is addressed to the staging operator
+    // and dies with it, so the durable one is minted here — after
+    // staging proved the invite is good for it.
+    let grant = match prepared.mode {
+        JoinMode::Durable => None,
         JoinMode::GuestVisit => {
-            prepared
-                .invite
-                .clone()
-                .visit(&tonk.operator.did())
-                .await
-                .map_err(|error| {
-                    JoinFailure::claim_failed(format!("guest authority did not mint: {error}"))
-                })?
-                .chain
+            Some(mint_guest_grant(prepared.invite.clone(), &tonk.operator.did()).await?)
         }
+    };
+    let chain = match &grant {
+        Some(grant) => grant.chain.clone(),
+        None => staged_chain,
     };
 
     let prefix_bytes = match prepared.mode {
@@ -1244,7 +1669,7 @@ async fn save_authority(
                 ))
             })?;
     }
-    Ok(())
+    Ok(grant)
 }
 
 /// Give the durable repository the staged revision, then publish it as the
@@ -2085,58 +2510,23 @@ mod tests {
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
-    /// repository subject. The subject signer doubles as root issuer.
-    /// Distinct tag bytes give distinct subjects/ephemerals. Returns
-    /// the URL plus the subject's routing key (the repo the join
-    /// mounts the claimer's replica under).
+    /// repository subject. Distinct tag bytes give distinct
+    /// subjects/ephemerals. Returns the URL plus the subject's routing
+    /// key (the repo the join mounts the claimer's replica under).
     async fn handcrafted_invite_url(subject_tag: u8, ephemeral_tag: u8) -> (String, String) {
-        open_invite_url(subject_tag, ephemeral_tag, None).await
+        crate::router::tests::open_invite_url(subject_tag, ephemeral_tag, None).await
     }
 
     /// The same open invite, but advertising an access service. The host
     /// does not exist, so any staged pull against it fails the way a
     /// remote outage does.
     async fn unreachable_invite_url(subject_tag: u8, ephemeral_tag: u8) -> (String, String) {
-        open_invite_url(
+        crate::router::tests::open_invite_url(
             subject_tag,
             ephemeral_tag,
             Some("https://sync.invalid.test/ucan/"),
         )
         .await
-    }
-
-    async fn open_invite_url(
-        subject_tag: u8,
-        ephemeral_tag: u8,
-        remote: Option<&str>,
-    ) -> (String, String) {
-        let subject_signer = Ed25519Signer::import(&[subject_tag; 32]).await.unwrap();
-        let subject = subject_signer.did();
-        let key = subject.repo_key().to_owned();
-        let ephemeral_seed = [ephemeral_tag; 32];
-        let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
-        let delegation = DelegationBuilder::new()
-            .issuer(subject_signer)
-            .audience(&ephemeral.did())
-            .subject(UcanSubject::Specific(subject.clone()))
-            .command(vec![])
-            .try_build()
-            .await
-            .unwrap();
-        let chain = DelegationChain::new(delegation);
-        let invite = Invite::new(
-            chain,
-            InviteAudience::Open {
-                seed: ephemeral_seed,
-            },
-            remote.map(|url| url::Url::parse(url).unwrap()),
-        )
-        .await
-        .unwrap()
-        .with_revocation_url(
-            remote.map(|_| "https://relay.example.test/revocations/".parse().unwrap()),
-        );
-        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
     }
 
     /// Hand-craft an audience-scoped invite: only `audience` can redeem
@@ -3048,6 +3438,102 @@ mod tests {
         assert!(
             memberships.iter().any(|row| row.member.0 == root_entity),
             "a promoted guest is recorded by root DID",
+        );
+    }
+
+    /// Renewal decides whether a guest's authority is still good from the
+    /// retained record alone, so the record has to describe the chain that
+    /// was actually installed — the operator it names and the expiry the
+    /// chain really carries, not a separately recomputed `now + TTL`.
+    #[dialog_common::test]
+    async fn it_persists_the_guest_grants_actual_audience_and_expiry() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(74, 75).await;
+        assert_eq!(post_visit(&app, &url).await, StatusCode::CREATED);
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+
+        let tonk = state.read().await;
+        let lease = super::guest_lease(&tonk, &subject)
+            .await
+            .expect("the guest record reads")
+            .expect("a visit retains one");
+
+        let bytes = super::guest_record_bytes(&tonk, &subject)
+            .await
+            .expect("the record is on disk");
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(raw["version"], serde_json::json!(2));
+
+        assert_eq!(
+            lease.audience.as_ref(),
+            Some(&tonk.operator.did()),
+            "the record must name the operator the chain was minted for, or \
+             renewal cannot tell a live delegation from a retired one",
+        );
+
+        let proof = tonk
+            .profile
+            .access()
+            .prove(dialog_capability::Subject::from(subject.clone()))
+            .audience(&tonk.operator)
+            .perform(&tonk.operator)
+            .await
+            .expect("the guest chain proves");
+        assert_eq!(
+            proof.duration.expiration, lease.expires_at,
+            "the recorded expiry is the chain's effective one",
+        );
+    }
+
+    /// The operator is shared by every mounted repository, so renewal
+    /// works on the whole guest set. Which means enumerating it has to
+    /// find exactly the guests: not the durable spaces beside them, and
+    /// not a replica whose guest site was cleared by promotion.
+    #[dialog_common::test]
+    async fn it_enumerates_only_repository_replicas_with_guest_records() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (first_url, first_key) = handcrafted_invite_url(76, 77).await;
+        let (second_url, second_key) = handcrafted_invite_url(78, 79).await;
+        let (durable_url, durable_key) = handcrafted_invite_url(80, 81).await;
+        assert_eq!(post_visit(&app, &first_url).await, StatusCode::CREATED);
+        assert_eq!(post_visit(&app, &second_url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&app, &durable_url).await, StatusCode::CREATED);
+
+        let mut expected = vec![first_key.clone(), second_key.clone()];
+        expected.sort();
+
+        let leases = {
+            let tonk = state.read().await;
+            super::guest_leases(&tonk).await.expect("leases enumerate")
+        };
+        assert_eq!(
+            leases
+                .iter()
+                .map(|lease| lease.subject.to_string())
+                .collect::<Vec<_>>(),
+            expected,
+            "only the two guests, in subject order, and never the durable \
+             space or the profile and account replicas beside them",
+        );
+        assert!(
+            !expected.contains(&durable_key),
+            "the durable join is not a guest",
+        );
+
+        // Promotion clears the site by writing empty bytes, which has to
+        // read the same as never having visited.
+        assert_eq!(promote(&app, &first_key).await.0, StatusCode::OK);
+        let leases = {
+            let tonk = state.read().await;
+            super::guest_leases(&tonk).await.expect("leases enumerate")
+        };
+        assert_eq!(
+            leases
+                .iter()
+                .map(|lease| lease.subject.to_string())
+                .collect::<Vec<_>>(),
+            vec![second_key],
+            "a promoted replica must not be replayed as a guest",
         );
     }
 
