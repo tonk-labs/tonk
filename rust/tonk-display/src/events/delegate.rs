@@ -730,7 +730,7 @@ mod tests {
             field.into(),
             serde_json::json!({
                 "the": format!("xyz.tonk.test/{field}"),
-                "as": "String",
+                "as": "Text",
                 "cardinality": "one"
             }),
         );
@@ -847,13 +847,13 @@ mod tests {
         ));
     }
 
-    /// Build a click event whose `event.target` is `target_el`.
-    /// Done by defining an own `target` property on the event JS
-    /// object — `Reflect::get` and the web-sys getter both check
-    /// own props before falling through to the readonly getter
-    /// inherited from `Event.prototype`.
-    fn click_event_targeting(target_el: &Element) -> Event {
-        let event = Event::new_with_event_init_dict("click", &EventInit::new()).expect("Event");
+    /// Point `event.target` at `target_el` by defining an own
+    /// `target` property on the event JS object — `Reflect::get`
+    /// and the web-sys getter both check own props before falling
+    /// through to the readonly getter inherited from
+    /// `Event.prototype`. A plain `Reflect::set` would hit that
+    /// setterless accessor and silently do nothing.
+    fn set_event_target(event: &Event, target_el: &Element) {
         let event_js: &JsValue = event.as_ref();
         let descriptor = Object::new();
         Reflect::set(&descriptor, &JsValue::from_str("value"), target_el.as_ref()).unwrap();
@@ -875,6 +875,12 @@ mod tests {
             &JsValue::from_str("target"),
             &descriptor,
         );
+    }
+
+    /// Build a click event whose `event.target` is `target_el`.
+    fn click_event_targeting(target_el: &Element) -> Event {
+        let event = Event::new_with_event_init_dict("click", &EventInit::new()).expect("Event");
+        set_event_target(&event, target_el);
         event
     }
 
@@ -922,8 +928,7 @@ mod tests {
         let init = EventInit::new();
         init.set_cancelable(true);
         let event = Event::new_with_event_init_dict("submit", &init).unwrap();
-        let event_js: &JsValue = event.as_ref();
-        Reflect::set(event_js, &JsValue::from_str("target"), form.as_ref()).unwrap();
+        set_event_target(&event, &form);
 
         let body = resolve_catalog_binding(&event, "data-onsubmit", &catalog, &host)
             .expect("nominal projection succeeds");

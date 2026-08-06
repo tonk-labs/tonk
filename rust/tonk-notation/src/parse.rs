@@ -1764,13 +1764,12 @@ person:
     }
 
     #[dialog_common::test]
-    fn it_rejects_sequence_value() {
+    fn it_rejects_non_scalar_sequence_entries() {
         let parsed = parse(
             r#"
 person!:
   name:
-    - Alice
-    - Bob
+    - nested: mapping
 "#,
         );
         assert!(!parsed.diagnostics.is_empty());
