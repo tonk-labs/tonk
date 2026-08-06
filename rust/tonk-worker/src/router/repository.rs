@@ -5751,8 +5751,9 @@ mod tests {
         let key = put_repo(&app, "test-refuse-guest").await;
         attach_remote(&app, &key, "https://access.example.test/ucan/").await;
 
-        // Marked a guest through the writer the visit path itself uses, so the
-        // fixture states no opinion about how guest state is stored.
+        // Marked a guest through the record writer itself, so the fixture
+        // states no opinion about how guest state is stored beyond the
+        // metadata every retained record carries.
         {
             use dialog_repository::{Repository, RepositoryExt as _};
             let tonk = state.read().await;
@@ -5763,10 +5764,13 @@ mod tests {
                 .perform(&tonk.operator)
                 .await
                 .expect("repo loads");
-            crate::router::join::save_guest(
+            let audience = tonk.operator.did();
+            crate::router::join::store_guest_record(
                 &tonk,
                 &repository.did(),
                 "https://staging.example.test/join?access=fixture",
+                &audience,
+                crate::session::now() + 3600,
             )
             .await
             .expect("guest record stores");
