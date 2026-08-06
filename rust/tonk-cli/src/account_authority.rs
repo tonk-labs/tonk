@@ -141,31 +141,21 @@ impl AccountBoundOperator {
         let mut chain = if subject == root {
             grant
         } else {
-            let bytes = self
-                .profile
-                .credential()
-                .site(tonk_account::backup::space_root_site(&subject, &root))
-                .load::<Vec<u8>>()
-                .perform(&self.inner)
-                .await
-                .map_err(|error| {
-                    AuthorizeError::Denied(format!(
-                        "spot is not delegated to the active account: {error}"
-                    ))
-                })?;
-            let backup = tonk_account::backup::AccountSpotBackup {
-                chain_hex: hex::encode(bytes),
-                remote_url: None,
-                revocation_url: None,
-                name: None,
-            };
-            let prefix = backup.validate_for(&root).await.map_err(|error| {
-                AuthorizeError::Denied(format!(
-                    "spot is not delegated to the active account: {error}"
-                ))
-            })?;
+            // Resolving rather than reading: a spot predating this account,
+            // or created by a release that stored no prefix, still has to
+            // reach its own remote. Recovery is the same one every other
+            // account path uses, so the authority a spot syncs with is the
+            // authority it gets backed up with.
+            let prefix =
+                crate::site::account_root_prefix_for(&self.profile, &self.inner, &subject, &root)
+                    .await
+                    .map_err(|error| {
+                        AuthorizeError::Denied(format!(
+                            "spot is not delegated to the active account: {error:#}"
+                        ))
+                    })?;
             let active_proof = grant.proofs().next().unwrap().clone();
-            prefix.chain.push(active_proof).map_err(|error| {
+            prefix.push(active_proof).map_err(|error| {
                 AuthorizeError::Denied(format!("account authority chain is invalid: {error}"))
             })?
         };

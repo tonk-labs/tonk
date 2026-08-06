@@ -87,6 +87,11 @@ name = "account_interrupt"
 path = "tests/account_interrupt.rs"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "account_authority"
+path = "tests/account_authority.rs"
+required-features = ["integration-tests"]
+
 [features]
 integration-tests = []
 
