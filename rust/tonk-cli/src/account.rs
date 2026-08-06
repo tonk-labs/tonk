@@ -547,31 +547,80 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
         }
         None => options.service_url.trim_end_matches('/').to_string(),
     };
+    if target_provider != options.service_url.trim_end_matches('/') {
+        bail!("a pending account handoff belongs to another provider; log out to cancel it");
+    }
     clear_detach_for(profile, &operator, &target_provider, options.abandon_detach).await?;
     let device_did = profile.did().to_string();
     let client = reqwest::Client::new();
-    let (service_url, secret, token_hash, activating) = match state.pending_login {
+    let (service_url, secret, token_hash, activating, recovered) = match state.pending_login {
         Some(crate::account_session::PendingLogin::Waiting {
             provider,
             secret,
             token_hash,
         }) => {
-            create_remote(
+            match create_remote(
                 &client,
                 &provider,
                 &token_hash,
                 &device_did,
                 &options.device_name,
             )
-            .await?;
-            (provider, secret, token_hash, None)
+            .await
+            {
+                Ok(()) => (provider, secret, token_hash, None, None),
+                // A waiting handoff holds no grant material, and its token
+                // is one-time: a service that refuses to recreate it —
+                // because that token was already spent, expired, or the
+                // service never made creation idempotent — has ended that
+                // handoff, not this profile's ability to link. Take the
+                // completed material if the browser got there first;
+                // otherwise start a fresh handoff, so a cancelled attempt
+                // never strands the profile on a secret no later attempt
+                // can revive.
+                Err(error) => match consume_once(&client, &provider, &secret).await {
+                    Ok(Some(consumed)) => (provider, secret, token_hash, None, Some(consumed)),
+                    _ => {
+                        eprintln!(
+                            "warning: could not resume the pending handoff ({error:#}); \
+                             starting a new one"
+                        );
+                        let (secret, token_hash) = new_secret();
+                        crate::account_session::begin_login(
+                            profile,
+                            &operator,
+                            crate::account_session::PendingLogin::Waiting {
+                                provider: provider.clone(),
+                                secret: secret.clone(),
+                                token_hash: token_hash.clone(),
+                            },
+                        )
+                        .await?;
+                        create_remote(
+                            &client,
+                            &provider,
+                            &token_hash,
+                            &device_did,
+                            &options.device_name,
+                        )
+                        .await?;
+                        (provider, secret, token_hash, None, None)
+                    }
+                },
+            }
         }
         Some(crate::account_session::PendingLogin::Activating {
             secret, account, ..
         }) => {
             let secret_bytes = hex::decode(&secret).context("pending link secret is invalid")?;
             let token_hash = blake3::hash(&secret_bytes).to_hex().to_string();
-            (account.provider.clone(), secret, token_hash, Some(account))
+            (
+                account.provider.clone(),
+                secret,
+                token_hash,
+                Some(account),
+                None,
+            )
         }
         None => {
             let (secret, token_hash) = new_secret();
@@ -598,17 +647,16 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
                 secret,
                 token_hash,
                 None,
+                None,
             )
         }
     };
-    if service_url.trim_end_matches('/') != options.service_url.trim_end_matches('/') {
-        bail!("a pending account handoff belongs to another provider; log out to cancel it");
-    }
     let url = handoff_url(&options.account_url, &secret);
-    if activating.is_none() {
+    let awaits_approval = activating.is_none() && recovered.is_none();
+    if awaits_approval {
         println!("Open this URL to approve the device:\n{url}");
     }
-    if activating.is_none() && options.open_browser && webbrowser::open(&url).is_err() {
+    if awaits_approval && options.open_browser && webbrowser::open(&url).is_err() {
         eprintln!("Could not open a browser; use the URL above.");
     }
 
@@ -620,7 +668,9 @@ pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcom
 
     let mut delay = Duration::from_millis(500);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5 * 60);
-    let consumed = if activating.is_some() {
+    let consumed = if recovered.is_some() {
+        recovered
+    } else if activating.is_some() {
         None
     } else {
         Some(loop {

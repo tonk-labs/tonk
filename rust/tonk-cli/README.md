@@ -127,6 +127,12 @@ requires a fresh browser/passkey handoff; switching accounts is logout followed
 by link. Historical certificates remain available for local spot writes, but
 only the latest active attachment can authorize a remote request.
 
+Interrupting `tonk account link` leaves the handoff recorded so the next run
+resumes it. A link token is one-time, so a service that refuses to reissue it
+has ended that handoff and not this profile's ability to link: the next run
+takes the completed grant if the browser approved in the meantime, and
+otherwise prints a fresh URL rather than re-offering a spent token.
+
 `tonk account logout` commits locally first, so it works offline. Existing
 spots remain readable and editable, while fetch, pull, push, account sync, and
 other access-service requests are denied before HTTP. Logout queues a
