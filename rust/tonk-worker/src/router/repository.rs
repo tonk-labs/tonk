@@ -3258,7 +3258,15 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // de-duplicates rather than minting fresh claims, so it's safe on
     // every boot. Fetch is only available in the SW scope; native
     // builds skip it (the Hub is a browser-only surface).
-    seed_profile_library(tonk).await?;
+    //
+    // Best-effort: this runs again on every boot and profile
+    // activation, so a failed fetch (an offline worker restart, a
+    // harness that serves no library) costs a degraded Hub until the
+    // next attempt — not a worker that refuses to boot or a profile
+    // switch that dies half-way.
+    if let Err(error) = seed_profile_library(tonk).await {
+        log!("profile library seed skipped: {error}");
+    }
 
     // Drain the poll the bootstrap commit scheduled.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
