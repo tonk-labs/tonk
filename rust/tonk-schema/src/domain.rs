@@ -542,6 +542,25 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct DisplayName(pub String);
+
+    /// Browser-reported Unix time in seconds, captured immediately after
+    /// `navigator.credentials.create()` returned. `f64` because the value
+    /// system stores numbers as `Float`; second-resolution Unix times convert
+    /// losslessly at this magnitude. Cardinality-one: an account has one
+    /// passkey creation moment, so concurrent linked-device writes converge on
+    /// a deterministic winner rather than accumulating.
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct PasskeyCreatedAt(pub f64);
+
+    /// The browser and operating system where passkey creation ran, e.g.
+    /// `Chrome on macOS`. Never the password manager or storage provider —
+    /// WebAuthn does not expose those reliably.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct PasskeyCreatedOn(pub String);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the

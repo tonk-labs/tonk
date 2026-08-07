@@ -19,7 +19,7 @@ use tonk_account::{
     probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
-use tonk_schema::{Replica, prelude::DidExt as _};
+use tonk_schema::{AccountPasskeyCreated, Replica, prelude::DidExt as _};
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -494,6 +494,11 @@ async fn sync_ready(tonk: &TonkState, key: &str) -> Result<(), String> {
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    // After the pull, so the seed sees what other devices already recorded,
+    // and before the push, so anything it writes leaves with this sweep.
+    if seed_passkey_facts(tonk).await {
+        log!("recorded this device's passkey creation facts in the account space");
+    }
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
     }
@@ -552,6 +557,11 @@ pub(crate) async fn ensure_account_state_swept(
         Ok(_) => match hydrate_untrusted(tonk, &key, &repository).await {
             Ok(()) => match mark_trusted(tonk, &descriptor).await {
                 Ok(()) => {
+                    // The path a freshly created account takes, where the
+                    // ready sweep above has not run yet.
+                    if seed_passkey_facts(tonk).await {
+                        log!("recorded this device's passkey creation facts in the account space");
+                    }
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
@@ -597,6 +607,109 @@ pub(crate) async fn require_ready_account_state(
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
     Ok(ReadyAccountBranch { key, subject })
+}
+
+/// Read the creation facts recorded on a ready account branch.
+async fn read_passkey_facts(
+    tonk: &TonkState,
+    ready: &ReadyAccountBranch,
+) -> Result<Option<tonk_worker_api::PasskeyMetadata>, TonkWorkerError> {
+    let branch = tonk
+        .reactor
+        .repository(&ready.key)
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
+    let rows: Vec<AccountPasskeyCreated> = branch
+        .handle()
+        .query()
+        .select(Query::<AccountPasskeyCreated> {
+            this: Term::from(ready.subject.this()),
+            created_at: Term::var("created_at"),
+            created_on: Term::var("created_on"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("read account passkey facts: {error:?}"))
+        })?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(|row| tonk_worker_api::PasskeyMetadata {
+            created_at: row.seconds(),
+            created_on: row.created_on.0,
+        }))
+}
+
+/// This account's passkey facts as recorded in the account space, absent when
+/// the account is not ready or carries none.
+///
+/// Best-effort by design — the dashboard has an explicit unavailable state and
+/// must not fail because a hidden system repository is mid-hydration. Every
+/// `None` that is not simply "no fact" is logged, so an unreadable branch is
+/// visible rather than silent.
+pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::PasskeyMetadata> {
+    let ready = require_ready_account_state(tonk).await.ok()?;
+    match read_passkey_facts(tonk, &ready).await {
+        Ok(facts) => facts,
+        Err(error) => {
+            log!("account passkey facts unreadable: {error}");
+            None
+        }
+    }
+}
+
+/// Write this device's recorded passkey facts into the account space when it
+/// has them and the space does not. Returns whether it wrote.
+///
+/// Idempotent: a device that only ever *evaluated* an existing root has
+/// nothing to contribute and returns `false` without touching the branch. So
+/// does a device whose facts are already there — an existing fact is never
+/// overwritten, so a device that later derives a different label cannot
+/// rewrite history.
+pub(crate) async fn seed_passkey_facts(tonk: &TonkState) -> bool {
+    // Unconfigured and unhydrated are ordinary states, reached on every sweep
+    // of a signed-out profile. They are not worth a line in the log.
+    let Ok(ready) = require_ready_account_state(tonk).await else {
+        return false;
+    };
+    match read_passkey_facts(tonk, &ready).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return false,
+        Err(error) => {
+            log!("account passkey facts unreadable before seeding: {error}");
+            return false;
+        }
+    }
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return false;
+    };
+    let Some(metadata) = root.passkey else {
+        return false;
+    };
+    if let Err(error) = tonk
+        .reactor
+        .repository(&ready.key)
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(AccountPasskeyCreated::new(
+            ready.subject.this(),
+            metadata.created_at,
+            metadata.created_on,
+        ))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("commit account passkey creation facts: {error}");
+        return false;
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    true
 }
 
 /// Project the authoritative account display name into local caches and every
@@ -939,6 +1052,9 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use dialog_common::helpers::Provisionable as _;
+
     use super::*;
 
     #[dialog_common::test]
@@ -1103,12 +1219,26 @@ mod tests {
         }
     }
 
+    /// A native `TonkState` on a randomized profile, plus the local root and
+    /// account link that make [`ensure_account_state`] reach `Ready`.
+    ///
+    /// Yields the state, the running access service, and the signed
+    /// descriptor. Callers stop the service and clean up the on-disk verifier
+    /// repository themselves, the way the offline test does.
     #[cfg(not(target_arch = "wasm32"))]
-    #[dialog_common::test]
-    async fn it_mounts_hydrates_and_keeps_readiness_offline() {
-        use dialog_common::helpers::Provisionable as _;
+    async fn ready_account_state(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        AccountRepositoryDescriptorV1,
+    ) {
         use dialog_operator::Profile;
         use dialog_storage::provider::storage::Storage;
+        use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
 
         let service = AccessServiceAddress::start(Default::default())
@@ -1149,39 +1279,38 @@ mod tests {
         let descriptor = AccountRepositoryDescriptorV1::sign(&root, &remote)
             .await
             .unwrap();
-        let root_did = {
-            use dialog_varsig::Principal as _;
-            root.did().to_string()
-        };
+        let root_did = root.did().to_string();
         let credential_id = "account-state-test-credential".to_string();
         let delegation =
             tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
                 .await
                 .unwrap();
         let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
-        // The link now attaches a provider to an already-persisted local root,
-        // so the root has to exist before persist_link will accept it.
+        // The link attaches a provider to an already-persisted local root, so
+        // the root has to exist before persist_link will accept it.
         crate::router::identity::persist_root(
             &state,
             tonk_worker_api::SaveRootRequest {
                 credential_id: credential_id.clone(),
                 delegation_hex: delegation_hex.clone(),
-                passkey: None,
+                passkey,
             },
         )
         .await
         .unwrap();
-        let request = tonk_worker_api::AccountLinkRequest {
-            provider: "https://accounts.example".to_string(),
-            root_did,
-            credential_id,
-            delegation_hex,
-            descriptor_hex: hex::encode(descriptor.bytes()),
-            initialize_name: false,
-        };
-        crate::router::account::persist_link(&state, &request)
-            .await
-            .unwrap();
+        crate::router::account::persist_link(
+            &state,
+            &tonk_worker_api::AccountLinkRequest {
+                provider: "https://accounts.example".to_string(),
+                root_did,
+                credential_id,
+                delegation_hex,
+                descriptor_hex: hex::encode(descriptor.bytes()),
+                initialize_name: false,
+            },
+        )
+        .await
+        .unwrap();
         state
             .profile
             .credential()
@@ -1190,6 +1319,105 @@ mod tests {
             .perform(&state.operator)
             .await
             .unwrap();
+
+        (state, service, descriptor)
+    }
+
+    /// Every recorded creation fact on the ready account branch.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn recorded_passkey_facts(
+        state: &TonkState,
+        ready: &ReadyAccountBranch,
+    ) -> Vec<tonk_schema::AccountPasskeyCreated> {
+        state
+            .reactor
+            .repository(&ready.key)
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap()
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::AccountPasskeyCreated> {
+                this: Term::from(ready.subject.this()),
+                created_at: Term::var("created_at"),
+                created_on: Term::var("created_on"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap()
+    }
+
+    /// Remove the on-disk verifier repository `NativeSpace` rooted in the
+    /// package working directory for one randomized fixture.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn discard(state: TonkState, key: &str) {
+        let local = std::env::current_dir().unwrap().join(key);
+        drop(state);
+        if local.is_dir() {
+            std::fs::remove_dir_all(local).unwrap();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_seeds_passkey_creation_facts_from_the_local_root() {
+        let (state, service, _descriptor) =
+            ready_account_state(Some(tonk_worker_api::PasskeyMetadata {
+                created_at: 1_754_380_800,
+                created_on: "Chrome on macOS".to_string(),
+            }))
+            .await;
+
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let seeded = recorded_passkey_facts(&state, &ready).await;
+        assert_eq!(seeded.len(), 1);
+        assert_eq!(seeded[0].seconds(), 1_754_380_800);
+        assert_eq!(seeded[0].created_on.0, "Chrome on macOS");
+
+        // The sweep runs on every boot and every heartbeat. A second pass must
+        // find its own fact and leave it exactly as written.
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let again = recorded_passkey_facts(&state, &ready).await;
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].seconds(), 1_754_380_800);
+        assert_eq!(again[0].created_on.0, "Chrome on macOS");
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_seeds_nothing_when_the_local_root_has_no_passkey_metadata() {
+        let (state, service, _descriptor) = ready_account_state(None).await;
+
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        assert!(
+            recorded_passkey_facts(&state, &ready).await.is_empty(),
+            "a device that only evaluated an existing passkey has nothing to record"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_mounts_hydrates_and_keeps_readiness_offline() {
+        let (state, service, descriptor) = ready_account_state(None).await;
 
         let before = crate::router::profile_name::resolve_display_name(&state).await;
         assert!(matches!(
@@ -1248,12 +1476,6 @@ mod tests {
             AccountStateStatus::Ready
         );
 
-        // NativeSpace roots verifier repositories in the package working
-        // directory for this fixture. Remove only this randomized test repo.
-        let local = std::env::current_dir().unwrap().join(&ready.key);
-        drop(state);
-        if local.is_dir() {
-            std::fs::remove_dir_all(local).unwrap();
-        }
+        discard(state, &ready.key);
     }
 }

@@ -66,7 +66,7 @@ pub mod sync;
 pub use sync::*;
 
 pub mod account;
-pub use account::AccountDisplayName;
+pub use account::{AccountDisplayName, AccountPasskeyCreated};
 
 pub mod replica;
 pub use replica::*;
