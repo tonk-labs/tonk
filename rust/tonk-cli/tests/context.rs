@@ -66,6 +66,111 @@ async fn it_emits_a_versioned_complete_contract() -> Result<()> {
         value["empty_spot_workflow"][0]["command"],
         "tonk concept add note --attr title:text:one --attr body:text:one"
     );
+    assert_eq!(
+        value["interactivity_workflow"][0]["command"],
+        "tonk guide events"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_routes_to_the_interactivity_loop_on_every_spot() -> Result<()> {
+    // An agent that needs a button has no other signal that `project`
+    // and `commands` exist, so the lane renders whether or not the spot
+    // has any application concepts yet.
+    let test = TestSite::new().await?;
+    let resolved = Resolved {
+        name: "empty".to_string(),
+        site: test.site.root.clone(),
+        source: Source::Flag,
+    };
+
+    let empty = context::inspect(&resolved, &test.site)
+        .await?
+        .render_markdown();
+    assert!(
+        empty.contains("## Make a concept respond to DOM events") && empty.contains("tonk project"),
+        "{empty}"
+    );
+
+    test.eval_inline(ATTRIBUTE_DECL).await?;
+    test.eval_inline(CONCEPT_DECL).await?;
+    let populated = context::inspect(&resolved, &test.site)
+        .await?
+        .render_markdown();
+    assert!(
+        populated.contains("## Make a concept respond to DOM events")
+            && populated.contains("tonk project"),
+        "{populated}"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_surfaces_a_view_without_a_separate_home_step() -> Result<()> {
+    // `tonk view add` auto-surfaces onto an unset home. A trailing
+    // `tonk home note` step would be a no-op that reads as required.
+    let test = TestSite::new().await?;
+    let resolved = Resolved {
+        name: "empty".to_string(),
+        site: test.site.root.clone(),
+        source: Source::Flag,
+    };
+
+    let report = context::inspect(&resolved, &test.site).await?;
+    let commands: Vec<&str> = report
+        .empty_spot_workflow
+        .iter()
+        .map(|step| step.command.as_str())
+        .collect();
+
+    assert!(
+        !commands
+            .iter()
+            .any(|command| command.starts_with("tonk home")),
+        "{commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.starts_with("tonk view add note")),
+        "{commands:?}"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_stays_deserializable_when_the_contract_grows_a_field() -> Result<()> {
+    // The version-change rule on `SCHEMA_VERSION` promises additive
+    // growth keeps `tonk.context.v1`, which only holds if consumers
+    // tolerate fields they do not know. Pin the tolerant half here so
+    // the promise is enforced rather than assumed.
+    #[derive(serde::Deserialize)]
+    struct Consumer {
+        schema_version: String,
+        spot: ConsumerSpot,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ConsumerSpot {
+        name: String,
+    }
+
+    let test = TestSite::new().await?;
+    let resolved = Resolved {
+        name: "empty".to_string(),
+        site: test.site.root.clone(),
+        source: Source::Flag,
+    };
+
+    let report = context::inspect(&resolved, &test.site).await?;
+    let mut value: serde_json::Value = serde_json::from_str(&report.render_json()?)?;
+    value["a_field_from_a_later_version"] = serde_json::json!({ "nested": [1, 2, 3] });
+    value["spot"]["another_unknown_field"] = serde_json::json!("surprise");
+
+    let consumer: Consumer = serde_json::from_value(value)?;
+    assert_eq!(consumer.schema_version, context::SCHEMA_VERSION);
+    assert_eq!(consumer.spot.name, "empty");
     Ok(())
 }
 

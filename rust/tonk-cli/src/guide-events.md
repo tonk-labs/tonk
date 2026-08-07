@@ -106,11 +106,16 @@ controls:
 ```sh
 tonk eval todo.notation
 tonk project todo/add-form --fixture fixture.yaml --json
+tonk home todo/list                 # a build nobody can see isn't done
+tonk render todo/list               # headless check that it renders
 ```
 
-The second command is read-only. Add `--transact` only when you intend to run
-the declarative rule. `--redact` replaces values while retaining field and
-source names for shareable diagnostics.
+`project` is read-only. Add `--transact` only when you intend to run the
+declarative rule. `--redact` replaces values while retaining field and source
+names for shareable diagnostics.
+
+`home` is not optional bookkeeping: without it the views above resolve
+correctly and stay invisible, because nothing points the space home at them.
 
 ## Projection sources
 

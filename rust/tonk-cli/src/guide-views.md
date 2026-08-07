@@ -149,9 +149,9 @@ tonk guide views tonk-prose
 ```
 
 The editors persist the same way: bind the store's value in (as element
-text or an attribute), fire a command on the element's `change` event
-(read `dom.event.detail/…`), and a rule writes it back — the loop in
-`tonk guide events`. `<tonk-table>` also offers a store-native *claims*
+text or an attribute), name a projection on the element's `change` event
+(`onchange=<projection>`, whose argument reads `{ detail: "value" }`),
+and a rule writes it back — the loop in `tonk guide events`. `<tonk-table>` also offers a store-native *claims*
 mode (one claim per cell). Your own components (below) are peers of
 these.
 
@@ -198,10 +198,10 @@ view renders it. Rules of the road:
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the
   element; **actions flow out** as bubbling `CustomEvent`s, wired
-  exactly like clicks — `onbump=<command>` on the element plus
-  `dom.event.detail/amount` fields on the command (see `tonk guide
-  events`). The built-in `<tonk-sheet-binder>` works this way; your
-  components are peers of it.
+  exactly like clicks — `onbump=<projection>` on the element, with the
+  projection's `amount` argument sourced from `{ detail: "amount" }`
+  (see `tonk guide events`). The built-in `<tonk-sheet-binder>` works
+  this way; your components are peers of it.
 - **One-off inline form**: inside a view's `display`, a
   `<tonk-component>` wrapping an inert holder
   `<script type="tonk/module">…</script>` executes that source the

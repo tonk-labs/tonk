@@ -131,9 +131,11 @@ pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
 }
 
 /// Render the site's full schema as a re-submittable notation
-/// document. Output is a sequence of `attribute! …:` heads
-/// followed by `concept! …:` heads — attributes first so concept
-/// `with:` references resolve in document scope.
+/// document: `attribute! …:` heads, then `concept! …:` heads, then
+/// `command! …:` heads and the `projection! …:` mappings stored
+/// against them. Ordered so every reference resolves in document
+/// scope — attributes before the concepts whose `with:` names them,
+/// commands before the projections that name them.
 pub async fn render(site: &TonkSite) -> Result<String> {
     let attrs = enumerate_attributes(site).await?;
     let concepts = enumerate_concepts(site).await?;

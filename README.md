@@ -102,10 +102,28 @@ curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh
 
 ### Quick start
 
+Linking an account comes first: creating a spot bootstraps a repository,
+and that needs one.
+
 ```sh
-tonk spot new garden       # register a spot and select it
-tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
-tonk schema                # every named attribute + concept on the branch
+tonk account link          # one-time, per machine — approve in the browser
+tonk spot new garden       # register a fact store and select it
+```
+
+Then define a model, put data in it, and make it visible:
+
+```sh
+tonk concept add note --attr title:text:one --attr body:text:one
+tonk assert note --title "First note" --body "Hello"
+tonk view add note --template '<article><h2>{title}</h2><p>{body}</p></article>'
+tonk render note           # headless check; the view is now on the space home
+```
+
+From there:
+
+```sh
+tonk context               # live state, plus the next commands to run against it
+tonk schema                # every named attribute + concept, as re-submittable notation
 tonk guide                 # built-in asserted-notation reference
 ```
 

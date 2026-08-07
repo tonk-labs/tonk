@@ -25,10 +25,11 @@ Run `tonk schema` for the authoritative shape. At a glance:
 - `portal`          — a sandboxed-iframe HTML document.
 - `inspector`       — a built-in space-inspector tile.
 - `workspace/create-sheet`, `workspace/activate-sheet`,
-  `workspace/close-sheet` — `command!:` transients the tab strip fires
+  `workspace/close-sheet` — the `command!:` kinds the tab strip fires
   (see `tonk guide events`).
-- `workspace/active-sheet` — the durable `{active}` projection a rule
-  writes in response to `activate-sheet`.
+- `workspace/active-sheet` — the durable `{active}` fact a rule writes
+  in response to `activate-sheet`. (Durable, so not a `projection!:` —
+  that word means an event-to-argument mapping, which is never stored.)
 
 ## The sheet recipe
 

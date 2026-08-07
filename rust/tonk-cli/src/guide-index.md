@@ -18,8 +18,8 @@ invalidates an earlier one.
 - **query** — pattern matching with unification: the same `?x` across
   expressions must take the same value, like datalog body clauses
 - **view** — an HTML template rendered over a concept's instances
-- **rule** — a datalog rule whose trigger premise is a transient
-  command fact produced by a DOM event; its head asserts/retracts facts
+- **rule** — a datalog rule whose trigger premise is a nominal command
+  invocation projected from a DOM event; its head asserts/retracts facts
 
 Two consequences worth internalizing early: entity identity is
 content-addressed (re-asserting an identical body is a no-op; changing
@@ -81,8 +81,9 @@ Run `tonk guide <topic>` — e.g. `tonk guide notation`:
                 `<tonk-code>`, `<tonk-table>` — full docs via
                 `tonk guide views <element>`), and web components
                 (`component!:`) for behaviour templates can't express.
-- `events`    — interactivity: effects, rules, transient concepts, and
-                `on<event>=<concept>` DOM bindings.
+- `events`    — interactivity: `command!:` kinds, `projection!:` event
+                mappings, the rules that consume them, and
+                `on<event>=<name>` DOM bindings.
 - `workspace` — building sheets for the tonk-ui workspace shell
                 (app-layer; subject to change).
 - `all`       — every topic at once.
