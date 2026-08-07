@@ -3,9 +3,10 @@ use serde::Deserialize;
 use tonk_account::handoff::{LinkSecretRequest, ResolvedLink};
 use tonk_worker_api::{
     AccountDevice, AccountLinkRequest, AccountRepositoryEstablishRequest, AccountStatus,
-    AccountSummary, EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse,
-    MembershipResponse, QueryResponse, RepositoryInfo, RevokeDeviceAcknowledgement,
-    RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse, SyncStatusResponse,
+    AccountSummary, ActivateProfileRequest, EvaluateResponse, IdentifyResponse, JoinRequest,
+    JoinResponse, MembershipResponse, ProfilesResponse, QueryResponse, RepositoryInfo,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest, RootStatus, SaveRootRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -658,8 +659,67 @@ pub async fn revoke_account_device(
     }
 }
 
-/// Sign out on this device: revoke it in the registry (best-effort,
-/// reported in the response) and rotate onto a fresh key.
+/// List every profile signed in (or local) on this browser.
+pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/profiles", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "GET /api/profiles returned {status}: {text}"
+        )))
+    }
+}
+
+/// Swap the worker onto another roster profile. The caller reloads the
+/// page afterwards so every surface re-renders the new profile.
+pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/profiles/activate", origin()))
+        .json(&ActivateProfileRequest { profile })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/profiles/activate returned {status}: {text}"
+        )))
+    }
+}
+
+/// Rotate onto a fresh profile — the landing pad the normal sign-in
+/// ceremony then runs on. The caller reloads the page afterwards.
+pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/profiles/add", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/profiles/add returned {status}: {text}"
+        )))
+    }
+}
+
+/// Sign out on this device while preserving its local profile and spots.
 pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()

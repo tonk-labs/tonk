@@ -673,6 +673,82 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_adds_a_second_account_and_switches_between_disjoint_space_lists(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "first@example.com").await?;
+
+        // First account creates a spot; its Hub lists it.
+        let created = post_json(
+            &driver,
+            "/api/spaces",
+            serde_json::json!({
+                "name": "First Garden",
+                "remote": env.tonk_web.join("ucan/")?,
+                "revocation_url": env.account_service.join("revocations")?,
+                "template": "blank",
+            }),
+        )
+        .await?;
+        let key = successful_body("create first account's spot", &created)["key"]
+            .as_str()
+            .context("create response omitted the spot key")?
+            .to_string();
+        let listed = get_json(&driver, "/api/profile").await?;
+        let space_keys = |body: &serde_json::Value| -> Vec<String> {
+            body["space"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry["key"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert!(space_keys(successful_body("list first account's spaces", &listed)).contains(&key));
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let first_profile = successful_body("list profiles", &profiles)["active"]
+            .as_str()
+            .context("profiles response omitted the active name")?
+            .to_string();
+
+        // Add account: a fresh profile lands on the normal Choice flow,
+        // where the second sign-up runs unchanged.
+        driver.goto(env.tonk_web.join("account")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        element(&driver, "#account-add-profile")
+            .await?
+            .click()
+            .await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        sign_up(&driver, &env, "second@example.com").await?;
+
+        // The second account sees none of the first account's spots.
+        let listed = get_json(&driver, "/api/profile").await?;
+        assert!(
+            space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
+            "a fresh account must not see the other account's spots"
+        );
+        wait_for_text_containing(&driver, "#account-profile-list", "first@example.com").await?;
+
+        // Switch back through the switcher; the first Hub returns.
+        let selector = format!("#account-profile-list button[data-activate=\"{first_profile}\"]");
+        element(&driver, &selector).await?.click().await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text_containing(&driver, "#account-email-value", "first@example.com").await?;
+        let listed = get_json(&driver, "/api/profile").await?;
+        assert!(
+            space_keys(successful_body("relist first account's spaces", &listed)).contains(&key),
+            "switching back must restore the first account's spot list"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_links_the_cli_through_the_browser_handoff(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;

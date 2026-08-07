@@ -374,6 +374,12 @@ pub struct TonkState {
     /// HTTP surface, so it sits on the hot path for every repository request.
     /// See [`crate::router::AccountKeys`].
     pub account_keys: crate::router::AccountKeys,
+    /// Handle to the fixed registry profile recording which profile is
+    /// active and the roster of every profile this browser knows. Held so
+    /// the profile-switching routes can validate, repoint, and annotate
+    /// without re-deriving where the registry lives — and so tests can
+    /// point it at a scratch registry instead of the real one.
+    pub(crate) registry: crate::device::Registry,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -1626,6 +1632,48 @@ const SYNC_HIDDEN_INTERVAL_MS: i32 = 60_000;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const SYNC_HIDDEN_MAX_MS: i32 = 3_600_000;
 
+/// Build a [`TonkState`] for an already-opened profile — the shared core
+/// of worker boot and profile activation.
+///
+/// Opens a signing session over `storage`, constructs the reactive state,
+/// and bootstraps the profile repo's meta branch (idempotent). The
+/// registry's active-profile pointer is deliberately not touched here:
+/// activation repoints it only after this succeeds, so a failed build
+/// never strands the next boot on a broken profile.
+pub(crate) async fn boot_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: Profile,
+    registry: crate::device::Registry,
+) -> Result<TonkState, crate::TonkWorkerError> {
+    let session = crate::session::open(&profile, &storage)
+        .await
+        .map_err(|e| {
+            crate::TonkWorkerError::Internal(format!("failed to open a signing session: {e}"))
+        })?;
+
+    let reactor = crate::Reactor::new(profile.clone());
+    let state = TonkState {
+        profile,
+        operator: session.operator,
+        storage,
+        session_expires_at: session.expires_at,
+        profile_name,
+        reactor,
+        view_bindings: Default::default(),
+        bridges: Default::default(),
+        commands: crate::router::command_registry(),
+        sync_queue: Default::default(),
+        clients: Default::default(),
+        account_keys: Default::default(),
+        registry,
+    };
+    bootstrap_profile(&state).await.map_err(|e| {
+        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
+    })?;
+    Ok(state)
+}
+
 /// The main Tonk service worker that handles browser fetch events.
 ///
 /// This struct bridges the browser's service worker API with an Axum router,
@@ -1684,41 +1732,22 @@ impl TonkServiceWorker {
         let storage = Storage::<DefaultSpace>::default();
 
         // 2. Open the profile this device signs as. Usually the one it
-        // started with; a device that has signed out since then signs
-        // as the profile that replaced the key it revoked.
-        let (profile_name, profile) = crate::device::open_active(&storage)
+        // started with; a device that has signed out (or added an
+        // account) since then signs as whatever profile the registry's
+        // pointer names.
+        let registry = crate::device::Registry::device();
+        let (profile_name, profile) = registry
+            .open_active(&storage)
             .await
             .map_err(|e| JsError::new(&format!("Failed to open profile: {}", e)))?;
         log!("Profile DID: {}", profile.did());
 
-        // 3. Open a signing session — an operator keyed for this
-        // session alone, authorized by a delegation that expires. The
-        // storage is shared, not handed over, so a later rotation can
-        // build its replacement over the same pool.
-        let session = crate::session::open(&profile, &storage)
+        // 3–4. Open a signing session, build state, and bootstrap the
+        // profile repo's meta branch — shared with profile activation,
+        // which rebuilds the same state for a different profile.
+        let state = boot_state(storage, profile_name, profile, registry)
             .await
-            .map_err(|e| JsError::new(&format!("Failed to open a signing session: {}", e)))?;
-
-        // 4. Build state and bootstrap the profile repo's meta
-        // branch. Idempotent — safe to run on every worker boot.
-        let reactor = crate::Reactor::new(profile.clone());
-        let state = TonkState {
-            profile,
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name,
-            reactor,
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            commands: crate::router::command_registry(),
-            sync_queue: Default::default(),
-            clients: Default::default(),
-            account_keys: Default::default(),
-        };
-        bootstrap_profile(&state)
-            .await
-            .map_err(|e| JsError::new(&format!("Failed to bootstrap profile meta: {}", e)))?;
+            .map_err(|e| JsError::new(&format!("Failed to initialize the worker: {e}")))?;
 
         // 5. Wrap state in the router. `api_router_with_state`
         // returns the LSP hub *and* a cloneable `AppState` handle:
@@ -1742,6 +1771,10 @@ impl TonkServiceWorker {
             let state = state.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let tonk = state.read().await;
+                // Best-effort roster upsert so existing installs
+                // self-populate a switcher entry for the profile they
+                // already have — the grandfathering path.
+                crate::router::profiles::upsert_active_entry(&tonk, None).await;
                 crate::router::account_state::ensure_account_state(&tonk).await;
                 crate::router::restore::restore_spaces(&tonk).await;
             });

@@ -74,6 +74,8 @@ mod lsp_env;
 mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
+pub(crate) mod profiles;
+
 mod profile_name;
 
 mod evaluate;
@@ -241,6 +243,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/account/summary", get(account_devices::summary))
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
+        // Profile roster and switching — every account signed in on this
+        // browser has its own profile; these list them, swap the active
+        // one, and mint a fresh landing pad for "add account".
+        .route("/api/profiles", get(profiles::list))
+        .route("/api/profiles/activate", post(profiles::activate))
+        .route("/api/profiles/add", post(profiles::add))
         // Profile-as-repository routes. The profile is its own
         // repository but lives outside the named-repo namespace
         // (no `repo` segment), so it gets a parallel route
@@ -592,6 +600,16 @@ pub mod tests {
             .expect("Failed to open a test signing session");
 
         let reactor = crate::Reactor::new(profile.clone());
+        // The registry mirrors production shape — the state's own profile
+        // is the registry profile, exactly as `Registry::device()` signs
+        // as `tonk` until the first rotation. Uniquely named per state,
+        // so tests neither collide with each other nor touch the real
+        // registry, while rotated/activated profiles still resolve in the
+        // same directory the test profile itself lives in.
+        let registry = crate::device::Registry {
+            profile: profile_name.clone(),
+            directory: dialog_effects::storage::Directory::Profile,
+        };
         TonkState {
             profile,
             operator: session.operator,
@@ -605,6 +623,7 @@ pub mod tests {
             commands: super::command_registry(),
             clients: Default::default(),
             account_keys: Default::default(),
+            registry,
         }
     }
 

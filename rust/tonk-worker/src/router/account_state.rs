@@ -882,7 +882,10 @@ pub(crate) async fn rename_display_name(
         if configured_descriptor(tonk).await.is_none() {
             return Err(account_state_unavailable());
         }
-        return adopt_account_display_name(tonk, name).await.map(Some);
+        let response = adopt_account_display_name(tonk, name).await?;
+        // Roster upkeep: the switcher row shows the new name.
+        super::profiles::upsert_active_entry(tonk, None).await;
+        return Ok(Some(response));
     }
 
     let profile_entity = tonk.profile.did().this();
@@ -918,6 +921,9 @@ pub(crate) async fn rename_display_name(
         }
         crate::router::sync::publish_self_identity(tonk, &key, tonk_account::MAIN_BRANCH).await;
     }
+
+    // Roster upkeep: the switcher row shows the new name.
+    super::profiles::upsert_active_entry(tonk, None).await;
 
     Ok(Some(AccountDisplayNameResponse {
         name: name.to_string(),
@@ -1118,7 +1124,7 @@ mod tests {
             operator: session.operator,
             storage,
             session_expires_at: session.expires_at,
-            profile_name: name,
+            profile_name: name.clone(),
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
@@ -1126,6 +1132,10 @@ mod tests {
             commands: crate::router::command_registry(),
             clients: Default::default(),
             account_keys: Default::default(),
+            registry: crate::device::Registry {
+                profile: name.clone(),
+                directory: dialog_effects::storage::Directory::Profile,
+            },
         };
         crate::router::repository::bootstrap_profile(&state)
             .await

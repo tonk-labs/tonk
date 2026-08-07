@@ -15,6 +15,11 @@
       <button id="account-choose-create" class="account__button" type="button">Create account</button>
       <button id="account-choose-link" class="account__button account__button--secondary" type="button">Log in</button>
     </div>
+    <button id="account-use-different-account" class="account__button account__button--quiet" type="button" hidden>Use a different account</button>
+    <div id="account-choice-profiles" class="account__choice-profiles" hidden>
+      <p class="account__hint">Also on this browser:</p>
+      <ul id="account-choice-profile-list" class="account__profiles"></ul>
+    </div>
   </section>
 
   <section id="account-create" class="account__panel" hidden>
@@ -106,6 +111,15 @@
         <p>These devices can open and sync your Tonk spots. Remove any device you no longer use or recognise.</p>
       </div>
       <ul id="account-device-list" class="account__devices"></ul>
+    </section>
+
+    <section class="account__section account__profiles-section" aria-labelledby="account-profiles-title">
+      <div class="account__section-heading">
+        <h2 id="account-profiles-title">Accounts on this browser</h2>
+        <p>Each account keeps its own spots. Switching swaps which one this browser shows.</p>
+      </div>
+      <ul id="account-profile-list" class="account__profiles"></ul>
+      <button id="account-add-profile" class="account__button account__button--secondary account__button--compact" type="button">Add account</button>
     </section>
 
     <section class="account__signout" aria-labelledby="account-signout-title">
