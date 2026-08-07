@@ -314,6 +314,18 @@ pub enum AnalyzeErrorKind {
         /// Underlying validation message.
         reason: String,
     },
+    /// `command!` body was malformed or lacked stable identity.
+    #[error("invalid `command!` body: {reason}")]
+    InvalidCommandBody {
+        /// Underlying validation message.
+        reason: String,
+    },
+    /// `projection!` body was malformed.
+    #[error("invalid `projection!` body: {reason}")]
+    InvalidProjectionBody {
+        /// Underlying validation message.
+        reason: String,
+    },
     /// Head's concept name didn't resolve to anything known.
     #[error("unknown concept {name:?}: not a built-in and not found on the branch")]
     UnknownConcept {
@@ -515,6 +527,8 @@ impl AnalyzeErrorKind {
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
+            Self::InvalidCommandBody { .. } => "E_INVALID_COMMAND_BODY",
+            Self::InvalidProjectionBody { .. } => "E_INVALID_PROJECTION_BODY",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",

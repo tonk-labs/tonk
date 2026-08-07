@@ -39,10 +39,13 @@ view_model() {
 
   local view_json
   view_json="$("$TONK" query view "$view_name" --json 2>/dev/null)" || return 0
+  if [ "$(printf '%s' "$view_json" | jq 'length' 2>/dev/null)" = 0 ]; then
+    view_json="$("$TONK" query view/directory "$view_name" --json 2>/dev/null)" || return 0
+  fi
 
   local model_uri
   model_uri="$(printf '%s' "$view_json" \
-    | jq -r '.matches_before[0].results[0].fields.model // empty' 2>/dev/null)" || return 0
+    | jq -r '.[0].model // empty' 2>/dev/null)" || return 0
   [ -n "$model_uri" ] || return 0
 
   # The model field holds a concept URI; the concept's own row carries

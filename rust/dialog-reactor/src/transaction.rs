@@ -24,7 +24,8 @@
 
 use dialog_artifacts::{Changes, Statement};
 use dialog_repository::{CommitError, Revision};
-use tonk_evaluator::effects::TransactionExt;
+use tonk_core::command::CommandBatch;
+use tonk_evaluator::effects::{InduceSummary, TransactionExt};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
 
@@ -57,6 +58,9 @@ pub struct TransactionBuilder<'a> {
     /// integrates them into the transaction overlay (so effects
     /// see them) then emits a matching retract before commit.
     pub transients: Changes,
+    /// Validated nominal command occurrences kept outside structural
+    /// branch facts.
+    pub commands: CommandBatch,
 }
 
 impl<'a> TransactionBuilder<'a> {
@@ -66,6 +70,7 @@ impl<'a> TransactionBuilder<'a> {
             branch,
             changes: Changes::new(),
             transients: Changes::new(),
+            commands: CommandBatch::default(),
         }
     }
 
@@ -125,12 +130,19 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Add validated nominal command occurrences to this commit.
+    pub fn command_batch(mut self, commands: CommandBatch) -> Self {
+        self.commands = commands;
+        self
+    }
+
     /// Wrap the accumulated changes into a [`Commit`] effect.
     pub fn commit(self) -> Commit<'a> {
         Commit {
             branch: self.branch,
             changes: self.changes,
             transients: self.transients,
+            commands: self.commands,
         }
     }
 }
@@ -149,6 +161,16 @@ pub struct Commit<'a> {
     /// by inline retractions before the durable write so they
     /// cancel at commit. See `plan/effects.md`.
     pub transients: Changes,
+    /// Validated nominal command occurrences for induction.
+    pub commands: CommandBatch,
+}
+
+/// Durable revision paired with nominal-command induction evidence.
+pub struct CommitReport {
+    /// Newly committed branch revision.
+    pub revision: Revision,
+    /// Per-occurrence registered and fired rule counts.
+    pub induction: InduceSummary,
 }
 
 impl Commit<'_> {
@@ -164,6 +186,14 @@ impl Commit<'_> {
     /// view), then transient facts are retracted in-place so
     /// they cancel at commit. Whatever's left lands durably.
     pub async fn perform<Env>(self, env: &Env) -> Result<Revision, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
+    {
+        Ok(self.perform_report(env).await?.revision)
+    }
+
+    /// Execute the commit and retain nominal-command induction evidence.
+    pub async fn perform_report<Env>(self, env: &Env) -> Result<CommitReport, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
@@ -186,27 +216,28 @@ impl Commit<'_> {
         // advanced head is safe.
         let changes = self.changes;
         let transients = self.transients;
+        let commands = self.commands;
         let mut attempt = 0;
-        let revision = loop {
+        let (revision, induction) = loop {
             let branch = cached.handle();
             let t_induce = web_time::Instant::now();
-            let txn = branch
+            let induced = branch
                 .transaction()
                 .integrate(changes.clone())
                 .integrate(transients.clone())
-                .induce(transients.clone())
-                .perform(env)
+                .induce_commands(transients.clone(), commands.clone())
+                .perform_report(env)
                 .await?;
             let induce_ms = t_induce.elapsed().as_millis();
 
             let t_commit = web_time::Instant::now();
-            match txn.commit().perform(env).await {
+            match induced.transaction.commit().perform(env).await {
                 Ok(revision) => {
                     let commit_ms = t_commit.elapsed().as_millis();
                     dialog_common::log!(
                         "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms"
                     );
-                    break revision;
+                    break (revision, induced.summary);
                 }
                 Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {
                     attempt += 1;
@@ -235,7 +266,10 @@ impl Commit<'_> {
             .reactor()
             .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        Ok(revision)
+        Ok(CommitReport {
+            revision,
+            induction,
+        })
     }
 }
 
@@ -251,4 +285,68 @@ const COMMIT_RETRY_LIMIT: usize = 4;
 /// renders its distinctive text through the chain.
 fn is_head_moved(error: &CommitError) -> bool {
     error.to_string().contains("Version mismatch")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dialog_artifacts::{Entity, Value};
+    use dialog_query::{AttributeDescriptor, Cardinality, Type};
+    use dialog_repository::helpers::test_operator_with_profile;
+    use tonk_core::command::{
+        CommandOccurrence, CommandSchema, InvocationMetadata, SourceInvocation,
+    };
+
+    #[dialog_common::test]
+    async fn command_occurrence_commit_report_preserves_revision_api() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let reactor = crate::Reactor::new(profile);
+        let branch = reactor.profile_repository().branch("main");
+        let schema = CommandSchema {
+            required: [(
+                "title".into(),
+                AttributeDescriptor::new(
+                    "xyz.tonk.todo/title".parse().unwrap(),
+                    "",
+                    Cardinality::One,
+                    Some(Type::String),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            optional: Default::default(),
+        };
+        let validated = schema.validate(SourceInvocation {
+            command: "id:todo/add".parse().unwrap(),
+            arguments: [("title".into(), Value::String("No consumer".into()))]
+                .into_iter()
+                .collect(),
+        })?;
+        let occurrence = Entity::new()?;
+        let report = branch
+            .transaction()
+            .command_batch(CommandBatch::new(vec![CommandOccurrence::new(
+                validated,
+                InvocationMetadata::new(occurrence.clone(), "test:no-consumer"),
+            )]))
+            .commit()
+            .perform_report(&operator)
+            .await?;
+        assert_eq!(
+            report
+                .induction
+                .registered_rules_by_occurrence
+                .get(&occurrence),
+            Some(&0)
+        );
+        assert_eq!(
+            report.induction.fired_rules_by_occurrence.get(&occurrence),
+            Some(&0)
+        );
+
+        // The original perform surface remains source-compatible and
+        // still returns only the committed revision.
+        let _revision: Revision = branch.transaction().commit().perform(&operator).await?;
+        Ok(())
+    }
 }

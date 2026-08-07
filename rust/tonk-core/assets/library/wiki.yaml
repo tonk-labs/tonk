@@ -17,7 +17,8 @@
 # INTO them as invisible "data row" directory views (plain divs with
 # `data-*` attributes) that the components read and observe; actions
 # flow OUT as bubbling CustomEvents wired declaratively on the
-# component elements (`on<event>=<command>` + `dom.event.detail/*`).
+# component elements (`on<event>=<command>`), with typed projections reading
+# whitelisted detail members.
 # Components never mutate inside a `<tonk-display>` subtree — the
 # renderer addresses bound nodes by child-index paths, so injected
 # DOM there would corrupt bindings. They build their own DOM instead.
@@ -236,8 +237,14 @@ command!: &wiki/activate-page
   with:
     page:
       description: The page to activate, from the event detail
-      the: dom.event.detail/activate
+      the: xyz.tonk.command.wiki.activate-page/page
       as: entity
+
+projection!: &wiki/activate-page-default
+  command: wiki/activate-page
+  default: true
+  arguments:
+    page: { detail: "activate" }
 
 # Create a root page. The component computes the sibling `order` key
 # and stamps `time` (a whole-number nonce) so successive creates with
@@ -248,16 +255,19 @@ command!: &wiki/create-page
   with:
     title:
       description: Title of the new page
-      the: dom.event.detail/create-title
+      the: xyz.tonk.command.wiki.create-page/title
       as: text
     order:
       description: Sibling order key, computed by the tree component
-      the: dom.event.detail/create-order
+      the: xyz.tonk.command.wiki.create-page/order
       as: text
-    time:
-      description: A monotonic integer nonce from the component
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &wiki/create-page-default
+  command: wiki/create-page
+  default: true
+  arguments:
+    title: { detail: "create-title" }
+    order: { detail: "create-order" }
 
 # Create a child page. A separate command from `create-page`: an
 # event-detail path that fails to resolve aborts the whole assertion,
@@ -267,40 +277,57 @@ command!: &wiki/create-subpage
   with:
     title:
       description: Title of the new page
-      the: dom.event.detail/sub-title
+      the: xyz.tonk.command.wiki.create-subpage/title
       as: text
     parent:
       description: The parent page
-      the: dom.event.detail/sub-parent
+      the: xyz.tonk.command.wiki.create-subpage/parent
       as: entity
     order:
       description: Sibling order key, computed by the tree component
-      the: dom.event.detail/sub-order
+      the: xyz.tonk.command.wiki.create-subpage/order
       as: text
-    time:
-      description: A monotonic integer nonce from the component
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &wiki/create-subpage-default
+  command: wiki/create-subpage
+  default: true
+  arguments:
+    title: { detail: "sub-title" }
+    parent: { detail: "sub-parent" }
+    order: { detail: "sub-order" }
 
 command!: &wiki/rename-page
   description: Rename `page` to `title`.
   with:
     page:
       description: The page to rename
-      the: dom.event.detail/rename
+      the: xyz.tonk.command.wiki.rename-page/page
       as: entity
     title:
       description: The new title
-      the: dom.event.detail/rename-title
+      the: xyz.tonk.command.wiki.rename-page/title
       as: text
+
+projection!: &wiki/rename-page-default
+  command: wiki/rename-page
+  default: true
+  arguments:
+    page: { detail: "rename" }
+    title: { detail: "rename-title" }
 
 command!: &wiki/delete-page
   description: Remove `page` from the tree.
   with:
     page:
       description: The page to delete
-      the: dom.event.detail/delete
+      the: xyz.tonk.command.wiki.delete-page/page
       as: entity
+
+projection!: &wiki/delete-page-default
+  command: wiki/delete-page
+  default: true
+  arguments:
+    page: { detail: "delete" }
 
 # Create a block. The editor computes `order` (between neighbours or
 # after the last block) and sends the initial `type`/`text` — an
@@ -310,112 +337,162 @@ command!: &wiki/create-block
   with:
     page:
       description: The page the block is created on
-      the: dom.event.detail/block-page
+      the: xyz.tonk.command.wiki.create-block/page
       as: entity
     order:
       description: Block order key, computed by the editor
-      the: dom.event.detail/block-order
+      the: xyz.tonk.command.wiki.create-block/order
       as: text
     type:
       description: Initial block type
-      the: dom.event.detail/block-type
+      the: xyz.tonk.command.wiki.create-block/type
       as: text
     text:
       description: Initial inline-HTML content (may be empty)
-      the: dom.event.detail/block-text
+      the: xyz.tonk.command.wiki.create-block/text
       as: text
-    time:
-      description: A monotonic integer nonce from the editor
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &wiki/create-block-default
+  command: wiki/create-block
+  default: true
+  arguments:
+    page: { detail: "block-page" }
+    order: { detail: "block-order" }
+    type: { detail: "block-type" }
+    text: { detail: "block-text" }
 
 command!: &wiki/edit-block
   description: Replace `block`'s text.
   with:
     block:
       description: The edited block
-      the: dom.event.detail/edit
+      the: xyz.tonk.command.wiki.edit-block/block
       as: entity
     text:
       description: The new inline-HTML content
-      the: dom.event.detail/edit-text
+      the: xyz.tonk.command.wiki.edit-block/text
       as: text
+
+projection!: &wiki/edit-block-default
+  command: wiki/edit-block
+  default: true
+  arguments:
+    block: { detail: "edit" }
+    text: { detail: "edit-text" }
 
 command!: &wiki/turn-block
   description: Change `block`'s type.
   with:
     block:
       description: The block to convert
-      the: dom.event.detail/turn
+      the: xyz.tonk.command.wiki.turn-block/block
       as: entity
     type:
       description: The new block type
-      the: dom.event.detail/turn-type
+      the: xyz.tonk.command.wiki.turn-block/type
       as: text
+
+projection!: &wiki/turn-block-default
+  command: wiki/turn-block
+  default: true
+  arguments:
+    block: { detail: "turn" }
+    type: { detail: "turn-type" }
 
 command!: &wiki/move-block
   description: Re-key `block` to a new order position.
   with:
     block:
       description: The block to move
-      the: dom.event.detail/move
+      the: xyz.tonk.command.wiki.move-block/block
       as: entity
     order:
       description: The new order key, computed by the editor
-      the: dom.event.detail/move-order
+      the: xyz.tonk.command.wiki.move-block/order
       as: text
+
+projection!: &wiki/move-block-default
+  command: wiki/move-block
+  default: true
+  arguments:
+    block: { detail: "move" }
+    order: { detail: "move-order" }
 
 command!: &wiki/delete-block
   description: Remove `block` from its page.
   with:
     block:
       description: The block to delete
-      the: dom.event.detail/delete-block
+      the: xyz.tonk.command.wiki.delete-block/block
       as: entity
+
+projection!: &wiki/delete-block-default
+  command: wiki/delete-block
+  default: true
+  arguments:
+    block: { detail: "delete-block" }
 
 command!: &wiki/add-comment
   description: Comment on `block`.
   with:
     block:
       description: The block the comment anchors to
-      the: dom.event.detail/comment-block
+      the: xyz.tonk.command.wiki.add-comment/block
       as: entity
     page:
       description: The page that block lives on
-      the: dom.event.detail/comment-page
+      the: xyz.tonk.command.wiki.add-comment/page
       as: entity
     author:
       description: Display name of the author
-      the: dom.event.detail/comment-author
+      the: xyz.tonk.command.wiki.add-comment/author
       as: text
     body:
       description: The comment text
-      the: dom.event.detail/comment-body
+      the: xyz.tonk.command.wiki.add-comment/body
       as: text
-    time:
-      description: A monotonic integer nonce from the panel
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &wiki/add-comment-default
+  command: wiki/add-comment
+  default: true
+  arguments:
+    block: { detail: "comment-block" }
+    page: { detail: "comment-page" }
+    author: { detail: "comment-author" }
+    body: { detail: "comment-body" }
 
 command!: &wiki/resolve-comment
   description: Set `comment`'s state ("open" or "resolved").
   with:
     comment:
       description: The comment to update
-      the: dom.event.detail/resolve
+      the: xyz.tonk.command.wiki.resolve-comment/comment
       as: entity
     state:
       description: The new state, computed by the panel (toggle)
-      the: dom.event.detail/resolve-state
+      the: xyz.tonk.command.wiki.resolve-comment/state
       as: text
+
+projection!: &wiki/resolve-comment-default
+  command: wiki/resolve-comment
+  default: true
+  arguments:
+    comment: { detail: "resolve" }
+    state: { detail: "resolve-state" }
 
 command!: &wiki/delete-comment
   description: Delete `comment`.
   with:
     comment:
       description: The comment to delete
-      the: dom.event.detail/delete-comment
+      the: xyz.tonk.command.wiki.delete-comment/comment
       as: entity
+
+projection!: &wiki/delete-comment-default
+  command: wiki/delete-comment
+  default: true
+  arguments:
+    comment: { detail: "delete-comment" }
 
 # Record a wikilink the editor inserted. (Link removal is not yet
 # tracked — a stale link degrades to a harmless extra backlink until
@@ -425,16 +502,24 @@ command!: &wiki/link-add
   with:
     from:
       description: The block carrying the link
-      the: dom.event.detail/link-from
+      the: xyz.tonk.command.wiki.link-add/from
       as: entity
     page:
       description: The page that block lives on
-      the: dom.event.detail/link-page
+      the: xyz.tonk.command.wiki.link-add/page
       as: entity
     to:
       description: The linked page
-      the: dom.event.detail/link-to
+      the: xyz.tonk.command.wiki.link-add/to
       as: entity
+
+projection!: &wiki/link-add-default
+  command: wiki/link-add
+  default: true
+  arguments:
+    from: { detail: "link-from" }
+    page: { detail: "link-page" }
+    to: { detail: "link-to" }
 
 # ============================================================
 # RULES

@@ -170,6 +170,7 @@ impl dialog_artifacts::Statement for Rule {
         let description = self.effect.descriptor().description.clone();
         let conclusion = self.effect.conclusion();
         let attributes = self.effect.on_entities();
+        let commands = self.effect.command_kinds();
 
         // Marker — `(?this, dialog.meta/effect, db:effect)`.
         update.associate_unique(
@@ -203,6 +204,13 @@ impl dialog_artifacts::Statement for Rule {
                 Value::Entity(attribute),
             );
         }
+        for command in commands {
+            update.associate(
+                meta_attr("dialog.effect", "command"),
+                this.clone(),
+                Value::Entity(command),
+            );
+        }
         // Optional description.
         if let Some(description) = description
             && !description.is_empty()
@@ -220,6 +228,7 @@ impl dialog_artifacts::Statement for Rule {
         let description = self.effect.descriptor().description.clone();
         let conclusion = self.effect.conclusion();
         let attributes = self.effect.on_entities();
+        let commands = self.effect.command_kinds();
 
         update.dissociate(
             meta_attr("dialog.meta", "effect"),
@@ -246,6 +255,13 @@ impl dialog_artifacts::Statement for Rule {
                 meta_attr("dialog.effect", "on"),
                 this.clone(),
                 Value::Entity(attribute),
+            );
+        }
+        for command in commands {
+            update.dissociate(
+                meta_attr("dialog.effect", "command"),
+                this.clone(),
+                Value::Entity(command),
             );
         }
         if let Some(description) = description
@@ -488,6 +504,67 @@ mod tests {
                 .expect("Sum::apply should succeed")
                 .into(),
         ]
+    }
+
+    fn nominal_command_premise(kind: Entity) -> DialogPremise {
+        let predicate = ConceptDescriptor::try_from(vec![(
+            "__command_kind",
+            AttributeDescriptor::new(
+                the!("dialog.command/kind"),
+                "",
+                Cardinality::One,
+                Some(Type::Entity),
+            ),
+        )])
+        .unwrap();
+        let mut terms = Parameters::new();
+        terms.insert(
+            "this".into(),
+            Term::Constant(Value::Entity(Entity::new().unwrap())),
+        );
+        terms.insert("__command_kind".into(), Term::Constant(Value::Entity(kind)));
+        DialogPremise::Assert(Proposition::Concept(ConceptQuery { terms, predicate }))
+    }
+
+    #[dialog_common::test]
+    fn command_index_asserts_and_retracts_symmetrically() {
+        use dialog_artifacts::{Changes, Instruction};
+
+        let kind: Entity = "id:todo/add".parse().unwrap();
+        let mut body = increment_body();
+        body.push(nominal_command_premise(kind.clone()));
+        let effect = Effect::asserting(InductiveRule::new(counter_head(), body).unwrap());
+        let this = effect.this();
+
+        let mut asserted = Changes::new();
+        ArtifactsStatement::assert(Rule::asserting(effect.clone()), &mut asserted);
+        assert!(
+            asserted
+                .into_instructions()
+                .iter()
+                .any(|instruction| matches!(
+                    instruction,
+                    Instruction::Assert(claim) | Instruction::Replace(claim)
+                        if claim.the.to_string() == "dialog.effect/command"
+                            && claim.of == this
+                            && claim.is == Value::Entity(kind.clone())
+                ))
+        );
+
+        let mut retracted = Changes::new();
+        ArtifactsStatement::retract(Rule::asserting(effect), &mut retracted);
+        assert!(
+            retracted
+                .into_instructions()
+                .iter()
+                .any(|instruction| matches!(
+                    instruction,
+                    Instruction::Retract(claim)
+                        if claim.the.to_string() == "dialog.effect/command"
+                            && claim.of == this
+                            && claim.is == Value::Entity(kind.clone())
+                ))
+        );
     }
 
     /// Install an effect, then retract it by resolving its

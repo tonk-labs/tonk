@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Boot/teardown the hermetic local stack: trunk-built tonk-ui assets
 # served by Caddy with /ucan/* proxied to the native access service
-# (tonk-access-local, in-process S3).
+# (tonk-access-local, in-process S3) and /revocations proxied to the
+# native account service's in-memory immutable-artifact relay.
 #
 # Env: ROOT (repo root), RUN_DIR (per-run artifact dir),
 #      BENCH_PORT (default 8787), BENCH_URL (http://127.0.0.1:$BENCH_PORT)
@@ -25,6 +26,11 @@ ensure_access_bin() {
   (cd "$ROOT" && cargo build --release -p tonk-access-service --features helpers --bin tonk-access-local)
 }
 
+ensure_account_bin() {
+  echo "stack: cargo build tonk-account-local..." >&2
+  (cd "$ROOT" && cargo build --release -p tonk-account-service --features helpers --bin tonk-account-local)
+}
+
 ensure_tonk() {
   echo "stack: cargo build tonk-cli..." >&2
   (cd "$ROOT" && cargo build --release -p tonk-cli)
@@ -40,6 +46,7 @@ start() {
 
   ensure_ui
   ensure_access_bin
+  ensure_account_bin
   ensure_tonk
   mkdir -p "$RUN_DIR"
 
@@ -69,6 +76,31 @@ start() {
   ACCESS_PORT="${ACCESS_URL##*:}"
   echo "stack: access service up at $ACCESS_URL" >&2
 
+  # --- launch immutable revocation relay ---
+  set -m
+  "$ROOT/target/release/tonk-account-local" > "$RUN_DIR/account.log" 2>&1 &
+  ACCOUNT_PID=$!
+  set +m
+  echo "$ACCOUNT_PID" > "$RUN_DIR/account.pid"
+
+  ACCOUNT_URL=""
+  for _ in $(seq 1 30); do
+    if ACCOUNT_URL=$(grep -m1 '^ACCOUNT_SERVICE_URL=' "$RUN_DIR/account.log" 2>/dev/null | cut -d= -f2-); then
+      [ -n "$ACCOUNT_URL" ] && break
+    fi
+    sleep 0.5
+  done
+
+  if [ -z "$ACCOUNT_URL" ]; then
+    echo "stack: account service did not print URL; tail of account.log:" >&2
+    tail -20 "$RUN_DIR/account.log" >&2
+    exit 1
+  fi
+
+  echo "$ACCOUNT_URL" > "$RUN_DIR/account.url"
+  ACCOUNT_PORT="${ACCOUNT_URL##*:}"
+  echo "stack: revocation relay up at $ACCOUNT_URL/revocations" >&2
+
   # --- write Caddyfile ---
   cat > "$RUN_DIR/Caddyfile" <<EOF
 {
@@ -89,6 +121,9 @@ start() {
   }
   handle /ucan/* {
     reverse_proxy 127.0.0.1:$ACCESS_PORT
+  }
+  handle /revocations {
+    reverse_proxy 127.0.0.1:$ACCOUNT_PORT
   }
   handle {
     root * "$ROOT/rust/tonk-ui/dist"
@@ -123,7 +158,7 @@ EOF
 }
 
 stop() {
-  for svc in caddy access; do
+  for svc in caddy access account; do
     local pidfile="$RUN_DIR/$svc.pid"
     if [ -f "$pidfile" ]; then
       local pid

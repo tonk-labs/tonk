@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Thin WebDriver client over chromedriver. Headless Chrome with a
 # fresh per-run profile. Subcommands:
-#   start | stop | goto <url> | eval <js-expr> | eval-async <js-expr> | wait-render | wait-sw | shot <out.png>
+#   start | stop | goto <url> | eval <js-expr> | eval-async <js-expr>
+#   frame-eval <selector> <js-expr> | wait-render | wait-sw | shot <out.png>
 #
 # `eval` wraps the expression in `return (...)` and prints the JSON value.
 # `eval-async` awaits a promise-valued expression via execute/async.
@@ -100,6 +101,44 @@ evaljs_async() {
     | jq -c '.value'
 }
 
+# Search the current frame tree for a document containing selector. On success
+# leave WebDriver focused in that frame; callers restore the top frame after
+# evaluating. This uses WebDriver frame switching because sealed guest iframes
+# deliberately have opaque origins and cannot be traversed from page JS.
+find_frame() {
+  local selector="$1" selector_json frames count frame index
+  selector_json="$(jq -n --arg selector "$selector" '$selector')"
+  if [ "$(evaljs "document.querySelector($selector_json) !== null" 2>/dev/null || true)" = true ]; then
+    return 0
+  fi
+
+  frames="$(wd POST "/session/$(sid)/elements" \
+    '{"using":"css selector","value":"iframe"}')"
+  count="$(printf '%s' "$frames" | jq '.value | length')"
+  [ "$count" -gt 0 ] || return 1
+  for index in $(seq 0 $((count - 1))); do
+    frame="$(printf '%s' "$frames" | jq -c ".value[$index]")"
+    wd POST "/session/$(sid)/frame" "$(jq -n --argjson id "$frame" '{id:$id}')" >/dev/null
+    if find_frame "$selector"; then
+      return 0
+    fi
+    wd POST "/session/$(sid)/frame/parent" '{}' >/dev/null
+  done
+  return 1
+}
+
+frame_eval() {
+  local selector="$1" expression="$2" result
+  wd POST "/session/$(sid)/frame" '{"id":null}' >/dev/null
+  if ! find_frame "$selector"; then
+    wd POST "/session/$(sid)/frame" '{"id":null}' >/dev/null
+    return 1
+  fi
+  result="$(evaljs "$expression")"
+  wd POST "/session/$(sid)/frame" '{"id":null}' >/dev/null
+  printf '%s\n' "$result"
+}
+
 # Poll a JS predicate until it returns true. wait_for <js-expr> <timeout-s> <label>
 wait_for() {
   local expr="$1" timeout="${2:-30}" label="${3:-condition}" out=""
@@ -145,8 +184,9 @@ case "${1:-}" in
   goto) goto "$2" ;;
   eval) evaljs "$2" ;;
   eval-async) evaljs_async "$2" ;;
+  frame-eval) frame_eval "$2" "$3" ;;
   wait-render) wait_render ;;
   wait-sw) wait_sw ;;
   shot) shot "$2" ;;
-  *) echo "usage: browser.sh {start|stop|goto <url>|eval <js>|eval-async <js>|wait-render|wait-sw|shot <png>}" >&2; exit 2 ;;
+  *) echo "usage: browser.sh {start|stop|goto <url>|eval <js>|eval-async <js>|frame-eval <selector> <js>|wait-render|wait-sw|shot <png>}" >&2; exit 2 ;;
 esac

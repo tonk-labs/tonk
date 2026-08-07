@@ -36,7 +36,8 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result, anyhow};
 use dialog_artifacts::Entity;
 use dialog_query::{
-    AttributeQuery, Cardinality, ConceptDescriptor, Output as _, Term, Type, attribute,
+    AttributeDescriptor, AttributeQuery, Cardinality, ConceptDescriptor, Output as _, Term, Type,
+    attribute,
 };
 use serde_json::Value as Json;
 use tonk_evaluator::evaluate::{QueryMatchBlock, SyntaxEvaluateExt};
@@ -44,7 +45,12 @@ use tonk_notation::parse;
 
 use crate::output::EvaluateResponse;
 
+use crate::commands::NominalCommand;
 use crate::site::TonkSite;
+use tonk_core::command::CommandSchema;
+use tonk_schema::projection::{
+    ControlProperty, EventAction, EventMember, ProjectionSource, TargetMember,
+};
 
 /// Slim summary of one named concept on the branch — just enough
 /// for `tonk concept ls` to print. The full descriptor stays internal
@@ -131,6 +137,7 @@ pub async fn list_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
 pub async fn render(site: &TonkSite) -> Result<String> {
     let attrs = enumerate_attributes(site).await?;
     let concepts = enumerate_concepts(site).await?;
+    let commands = crate::commands::inventory(site).await?.nominal;
 
     // URI → bookmark name, used to render `with: { field: name }`
     // when a referenced attribute has a published name.
@@ -140,11 +147,22 @@ pub async fn render(site: &TonkSite) -> Result<String> {
         .collect();
 
     let mut out = String::new();
-    for attr in &attrs {
+    for attr in attrs
+        .iter()
+        .filter(|attribute| attribute.name.is_some() && !attribute.description.is_empty())
+    {
         render_attribute(&mut out, attr);
     }
     for concept in &concepts {
         render_concept(&mut out, concept, &uri_to_name);
+    }
+    for command in &commands {
+        render_command(&mut out, command)?;
+    }
+    for command in &commands {
+        for projection in &command.projections {
+            render_projection(&mut out, projection)?;
+        }
     }
     Ok(out)
 }
@@ -378,6 +396,7 @@ fn is_builtin_concept(name: &str) -> bool {
         name,
         "attribute"
             | "concept"
+            | "command"
             | "name"
             | "rule"
             | "branch"
@@ -450,6 +469,182 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
         }
     }
     out.push('\n');
+}
+
+fn render_command(out: &mut String, command: &NominalCommand) -> Result<()> {
+    let schema: CommandSchema = serde_ipld_dagjson::from_slice(command.source.as_bytes())
+        .with_context(|| format!("invalid stored schema for command {}", command.kind))?;
+    let name = command
+        .name
+        .as_deref()
+        .or_else(|| command.kind.strip_prefix("id:"));
+    match name {
+        Some(name) => {
+            let _ = writeln!(out, "command!: &{name}");
+            if command.kind != format!("id:{name}") {
+                let _ = writeln!(out, "  this: {}", command.kind);
+            }
+        }
+        None => {
+            out.push_str("command!:\n");
+            let _ = writeln!(out, "  this: {}", command.kind);
+        }
+    }
+    render_command_fields(out, "with", &schema.required);
+    render_command_fields(out, "maybe", &schema.optional);
+    out.push('\n');
+    Ok(())
+}
+
+fn render_command_fields(
+    out: &mut String,
+    section: &str,
+    fields: &indexmap::IndexMap<String, AttributeDescriptor>,
+) {
+    if fields.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "  {section}:");
+    for (field, descriptor) in fields {
+        let _ = writeln!(out, "    {field}:");
+        if !descriptor.description().is_empty() {
+            let _ = writeln!(
+                out,
+                "      description: {}",
+                quote_string(descriptor.description())
+            );
+        }
+        let _ = writeln!(out, "      the:         {}", descriptor.the());
+        if let Some(value_type) = descriptor.content_type() {
+            let _ = writeln!(out, "      as:          {}", type_to_notation(&value_type));
+        }
+        let cardinality = match descriptor.cardinality() {
+            Cardinality::One => "one",
+            Cardinality::Many => "many",
+        };
+        let _ = writeln!(out, "      cardinality: {cardinality}");
+    }
+}
+
+fn render_projection(
+    out: &mut String,
+    projection: &crate::commands::ProjectionInventory,
+) -> Result<()> {
+    let name = projection
+        .name
+        .as_deref()
+        .or_else(|| projection.entity.strip_prefix("id:"));
+    match name {
+        Some(name) => {
+            let _ = writeln!(out, "projection!: &{name}");
+            if projection.entity != format!("id:{name}") {
+                let _ = writeln!(out, "  this: {}", projection.entity);
+            }
+        }
+        None => {
+            out.push_str("projection!:\n");
+            let _ = writeln!(out, "  this: {}", projection.entity);
+        }
+    }
+    let _ = writeln!(out, "  command: {}", projection.descriptor.command);
+    if projection.descriptor.default {
+        out.push_str("  default: true\n");
+    }
+    if projection.descriptor.arguments.is_empty() {
+        out.push_str("  arguments: {}\n");
+    } else {
+        out.push_str("  arguments:\n");
+        for (field, source) in &projection.descriptor.arguments {
+            let _ = writeln!(out, "    {field}:");
+            render_projection_source(out, source)?;
+        }
+    }
+    if !projection.descriptor.actions.is_empty() {
+        out.push_str("  actions:\n");
+        for action in &projection.descriptor.actions {
+            let action = match action {
+                EventAction::PreventDefault => "prevent-default",
+                EventAction::StopPropagation => "stop-propagation",
+                EventAction::StopImmediatePropagation => "stop-immediate-propagation",
+            };
+            let _ = writeln!(out, "    - {action}");
+        }
+    }
+    out.push('\n');
+    Ok(())
+}
+
+fn render_projection_source(out: &mut String, source: &ProjectionSource) -> Result<()> {
+    match source {
+        ProjectionSource::Control(control) if control.property == ControlProperty::Value => {
+            let _ = writeln!(out, "      control: {}", quote_scalar(&control.name));
+        }
+        ProjectionSource::Control(control) => {
+            out.push_str("      control:\n");
+            let _ = writeln!(out, "        name: {}", quote_scalar(&control.name));
+            out.push_str("        property: checked\n");
+        }
+        ProjectionSource::Data(name) => {
+            let _ = writeln!(out, "      data: {}", quote_scalar(name));
+        }
+        ProjectionSource::Event(member) => {
+            let _ = writeln!(out, "      event: {}", event_member_name(*member));
+        }
+        ProjectionSource::Detail(name) => {
+            let _ = writeln!(out, "      detail: {}", quote_scalar(name));
+        }
+        ProjectionSource::Target(member) => {
+            let member = match member {
+                TargetMember::Value => "value",
+                TargetMember::Checked => "checked",
+            };
+            let _ = writeln!(out, "      target: {member}");
+        }
+        ProjectionSource::Literal(value) => {
+            let _ = writeln!(out, "      literal: {}", render_value(value)?);
+        }
+    }
+    Ok(())
+}
+
+fn event_member_name(member: EventMember) -> &'static str {
+    match member {
+        EventMember::Type => "type",
+        EventMember::Key => "key",
+        EventMember::Code => "code",
+        EventMember::Repeat => "repeat",
+        EventMember::ShiftKey => "shiftKey",
+        EventMember::CtrlKey => "ctrlKey",
+        EventMember::AltKey => "altKey",
+        EventMember::MetaKey => "metaKey",
+        EventMember::Button => "button",
+        EventMember::ClientX => "clientX",
+        EventMember::ClientY => "clientY",
+        EventMember::TimeStamp => "timeStamp",
+    }
+}
+
+fn quote_scalar(value: &str) -> String {
+    // Always quote names so hyphens, slashes, and YAML booleans retain their
+    // exact spelling when the output is parsed again.
+    quote_string(value)
+}
+
+fn render_value(value: &dialog_artifacts::Value) -> Result<String> {
+    Ok(match value {
+        dialog_artifacts::Value::String(value) => quote_string(value),
+        dialog_artifacts::Value::Boolean(value) => value.to_string(),
+        dialog_artifacts::Value::UnsignedInt(value) => value.to_string(),
+        dialog_artifacts::Value::SignedInt(value) => value.to_string(),
+        dialog_artifacts::Value::Float(value) => value.to_string(),
+        dialog_artifacts::Value::Entity(value) => value.to_string(),
+        dialog_artifacts::Value::Symbol(value) => quote_string(&value.to_string()),
+        other => {
+            return Err(anyhow!(
+                "projection literal {other:?} has no scalar notation representation"
+            ));
+        }
+    })
 }
 
 /// Map a dialog `Type` onto the string accepted by the analyzer

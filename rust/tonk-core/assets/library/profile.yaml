@@ -58,8 +58,8 @@ concept!: &space
       cardinality: one
       as: text
 
-# The Add Space command. Submitting the Hub's form asserts this
-# transient command; the worker's `create_space` handler decodes it and
+# The Add Space command. Submitting the Hub's form projects a nominal
+# invocation; the worker's exact-kind `create_space` handler decodes it and
 # does the work (record the replica, create + seed the repository, flip
 # the status, navigate the creator into the new spot). `name` reads from
 # the form on submit: `event.currentTarget.elements.name.value` — the
@@ -69,8 +69,8 @@ concept!: &space
 # slotted into `<wa-dialog>` and the native `<dialog>` lives across the
 # shadow boundary, so the form has no native-dialog ancestor in its own
 # tree and the browser falls back to a GET submit. The command is
-# transient: it fires the handler once and is swept before the durable
-# commit.
+# invocation has its own occurrence identity and never persists as ordinary
+# argument facts.
 command!: &space/create
   description: A request to create a new space from the wizard form.
   with:
@@ -84,8 +84,9 @@ command!: &space/create
         must be non-empty — the event extractor omits blank fields, and
         with no `name` fact the transient would never trigger the
         handler.
-      the: dom.event.current-target.elements.name/value
+      the: xyz.tonk.command.space.create/name
       as: text
+  maybe:
     remote:
       description: >
         Sync URL, read from the form's hidden `remote` input. The
@@ -98,7 +99,7 @@ command!: &space/create
         with `main` tracking `origin/main`. Single
         word `remote` (not `remote-url`) because read-path segments are
         kebab→camel-cased.
-      the: dom.event.current-target.elements.remote/value
+      the: xyz.tonk.command.space.create/remote
       as: text
     revocation:
       description: >
@@ -110,7 +111,7 @@ command!: &space/create
         `value` (the input's value slot), NOT `revocation-url` — the
         segment after the control name is a JS property, so any other
         leaf reads `undefined` and aborts the whole command on submit.
-      the: dom.event.current-target.elements.revocation/value
+      the: xyz.tonk.command.space.create/revocation
       as: text
     template:
       description: >
@@ -121,11 +122,19 @@ command!: &space/create
         and `remote` are. The worker's CreateSpaceHandler reads it via
         template_from_facts; an older form that omits it decodes as
         blank.
-      the: dom.event.current-target.elements.template/value
+      the: xyz.tonk.command.space.create/template
       as: text
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
+
+projection!: &space/create-default
+  command: space/create
+  default: true
+  arguments:
+    name: { control: "name" }
+    remote: { control: "remote" }
+    revocation: { control: "revocation" }
+    template: { control: "template" }
+  actions:
+    - prevent-default
 
 # The Remove Space command. Submitting a Hub row's delete-confirm form
 # asserts this transient; the worker's `RemoveSpaceHandler` retracts the
@@ -145,11 +154,16 @@ command!: &space/remove
   with:
     subject:
       description: The subject DID of the space to remove, read from `data-remove`.
-      the: dom.event.current-target.dataset/remove
+      the: xyz.tonk.command.space.remove/subject
       as: entity
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
+
+projection!: &space/remove-default
+  command: space/remove
+  default: true
+  arguments:
+    subject: { data: "remove" }
+  actions:
+    - prevent-default
 
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
 # `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
@@ -160,6 +174,10 @@ command!: &tonk/load
   this: tonk:load
   description: Stamp the requesting tab's site for its current path on this branch.
   with:
+    site:
+      description: The page-minted site entity to stamp.
+      the: xyz.tonk.command.tonk.load/site
+      as: entity
     path:
       description: The route path the tab is at, matched against the route table.
       the: xyz.tonk.site/path
@@ -706,24 +724,40 @@ concept!: &profile/name
 
 # Rename the signed-in member (set their display name). Lives here as well as
 # in core.yaml because the FAB is sealed to the profile/meta branch: the
-# guest's `<tonk-display>` resolves the command's concept descriptor by a
+# guest's `<tonk-display>` resolves the command and its projection by a
 # phase-1 lookup against THIS branch (seeded from the lean profile.yaml), so
 # the command must be present here for the editable's `onchange=profile/rename`
 # to fire. The worker's globally-registered `ProfileRenameHandler` does the
 # work (persist `ProfileName`, restamp `MemberName` across every space's
-# roster, republish self-identity) — this descriptor only has to decode the
-# new name and the `tonk:profile` marker that distinguishes it from the repo
-# rename, which shares the same `dom.event.current-target` shape.
+# roster, republish self-identity). Exact command kind selection distinguishes
+# it from repository rename before the `name` argument is decoded.
 command!: &profile/rename
   description: Rename the signed-in member (set their display name).
   with:
     name:
       description: The new name, read from the editable's value on commit.
-      the: dom.event.current-target/value
+      the: xyz.tonk.command.profile.rename/name
       as: text
-    marker:
-      description: Per-command marker (data-rename) distinguishing this from repo rename.
-      the: dom.event.current-target.dataset/rename
+
+projection!: &profile/rename-default
+  command: profile/rename
+  default: true
+  arguments:
+    name: { target: value }
+
+# Profile-routed repository rename. The mounted space-side banner uses the
+# separate `id:tonk/rename-repository` declarative command in core.yaml.
+command!: &tonk/rename-repository-worker
+  this: tonk:rename-repository
+  description: Rename an explicitly named space from the profile-routed FAB.
+  with:
+    name:
+      description: New repository name.
+      the: xyz.tonk.command.tonk.rename-repository-worker/name
+      as: text
+    space:
+      description: Target space DID.
+      the: xyz.tonk.command.tonk.rename-repository-worker/space
       as: entity
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
@@ -738,17 +772,37 @@ command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
   with:
-    time:
-      description: The click's timestamp; makes each dispatch a distinct transient.
-      the: dom.event/time-stamp
-      as: float
     space:
       description: The target space DID — the replica whose auto-sync is flipped.
       the: xyz.tonk.pause-sync/space
       as: entity
-    marker:
-      description: Per-command marker keeping the shape distinct from tonk:invite.
-      the: dom.event.current-target.dataset/pause-sync
+
+# Profile-routed share acceptance. Rust constructs this invocation directly;
+# it has no DOM projection because the FAB already owns the typed values.
+command!: &tonk/enable-sync
+  this: tonk:enable-sync
+  description: Attach a remote to an existing space and optionally mint an invite.
+  with:
+    time:
+      description: Diagnostic event timestamp.
+      the: xyz.tonk.command.tonk.enable-sync/time
+      as: float
+    space:
+      description: Target space DID.
+      the: xyz.tonk.command.tonk.enable-sync/space
+      as: entity
+    remote:
+      description: Remote URL to attach.
+      the: xyz.tonk.command.tonk.enable-sync/remote
+      as: text
+  maybe:
+    revocation:
+      description: Immutable-artifact relay URL.
+      the: xyz.tonk.command.tonk.enable-sync/revocation
+      as: text
+    share:
+      description: Request invite minting after attach.
+      the: xyz.tonk.command.tonk.enable-sync/share
       as: entity
 
 # The FAB dock — which corner the bar rests in (tonk:top-left or
@@ -785,8 +839,14 @@ command!: &tonk/join
   with:
     url:
       description: The complete invite URL, including any fragment, from detail.href.
-      the: dom.event.detail/href
+      the: xyz.tonk.command.tonk.join/url
       as: text
+
+projection!: &tonk/join-default
+  command: tonk/join
+  default: true
+  arguments:
+    url: { detail: "href" }
 
 # The in-flight join, overlay-only, at the fixed `tonk:join/status` entity.
 # Just `status` (`tonk:pending` while claiming, `tonk:failed` on error) so it

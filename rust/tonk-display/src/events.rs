@@ -20,7 +20,15 @@
 #[cfg(target_arch = "wasm32")]
 pub mod delegate;
 #[cfg(target_arch = "wasm32")]
+pub mod dom;
+#[cfg(target_arch = "wasm32")]
 pub mod extract;
 pub mod path;
 #[cfg(target_arch = "wasm32")]
 pub mod preprocess;
+
+/// Explicit compatibility surface for structural `dom.event` extraction.
+#[cfg(target_arch = "wasm32")]
+pub mod legacy {
+    pub use super::extract::build_transact_body;
+}

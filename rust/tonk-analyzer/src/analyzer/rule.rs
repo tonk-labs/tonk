@@ -22,7 +22,9 @@ use dialog_query::constraint::Constraint;
 use dialog_query::formula::query::FormulaQuery;
 use dialog_query::premise::Premise as DialogPremise;
 use dialog_query::{
+    AttributeDescriptor, Cardinality, ConceptDescriptor, ConceptFieldDescriptor,
     DeductiveRule as CompiledDeductiveRule, InductiveRule, Negation, Parameters, Proposition, Term,
+    Type,
 };
 use tonk_notation::{
     Application as SyntaxApplication, FieldValue, Premise as NotationPremise, Scalar,
@@ -35,7 +37,9 @@ use super::formula::{FormulaInfo, lookup_formula};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
+use tonk_core::command::{COMMAND_ARGUMENT_RELATION_PREFIX, COMMAND_KIND_RELATION, CommandSchema};
 use tonk_core::effect::{Effect, EffectPolarity};
+use tonk_schema::command_definition::CommandDefinition;
 use tonk_schema::deductive_rule::DeductiveRule;
 use tonk_schema::rule::Rule;
 
@@ -283,7 +287,18 @@ pub(crate) fn lift_rule(
     let body = parse_rule_body(application)?;
 
     // ---- Head concept ----
-    let head_descriptor = {
+    let head_command = scope.command(&body.conclusion);
+    let head_descriptor = if let Some(command) = &head_command {
+        if body.head != RuleHead::Inductive(EffectPolarity::Assert) {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: "a nominal command rule head must use `assert!:`".into(),
+                },
+                body.conclusion_range,
+            ));
+        }
+        command_predicate(command.schema())
+    } else {
         let name = body.conclusion.as_str();
         let resolved = scope.concept(name).ok_or_else(|| {
             AnalyzeError::at(
@@ -303,6 +318,17 @@ pub(crate) fn lift_rule(
     for premise in body.unless {
         let proposition = lift_premise(premise, scope, analysis)?;
         dialog_premises.push(DialogPremise::Unless(Negation(proposition)));
+    }
+    if let Some(command) = &head_command {
+        let equality = dialog_query::constraint::Equality::new(
+            Term::<dialog_query::Any>::var(COMMAND_KIND_FIELD),
+            Term::<dialog_query::Any>::Constant(dialog_artifacts::Value::Entity(
+                command.kind().clone(),
+            )),
+        );
+        dialog_premises.push(DialogPremise::Assert(Proposition::Constraint(
+            equality.into(),
+        )));
     }
 
     // ---- Reject trivially tautological assert rules ----
@@ -650,6 +676,10 @@ fn lift_premise(
         return lift_constraint_premise(premise, constraint, scope, analysis);
     }
 
+    if let Some(command) = scope.command(name) {
+        return lift_command_premise(premise, &command, scope, analysis);
+    }
+
     let resolved = scope.concept(name).ok_or_else(|| {
         AnalyzeError::at(
             AnalyzeErrorKind::UnknownConcept { name: name.into() },
@@ -728,6 +758,122 @@ fn lift_premise(
         }
     }
 
+    Ok(Proposition::Concept(ConceptQuery {
+        terms,
+        predicate: descriptor,
+    }))
+}
+
+const COMMAND_KIND_FIELD: &str = "__command_kind";
+
+fn command_predicate(schema: &CommandSchema) -> ConceptDescriptor {
+    let mut fields = vec![(
+        COMMAND_KIND_FIELD.to_owned(),
+        ConceptFieldDescriptor::required(AttributeDescriptor::new(
+            COMMAND_KIND_RELATION
+                .parse()
+                .expect("private command relation"),
+            "Stable nominal command kind",
+            Cardinality::One,
+            Some(Type::Entity),
+        )),
+    )];
+    for (name, attribute) in &schema.required {
+        fields.push((
+            name.clone(),
+            ConceptFieldDescriptor::required(AttributeDescriptor::new(
+                format!("{COMMAND_ARGUMENT_RELATION_PREFIX}{name}")
+                    .parse()
+                    .expect("validated command field relation"),
+                attribute.description(),
+                attribute.cardinality(),
+                attribute.content_type(),
+            )),
+        ));
+    }
+    for (name, attribute) in &schema.optional {
+        fields.push((
+            name.clone(),
+            ConceptFieldDescriptor::optional(AttributeDescriptor::new(
+                format!("{COMMAND_ARGUMENT_RELATION_PREFIX}{name}")
+                    .parse()
+                    .expect("validated command field relation"),
+                attribute.description(),
+                attribute.cardinality(),
+                attribute.content_type(),
+            )),
+        ));
+    }
+    ConceptDescriptor::try_from(fields).expect("command predicate always has required kind")
+}
+
+fn lift_command_premise(
+    premise: &NotationPremise,
+    command: &CommandDefinition,
+    scope: &Scope,
+    analysis: &Working,
+) -> Result<Proposition, AnalyzeError> {
+    let descriptor = command_predicate(command.schema());
+    let mut terms = Parameters::new();
+    let this = premise.bindings.iter().find(|field| field.name == "this");
+    terms.insert(
+        "this".into(),
+        match this {
+            Some(field) => field_value_to_term(
+                "this",
+                &field.value,
+                field.value_range,
+                scope,
+                analysis,
+                None,
+            )?,
+            None => Term::<dialog_query::Any>::unique(),
+        },
+    );
+    terms.insert(
+        COMMAND_KIND_FIELD.into(),
+        Term::<dialog_query::Any>::Constant(dialog_artifacts::Value::Entity(
+            command.kind().clone(),
+        )),
+    );
+    for (field_name, attribute) in descriptor.with().iter() {
+        if field_name == COMMAND_KIND_FIELD {
+            continue;
+        }
+        let binding = premise
+            .bindings
+            .iter()
+            .find(|field| field.name == *field_name);
+        let term = match binding {
+            Some(field) if matches!(field.value, FieldValue::Blank) => {
+                Term::<dialog_query::Any>::blank()
+            }
+            Some(field) => field_value_to_term(
+                field_name,
+                &field.value,
+                field.value_range,
+                scope,
+                analysis,
+                attribute.content_type(),
+            )?,
+            None => Term::<dialog_query::Any>::blank(),
+        };
+        terms.insert(field_name.to_string(), term);
+    }
+    for field in &premise.bindings {
+        if field.name != "this"
+            && !command.schema().required.contains_key(&field.name)
+            && !command.schema().optional.contains_key(&field.name)
+        {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnknownField {
+                    concept: premise.concept.value.clone(),
+                    field: field.name.clone(),
+                },
+                field.name_range,
+            ));
+        }
+    }
     Ok(Proposition::Concept(ConceptQuery {
         terms,
         predicate: descriptor,
@@ -1142,6 +1288,155 @@ mod tests {
             on_uris.iter().any(|u| u == "on:io.gozala.ping/tag"),
             "expected on:io.gozala.ping/tag in {on_uris:?}"
         );
+    }
+
+    #[dialog_common::test]
+    async fn command_rule_compiles_private_predicate_and_kind_index() {
+        let fixture = new_fixture().await;
+        let doc = r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+concept!: &todo/item
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+rule!:
+  assert!: todo/item
+  when:
+    - assert: todo/add
+      where: { this: ?this, title: ?title }
+"#;
+        let parsed = parse(doc);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let analysis = fixture
+            .analyze(&parsed.syntax.expect("syntax"))
+            .await
+            .expect("nominal command premise compiles");
+        let effect = analysis.analysis.rule_installs().remove(0).effect;
+        let descriptor = effect.descriptor();
+        let Proposition::Concept(command) = &descriptor.when[0] else {
+            panic!("command premise should compile as a private concept query");
+        };
+        let kind_field = command
+            .predicate
+            .with()
+            .iter()
+            .find(|(_, field)| field.the().to_string() == "dialog.command/kind")
+            .expect("private kind relation");
+        assert!(matches!(
+            command.terms.get(kind_field.0),
+            Some(Term::Constant(dialog_artifacts::Value::Entity(kind)))
+                if kind.to_string() == "id:todo/add"
+        ));
+        assert!(
+            command
+                .predicate
+                .with()
+                .iter()
+                .any(|(_, field)| { field.the().to_string() == "dialog.command.argument/title" })
+        );
+        assert!(effect.on_entities().is_empty());
+        assert_eq!(
+            effect
+                .command_kinds()
+                .into_iter()
+                .map(|kind| kind.to_string())
+                .collect::<Vec<_>>(),
+            vec!["id:todo/add"]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn command_rule_head_emits_private_next_round_shape() {
+        let fixture = new_fixture().await;
+        let doc = r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+concept!: &todo/request
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+rule!:
+  assert!: todo/add
+  when:
+    - assert: todo/request
+      where: { this: ?this, title: ?title }
+"#;
+        let parsed = parse(doc);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let analysis = fixture
+            .analyze(&parsed.syntax.expect("syntax"))
+            .await
+            .expect("nominal command head compiles");
+        let effect = analysis.analysis.rule_installs().remove(0).effect;
+        assert!(
+            effect
+                .rule()
+                .conclusion()
+                .with()
+                .iter()
+                .any(|(_, field)| { field.the().to_string() == "dialog.command/kind" })
+        );
+        assert!(
+            effect
+                .rule()
+                .conclusion()
+                .with()
+                .iter()
+                .any(|(_, field)| { field.the().to_string() == "dialog.command.argument/title" })
+        );
+        assert!(
+            effect
+                .rule()
+                .conclusion()
+                .with()
+                .iter()
+                .all(|(name, _)| name != "this")
+        );
+    }
+
+    #[dialog_common::test]
+    async fn command_rule_indexes_are_kind_isolated_from_shared_schema() {
+        let fixture = new_fixture().await;
+        let doc = r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.shared/title, as: Text }
+command!: &note/add
+  with:
+    title: { description: "Title", the: xyz.shared/title, as: Text }
+concept!: &todo/item
+  with:
+    title: { description: "Title", the: xyz.shared/title, as: Text }
+concept!: &note/item
+  with:
+    title: { description: "Title", the: xyz.shared/title, as: Text }
+rule!:
+  assert!: todo/item
+  when:
+    - assert: todo/add
+      where: { this: ?this, title: ?title }
+rule!:
+  assert!: note/item
+  when:
+    - assert: note/add
+      where: { this: ?this, title: ?title }
+"#;
+        let parsed = parse(doc);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let analysis = fixture
+            .analyze(&parsed.syntax.expect("syntax"))
+            .await
+            .expect("both command rules compile");
+        let mut indexes = analysis
+            .analysis
+            .rule_installs()
+            .into_iter()
+            .flat_map(|rule| rule.effect.command_kinds())
+            .map(|kind| kind.to_string())
+            .collect::<Vec<_>>();
+        indexes.sort();
+        assert_eq!(indexes, vec!["id:note/add", "id:todo/add"]);
     }
 
     /// A `rule!:` with an `assert:` (no-bang) head lifts to a

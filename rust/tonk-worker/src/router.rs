@@ -90,7 +90,9 @@ mod session;
 pub use session::{ClientRegistry, ClientState, SiteResponse};
 
 mod transact;
-pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
+pub use transact::{
+    InvocationOutcome, InvocationStatus, ProfileTransactPath, TransactPath, TransactResponse,
+};
 
 mod transfer;
 pub use transfer::ImportResponse;
@@ -108,7 +110,10 @@ mod migration;
 mod navigate;
 
 mod command;
-pub use command::{CommandEnv, CommandOrigin, command_registry, dispatch};
+pub use command::{
+    CommandEnv, CommandOrigin, HandlerOutcome, HandlerState, InvocationLedger, InvocationRecord,
+    PendingInvocation, command_registry, dispatch, dispatch_with_nominal,
+};
 
 #[cfg(test)]
 mod wire_compat;
@@ -225,6 +230,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let (lsp_routes, lsp_hub) = lsp::lsp_router(state.clone());
     let router = Router::new()
         .route("/api", get(root))
+        .route(
+            "/api/invocations/{correlation}",
+            get(command::invocation_status),
+        )
         .route("/api/identify", get(identify::identify))
         .route(
             "/api/identity/root",
@@ -603,6 +612,7 @@ pub mod tests {
             bridges: Default::default(),
             sync_queue: Default::default(),
             commands: super::command_registry(),
+            invocations: Default::default(),
             clients: Default::default(),
             account_keys: Default::default(),
         }

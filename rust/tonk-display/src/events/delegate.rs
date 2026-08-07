@@ -24,17 +24,101 @@ use std::rc::Rc;
 
 use serde_json::Value;
 use tonk_host::consumer as host_consumer;
+use tonk_schema::command_definition::CommandDefinition;
+use tonk_schema::projection::{ProjectionDefinition, ProjectionError, project};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event};
 
-use super::extract::build_transact_body;
+use super::dom::{DomInput, apply_actions};
+use super::legacy::build_transact_body;
 
 /// Concept name → pre-parsed descriptor. Built once at mount time
 /// from the worker's phase-1 results; each click reads from this
 /// map directly, no per-click JSON parse.
 pub type Descriptors = HashMap<String, Value>;
+
+/// One nominal command plus the projections currently indexed to it.
+#[derive(Debug, Clone)]
+pub struct CommandBinding {
+    /// Current authoritative command definition.
+    pub command: CommandDefinition,
+    /// Current projections for the command.
+    pub projections: Vec<ProjectionDefinition>,
+}
+
+/// Event bindings resolved during the display's phase-1 refresh.
+#[derive(Debug, Clone, Default)]
+pub struct BindingsCatalog {
+    /// Binding reference → nominal command and candidate projections.
+    pub commands: HashMap<String, CommandBinding>,
+    /// Binding reference → explicit nominal projection and its command.
+    pub projections: HashMap<String, (ProjectionDefinition, CommandDefinition)>,
+    /// Explicitly isolated structural compatibility descriptors.
+    pub legacy_descriptors: Descriptors,
+}
+
+impl From<Descriptors> for BindingsCatalog {
+    fn from(legacy_descriptors: Descriptors) -> Self {
+        Self {
+            legacy_descriptors,
+            ..Self::default()
+        }
+    }
+}
+
+enum ResolvedBinding<'a> {
+    Nominal {
+        projection: &'a ProjectionDefinition,
+        command: &'a CommandDefinition,
+    },
+    Legacy(&'a Value),
+}
+
+#[derive(Debug)]
+enum BindingResolveError {
+    Unresolved,
+    MissingProjection,
+    AmbiguousProjection,
+}
+
+impl BindingsCatalog {
+    fn resolve(&self, reference: &str) -> Result<ResolvedBinding<'_>, BindingResolveError> {
+        if let Some((projection, command)) = self.projections.get(reference) {
+            return Ok(ResolvedBinding::Nominal {
+                projection,
+                command,
+            });
+        }
+        if let Some(binding) = self.commands.get(reference) {
+            let projection = match binding.projections.as_slice() {
+                [projection] => projection,
+                [] => return Err(BindingResolveError::MissingProjection),
+                projections => {
+                    let mut defaults = projections
+                        .iter()
+                        .filter(|projection| projection.descriptor().default);
+                    let Some(default) = defaults.next() else {
+                        return Err(BindingResolveError::AmbiguousProjection);
+                    };
+                    if defaults.next().is_some() {
+                        return Err(BindingResolveError::AmbiguousProjection);
+                    }
+                    default
+                }
+            };
+            return Ok(ResolvedBinding::Nominal {
+                projection,
+                command: &binding.command,
+            });
+        }
+        self.legacy_descriptors
+            .get(reference)
+            .map(ResolvedBinding::Legacy)
+            .ok_or(BindingResolveError::Unresolved)
+    }
+}
 
 /// Per-listener pair: the event-type name and the JS-side closure
 /// whose lifetime owns its memory.
@@ -67,17 +151,17 @@ impl Delegate {
     pub fn install(
         host: Element,
         event_types: impl IntoIterator<Item = String>,
-        descriptors: Descriptors,
+        catalog: impl Into<BindingsCatalog>,
     ) -> Self {
-        let descriptors = Rc::new(descriptors);
+        let catalog = Rc::new(catalog.into());
         let mut listeners: Vec<ListenerEntry> = Vec::new();
 
         for event_type in event_types {
-            let descriptors = Rc::clone(&descriptors);
+            let catalog = Rc::clone(&catalog);
             let attr_name = format!("data-on{event_type}");
             let host_for_handler = host.clone();
             let closure = Closure::wrap(Box::new(move |event: Event| {
-                handle_event(&event, &attr_name, descriptors.as_ref(), &host_for_handler);
+                handle_event(&event, &attr_name, catalog.as_ref(), &host_for_handler);
             }) as Box<dyn FnMut(Event)>);
             let _ = host
                 .add_event_listener_with_callback(&event_type, closure.as_ref().unchecked_ref());
@@ -111,8 +195,8 @@ impl Drop for Delegate {
 /// side effects (`preventDefault`, `stopPropagation`) only fire for
 /// the binding that wins, because `build_transact_body` queues them
 /// and applies them only after the body is known-good.
-fn handle_event(event: &Event, attr_name: &str, descriptors: &Descriptors, host: &Element) {
-    let Some(body) = resolve_actionable_binding(event, attr_name, descriptors, host) else {
+fn handle_event(event: &Event, attr_name: &str, catalog: &BindingsCatalog, host: &Element) {
+    let Some(body) = resolve_catalog_binding(event, attr_name, catalog, host) else {
         return;
     };
     let request_js = match serde_wasm_bindgen::to_value(&body) {
@@ -174,6 +258,120 @@ fn maybe_dismiss_overlay(event: &Event) {
     }
 }
 
+fn resolve_catalog_binding(
+    event: &Event,
+    attr_name: &str,
+    catalog: &BindingsCatalog,
+    host: &Element,
+) -> Option<serde_json::Value> {
+    let target_el = event.target()?.dyn_ref::<Element>()?.clone();
+    let selector = format!("[{attr_name}]");
+    let mut cursor = Some(target_el);
+    while let Some(current) = cursor {
+        let bound = closest(&current, &selector)?;
+        if !host.contains(Some(bound.unchecked_ref())) {
+            return None;
+        }
+        let reference = bound.get_attribute(attr_name)?;
+        match catalog.resolve(&reference) {
+            Ok(ResolvedBinding::Nominal {
+                projection,
+                command,
+            }) => match project(projection, command.schema(), &DomInput::new(event, &bound)) {
+                Ok(result) => {
+                    apply_actions(event, &result.actions);
+                    let request = tonk_schema::claim::TransactRequest {
+                        claims: vec![tonk_schema::claim::SourceClaim::Invoke(result.invocation)],
+                    };
+                    return match serde_json::to_value(request) {
+                        Ok(body) => Some(body),
+                        Err(error) => {
+                            log_diagnostic(
+                                "projection_serialize",
+                                &reference,
+                                Some(projection),
+                                Some(command),
+                                None,
+                                &error.to_string(),
+                            );
+                            None
+                        }
+                    };
+                }
+                Err(error) => {
+                    let (field, input) = projection_error_context(&error);
+                    log_diagnostic(
+                        "projection_failed",
+                        &reference,
+                        Some(projection),
+                        Some(command),
+                        field,
+                        &format!("{error}; input={input}"),
+                    );
+                    return None;
+                }
+            },
+            Ok(ResolvedBinding::Legacy(descriptor)) => {
+                return try_legacy_binding(descriptor, &reference, event, &bound);
+            }
+            Err(error) => {
+                log_diagnostic(
+                    match error {
+                        BindingResolveError::Unresolved => "binding_unresolved",
+                        BindingResolveError::MissingProjection => "projection_missing",
+                        BindingResolveError::AmbiguousProjection => "projection_ambiguous",
+                    },
+                    &reference,
+                    None,
+                    catalog
+                        .commands
+                        .get(&reference)
+                        .map(|binding| &binding.command),
+                    None,
+                    "event binding could not resolve unambiguously",
+                );
+            }
+        }
+        cursor = bound.parent_element();
+    }
+    None
+}
+
+fn projection_error_context(error: &ProjectionError) -> (Option<&str>, &'static str) {
+    match error {
+        ProjectionError::ReadFailed { field, .. } => (Some(field), "read-failed"),
+        ProjectionError::MissingRequired { field, .. } => (Some(field), "missing"),
+        ProjectionError::InvalidInvocation { error, .. } => {
+            let field = match error {
+                tonk_core::command::CommandValidationError::UnknownArgument { field }
+                | tonk_core::command::CommandValidationError::MissingRequiredArgument { field }
+                | tonk_core::command::CommandValidationError::ReservedArgument { field }
+                | tonk_core::command::CommandValidationError::TypeMismatch { field, .. } => field,
+            };
+            (Some(field), "invalid")
+        }
+    }
+}
+
+fn log_diagnostic(
+    code: &str,
+    reference: &str,
+    projection: Option<&ProjectionDefinition>,
+    command: Option<&CommandDefinition>,
+    field: Option<&str>,
+    message: &str,
+) {
+    let diagnostic = serde_json::json!({
+        "code": code,
+        "binding": reference,
+        "projection": projection.map(|projection| projection.this().to_string()),
+        "command": command.map(|command| command.kind().to_string()),
+        "field": field,
+        "message": message,
+    });
+    web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&diagnostic.to_string()));
+}
+
 /// Walk ancestors of `event.target` in innermost-first order,
 /// trying each one that matches `[data-on<event>]`. Returns the
 /// first transact body that builds cleanly. Skips bindings whose
@@ -184,6 +382,7 @@ fn maybe_dismiss_overlay(event: &Event) {
 /// Action side effects only fire for the binding that wins, because
 /// `build_transact_body` queues actions and applies them only after
 /// the body is known-good.
+#[cfg(test)]
 pub(super) fn resolve_actionable_binding(
     event: &Event,
     attr_name: &str,
@@ -213,6 +412,7 @@ pub(super) fn resolve_actionable_binding(
     None
 }
 
+#[cfg(test)]
 fn try_binding(
     attr_name: &str,
     descriptors: &Descriptors,
@@ -221,12 +421,21 @@ fn try_binding(
 ) -> Option<serde_json::Value> {
     let concept = bound.get_attribute(attr_name)?;
     let descriptor = descriptors.get(&concept)?;
+    try_legacy_binding(descriptor, &concept, event, bound)
+}
+
+fn try_legacy_binding(
+    descriptor: &Value,
+    concept: &str,
+    event: &Event,
+    bound: &Element,
+) -> Option<serde_json::Value> {
     // The wire body omits `this:` unless the descriptor itself
     // populates the slot from an event field. The worker derives
     // an absent `this:` from `(predicate, parameters)` so each
     // event-derived assertion gets a distinct, content-addressed
     // subject entity.
-    match build_transact_body(descriptor, &concept, event, bound) {
+    match build_transact_body(descriptor, concept, event, bound) {
         Ok(built) => {
             // Blank form fields are omitted, not fatal — but a rule
             // premise naming one will silently match nothing, which
@@ -258,6 +467,249 @@ fn log_error(message: String) {
     web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&message));
 }
 
+/// Resolve one authored event-binding reference into its nominal command or
+/// projection catalog entry, falling back to a legacy concept only when no
+/// nominal definition exists.
+pub async fn load_binding(
+    host: &Element,
+    reference: &str,
+) -> Result<BindingsCatalog, tonk_host::error::ErrorDetail> {
+    let entity = resolve_binding_entity(host, reference).await?;
+    let mut catalog = BindingsCatalog::default();
+
+    if let Some(projection) = load_projection(host, &entity).await? {
+        let command_kind = projection.descriptor().command.to_string();
+        if let Some(command) = load_command(host, &command_kind).await? {
+            catalog
+                .projections
+                .insert(reference.to_owned(), (projection, command));
+            return Ok(catalog);
+        }
+    }
+
+    if let Some(command) = load_command(host, &entity).await? {
+        let projections = load_projections_for_command(host, command.kind()).await?;
+        catalog.commands.insert(
+            reference.to_owned(),
+            CommandBinding {
+                command,
+                projections,
+            },
+        );
+        return Ok(catalog);
+    }
+
+    if let Some(descriptor) = load_legacy_descriptor(host, &entity).await? {
+        catalog
+            .legacy_descriptors
+            .insert(reference.to_owned(), descriptor);
+    }
+    Ok(catalog)
+}
+
+async fn resolve_binding_entity(
+    host: &Element,
+    reference: &str,
+) -> Result<String, tonk_host::error::ErrorDetail> {
+    if tonk_template::resolve::looks_like_uri(reference) {
+        return Ok(reference.to_owned());
+    }
+    let rows = run_query(host, tonk_template::resolve::name_query(reference)).await?;
+    Ok(rows
+        .first()
+        .and_then(|row| ipld_text(row.fields.get("entity")))
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("id:{reference}")))
+}
+
+async fn load_command(
+    host: &Element,
+    kind: &str,
+) -> Result<Option<CommandDefinition>, tonk_host::error::ErrorDetail> {
+    let rows = run_query(
+        host,
+        one_attribute_query(kind, "schema", "dialog.command/schema", "Entity"),
+    )
+    .await?;
+    let Some(schema_entity) = rows
+        .first()
+        .and_then(|row| ipld_text(row.fields.get("schema")))
+    else {
+        return Ok(None);
+    };
+    let rows = run_query(
+        host,
+        one_attribute_query(schema_entity, "source", "dialog.command/source", "Text"),
+    )
+    .await?;
+    let Some(source) = rows
+        .first()
+        .and_then(|row| ipld_text(row.fields.get("source")))
+    else {
+        return Ok(None);
+    };
+    let schema = serde_ipld_dagjson::from_slice(source.as_bytes()).map_err(|error| {
+        tonk_host::error::ErrorDetail::new(
+            tonk_host::error::ErrorKind::Descriptor,
+            format!("command {kind} schema: {error}"),
+        )
+    })?;
+    let kind = kind.parse().map_err(|error| {
+        tonk_host::error::ErrorDetail::new(
+            tonk_host::error::ErrorKind::Descriptor,
+            format!("command kind {kind}: {error}"),
+        )
+    })?;
+    Ok(Some(CommandDefinition::asserting(kind, schema)))
+}
+
+async fn load_projection(
+    host: &Element,
+    entity: &str,
+) -> Result<Option<ProjectionDefinition>, tonk_host::error::ErrorDetail> {
+    let rows = run_query(
+        host,
+        one_attribute_query(entity, "source", "dialog.projection/source", "Text"),
+    )
+    .await?;
+    let Some(source) = rows
+        .first()
+        .and_then(|row| ipld_text(row.fields.get("source")))
+    else {
+        return Ok(None);
+    };
+    let descriptor = serde_ipld_dagjson::from_slice(source.as_bytes()).map_err(|error| {
+        tonk_host::error::ErrorDetail::new(
+            tonk_host::error::ErrorKind::Descriptor,
+            format!("projection {entity}: {error}"),
+        )
+    })?;
+    let entity = entity.parse().map_err(|error| {
+        tonk_host::error::ErrorDetail::new(
+            tonk_host::error::ErrorKind::Descriptor,
+            format!("projection entity {entity}: {error}"),
+        )
+    })?;
+    Ok(Some(ProjectionDefinition::asserting(entity, descriptor)))
+}
+
+async fn load_projections_for_command(
+    host: &Element,
+    command: &dialog_artifacts::Entity,
+) -> Result<Vec<ProjectionDefinition>, tonk_host::error::ErrorDetail> {
+    let query: tonk_schema::query::Query = serde_json::from_value(serde_json::json!({
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "command": command.to_string(),
+        },
+        "predicate": {
+            "with": {
+                "command": {
+                    "the": "dialog.projection/command",
+                    "as": "Entity",
+                    "cardinality": "one"
+                }
+            }
+        }
+    }))
+    .expect("projection index query is well formed");
+    let rows = run_query(host, query).await?;
+    let mut projections = Vec::new();
+    for row in rows {
+        if let Some(projection) = load_projection(host, &row.this).await? {
+            projections.push(projection);
+        }
+    }
+    Ok(projections)
+}
+
+async fn load_legacy_descriptor(
+    host: &Element,
+    reference: &str,
+) -> Result<Option<Value>, tonk_host::error::ErrorDetail> {
+    let parsed = tonk_template::resolve::parse_source(reference);
+    let result = host_consumer::query(
+        host,
+        &serde_wasm_bindgen::to_value(&tonk_template::resolve::phase1_query(&parsed)).map_err(
+            |error| {
+                tonk_host::error::ErrorDetail::new(
+                    tonk_host::error::ErrorKind::Parse,
+                    format!("legacy descriptor query: {error}"),
+                )
+            },
+        )?,
+    )
+    .await?;
+    let rows: Vec<tonk_schema::conclusion::Conclusion> = serde_wasm_bindgen::from_value(result)
+        .map_err(|error| {
+            tonk_host::error::ErrorDetail::new(
+                tonk_host::error::ErrorKind::Parse,
+                format!("legacy descriptor result: {error}"),
+            )
+        })?;
+    rows.first()
+        .and_then(|row| ipld_text(row.fields.get("source")))
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| {
+            tonk_host::error::ErrorDetail::new(
+                tonk_host::error::ErrorKind::Descriptor,
+                format!("legacy descriptor {reference}: {error}"),
+            )
+        })
+}
+
+fn one_attribute_query(
+    this: &str,
+    field: &str,
+    attribute: &str,
+    value_type: &str,
+) -> tonk_schema::query::Query {
+    let mut terms = serde_json::Map::new();
+    terms.insert("this".into(), serde_json::json!(this));
+    terms.insert(field.into(), serde_json::json!({ "?": { "name": field } }));
+    let mut with = serde_json::Map::new();
+    with.insert(
+        field.into(),
+        serde_json::json!({
+            "the": attribute,
+            "as": value_type,
+            "cardinality": "one"
+        }),
+    );
+    serde_json::from_value(serde_json::json!({
+        "terms": terms,
+        "predicate": { "with": with }
+    }))
+    .expect("single-attribute query is well formed")
+}
+
+async fn run_query(
+    host: &Element,
+    query: tonk_schema::query::Query,
+) -> Result<Vec<tonk_schema::conclusion::Conclusion>, tonk_host::error::ErrorDetail> {
+    let body = serde_wasm_bindgen::to_value(&query).map_err(|error| {
+        tonk_host::error::ErrorDetail::new(
+            tonk_host::error::ErrorKind::Parse,
+            format!("binding query: {error}"),
+        )
+    })?;
+    let result = host_consumer::query(host, &body).await?;
+    serde_wasm_bindgen::from_value(result).map_err(|error| {
+        tonk_host::error::ErrorDetail::new(
+            tonk_host::error::ErrorKind::Parse,
+            format!("binding query result: {error}"),
+        )
+    })
+}
+
+fn ipld_text(value: Option<&ipld_core::ipld::Ipld>) -> Option<&str> {
+    match value? {
+        ipld_core::ipld::Ipld::String(value) => Some(value),
+        _ => None,
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
@@ -268,13 +720,140 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// Build a click event whose `event.target` is `target_el`.
-    /// Done by defining an own `target` property on the event JS
-    /// object — `Reflect::get` and the web-sys getter both check
-    /// own props before falling through to the readonly getter
-    /// inherited from `Event.prototype`.
-    fn click_event_targeting(target_el: &Element) -> Event {
-        let event = Event::new_with_event_init_dict("click", &EventInit::new()).expect("Event");
+    fn command(kind: &str) -> CommandDefinition {
+        CommandDefinition::asserting(kind.parse().unwrap(), Default::default())
+    }
+
+    fn text_command(kind: &str, field: &str) -> CommandDefinition {
+        let mut required = serde_json::Map::new();
+        required.insert(
+            field.into(),
+            serde_json::json!({
+                "the": format!("xyz.tonk.test/{field}"),
+                "as": "Text",
+                "cardinality": "one"
+            }),
+        );
+        let schema = serde_json::from_value(serde_json::json!({
+            "required": required,
+            "optional": {}
+        }))
+        .unwrap();
+        CommandDefinition::asserting(kind.parse().unwrap(), schema)
+    }
+
+    fn projection(this: &str, kind: &str, default: bool) -> ProjectionDefinition {
+        ProjectionDefinition::asserting(
+            this.parse().unwrap(),
+            tonk_schema::projection::ProjectionDescriptor {
+                command: kind.parse().unwrap(),
+                default,
+                arguments: Default::default(),
+                actions: Vec::new(),
+            },
+        )
+    }
+
+    #[dialog_common::test]
+    fn catalog_resolves_explicit_projection_then_command_default() {
+        let kind = "id:test/save";
+        let explicit = projection("id:test/save-form", kind, false);
+        let default = projection("id:test/save-default", kind, true);
+        let alternate = projection("id:test/save-alternate", kind, false);
+        let mut catalog = BindingsCatalog::default();
+        catalog
+            .projections
+            .insert("save-form".into(), (explicit.clone(), command(kind)));
+        catalog.commands.insert(
+            "save".into(),
+            CommandBinding {
+                command: command(kind),
+                projections: vec![alternate, default.clone()],
+            },
+        );
+
+        assert!(matches!(
+            catalog.resolve("save-form"),
+            Ok(ResolvedBinding::Nominal { projection, .. }) if projection.this() == explicit.this()
+        ));
+        assert!(matches!(
+            catalog.resolve("save"),
+            Ok(ResolvedBinding::Nominal { projection, .. }) if projection.this() == default.this()
+        ));
+    }
+
+    #[dialog_common::test]
+    fn catalog_uses_the_only_projection_and_rejects_ambiguity() {
+        let kind = "id:test/save";
+        let only = projection("id:test/only", kind, false);
+        let mut catalog = BindingsCatalog::default();
+        catalog.commands.insert(
+            "only".into(),
+            CommandBinding {
+                command: command(kind),
+                projections: vec![only.clone()],
+            },
+        );
+        catalog.commands.insert(
+            "ambiguous".into(),
+            CommandBinding {
+                command: command(kind),
+                projections: vec![
+                    projection("id:test/a", kind, false),
+                    projection("id:test/b", kind, false),
+                ],
+            },
+        );
+
+        assert!(matches!(
+            catalog.resolve("only"),
+            Ok(ResolvedBinding::Nominal { projection, .. }) if projection.this() == only.this()
+        ));
+        assert!(matches!(
+            catalog.resolve("ambiguous"),
+            Err(BindingResolveError::AmbiguousProjection)
+        ));
+    }
+
+    #[dialog_common::test]
+    fn catalog_falls_back_only_to_an_explicit_legacy_descriptor() {
+        let mut catalog = BindingsCatalog::default();
+        catalog
+            .legacy_descriptors
+            .insert("legacy".into(), serde_json::json!({ "with": {} }));
+        catalog.commands.insert(
+            "nominal-without-projection".into(),
+            CommandBinding {
+                command: command("id:test/nominal"),
+                projections: Vec::new(),
+            },
+        );
+        catalog.legacy_descriptors.insert(
+            "nominal-without-projection".into(),
+            serde_json::json!({ "with": {} }),
+        );
+
+        assert!(matches!(
+            catalog.resolve("legacy"),
+            Ok(ResolvedBinding::Legacy(_))
+        ));
+        assert!(matches!(
+            catalog.resolve("nominal-without-projection"),
+            Err(BindingResolveError::MissingProjection)
+        ));
+        assert!(matches!(
+            catalog.resolve("unknown"),
+            Err(BindingResolveError::Unresolved)
+        ));
+    }
+
+    /// Point `event.target` at `target_el` by defining an own
+    /// `target` property on the event JS object — `Reflect::get`
+    /// and the web-sys getter both check own props before falling
+    /// through to the readonly getter inherited from
+    /// `Event.prototype`. A plain `Reflect::set` would hit that
+    /// setterless accessor and silently do nothing.
+    fn set_event_target(event: &Event, target_el: &Element) {
         let event_js: &JsValue = event.as_ref();
         let descriptor = Object::new();
         Reflect::set(&descriptor, &JsValue::from_str("value"), target_el.as_ref()).unwrap();
@@ -296,6 +875,12 @@ mod tests {
             &JsValue::from_str("target"),
             &descriptor,
         );
+    }
+
+    /// Build a click event whose `event.target` is `target_el`.
+    fn click_event_targeting(target_el: &Element) -> Event {
+        let event = Event::new_with_event_init_dict("click", &EventInit::new()).expect("Event");
+        set_event_target(&event, target_el);
         event
     }
 
@@ -309,6 +894,52 @@ mod tests {
         host.set_inner_html(markup);
         document.body().expect("body").append_child(&host).unwrap();
         host
+    }
+
+    #[dialog_common::test]
+    fn nominal_submit_prevents_default_and_posts_invoke_with_blank_text() {
+        let host = mount(r#"<form data-onsubmit="add-form"><input name="title" value=""></form>"#);
+        let form = host.query_selector("form").unwrap().unwrap();
+        let kind = "id:todo/add";
+        let command = text_command(kind, "title");
+        let projection = ProjectionDefinition::asserting(
+            "id:todo/add-form".parse().unwrap(),
+            tonk_schema::projection::ProjectionDescriptor {
+                command: kind.parse().unwrap(),
+                default: true,
+                arguments: [(
+                    "title".into(),
+                    tonk_schema::projection::ProjectionSource::Control(
+                        tonk_schema::projection::ControlSource {
+                            name: "title".into(),
+                            property: tonk_schema::projection::ControlProperty::Value,
+                        },
+                    ),
+                )]
+                .into_iter()
+                .collect(),
+                actions: vec![tonk_schema::projection::EventAction::PreventDefault],
+            },
+        );
+        let mut catalog = BindingsCatalog::default();
+        catalog
+            .projections
+            .insert("add-form".into(), (projection, command));
+        let init = EventInit::new();
+        init.set_cancelable(true);
+        let event = Event::new_with_event_init_dict("submit", &init).unwrap();
+        set_event_target(&event, &form);
+
+        let body = resolve_catalog_binding(&event, "data-onsubmit", &catalog, &host)
+            .expect("nominal projection succeeds");
+        assert!(event.default_prevented());
+        assert_eq!(body["claims"][0]["op"], serde_json::json!("invoke"));
+        assert_eq!(body["claims"][0]["command"], serde_json::json!(kind));
+        assert_eq!(
+            body["claims"][0]["arguments"]["title"],
+            serde_json::json!("")
+        );
+        assert!(body["claims"][0]["arguments"].get("this").is_none());
     }
 
     /// Build a [`Descriptors`] map from `(concept_name, json_text)`

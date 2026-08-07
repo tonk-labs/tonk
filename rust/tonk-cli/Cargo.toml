@@ -42,6 +42,14 @@ name = "schema_read"
 path = "tests/schema_read.rs"
 
 [[test]]
+name = "project"
+path = "tests/project.rs"
+
+[[test]]
+name = "commands"
+path = "tests/commands.rs"
+
+[[test]]
 name = "telemetry"
 path = "tests/telemetry.rs"
 
@@ -142,16 +150,19 @@ futures-util = { workspace = true }
 # those downloads trust the OS CA store and work behind TLS-intercepting proxies.
 reqwest = { workspace = true }
 ipld-core = { workspace = true }
+indexmap = { workspace = true }
 lsp-types = { workspace = true }
 os_info = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+serde_ipld_dagjson = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util", "signal", "time"] }
 tokio-util = { workspace = true }
 tonk-account = { workspace = true }
 tonk-analytics = { workspace = true }
+tonk-core = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-invite = { workspace = true }

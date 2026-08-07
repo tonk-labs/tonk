@@ -21,8 +21,8 @@
 # Branch data flows INTO it as invisible "data row" directory views
 # (plain divs with `data-*` attributes) that the component reads and
 # observes; actions flow OUT as bubbling CustomEvents wired
-# declaratively on the component element (`on<event>=<command>` +
-# `dom.event.detail/*`). The component never mutates inside a
+# declaratively on the component element (`on<event>=<command>`), with typed
+# projections reading whitelisted detail members. The component never mutates inside a
 # `<tonk-display>` subtree — it builds its own DOM.
 #
 # Cross-references between instances use component-minted TEXT KEYS,
@@ -192,133 +192,187 @@ concept!: &board/card-place
       as: text
 
 # ============================================================
-# COMMANDS (transient, event-derived)
+# NOMINAL COMMANDS AND EVENT PROJECTIONS
 # ============================================================
 #
-# Every command reads its fields from a command-specific
-# `dom.event.detail/*` attribute — never shared across commands
-# (except the `time` nonce) — so one event can never read as another
-# (the close-vs-activate lesson from the sheets template).
+# Stable command kinds select consumers before typed detail fields are decoded,
+# so overlapping field shapes cannot cross-dispatch.
 
 command!: &board/rename
   description: Rename the board to `name`.
   with:
     name:
       description: The new board title
-      the: dom.event.detail/board-name
+      the: xyz.tonk.command.board.rename/name
       as: text
+
+projection!: &board/rename-default
+  command: board/rename
+  default: true
+  arguments:
+    name: { detail: "board-name" }
 
 command!: &board/create-column
   description: Create a new column.
   with:
     key:
       description: Component-minted opaque token for the column
-      the: dom.event.detail/col-key
+      the: xyz.tonk.command.board.create-column/key
       as: text
     width:
       description: Initial width class
-      the: dom.event.detail/col-width
+      the: xyz.tonk.command.board.create-column/width
       as: text
     order:
       description: Column order key, computed by the component
-      the: dom.event.detail/col-order
+      the: xyz.tonk.command.board.create-column/order
       as: text
-    time:
-      description: A monotonic integer nonce from the component
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &board/create-column-default
+  command: board/create-column
+  default: true
+  arguments:
+    key: { detail: "col-key" }
+    width: { detail: "col-width" }
+    order: { detail: "col-order" }
 
 command!: &board/set-column-width
   description: Set the column with key `column` to width class `width`.
   with:
     column:
       description: The `key` of the column to re-class
-      the: dom.event.detail/width-column
+      the: xyz.tonk.command.board.set-column-width/column
       as: text
     width:
       description: The new width class
-      the: dom.event.detail/width-value
+      the: xyz.tonk.command.board.set-column-width/width
       as: text
+
+projection!: &board/set-column-width-default
+  command: board/set-column-width
+  default: true
+  arguments:
+    column: { detail: "width-column" }
+    width: { detail: "width-value" }
 
 command!: &board/delete-column
   description: Remove the (empty) column with key `column` from the strip.
   with:
     column:
       description: The `key` of the column to delete
-      the: dom.event.detail/delete-column
+      the: xyz.tonk.command.board.delete-column/column
       as: text
+
+projection!: &board/delete-column-default
+  command: board/delete-column
+  default: true
+  arguments:
+    column: { detail: "delete-column" }
 
 command!: &board/create-card
   description: Create a new card in the column with key `column`.
   with:
     column:
       description: The `key` of the column the card lands in
-      the: dom.event.detail/card-column
+      the: xyz.tonk.command.board.create-card/column
       as: text
     order:
       description: Card order key, computed by the component
-      the: dom.event.detail/card-order
+      the: xyz.tonk.command.board.create-card/order
       as: text
     kind:
       description: Card kind (text, checklist, table)
-      the: dom.event.detail/card-kind
+      the: xyz.tonk.command.board.create-card/kind
       as: text
     content:
       description: Initial content JSON
-      the: dom.event.detail/card-content
+      the: xyz.tonk.command.board.create-card/content
       as: text
-    time:
-      description: A monotonic integer nonce from the component
-      the: dom.event.detail/time
-      as: unsigned-integer
+
+projection!: &board/create-card-default
+  command: board/create-card
+  default: true
+  arguments:
+    column: { detail: "card-column" }
+    order: { detail: "card-order" }
+    kind: { detail: "card-kind" }
+    content: { detail: "card-content" }
 
 command!: &board/edit-card
   description: Replace `card`'s content JSON.
   with:
     card:
       description: The edited card
-      the: dom.event.detail/edit-card
+      the: xyz.tonk.command.board.edit-card/card
       as: entity
     content:
       description: The new content JSON
-      the: dom.event.detail/edit-content
+      the: xyz.tonk.command.board.edit-card/content
       as: text
+
+projection!: &board/edit-card-default
+  command: board/edit-card
+  default: true
+  arguments:
+    card: { detail: "edit-card" }
+    content: { detail: "edit-content" }
 
 command!: &board/move-card
   description: Re-place `card` into column `column` at `order`.
   with:
     card:
       description: The card to move
-      the: dom.event.detail/move-card
+      the: xyz.tonk.command.board.move-card/card
       as: entity
     column:
       description: The `key` of the destination column
-      the: dom.event.detail/move-column
+      the: xyz.tonk.command.board.move-card/column
       as: text
     order:
       description: The new order key, computed by the component
-      the: dom.event.detail/move-order
+      the: xyz.tonk.command.board.move-card/order
       as: text
+
+projection!: &board/move-card-default
+  command: board/move-card
+  default: true
+  arguments:
+    card: { detail: "move-card" }
+    column: { detail: "move-column" }
+    order: { detail: "move-order" }
 
 command!: &board/resize-card
   description: Set `card`'s manual height (or "auto").
   with:
     card:
       description: The card to resize
-      the: dom.event.detail/resize-card
+      the: xyz.tonk.command.board.resize-card/card
       as: entity
     height:
       description: '"auto" or the new pixel height as text'
-      the: dom.event.detail/resize-height
+      the: xyz.tonk.command.board.resize-card/height
       as: text
+
+projection!: &board/resize-card-default
+  command: board/resize-card
+  default: true
+  arguments:
+    card: { detail: "resize-card" }
+    height: { detail: "resize-height" }
 
 command!: &board/delete-card
   description: Remove `card` from the board.
   with:
     card:
       description: The card to delete
-      the: dom.event.detail/delete-card
+      the: xyz.tonk.command.board.delete-card/card
       as: entity
+
+projection!: &board/delete-card-default
+  command: board/delete-card
+  default: true
+  arguments:
+    card: { detail: "delete-card" }
 
 # ============================================================
 # RULES

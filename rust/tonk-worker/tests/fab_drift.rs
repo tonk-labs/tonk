@@ -8,10 +8,9 @@
 //! old-library fixture here — there is nothing seeded for it to be checked
 //! against.
 //!
-//! The load-bearing invariant is that a hand-built claim carries exactly the
-//! attributes its handler indexes on. If they drift apart the command decodes
-//! as nothing, the handler never runs, and the UI still looks successful —
-//! the precise failure this design exists to prevent.
+//! The load-bearing invariant is now nominal: every hand-built request names
+//! the exact registered command kind and uses the semantic argument names its
+//! authoritative branch schema validates.
 //!
 //! Native-only, mirroring `standard_library.rs`: no filesystem on wasm, and
 //! this needs no running system.
@@ -21,83 +20,44 @@
 use tonk_fab::logic;
 
 #[dialog_common::test]
-fn it_builds_rename_claims_carrying_every_attribute_the_handler_triggers_on() {
-    use dialog_reactor::Decode as _;
-
-    let triggers = tonk_schema::command::RenameRepository::trigger_attributes();
-    assert!(
-        !triggers.is_empty(),
-        "the command must declare trigger attributes"
-    );
-
-    let claim = logic::rename_repo_claim_json("did:key:z6Mk", "Renamed").to_string();
-    for attribute in &triggers {
-        assert!(
-            claim.contains(attribute.as_str()),
-            "hand-built rename claim must carry trigger attribute {attribute}"
-        );
-    }
+fn it_builds_a_nominal_rename_invocation() {
+    let claim = logic::rename_repo_claim_json("did:key:z6Mk", "Renamed");
+    let invocation = &claim["claims"][0];
+    assert_eq!(invocation["op"], "invoke");
+    assert_eq!(invocation["command"], "tonk:rename-repository");
+    assert_eq!(invocation["arguments"]["space"], "did:key:z6Mk");
+    assert_eq!(invocation["arguments"]["name"], "Renamed");
 }
 
 #[dialog_common::test]
-fn it_builds_invite_claims_carrying_every_attribute_the_handler_triggers_on() {
-    use dialog_reactor::Decode as _;
-
-    let triggers = tonk_schema::command::Invite::trigger_attributes();
-    assert!(
-        !triggers.is_empty(),
-        "the command must declare trigger attributes"
-    );
-
-    let claim = logic::invite_claim_json("did:key:z6Mk", 1.0).to_string();
-    for attribute in &triggers {
-        assert!(
-            claim.contains(attribute.as_str()),
-            "hand-built invite claim must carry trigger attribute {attribute}"
-        );
-    }
+fn it_builds_a_nominal_invite_invocation() {
+    let claim = logic::invite_claim_json("did:key:z6Mk", 1.0);
+    let invocation = &claim["claims"][0];
+    assert_eq!(invocation["op"], "invoke");
+    assert_eq!(invocation["command"], "tonk:invite");
+    assert_eq!(invocation["arguments"]["space"], "did:key:z6Mk");
+    assert_eq!(invocation["arguments"]["time"], 1.0);
 }
 
 #[dialog_common::test]
-fn it_builds_create_space_claims_carrying_every_attribute_the_handler_triggers_on() {
-    use dialog_reactor::Decode as _;
-
-    // Deliberately name-only: see `it_decodes_create_space_from_name_only_facts`
-    // in `dialog-reactor/src/command.rs`, which pins that a frozen, older
-    // profile descriptor (name field alone) must still decode.
-    let triggers = tonk_schema::command::CreateSpace::trigger_attributes();
-    assert!(
-        !triggers.is_empty(),
-        "the command must declare trigger attributes"
-    );
-
-    let claim = logic::create_space_claim_json("Untitled", "https://x", "https://x/rev", "wiki")
-        .to_string();
-    for attribute in &triggers {
-        assert!(
-            claim.contains(attribute.as_str()),
-            "hand-built create-space claim must carry trigger attribute {attribute}"
-        );
-    }
+fn it_builds_a_nominal_create_space_invocation() {
+    let claim = logic::create_space_claim_json("Untitled", "https://x", "https://x/rev", "wiki");
+    let invocation = &claim["claims"][0];
+    assert_eq!(invocation["op"], "invoke");
+    assert_eq!(invocation["command"], "id:space/create");
+    assert_eq!(invocation["arguments"]["name"], "Untitled");
+    assert_eq!(invocation["arguments"]["remote"], "https://x");
+    assert_eq!(invocation["arguments"]["revocation"], "https://x/rev");
+    assert_eq!(invocation["arguments"]["template"], "wiki");
 }
 
 #[dialog_common::test]
-fn it_builds_pause_claims_carrying_every_attribute_the_handler_triggers_on() {
-    use dialog_reactor::Decode as _;
-
-    let triggers = tonk_schema::command::PauseSync::trigger_attributes();
-    assert!(
-        !triggers.is_empty(),
-        "the command must declare trigger attributes"
-    );
-
-    let claim = logic::pause_claim_json("tonk:pause-sync", "did:key:z6Mk", 1.0).to_string();
-    for attribute in &triggers {
-        assert!(
-            claim.contains(attribute.as_str()),
-            "hand-built pause claim must carry trigger attribute {attribute}"
-        );
-    }
+fn it_builds_a_nominal_pause_invocation() {
+    let claim = logic::pause_claim_json("tonk:pause-sync", "did:key:z6Mk", 1.0);
+    let invocation = &claim["claims"][0];
+    assert_eq!(invocation["op"], "invoke");
+    assert_eq!(invocation["command"], "tonk:pause-sync");
+    assert_eq!(invocation["arguments"]["space"], "did:key:z6Mk");
 }
 
 #[dialog_common::test]

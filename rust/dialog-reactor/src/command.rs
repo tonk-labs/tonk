@@ -21,11 +21,12 @@
 
 use std::collections::HashMap;
 
-use dialog_artifacts::{Artifact, Changes, Entity, Instruction};
+use dialog_artifacts::{Artifact, Attribute, Changes, Entity, Instruction};
 use dialog_capability::{Command, Provider};
 use dialog_common::ConditionalSync;
 use dialog_query::concept::Concept;
 use dialog_query::{Application, ConceptDescriptor, Conclusion, Descriptor, Match, Term};
+use tonk_core::command::CommandOccurrence;
 
 /// The asserted facts for a single transient entity — the `(the, of,
 /// is)` triples grouped under one `of`. [`Artifact`] is `Clone`
@@ -131,12 +132,13 @@ where
 /// dispatcher can build it, release the state lock, then await it —
 /// command IO never runs while a lock is held.
 #[cfg(not(target_arch = "wasm32"))]
-pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+pub type LegacyRunFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 /// A `'static` boxed future for one command's execution (the wasm
 /// single-threaded variant — no `Send` bound). See the native variant
 /// above for the rationale.
 #[cfg(target_arch = "wasm32")]
-pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>;
+pub type LegacyRunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>;
 
 /// Dyn-safe entry stored in the [`CommandRegistry`]. One per registered
 /// command *type*. The concrete command `C` is erased behind this
@@ -152,7 +154,7 @@ pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 's
 /// `ConditionalSync` (Send + Sync off wasm, nothing on wasm) keeps a
 /// `Box<dyn CommandHandler<Env>>` — and therefore the consumer's
 /// state — `Send + Sync` on native, which axum requires.
-pub trait CommandHandler<Env>: ConditionalSync {
+pub trait LegacyCommandHandler<Env>: ConditionalSync {
     /// Attribute names whose presence on a transient entity makes this
     /// command a candidate. Drives the reverse index.
     fn trigger_attributes(&self) -> &[String];
@@ -168,7 +170,7 @@ pub trait CommandHandler<Env>: ConditionalSync {
     /// triggering commit — the dispatcher releases the state lock
     /// before awaiting it. A no-op future when the facts don't decode.
     /// Boxed so the trait stays dyn-safe for `Box<dyn CommandHandler<Env>>`.
-    fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture;
+    fn run(&self, facts: &EntityFacts, env: &Env) -> LegacyRunFuture;
 }
 
 /// The `of` (entity) shared by a transient entity's facts. Every
@@ -189,12 +191,12 @@ fn facts_entity(facts: &EntityFacts) -> Option<Entity> {
 /// the capability to run it. That bound on [`Self::new`] is the
 /// (compile-time) capability gate; the UCAN-style runtime gate layers on
 /// top of it later.
-pub struct TypedCommand<C, Env> {
+pub struct LegacyTypedCommand<C, Env> {
     attributes: Vec<String>,
     _command: std::marker::PhantomData<fn() -> (C, Env)>,
 }
 
-impl<C, Env> TypedCommand<C, Env>
+impl<C, Env> LegacyTypedCommand<C, Env>
 where
     C: Decode + Command<Input = C> + 'static,
     Env: Provider<C>,
@@ -210,7 +212,7 @@ where
     }
 }
 
-impl<C, Env> Default for TypedCommand<C, Env>
+impl<C, Env> Default for LegacyTypedCommand<C, Env>
 where
     C: Decode + Command<Input = C> + 'static,
     Env: Provider<C>,
@@ -220,7 +222,7 @@ where
     }
 }
 
-impl<C, Env> CommandHandler<Env> for TypedCommand<C, Env>
+impl<C, Env> LegacyCommandHandler<Env> for LegacyTypedCommand<C, Env>
 where
     C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
     Env: Provider<C> + Clone + ConditionalSync + 'static,
@@ -236,7 +238,7 @@ where
         C::decode(this, facts).is_some()
     }
 
-    fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture {
+    fn run(&self, facts: &EntityFacts, env: &Env) -> LegacyRunFuture {
         // Decode synchronously here (the caller still holds the lock),
         // then hand the owned command + an env clone to a `'static`
         // future so the dispatcher can drop the lock before awaiting.
@@ -250,14 +252,249 @@ where
     }
 }
 
+/// Structured failure returned by a scheduled nominal handler.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct CommandFailure {
+    /// Stable machine-readable failure code.
+    pub code: String,
+    /// Human-readable failure detail.
+    pub message: String,
+}
+
+/// A nominal handler's owned asynchronous run.
+#[cfg(not(target_arch = "wasm32"))]
+pub type RunFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), CommandFailure>> + Send + 'static>,
+>;
+/// Wasm single-threaded sibling of [`RunFuture`].
+#[cfg(target_arch = "wasm32")]
+pub type RunFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CommandFailure>> + 'static>>;
+
+/// Deferred nominal run decoded without synthesizing semantic facts.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxedCommandRun<Env> = Box<dyn FnOnce(&Env) -> RunFuture + Send + 'static>;
+/// Wasm single-threaded sibling of [`BoxedCommandRun`].
+#[cfg(target_arch = "wasm32")]
+pub type BoxedCommandRun<Env> = Box<dyn FnOnce(&Env) -> RunFuture + 'static>;
+
+/// Dyn-safe stable-kind nominal command handler.
+pub trait CommandHandler<Env>: ConditionalSync {
+    /// Stable command kind selected before decoding.
+    fn kind(&self) -> &Entity;
+    /// Diagnostic handler name.
+    fn name(&self) -> &'static str;
+    /// Decode an occurrence into an owned run, or reject its payload.
+    fn decode(&self, occurrence: &CommandOccurrence) -> Option<BoxedCommandRun<Env>>;
+}
+
+/// One nominal handler scheduled after a successful commit.
+pub struct ScheduledHandler {
+    /// Diagnostic handler name.
+    pub name: &'static str,
+    /// Source occurrence that selected this handler.
+    pub occurrence: Entity,
+    future: RunFuture,
+}
+
+impl ScheduledHandler {
+    /// Await the handler and retain its structured failure.
+    pub async fn perform(self) -> Result<(), CommandFailure> {
+        self.future.await
+    }
+}
+
+/// Decode a Rust `Concept` directly from nominal argument names and
+/// bind `this` from the runtime occurrence.
+pub fn decode_occurrence<C>(occurrence: &CommandOccurrence) -> Option<C>
+where
+    C: Concept<Conclusion = C> + Conclusion + Descriptor<ConceptDescriptor>,
+    C::Application: Default + Application<Conclusion = C>,
+{
+    let query = C::Application::default();
+    let descriptor = <C as Descriptor<ConceptDescriptor>>::descriptor();
+    let mut source = Match::new();
+    source
+        .bind(&Term::var("this"), occurrence.occurrence().clone().into())
+        .ok()?;
+    for (field, attribute) in descriptor.with().iter() {
+        let term = Term::var(field);
+        match occurrence.arguments().get(field) {
+            Some(value) => source.bind(&term, value.clone()).ok()?,
+            None if attribute.is_optional() => source.bind_absent(&term).ok()?,
+            None => return None,
+        }
+    }
+    query.realize(source).ok()
+}
+
+/// Typed nominal handler backed by an `Env: Provider<C>` capability.
+pub struct NominalTypedCommand<C, Env> {
+    kind: Entity,
+    _command: std::marker::PhantomData<fn() -> (C, Env)>,
+}
+
+/// Transitional exact-kind adapter for operational handlers that still share
+/// their implementation with the structural compatibility lane. Argument
+/// names are converted only inside the adapter into the legacy facts expected
+/// by that implementation; they never enter the transaction overlay or legacy
+/// registry matching.
+pub struct CompatibilityNominalAdapter<Env> {
+    kind: Entity,
+    name: &'static str,
+    handler: std::sync::Arc<dyn LegacyCommandHandler<Env>>,
+    attributes: HashMap<String, Attribute>,
+    constants: Vec<(Attribute, dialog_artifacts::Value)>,
+}
+
+impl<Env> CompatibilityNominalAdapter<Env> {
+    /// Map the fields of a derived Rust concept to their legacy attributes.
+    pub fn for_concept<C>(
+        kind: Entity,
+        name: &'static str,
+        handler: std::sync::Arc<dyn LegacyCommandHandler<Env>>,
+    ) -> Self
+    where
+        C: Descriptor<ConceptDescriptor>,
+    {
+        let attributes = <C as Descriptor<ConceptDescriptor>>::descriptor()
+            .with()
+            .iter()
+            .map(|(field, descriptor)| {
+                (
+                    field.to_owned(),
+                    descriptor
+                        .the()
+                        .to_string()
+                        .parse()
+                        .expect("derived attribute"),
+                )
+            })
+            .collect();
+        Self {
+            kind,
+            name,
+            handler,
+            attributes,
+            constants: Vec::new(),
+        }
+    }
+
+    /// Add an argument consumed by a custom raw-fact reader but not present in
+    /// the Rust concept used for legacy matching.
+    pub fn argument(mut self, field: impl Into<String>, attribute: Attribute) -> Self {
+        self.attributes.insert(field.into(), attribute);
+        self
+    }
+
+    /// Add a compatibility-only fact that is not part of the nominal payload.
+    /// This is used solely to satisfy an old structural decoder's shape
+    /// discriminator while exact-kind selection supplies the real authority.
+    pub fn constant(mut self, attribute: Attribute, value: dialog_artifacts::Value) -> Self {
+        self.constants.push((attribute, value));
+        self
+    }
+}
+
+impl<Env> CommandHandler<Env> for CompatibilityNominalAdapter<Env>
+where
+    Env: ConditionalSync + 'static,
+{
+    fn kind(&self) -> &Entity {
+        &self.kind
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn decode(&self, occurrence: &CommandOccurrence) -> Option<BoxedCommandRun<Env>> {
+        let mut facts = occurrence
+            .arguments()
+            .iter()
+            .filter_map(|(field, value)| {
+                self.attributes.get(field).map(|attribute| Artifact {
+                    the: attribute.clone(),
+                    of: occurrence.occurrence().clone(),
+                    is: value.clone(),
+                    cause: None,
+                })
+            })
+            .collect::<EntityFacts>();
+        facts.extend(self.constants.iter().map(|(attribute, value)| Artifact {
+            the: attribute.clone(),
+            of: occurrence.occurrence().clone(),
+            is: value.clone(),
+            cause: None,
+        }));
+        if !self.handler.matches(&facts) {
+            return None;
+        }
+        let handler = self.handler.clone();
+        Some(Box::new(move |env| {
+            let future = handler.run(&facts, env);
+            Box::pin(async move {
+                future.await;
+                Ok(())
+            })
+        }))
+    }
+}
+
+impl<C, Env> NominalTypedCommand<C, Env> {
+    /// Bind Rust command type `C` to a stable nominal kind.
+    pub fn new(kind: Entity) -> Self {
+        Self {
+            kind,
+            _command: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<C, Env> CommandHandler<Env> for NominalTypedCommand<C, Env>
+where
+    C: Concept<Conclusion = C>
+        + Conclusion
+        + Descriptor<ConceptDescriptor>
+        + Command<Input = C, Output = ()>
+        + ConditionalSync
+        + 'static,
+    C::Application: Default + Application<Conclusion = C>,
+    Env: Provider<C> + Clone + ConditionalSync + 'static,
+{
+    fn kind(&self) -> &Entity {
+        &self.kind
+    }
+
+    fn name(&self) -> &'static str {
+        std::any::type_name::<C>()
+    }
+
+    fn decode(&self, occurrence: &CommandOccurrence) -> Option<BoxedCommandRun<Env>> {
+        let command = decode_occurrence::<C>(occurrence)?;
+        Some(Box::new(move |env| {
+            let env = env.clone();
+            Box::pin(async move {
+                env.execute(command).await;
+                Ok(())
+            })
+        }))
+    }
+}
+
 /// Registry of command handlers, with a reverse index from trigger
 /// attribute name to the handlers it can fire. Mirrors the
 /// `dialog.effect/on` index the induce loop walks, but over
 /// registered Rust handlers instead of installed `rule!:` effects.
 pub struct CommandRegistry<Env> {
+    /// Stable kind to nominal handler indices.
+    by_kind: HashMap<String, Vec<usize>>,
+    /// Nominal handlers selected exclusively by kind.
+    nominal_handlers: Vec<Box<dyn CommandHandler<Env>>>,
     /// Registered handlers, owned. Indices into this vec are the
     /// values in [`Self::by_attribute`].
-    handlers: Vec<Box<dyn CommandHandler<Env>>>,
+    legacy_handlers: Vec<Box<dyn LegacyCommandHandler<Env>>>,
     /// `attribute name → handler indices`. A transient touching this
     /// attribute makes every listed handler a candidate.
     by_attribute: HashMap<String, Vec<usize>>,
@@ -266,7 +503,9 @@ pub struct CommandRegistry<Env> {
 impl<Env> Default for CommandRegistry<Env> {
     fn default() -> Self {
         Self {
-            handlers: Vec::new(),
+            by_kind: HashMap::new(),
+            nominal_handlers: Vec::new(),
+            legacy_handlers: Vec::new(),
             by_attribute: HashMap::new(),
         }
     }
@@ -278,7 +517,57 @@ impl<Env> CommandRegistry<Env> {
         Self::default()
     }
 
-    /// Register the command type `C`. Lighter than passing a handler:
+    /// Register nominal command type `C` for the stable `kind`.
+    pub fn nominal<C>(mut self, kind: Entity) -> Self
+    where
+        C: Concept<Conclusion = C>
+            + Conclusion
+            + Descriptor<ConceptDescriptor>
+            + Command<Input = C, Output = ()>
+            + ConditionalSync
+            + 'static,
+        C::Application: Default + Application<Conclusion = C>,
+        Env: Provider<C> + Clone + ConditionalSync + 'static,
+    {
+        self.register_nominal(Box::new(NominalTypedCommand::<C, Env>::new(kind)));
+        self
+    }
+
+    /// Register a nominal handler and index it exclusively by stable kind.
+    pub fn register_nominal(&mut self, handler: Box<dyn CommandHandler<Env>>) {
+        let index = self.nominal_handlers.len();
+        self.by_kind
+            .entry(handler.kind().to_string())
+            .or_default()
+            .push(index);
+        self.nominal_handlers.push(handler);
+    }
+
+    /// Number of nominal handlers registered for `kind`.
+    pub fn registrations(&self, kind: &Entity) -> usize {
+        self.by_kind.get(&kind.to_string()).map_or(0, Vec::len)
+    }
+
+    /// Decode and schedule every nominal handler registered for the
+    /// occurrence's exact stable kind.
+    pub fn schedule(&self, occurrence: &CommandOccurrence, env: &Env) -> Vec<ScheduledHandler> {
+        self.by_kind
+            .get(&occurrence.command().to_string())
+            .into_iter()
+            .flatten()
+            .filter_map(|index| {
+                let handler = self.nominal_handlers[*index].as_ref();
+                let run = handler.decode(occurrence)?;
+                Some(ScheduledHandler {
+                    name: handler.name(),
+                    occurrence: occurrence.occurrence().clone(),
+                    future: run(env),
+                })
+            })
+            .collect()
+    }
+
+    /// Register the legacy structural command type `C`. Lighter than passing a handler:
     /// the behaviour is the [`Provider<C>`](dialog_capability::Provider)
     /// impl on [`Env`], so registration is just the type. The
     /// `Env: Provider<C>` bound means a command can only be registered if
@@ -286,36 +575,36 @@ impl<Env> CommandRegistry<Env> {
     ///
     /// ```ignore
     /// let registry = CommandRegistry::new()
-    ///     .command::<CreateSpace>()   // Env: Provider<CreateSpace>
-    ///     .command::<RenameSpace>();
+    ///     .legacy::<CreateSpace>()   // Env: Provider<CreateSpace>
+    ///     .legacy::<RenameSpace>();
     /// ```
-    pub fn command<C>(mut self) -> Self
+    pub fn legacy<C>(mut self) -> Self
     where
         C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
         Env: Provider<C> + Clone + ConditionalSync + 'static,
     {
-        self.register(Box::new(TypedCommand::<C, Env>::new()));
+        self.register_legacy(Box::new(LegacyTypedCommand::<C, Env>::new()));
         self
     }
 
     /// Register a boxed handler, indexing it by each of its trigger
-    /// attribute names. Prefer [`Self::command`] for typed handlers.
-    pub fn register(&mut self, handler: Box<dyn CommandHandler<Env>>) {
-        let index = self.handlers.len();
+    /// attribute names. Prefer [`Self::legacy`] for typed legacy handlers.
+    pub fn register_legacy(&mut self, handler: Box<dyn LegacyCommandHandler<Env>>) {
+        let index = self.legacy_handlers.len();
         for name in handler.trigger_attributes() {
             self.by_attribute
                 .entry(name.clone())
                 .or_default()
                 .push(index);
         }
-        self.handlers.push(handler);
+        self.legacy_handlers.push(handler);
     }
 
     /// `true` when no handlers are registered — lets the reactor skip
     /// the whole dispatch pass (group-by-entity, candidate lookup)
     /// when commands aren't in use.
     pub fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
+        self.nominal_handlers.is_empty() && self.legacy_handlers.is_empty()
     }
 
     /// For a committed transient batch, find every `(handler, entity
@@ -326,10 +615,10 @@ impl<Env> CommandRegistry<Env> {
     /// Returns references into `self` paired with a clone of the
     /// matched entity's facts; the caller (step 4) decodes + spawns
     /// each.
-    pub fn match_transients<'a>(
+    pub fn match_legacy_transients<'a>(
         &'a self,
         transients: &Changes,
-    ) -> Vec<(&'a dyn CommandHandler<Env>, EntityFacts)> {
+    ) -> Vec<(&'a dyn LegacyCommandHandler<Env>, EntityFacts)> {
         let by_entity = group_by_entity(transients.clone());
 
         let mut fired = Vec::new();
@@ -347,7 +636,7 @@ impl<Env> CommandRegistry<Env> {
             candidates.dedup();
 
             for index in candidates {
-                let handler = self.handlers[index].as_ref();
+                let handler = self.legacy_handlers[index].as_ref();
                 // All matches fire (commands are subscription-like),
                 // so no tiebreak — every handler whose trigger decodes
                 // gets its own fact slice.
@@ -390,7 +679,9 @@ mod tests {
 
     use super::*;
     use dialog_artifacts::{Statement, Value};
-    use dialog_query::{Attribute, Concept, the};
+    use dialog_query::{Attribute, AttributeDescriptor, Cardinality, Concept, Type, the};
+    use tonk_core::claim::ValueMap;
+    use tonk_core::command::{CommandBatch, CommandSchema, InvocationMetadata, SourceInvocation};
 
     // --- Test command concepts ------------------------------------------
     // Their `Provider`s live at the router layer; here we test the decode,
@@ -417,6 +708,17 @@ mod tests {
         pub this: Entity,
         pub name: RepoName,
         pub owner: Owner,
+    }
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command")]
+    pub struct Note(pub String);
+
+    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct OptionalCreate {
+        pub this: Entity,
+        pub name: RepoName,
+        pub note: Option<Note>,
     }
 
     fn entity(uri: &str) -> Entity {
@@ -447,6 +749,46 @@ mod tests {
             .into_iter()
             .next()
             .expect("one entity")
+    }
+
+    fn string_field(field: &str) -> AttributeDescriptor {
+        AttributeDescriptor::new(
+            format!("xyz.tonk.command/{field}")
+                .parse()
+                .expect("valid attribute"),
+            "",
+            Cardinality::One,
+            Some(Type::String),
+        )
+    }
+
+    fn nominal_occurrence(
+        kind: &str,
+        occurrence: &str,
+        required: &[&str],
+        optional: &[&str],
+        arguments: ValueMap,
+    ) -> CommandOccurrence {
+        let schema = CommandSchema {
+            required: required
+                .iter()
+                .map(|field| ((*field).to_string(), string_field(field)))
+                .collect(),
+            optional: optional
+                .iter()
+                .map(|field| ((*field).to_string(), string_field(field)))
+                .collect(),
+        };
+        let invocation = schema
+            .validate(SourceInvocation {
+                command: entity(kind),
+                arguments,
+            })
+            .expect("valid nominal invocation");
+        CommandOccurrence::new(
+            invocation,
+            InvocationMetadata::new(entity(occurrence), format!("test:{occurrence}")),
+        )
     }
 
     // --- decode ---------------------------------------------------------
@@ -758,7 +1100,7 @@ mod tests {
     }
 
     // --- registry + matching (via a stub handler) -----------------------
-    // A stub `CommandHandler` lets us exercise the reverse-index match and
+    // A stub `LegacyCommandHandler` lets us exercise the reverse-index match and
     // the "all matches fire" / "candidate but doesn't decode" edges
     // without a real `Provider` env (which lives at the router layer).
 
@@ -768,6 +1110,44 @@ mod tests {
     #[derive(Clone)]
     struct TestEnv;
 
+    struct NominalStub {
+        kind: Entity,
+        name: &'static str,
+        failure: Option<CommandFailure>,
+    }
+
+    impl NominalStub {
+        fn succeeds(kind: &str, name: &'static str) -> Box<dyn CommandHandler<TestEnv>> {
+            Box::new(Self {
+                kind: entity(kind),
+                name,
+                failure: None,
+            })
+        }
+    }
+
+    impl CommandHandler<TestEnv> for NominalStub {
+        fn kind(&self) -> &Entity {
+            &self.kind
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn decode(&self, _occurrence: &CommandOccurrence) -> Option<BoxedCommandRun<TestEnv>> {
+            let failure = self.failure.clone();
+            Some(Box::new(move |_env| {
+                Box::pin(async move {
+                    match failure {
+                        Some(failure) => Err(failure),
+                        None => Ok(()),
+                    }
+                })
+            }))
+        }
+    }
+
     struct StubHandler {
         attributes: Vec<String>,
         // Decode succeeds only when the entity carries this attribute.
@@ -775,7 +1155,7 @@ mod tests {
     }
 
     impl StubHandler {
-        fn boxed(attribute: &str) -> Box<dyn CommandHandler<TestEnv>> {
+        fn boxed(attribute: &str) -> Box<dyn LegacyCommandHandler<TestEnv>> {
             Box::new(StubHandler {
                 attributes: vec![attribute.to_string()],
                 decode_on: attribute.to_string(),
@@ -783,14 +1163,14 @@ mod tests {
         }
     }
 
-    impl CommandHandler<TestEnv> for StubHandler {
+    impl LegacyCommandHandler<TestEnv> for StubHandler {
         fn trigger_attributes(&self) -> &[String] {
             &self.attributes
         }
         fn matches(&self, facts: &EntityFacts) -> bool {
             facts.iter().any(|a| a.the.to_string() == self.decode_on)
         }
-        fn run(&self, _facts: &EntityFacts, _env: &TestEnv) -> RunFuture {
+        fn run(&self, _facts: &EntityFacts, _env: &TestEnv) -> LegacyRunFuture {
             Box::pin(async {})
         }
     }
@@ -799,25 +1179,26 @@ mod tests {
     fn it_reports_empty_until_a_command_is_registered() {
         let mut registry = CommandRegistry::new();
         assert!(registry.is_empty());
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
         assert!(!registry.is_empty());
     }
 
     #[dialog_common::test]
     fn it_matches_a_registered_command_on_its_trigger() {
         let mut registry = CommandRegistry::new();
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
-        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired =
+            registry.match_legacy_transients(&create_repo_transient("did:key:zCmd", "pics"));
         assert_eq!(fired.len(), 1);
     }
 
     #[dialog_common::test]
     fn it_does_not_match_an_unrelated_transient() {
         let mut registry = CommandRegistry::new();
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
         let mut changes = Changes::new();
         noise_fact(&mut changes, "did:key:zNoise");
-        assert!(registry.match_transients(&changes).is_empty());
+        assert!(registry.match_legacy_transients(&changes).is_empty());
     }
 
     #[dialog_common::test]
@@ -825,9 +1206,10 @@ mod tests {
         // Two commands registered on the same trigger attribute: BOTH
         // fire (commands are subscription-like, no tiebreak).
         let mut registry = CommandRegistry::new();
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
-        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired =
+            registry.match_legacy_transients(&create_repo_transient("did:key:zCmd", "pics"));
         assert_eq!(fired.len(), 2, "both commands on the attribute fire");
     }
 
@@ -838,11 +1220,12 @@ mod tests {
         // fire. We register a stub keyed on `repo-name` but that only
         // decodes on `owner`, then submit a `repo-name`-only entity.
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(StubHandler {
+        registry.register_legacy(Box::new(StubHandler {
             attributes: vec!["xyz.tonk.command/repo-name".to_string()],
             decode_on: "xyz.tonk.command/owner".to_string(),
         }));
-        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        let fired =
+            registry.match_legacy_transients(&create_repo_transient("did:key:zCmd", "pics"));
         assert!(
             fired.is_empty(),
             "a candidate that fails to decode must not fire"
@@ -854,7 +1237,7 @@ mod tests {
         // A command keyed on two attributes, both present on the entity,
         // is still considered once (candidate dedup).
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(StubHandler {
+        registry.register_legacy(Box::new(StubHandler {
             attributes: vec![
                 "xyz.tonk.command/repo-name".to_string(),
                 "xyz.tonk.command/owner".to_string(),
@@ -866,7 +1249,7 @@ mod tests {
             .of(entity("did:key:zCmd"))
             .is(entity("did:key:zOwner"))
             .assert(&mut changes);
-        let fired = registry.match_transients(&changes);
+        let fired = registry.match_legacy_transients(&changes);
         assert_eq!(fired.len(), 1, "the command fires once, not per-attribute");
     }
 
@@ -874,13 +1257,13 @@ mod tests {
     fn it_matches_each_command_entity_in_a_batch() {
         // Two distinct command entities in one batch each match.
         let mut registry = CommandRegistry::new();
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
         let mut changes = create_repo_transient("did:key:zA", "alpha");
         the!("xyz.tonk.command/repo-name")
             .of(entity("did:key:zB"))
             .is("beta".to_string())
             .assert(&mut changes);
-        let fired = registry.match_transients(&changes);
+        let fired = registry.match_legacy_transients(&changes);
         assert_eq!(fired.len(), 2, "each command entity fires once");
     }
 
@@ -889,8 +1272,9 @@ mod tests {
         // The facts handed to a matched handler are that entity's facts
         // (so the handler can decode every field).
         let mut registry = CommandRegistry::new();
-        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
-        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired =
+            registry.match_legacy_transients(&create_repo_transient("did:key:zCmd", "pics"));
         let (_, facts) = &fired[0];
         let name = facts
             .iter()
@@ -900,5 +1284,139 @@ mod tests {
                 _ => None,
             });
         assert_eq!(name.as_deref(), Some("pics"));
+    }
+
+    // --- nominal registry + decoding ----------------------------------
+
+    #[dialog_common::test]
+    fn nominal_decode_binds_runtime_this_and_preserves_empty_strings() {
+        let occurrence = nominal_occurrence(
+            "id:repo/create",
+            "did:key:zOccurrence",
+            &["name"],
+            &[],
+            [("name".into(), Value::String(String::new()))]
+                .into_iter()
+                .collect(),
+        );
+
+        let decoded = decode_occurrence::<CreateRepo>(&occurrence).expect("decodes");
+        assert_eq!(decoded.this, entity("did:key:zOccurrence"));
+        assert_eq!(decoded.name.0, "", "empty string is a supplied value");
+    }
+
+    #[dialog_common::test]
+    fn nominal_decode_binds_absent_optional_fields() {
+        let occurrence = nominal_occurrence(
+            "id:repo/create",
+            "did:key:zOptional",
+            &["name"],
+            &["note"],
+            [("name".into(), Value::String("pictures".into()))]
+                .into_iter()
+                .collect(),
+        );
+
+        let decoded =
+            decode_occurrence::<OptionalCreate>(&occurrence).expect("optional field decodes");
+        assert_eq!(decoded.name.0, "pictures");
+        assert_eq!(decoded.note, None);
+    }
+
+    #[dialog_common::test]
+    fn nominal_decode_rejects_a_missing_rust_required_field() {
+        // The occurrence is valid under its current nominal schema, but the
+        // selected Rust handler expects an additional required `owner` field.
+        // Decode must reject it instead of manufacturing a value.
+        let occurrence = nominal_occurrence(
+            "id:repo/share",
+            "did:key:zPartial",
+            &["name"],
+            &[],
+            [("name".into(), Value::String("pictures".into()))]
+                .into_iter()
+                .collect(),
+        );
+
+        assert!(decode_occurrence::<Share>(&occurrence).is_none());
+    }
+
+    #[dialog_common::test]
+    async fn nominal_dispatch_selects_exact_kind_before_shape() {
+        let kind_a = entity("id:repo/create-a");
+        let kind_b = entity("id:repo/create-b");
+        let mut registry = CommandRegistry::new();
+        registry.register_nominal(NominalStub::succeeds("id:repo/create-a", "handler-a"));
+        registry.register_nominal(NominalStub::succeeds("id:repo/create-b", "handler-b"));
+        let occurrence = nominal_occurrence(
+            "id:repo/create-a",
+            "did:key:zA",
+            &["name"],
+            &[],
+            [("name".into(), Value::String("same shape".into()))]
+                .into_iter()
+                .collect(),
+        );
+
+        assert_eq!(registry.registrations(&kind_a), 1);
+        assert_eq!(registry.registrations(&kind_b), 1);
+        let scheduled = registry.schedule(&occurrence, &TestEnv);
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(scheduled[0].name, "handler-a");
+        scheduled
+            .into_iter()
+            .next()
+            .unwrap()
+            .perform()
+            .await
+            .unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn nominal_dispatch_preserves_structured_handler_failures() {
+        let failure = CommandFailure {
+            code: "repo-unavailable".into(),
+            message: "repository is offline".into(),
+        };
+        let mut registry = CommandRegistry::new();
+        registry.register_nominal(Box::new(NominalStub {
+            kind: entity("id:repo/create"),
+            name: "failing-handler",
+            failure: Some(failure.clone()),
+        }));
+        let occurrence = nominal_occurrence(
+            "id:repo/create",
+            "did:key:zFailure",
+            &["name"],
+            &[],
+            [("name".into(), Value::String("pictures".into()))]
+                .into_iter()
+                .collect(),
+        );
+
+        let scheduled = registry.schedule(&occurrence, &TestEnv);
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(
+            scheduled.into_iter().next().unwrap().perform().await,
+            Err(failure)
+        );
+    }
+
+    #[dialog_common::test]
+    fn nominal_private_overlay_does_not_enter_the_legacy_lane() {
+        let occurrence = nominal_occurrence(
+            "id:repo/create",
+            "did:key:zIsolated",
+            &["name"],
+            &[],
+            [("name".into(), Value::String("pictures".into()))]
+                .into_iter()
+                .collect(),
+        );
+        let encoded = CommandBatch::new(vec![occurrence]).encode();
+        let mut registry = CommandRegistry::new();
+        registry.register_legacy(StubHandler::boxed("xyz.tonk.command/repo-name"));
+
+        assert!(registry.match_legacy_transients(&encoded).is_empty());
     }
 }

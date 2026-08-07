@@ -20,6 +20,7 @@ from-scratch`) that fixes the highest-leverage problem each iteration.
 | `from-scratch` | `scenarios/from-scratch/task.md` | Agent builds a habit tracker from nothing through tonk |
 | `wiki-conversion` | `scenarios/wiki-conversion/task.md` | Agent converts the Grove wiki (page tree, block canvas, wikilinks, comments) into tonk concepts+views+components; judged against `reference.png` |
 | `first-use` | `scenarios/first-use/task.md` | No CLI hints: measure the first successful live read and precise write |
+| `list-append` | `scenarios/list-append/task.md` | Frozen first-shot gate: nominal form projection appends exactly one persistent todo and survives reload |
 | `targeted-edit` | `scenarios/targeted-edit/task.md` | Returning agent makes one precise change to seeded data |
 | `interview-build` | `scenarios/interview-build/task.md` | Agent interviews a simulated user, then builds the result |
 | `cold-onboard` | live invite prompt | Agent installs via npx, joins, orients, and builds |

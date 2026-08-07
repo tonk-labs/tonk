@@ -28,8 +28,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use dialog_query::{Output as _, Query, Term};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tonk_schema::RepositoryName;
+use tonk_schema::domain::repo;
+use tonk_schema::prelude::DidExt as _;
 
 /// Environment variable naming the spot to use, beaten only by the
 /// `--spot` flag. Automation (agents, bench, CI) should always set
@@ -513,6 +517,7 @@ pub async fn create(
     let site = crate::site::TonkSite::init_at_with(&target, config)
         .await
         .map_err(|e| SpotError::Init(format!("{e:#}")))?;
+    ensure_repository_name(&site, name).await?;
 
     let outcome = CreateOutcome {
         name: name.to_owned(),
@@ -532,6 +537,42 @@ pub async fn create(
     }
     store.save(&registry)?;
     Ok(outcome)
+}
+
+/// Give a newly-created CLI repository the same self-describing content fact
+/// that browser-created repositories carry. Adopted sites keep an existing
+/// content name; only a missing identity is filled from the registry name.
+async fn ensure_repository_name(site: &crate::site::TonkSite, name: &str) -> Result<(), SpotError> {
+    let session = site
+        .branch()
+        .await
+        .map_err(|error| SpotError::Init(format!("acquire content branch: {error}")))?;
+    let subject = site.repository.did().this();
+    let existing: Vec<RepositoryName> = session
+        .handle()
+        .query()
+        .select(Query::<RepositoryName> {
+            this: Term::from(subject.clone()),
+            name: Term::var("name"),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .map_err(|error| SpotError::Init(format!("read repository identity: {error}")))?;
+    if existing.is_empty() {
+        session
+            .handle()
+            .transaction()
+            .assert(RepositoryName {
+                this: subject,
+                name: repo::Name(name.to_owned()),
+            })
+            .commit()
+            .perform(&site.operator)
+            .await
+            .map_err(|error| SpotError::Init(format!("stamp repository identity: {error}")))?;
+    }
+    Ok(())
 }
 
 /// Outcome of [`bind`].

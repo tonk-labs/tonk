@@ -889,12 +889,19 @@ fn walk_field_value(
             }
             Some(FieldValue::Nested(nested))
         }
-        YamlData::Sequence(_) => {
-            out.push(error(
-                range_of(value),
-                r#"Sequence values are not supported in this notation. Use repeated assertions for cardinality-many writes."#,
-            ));
-            None
+        YamlData::Sequence(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(value) = string_of(item) else {
+                    out.push(error(
+                        range_of(item),
+                        "Sequence entries must be scalar names.",
+                    ));
+                    continue;
+                };
+                values.push(Spanned::new(value.to_owned(), range_of(item)));
+            }
+            Some(FieldValue::List(values))
         }
         YamlData::Tagged(_, inner) => walk_field_value(inner, rule_body, out),
         YamlData::Alias(_) => {
@@ -1226,6 +1233,28 @@ mod tests {
         let parsed = parse("");
         assert!(parsed.diagnostics.is_empty());
         assert!(parsed.syntax.is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_parses_scalar_lists_for_projection_actions() {
+        let syntax = parse_clean(
+            "projection!: &todo/add-form\n  actions:\n    - prevent-default\n    - stop-propagation\n",
+        );
+        let Expression::Claim(claim) = &syntax.expressions[0] else {
+            panic!("expected claim");
+        };
+        let actions = claim
+            .inner
+            .fields
+            .iter()
+            .find(|field| field.name == "actions")
+            .expect("actions field");
+        let FieldValue::List(items) = &actions.value else {
+            panic!("expected scalar list, got {:?}", actions.value);
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].value, "prevent-default");
+        assert_eq!(items[1].value, "stop-propagation");
     }
 
     #[dialog_common::test]
@@ -1735,13 +1764,12 @@ person:
     }
 
     #[dialog_common::test]
-    fn it_rejects_sequence_value() {
+    fn it_rejects_non_scalar_sequence_entries() {
         let parsed = parse(
             r#"
 person!:
   name:
-    - Alice
-    - Bob
+    - nested: mapping
 "#,
         );
         assert!(!parsed.diagnostics.is_empty());

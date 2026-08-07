@@ -11,6 +11,9 @@ use tonk_cli::spot::{self, SpotStore};
 
 mod when_creating_a_spot {
     use super::*;
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::RepositoryName;
+    use tonk_schema::prelude::DidExt as _;
 
     #[dialog_common::test]
     async fn it_creates_registers_and_binds_in_the_canonical_dir() -> Result<()> {
@@ -30,6 +33,31 @@ mod when_creating_a_spot {
         // And the site actually opens.
         let opened = TonkSite::open_with(&resolved.site, config).await?;
         assert_eq!(opened.repository.did().to_string(), outcome.did);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_stamps_the_spot_name_as_the_repository_identity() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpotStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+
+        let outcome = spot::create(&store, "garden", None, None, config.clone()).await?;
+        let site = TonkSite::open_with(&outcome.site, config).await?;
+        let branch = site.branch().await?;
+        let rows: Vec<RepositoryName> = branch
+            .handle()
+            .query()
+            .select(Query::<RepositoryName> {
+                this: Term::from(site.repository.did().this()),
+                name: Term::var("name"),
+            })
+            .perform(&site.operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name.0, "garden");
         Ok(())
     }
 

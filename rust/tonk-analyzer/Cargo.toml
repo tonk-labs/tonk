@@ -25,6 +25,7 @@ dialog-common = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
+indexmap = { workspace = true }
 lsp-types = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

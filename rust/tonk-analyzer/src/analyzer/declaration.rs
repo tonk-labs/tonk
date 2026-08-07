@@ -13,9 +13,14 @@ use std::collections::BTreeMap;
 use tonk_notation::{Application as SyntaxApplication, Field as SyntaxField, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::field::{is_meta_field, scalar_to_string};
+use super::field::{is_meta_field, scalar_to_string, scalar_to_value};
 use super::scope::Scope;
+use tonk_core::command::CommandSchema;
 use tonk_core::meta::AnchorName;
+use tonk_schema::projection::{
+    ControlProperty, ControlSource, EventAction, EventMember, ProjectionDescriptor,
+    ProjectionSource, TargetMember,
+};
 use tonk_schema::resolution::AttributeDefinition;
 use tonk_schema::transact::{Application, ThisIntent};
 
@@ -209,6 +214,349 @@ pub(crate) struct ConceptBody {
     /// and `dialog.meta/description` claims so the attribute is
     /// queryable via `attribute:` after the `concept!` commits.
     pub inline_attributes: Vec<AttributeBody>,
+}
+
+/// Parsed nominal command body. Command identity is selected by the
+/// declaration head; this carries only the typed argument schema and
+/// inline attribute definitions that must be emitted first.
+pub(crate) struct CommandBody {
+    pub schema: CommandSchema,
+}
+
+/// Parsed event projection body before the declaration head selects
+/// the projection entity.
+pub(crate) struct ProjectionBody {
+    pub descriptor: ProjectionDescriptor,
+}
+
+/// Parse and statically validate a `projection!:` body.
+pub(crate) fn parse_projection_body(
+    assertion: &SyntaxApplication,
+    scope: &Scope,
+) -> Result<ProjectionBody, AnalyzeError> {
+    let mut command = None;
+    let mut default = false;
+    let mut arguments = indexmap::IndexMap::new();
+    let mut actions = Vec::new();
+    for field in &assertion.fields {
+        if field.name == "this" {
+            continue;
+        }
+        match field.name.as_str() {
+            "command" => {
+                let resolved = match &field.value {
+                    FieldValue::Symbol(name) | FieldValue::Literal(Scalar::String(name)) => {
+                        scope.command(name)
+                    }
+                    FieldValue::Uri(uri) => uri
+                        .parse::<Entity>()
+                        .ok()
+                        .and_then(|entity| scope.command_by_entity(&entity)),
+                    _ => None,
+                };
+                command = Some(resolved.ok_or_else(|| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidProjectionBody {
+                            reason: "`command:` does not resolve to a nominal command".into(),
+                        },
+                        field.value_range,
+                    )
+                })?);
+            }
+            "default" => match &field.value {
+                FieldValue::Literal(Scalar::Boolean(value)) => default = *value,
+                _ => {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidProjectionBody {
+                            reason: "`default:` must be a boolean".into(),
+                        },
+                        field.value_range,
+                    ));
+                }
+            },
+            "arguments" => {
+                let FieldValue::Nested(fields) = &field.value else {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidProjectionBody {
+                            reason: "`arguments:` must be a field-to-source mapping".into(),
+                        },
+                        field.value_range,
+                    ));
+                };
+                for argument in fields {
+                    arguments.insert(argument.name.clone(), parse_projection_source(argument)?);
+                }
+            }
+            "actions" => {
+                let FieldValue::List(items) = &field.value else {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidProjectionBody {
+                            reason: "`actions:` must be a list".into(),
+                        },
+                        field.value_range,
+                    ));
+                };
+                for item in items {
+                    let action = match item.value.as_str() {
+                        "prevent-default" => EventAction::PreventDefault,
+                        "stop-propagation" => EventAction::StopPropagation,
+                        "stop-immediate-propagation" => EventAction::StopImmediatePropagation,
+                        other => {
+                            return Err(AnalyzeError::at(
+                                AnalyzeErrorKind::InvalidProjectionBody {
+                                    reason: format!("unsupported event action {other:?}"),
+                                },
+                                item.range,
+                            ));
+                        }
+                    };
+                    actions.push(action);
+                }
+            }
+            other => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidProjectionBody {
+                        reason: format!("unknown projection field {other:?}"),
+                    },
+                    field.name_range,
+                ));
+            }
+        }
+    }
+    let command = command.ok_or_else(|| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::InvalidProjectionBody {
+                reason: "missing required field `command`".into(),
+            },
+            assertion.range,
+        )
+    })?;
+    for field in arguments.keys() {
+        if !command.schema().required.contains_key(field)
+            && !command.schema().optional.contains_key(field)
+        {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidProjectionBody {
+                    reason: format!("unknown command argument {field:?}"),
+                },
+                assertion
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == "arguments")
+                    .map(|candidate| candidate.value_range)
+                    .unwrap_or(assertion.range),
+            ));
+        }
+    }
+    for required in command.schema().required.keys() {
+        if !arguments.contains_key(required) {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidProjectionBody {
+                    reason: format!("required command argument {required:?} has no source"),
+                },
+                assertion.range,
+            ));
+        }
+    }
+    Ok(ProjectionBody {
+        descriptor: ProjectionDescriptor {
+            command: command.kind().clone(),
+            default,
+            arguments,
+            actions,
+        },
+    })
+}
+
+fn parse_projection_source(field: &SyntaxField) -> Result<ProjectionSource, AnalyzeError> {
+    let FieldValue::Nested(entries) = &field.value else {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::InvalidProjectionBody {
+                reason: format!("source for argument {:?} must be a mapping", field.name),
+            },
+            field.value_range,
+        ));
+    };
+    if entries.len() != 1 {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::InvalidProjectionBody {
+                reason: format!(
+                    "source for argument {:?} must contain exactly one source key",
+                    field.name
+                ),
+            },
+            field.value_range,
+        ));
+    }
+    let source = &entries[0];
+    let simple = || projection_source_name(source);
+    match source.name.as_str() {
+        "control" => match &source.value {
+            FieldValue::Nested(options) => {
+                let name = options
+                    .iter()
+                    .find(|option| option.name == "name")
+                    .ok_or_else(|| invalid_projection("control source is missing `name`", source))
+                    .and_then(projection_source_name)?;
+                let property = match options.iter().find(|option| option.name == "property") {
+                    None => ControlProperty::Value,
+                    Some(option) => match projection_source_name(option)?.as_str() {
+                        "value" => ControlProperty::Value,
+                        "checked" => ControlProperty::Checked,
+                        other => {
+                            return Err(invalid_projection(
+                                format!("unsupported control property {other:?}"),
+                                option,
+                            ));
+                        }
+                    },
+                };
+                if options
+                    .iter()
+                    .any(|option| option.name != "name" && option.name != "property")
+                {
+                    return Err(invalid_projection("unknown control source option", source));
+                }
+                Ok(ProjectionSource::Control(ControlSource { name, property }))
+            }
+            _ => Ok(ProjectionSource::Control(ControlSource {
+                name: simple()?,
+                property: ControlProperty::Value,
+            })),
+        },
+        "data" => Ok(ProjectionSource::Data(simple()?)),
+        "event" => Ok(ProjectionSource::Event(match simple()?.as_str() {
+            "type" => EventMember::Type,
+            "key" => EventMember::Key,
+            "code" => EventMember::Code,
+            "repeat" => EventMember::Repeat,
+            "shiftKey" => EventMember::ShiftKey,
+            "ctrlKey" => EventMember::CtrlKey,
+            "altKey" => EventMember::AltKey,
+            "metaKey" => EventMember::MetaKey,
+            "button" => EventMember::Button,
+            "clientX" => EventMember::ClientX,
+            "clientY" => EventMember::ClientY,
+            "timeStamp" => EventMember::TimeStamp,
+            other => {
+                return Err(invalid_projection(
+                    format!("unsupported event member {other:?}"),
+                    source,
+                ));
+            }
+        })),
+        "detail" => Ok(ProjectionSource::Detail(simple()?)),
+        "target" => Ok(ProjectionSource::Target(match simple()?.as_str() {
+            "value" => TargetMember::Value,
+            "checked" => TargetMember::Checked,
+            other => {
+                return Err(invalid_projection(
+                    format!("unsupported target member {other:?}"),
+                    source,
+                ));
+            }
+        })),
+        "literal" => Ok(ProjectionSource::Literal(match &source.value {
+            FieldValue::Literal(value) => scalar_to_value(value, None)?,
+            FieldValue::Symbol(value) => Value::String(value.clone()),
+            FieldValue::Uri(value) => Value::Entity(value.parse().map_err(|error| {
+                invalid_projection(format!("invalid literal entity: {error}"), source)
+            })?),
+            _ => {
+                return Err(invalid_projection(
+                    "literal source must be a scalar",
+                    source,
+                ));
+            }
+        })),
+        other => Err(invalid_projection(
+            format!("unsupported projection source {other:?}"),
+            source,
+        )),
+    }
+}
+
+fn projection_source_name(field: &SyntaxField) -> Result<String, AnalyzeError> {
+    match &field.value {
+        FieldValue::Symbol(value)
+        | FieldValue::Uri(value)
+        | FieldValue::Literal(Scalar::String(value)) => Ok(value.clone()),
+        _ => Err(invalid_projection(
+            "source option must be a scalar name",
+            field,
+        )),
+    }
+}
+
+fn invalid_projection(reason: impl Into<String>, field: &SyntaxField) -> AnalyzeError {
+    AnalyzeError::at(
+        AnalyzeErrorKind::InvalidProjectionBody {
+            reason: reason.into(),
+        },
+        field.value_range,
+    )
+}
+
+/// Parse a nominal command's `with:` and `maybe:` argument blocks.
+pub(crate) fn parse_command_body(
+    assertion: &SyntaxApplication,
+    scope: &Scope,
+) -> Result<CommandBody, AnalyzeError> {
+    let body = parse_concept_body(assertion, scope).map_err(|error| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::InvalidCommandBody {
+                reason: error.to_string(),
+            },
+            error.range.unwrap_or(assertion.range),
+        )
+    })?;
+    if body.transient {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::InvalidCommandBody {
+                reason: "`transient:` is not valid on a nominal command".into(),
+            },
+            assertion.range,
+        ));
+    }
+    if body.asserts_nothing || !body.retracted.is_empty() || body.rest_retraction.is_some() {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::InvalidCommandBody {
+                reason: "nominal command schemas cannot use field retraction syntax".into(),
+            },
+            assertion.range,
+        ));
+    }
+
+    let mut schema = CommandSchema::default();
+    for (name, field) in body.descriptor.with().iter() {
+        if name == "this" {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidCommandBody {
+                    reason: "`this` is reserved for the runtime-assigned command occurrence".into(),
+                },
+                assertion.range,
+            ));
+        }
+        let descriptor = field.descriptor().clone();
+        if descriptor.domain().starts_with("dom.event") {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidCommandBody {
+                    reason: format!(
+                        "argument {name:?} uses legacy DOM-addressed attribute {}/{}",
+                        descriptor.domain(),
+                        descriptor.name()
+                    ),
+                },
+                assertion.range,
+            ));
+        }
+        if field.is_optional() {
+            schema.optional.insert(name.to_owned(), descriptor);
+        } else {
+            schema.required.insert(name.to_owned(), descriptor);
+        }
+    }
+    Ok(CommandBody { schema })
 }
 
 pub(crate) fn parse_concept_body(
@@ -922,7 +1270,8 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Variable(_)
         | FieldValue::Blank
         | FieldValue::Nested(_)
-        | FieldValue::Premises(_) => {
+        | FieldValue::Premises(_)
+        | FieldValue::List(_) => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: field.name.clone(),
                 form: "non-literal (attribute definitions take literals)",

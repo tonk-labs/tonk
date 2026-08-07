@@ -361,6 +361,8 @@ pub struct TonkState {
     /// transient command concepts after a commit. Consulted by the
     /// transact path's post-commit dispatch.
     pub commands: crate::reactor::CommandRegistry<crate::router::CommandEnv>,
+    /// Bounded, non-durable diagnostic state for nominal native invocations.
+    pub invocations: crate::router::InvocationLedger,
     /// Repositories with un-pushed local commits. A commit enqueues its repo;
     /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
     /// reconcile it. See `router::sync::SyncQueue`.
@@ -1712,6 +1714,7 @@ impl TonkServiceWorker {
             view_bindings: Default::default(),
             bridges: Default::default(),
             commands: crate::router::command_registry(),
+            invocations: Default::default(),
             sync_queue: Default::default(),
             clients: Default::default(),
             account_keys: Default::default(),

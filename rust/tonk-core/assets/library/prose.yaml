@@ -46,12 +46,19 @@ command!: &prose/edit
   with:
     subject:
       description: The document entity, stamped on the editor's data-subject.
-      the: dom.event.current-target.dataset/subject
+      the: xyz.tonk.command.prose.edit/subject
       as: entity
     content:
       description: The new content envelope, read from the change event.
-      the: dom.event.detail/content
+      the: xyz.tonk.command.prose.edit/content
       as: text
+
+projection!: &prose/edit-default
+  command: prose/edit
+  default: true
+  arguments:
+    subject: { data: "subject" }
+    content: { detail: "content" }
 
 # ---------------------------------------------------------------------------
 # Rule — persist the edit onto the document named by the command's subject.

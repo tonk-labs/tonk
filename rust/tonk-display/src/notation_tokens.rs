@@ -219,6 +219,17 @@ fn walk_value(
                 }
             }
         }
+        FieldValue::List(items) => {
+            for item in items {
+                if let Some((from, to)) = range_to_bytes(&item.range, line_starts) {
+                    out.push(Mark {
+                        from,
+                        to,
+                        decoration: Decoration::Name,
+                    });
+                }
+            }
+        }
         FieldValue::Literal(_) => {}
     }
 }

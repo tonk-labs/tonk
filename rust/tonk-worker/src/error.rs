@@ -14,6 +14,15 @@ pub enum TonkWorkerError {
     #[error("Router error: {0}")]
     Router(String),
 
+    /// A nominal command failed request preflight.
+    #[error("Command error {code}: {message}")]
+    Command {
+        /// Stable machine-readable command error code.
+        code: &'static str,
+        /// Caller-safe failure detail.
+        message: String,
+    },
+
     /// An internal error occurred.
     #[error("Internal error: {0}")]
     Internal(String),
@@ -137,6 +146,7 @@ impl TonkWorkerError {
     fn kind(&self) -> &'static str {
         match self {
             TonkWorkerError::Router(_) => "router",
+            TonkWorkerError::Command { .. } => "command",
             TonkWorkerError::Internal(_) => "internal",
             TonkWorkerError::NotFound(_) => "not_found",
             TonkWorkerError::Conflict(_) => "conflict",
@@ -158,6 +168,7 @@ impl TonkWorkerError {
             | TonkWorkerError::PreconditionFailed(m)
             | TonkWorkerError::Forbidden(m)
             | TonkWorkerError::AccountStateUnavailable(m) => m.clone(),
+            TonkWorkerError::Command { message, .. } => message.clone(),
             TonkWorkerError::RootRequired => "a local passkey root is required".to_string(),
             TonkWorkerError::AccountRequired => "a Tonk account is required".to_string(),
             TonkWorkerError::Upstream { message, .. } => message.clone(),
@@ -190,7 +201,9 @@ impl IntoResponse for TonkWorkerError {
     fn into_response(self) -> axum::response::Response {
         let status = match &self {
             TonkWorkerError::NotFound(_) => StatusCode::NOT_FOUND,
-            TonkWorkerError::Router(_) | TonkWorkerError::Analyze { .. } => StatusCode::BAD_REQUEST,
+            TonkWorkerError::Router(_)
+            | TonkWorkerError::Command { .. }
+            | TonkWorkerError::Analyze { .. } => StatusCode::BAD_REQUEST,
             TonkWorkerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             TonkWorkerError::Conflict(_)
             | TonkWorkerError::RootRequired
@@ -205,6 +218,7 @@ impl IntoResponse for TonkWorkerError {
         };
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
+            TonkWorkerError::Command { code, .. } => (Some((*code).to_string()), None),
             TonkWorkerError::RootRequired => (Some("ROOT_REQUIRED".to_string()), None),
             TonkWorkerError::AccountRequired => (Some("ACCOUNT_REQUIRED".to_string()), None),
             TonkWorkerError::Upstream { code, .. } => (code.clone(), None),

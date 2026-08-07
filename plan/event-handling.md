@@ -1,6 +1,6 @@
 # Event handling
 
-Status: design. Defines how DOM events on rendered tonk-display markup become transient concept assertions that cross the service-worker boundary, without introducing a new notation form or a separate rule kind. Rule-driven event extraction (rules that run on main thread, conditional side effects) is acknowledged but out of scope.
+Status: superseded for new code. This document is retained as the legacy structural compatibility contract for unmigrated branches. New code uses nominal `command!:` declarations and stored `projection!:` event mappings; see `docs/evolving-command-concepts.md` and `tonk guide events`. Compatibility removal is a later release.
 
 ## Complication
 

@@ -39,3 +39,47 @@ mod when_reading_a_concepts_schema {
         Ok(())
     }
 }
+
+#[dialog_common::test]
+async fn nominal_command_and_projection_schema_round_trip() -> Result<()> {
+    let source = TestSite::new().await?;
+    source
+        .eval_inline(
+            r#"
+command!: &todo/add
+  with:
+    title: { description: "Title", the: xyz.tonk.todo/title, as: Text }
+  maybe:
+    done: { description: "Done", the: xyz.tonk.todo/done, as: Boolean }
+projection!: &todo/add-form
+  command: todo/add
+  default: true
+  arguments:
+    title: { control: "note-body" }
+    done: { control: { name: "is-done", property: checked } }
+  actions: [prevent-default]
+"#,
+        )
+        .await?;
+    let exported = tonk_cli::schema::render(&source.site).await?;
+    assert!(exported.contains("command!: &todo/add"));
+    assert!(exported.contains("projection!: &todo/add-form"));
+
+    let destination = TestSite::new().await?;
+    destination.eval_inline(&exported).await?;
+    let before = tonk_cli::commands::inventory(&source.site).await?;
+    let after = tonk_cli::commands::inventory(&destination.site).await?;
+    let before = before
+        .nominal
+        .iter()
+        .find(|command| command.kind == "id:todo/add")
+        .expect("source command");
+    let after = after
+        .nominal
+        .iter()
+        .find(|command| command.kind == "id:todo/add")
+        .expect("round-tripped command");
+    assert_eq!(before.source, after.source);
+    assert_eq!(before.projections[0].source, after.projections[0].source);
+    Ok(())
+}

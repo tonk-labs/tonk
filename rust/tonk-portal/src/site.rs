@@ -455,16 +455,14 @@ fn random_uuid() -> String {
     .unwrap_or_else(|| format!("{:x}", web_sys::js_sys::Date::now() as u64))
 }
 
-/// Build the transient `tonk:load { this: site, path }` transact body the
-/// consumer `claim` API takes. The predicate carries the `tonk:load` descriptor
-/// INLINE (`kind: transient` + the one `xyz.tonk.site/path` field), so the worker
-/// resolves against the inline shape — no dependency on `tonk:load` being
-/// resolvable by name on the branch. Matches the wire shape
-/// `tonk-display`'s event delegate posts (`{ claims: [ { op, application } ] }`).
+/// Build the nominal `tonk:load { site, path }` transact body the consumer
+/// `claim` API takes. The worker resolves the authoritative stored schema;
+/// `site` is an explicit domain argument and the invocation occurrence remains
+/// separate.
 fn load_claim(site: &str, path: &str) -> wasm_bindgen::JsValue {
     use web_sys::js_sys::JSON;
     let body = format!(
-        r#"{{"claims":[{{"op":"assert","application":{{"predicate":{{"kind":"transient","concept":{{"with":{{"path":{{"the":"xyz.tonk.site/path","as":"Text","cardinality":"one"}}}}}}}},"parameters":{{"this":{site:?},"path":{path:?}}}}}}}]}}"#
+        r#"{{"claims":[{{"op":"invoke","command":"tonk:load","arguments":{{"site":{site:?},"path":{path:?}}}}}]}}"#
     );
     JSON::parse(&body).unwrap_or(wasm_bindgen::JsValue::NULL)
 }

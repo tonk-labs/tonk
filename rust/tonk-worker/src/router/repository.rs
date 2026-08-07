@@ -341,7 +341,7 @@ const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
 /// control name is the JS property the event layer reads, so a
 /// descriptive leaf (`revocation-url`) resolves to `undefined` and kills
 /// the submit.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const REVOCATION_URL_ATTR: &str = "dom.event.current-target.elements.revocation/value";
 
 /// Read the optional remote URL from a transient's facts, tolerating
@@ -597,7 +597,7 @@ impl CreateSpaceHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for CreateSpaceHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -615,7 +615,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
 
         // Decode synchronously (the caller still holds the lock), then
@@ -781,7 +781,7 @@ impl InviteHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for InviteHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -799,7 +799,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
@@ -865,7 +865,7 @@ impl EnableSyncHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for EnableSyncHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -883,7 +883,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
@@ -1328,7 +1328,7 @@ impl PauseSyncHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for PauseSyncHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -1346,7 +1346,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
@@ -1425,7 +1425,7 @@ impl ProfileRenameHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRenameHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for ProfileRenameHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -1443,7 +1443,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRename
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
 
         // Decode synchronously (the caller still holds the lock), then
@@ -1558,7 +1558,7 @@ impl RenameRepositoryHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameRepositoryHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for RenameRepositoryHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -1576,7 +1576,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameReposit
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
@@ -1711,7 +1711,7 @@ impl RemoveSpaceHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHandler {
+impl crate::reactor::LegacyCommandHandler<crate::router::CommandEnv> for RemoveSpaceHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -1729,7 +1729,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
         &self,
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+    ) -> crate::reactor::LegacyRunFuture {
         use crate::reactor::Decode as _;
 
         // Decode synchronously (the caller still holds the lock), then
@@ -4158,17 +4158,12 @@ mod space_config_tests {
     }
 }
 
-/// The create form and this handler must name one attribute per control.
-///
-/// The handler reads these raw (not through the typed `CreateSpace`
-/// decode) so an older, frozen profile descriptor still triggers it. That
-/// tolerance cuts both ways: a renamed attribute on either side doesn't
-/// fail — the fact simply never matches, the field reads as absent, and
-/// the spot is created missing the remote or the relay with nothing
-/// logged. Pin both sides against the seeded document. Native.
+/// The create form's nominal schema and projection must expose every optional
+/// field consumed by the worker adapter. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
-    use super::{REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR};
+    use tonk_schema::projection::{ControlProperty, ProjectionSource};
+    use tonk_schema::transact::{Application, Statement};
 
     /// The document the worker seeds onto a profile branch, embedded for
     /// the same reason `tests/standard_library.rs` embeds it: CI runs from
@@ -4177,11 +4172,49 @@ mod form_attribute_tests {
 
     #[test]
     fn it_reads_the_attributes_the_create_form_declares() {
-        for attribute in [REMOTE_ATTR, REVOCATION_URL_ATTR, TEMPLATE_ATTR] {
+        let syntax = tonk_notation::parse(PROFILE_LIBRARY)
+            .syntax
+            .expect("profile library parses");
+        let tree = tonk_analyzer::analyzer::analyze_local(&syntax)
+            .expect("profile library analyzes without a running system");
+        let statements = tree.analysis.statements();
+        let command = statements
+            .iter()
+            .find_map(|planned| match &planned.statement {
+                Statement::Assert(Application::CommandDefinition { definition, .. })
+                    if definition.kind().to_string() == "id:space/create" =>
+                {
+                    Some(definition)
+                }
+                _ => None,
+            })
+            .expect("profile declares space/create");
+        for field in ["remote", "revocation", "template"] {
             assert!(
-                PROFILE_LIBRARY.contains(attribute),
-                "profile.yaml declares no `the: {attribute}` — the handler \
-                 would read this field as absent on every submit",
+                command.schema().optional.contains_key(field),
+                "space/create must declare optional semantic argument {field:?}"
+            );
+        }
+
+        let projection = statements
+            .iter()
+            .find_map(|planned| match &planned.statement {
+                Statement::Assert(Application::ProjectionDefinition { definition, .. })
+                    if definition.descriptor().command.to_string() == "id:space/create" =>
+                {
+                    Some(definition)
+                }
+                _ => None,
+            })
+            .expect("profile declares a space/create projection");
+        for field in ["remote", "revocation", "template"] {
+            assert!(
+                matches!(
+                    projection.descriptor().arguments.get(field),
+                    Some(ProjectionSource::Control(control))
+                        if control.name == field && control.property == ControlProperty::Value
+                ),
+                "space/create projection must read control {field:?} by exact name"
             );
         }
     }

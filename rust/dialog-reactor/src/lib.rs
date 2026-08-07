@@ -39,7 +39,11 @@ mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState};
-pub use command::{CommandHandler, CommandRegistry, Decode, EntityFacts, RunFuture, TypedCommand};
+pub use command::{
+    BoxedCommandRun, CommandFailure, CommandHandler, CommandRegistry, CompatibilityNominalAdapter,
+    Decode, EntityFacts, LegacyCommandHandler, LegacyRunFuture, LegacyTypedCommand,
+    NominalTypedCommand, RunFuture, ScheduledHandler, decode_occurrence,
+};
 pub use env::{
     BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,
     SelectProvider,
@@ -60,7 +64,7 @@ pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionRefe
 /// elements) can deserialize without depending on this crate.
 pub use tonk_schema::conclusion::{Conclusion, Frame, project};
 pub use tonk_schema::query::Query;
-pub use transaction::{Commit, TransactionBuilder};
+pub use transaction::{Commit, CommitReport, TransactionBuilder};
 
 /// A reactive layer over dialog branches. Owned by the consumer's
 /// application state (e.g. the worker's `TonkState`).
