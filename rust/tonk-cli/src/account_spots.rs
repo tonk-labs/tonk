@@ -378,9 +378,18 @@ pub async fn pull(
     }
     let target = store.canonical_site(&name);
     if target.exists() {
+        // Reached most often after `tonk spot rm --keep-data`: the
+        // registry forgot the name but the data still holds it, so
+        // point at both ways to clear the collision rather than
+        // reporting it as a bare fact.
         return Err(name_error(
             Some(&name),
-            format!("the canonical site {} already exists", target.display()),
+            format!(
+                "the canonical site {target} already exists and belongs to no \
+                 registered spot; adopt it with `tonk spot new {name} --site {target}` \
+                 or delete the directory",
+                target = target.display()
+            ),
         ));
     }
 
@@ -465,6 +474,19 @@ async fn marker(site: &TonkSite, subject: &Did) -> Result<Option<Vec<u8>>> {
         Err(error) if crate::account_state::credential_is_missing(&error) => Ok(None),
         Err(error) => Err(error).context("failed to load the account backup marker"),
     }
+}
+
+/// Whether this device has already uploaded an account backup for
+/// `site`'s repository.
+///
+/// Answered from the local marker credential alone, so it costs no
+/// network round trip and works while logged out. The marker is
+/// written only after the account service accepts the payload
+/// ([`back_up_site_with_connection`]), which makes its presence a
+/// claim that a backup exists — the claim `tonk spot rm` leans on
+/// when it tells someone their data is recoverable.
+pub async fn has_account_backup(site: &TonkSite) -> Result<bool> {
+    Ok(marker(site, &site.repository.did()).await?.is_some())
 }
 
 async fn back_up_site_with_connection(

@@ -10,6 +10,8 @@
 //! - [`site`] — repo+branch open/init; resolved via the spot registry.
 //! - [`spot`] — spot registry: named spots, canonical storage, selection.
 //! - [`account_spots`] — account inventory, pull, and backup reconciliation.
+//! - [`recovery`] — whether a spot's data exists anywhere but this
+//!   disk, so deleting it can say what it costs.
 //! - [`identity`] — local profile management.
 //! - [`agents`] — claim-backed spot context and `AGENTS.md` projection data.
 //! - [`authoring`] — pure notation builders (concept, view, and the
@@ -48,6 +50,7 @@ pub mod identity;
 pub mod invite;
 pub mod migrate;
 pub mod output;
+pub mod recovery;
 pub mod remote;
 pub mod render;
 pub mod schema;

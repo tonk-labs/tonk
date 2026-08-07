@@ -74,17 +74,18 @@ mod when_creating_a_spot {
 
 mod when_removing_a_spot {
     use super::*;
+    use tonk_cli::spot::{Data, Deletion};
 
     #[dialog_common::test]
-    async fn it_unregisters_but_keeps_data_by_default() -> Result<()> {
+    async fn it_deletes_the_site_dir_and_the_entry() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let store = SpotStore::at(tmp.path().join("state"));
         let config = common::isolated_config(&tmp.path().canonicalize()?)?;
         let created = spot::create(&store, "garden", None, Some(tmp.path()), config).await?;
 
-        let outcome = spot::remove(&store, "garden", false)?;
-        assert!(!outcome.deleted);
-        assert!(created.site.exists(), "data kept");
+        let outcome = spot::remove(&store, "garden", Data::Delete)?;
+        assert_eq!(outcome.data, Deletion::Deleted);
+        assert!(!created.site.exists(), "data removed");
         // Entry and its binding are gone.
         assert!(store.load()?.spots.is_empty());
         assert!(store.load()?.bindings.is_empty());
@@ -92,15 +93,78 @@ mod when_removing_a_spot {
     }
 
     #[dialog_common::test]
-    async fn it_deletes_the_site_dir_with_delete() -> Result<()> {
+    async fn it_keeps_the_site_dir_with_keep() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let store = SpotStore::at(tmp.path().join("state"));
         let config = common::isolated_config(&tmp.path().canonicalize()?)?;
         let created = spot::create(&store, "garden", None, Some(tmp.path()), config).await?;
 
-        let outcome = spot::remove(&store, "garden", true)?;
-        assert!(outcome.deleted);
-        assert!(!created.site.exists(), "data removed");
+        let outcome = spot::remove(&store, "garden", Data::Keep)?;
+        assert_eq!(outcome.data, Deletion::Kept);
+        assert!(created.site.exists(), "data kept");
+        assert!(store.load()?.spots.is_empty());
+        Ok(())
+    }
+
+    /// The registry can outlive the directory it names — someone
+    /// deletes it by hand, or a sync tool does. Dropping the entry is
+    /// still right; the outcome just must not claim a deletion that
+    /// never happened.
+    #[dialog_common::test]
+    async fn it_reports_an_already_missing_site_rather_than_failing() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpotStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+        let created = spot::create(&store, "garden", None, Some(tmp.path()), config).await?;
+        std::fs::remove_dir_all(&created.site)?;
+
+        let outcome = spot::remove(&store, "garden", Data::Delete)?;
+        assert_eq!(outcome.data, Deletion::AlreadyGone);
+        assert!(store.load()?.spots.is_empty());
+        Ok(())
+    }
+
+    /// Data kept behind is data no entry names. `spot list` has to
+    /// report it, because nothing else will and it still holds the
+    /// canonical name against a later join or account pull.
+    #[dialog_common::test]
+    async fn it_leaves_kept_data_visible_as_an_orphan() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpotStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+        let created = spot::create(&store, "garden", None, Some(tmp.path()), config).await?;
+        assert!(
+            spot::listing(&store, None, None, None)?.orphans.is_empty(),
+            "a registered spot is not an orphan"
+        );
+
+        spot::remove(&store, "garden", Data::Keep)?;
+        let listing = spot::listing(&store, None, None, None)?;
+        assert_eq!(listing.orphans, vec![created.site.clone()]);
+
+        // Deleting the data clears the orphan too.
+        std::fs::remove_dir_all(&created.site)?;
+        assert!(spot::listing(&store, None, None, None)?.orphans.is_empty());
+        Ok(())
+    }
+
+    /// Re-creating the name after `Data::Keep` picks the old facts
+    /// back up. That is the useful behaviour, but it is silent, so
+    /// `create` reports which of the two happened.
+    #[dialog_common::test]
+    async fn it_reports_adoption_when_a_name_reclaims_kept_data() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpotStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+
+        let created =
+            spot::create(&store, "garden", None, Some(tmp.path()), config.clone()).await?;
+        assert!(!created.adopted, "a fresh site is not adopted");
+        spot::remove(&store, "garden", Data::Keep)?;
+
+        let again = spot::create(&store, "garden", None, Some(tmp.path()), config).await?;
+        assert!(again.adopted, "the kept data was adopted");
+        assert_eq!(again.did, created.did, "same repository, not a new one");
         Ok(())
     }
 }

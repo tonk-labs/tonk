@@ -939,3 +939,122 @@ mod when_a_binding_is_orphaned {
         assert!(stderr.contains("spot unbind"), "{stderr}");
     }
 }
+
+/// `tonk spot rm` is the only command that destroys facts, so its
+/// guard rails are worth exercising through the real binary: the
+/// prompt, the non-interactive refusal, and what each mode leaves on
+/// disk. `run` pipes stdin, so every invocation here is exactly the
+/// non-terminal case a script would hit.
+mod when_deleting_a_spot {
+    use super::*;
+
+    /// Create a spot at its canonical path, bound to `cwd`, and
+    /// return where its data landed.
+    fn canonical_spot(state_dir: &Path, cwd: &Path, name: &str) -> std::path::PathBuf {
+        let output = run_in(state_dir, cwd, &["spot", "new", name], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let site = state_dir.join("spots").join(name);
+        assert!(site.is_dir(), "site data at {}", site.display());
+        site
+    }
+
+    fn work_dir(state: &tempfile::TempDir) -> std::path::PathBuf {
+        let work = state.path().join("work");
+        std::fs::create_dir_all(&work).expect("mkdir work");
+        work.canonicalize().expect("canonicalize work")
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_to_delete_when_the_prompt_cannot_be_answered() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let work = work_dir(&state);
+        let site = canonical_spot(state.path(), &work, "garden");
+
+        let output = run_in(state.path(), &work, &["spot", "rm", "garden"], &[]);
+        assert!(!output.status.success(), "{}", stdout_of(&output));
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("stdin is not a terminal"), "{stderr}");
+        assert!(stderr.contains("--yes"), "{stderr}");
+        assert!(stderr.contains("--keep-data"), "{stderr}");
+
+        // Nothing moved: the spot is still registered and its data
+        // is untouched.
+        assert!(site.is_dir(), "data survives the refusal");
+        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
+        assert!(listed.contains("garden"), "{listed}");
+    }
+
+    #[dialog_common::test]
+    fn it_deletes_the_data_with_yes() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let work = work_dir(&state);
+        let site = canonical_spot(state.path(), &work, "garden");
+
+        let output = run_in(state.path(), &work, &["spot", "rm", "garden", "--yes"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(
+            stdout.contains("Deleted spot 'garden' and its data"),
+            "{stdout}"
+        );
+        assert!(!site.exists(), "data deleted");
+
+        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
+        assert!(listed.contains("no spots registered"), "{listed}");
+        assert!(!listed.contains("unregistered site data"), "{listed}");
+    }
+
+    /// The old default, now explicit. What matters is that the data
+    /// it leaves behind stops being invisible.
+    #[dialog_common::test]
+    fn it_reports_kept_data_as_unregistered_and_re_adoptable() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let work = work_dir(&state);
+        let site = canonical_spot(state.path(), &work, "garden");
+
+        let output = run_in(
+            state.path(),
+            &work,
+            &["spot", "rm", "garden", "--keep-data"],
+            &[],
+        );
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(stdout.contains("Unregistered spot 'garden'"), "{stdout}");
+        assert!(stdout.contains("data kept at"), "{stdout}");
+        assert!(site.is_dir(), "data kept");
+
+        let listed = stdout_of(&run(state.path(), &["spot", "list"], &[]));
+        assert!(listed.contains("unregistered site data"), "{listed}");
+        let canonical = site.canonicalize().expect("canonicalize site");
+        assert!(
+            listed.contains(&canonical.display().to_string()),
+            "{listed}"
+        );
+    }
+
+    /// Re-using the name after `--keep-data` silently picks the old
+    /// facts back up. Useful, but it must say so — otherwise a spot
+    /// that was just "removed" comes back full of data.
+    #[dialog_common::test]
+    fn it_says_when_a_new_spot_adopted_leftover_data() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let work = work_dir(&state);
+        canonical_spot(state.path(), &work, "garden");
+        let removed = run_in(
+            state.path(),
+            &work,
+            &["spot", "rm", "garden", "--keep-data"],
+            &[],
+        );
+        assert!(removed.status.success(), "{}", stderr_of(&removed));
+
+        let output = run_in(state.path(), &work, &["spot", "new", "garden"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(
+            stdout.contains("on the site data already at that path"),
+            "{stdout}"
+        );
+    }
+}
