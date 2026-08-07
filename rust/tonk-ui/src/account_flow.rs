@@ -181,6 +181,22 @@ mod tests {
         wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
         wait_for_text_containing(&driver, "#account-device-list", "Chrome on ").await?;
 
+        // These facts are served from the account repository, seeded on every
+        // sweep of a ready account. Reading twice proves the seed recognizes
+        // its own fact rather than restamping it with each pass.
+        let first = get_json(&driver, "/api/account/summary").await?;
+        let again = get_json(&driver, "/api/account/summary").await?;
+        let first = successful_body("account summary", &first);
+        let again = successful_body("account summary", &again);
+        assert!(
+            !first["passkey"].is_null(),
+            "signup records passkey facts: {first}"
+        );
+        assert_eq!(
+            first["passkey"], again["passkey"],
+            "a second sweep must not rewrite the recorded creation facts"
+        );
+
         driver.quit().await?;
         Ok(())
     }

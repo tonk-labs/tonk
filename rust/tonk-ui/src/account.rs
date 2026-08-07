@@ -198,7 +198,14 @@ fn set_text(host: &HtmlElement, selector: &str, value: &str) {
 }
 
 fn render_summary(host: &HtmlElement, summary: &tonk_worker_api::AccountSummary) {
-    set_text(host, "#account-email-value", &summary.email);
+    // The passkey facts come from the account repository, which answers even
+    // with the account service unreachable. The verified address has no home
+    // outside that service, so it alone goes unavailable.
+    set_text(
+        host,
+        "#account-email-value",
+        summary.email.as_deref().unwrap_or("Unavailable"),
+    );
     match &summary.passkey {
         Some(passkey) => {
             let date = js_sys::Date::new(&JsValue::from_f64(passkey.created_at as f64 * 1000.0))
@@ -1897,7 +1904,7 @@ mod tests {
         render_summary(
             &host,
             &tonk_worker_api::AccountSummary {
-                email: "person@example.com".into(),
+                email: Some("person@example.com".into()),
                 passkey: Some(tonk_worker_api::PasskeyMetadata {
                     created_at: 1_754_380_800,
                     created_on: "Chrome on macOS".into(),
@@ -1924,7 +1931,7 @@ mod tests {
         render_summary(
             &host,
             &tonk_worker_api::AccountSummary {
-                email: "legacy@example.com".into(),
+                email: Some("legacy@example.com".into()),
                 passkey: None,
             },
         );
@@ -1943,6 +1950,49 @@ mod tests {
                 .text_content()
                 .unwrap()
                 .contains("cannot reliably reconstruct")
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renders_passkey_facts_without_a_verified_email() {
+        let host = host();
+        render_summary(
+            &host,
+            &tonk_worker_api::AccountSummary {
+                email: None,
+                passkey: Some(tonk_worker_api::PasskeyMetadata {
+                    created_at: 1_754_380_800,
+                    created_on: "Chrome on macOS".into(),
+                }),
+            },
+        );
+
+        assert_eq!(
+            host.query_selector("#account-email-value")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Unavailable"),
+            "the verified address lives only at the account service"
+        );
+        assert_eq!(
+            host.query_selector("#account-passkey-device-value")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Chrome on macOS")
+        );
+        let created = host
+            .query_selector("#account-passkey-created-value")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .unwrap();
+        assert!(
+            !created.is_empty() && created != "Unavailable",
+            "the account repository carries the creation date without the provider"
         );
     }
 

@@ -288,7 +288,7 @@ pub async fn establish_repository(
     let email = super::account_devices::account_summary(&tonk)
         .await
         .ok()
-        .map(|summary| summary.email);
+        .and_then(|summary| summary.email);
     super::profiles::upsert_active_entry(&tonk, email).await;
 
     Ok(Json(status(&tonk).await?))
@@ -372,7 +372,7 @@ pub async fn link(
     let email = super::account_devices::account_summary(&state)
         .await
         .ok()
-        .map(|summary| summary.email);
+        .and_then(|summary| summary.email);
     super::profiles::upsert_active_entry(&state, email).await;
 
     Ok(Json(status(&state).await?))

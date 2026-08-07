@@ -8,8 +8,11 @@ use crate::PasskeyMetadata;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSummary {
-    /// Email address verified when the account was created.
-    pub email: String,
+    /// Email address verified when the account was created. Absent only when
+    /// the account service could not be reached: the address is service-owned
+    /// and is never mirrored into the account repository, because it is the
+    /// uniqueness key and the enumeration boundary.
+    pub email: Option<String>,
     /// Facts Tonk recorded during passkey creation, absent for legacy roots.
     pub passkey: Option<PasskeyMetadata>,
 }
@@ -174,7 +177,7 @@ mod tests {
     #[dialog_common::test]
     fn it_serializes_account_summary_passkey_facts_in_camel_case() {
         let json = serde_json::to_value(AccountSummary {
-            email: "person@example.com".into(),
+            email: Some("person@example.com".into()),
             passkey: Some(PasskeyMetadata {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".into(),
@@ -183,6 +186,20 @@ mod tests {
         .unwrap();
         assert_eq!(json["email"], "person@example.com");
         assert_eq!(json["passkey"]["createdAt"], 1_754_380_800_u64);
+        assert_eq!(json["passkey"]["createdOn"], "Chrome on macOS");
+    }
+
+    #[dialog_common::test]
+    fn it_serves_passkey_facts_without_a_reachable_account_service() {
+        let json = serde_json::to_value(AccountSummary {
+            email: None,
+            passkey: Some(PasskeyMetadata {
+                created_at: 1_754_380_800,
+                created_on: "Chrome on macOS".into(),
+            }),
+        })
+        .unwrap();
+        assert!(json["email"].is_null());
         assert_eq!(json["passkey"]["createdOn"], "Chrome on macOS");
     }
 

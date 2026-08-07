@@ -8,8 +8,10 @@ use dialog_ucan_core::{DelegationChain, promise::Promised};
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_common::log;
 use tonk_worker_api::{
-    AccountDevice, AccountSummary, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountDevice, AccountSummary, PasskeyMetadata, RevokeDeviceAcknowledgement,
+    RevokeDeviceRequest,
 };
 
 use super::AppState;
@@ -90,12 +92,45 @@ pub async fn list(
     Ok(Json(fetch_devices(&state, &link, &service).await?))
 }
 
-/// Fetch the provider's verified account facts for the linked profile.
+/// The account service's `POST /account/summary` response.
+///
+/// Deliberately its own type rather than [`AccountSummary`]: the provider hop
+/// and the local hop no longer carry the same shape, and decoding the provider
+/// straight into the local DTO is what would silently re-couple them.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSummary {
+    email: String,
+    passkey: Option<PasskeyMetadata>,
+}
+
+/// Prefer the portable account-space fact; fall back to what the provider
+/// recorded at account creation.
+///
+/// The provider row is not a legacy-only path. Every account still writes it at
+/// creation, and it answers three live cases: an account created before the
+/// space fact existed, a device that never held the passkey and so cannot seed
+/// it, and a fresh account read in the window between account creation and the
+/// first sweep that seeds the space.
+fn merge_summary(
+    email: Option<String>,
+    space: Option<PasskeyMetadata>,
+    provider: Option<PasskeyMetadata>,
+) -> AccountSummary {
+    AccountSummary {
+        email,
+        passkey: space.or(provider),
+    }
+}
+
+/// Verified account facts for the linked profile, preferring what the account
+/// repository carries over what the provider recorded.
 ///
 /// Shared by the HTTP route and the roster hooks that capture the
 /// account email best-effort at link time.
 pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary, TonkWorkerError> {
     let (link, service) = linked_service(state).await?;
+    let space = super::account_state::passkey_facts(state).await;
     let body = tonk_identity::request::build_device_invocation(
         state.profile.signer().signer().clone(),
         &link,
@@ -111,9 +146,23 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
         service.trim_end_matches('/')
     ))
     .map_err(|error| TonkWorkerError::Internal(format!("invalid account provider URL: {error}")))?;
-    let response = super::http::post_cbor(&endpoint, &body).await?;
-    serde_json::from_slice(&response.body)
-        .map_err(|error| TonkWorkerError::Internal(format!("parse account summary: {error}")))
+    match super::http::post_cbor(&endpoint, &body).await {
+        Ok(response) => {
+            let provider: ProviderSummary =
+                serde_json::from_slice(&response.body).map_err(|error| {
+                    TonkWorkerError::Internal(format!("parse account summary: {error}"))
+                })?;
+            Ok(merge_summary(Some(provider.email), space, provider.passkey))
+        }
+        // The account repository already answered the passkey question, so an
+        // unreachable provider costs the email and nothing else. With no space
+        // fact there is nothing to serve, and the caller keeps the real error.
+        Err(error) if space.is_some() => {
+            log!("account summary falling back to account-space facts: {error}");
+            Ok(merge_summary(None, space, None))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Return verified account facts authorized by this profile's active grant.
@@ -235,6 +284,44 @@ mod tests {
             summary(State(state)).await,
             Err(TonkWorkerError::NotFound(_))
         ));
+    }
+
+    #[dialog_common::test]
+    fn it_prefers_the_account_space_passkey_fact_over_the_provider_row() {
+        let space = PasskeyMetadata {
+            created_at: 1_754_380_800,
+            created_on: "Chrome on macOS".to_string(),
+        };
+        let provider = PasskeyMetadata {
+            created_at: 1_600_000_000,
+            created_on: "Safari on iOS".to_string(),
+        };
+
+        let merged = merge_summary(
+            Some("person@example.com".to_string()),
+            Some(space.clone()),
+            Some(provider.clone()),
+        );
+        assert_eq!(merged.passkey, Some(space.clone()));
+
+        let fallback = merge_summary(
+            Some("person@example.com".to_string()),
+            None,
+            Some(provider.clone()),
+        );
+        assert_eq!(
+            fallback.passkey,
+            Some(provider),
+            "an account created before the space fact existed still has the provider row"
+        );
+
+        let neither = merge_summary(Some("person@example.com".to_string()), None, None);
+        assert_eq!(neither.passkey, None);
+
+        // What an unreachable provider leaves: the portable fact, no address.
+        let offline = merge_summary(None, Some(space), None);
+        assert_eq!(offline.email, None);
+        assert_eq!(offline.passkey.unwrap().created_on, "Chrome on macOS");
     }
 
     #[dialog_common::test]
