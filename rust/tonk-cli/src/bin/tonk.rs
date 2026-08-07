@@ -643,18 +643,44 @@ enum SpotCommand {
     #[command(after_help = "Examples:\n  tonk spot list")]
     List,
 
-    /// Remove a spot from the registry (data stays unless --delete)
-    #[command(after_help = "Examples:\n  tonk spot rm garden\n  tonk spot rm garden --delete")]
+    /// Delete a spot and its data from disk
+    ///
+    /// This destroys the spot's facts, not just its registration.
+    /// It asks for confirmation first, and says whether the data is
+    /// backed up to your account (so you can pull it again) or
+    /// local-only (so it is gone for good).
+    ///
+    /// To stop a directory from resolving to a spot without touching
+    /// any data, use `tonk spot unbind`. To drop the registration but
+    /// keep the data, use --keep-data.
+    #[command(
+        after_help = "Examples:\n  tonk spot rm garden\n  tonk spot rm garden --yes\n  tonk spot rm garden --keep-data"
+    )]
     Rm {
-        /// Spot name to unregister.
+        /// Spot name to delete.
         #[arg(value_name = "NAME")]
         name: String,
-        /// Also delete the site directory from disk.
-        #[arg(long)]
+        /// Unregister the spot but leave its data on disk.
+        ///
+        /// The data then belongs to no spot: `tonk spot list` reports
+        /// it, `tonk spot new <name> --site <path>` adopts it back,
+        /// and it keeps its canonical name reserved against `tonk
+        /// join` and `tonk account spots pull`.
+        #[arg(long, conflicts_with = "delete")]
+        keep_data: bool,
+        /// Delete without asking for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Accepted for compatibility — deleting the data is now the
+        /// default, so this flag does nothing.
+        #[arg(long, hide = true)]
         delete: bool,
     },
 
     /// Unbind a directory from its spot (see `tonk use`)
+    ///
+    /// Only unlinks the directory: the spot stays registered and no
+    /// data is touched. `tonk spot rm` is the one that deletes.
     ///
     /// Matches exactly: run from the directory that was bound,
     /// not a subdirectory of it.
@@ -1462,7 +1488,14 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             .await
             {
                 Ok(outcome) => {
-                    println!("Registered spot '{}'", outcome.name);
+                    if outcome.adopted {
+                        println!(
+                            "Registered spot '{}' on the site data already at that path",
+                            outcome.name
+                        );
+                    } else {
+                        println!("Registered spot '{}'", outcome.name);
+                    }
                     println!("site: {}", outcome.site.display());
                     println!("DID: {}", outcome.did);
                     println!("binding: {}", cwd.display());
@@ -1487,6 +1520,7 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                 Ok(listing) => {
                     if listing.rows.is_empty() {
                         println!("(no spots registered; create one with `tonk spot new <name>`)");
+                        print_orphaned_sites(&listing.orphans);
                         return ExitCode::Success;
                     }
                     let active = listing.active.as_ref().map(|c| c.name.as_str());
@@ -1512,26 +1546,18 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
                             println!("  {directory}\t{name}", directory = directory.display());
                         }
                     }
+                    print_orphaned_sites(&listing.orphans);
                     ExitCode::Success
                 }
                 Err(err) => print_failure(err),
             }
         }
-        SpotCommand::Rm { name, delete } => match tonk_cli::spot::remove(&store, &name, delete) {
-            Ok(outcome) => {
-                println!("Removed spot '{}' from the registry", outcome.name);
-                if outcome.deleted {
-                    println!("site deleted: {}", outcome.site.display());
-                } else {
-                    println!("site kept at {}", outcome.site.display());
-                }
-                for directory in &outcome.unbound {
-                    println!("unbound {}", directory.display());
-                }
-                ExitCode::Success
-            }
-            Err(err) => print_failure(err),
-        },
+        SpotCommand::Rm {
+            name,
+            keep_data,
+            yes,
+            delete: _,
+        } => spot_rm(&store, &name, keep_data, yes).await,
         SpotCommand::Unbind { path } => {
             let directory = match path.or_else(working_directory) {
                 Some(directory) => directory,
@@ -1550,6 +1576,150 @@ async fn spot_op(command: SpotCommand, flag: Option<&str>) -> ExitCode {
             }
         }
     }
+}
+
+/// Report canonical site data that no registered spot names.
+///
+/// Silent when there is none, so the common listing stays clean. When
+/// there is some it belongs on screen: it is otherwise entirely
+/// invisible, and it is the thing that will refuse a later `tonk
+/// join` or `tonk account spots pull` on the same name.
+fn print_orphaned_sites(orphans: &[PathBuf]) {
+    if orphans.is_empty() {
+        return;
+    }
+    println!();
+    println!("unregistered site data (belongs to no spot):");
+    for path in orphans {
+        println!("  {}", path.display());
+    }
+    println!("  adopt it with `tonk spot new <name> --site <path>`, or delete the directory");
+}
+
+/// `tonk spot rm` — delete a spot's data, or (with --keep-data) just
+/// its registration.
+///
+/// Deleting is the default because the alternative is worse: an
+/// unregistered site directory is invisible to every command that
+/// reads the registry, yet still holds the canonical name against
+/// `tonk join --name` and `tonk account spots pull --name`. Making
+/// that the accident-shaped path instead of the deliberate one is
+/// what this command is for.
+async fn spot_rm(
+    store: &tonk_cli::spot::SpotStore,
+    name: &str,
+    keep_data: bool,
+    yes: bool,
+) -> ExitCode {
+    use tonk_cli::spot::{Data, Deletion};
+
+    let registry = match store.load() {
+        Ok(registry) => registry,
+        Err(err) => return print_failure(err),
+    };
+    // Resolved up front so the confirmation can name the exact
+    // directory it is about to destroy, and so an unknown name fails
+    // before anything is inspected or printed.
+    let Some(entry) = registry.spots.get(name) else {
+        return print_failure(tonk_cli::spot::SpotError::Unknown {
+            name: name.to_owned(),
+            available: registry.spots.keys().cloned().collect(),
+            binding: None,
+        });
+    };
+    let site = entry.site.clone();
+
+    if keep_data {
+        return match tonk_cli::spot::remove(store, name, Data::Keep) {
+            Ok(outcome) => {
+                println!("Unregistered spot '{}'", outcome.name);
+                println!("data kept at {}", outcome.site.display());
+                println!(
+                    "  it belongs to no spot now: re-adopt it with \
+                     `tonk spot new <name> --site {}`,",
+                    outcome.site.display()
+                );
+                println!("  or delete it with `tonk spot rm <name>` after re-adopting");
+                for directory in &outcome.unbound {
+                    println!("unbound {}", directory.display());
+                }
+                ExitCode::Success
+            }
+            Err(err) => print_failure(err),
+        };
+    }
+
+    if !yes {
+        // Checked before anything is inspected or printed: there is
+        // no one to read a warning addressed to a pipe, and
+        // inspecting the site to write it means opening a repository
+        // this command was never going to be allowed to delete.
+        if !std::io::stdin().is_terminal() {
+            return print_error(format!(
+                "refusing to delete '{name}': stdin is not a terminal, so the \
+                 confirmation cannot be answered. Pass --yes to delete without \
+                 confirming, or --keep-data to unregister without deleting."
+            ));
+        }
+        let recovery = tonk_cli::recovery::inspect(&site, site::default_config()).await;
+        println!();
+        println!("This permanently deletes the spot's data from disk:");
+        println!("  {}", site.display());
+        println!();
+        println!("{}", recovery.consequence(name));
+        if let Some(hint) = recovery.restore_hint() {
+            println!("  {hint}");
+        }
+        println!();
+        if !confirm_by_name(name) {
+            // Non-zero: a caller chaining off `tonk spot rm` must not
+            // read "you declined" as "it is gone".
+            println!("Aborted; nothing was deleted.");
+            return ExitCode::IoError;
+        }
+    }
+
+    match tonk_cli::spot::remove(store, name, Data::Delete) {
+        Ok(outcome) => {
+            match outcome.data {
+                Deletion::Deleted => {
+                    println!("Deleted spot '{}' and its data", outcome.name);
+                    println!("removed {}", outcome.site.display());
+                }
+                // Nothing was destroyed, so don't say it was.
+                Deletion::AlreadyGone => {
+                    println!("Unregistered spot '{}'", outcome.name);
+                    println!("its data was already gone from {}", outcome.site.display());
+                }
+                Deletion::Kept => unreachable!("Data::Delete never keeps the site"),
+            }
+            for directory in &outcome.unbound {
+                println!("unbound {}", directory.display());
+            }
+            ExitCode::Success
+        }
+        Err(err) => print_failure(err),
+    }
+}
+
+/// Require the operator to type `name` back, returning whether they
+/// did. Callers check for a terminal first.
+///
+/// Typing the name rather than `y` is deliberate: this is the one
+/// tonk command that destroys facts, and the cost of a mistaken
+/// keystroke is unbounded. Anything else — a wrong answer, a closed
+/// stdin, a write that fails — reads as "no", the only safe way to
+/// resolve a confirmation nobody gave.
+fn confirm_by_name(name: &str) -> bool {
+    print!("Type '{name}' to confirm: ");
+    if std::io::stdout().flush().is_err() {
+        return false;
+    }
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    answer.trim() == name
 }
 
 async fn eval(args: EvalArgs, spot: Option<&str>) -> ExitCode {

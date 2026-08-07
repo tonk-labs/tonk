@@ -165,7 +165,11 @@ pub enum SpotError {
     },
     /// `spot new` against a name that already exists. Re-pointing
     /// is an explicit `rm` + `new`, never an overwrite.
-    #[error("spot '{0}' already exists; run `tonk spot rm {0}` first to re-point it")]
+    #[error(
+        "spot '{0}' already exists; to re-point the name run \
+         `tonk spot rm {0} --keep-data` first, or `tonk spot rm {0}` \
+         to delete its data as well"
+    )]
     Exists(String),
     /// The registry file exists but doesn't parse. Deliberately
     /// not self-healing: silently recreating it would orphan every
@@ -270,6 +274,46 @@ impl SpotStore {
     /// Purely a path computation — nothing is created.
     pub fn canonical_site(&self, name: &str) -> PathBuf {
         self.dir.join(SPOTS_DIRNAME).join(name)
+    }
+
+    /// The root holding canonical site directories.
+    pub fn spots_root(&self) -> PathBuf {
+        self.dir.join(SPOTS_DIRNAME)
+    }
+
+    /// Canonical site directories that no registry entry names.
+    ///
+    /// These are left by `tonk spot rm --keep-data` (and by a
+    /// hand-edited `spots.json`). They are invisible to every other
+    /// command yet still occupy their names: `tonk join --name x` and
+    /// `tonk account spots pull --name x` both refuse to write over
+    /// one. Listing them is what makes that state recoverable instead
+    /// of merely confusing.
+    ///
+    /// A store whose `spots/` directory cannot be read has no
+    /// orphans to report — this is a diagnostic, never a reason to
+    /// fail a command that was otherwise fine.
+    pub fn orphaned_sites(&self, registry: &Registry) -> Vec<PathBuf> {
+        let registered: Vec<PathBuf> = registry
+            .spots
+            .values()
+            .map(|entry| canonical(&entry.site))
+            .collect();
+        let Ok(entries) = std::fs::read_dir(self.spots_root()) else {
+            return Vec::new();
+        };
+        // Canonicalized on the way out, not just for the comparison:
+        // these paths get printed as `--site` arguments, and a path
+        // that doesn't compare equal to the one `spot new` would
+        // register is a path that re-creates this same confusion.
+        let mut orphans: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| canonical(&entry.path()))
+            .filter(|path| !registered.contains(path))
+            .collect();
+        orphans.sort();
+        orphans
     }
 
     /// Load the registry. A missing file is an empty registry (the
@@ -424,6 +468,43 @@ pub struct CreateOutcome {
     pub site: PathBuf,
     /// The site repository's DID.
     pub did: String,
+    /// Whether site data was already at the target and got adopted
+    /// rather than created.
+    ///
+    /// Adoption is the point of `--site`, but it also happens
+    /// silently at the canonical path after `tonk spot rm
+    /// --keep-data` — the same name picks its old data back up. That
+    /// is usually what someone wants and never what they expect, so
+    /// the caller says which one happened.
+    pub adopted: bool,
+}
+
+/// What [`remove`] should do with the spot's site data.
+///
+/// Explicit rather than a `bool` because the two arms are not
+/// variations on one operation: deleting is irreversible and
+/// keeping leaves data behind that no registry entry names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Data {
+    /// Delete the site directory from disk.
+    Delete,
+    /// Leave the site directory where it is. The data then belongs
+    /// to no registered spot — see [`SpotStore::orphaned_sites`].
+    Keep,
+}
+
+/// What happened to the site directory during [`remove`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deletion {
+    /// The directory was deleted.
+    Deleted,
+    /// [`Data::Delete`] was asked for but nothing was there — the
+    /// registry named a directory that had already been removed by
+    /// hand. Distinguished from `Deleted` so output can say the
+    /// data was already gone rather than claim to have destroyed it.
+    AlreadyGone,
+    /// [`Data::Keep`]: the directory is still on disk.
+    Kept,
 }
 
 /// Outcome of [`remove`].
@@ -431,10 +512,11 @@ pub struct CreateOutcome {
 pub struct RemoveOutcome {
     /// The removed registry name.
     pub name: String,
-    /// Where the site lived (still lives, unless `deleted`).
+    /// Where the site lived (still lives, when `data` is
+    /// [`Deletion::Kept`]).
     pub site: PathBuf,
-    /// Whether the site directory was deleted from disk.
-    pub deleted: bool,
+    /// What became of the site directory.
+    pub data: Deletion,
     /// Directories that were bound to this spot and are no longer
     /// bound to anything.
     pub unbound: Vec<PathBuf>,
@@ -450,6 +532,9 @@ pub struct Listing {
     pub bindings: Vec<(PathBuf, String)>,
     /// The spot a bare command would hit right now, with source.
     pub active: Option<Resolved>,
+    /// Site data under `spots/` that no entry names. See
+    /// [`SpotStore::orphaned_sites`].
+    pub orphans: Vec<PathBuf>,
 }
 
 /// Register an already-mounted canonical site without binding any directory.
@@ -510,6 +595,9 @@ pub async fn create(
     let target = site_override
         .map(Path::to_path_buf)
         .unwrap_or_else(|| store.canonical_site(name));
+    // Asked before init, which is idempotent and so cannot tell us
+    // afterwards whether it created or adopted.
+    let adopted = crate::site::has_site_data(&target);
     let site = crate::site::TonkSite::init_at_with(&target, config)
         .await
         .map_err(|e| SpotError::Init(format!("{e:#}")))?;
@@ -518,6 +606,7 @@ pub async fn create(
         name: name.to_owned(),
         site: site.root.clone(),
         did: site.repository.did().to_string(),
+        adopted,
     };
     registry.spots.insert(
         name.to_owned(),
@@ -622,13 +711,25 @@ pub fn listing(
         rows,
         bindings,
         active: store.resolve(flag, env, cwd).ok(),
+        orphans: store.orphaned_sites(&registry),
     })
 }
 
-/// Remove `name` from the registry. Site data stays on disk unless
-/// `delete` — the registry is the authority on names, not a lifecycle
-/// manager for storage it didn't necessarily create.
-pub fn remove(store: &SpotStore, name: &str, delete: bool) -> Result<RemoveOutcome, SpotError> {
+/// Remove `name` from the registry, deleting its site data or
+/// leaving it behind per `data`.
+///
+/// The data is deleted *before* the registry is saved. The reverse
+/// order looks more cautious and is worse: a delete that fails after
+/// the entry is already gone leaves data on disk that nothing names,
+/// which is precisely the state that later blocks `tonk join` and
+/// `tonk account spots pull` on the same name. Deleting first means a
+/// failure leaves the spot fully registered and the command safe to
+/// retry.
+///
+/// The residual risk runs the other way — data deleted, registry save
+/// fails — and is benign: the entry points at an empty path, `tonk
+/// spot list` shows it, and re-running `rm` clears it.
+pub fn remove(store: &SpotStore, name: &str, data: Data) -> Result<RemoveOutcome, SpotError> {
     let mut registry = store.load()?;
     let Some(entry) = registry.spots.remove(name) else {
         return Err(SpotError::Unknown {
@@ -649,22 +750,29 @@ pub fn remove(store: &SpotStore, name: &str, delete: bool) -> Result<RemoveOutco
     for directory in &unbound {
         registry.bindings.remove(directory);
     }
-    store.save(&registry)?;
-    let deleted = if delete {
-        std::fs::remove_dir_all(&entry.site).map_err(|e| {
-            SpotError::Io(format!(
-                "entry removed, but deleting {} failed: {e}",
-                entry.site.display()
-            ))
-        })?;
-        true
-    } else {
-        false
+
+    let deletion = match data {
+        Data::Keep => Deletion::Kept,
+        Data::Delete => match std::fs::remove_dir_all(&entry.site) {
+            Ok(()) => Deletion::Deleted,
+            // The registry outlived the directory. Nothing to
+            // destroy and nothing to warn about beyond saying so:
+            // dropping the entry is still the right outcome.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Deletion::AlreadyGone,
+            Err(e) => {
+                return Err(SpotError::Io(format!(
+                    "could not delete {}: {e}; spot '{name}' is still registered",
+                    entry.site.display()
+                )));
+            }
+        },
     };
+    store.save(&registry)?;
+
     Ok(RemoveOutcome {
         name: name.to_owned(),
         site: entry.site,
-        deleted,
+        data: deletion,
         unbound,
     })
 }
@@ -1065,12 +1173,62 @@ mod tests {
             bind(&store, "a", Path::new("/proj")).expect("bind a");
             bind(&store, "b", Path::new("/other")).expect("bind b");
 
-            let outcome = remove(&store, "a", false).expect("remove");
+            let outcome = remove(&store, "a", Data::Keep).expect("remove");
             assert_eq!(outcome.unbound, vec![PathBuf::from("/proj")]);
 
             let bindings = store.load().expect("load").bindings;
             assert_eq!(bindings.get(Path::new("/other")), Some(&"b".to_owned()));
             assert!(!bindings.contains_key(Path::new("/proj")));
+        }
+    }
+
+    mod removal {
+        use super::*;
+
+        /// A failed delete must leave the spot registered. The
+        /// alternative — name unregistered, data still on disk — is
+        /// the exact state this command exists to prevent, and
+        /// reaching it by accident is worse than failing loudly.
+        #[dialog_common::test]
+        fn it_keeps_the_entry_registered_when_the_delete_fails() {
+            let (tmp, store) = store();
+            // A regular file where a site directory should be:
+            // `remove_dir_all` refuses it, and not with NotFound.
+            let site = tmp.path().join("not-a-directory");
+            std::fs::write(&site, b"").expect("write");
+            store
+                .save(&registry_with(
+                    &[("a", site.to_str().expect("utf-8 path"))],
+                    None,
+                ))
+                .expect("save");
+
+            let err = remove(&store, "a", Data::Delete).expect_err("delete fails");
+            assert!(err.to_string().contains("still registered"), "{err}");
+            assert!(
+                store.load().expect("load").spots.contains_key("a"),
+                "the entry survives a failed delete"
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_counts_only_unregistered_site_directories_as_orphans() {
+            let (tmp, store) = store();
+            let live = store.canonical_site("live");
+            let kept = store.canonical_site("kept");
+            std::fs::create_dir_all(&live).expect("live");
+            std::fs::create_dir_all(&kept).expect("kept");
+            let registry = registry_with(&[("live", live.to_str().expect("utf-8 path"))], None);
+            store.save(&registry).expect("save");
+
+            assert_eq!(
+                store.orphaned_sites(&registry),
+                vec![kept.canonicalize().expect("canonicalize kept")]
+            );
+            // A store whose `spots/` root does not exist yet has
+            // nothing to report rather than something to fail on.
+            let empty = SpotStore::at(tmp.path().join("nowhere"));
+            assert!(empty.orphaned_sites(&registry).is_empty());
         }
     }
 
