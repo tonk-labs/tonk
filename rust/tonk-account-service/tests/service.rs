@@ -1213,3 +1213,127 @@ async fn it_drives_the_full_ceremony_over_http() {
         .unwrap();
     assert_eq!(rejected.status(), 403);
 }
+
+/// The bootstrap a second passkey depends on: a device that has only just
+/// derived its credential key, holding no delegation and no account
+/// identity, asks for whatever has been addressed to that key and gets a
+/// usable chain back.
+#[dialog_common::test]
+async fn it_publishes_and_claims_an_enrollment_chain_over_http() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+
+    client
+        .post(format!("{base}/codes"))
+        .json(&serde_json::json!({ "email": "peer@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    let code = {
+        let sent = server.emails.0.lock().unwrap();
+        sent.iter()
+            .find(|(email, _)| email == "peer@example.com")
+            .map(|(_, code): &(String, String)| code.clone())
+            .expect("a code was sent")
+    };
+    let created = client
+        .post(format!("{base}/accounts"))
+        .header("Content-Type", "application/cbor")
+        .body(account_creation("peer@example.com", &code).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+
+    // The account root enrols a second passkey's credential key. Under
+    // fan-out this hop would be signed by the recovery anchor; for a v1
+    // account the subject signs it directly, and the store cannot tell.
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    let credential = tonk_identity::derive::derive_root_signer(&[21u8; 32])
+        .await
+        .unwrap();
+    let enrollment = tonk_identity::credential::mint_enrollment(root, &credential.did())
+        .await
+        .unwrap();
+    let bytes = enrollment.to_bytes().unwrap();
+
+    let published = client
+        .post(format!("{base}/enrollments"))
+        .header("Content-Type", "application/cbor")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(published.status(), 202);
+    let published: serde_json::Value = published.json().await.unwrap();
+    assert_eq!(published["credential"], credential.did().to_string());
+    assert_eq!(published["stored"], true);
+
+    // Republishing the same bytes is idempotent rather than a second entry.
+    let again = client
+        .post(format!("{base}/enrollments"))
+        .header("Content-Type", "application/cbor")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        again.json::<serde_json::Value>().await.unwrap()["stored"],
+        false
+    );
+
+    // The claim: everything this device brings is its own DID.
+    let claimed = client
+        .get(format!("{base}/enrollments/{}", credential.did()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(claimed.status(), 200);
+    let claimed: serde_json::Value = claimed.json().await.unwrap();
+    let chains = claimed["chains"].as_array().unwrap();
+    assert_eq!(chains.len(), 1);
+    assert_eq!(chains[0].as_str().unwrap(), hex::encode(&bytes));
+
+    // A key nobody enrolled gets nothing, not an error.
+    let stranger = Ed25519Signer::import(&[22u8; 32]).await.unwrap();
+    let empty = client
+        .get(format!("{base}/enrollments/{}", stranger.did()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), 200);
+    assert!(
+        empty.json::<serde_json::Value>().await.unwrap()["chains"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    server.stop().await;
+}
+
+/// The bucket is not free storage: a chain that is perfectly valid but runs
+/// from an account this service has never heard of is refused.
+#[dialog_common::test]
+async fn it_refuses_an_enrollment_for_an_account_it_does_not_host() {
+    let server = AccountServer::start().await;
+    let stranger_root = Ed25519Signer::import(&[23u8; 32]).await.unwrap();
+    let credential = Ed25519Signer::import(&[24u8; 32]).await.unwrap();
+    let enrollment = tonk_identity::credential::mint_enrollment(stranger_root, &credential.did())
+        .await
+        .unwrap();
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/enrollments", server.endpoint))
+        .header("Content-Type", "application/cbor")
+        .body(enrollment.to_bytes().unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 404);
+    server.stop().await;
+}

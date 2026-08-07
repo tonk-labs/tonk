@@ -13,6 +13,8 @@ pub mod codes;
 #[cfg(target_arch = "wasm32")]
 pub mod devices;
 #[cfg(target_arch = "wasm32")]
+pub mod enrollments;
+#[cfg(target_arch = "wasm32")]
 pub mod links;
 #[cfg(target_arch = "wasm32")]
 pub mod repository;
@@ -24,7 +26,7 @@ pub mod revocations;
 pub fn with_cors_headers(response: worker::Response) -> worker::Response {
     let headers = response.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
-    let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    let _ = headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
     let _ = headers.set(
         "Access-Control-Expose-Headers",
@@ -109,6 +111,21 @@ pub fn build_chains(
         crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
     })?;
     Ok(crate::chains::r2::R2ChainStore::new(bucket))
+}
+
+/// Build the enrollment store from the `CHAINS` binding.
+///
+/// Deliberately the same bucket the chain backup uses: enrollment objects
+/// live under their own prefix, so this needs no new deployment binding.
+#[cfg(target_arch = "wasm32")]
+pub fn build_enrollments(
+    ctx: &worker::RouteContext<()>,
+) -> std::result::Result<crate::enrollments::r2::R2EnrollmentStore, crate::error::ServiceError> {
+    let bucket = ctx.bucket("CHAINS").map_err(|err| {
+        worker::console_error!("missing R2 binding: {err}");
+        crate::error::ServiceError::new(crate::error::ErrorCode::InternalError, "internal error")
+    })?;
+    Ok(crate::enrollments::r2::R2EnrollmentStore::new(bucket))
 }
 
 /// Build the immutable revocation writer from the `REVOCATIONS` binding.

@@ -38,9 +38,13 @@ use crate::core::devices::{
 };
 use crate::core::links::{activate_link, complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
+use crate::enrollments::{
+    EnrollmentStore, MemoryEnrollmentStore, VerifyError as EnrollmentVerifyError,
+    verify as verify_enrollment,
+};
 use crate::error::{ErrorCode, ServiceError};
 use crate::handlers::ceremony_error;
-use crate::revocations::{MemoryRevocationStore, PublishError, publish};
+use crate::revocations::{MemoryRevocationStore, PublishError, PutOutcome, publish};
 use crate::store::Store;
 use crate::store::sqlite::SqliteStore;
 use tonk_identity::revocation::VerifyError;
@@ -50,6 +54,7 @@ struct Backends {
     store: SqliteStore,
     chains: MemoryChainStore,
     revocations: MemoryRevocationStore,
+    enrollments: MemoryEnrollmentStore,
     emails: Arc<CapturedEmail>,
 }
 
@@ -76,6 +81,7 @@ impl AccountServer {
             store: SqliteStore::in_memory().expect("in-memory sqlite store"),
             chains: MemoryChainStore::default(),
             revocations: MemoryRevocationStore::default(),
+            enrollments: MemoryEnrollmentStore::default(),
             emails: emails.clone(),
         });
 
@@ -136,7 +142,9 @@ async fn handle_request(
         return Ok(cors_response(no_content()));
     }
 
-    let response = match (req.method().clone(), req.uri().path()) {
+    // Owned so an arm that binds the path can still take `req` by value.
+    let path = req.uri().path().to_string();
+    let response = match (req.method().clone(), path.as_str()) {
         (Method::GET, "/") => return Ok(info_response()),
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
@@ -159,6 +167,10 @@ async fn handle_request(
         (Method::POST, "/links/complete") => links_complete_route(req, &backends).await,
         (Method::POST, "/links/activate") => links_activate_route(req, &backends).await,
         (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
+        (Method::POST, "/enrollments") => enrollments_publish_route(req, &backends).await,
+        (Method::GET, claim) if claim.starts_with("/enrollments/") => {
+            enrollments_claim_route(&claim["/enrollments/".len()..], &backends).await
+        }
         (Method::POST, "/chains/put") => chains_put_route(req, &backends).await,
         (Method::POST, "/chains/list") => chains_list_route(req, &backends).await,
         (Method::POST, "/chains/spots") => chains_spots_route(req, &backends).await,
@@ -568,6 +580,104 @@ async fn revocations_route(
             "targetCid": outcome.verified.target_cid,
             "artifactCid": outcome.verified.artifact_cid,
             "stored": outcome.stored,
+        }),
+    ))
+}
+
+/// `POST /enrollments` → publish a chain addressed to a credential.
+async fn enrollments_publish_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    const MAX_BYTES: usize = 8 * 1024;
+    let content_type = req
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if content_type.split(';').next() != Some("application/cbor") {
+        return Err(ServiceError::new(
+            ErrorCode::InvalidArgument,
+            "Content-Type must be application/cbor",
+        ));
+    }
+    let bytes = body_bytes(req).await?;
+    if bytes.len() > MAX_BYTES {
+        return Err(ServiceError::new(
+            ErrorCode::InvalidArgument,
+            "enrollment chain exceeds 8 KiB",
+        ));
+    }
+
+    let verified = verify_enrollment(&bytes)
+        .await
+        .map_err(|error| match error {
+            EnrollmentVerifyError::Invalid(message) => {
+                ServiceError::new(ErrorCode::InvalidArgument, message)
+            }
+            EnrollmentVerifyError::Unauthorized(message) => {
+                ServiceError::new(ErrorCode::Forbidden, message)
+            }
+        })?;
+    if backends
+        .store
+        .account_by_root(verified.account_root.as_ref())
+        .await
+        .map_err(|error| {
+            eprintln!("enrollment account lookup failed: {error:?}");
+            ServiceError::new(ErrorCode::InternalError, "internal error")
+        })?
+        .is_none()
+    {
+        return Err(ServiceError::new(
+            ErrorCode::NotFound,
+            "this service does not host the account the chain runs from",
+        ));
+    }
+    let stored = backends
+        .enrollments
+        .put(&verified, &bytes)
+        .await
+        .map_err(|error| {
+            eprintln!("enrollment publication failed: {error}");
+            ServiceError::new(ErrorCode::InternalError, "internal error")
+        })?
+        == PutOutcome::Stored;
+
+    Ok(json_response(
+        StatusCode::ACCEPTED,
+        &serde_json::json!({
+            "credential": verified.credential.to_string(),
+            "accountRoot": verified.account_root.to_string(),
+            "key": verified.key,
+            "stored": stored,
+        }),
+    ))
+}
+
+/// `GET /enrollments/{credential}` → every chain addressed to that key.
+async fn enrollments_claim_route(
+    credential: &str,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    let credential: dialog_varsig::Did = credential.parse().map_err(|error| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid credential DID: {error}"),
+        )
+    })?;
+    let chains = backends
+        .enrollments
+        .claim(&credential)
+        .await
+        .map_err(|error| {
+            eprintln!("enrollment claim failed: {error}");
+            ServiceError::new(ErrorCode::InternalError, "internal error")
+        })?;
+    Ok(json_response(
+        StatusCode::OK,
+        &serde_json::json!({
+            "chains": chains.iter().map(hex::encode).collect::<Vec<_>>(),
         }),
     ))
 }

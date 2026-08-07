@@ -14,6 +14,7 @@ pub mod auth;
 pub mod chains;
 pub mod core;
 pub mod email;
+pub mod enrollments;
 pub mod error;
 mod handlers;
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
@@ -67,6 +68,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/links/activate", handlers::links::handle_options)
         .post_async("/links/consume", handlers::links::handle_consume)
         .options_async("/links/consume", handlers::links::handle_options)
+        .post_async("/enrollments", handlers::enrollments::handle_publish)
+        .options_async("/enrollments", handlers::enrollments::handle_options)
+        .get_async(
+            "/enrollments/:credential",
+            handlers::enrollments::handle_claim,
+        )
+        .options_async(
+            "/enrollments/:credential",
+            handlers::enrollments::handle_options,
+        )
         .post_async("/chains/put", handlers::chains::handle_put)
         .options_async("/chains/put", handlers::chains::handle_options)
         .post_async("/chains/list", handlers::chains::handle_list)

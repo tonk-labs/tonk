@@ -164,9 +164,17 @@ Landed on `feat/passkey-fanout`:
   registry now records the device's own hop rather than the chain root —
   identical for a one-hop grant, so no migration.
 
-Next is the chain store (step 3), which is what closes the bootstrap gap: a
-device holding only the second passkey currently has no way to obtain
-`root → C2`.
+- **Step 3.** `tonk-account-service/src/enrollments.rs` plus its R2 adapter
+  and handlers: `POST /enrollments` publishes a chain, `GET
+  /enrollments/{credential_did}` claims everything addressed to a key. Both
+  unauthenticated, for the reason `/revocations` is. Objects live under an
+  `enrollments/` prefix in the existing `CHAINS` bucket, so there is no new
+  binding and no wrangler change in any environment. Publication checks the
+  chain's shape and signatures and that this service hosts the account it
+  runs from — the latter is anti-abuse, not authority.
+
+Next is step 4: email-gated `recovery → Cn` issuance. The transport it needs
+now exists.
 
 Two decisions the implementation surfaced, both left open deliberately:
 
