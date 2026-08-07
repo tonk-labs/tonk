@@ -34,6 +34,7 @@ serde_json = { workspace = true }
 getrandom = { workspace = true }
 getrandom_0_2 = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
 
 # Native helpers server (optional, "helpers" feature)
 anyhow = { workspace = true, optional = true }

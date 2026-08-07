@@ -71,7 +71,26 @@ pub trait EnrollmentStore {
 
     /// Every chain addressed to `credential`, at most [`MAX_CLAIMED`].
     async fn claim(&self, credential: &Did) -> Result<Vec<Vec<u8>>, EnrollmentStoreError>;
+
+    /// File `bytes` as the proof this service holds for `account_root`.
+    ///
+    /// A chain addressed to the service's own anchor is also indexed by the
+    /// account it comes from, because the anchor is the audience for every
+    /// account at once: claiming by audience would return the world. Last
+    /// write wins, which is harmless — after genesis the root is gone, so
+    /// there is only ever one such chain to write.
+    async fn put_anchor(
+        &self,
+        account_root: &Did,
+        bytes: &[u8],
+    ) -> Result<(), EnrollmentStoreError>;
+
+    /// The anchor proof filed for `account_root`, if any.
+    async fn anchor(&self, account_root: &Did) -> Result<Option<Vec<u8>>, EnrollmentStoreError>;
 }
+
+/// Prefix holding one anchor proof per account.
+pub const ANCHOR_PREFIX: &str = "anchors/";
 
 /// Derive the only permitted object key for a verified chain.
 pub fn object_key(verified: &VerifiedEnrollment) -> String {
@@ -126,15 +145,24 @@ mod memory {
     #[derive(Default)]
     pub struct MemoryEnrollmentStore(Mutex<BTreeMap<String, Vec<u8>>>);
 
+    impl MemoryEnrollmentStore {
+        fn entries(
+            &self,
+        ) -> Result<std::sync::MutexGuard<'_, BTreeMap<String, Vec<u8>>>, EnrollmentStoreError>
+        {
+            self.0.lock().map_err(|_| {
+                EnrollmentStoreError::Internal("enrollment store lock poisoned".to_string())
+            })
+        }
+    }
+
     impl EnrollmentStore for MemoryEnrollmentStore {
         async fn put(
             &self,
             verified: &VerifiedEnrollment,
             bytes: &[u8],
         ) -> Result<PutOutcome, EnrollmentStoreError> {
-            let mut entries = self.0.lock().map_err(|_| {
-                EnrollmentStoreError::Internal("enrollment store lock poisoned".to_string())
-            })?;
+            let mut entries = self.entries()?;
             let key = object_key(verified);
             if entries.contains_key(&key) {
                 return Ok(PutOutcome::Existing);
@@ -144,9 +172,7 @@ mod memory {
         }
 
         async fn claim(&self, credential: &Did) -> Result<Vec<Vec<u8>>, EnrollmentStoreError> {
-            let entries = self.0.lock().map_err(|_| {
-                EnrollmentStoreError::Internal("enrollment store lock poisoned".to_string())
-            })?;
+            let entries = self.entries()?;
             let prefix = format!("{ENROLLMENT_PREFIX}{credential}/");
             Ok(entries
                 .range(prefix.clone()..)
@@ -154,6 +180,26 @@ mod memory {
                 .take(MAX_CLAIMED)
                 .map(|(_, bytes)| bytes.clone())
                 .collect())
+        }
+
+        async fn put_anchor(
+            &self,
+            account_root: &Did,
+            bytes: &[u8],
+        ) -> Result<(), EnrollmentStoreError> {
+            self.entries()?
+                .insert(format!("{ANCHOR_PREFIX}{account_root}"), bytes.to_vec());
+            Ok(())
+        }
+
+        async fn anchor(
+            &self,
+            account_root: &Did,
+        ) -> Result<Option<Vec<u8>>, EnrollmentStoreError> {
+            Ok(self
+                .entries()?
+                .get(&format!("{ANCHOR_PREFIX}{account_root}"))
+                .cloned())
         }
     }
 }

@@ -212,7 +212,7 @@ async fn it_exhausts_verification_attempts_over_http() {
         .unwrap()
         .error_for_status()
         .unwrap();
-    let correct = server.emails.0.lock().unwrap()[0].1.clone();
+    let correct = server.emails.codes.lock().unwrap()[0].1.clone();
     let wrong = if correct == "000000" {
         "111111"
     } else {
@@ -262,7 +262,15 @@ async fn it_checks_email_availability_only_after_a_valid_code() {
         .unwrap()
         .error_for_status()
         .unwrap();
-    let first_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
+    let first_code = server
+        .emails
+        .codes
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .1
+        .clone();
     let created = client
         .post(format!("{}/accounts", server.endpoint))
         .header("Content-Type", "application/cbor")
@@ -280,7 +288,15 @@ async fn it_checks_email_availability_only_after_a_valid_code() {
         .unwrap()
         .error_for_status()
         .unwrap();
-    let existing_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
+    let existing_code = server
+        .emails
+        .codes
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .1
+        .clone();
     let conflict = client
         .post(format!("{}/accounts/preflight", server.endpoint))
         .json(&serde_json::json!({
@@ -307,7 +323,15 @@ async fn it_checks_email_availability_only_after_a_valid_code() {
         .unwrap()
         .error_for_status()
         .unwrap();
-    let available_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
+    let available_code = server
+        .emails
+        .codes
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .1
+        .clone();
     for _ in 0..2 {
         let response = client
             .post(format!("{}/accounts/preflight", server.endpoint))
@@ -451,7 +475,7 @@ async fn it_explains_an_already_registered_email_over_http() {
     let email = "person@example.com";
 
     let latest_code = || {
-        let sent = server.emails.0.lock().unwrap();
+        let sent = server.emails.codes.lock().unwrap();
         sent.iter()
             .rfind(|(to, _)| to == email)
             .map(|(_, code): &(String, String)| code.clone())
@@ -535,7 +559,7 @@ async fn it_drives_the_full_ceremony_over_http() {
     assert_eq!(response.status(), 200);
 
     let code = {
-        let sent = server.emails.0.lock().unwrap();
+        let sent = server.emails.codes.lock().unwrap();
         sent.iter()
             .find(|(email, _)| email == "person@example.com")
             .map(|(_, code): &(String, String)| code.clone())
@@ -1120,7 +1144,7 @@ async fn it_drives_the_full_ceremony_over_http() {
         .error_for_status()
         .unwrap();
     let other_code = {
-        let sent = server.emails.0.lock().unwrap();
+        let sent = server.emails.codes.lock().unwrap();
         sent.iter()
             .rfind(|(email, _)| email == other_email)
             .map(|(_, code)| code.clone())
@@ -1231,7 +1255,7 @@ async fn it_publishes_and_claims_an_enrollment_chain_over_http() {
         .await
         .unwrap();
     let code = {
-        let sent = server.emails.0.lock().unwrap();
+        let sent = server.emails.codes.lock().unwrap();
         sent.iter()
             .find(|(email, _)| email == "peer@example.com")
             .map(|(_, code): &(String, String)| code.clone())
@@ -1335,5 +1359,136 @@ async fn it_refuses_an_enrollment_for_an_account_it_does_not_host() {
         .unwrap();
 
     assert_eq!(response.status(), 404);
+    server.stop().await;
+}
+
+/// The flow a second passkey actually walks: the account delegates to the
+/// service's anchor once, then every later credential is enrolled behind a
+/// code sent to the account address and claims its chain with nothing but
+/// its own DID.
+#[dialog_common::test]
+async fn it_enrols_a_second_credential_behind_an_emailed_code() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+    let base = server.endpoint.clone();
+    let email = "anchored@example.com";
+
+    let request_code = async |client: &reqwest::Client| {
+        client
+            .post(format!("{base}/codes"))
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .unwrap();
+        server
+            .emails
+            .codes
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .1
+            .clone()
+    };
+
+    // The anchor DID is published, so genesis knows who to delegate to.
+    let info: serde_json::Value = client
+        .get(format!("{base}/"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let anchor: Did = info["recoveryAnchor"].as_str().unwrap().parse().unwrap();
+    assert_eq!(anchor.to_string(), server.anchor_did);
+
+    let code = request_code(&client).await;
+    let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/accounts"))
+        .header("Content-Type", "application/cbor")
+        .body(account_creation(email, &code).await)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    // Enrolling before the anchor exists has nothing to extend.
+    let credential = Ed25519Signer::import(&[31u8; 32]).await.unwrap();
+    let too_early = client
+        .post(format!("{base}/enrollments/confirm"))
+        .json(&serde_json::json!({
+            "email": email,
+            "code": request_code(&client).await,
+            "credential": credential.did().to_string(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(too_early.status(), 409);
+
+    // A signed-in credential publishes `root → anchor` once. The service
+    // files it as the proof it may later extend.
+    let anchor_proof = tonk_identity::credential::mint_enrollment(root.clone(), &anchor)
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/enrollments"))
+        .header("Content-Type", "application/cbor")
+        .body(anchor_proof.to_bytes().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let issued = client
+        .post(format!("{base}/enrollments/confirm"))
+        .json(&serde_json::json!({
+            "email": email,
+            "code": request_code(&client).await,
+            "credential": credential.did().to_string(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), 201);
+    let issued: serde_json::Value = issued.json().await.unwrap();
+    assert_eq!(issued["accountRoot"], root.did().to_string());
+
+    // The account holder is told, whether or not they asked.
+    assert_eq!(
+        server.emails.notices.lock().unwrap().as_slice(),
+        [(email.to_string(), credential.did().to_string())],
+    );
+
+    // And the new credential's device now presents a chain the registry
+    // accepts: root → anchor → credential → device.
+    let claimed: serde_json::Value = client
+        .get(format!("{base}/enrollments/{}", credential.did()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let chain_hex = claimed["chains"].as_array().unwrap()[0].as_str().unwrap();
+    assert_eq!(chain_hex, issued["chain"].as_str().unwrap());
+    let chain = DelegationChain::try_from(hex::decode(chain_hex).unwrap().as_slice()).unwrap();
+    let phone = Ed25519Signer::import(&[32u8; 32]).await.unwrap();
+    let device_chain =
+        tonk_identity::credential::extend_with_enrollment(&chain, credential, &phone.did())
+            .await
+            .unwrap();
+    let grant = tonk_identity::delegation::validate_account_grant(&device_chain, &phone.did())
+        .await
+        .unwrap();
+    assert_eq!(grant.root_did, root.did());
+    assert_eq!(device_chain.proof_cids().len(), 3);
+
     server.stop().await;
 }

@@ -36,6 +36,7 @@ use crate::core::descriptor::establish_descriptor;
 use crate::core::devices::{
     DeviceView, detach_device, list_devices, register_device, revoke_device,
 };
+use crate::core::enrollment::issue_anchor_chain;
 use crate::core::links::{activate_link, complete_link, consume_link, create_link, resolve_link};
 use crate::email::CapturedEmail;
 use crate::enrollments::{
@@ -55,7 +56,15 @@ struct Backends {
     chains: MemoryChainStore,
     revocations: MemoryRevocationStore,
     enrollments: MemoryEnrollmentStore,
+    anchor: dialog_credentials::Ed25519Signer,
     emails: Arc<CapturedEmail>,
+}
+
+impl Backends {
+    fn anchor_did(&self) -> String {
+        use dialog_varsig::Principal;
+        self.anchor.did().to_string()
+    }
 }
 
 /// A running native account service, for integration tests and
@@ -67,6 +76,9 @@ pub struct AccountServer {
     /// Verification-code emails captured instead of sent, so a caller
     /// can read a code back out directly.
     pub emails: Arc<CapturedEmail>,
+    /// DID of this server's recovery anchor, as `GET /` reports it. An
+    /// account genesis delegates `root → recovery` to this key.
+    pub anchor_did: String,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
 }
@@ -77,11 +89,19 @@ impl AccountServer {
     /// a shared `CapturedEmail`.
     pub async fn start() -> AccountServer {
         let emails = Arc::new(CapturedEmail::default());
+        let anchor = crate::anchor::from_seed_hex(&hex::encode([0xa1u8; 32]))
+            .await
+            .expect("a fixed test anchor seed is valid");
+        let anchor_did = {
+            use dialog_varsig::Principal;
+            anchor.did().to_string()
+        };
         let backends = Arc::new(Backends {
             store: SqliteStore::in_memory().expect("in-memory sqlite store"),
             chains: MemoryChainStore::default(),
             revocations: MemoryRevocationStore::default(),
             enrollments: MemoryEnrollmentStore::default(),
+            anchor,
             emails: emails.clone(),
         });
 
@@ -118,6 +138,7 @@ impl AccountServer {
         AccountServer {
             endpoint,
             emails,
+            anchor_did,
             shutdown_tx,
             server_handle,
         }
@@ -145,7 +166,7 @@ async fn handle_request(
     // Owned so an arm that binds the path can still take `req` by value.
     let path = req.uri().path().to_string();
     let response = match (req.method().clone(), path.as_str()) {
-        (Method::GET, "/") => return Ok(info_response()),
+        (Method::GET, "/") => return Ok(info_response(&backends)),
         (Method::GET, "/health") => return Ok(health_response()),
         (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::GET, "/_test/spots") => spots_route(req, &backends).await,
@@ -168,6 +189,7 @@ async fn handle_request(
         (Method::POST, "/links/activate") => links_activate_route(req, &backends).await,
         (Method::POST, "/links/consume") => links_consume_route(req, &backends).await,
         (Method::POST, "/enrollments") => enrollments_publish_route(req, &backends).await,
+        (Method::POST, "/enrollments/confirm") => enrollments_confirm_route(req, &backends).await,
         (Method::GET, claim) if claim.starts_with("/enrollments/") => {
             enrollments_claim_route(&claim["/enrollments/".len()..], &backends).await
         }
@@ -210,12 +232,13 @@ async fn account_summary_route(
 }
 
 /// `GET /` → service info. Not CORS-wrapped, matching the worker.
-fn info_response() -> Response<Full<Bytes>> {
+fn info_response(backends: &Backends) -> Response<Full<Bytes>> {
     json_response(
         StatusCode::OK,
         &serde_json::json!({
             "service": "tonk-account-service",
             "version": env!("CARGO_PKG_VERSION"),
+            "recoveryAnchor": backends.anchor_did(),
         }),
     )
 }
@@ -260,7 +283,7 @@ impl From<DeviceView> for DeviceJson {
 /// `GET /_test/emails` → a non-draining snapshot of captured codes.
 fn emails_route(backends: &Backends) -> Result<Response<Full<Bytes>>, ServiceError> {
     let emails =
-        backends.emails.0.lock().map_err(|_| {
+        backends.emails.codes.lock().map_err(|_| {
             ServiceError::new(ErrorCode::InternalError, "captured email lock poisoned")
         })?;
     let snapshot: Vec<_> = emails
@@ -643,6 +666,16 @@ async fn enrollments_publish_route(
             ServiceError::new(ErrorCode::InternalError, "internal error")
         })?
         == PutOutcome::Stored;
+    if verified.credential.to_string() == backends.anchor_did() {
+        backends
+            .enrollments
+            .put_anchor(&verified.account_root, &bytes)
+            .await
+            .map_err(|error| {
+                eprintln!("anchor proof filing failed: {error}");
+                ServiceError::new(ErrorCode::InternalError, "internal error")
+            })?;
+    }
 
     Ok(json_response(
         StatusCode::ACCEPTED,
@@ -678,6 +711,50 @@ async fn enrollments_claim_route(
         StatusCode::OK,
         &serde_json::json!({
             "chains": chains.iter().map(hex::encode).collect::<Vec<_>>(),
+        }),
+    ))
+}
+
+/// `POST /enrollments/confirm` → mint an anchor chain behind a one-time code.
+async fn enrollments_confirm_route(
+    req: Request<Incoming>,
+    backends: &Backends,
+) -> Result<Response<Full<Bytes>>, ServiceError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ConfirmRequest {
+        email: String,
+        code: String,
+        credential: String,
+    }
+
+    let request: ConfirmRequest = parse_json(req).await?;
+    let credential: dialog_varsig::Did = request.credential.parse().map_err(|error| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid credential DID: {error}"),
+        )
+    })?;
+    let issued = issue_anchor_chain(
+        &backends.store,
+        &backends.enrollments,
+        backends.emails.as_ref(),
+        backends.anchor.clone(),
+        &request.email,
+        &request.code,
+        &credential,
+        unix_now(),
+    )
+    .await
+    .map_err(ceremony_error)?;
+
+    Ok(json_response(
+        StatusCode::CREATED,
+        &serde_json::json!({
+            "accountRoot": issued.account_root.to_string(),
+            "credential": issued.credential.to_string(),
+            "chain": hex::encode(issued.chain.to_bytes().expect("a minted chain serializes")),
+            "stored": issued.stored,
         }),
     ))
 }

@@ -32,13 +32,13 @@ struct SendRequest<'a> {
     text: String,
 }
 
-impl EmailSender for Resend {
-    async fn send_code(&self, email: &str, code: &str) -> Result<(), EmailError> {
+impl Resend {
+    async fn send(&self, email: &str, subject: &str, text: String) -> Result<(), EmailError> {
         let body = SendRequest {
             from: &self.from,
             to: [email],
-            subject: "Your tonk verification code",
-            text: format!("Your code is {code}. It expires in 10 minutes."),
+            subject,
+            text,
         };
         let body_json =
             serde_json::to_string(&body).map_err(|err| EmailError::Send(err.to_string()))?;
@@ -72,5 +72,34 @@ impl EmailSender for Resend {
             )));
         }
         Ok(())
+    }
+}
+
+impl EmailSender for Resend {
+    async fn send_code(&self, email: &str, code: &str) -> Result<(), EmailError> {
+        self.send(
+            email,
+            "Your tonk verification code",
+            format!("Your code is {code}. It expires in 10 minutes."),
+        )
+        .await
+    }
+
+    async fn send_enrollment_notice(
+        &self,
+        email: &str,
+        credential: &str,
+    ) -> Result<(), EmailError> {
+        self.send(
+            email,
+            "A new passkey was added to your tonk account",
+            format!(
+                "A passkey was enrolled on your tonk account.\n\n\
+                 Credential: {credential}\n\n\
+                 If this was not you, sign in from a device you still trust \
+                 and revoke it. Anyone holding this passkey can act as you."
+            ),
+        )
+        .await
     }
 }

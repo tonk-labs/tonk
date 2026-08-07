@@ -265,6 +265,95 @@ pub async fn create_account(
     .await
 }
 
+/// Output of the ephemeral-root genesis ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenesisCeremony {
+    /// The account subject: a key that no longer exists anywhere.
+    pub account_subject: String,
+    /// Hex-encoded `root → credential`, the first passkey's enrollment.
+    pub credential_delegation_hex: String,
+    /// Hex-encoded `root → anchor`, the only recovery path this account
+    /// will ever have that did not come through a live credential.
+    pub anchor_delegation_hex: String,
+    /// Root-signed account creation request.
+    pub account: AccountCeremony,
+}
+
+/// Create an account whose subject is a key destroyed during the ceremony.
+///
+/// The passkey-derived key stops being the account and becomes one credential
+/// among peers: the subject is a fresh keypair that signs the descriptor and
+/// fans out to the credential and to `anchor`, then goes away. Nothing can
+/// ever mint a direct `root → x` delegation again, which is what makes both
+/// of those delegations load-bearing — see the anchor invariant in the spec.
+///
+/// The device's grant runs `root → credential → device`, so the credential
+/// remains the thing that authorizes devices day to day.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_account_with_ephemeral_root(
+    credential: Ed25519Signer,
+    anchor: &dialog_varsig::Did,
+    email: String,
+    code: String,
+    credential_id: String,
+    device_did: dialog_varsig::Did,
+    device_name: String,
+    remote: String,
+    passkey: Option<PasskeyCreationMetadata>,
+) -> Result<GenesisCeremony> {
+    // Generated here and dropped at the end of this function. The seed
+    // zeroizes with its guard; the signer holds the only other copy, and on
+    // the web target that copy is a non-extractable WebCrypto key.
+    let seed = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+    let root = Ed25519Signer::import(&*seed)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to generate the account root: {err}"))?;
+    let account_subject = root.did().to_string();
+
+    let credential_link = crate::credential::mint_enrollment(root.clone(), &credential.did())
+        .await
+        .context("failed to enrol the first credential")?;
+    let anchor_link = crate::credential::mint_enrollment(root.clone(), anchor)
+        .await
+        .context("failed to delegate to the recovery anchor")?;
+    let device_chain =
+        crate::credential::extend_with_enrollment(&credential_link, credential, &device_did)
+            .await
+            .context("failed to grant the device through the credential")?;
+
+    let account = create_account(
+        root,
+        email,
+        code,
+        credential_id,
+        device_did,
+        device_name,
+        hex::encode(
+            device_chain
+                .to_bytes()
+                .context("failed to serialize the device grant")?,
+        ),
+        remote,
+        passkey,
+    )
+    .await?;
+
+    Ok(GenesisCeremony {
+        account_subject,
+        credential_delegation_hex: hex::encode(
+            credential_link
+                .to_bytes()
+                .context("failed to serialize the credential enrollment")?,
+        ),
+        anchor_delegation_hex: hex::encode(
+            anchor_link
+                .to_bytes()
+                .context("failed to serialize the anchor delegation")?,
+        ),
+        account,
+    })
+}
+
 /// Create a passkey root and sign its account request without immediately
 /// asking the new passkey for a second assertion.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -496,6 +585,101 @@ mod tests {
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         assert!(!chain.arguments().contains_key("passkeyCreatedAt"));
         assert!(!chain.arguments().contains_key("passkeyCreatedOn"));
+    }
+
+    #[dialog_common::test]
+    async fn it_makes_the_account_subject_a_key_no_one_holds() {
+        let credential = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let anchor = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
+
+        let genesis = create_account_with_ephemeral_root(
+            credential.clone(),
+            &anchor.did(),
+            "a@x.com".into(),
+            "123456".into(),
+            "credential".into(),
+            device.did(),
+            "laptop".into(),
+            "https://accounts.example/ucan/".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let subject: dialog_varsig::Did = genesis.account_subject.parse().unwrap();
+        assert_ne!(subject, credential.did(), "the passkey is not the account");
+        assert_ne!(subject, device.did());
+        assert_ne!(subject, anchor.did());
+
+        // Both genesis delegations run from the subject, and neither could be
+        // minted again once this ceremony returns.
+        let credential_link = DelegationChain::try_from(
+            hex::decode(&genesis.credential_delegation_hex)
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        let anchor_link = DelegationChain::try_from(
+            hex::decode(&genesis.anchor_delegation_hex)
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        assert_eq!(*credential_link.issuer(), subject);
+        assert_eq!(*credential_link.audience(), credential.did());
+        assert_eq!(*anchor_link.issuer(), subject);
+        assert_eq!(*anchor_link.audience(), anchor.did());
+
+        // The descriptor is signed by the subject while it still exists.
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::validate(
+            &hex::decode(genesis.account.descriptor_hex.as_ref().unwrap()).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(*descriptor.account_subject(), subject);
+
+        // And the device's grant reaches it through the credential.
+        let grant = DelegationChain::try_from(
+            hex::decode(&genesis.account.delegation_hex)
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        assert_eq!(grant.proof_cids().len(), 2, "root → credential → device");
+        let validated = crate::delegation::validate_account_grant(&grant, &device.did())
+            .await
+            .unwrap();
+        assert_eq!(validated.root_did, subject);
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_a_distinct_subject_for_every_account() {
+        let credential = crate::derive::derive_root_signer(&[7u8; 32]).await.unwrap();
+        let anchor = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
+        let genesis = async || {
+            create_account_with_ephemeral_root(
+                credential.clone(),
+                &anchor.did(),
+                "a@x.com".into(),
+                "123456".into(),
+                "credential".into(),
+                device.did(),
+                "laptop".into(),
+                "https://accounts.example/ucan/".into(),
+                None,
+            )
+            .await
+            .unwrap()
+            .account_subject
+        };
+
+        assert_ne!(
+            genesis().await,
+            genesis().await,
+            "the same passkey must not re-derive an account subject"
+        );
     }
 
     #[dialog_common::test]

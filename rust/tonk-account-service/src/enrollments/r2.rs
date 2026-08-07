@@ -9,8 +9,8 @@ use dialog_varsig::Did;
 use worker::Bucket;
 
 use super::{
-    ENROLLMENT_PREFIX, EnrollmentStore, EnrollmentStoreError, MAX_CLAIMED, VerifiedEnrollment,
-    object_key,
+    ANCHOR_PREFIX, ENROLLMENT_PREFIX, EnrollmentStore, EnrollmentStoreError, MAX_CLAIMED,
+    VerifiedEnrollment, object_key,
 };
 use crate::revocations::PutOutcome;
 
@@ -79,5 +79,22 @@ impl EnrollmentStore for R2EnrollmentStore {
             }
         }
         Ok(chains)
+    }
+
+    async fn put_anchor(
+        &self,
+        account_root: &Did,
+        bytes: &[u8],
+    ) -> Result<(), EnrollmentStoreError> {
+        self.0
+            .put(format!("{ANCHOR_PREFIX}{account_root}"), bytes.to_vec())
+            .execute()
+            .await
+            .map_err(|error| EnrollmentStoreError::Internal(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn anchor(&self, account_root: &Did) -> Result<Option<Vec<u8>>, EnrollmentStoreError> {
+        self.get(&format!("{ANCHOR_PREFIX}{account_root}")).await
     }
 }

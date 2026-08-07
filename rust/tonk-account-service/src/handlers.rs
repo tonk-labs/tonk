@@ -128,6 +128,35 @@ pub fn build_enrollments(
     Ok(crate::enrollments::r2::R2EnrollmentStore::new(bucket))
 }
 
+/// Build the recovery-anchor signer from the `RECOVERY_ANCHOR_SEED` secret.
+///
+/// Absent or malformed, the anchor routes are unavailable and every other
+/// route is unaffected: an account that never delegated to this key loses
+/// nothing by the service not holding it.
+#[cfg(target_arch = "wasm32")]
+pub async fn build_anchor(
+    ctx: &worker::RouteContext<()>,
+) -> std::result::Result<dialog_credentials::Ed25519Signer, crate::error::ServiceError> {
+    let seed = ctx
+        .secret(crate::anchor::ANCHOR_SEED_SECRET)
+        .map_err(|err| {
+            worker::console_error!("missing recovery anchor secret: {err}");
+            crate::error::ServiceError::new(
+                crate::error::ErrorCode::InternalError,
+                "this service has no recovery anchor configured",
+            )
+        })?;
+    crate::anchor::from_seed_hex(&seed.to_string())
+        .await
+        .map_err(|err| {
+            worker::console_error!("unusable recovery anchor seed: {err}");
+            crate::error::ServiceError::new(
+                crate::error::ErrorCode::InternalError,
+                "this service has no recovery anchor configured",
+            )
+        })
+}
+
 /// Build the immutable revocation writer from the `REVOCATIONS` binding.
 #[cfg(target_arch = "wasm32")]
 pub fn build_revocations(

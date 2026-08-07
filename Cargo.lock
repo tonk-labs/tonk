@@ -4524,6 +4524,7 @@ dependencies = [
  "wasm-bindgen-test",
  "worker",
  "worker-macros",
+ "zeroize",
 ]
 
 [[package]]

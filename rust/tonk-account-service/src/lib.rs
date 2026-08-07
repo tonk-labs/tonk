@@ -10,6 +10,7 @@
 
 use worker::*;
 
+pub mod anchor;
 pub mod auth;
 pub mod chains;
 pub mod core;
@@ -70,6 +71,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .options_async("/links/consume", handlers::links::handle_options)
         .post_async("/enrollments", handlers::enrollments::handle_publish)
         .options_async("/enrollments", handlers::enrollments::handle_options)
+        .post_async(
+            "/enrollments/confirm",
+            handlers::enrollments::handle_confirm,
+        )
+        .options_async(
+            "/enrollments/confirm",
+            handlers::enrollments::handle_options,
+        )
         .get_async(
             "/enrollments/:credential",
             handlers::enrollments::handle_claim,

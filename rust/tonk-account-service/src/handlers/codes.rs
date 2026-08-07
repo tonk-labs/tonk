@@ -56,7 +56,7 @@ async fn handle_inner(
 
 /// Build a [`Resend`] sender from the worker environment's
 /// `RESEND_API_KEY` secret and `EMAIL_FROM` variable.
-fn build_resend(ctx: &RouteContext<()>) -> std::result::Result<Resend, ServiceError> {
+pub(crate) fn build_resend(ctx: &RouteContext<()>) -> std::result::Result<Resend, ServiceError> {
     let api_key = ctx
         .secret("RESEND_API_KEY")
         .map_err(|err| {

@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         loop {
             let captured: Vec<(String, String)> = {
-                let mut inbox = emails.0.lock().expect("captured email mutex poisoned");
+                let mut inbox = emails.codes.lock().expect("captured email mutex poisoned");
                 std::mem::take(&mut *inbox)
             };
             for (address, code) in captured {

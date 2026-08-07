@@ -99,7 +99,7 @@ impl AccountFixture {
             .await?
             .error_for_status()?;
         let code = {
-            let emails = server.emails.0.lock().unwrap();
+            let emails = server.emails.codes.lock().unwrap();
             emails
                 .iter()
                 .find(|(recipient, _)| recipient == &email)

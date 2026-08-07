@@ -15,6 +15,7 @@ pub mod codes;
 pub mod delegation;
 pub mod descriptor;
 pub mod devices;
+pub mod enrollment;
 pub mod links;
 
 /// Errors shared by every ceremony in this crate.

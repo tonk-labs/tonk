@@ -8,9 +8,14 @@ use worker::*;
 
 use dialog_varsig::Did;
 
+use dialog_varsig::Principal;
+
+use crate::core::enrollment::issue_anchor_chain;
 use crate::enrollments::{EnrollmentStore, VerifyError, verify};
 use crate::error::{ErrorCode, ServiceError};
-use crate::handlers::{build_enrollments, build_store, with_cors_headers};
+use crate::handlers::{
+    build_anchor, build_enrollments, build_store, ceremony_error, read_body, with_cors_headers,
+};
 use crate::revocations::PutOutcome;
 use crate::store::Store;
 
@@ -99,6 +104,21 @@ async fn handle_publish_inner(
         ServiceError::new(ErrorCode::InternalError, "internal error")
     })? == PutOutcome::Stored;
 
+    // A chain addressed to this service's own anchor is the proof it will
+    // later extend, so it is additionally filed by the account it comes
+    // from. Claiming by audience would return every account's at once.
+    if let Ok(anchor) = build_anchor(ctx).await
+        && verified.credential == anchor.did()
+    {
+        enrollments
+            .put_anchor(&verified.account_root, &bytes)
+            .await
+            .map_err(|error| {
+                console_error!("anchor proof filing failed: {error}");
+                ServiceError::new(ErrorCode::InternalError, "internal error")
+            })?;
+    }
+
     Response::from_json(&serde_json::json!({
         "credential": verified.credential.to_string(),
         "accountRoot": verified.account_root.to_string(),
@@ -106,6 +126,72 @@ async fn handle_publish_inner(
         "stored": stored,
     }))
     .map(|response| response.with_status(202))
+    .map_err(|error| {
+        ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
+    })
+}
+
+/// `POST /enrollments/confirm` → mint an anchor chain behind a one-time code.
+pub async fn handle_confirm(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let response = match handle_confirm_inner(&mut req, &ctx).await {
+        Ok(response) => response,
+        Err(error) => error.to_response()?,
+    };
+    Ok(with_cors_headers(response))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfirmRequest {
+    email: String,
+    code: String,
+    credential: String,
+}
+
+async fn handle_confirm_inner(
+    req: &mut Request,
+    ctx: &RouteContext<()>,
+) -> std::result::Result<Response, ServiceError> {
+    let body = read_body(req).await?;
+    let request: ConfirmRequest = serde_json::from_slice(&body).map_err(|error| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("failed to parse request body: {error}"),
+        )
+    })?;
+    let credential: Did = request.credential.parse().map_err(|error| {
+        ServiceError::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid credential DID: {error}"),
+        )
+    })?;
+
+    let issued = issue_anchor_chain(
+        &build_store(ctx)?,
+        &build_enrollments(ctx)?,
+        &crate::handlers::codes::build_resend(ctx)?,
+        build_anchor(ctx).await?,
+        &request.email,
+        &request.code,
+        &credential,
+        Date::now().as_millis() / 1000,
+    )
+    .await
+    .map_err(ceremony_error)?;
+
+    let chain_hex = issued.chain.to_bytes().map(hex::encode).map_err(|error| {
+        ServiceError::new(
+            ErrorCode::InternalError,
+            format!("failed to serialize the chain: {error}"),
+        )
+    })?;
+    Response::from_json(&serde_json::json!({
+        "accountRoot": issued.account_root.to_string(),
+        "credential": issued.credential.to_string(),
+        "chain": chain_hex,
+        "stored": issued.stored,
+    }))
+    .map(|response| response.with_status(201))
     .map_err(|error| {
         ServiceError::new(ErrorCode::InternalError, format!("response error: {error}"))
     })

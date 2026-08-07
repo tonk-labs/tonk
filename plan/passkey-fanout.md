@@ -149,6 +149,21 @@ Smallest stable slice first; each step is independently shippable and useful. St
 5. **Ephemeral-root genesis** for new accounts, plus the enrollment log.
 6. **Revocation walk UX** and the seniority tie-break, which is the first consumer of the enrollment log.
 
+## Deployment
+
+`RECOVERY_ANCHOR_SEED` is a per-environment worker secret: 32 bytes, hex. It
+is not in `wrangler.account.toml` and must be set with `wrangler secret put`
+for production, staging and preview separately — three different anchors, so
+a staging account can never be enrolled against by production or the reverse.
+
+Rotating it is not a routine operation. An account that delegated to the old
+key keeps working for everything except this service's anchor path, which
+starts refusing with a conflict rather than silently doing something else.
+Recovering such an account needs a live credential to delegate to the new
+anchor. Nothing else in the service depends on the secret, so an environment
+without one serves every other route normally and simply omits
+`recoveryAnchor` from `GET /`.
+
 ## Status
 
 Landed on `feat/passkey-fanout`:
@@ -173,8 +188,30 @@ Landed on `feat/passkey-fanout`:
   chain's shape and signatures and that this service hosts the account it
   runs from — the latter is anti-abuse, not authority.
 
-Next is step 4: email-gated `recovery → Cn` issuance. The transport it needs
-now exists.
+- **Step 4.** `anchor.rs` builds the service's anchor signer from a
+  `RECOVERY_ANCHOR_SEED` secret and `GET /` publishes its DID, which is what
+  a genesis reads to address `root → recovery`. `core/enrollment.rs` verifies
+  a one-time code, loads that account's anchor proof, mints
+  `recovery → Cn`, publishes it to the audience-keyed store and mails the
+  account holder — best-effort, since the chain is already minted by then.
+  `POST /enrollments/confirm` drives it. Anchor proofs are filed under an
+  `anchors/{account_root}` prefix when published, because the anchor is the
+  audience for every account at once and claiming by audience would return
+  all of them.
+- **Step 5, genesis.** `ceremony::create_account_with_ephemeral_root`
+  generates the subject, signs the descriptor, fans out to the first
+  credential and to the anchor, grants the device through the credential
+  (`root → C1 → device`), and drops the key. Two accounts created from the
+  same passkey get different subjects, which is the property the old design
+  could not have.
+
+Remaining: the enrollment log, and step 6's revocation walk and seniority
+tie-break, which reads it. The log lives in the account repository, so it
+needs the repo write path rather than anything in the account service — and
+it wants the authority question below answered first. Also unbuilt: the
+browser wiring that calls these ceremonies, and `v1` accounts publishing
+`subject → recovery` at sign-in, which is a few lines against
+`mint_enrollment` once there is a UI to hang it on.
 
 Two decisions the implementation surfaced, both left open deliberately:
 

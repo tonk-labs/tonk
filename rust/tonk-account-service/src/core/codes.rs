@@ -116,7 +116,7 @@ mod tests {
         request_code(&store, &sender, "A@X.com", "123456", 100)
             .await
             .unwrap();
-        let sent = sender.0.lock().unwrap().clone();
+        let sent = sender.codes.lock().unwrap().clone();
         assert_eq!(sent, vec![("a@x.com".to_string(), "123456".to_string())]);
         verify_code(&store, "a@x.com", "123456", 200).await.unwrap();
         // consumed: the same code no longer verifies
