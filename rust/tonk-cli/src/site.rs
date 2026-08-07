@@ -75,6 +75,21 @@ const OPERATOR_CONTEXT: &[u8] = b"slide";
 /// Name of the `.tonk/` sub-directory holding repository data.
 pub const SITE_DIRNAME: &str = ".tonk";
 
+/// Whether `root` already holds site data.
+///
+/// The dialog repository always lands in `<root>/<REPO_NAME>/`, so
+/// that directory is the marker regardless of how the site was
+/// created. Callers use it to tell "creating a site here" from
+/// "adopting the site already here" — a distinction
+/// [`TonkSite::init_at_with`] deliberately erases by being
+/// idempotent.
+///
+/// A bare `root` that exists but holds no repository reads as no
+/// data: an empty directory is not a site.
+pub fn has_site_data(root: &Path) -> bool {
+    root.join(REPO_NAME).is_dir()
+}
+
 /// An opened tonk site: profile, operator, repository, and a
 /// reactor, all wired up against the on-disk `.tonk/` directory.
 ///

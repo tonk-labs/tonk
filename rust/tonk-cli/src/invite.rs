@@ -107,7 +107,17 @@ pub enum InviteError {
     /// already exists. The join must never clobber existing site
     /// storage; the user removes it (or picks another spot name)
     /// first.
-    #[error("a site already exists at {0}; remove it or pick another spot name")]
+    ///
+    /// The likeliest way to reach this without having noticed is
+    /// `tonk spot rm --keep-data` under the same name, which leaves
+    /// data here that no registry entry mentions — so the message
+    /// names both ways out rather than just "remove it".
+    #[error(
+        "a site already exists at {0}\n\
+         it belongs to no registered spot; adopt it with \
+         `tonk spot new <name> --site {0}`,\n\
+         delete the directory, or join under another spot name"
+    )]
     SiteAlreadyExists(PathBuf),
     /// Anything else — key generation, delegation building,
     /// storage I/O. Surfaced verbatim.
