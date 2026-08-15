@@ -56,7 +56,8 @@ pub fn render(state: &Shared) {
     let count_label = if node.kind == Kind::Index {
         "children"
     } else {
-        "entries"
+        // A segment holds asserted facts; call them assertions, not "entries".
+        "assertions"
     };
     let _ = body.append_child(&kv(count_label, &node.count.to_string()));
     if let Some(rank) = node.rank {
@@ -71,6 +72,24 @@ pub fn render(state: &Shared) {
         },
     ));
 
+    // Novelty summary for an index: pending (buffered) vs flushed. A node with
+    // no buffered ops is canonical; one with novelty has ops not yet pushed
+    // down into its subtrees. Show the split so "is this flushed?" reads at a
+    // glance.
+    if node.kind == Kind::Index {
+        let links = node.buffered_links.unwrap_or(0);
+        let summary = if node.novelty == 0 {
+            "flushed (no pending ops)".to_owned()
+        } else {
+            format!("{} buffered across {} links", node.novelty, links)
+        };
+        let row = kv("novelty", &summary);
+        if node.novelty > 0 {
+            let _ = row.set_attribute("data-novelty", "");
+        }
+        let _ = body.append_child(&row);
+    }
+
     if !node.bound_parts.is_empty() {
         let _ = body.append_child(&kv("upper key", ""));
         let keyrow = el("div").class("keybytes");
@@ -78,8 +97,12 @@ pub fn render(state: &Shared) {
         let _ = body.append_child(&keyrow);
     }
 
-    if node.kind == Kind::Segment {
-        render_entries(state, &body, &hash);
+    match node.kind {
+        Kind::Segment => render_entries(state, &body, &hash),
+        // An index node holds no leaf entries, but its links may carry pending
+        // novelty ops — transclude them here, highlighted and distinct.
+        Kind::Index if node.novelty > 0 => render_novelty(state, &body, &hash),
+        Kind::Index => {}
     }
 }
 
@@ -122,6 +145,42 @@ fn render_entries(state: &Shared, body: &Element, hash: &str) {
                         .text(&format!("{} entries", entries.len())),
                 );
                 let _ = box_.append_child(&entry_table(&entries));
+            }
+            Err(e) => {
+                clear(&box_);
+                let _ = box_.append_child(&el("div").class("err").text(&e));
+            }
+        }
+    });
+}
+
+/// Transclude an index node's pending novelty ops, highlighted and distinct
+/// from committed data. Assertions read normally (highlighted); retractions
+/// are struck through. Reuses [`entry_table`] — a buffered op reconstructs a
+/// fact exactly as a leaf entry does — inside a `.novelty` wrapper that carries
+/// the distinct styling.
+fn render_novelty(state: &Shared, body: &Element, hash: &str) {
+    let box_ = el("div").class("entries novelty");
+    let _ = box_.append_child(&el("div").class("status").text("loading novelty…"));
+    let _ = body.append_child(&box_);
+
+    let state = state.clone();
+    let hash = hash.to_owned();
+    spawn_local(async move {
+        let loader = state.borrow().loader.clone();
+        let ops = loader.novelty(&hash).await;
+        if state.borrow().selected.as_deref() != Some(hash.as_str()) {
+            return;
+        }
+        match ops {
+            Ok(ops) => {
+                clear(&box_);
+                let asserts = ops.iter().filter(|o| !o.retracted).count();
+                let retracts = ops.len() - asserts;
+                let _ = box_.append_child(&el("div").class("k novelty-label").text(&format!(
+                    "novelty — {asserts} asserted, {retracts} retracted"
+                )));
+                let _ = box_.append_child(&entry_table(&ops));
             }
             Err(e) => {
                 clear(&box_);

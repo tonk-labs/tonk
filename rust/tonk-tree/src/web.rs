@@ -285,7 +285,14 @@ fn dot(cached: bool, extra: &str) -> Element {
 /// node's dot lives in the expand-icon slot (it toggles); a leaf's dot is a
 /// separate positioned element on the item (see `build_item`).
 fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&str>) -> Element {
-    let row = el("span").class(if node.cached { "row" } else { "row remote" });
+    let mut row_class = String::from(if node.cached { "row" } else { "row remote" });
+    // A row whose subtree has ops buffered against it (pending a flush) is
+    // highlighted: the outline distinguishes a canonical row from one carrying
+    // novelty at a glance.
+    if node.novelty > 0 {
+        row_class.push_str(" novelty");
+    }
+    let row = el("span").class(&row_class);
 
     // The key, front-coded against the neighboring siblings.
     let keystr = el("span").class("keystr").attr("title", &node.hash);
@@ -312,6 +319,16 @@ fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&
 
     // Count column: the child/entry count as a bare number in its own cell.
     let _ = row.append_child(&el("span").class("col count").text(&node.count.to_string()));
+
+    // Novelty marker: how many ops are buffered against this row's subtree.
+    if node.novelty > 0 {
+        let _ = row.append_child(
+            &el("span")
+                .class("novelty-count")
+                .attr("title", "ops buffered against this subtree (pending a flush)")
+                .text(&format!("⟲{}", node.novelty)),
+        );
+    }
 
     if !node.cached {
         let _ = row.append_child(
@@ -362,34 +379,69 @@ pub fn append_key(
             base.push_str(" seg-index-type");
         }
 
-        // `emit` appends one pill (chip) with the part's tooltip. A chip is
-        // its own background, so dimming a chip dims its background too.
-        let emit = |text: &str, dim: bool| {
+        // `emit` appends one pill (chip). `head`/`tail` split the chip's text
+        // at the routing pivot: the head (through the diverging byte) stays
+        // bright, the tail is dimmed. A chip is its own background, so the two
+        // halves ride as inner spans rather than separate pills. The tooltip
+        // anchors the whole chip.
+        let emit = |head: &str, tail: &str| {
             let id = next_seg_id();
-            let cls = if dim {
-                format!("{base} dim")
-            } else {
-                base.clone()
-            };
-            let chip = el("span")
-                .attr("id", &id)
-                .child(&el("span").class("seg-text").text(text));
-            chip.set_class_name(&cls);
+            let chip = el("span").attr("id", &id);
+            chip.set_class_name(&base);
+            if !head.is_empty() {
+                let _ = chip.append_child(&el("span").class("seg-text").text(head));
+            }
+            if !tail.is_empty() {
+                let _ = chip.append_child(&el("span").class("seg-text dim").text(tail));
+            }
             let _ = parent.append_child(&chip);
             let _ = parent.append_child(&el("wa-tooltip").attr("for", &id).text(&c.label));
         };
 
-        // Dimming is per-chip now that chips carry decoded TEXT (not hex): a
-        // component whose bytes begin past the routing pivot is noise for this
-        // row's placement, so it dims whole; a component containing or before
-        // the pivot stays bright. (The old per-hex-digit split relied on the
-        // 2-chars-per-byte hex mapping, which no longer holds.)
+        // The routing pivot is a BYTE offset; a shared sibling prefix runs up to
+        // it, then the row diverges. Dim the shared prefix and keep the tail
+        // bright so the eye jumps to what distinguishes this row from its
+        // neighbors. The split can land INSIDE a chip (two `did:key:z6Mk…`
+        // siblings differ only in their trailing bytes), so we split the chip's
+        // text, not just whole chips. The parts' text is ASCII for the
+        // structural columns, so a byte offset maps to a char offset directly.
         match pivot {
-            Some(p) if c.bytes.start > p => emit(&elide(&c.text), true),
-            // Chip is at or before the pivot, or no pivot → bright, truncated.
-            _ => emit(&elide(&c.text), false),
+            // Chip lies entirely past the pivot → all dim.
+            Some(p) if c.bytes.start > p => emit("", &elide(&c.text)),
+            // Pivot falls inside this chip → bright head, dim tail. `split` is
+            // the count of bright chars: bytes from the chip's start through the
+            // pivot byte inclusive.
+            Some(p) if c.bytes.end > p => {
+                let split = (p + 1).saturating_sub(c.bytes.start);
+                let (head, tail) = split_at_chars(&c.text, split);
+                emit(&head, &elide_tail(&tail));
+            }
+            // Chip is at or before the pivot, or no pivot → all bright.
+            _ => emit(&elide(&c.text), ""),
         }
     }
+}
+
+/// Split a string at a character (not byte) boundary, returning `(head, tail)`.
+/// Used to divide a chip at the routing pivot.
+fn split_at_chars(s: &str, n: usize) -> (String, String) {
+    let chars: Vec<char> = s.chars().collect();
+    let n = n.min(chars.len());
+    (
+        chars[..n].iter().collect(),
+        chars[n..].iter().collect(),
+    )
+}
+
+/// Elide the DIM tail of a pivot-split chip: it is noise for this row's
+/// placement, so keep only a short lead and drop the rest.
+fn elide_tail(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= 6 {
+        return text.to_owned();
+    }
+    let head: String = chars[..4].iter().collect();
+    format!("{head}…")
 }
 
 /// Shorten a chip's text for the dense outline: keep the head, elide the
@@ -863,4 +915,27 @@ tr.entry.removed td { color: var(--wa-color-text-quiet); }
 .val-symbol { color: var(--tonk-triangle, #c89a2b); }
 tr.detail td { padding: 4px 0 8px 16px; }
 .entry-detail .keybytes { margin: 4px 0; }
+
+/* Novelty: ops buffered against a subtree, pending a flush. A distinct warm
+   accent (never the value/entity/attribute hues) marks the "not yet canonical"
+   state across the outline row, its count badge, the node summary, and the
+   transcluded op table. */
+:host { --tonk-novelty: #d98a3d; }
+/* Outline row carrying novelty: a faint warm wash + a left accent so it stands
+   out from canonical siblings without drowning the key text. */
+.row.novelty { background: color-mix(in srgb, var(--tonk-novelty) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--tonk-novelty); }
+.novelty-count { color: var(--tonk-novelty); font-size: var(--wa-font-size-xs, 12px);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Node-detail summary line when the node has pending ops. */
+.inspector .kv[data-novelty] .v { color: var(--tonk-novelty); font-weight: 600; }
+/* The transcluded novelty op table, set apart from committed data. */
+.entries.novelty { border-left: 2px solid var(--tonk-novelty);
+  padding-left: var(--wa-space-s, 8px); }
+.novelty-label { color: var(--tonk-novelty) !important; font-weight: 600; }
+/* A buffered retraction reads as struck-through (an assert reads normally,
+   highlighted by the section accent). Overrides the gray-out the committed
+   `removed` rows use. */
+.entries.novelty tr.entry.removed td { color: var(--tonk-novelty);
+  text-decoration: line-through; }
 "#;

@@ -47,9 +47,17 @@ pub struct TreeNode {
     pub bound_parts: Vec<KeyPart>,
     pub rank: Option<u64>,
     pub cached: bool,
+    /// Ops buffered against this node's subtree, pending a flush. On a CHILD
+    /// row it is the count for that child's link; on an index NODE it is the
+    /// total across the node's links (the worker's `novelty`). Zero ⇒ flushed.
+    pub novelty: u64,
+    /// How many of an index node's links carry a novelty buffer (the worker's
+    /// `buffered-links`). `None` for a segment (no links).
+    pub buffered_links: Option<u64>,
 }
 
-/// One entry in a segment — the `tree/entry` shape.
+/// One entry in a segment (the `tree/entry` shape) or one buffered op on an
+/// index node (the `tree/novelty` shape) — both reconstruct a fact from a key.
 #[derive(Clone)]
 pub struct TreeEntry {
     /// The entry key's decoded components (the worker's `key-parts`).
@@ -167,6 +175,8 @@ impl Loader {
             bound_parts: parts(f, "bound-parts"),
             rank: u(f, "rank"),
             cached: f.get("cached").and_then(|v| v.as_bool()) != Some(false),
+            novelty: u(f, "novelty").unwrap_or(0),
+            buffered_links: u(f, "buffered-links"),
         }
     }
 
@@ -189,19 +199,28 @@ impl Loader {
 
     pub async fn entries(&self, hash: &str) -> Result<Vec<TreeEntry>, String> {
         let rows = self.query("tree/entry", json!({ "hash": hash })).await?;
-        Ok(rows
-            .iter()
-            .map(|r| {
-                let f = &r.fields;
-                TreeEntry {
-                    key_parts: parts(f, "key-parts"),
-                    retracted: f.get("retracted").and_then(|v| v.as_bool()) == Some(true),
-                    entity: s(f, "entity"),
-                    attribute: s(f, "attribute"),
-                    type_name: s(f, "type"),
-                    value: f.get("value").cloned(),
-                }
-            })
-            .collect())
+        Ok(rows.iter().map(row_to_entry).collect())
+    }
+
+    /// The ops buffered against an index node's subtrees (the `tree/novelty`
+    /// shape). Empty for a flushed index or a segment. Reuses [`TreeEntry`]:
+    /// an assert reconstructs a fact, a retract is a tombstone.
+    pub async fn novelty(&self, hash: &str) -> Result<Vec<TreeEntry>, String> {
+        let rows = self.query("tree/novelty", json!({ "hash": hash })).await?;
+        Ok(rows.iter().map(row_to_entry).collect())
+    }
+}
+
+/// Decode a `tree/entry` or `tree/novelty` row into a [`TreeEntry`]; both
+/// reconstruct a fact (or a retraction tombstone) from a key.
+fn row_to_entry(r: &Row) -> TreeEntry {
+    let f = &r.fields;
+    TreeEntry {
+        key_parts: parts(f, "key-parts"),
+        retracted: f.get("retracted").and_then(|v| v.as_bool()) == Some(true),
+        entity: s(f, "entity"),
+        attribute: s(f, "attribute"),
+        type_name: s(f, "type"),
+        value: f.get("value").cloned(),
     }
 }

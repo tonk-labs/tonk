@@ -98,6 +98,16 @@ pub async fn resolve_formula<Env: SelectProvider>(
             entry_rows(branch, env, hash).await
         }
 
+        // Buffered (novelty) ops of an index node. `hash` is required. One row
+        // per pending op across the node's links, carrying which child it is
+        // buffered against, the decoded key, and the op (assert/retract).
+        "tree/novelty" => {
+            let Some(hash) = node_input(branch, query, "hash", name)? else {
+                return Ok(vec![]);
+            };
+            novelty_rows(branch, env, hash).await
+        }
+
         // Decompose a composite key into its components. Pure: no
         // block read. `key` is required.
         "tree/key" => match key_input(query, "key", name)? {
@@ -222,6 +232,19 @@ fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> 
     fields.insert("kind".into(), Ipld::String(kind.into()));
     fields.insert("size".into(), Ipld::Integer(size as i128));
     fields.insert("count".into(), Ipld::Integer(count as i128));
+    // Novelty summary for an index: how many ops are buffered (pending against
+    // this node's subtrees, not yet flushed down) and how many of its links
+    // carry a buffer. An empty buffer set is a fully-flushed (canonical) node.
+    if let ArchivedNodeBody::Index(index) = body {
+        fields.insert(
+            "novelty".into(),
+            Ipld::Integer(index.novelty_len() as i128),
+        );
+        fields.insert(
+            "buffered-links".into(),
+            Ipld::Integer(buffered_links(index) as i128),
+        );
+    }
     // Only a segment carries a full upper-bound key; an index's table
     // holds separators, not whole keys, so it reports no bound.
     if let Some(bound) = node.upper_bound().map_err(decode)? {
@@ -239,6 +262,15 @@ fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> 
         );
     }
     Ok(fields)
+}
+
+/// How many of an index node's child links carry a novelty buffer. Buffers are
+/// sparse (a flushed link stores none), so this is the count of children with
+/// pending ops — distinct from `novelty_len`, the total op count across them.
+fn buffered_links(index: &dialog_search_tree::ArchivedIndex<State<Datum>>) -> usize {
+    (0..index.len())
+        .filter(|&at| index.buffer_for(at).is_some())
+        .count()
 }
 
 /// One `tree/node` conclusion for the node at `hash`.
@@ -274,18 +306,27 @@ async fn child_rows<Env: SelectProvider>(
     };
     let manifest = parent.manifest().map_err(decode)?;
 
-    // Collect each child's hash and separator up front so we can drop the
-    // borrow on `parent` before the awaits that read each child. The link
-    // carries the separator, so a not-cached child can still show its bound.
-    let children: Vec<(Blake3Hash, Vec<u8>)> = index
+    // Collect each child's hash, separator, and pending-op count up front so we
+    // can drop the borrow on `parent` before the awaits that read each child.
+    // The link carries the separator, so a not-cached child can still show its
+    // bound; the novelty count rides along so a row can flag pending ops even
+    // when its child block is not cached.
+    let children: Vec<(Blake3Hash, Vec<u8>, u64)> = index
         .links()
         .map_err(decode)?
         .into_iter()
-        .map(|link| (*link.node.as_bytes(), link.separator))
+        .enumerate()
+        .map(|(at, link)| {
+            let novelty = index
+                .buffer_for(at)
+                .map(|buffer| buffer.count.to_native() as u64)
+                .unwrap_or(0);
+            (*link.node.as_bytes(), link.separator, novelty)
+        })
         .collect();
 
     let mut rows = Vec::with_capacity(children.len());
-    for (at, (child, separator)) in children.into_iter().enumerate() {
+    for (at, (child, separator, novelty)) in children.into_iter().enumerate() {
         // Local-only read: a hit is cached, a miss is remote (the block
         // would have to be fetched). A cached child carries its full node
         // fields (size/count/kind); a remote one carries only what the
@@ -323,6 +364,9 @@ async fn child_rows<Env: SelectProvider>(
         );
         fields.insert("child".into(), Ipld::String(to_base58(&child)));
         fields.insert("at".into(), Ipld::Integer(at as i128));
+        // Count of ops buffered against this child's subtree (0 when flushed).
+        // The outline highlights a row with pending novelty.
+        fields.insert("novelty".into(), Ipld::Integer(novelty as i128));
         rows.push(Conclusion {
             this: to_base58(&child),
             fields,
@@ -384,20 +428,7 @@ async fn entry_rows<Env: SelectProvider>(
         // standing in a placeholder for a spilled value, since the inspector
         // has no store to fetch the block.
         match state {
-            State::Added(datum) => {
-                let key = Key::from(key_bytes);
-                let artifact = Artifact::from_key_datum_placeholder(&key, &datum)
-                    .map_err(|e| FormulaError::Decode(e.to_string()))?;
-                fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
-                fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
-                fields.insert(
-                    "type".into(),
-                    Ipld::String(artifact.is.data_type().to_string()),
-                );
-                if let Some(ipld) = value_to_ipld(&artifact.is) {
-                    fields.insert("value".into(), ipld);
-                }
-            }
+            State::Added(datum) => insert_fact_fields(&mut fields, key_bytes, &datum)?,
             State::Removed => {
                 fields.insert("retracted".into(), Ipld::Bool(true));
             }
@@ -407,6 +438,100 @@ async fn entry_rows<Env: SelectProvider>(
             this: key_hex,
             fields,
         });
+    }
+    Ok(rows)
+}
+
+/// Reconstruct a fact (entity / attribute / type / value) from an asserted
+/// key+datum and insert it into `fields`. Only EAV-ordered keys (entity /
+/// attribute / value tags) carry a fact; a history / coverage / blob key has no
+/// entity-attribute-value shape, so those fields are omitted — the row still
+/// carries its decoded `key-parts` for display. Shared by `entry_rows` and
+/// `novelty_rows`.
+fn insert_fact_fields(
+    fields: &mut BTreeMap<String, Ipld>,
+    key_bytes: Vec<u8>,
+    datum: &Datum,
+) -> Result<(), FormulaError> {
+    let key = Key::from(key_bytes);
+    // Non-EAV keys (history/coverage/blob) have no fact to reconstruct; leave
+    // the entity/attribute/value fields unset rather than erroring.
+    if !matches!(
+        key.tag(),
+        ENTITY_KEY_TAG | ATTRIBUTE_KEY_TAG | VALUE_KEY_TAG
+    ) {
+        return Ok(());
+    }
+    let artifact = Artifact::from_key_datum_placeholder(&key, datum)
+        .map_err(|e| FormulaError::Decode(e.to_string()))?;
+    fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
+    fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
+    fields.insert(
+        "type".into(),
+        Ipld::String(artifact.is.data_type().to_string()),
+    );
+    if let Some(ipld) = value_to_ipld(&artifact.is) {
+        fields.insert("value".into(), ipld);
+    }
+    Ok(())
+}
+
+/// One `tree/novelty` conclusion per op buffered against an index node's
+/// links. Each row carries the child link it is pending against (`child-at`),
+/// the op position (`at`), the decoded key components (`key-parts`), the op
+/// polarity (`retracted` for a retract), and — for an assert — the
+/// entity / attribute / value reconstructed from the key. A segment node (no
+/// links) and a fully-flushed index (no buffers) yield no rows.
+async fn novelty_rows<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    hash: Blake3Hash,
+) -> Result<Vec<Conclusion>, FormulaError> {
+    use dialog_search_tree::{NoveltyEntry, NoveltyOp};
+
+    let decode = |e: DialogSearchTreeError| FormulaError::Decode(e.to_string());
+    let node = read_node(branch, env, hash).await?;
+    let body = node.body().map_err(decode)?;
+
+    let ArchivedNodeBody::Index(index) = body else {
+        return Ok(vec![]); // a segment carries no novelty buffers
+    };
+    let manifest = node.manifest().map_err(decode)?;
+
+    let mut rows = Vec::new();
+    for at in 0..index.len() {
+        let ops: Vec<NoveltyEntry<State<Datum>>> =
+            index.link_novelty::<Key>(at).map_err(decode)?;
+        for (op_at, NoveltyEntry { key: key_bytes, op }) in ops.into_iter().enumerate() {
+            let key_hex = bytes_hex(&key_bytes);
+            let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+            fields.insert("child-at".into(), Ipld::Integer(at as i128));
+            fields.insert("at".into(), Ipld::Integer(op_at as i128));
+            fields.insert("key".into(), Ipld::String(key_hex.clone()));
+            fields.insert("key-parts".into(), Ipld::List(key_parts(&key_bytes)));
+            fields.insert(
+                "rank".into(),
+                Ipld::Integer(Geometric::rank(&key_bytes, &manifest) as i128),
+            );
+
+            // An assert reconstructs the fact from the key (as `entry_rows`
+            // does); a retract is a tombstone carrying only its key.
+            match op {
+                NoveltyOp::Assert(State::Added(datum)) => {
+                    insert_fact_fields(&mut fields, key_bytes, &datum)?;
+                }
+                // A buffered retract, or an assert of a removed state (a
+                // tombstone riding the buffer): render as a retraction.
+                NoveltyOp::Retract | NoveltyOp::Assert(State::Removed) => {
+                    fields.insert("retracted".into(), Ipld::Bool(true));
+                }
+            }
+
+            rows.push(Conclusion {
+                this: key_hex,
+                fields,
+            });
+        }
     }
     Ok(rows)
 }
