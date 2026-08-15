@@ -22,12 +22,13 @@ use std::collections::BTreeMap;
 
 use base58::{FromBase58, ToBase58};
 use dialog_artifacts::inspect::{
-    EntrySummary, KeyComponent, KeySummary, NodeSummary, SpanSummary, inspect_entries,
-    inspect_keys, inspect_node, inspect_spans, key_components, separator_components,
+    EntrySummary, KeyComponent, KeySummary, NodeSummary, SpanSummary, inspect_blob_records,
+    inspect_entries, inspect_keys, inspect_manifest, inspect_node, inspect_spans, key_components,
+    separator_components,
 };
 use dialog_artifacts::{
-    ATTRIBUTE_KEY_TAG, Artifact, Datum, DialogArtifactsError, ENTITY_KEY_TAG, Key, VALUE_KEY_TAG,
-    Value,
+    ATTRIBUTE_KEY_TAG, Artifact, COVERAGE_KEY_TAG, Datum, DialogArtifactsError, ENTITY_KEY_TAG,
+    HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
 };
 use dialog_query::Term;
 use dialog_repository::{
@@ -224,6 +225,34 @@ fn node_fields(bytes: &[u8]) -> Result<BTreeMap<String, Ipld>, FormulaError> {
     fields.insert("kind".into(), Ipld::String(summary.kind.into()));
     fields.insert("size".into(), Ipld::Integer(summary.size as i128));
     fields.insert("count".into(), Ipld::Integer(summary.count as i128));
+    // The subtree's advisory scale code (a log-scale entry-count estimate)
+    // and the hitchhiker ops buffered on this node — the two numbers that
+    // explain the tree's SHAPE rather than its contents. Novelty is always
+    // 0 for a segment; it is reported anyway so the field never vanishes.
+    fields.insert("scale".into(), Ipld::Integer(summary.scale as i128));
+    fields.insert("novelty".into(), Ipld::Integer(summary.novelty as i128));
+    // Every node embeds the manifest it was written under, so the
+    // configuration that produced this shape is readable off the node
+    // itself rather than assumed from the current defaults.
+    if let Ok(manifest) = inspect_manifest(bytes.to_vec()) {
+        let mut m: BTreeMap<String, Ipld> = BTreeMap::new();
+        m.insert("version".into(), Ipld::Integer(manifest.version as i128));
+        m.insert("fanout".into(), Ipld::Integer(1i128 << manifest.fanout_n));
+        m.insert(
+            "max-separator".into(),
+            Ipld::Integer(manifest.max_separator as i128),
+        );
+        m.insert("inline".into(), Ipld::Integer(manifest.inline_n as i128));
+        m.insert(
+            "spill-prefix".into(),
+            Ipld::Integer(manifest.spill_prefix as i128),
+        );
+        m.insert(
+            "max-segment".into(),
+            Ipld::Integer(manifest.max_segment as i128),
+        );
+        fields.insert("manifest".into(), Ipld::Map(m));
+    }
     if summary.kind == "segment" {
         let keys: Vec<KeySummary> = inspect_keys(bytes.to_vec())?;
         if let Some(last) = keys.last() {
@@ -334,7 +363,7 @@ async fn entry_rows<Env: SelectProvider>(
         return Ok(vec![]); // an index has no entries
     }
     let keys: Vec<KeySummary> = inspect_keys(bytes.clone())?;
-    let entries: Vec<EntrySummary> = inspect_entries(bytes)?;
+    let entries: Vec<EntrySummary> = inspect_entries(bytes.clone())?;
 
     let mut rows = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -348,12 +377,46 @@ async fn entry_rows<Env: SelectProvider>(
             fields.insert("rank".into(), Ipld::Integer(key.rank as i128));
         }
 
+        // The index a key belongs to, read off its leading tag. A segment
+        // holds more than entity-attribute-value facts: history and
+        // coverage records, blob-index records. Naming the ordering lets
+        // the inspector render each for what it is instead of trying to
+        // read them all as facts.
+        let ordering = entry
+            .key
+            .first()
+            .copied()
+            .map(tag_name)
+            .unwrap_or("unknown");
+        fields.insert("ordering".into(), Ipld::String(ordering.into()));
+
+        // Claim metadata: which version wrote the entry, what it descends
+        // from, and how much was folded into it. This is what makes a
+        // history or coverage record legible — a covering record is the
+        // one that supersedes prior versions.
+        if !entry.origin.is_empty() {
+            fields.insert("origin".into(), Ipld::String(bytes_hex(&entry.origin)));
+        }
+        fields.insert("edition".into(), Ipld::Integer(entry.edition as i128));
+        fields.insert("cause".into(), Ipld::Integer(entry.cause as i128));
+        fields.insert("collapsed".into(), Ipld::Integer(entry.collapsed as i128));
+        fields.insert("supersedes".into(), Ipld::Integer(entry.supersedes as i128));
+        fields.insert("retraction".into(), Ipld::Bool(entry.retraction));
+        if let Some(spill) = &entry.spill {
+            fields.insert("spill".into(), Ipld::String(to_base58(spill)));
+        }
+
         // A segment holds asserted facts; a retraction is a tombstone. The
         // entity/attribute/value all live IN the key (the datum carries only
         // causal metadata), so reconstruct the fact from the key — standing
         // in a placeholder for a spilled value, since the inspector has no
-        // store to fetch the block. The synthesized datum carries no cause;
-        // the inspector doesn't render one.
+        // store to fetch the block.
+        //
+        // Only EAV-shaped keys reconstruct. A history, coverage or blob
+        // key decodes to no artifact, and treating that as fatal used to
+        // abort the WHOLE entry list — one history record and the segment
+        // rendered empty. Such an entry keeps its key components and
+        // metadata and simply reports no fact.
         if entry.state == "removed" {
             fields.insert("retracted".into(), Ipld::Bool(true));
         } else {
@@ -366,16 +429,16 @@ async fn entry_rows<Env: SelectProvider>(
                 supersedes: Vec::new(),
                 retraction: false,
             };
-            let artifact = Artifact::from_key_datum_placeholder(&key, &datum)
-                .map_err(|e| FormulaError::Decode(e.to_string()))?;
-            fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
-            fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
-            fields.insert(
-                "type".into(),
-                Ipld::String(artifact.is.data_type().to_string()),
-            );
-            if let Some(ipld) = value_to_ipld(&artifact.is) {
-                fields.insert("value".into(), ipld);
+            if let Ok(artifact) = Artifact::from_key_datum_placeholder(&key, &datum) {
+                fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
+                fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
+                fields.insert(
+                    "type".into(),
+                    Ipld::String(artifact.is.data_type().to_string()),
+                );
+                if let Some(ipld) = value_to_ipld(&artifact.is) {
+                    fields.insert("value".into(), ipld);
+                }
             }
         }
 
@@ -383,6 +446,25 @@ async fn entry_rows<Env: SelectProvider>(
             this: key_hex,
             fields,
         });
+    }
+
+    // Blob-index entries carry no claim metadata, so they come back from
+    // the entry walk with everything empty; their real payload (the
+    // referenced hash, its size and record version) lives in a parallel
+    // index. Merge it in by segment position so a blob row is a blob row
+    // rather than an entry that appears to say nothing.
+    for record in inspect_blob_records(bytes)? {
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|row| row.fields.get("at") == Some(&Ipld::Integer(record.at as i128)))
+        {
+            row.fields
+                .insert("blob".into(), Ipld::String(bytes_hex(&record.blob)));
+            row.fields
+                .insert("blob-size".into(), Ipld::Integer(record.size as i128));
+            row.fields
+                .insert("blob-version".into(), Ipld::Integer(record.version as i128));
+        }
     }
     Ok(rows)
 }
@@ -431,23 +513,151 @@ fn key_parts(bytes: &[u8]) -> Vec<Ipld> {
 /// so the outline's left edge reads in the right hue — `\0concept:J4J64…`
 /// shows as `concept:J4J64…` in entity-blue rather than structural gray.
 fn separator_parts(bytes: &[u8]) -> Vec<Ipld> {
-    let lead_kind = match bytes.first() {
-        Some(&ENTITY_KEY_TAG) => "entity",
-        Some(&ATTRIBUTE_KEY_TAG) => "attribute",
-        Some(&VALUE_KEY_TAG) => "value",
-        _ => "opaque",
-    };
     separator_components(bytes)
         .iter()
-        .map(|component| match component.kind {
-            "prefix" => component_part(&KeyComponent {
-                kind: lead_kind,
-                text: component.text.clone(),
-                bytes: component.bytes.clone(),
-            }),
-            _ => component_part(component),
+        .flat_map(|component| match component.kind {
+            "prefix" => prefix_fields(bytes.first().copied(), component),
+            _ => vec![component_part(component)],
         })
         .collect()
+}
+
+/// Split a separator's front-coded `prefix` into the key FIELDS it spans.
+///
+/// Dialog reports everything after the tag as one opaque `prefix`, but a
+/// separator is a truncated key: its bytes are the leading fields of a
+/// real key, NUL-delimited, cut wherever the prefix ends. Painting the
+/// whole run one colour mislabels it — `db:concept␀db.meta/concept␀d`
+/// showed as a single entity when it is an entity, an attribute, and the
+/// first byte of the next entity. Split on the delimiters and colour each
+/// field by its position in the ordering, so a separator reads with the
+/// same colour code as a full key.
+///
+/// The final field is usually truncated mid-value (that is the point of
+/// front-coding), so it is reported as-is; the key's own components would
+/// be wrong to synthesize here.
+fn prefix_fields(tag: Option<u8>, component: &KeyComponent) -> Vec<Ipld> {
+    // Field order per index, mirroring dialog's `key_components`: the
+    // ordering's leading sort column comes first.
+    let order: &[&str] = match tag {
+        Some(ENTITY_KEY_TAG) => &["entity", "attribute", "vtype", "value"],
+        Some(ATTRIBUTE_KEY_TAG) => &["attribute", "entity", "vtype", "value"],
+        Some(VALUE_KEY_TAG) => &["vtype", "value", "attribute", "entity"],
+        // A history or coverage separator opens with a 32-byte origin
+        // and an 8-byte big-endian edition — raw binary, which renders
+        // as a run of overlapping control glyphs if passed through as
+        // text. Report them as the version they encode.
+        Some(HISTORY_KEY_TAG) | Some(COVERAGE_KEY_TAG) => {
+            return version_fields(&component.bytes);
+        }
+        // An unknown tag has no field layout at all, so leave it opaque
+        // rather than colouring it by a layout it does not have.
+        _ => return vec![component_part(component)],
+    };
+
+    // In value-ordering the key opens with a one-byte VALUE TYPE tag
+    // rather than a NUL-delimited field, so it has to be peeled off
+    // before splitting — otherwise it fuses with the value that follows
+    // and every later field lands one slot early (an attribute showing
+    // up where the value belongs).
+    let mut parts = Vec::new();
+    let mut rest = component.bytes.as_slice();
+    let mut next = 0usize;
+    if tag == Some(VALUE_KEY_TAG)
+        && let Some((vtype, tail)) = rest.split_first()
+    {
+        parts.push(component_part(&KeyComponent {
+            kind: "vtype",
+            text: value_type_name(*vtype),
+            bytes: vec![*vtype],
+        }));
+        rest = tail;
+        next = 1;
+    }
+
+    parts.extend(
+        rest.split(|b| *b == 0)
+            .filter(|field| !field.is_empty())
+            .enumerate()
+            .map(|(index, field)| {
+                component_part(&KeyComponent {
+                    kind: order.get(next + index).copied().unwrap_or("opaque"),
+                    text: String::from_utf8_lossy(field).into_owned(),
+                    bytes: field.to_vec(),
+                })
+            }),
+    );
+    parts
+}
+
+/// Decode a history/coverage separator's leading bytes into readable
+/// version fields: a 32-byte origin and an 8-byte big-endian edition.
+///
+/// Front-coding truncates anywhere, so each field is emitted only if
+/// wholly present; whatever follows the version is the EAV tail, which
+/// is reported as one component rather than guessed at.
+fn version_fields(bytes: &[u8]) -> Vec<Ipld> {
+    const ORIGIN: usize = 32;
+    const EDITION: usize = 8;
+
+    let mut parts = Vec::new();
+    let Some(origin) = bytes.get(..ORIGIN) else {
+        // Too short to carry a whole origin — nothing decodable.
+        return vec![component_part(&KeyComponent {
+            kind: "opaque",
+            text: bytes_hex(bytes),
+            bytes: bytes.to_vec(),
+        })];
+    };
+    parts.push(component_part(&KeyComponent {
+        kind: "origin",
+        text: format!("origin:{}", bytes_hex(origin).trim_start_matches("0x")),
+        bytes: origin.to_vec(),
+    }));
+
+    let rest = &bytes[ORIGIN..];
+    if let Some(edition) = rest.get(..EDITION) {
+        let n = edition.iter().fold(0u64, |acc, b| (acc << 8) | *b as u64);
+        parts.push(component_part(&KeyComponent {
+            kind: "edition",
+            text: format!("@{n}"),
+            bytes: edition.to_vec(),
+        }));
+        let tail = &rest[EDITION..];
+        if !tail.is_empty() {
+            parts.push(component_part(&KeyComponent {
+                kind: "entity",
+                text: String::from_utf8_lossy(tail).into_owned(),
+                bytes: tail.to_vec(),
+            }));
+        }
+    } else if !rest.is_empty() {
+        parts.push(component_part(&KeyComponent {
+            kind: "opaque",
+            text: bytes_hex(rest),
+            bytes: rest.to_vec(),
+        }));
+    }
+    parts
+}
+
+/// The human name of a value-type tag, matching what dialog's own
+/// `key_components` renders for a `vtype` component (which formats the
+/// decoded [`ValueDataType`]). The tags are the enum's discriminants.
+fn value_type_name(tag: u8) -> String {
+    match tag {
+        0 => "Bytes",
+        1 => "Entity",
+        2 => "Boolean",
+        3 => "String",
+        4 => "UnsignedInt",
+        5 => "SignedInt",
+        6 => "Float",
+        7 => "Record",
+        8 => "Symbol",
+        _ => return format!("type {tag}"),
+    }
+    .to_owned()
 }
 
 /// Resolve the required `key` input: a `0x`-prefixed hex string of the raw
@@ -521,4 +731,113 @@ fn bytes_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Read a component list back as `(kind, text)` pairs.
+    fn kinds(parts: &[Ipld]) -> Vec<(String, String)> {
+        parts
+            .iter()
+            .map(|part| {
+                let Ipld::Map(m) = part else {
+                    panic!("component must be a map")
+                };
+                let get = |k: &str| match m.get(k) {
+                    Some(Ipld::String(s)) => s.clone(),
+                    other => panic!("{k} must be a string, got {other:?}"),
+                };
+                (get("kind"), get("text"))
+            })
+            .collect()
+    }
+
+    /// A separator is a front-coded prefix spanning SEVERAL key fields,
+    /// NUL-delimited. Painting the run one colour mislabels it — the
+    /// reported symptom was `db:concept␀db.meta/concept␀d` rendering as
+    /// a single entity when it is an entity, an attribute, and the first
+    /// byte of the next field.
+    #[dialog_common::test]
+    fn it_splits_an_entity_separator_into_its_fields() {
+        let mut bytes = vec![ENTITY_KEY_TAG];
+        bytes.extend_from_slice(b"concept:J4J64\0db.concept.with/n");
+
+        let parts = kinds(&separator_parts(&bytes));
+
+        assert_eq!(
+            parts,
+            vec![
+                ("index".to_owned(), "entity".to_owned()),
+                ("entity".to_owned(), "concept:J4J64".to_owned()),
+                ("attribute".to_owned(), "db.concept.with/n".to_owned()),
+            ]
+        );
+    }
+
+    /// Value ordering opens with a one-byte VALUE TYPE tag rather than a
+    /// NUL-delimited field. Splitting without peeling it off fuses it to
+    /// the value that follows and shifts every later field one slot
+    /// early — the attribute then lands where the value belongs.
+    #[dialog_common::test]
+    fn it_peels_the_value_type_tag_before_splitting() {
+        let mut bytes = vec![VALUE_KEY_TAG];
+        bytes.push(1); // ValueDataType::Entity
+        bytes.extend_from_slice(b"db:concept\0db.meta/concept\0d");
+
+        let parts = kinds(&separator_parts(&bytes));
+
+        assert_eq!(
+            parts,
+            vec![
+                ("index".to_owned(), "value".to_owned()),
+                ("vtype".to_owned(), "Entity".to_owned()),
+                ("value".to_owned(), "db:concept".to_owned()),
+                ("attribute".to_owned(), "db.meta/concept".to_owned()),
+                ("entity".to_owned(), "d".to_owned()),
+            ]
+        );
+    }
+
+    /// A history separator opens with a 32-byte origin and an 8-byte
+    /// big-endian edition. Passed through as text those render as a run
+    /// of overlapping control glyphs, so they decode to the version they
+    /// encode instead.
+    #[dialog_common::test]
+    fn it_decodes_a_history_separator_as_a_version() {
+        let mut bytes = vec![HISTORY_KEY_TAG];
+        bytes.extend_from_slice(&[0xab; 32]);
+        bytes.extend_from_slice(&7u64.to_be_bytes());
+
+        let parts = kinds(&separator_parts(&bytes));
+
+        assert_eq!(parts[0], ("index".to_owned(), "history".to_owned()));
+        assert_eq!(parts[1].0, "origin");
+        assert!(
+            parts[1].1.starts_with("origin:abab"),
+            "origin renders as hex, got {:?}",
+            parts[1].1
+        );
+        assert_eq!(parts[2], ("edition".to_owned(), "@7".to_owned()));
+    }
+
+    /// Front-coding truncates anywhere, so a separator may carry only
+    /// part of the version. A partial origin stays opaque rather than
+    /// being decoded from bytes that are not all there.
+    #[dialog_common::test]
+    fn it_leaves_a_truncated_history_separator_opaque() {
+        let mut bytes = vec![HISTORY_KEY_TAG];
+        bytes.extend_from_slice(&[0xab; 8]); // short of a whole origin
+
+        let parts = kinds(&separator_parts(&bytes));
+
+        assert_eq!(parts[0], ("index".to_owned(), "history".to_owned()));
+        assert_eq!(parts[1].0, "opaque");
+    }
 }

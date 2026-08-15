@@ -663,13 +663,31 @@ pub fn register() {
 }
 
 const STYLE: &str = r#"
+/* The element is mounted bare inside a view fragment, so `height: 100%`
+   has nothing to resolve against — the ancestor chain is auto-height and
+   the panes grow to fit their content, scrolling the whole page instead
+   of themselves. Styling the route's `tonk-view > *` to fix that would
+   clobber other views' layout, so the bound lives here.
+
+   The route slot gives this element a definite height (see the
+   `.display-view-slot:has(tonk-tree)` rule in `tonk-ui/styles.css`),
+   so filling the parent is enough. `flex: 1 1 0` claims the space when
+   the parent is a flex column — which the guest body and the route
+   chain both are — and `min-height: 0` overrides a flex item's
+   automatic content-height minimum, the thing that otherwise lets the
+   panes push past the bottom edge. Each pane then has a definite
+   height to scroll within, independently of the other. */
 :host {
-  display: grid; grid-template-columns: 1.4fr 1fr; height: 100%;
-  min-height: 240px; color: var(--wa-color-text-normal);
+  display: grid; grid-template-columns: 1.4fr 1fr;
+  flex: 1 1 0; min-height: 0; height: 100%;
+  box-sizing: border-box;
+  color: var(--wa-color-text-normal);
   font-family: var(--wa-font-family-code, ui-monospace, monospace);
   font-size: var(--wa-font-size-s, 13px);
 }
-.pane { overflow: auto; padding: var(--wa-space-m, 12px); }
+/* `min-height: 0` overrides the grid item's `auto` minimum, which would
+   otherwise floor each pane at its content height and defeat the scroll. */
+.pane { overflow: auto; min-height: 0; padding: var(--wa-space-m, 12px); }
 .pane.left { border-right: 1px solid var(--wa-color-border-quiet); }
 /* The outline runs at a smaller, denser size — closer to a D3 indented
    tree. The connectors are sized in `em`, so they tighten with it. The
@@ -784,9 +802,12 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .key-seg.seg-entity { color: var(--tonk-circle, #3d6da8); }
 .key-seg.seg-attribute { color: var(--tonk-triangle, #c89a2b); }
 .key-seg.seg-value { color: var(--tonk-square, #b94a3d); }
-/* The value-TYPE tag reads as a distinct marker (a muted violet), so it never
-   blurs into the red value it precedes. */
-.key-seg.seg-vtype { color: #8a6ab0; font-weight: var(--wa-font-weight-normal, 400); }
+/* The value-TYPE tag belongs to the value it precedes, so it carries the
+   value color rather than a hue of its own — violet sat outside the
+   Bauhaus palette. Reduced opacity and the lighter weight keep it
+   subordinate to the value itself. */
+.key-seg.seg-vtype { color: var(--tonk-square, #b94a3d); opacity: 0.7;
+  font-weight: var(--wa-font-weight-normal, 400); }
 .key-seg.seg-unknown { color: var(--tonk-closure, #7a7268); }
 /* The index-type segment is neutral (the page's normal text color). */
 .key-seg.seg-index-type { color: var(--wa-color-text-normal); }
@@ -836,7 +857,8 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .keybytes .key-seg.seg-entity { background: var(--tonk-circle, #3d6da8); color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-attribute { background: var(--tonk-triangle, #c89a2b); color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-value { background: var(--tonk-square, #b94a3d); color: light-dark(#000, #fff); }
-.keybytes .key-seg.seg-vtype { background: #8a6ab0; color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-vtype { background: var(--tonk-square, #b94a3d);
+  color: light-dark(#000, #fff); opacity: 0.7; }
 .keybytes .key-seg.seg-unknown { background: var(--tonk-closure, #7a7268); color: light-dark(#000, #fff); }
 .keybytes .key-seg.seg-index-type { background: light-dark(#000, #fff);
   color: light-dark(#fff, #000); }
