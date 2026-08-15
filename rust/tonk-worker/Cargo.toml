@@ -116,6 +116,7 @@ getrandom_0_3 = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
+dialog-operator = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }

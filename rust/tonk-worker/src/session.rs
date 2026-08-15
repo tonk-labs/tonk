@@ -148,8 +148,6 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use dialog_credentials::Ed25519Signer;
     use dialog_effects::storage::Directory;
     use dialog_ucan::UcanDelegation;
@@ -160,9 +158,14 @@ mod tests {
     /// A throwaway profile in a scratch directory, plus the storage it
     /// is mounted in. Names are unique per call so tests never share a
     /// profile key or a certificate store.
+    ///
+    /// The name must be unique across PROCESSES, not just within one: the
+    /// runner starts a process per test, so a bare per-process counter
+    /// hands two concurrent tests the same name — and therefore the same
+    /// profile directory, whose writer lock one of them then loses.
+    /// `unique_name` folds in the pid for exactly this reason.
     async fn scratch() -> (Storage<DefaultSpace>, Profile) {
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let name = format!("session-test-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+        let name = dialog_operator::helpers::unique_name("session-test");
         let storage = Storage::<DefaultSpace>::default();
         let profile = Profile::open(name)
             .at(Directory::Temp)
