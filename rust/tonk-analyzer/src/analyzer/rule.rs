@@ -1,5 +1,6 @@
 //! Rule-side analysis — lifts a `rule!:` claim's body into a
-//! compiled [`tonk_core::effect::Effect`].
+//! compiled [`dialog_query::InductiveRule`] or
+//! [`dialog_query::DeductiveRule`].
 //!
 //! `rule!:` is structurally a [`tonk_notation::Expression::Claim`]
 //! over the built-in `rule` concept; the analyzer's mutation pass
@@ -35,58 +36,51 @@ use super::formula::{FormulaInfo, lookup_formula};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
-use tonk_core::effect::{Effect, EffectPolarity};
-use tonk_schema::deductive_rule::DeductiveRule;
-use tonk_schema::rule::Rule;
+use dialog_query::rule::inductive::Polarity;
+use tonk_schema::rule::Rule as StoredRule;
 
 /// Outcome of inspecting a `rule!:` claim body — install (build a
-/// fresh [`Rule`]) or retract (resolve an existing rule from the
-/// branch). Both paths produce a [`Rule`] value the analyzer hands
-/// forward as `Application::Rule { rule, .. }`.
+/// fresh compiled rule) or retract (resolve an existing rule from
+/// the branch). Both paths produce a compiled dialog rule the
+/// analyzer hands forward as `Application::Rule` /
+/// `Application::DeductiveRule`.
 ///
 /// The two notation shapes:
 ///
 /// - Install: `rule!: assert!: <head>, when: [...]` — body carries
-///   polarity + premises, no `..: _`. A `this: <entity>` may
-///   additionally pin the install at a user-chosen entity.
-/// - Retract: `rule!: this: effect:<entity>, ..: _` — body carries
+///   polarity + premises, no `..: _`. Rules are content-addressed,
+///   so `this:` cannot pin an install entity.
+/// - Retract: `rule!: this: rule:<entity>, ..: _` — body carries
 ///   the rule's entity in `this:` and `..: _` as the
 ///   retract-everything sentinel.
 pub(crate) enum RuleAction {
-    /// Install a new rule. `rule` carries the freshly-built
-    /// [`Rule`] with `Effect::source()` already captured; `this`
-    /// carries `Some(entity)` when the user pinned the install with
-    /// `this: <entity>`, `None` for the content-addressed default.
+    /// Install a new inductive rule at its content-derived entity.
     Install {
-        /// The freshly-built rule packaged for assert.
-        rule: Box<Rule>,
-        /// Caller-supplied install-at entity from `this: <entity>`.
-        this: Option<Entity>,
+        /// The freshly-compiled rule; dialog's `Statement` impl
+        /// writes the `dialog.rule/*` facts.
+        rule: Box<InductiveRule>,
     },
-    /// Retract an installed rule. `rule` carries the [`Rule`]
-    /// resolved off the branch with the stored `source` / `polarity`
-    /// bytes — handed to `Statement::Retract` so the dissociate
-    /// matches what was written byte-for-byte.
-    Retract { rule: Box<Rule>, this: Entity },
-    /// Install a new deductive rule (the `assert:` no-bang form).
-    /// `rule` carries the freshly-built
-    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule);
-    /// `this` is `Some(entity)` when pinned via `this: <entity>`.
+    /// Retract an installed inductive rule. `rule` was resolved off
+    /// the branch, so re-encoding it dissociates the stored facts
+    /// byte-exactly (the encoding is canonical).
+    Retract {
+        /// The rule resolved off the branch.
+        rule: Box<InductiveRule>,
+        /// The entity the `dialog.rule/*` claims live under.
+        this: Entity,
+    },
+    /// Install a new deductive rule (the `assert:` no-bang form) at
+    /// its content-derived entity.
     InstallDeductive {
-        /// The freshly-built deductive rule packaged for assert.
-        rule: Box<DeductiveRule>,
-        /// Caller-supplied install-at entity from `this: <entity>`.
-        this: Option<Entity>,
+        /// The freshly-compiled deductive rule.
+        rule: Box<CompiledDeductiveRule>,
     },
-    /// Retract an installed deductive rule. `rule` carries the
-    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule)
-    /// resolved off the branch with its stored `db.rule/source` bytes —
-    /// handed to `Statement::Retract` so the dissociate matches what was
-    /// written. The deductive counterpart to [`Retract`](Self::Retract).
+    /// Retract an installed deductive rule. The deductive
+    /// counterpart to [`Retract`](Self::Retract).
     RetractDeductive {
-        /// The rule resolved off the branch, carrying exact stored bytes.
-        rule: Box<DeductiveRule>,
-        /// The entity the `db.rule/*` claims live under.
+        /// The rule resolved off the branch.
+        rule: Box<CompiledDeductiveRule>,
+        /// The entity the `dialog.rule/*` claims live under.
         this: Entity,
     },
 }
@@ -137,61 +131,54 @@ pub(crate) fn lift_rule_claim(
             )
         })?;
         // The stored rule was read off the branch during resolve's
-        // prefetch pass (so the carried `source` bytes match what's
-        // installed) and cached on the scope. A retract entity may name
-        // an inductive or a deductive rule, so resolve consulted both;
-        // whichever is present wins. `Some(None)` on a map means that
-        // kind is confirmed absent; `None` means resolve never
+        // prefetch pass and cached on the scope; the decoded body's
+        // head field decided its kind. `Some(None)` means the entity
+        // holds no installed rule; `None` means resolve never
         // prefetched it, which is an analyzer bug.
-        let inductive = scope.resolved_rule(&entity);
-        let deductive = scope.resolved_deductive_rule(&entity);
-        if inductive.is_none() && deductive.is_none() {
+        let Some(resolved) = scope.resolved_rule(&entity) else {
             return Err(AnalyzeError::at(
                 AnalyzeErrorKind::RuleCompileFailed {
                     reason: format!("rule retract at {entity} was not prefetched during resolve"),
                 },
                 application.range,
             ));
-        }
-        if let Some(Some(rule)) = inductive {
-            return Ok(Some(RuleAction::Retract {
+        };
+        match resolved {
+            Some(StoredRule::Inductive(rule)) => Ok(Some(RuleAction::Retract {
                 rule: Box::new(rule),
                 this: entity,
-            }));
-        }
-        if let Some(Some(rule)) = deductive {
-            return Ok(Some(RuleAction::RetractDeductive {
+            })),
+            Some(StoredRule::Deductive(rule)) => Ok(Some(RuleAction::RetractDeductive {
                 rule: Box::new(rule),
                 this: entity,
-            }));
+            })),
+            // Confirmed absent — retracting something not installed
+            // (or already retracted in this document); drop the claim
+            // silently.
+            None => Ok(None),
         }
-        // Both kinds confirmed absent — retracting something not
-        // installed (or already retracted in this document); drop the
-        // claim silently.
-        Ok(None)
     } else {
-        let this = parse_rule_this_entity(application)?;
+        // Rules are content-addressed: the entity IS the hash of the
+        // canonical body, and a reader treats facts stored under any
+        // other entity as inert. A pinned install would silently
+        // never fire, so reject it outright.
+        if let Some(entity) = parse_rule_this_entity(application)? {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: format!(
+                        "rules are content-addressed; `this: {entity}` cannot pin an install                          entity (omit `this:`, or use it only in the retract form)"
+                    ),
+                },
+                application.range,
+            ));
+        }
         match lift_rule(application, scope, analysis)? {
-            LiftedRule::Inductive(effect) => {
-                let rule = match this.clone() {
-                    Some(entity) => Rule::asserting_at(effect, entity),
-                    None => Rule::asserting(effect),
-                };
-                Ok(Some(RuleAction::Install {
-                    rule: Box::new(rule),
-                    this,
-                }))
-            }
-            LiftedRule::Deductive(compiled) => {
-                let rule = match this.clone() {
-                    Some(entity) => DeductiveRule::asserting_at(compiled, entity),
-                    None => DeductiveRule::asserting(compiled),
-                };
-                Ok(Some(RuleAction::InstallDeductive {
-                    rule: Box::new(rule),
-                    this,
-                }))
-            }
+            LiftedRule::Inductive(rule) => Ok(Some(RuleAction::Install {
+                rule: Box::new(rule),
+            })),
+            LiftedRule::Deductive(rule) => Ok(Some(RuleAction::InstallDeductive {
+                rule: Box::new(rule),
+            })),
         }
     }
 }
@@ -316,7 +303,7 @@ pub(crate) fn lift_rule(
     // only to inductive `assert!:` rules — a deductive rule that
     // re-states a premise simply yields that premise's rows on
     // query, which is harmless (no fixpoint to spin).
-    if body.head == RuleHead::Inductive(EffectPolarity::Assert)
+    if body.head == RuleHead::Inductive(Polarity::Assert)
         && let Some(reason) = trivially_tautological(&head_descriptor, &dialog_premises)
     {
         return Err(AnalyzeError::at(
@@ -338,7 +325,7 @@ pub(crate) fn lift_rule(
                     application.range,
                 )
             })?;
-            Ok(LiftedRule::Inductive(Effect::new(inductive, polarity)))
+            Ok(LiftedRule::Inductive(inductive.with_polarity(polarity)))
         }
         RuleHead::Deductive => {
             let deductive =
@@ -355,12 +342,12 @@ pub(crate) fn lift_rule(
     }
 }
 
-/// The compiled output of [`lift_rule`]: an inductive
-/// [`Effect`] (the `assert!:` / `retract!:` form) or a compiled
-/// [`DeductiveRule`](dialog_query::DeductiveRule) (the `assert:` form).
+/// The compiled output of [`lift_rule`]: an inductive rule (the
+/// `assert!:` / `retract!:` form, polarity carried on the rule) or a
+/// deductive rule (the `assert:` form).
 pub(crate) enum LiftedRule {
     /// An inductive rule with polarity.
-    Inductive(Effect),
+    Inductive(InductiveRule),
     /// A deductive rule.
     Deductive(CompiledDeductiveRule),
 }
@@ -441,7 +428,7 @@ struct RuleBody<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RuleHead {
     /// `assert!:` / `retract!:` — an inductive rule with a polarity.
-    Inductive(EffectPolarity),
+    Inductive(Polarity),
     /// `assert:` (no bang) — a deductive rule.
     Deductive,
 }
@@ -467,8 +454,8 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
         match field.name.as_str() {
             "assert!" | "retract!" | "assert" => {
                 let new_head = match field.name.as_str() {
-                    "assert!" => RuleHead::Inductive(EffectPolarity::Assert),
-                    "retract!" => RuleHead::Inductive(EffectPolarity::Retract),
+                    "assert!" => RuleHead::Inductive(Polarity::Assert),
+                    "retract!" => RuleHead::Inductive(Polarity::Retract),
                     // `assert:` (no bang) — deductive.
                     _ => RuleHead::Deductive,
                 };
@@ -1081,12 +1068,12 @@ mod tests {
     /// exactly one statement and it is not an effect install.
     fn only_installed_effect(
         tree: &crate::analysis::Analysis<tonk_notation::Syntax>,
-    ) -> tonk_core::effect::Effect {
+    ) -> InductiveRule {
         use tonk_schema::transact::{Application, Statement};
         let statements = tree.analysis.statements();
         assert_eq!(statements.len(), 1);
         match &statements[0].statement {
-            Statement::Assert(Application::Rule { rule, .. }) => rule.effect.clone(),
+            Statement::Assert(Application::Rule { rule, .. }) => (**rule).clone(),
             other => panic!("expected Statement::Assert(Application::Rule), got {other:?}"),
         }
     }
@@ -1124,17 +1111,16 @@ mod tests {
             .expect("analyze should succeed");
 
         let effect = only_installed_effect(&analysis);
-        assert_eq!(effect.polarity(), EffectPolarity::Assert);
+        assert_eq!(effect.polarity(), Polarity::Assert);
         // Head concept entity matches the pong descriptor.
         assert_eq!(
-            effect.conclusion(),
+            effect.conclusion().this(),
             one_text_field("io.gozala.pong", "tag").this()
         );
         // Reverse-index keys cover the body's attribute.
-        let on_uris: Vec<String> = effect
-            .on_entities()
+        let on_uris: Vec<String> = tonk_schema::rule::on_entities(&effect)
             .into_iter()
-            .map(|e| e.to_string())
+            .map(|entity| entity.to_string())
             .collect();
         assert!(
             on_uris.iter().any(|u| u == "on:io.gozala.ping/tag"),
@@ -1185,7 +1171,7 @@ mod tests {
         let installs = analysis.analysis.deductive_rule_installs();
         assert_eq!(installs.len(), 1);
         assert_eq!(
-            installs[0].conclusion(),
+            installs[0].conclusion().this(),
             one_text_field("io.gozala.pong", "tag").this()
         );
         // ...and not through the inductive accessor.
@@ -1285,7 +1271,7 @@ mod tests {
         );
     }
 
-    /// Retract-polarity head lifts to `EffectPolarity::Retract`.
+    /// Retract-polarity head lifts to `Polarity::Retract`.
     #[dialog_common::test]
     async fn it_lifts_retract_polarity() {
         let fixture = new_fixture().await;
@@ -1313,7 +1299,7 @@ mod tests {
 
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
-            EffectPolarity::Retract
+            Polarity::Retract
         );
     }
 
@@ -1356,12 +1342,12 @@ mod tests {
         );
     }
 
-    /// `rule!: this: <uri>, assert!: ..` pins the install at a
-    /// caller-chosen entity. The lifted `RuleAction::Install` carries
-    /// the chosen URI and the analyzer pushes a
-    /// `Statement::Assert(Application::Rule { this: Uri(<uri>), .. })`.
+    /// `rule!: this: <uri>, assert!: ..` is rejected: rules are
+    /// content-addressed, so facts pinned at any other entity would
+    /// be inert (a reader verifies the decoded body against the
+    /// entity it was stored under). The refusal names the pin.
     #[dialog_common::test]
-    async fn it_lifts_an_install_at_chosen_entity() {
+    async fn it_rejects_an_install_at_chosen_entity() {
         let fixture = new_fixture().await;
         fixture
             .declare("ping", one_text_field("io.gozala.ping", "tag"))
@@ -1378,23 +1364,17 @@ mod tests {
       where: { this: ?this, tag: ?tag }
 "#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
-        let analysis = fixture
+        let error = fixture
             .analyze(&syntax)
             .await
-            .expect("analyze should succeed");
-        use tonk_schema::transact::{Application, Statement, ThisIntent};
-        let statements = analysis.analysis.statements();
-        assert_eq!(statements.len(), 1);
-        let Statement::Assert(Application::Rule { this, .. }) = &statements[0].statement else {
-            panic!(
-                "expected Statement::Assert(Application::Rule), got {:?}",
-                statements[0].statement
-            );
-        };
-        let chosen: Entity = "id:my-counter".parse().expect("id URI parses");
+            .expect_err("a pinned rule install must be rejected");
         assert!(
-            matches!(this, ThisIntent::Uri(e) if e == &chosen),
-            "install-at entity should carry the user's `this: id:my-counter`, got {this:?}"
+            matches!(
+                &error.kind,
+                crate::analyzer::error::AnalyzeErrorKind::RuleCompileFailed { reason }
+                    if reason.contains("content-addressed")
+            ),
+            "refusal should name the content-addressing rule, got {error:?}"
         );
     }
 
@@ -1601,7 +1581,7 @@ mod tests {
             .expect("analyze should succeed");
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
-            EffectPolarity::Assert
+            Polarity::Assert
         );
     }
 
@@ -1701,7 +1681,7 @@ rule!:
             .expect("analyze should succeed");
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
-            EffectPolarity::Assert
+            Polarity::Assert
         );
     }
 

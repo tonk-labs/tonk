@@ -296,7 +296,7 @@ fn expand(
                 let this;
                 let anchor;
                 let mut transient_entity: Option<Entity> = None;
-                let mut rule_effect: Option<tonk_core::effect::Effect> = None;
+                let mut rule_effect: Option<dialog_query::InductiveRule> = None;
                 let is_declaration;
 
                 if let Some(declaration) = declared.remove(&index) {
@@ -363,22 +363,13 @@ fn expand(
                     predicate = Predicate::Domain(a.predicate.source.clone());
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
                     match rule::lift_rule_claim(a, scope, &working)? {
-                        Some(rule::RuleAction::Install {
-                            rule,
-                            this: install_at,
-                        }) => {
-                            // When the user pinned the install at a
-                            // URI (`rule!: this: <entity>`), surface
-                            // it on the application so the labelled
-                            // entity flows through the analysis tree;
-                            // otherwise the install lands at the
-                            // effect's content-derived `this()`.
-                            let intent = match install_at {
-                                Some(entity) => ThisIntent::Uri(entity),
-                                None => ThisIntent::Derived,
-                            };
+                        Some(rule::RuleAction::Install { rule }) => {
+                            // Rules are content-addressed, so the
+                            // install always lands at the rule's own
+                            // content-derived `this()`.
+                            let intent = ThisIntent::Derived;
                             this = intent.clone();
-                            rule_effect = Some(rule.effect.clone());
+                            rule_effect = Some((*rule).clone());
                             claims
                                 .push(Statement::Assert(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
@@ -390,14 +381,8 @@ fn expand(
                                 .push(Statement::Retract(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
                         }
-                        Some(rule::RuleAction::InstallDeductive {
-                            rule,
-                            this: install_at,
-                        }) => {
-                            let intent = match install_at {
-                                Some(entity) => ThisIntent::Uri(entity),
-                                None => ThisIntent::Derived,
-                            };
+                        Some(rule::RuleAction::InstallDeductive { rule }) => {
+                            let intent = ThisIntent::Derived;
                             this = intent.clone();
                             claims.push(Statement::Assert(Application::DeductiveRule {
                                 rule,
@@ -555,7 +540,7 @@ fn expand(
 /// tree's [`AssertionAnalysis`]. `Concept` carries the resolved
 /// descriptor tagged with its true durability — `transient` is
 /// the flag the analyzer recovered from the head concept's
-/// `db.concept/transient` marker. `Domain` carries the claim
+/// `dialog.concept/transient` marker. `Domain` carries the claim
 /// domain prefix; a domain head names no concept, so it is
 /// always durable (and the [`Predicate::Domain`] arm carries no
 /// descriptor anyway).
@@ -4408,7 +4393,7 @@ rule!:
     /// `Transient` variant on `AssertionAnalysis::predicate`;
     /// one against a durable concept carries `Durable`. The
     /// analyzer recovers the tag from the head concept's
-    /// `db.concept/transient` marker at tree-build time.
+    /// `dialog.concept/transient` marker at tree-build time.
     #[dialog_common::test]
     async fn it_tags_the_assertion_predicate_with_its_durability() {
         use crate::analysis::{ExpressionAnalysis, Predicate};

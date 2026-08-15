@@ -54,7 +54,7 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Changes, Entity, Value};
+use dialog_artifacts::{Entity, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -321,8 +321,6 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         self,
         env: &Env,
     ) -> Result<Evaluated<'a>, EvaluateError> {
-        use crate::effects::TransactionExt as _;
-
         let Evaluate { syntax, mut txn } = self;
 
         // Run `compile` under the hood. Resolution reads through
@@ -369,16 +367,14 @@ impl<'s, 'a> Evaluate<'s, 'a> {
             .map(|p| p.statement)
             .collect();
         // Concept entities whose facts are transient — an `Assert`
-        // against one of these seeds the effects-fixpoint bucket.
+        // against one of these is dispatched as a command (visible to
+        // reads and commit-time induction, never committed).
         let transient_entities = document.transient_entities();
         let mut claim_count = 0usize;
         // Retraction targets resolved by querying the branch
         // up-front so we don't interleave reads with mutation
         // accumulation against the transaction.
         let mut retract_claims: Vec<RawClaim> = Vec::new();
-        // Transient-concept assertions, accumulated so the caller
-        // can hand them to `induce` as the effects-fixpoint seed.
-        let mut transients = Changes::new();
         if !statements.is_empty() {
             for match_frame in &pre_matches {
                 let mut frame = base.clone();
@@ -392,33 +388,32 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 .clone()
                                 .plan(&frame)
                                 .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
-                            // A transient-concept assertion also
-                            // seeds the transient bucket so the
-                            // effects fixpoint fires on it and it's
-                            // swept before the durable commit.
+                            // A transient-concept assertion is a
+                            // command: dispatched into the
+                            // transaction so commit-time induction
+                            // fires on it, never committed.
+                            let mut dispatch = false;
                             if let ApplicationPlan::Concept(concept_plan) = &plan {
                                 claim_count += count_emitted_claims(concept_plan);
-                                if transient_entities
-                                    .contains(&concept_plan.statement.predicate.this())
-                                {
-                                    crate::effects::accumulate_head_facts(
-                                        &concept_plan.statement,
-                                        &mut transients,
-                                    );
-                                }
+                                dispatch = transient_entities
+                                    .contains(&concept_plan.statement.predicate.this());
                             } else if let ApplicationPlan::Rule(rule) = &plan {
-                                // A rule install writes a constant
-                                // set of facts (marker + source +
-                                // conclusion + polarity + one `on:`
-                                // entry per body attribute).
-                                claim_count += 4 + rule.effect.on_entities().len();
-                            } else if let ApplicationPlan::DeductiveRule(_) = &plan {
-                                // A deductive rule install writes a
-                                // constant set: marker + source +
-                                // conclusion (no polarity, no `on:`).
-                                claim_count += 3;
+                                // A rule install writes the native
+                                // `dialog.rule/*` set: source +
+                                // induces + one `on:` entry per body
+                                // attribute.
+                                claim_count += 2 + tonk_schema::rule::on_entities(rule).len();
+                            } else if let ApplicationPlan::DeductiveRule(rule) = &plan {
+                                // A deductive rule install writes
+                                // source + conclusion + one `reads`
+                                // entry per body attribute.
+                                claim_count += 2 + tonk_schema::rule::reads_entities(rule).len();
                             }
-                            txn = txn.assert(plan);
+                            if dispatch {
+                                txn = txn.dispatch(plan);
+                            } else {
+                                txn = txn.assert(plan);
+                            }
                         }
                         Statement::Retract(application) => {
                             let plan = application
@@ -434,20 +429,16 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                     retract_claims.extend(resolved);
                                 }
                                 ApplicationPlan::Rule(rule) => {
-                                    // The rule was already resolved
-                                    // off the branch in the analyzer
-                                    // (`Rule::retracting(entity).resolve(..)`),
-                                    // so its carried source bytes
-                                    // match the stored ones — the
-                                    // dissociate is byte-exact.
-                                    claim_count += 4 + rule.effect.on_entities().len();
+                                    // The rule was resolved off the
+                                    // branch in the analyzer, and the
+                                    // canonical encoding makes the
+                                    // dissociate byte-exact.
+                                    claim_count += 2 + tonk_schema::rule::on_entities(&rule).len();
                                     txn = txn.retract(*rule);
                                 }
                                 ApplicationPlan::DeductiveRule(rule) => {
-                                    // Deductive rules have no notation
-                                    // retract form, but the storage type
-                                    // supports dissociation for completeness.
-                                    claim_count += 3;
+                                    claim_count +=
+                                        2 + tonk_schema::rule::reads_entities(&rule).len();
                                     txn = txn.retract(*rule);
                                 }
                             }
@@ -463,18 +454,13 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 
         let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
 
-        // Effect induction is part of "evaluate the document":
-        // installed rules fire on the just-applied transients,
-        // their head facts land in the overlay, and user-submitted
-        // transients sweep so they never reach durable storage.
-        // The caller's txn is returned with the post-induction
-        // overlay; they commit or drop.
-        let txn = txn
-            .induce(transients)
-            .perform(env)
-            .await
-            .map_err(|e| EvaluateError::Query(format!("induce failed: {e}")))?;
-
+        // Rule induction is part of COMMIT now: dialog's
+        // `TransactionCommit::perform` fires installed rules over the
+        // transaction's delta (durable changes and dispatched
+        // transients alike) and folds their durable novelty into the
+        // commit, while transients are dropped, never written. The
+        // caller's txn is returned with the dispatch staged; they
+        // commit or drop.
         Ok(Evaluated {
             txn,
             matches,
@@ -1035,6 +1021,7 @@ mod tests {
     use tonk_schema::concept::{AnonymousConcept, TransientConcept};
     // Aliased so the `.assert()` trait method stays in scope
     // without shadowing the analyzer's `Statement` enum.
+    use dialog_artifacts::Changes;
     use dialog_artifacts::Statement as ArtifactsStatement;
     use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::artifact::Type;
@@ -1385,13 +1372,13 @@ name!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
 
-        // Sanity: the rule's db.effect/source claim landed.
+        // Sanity: the rule's dialog.rule/source claim landed.
         let effect_source_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
+                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
                     .of(Term::<dialog_artifacts::Entity>::var("effect"))
-                    .is(Term::<String>::var("source")),
+                    .is(Term::<Vec<u8>>::var("source")),
             ))
             .perform(&operator)
             .try_vec()
@@ -1399,7 +1386,7 @@ name!:
         assert_eq!(
             effect_source_claims.len(),
             1,
-            "expected exactly one installed effect; saw {effect_source_claims:?}"
+            "expected exactly one installed rule; saw {effect_source_claims:?}"
         );
 
         // Second commit: submit a transient ping{this: e1, tag: "hi"}
@@ -1415,14 +1402,9 @@ name!:
             .is("hi".to_string())
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(transients.clone())
-            .induce(transients)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce: {e}"))?
+            .dispatch(transients)
             .commit()
             .perform(&operator)
             .await?;
@@ -1474,7 +1456,7 @@ name!:
     /// directly).
     ///
     /// Verifies the `transient:` field on `concept!:` flows all
-    /// the way to the `db.concept/transient` marker fact —
+    /// the way to the `dialog.concept/transient` marker fact —
     /// without it, the rule would fail validate (no transient
     /// trigger) and the body wouldn't classify head emissions
     /// correctly.
@@ -1533,14 +1515,12 @@ rule!:
         // descriptor entity.
         let ping_descriptor = one_text_field("io.gozala.ping", "tag");
         let ping_entity = ping_descriptor.this();
-        let marker_target: dialog_artifacts::Entity =
-            "db:transient".parse().expect("db:transient is valid");
         let marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.concept/transient"))
+                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
                     .of(Term::from(ping_entity.clone()))
-                    .is(Term::from(marker_target.clone())),
+                    .is(Term::from(true)),
             ))
             .perform(&operator)
             .try_vec()
@@ -1548,7 +1528,7 @@ rule!:
         assert_eq!(
             marker_claims.len(),
             1,
-            "expected one db.concept/transient claim on ping; saw {marker_claims:?}"
+            "expected one dialog.concept/transient claim on ping; saw {marker_claims:?}"
         );
 
         // And the durable pong concept has no marker.
@@ -1557,9 +1537,9 @@ rule!:
         let pong_marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.concept/transient"))
+                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
                     .of(Term::from(pong_entity))
-                    .is(Term::from(marker_target)),
+                    .is(Term::from(true)),
             ))
             .perform(&operator)
             .try_vec()
@@ -1580,14 +1560,9 @@ rule!:
             .is("hi".to_string())
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(transients.clone())
-            .induce(transients)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce: {e}"))?
+            .dispatch(transients)
             .commit()
             .perform(&operator)
             .await?;
@@ -1738,14 +1713,9 @@ counter!: &counter-demo
             .is(1u128)
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(transients.clone())
-            .induce(transients)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce: {e}"))?
+            .dispatch(transients)
             .commit()
             .perform(&operator)
             .await?;
@@ -2099,21 +2069,19 @@ concept!: &pong
             );
         };
         assert_eq!(
-            rule.effect.conclusion(),
+            rule.conclusion().this(),
             one_text_field("io.gozala.pong", "tag").this(),
-            "the installed effect's head concept should be pong"
+            "the installed rule's head concept should be pong"
         );
 
         Ok(())
     }
 
-    /// `rule!: this: <entity>, assert!: ..` installs the rule at the
-    /// user-chosen entity. The `db.effect/source` claim must land
-    /// at that entity, not at the content-derived `Effect::this`.
-    /// This is the install-at-named-entity path mirroring task #90's
-    /// retract-at-named-entity flow.
+    /// `rule!: this: <entity>, assert!: ..` is rejected: rules are
+    /// content-addressed, and facts pinned at any other entity would
+    /// be inert to dialog's readers.
     #[dialog_common::test]
-    async fn it_installs_a_rule_at_a_chosen_entity() -> anyhow::Result<()> {
+    async fn it_rejects_a_pinned_rule_install() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
@@ -2148,8 +2116,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
 
-        // Install at a chosen, stable entity URI.
-        let chosen: Entity = "id:my-counter".parse()?;
+        // A pinned install is refused at analysis time.
         let rule_doc = r#"rule!:
   this: id:my-counter
   assert!: pong
@@ -2157,56 +2124,19 @@ concept!: &pong
     - assert: ping
       where: { this: ?this, tag: ?tag }
 "#;
-        parse(rule_doc)
+        let error = match parse(rule_doc)
             .syntax
             .expect("rule syntax")
             .evaluate(branch.transaction())
             .perform(&operator)
             .await
-            .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?
-            .commit()
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("commit (rule): {e}"))?;
-
-        // The `db.effect/source` claim should hang off the
-        // chosen entity, not off the content-derived hash.
-        let at_chosen: Vec<dialog_query::Claim> = branch
-            .query()
-            .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
-                    .of(Term::<Entity>::from(chosen.clone()))
-                    .is(Term::<String>::var("source")),
-            ))
-            .perform(&operator)
-            .try_vec()
-            .await?;
-        assert_eq!(
-            at_chosen.len(),
-            1,
-            "db.effect/source must land at id:my-counter, saw {at_chosen:?}"
-        );
-
-        // And there's exactly one installed effect — no orphan at
-        // the content-derived entity.
-        let all_sources: Vec<dialog_query::Claim> = branch
-            .query()
-            .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
-                    .of(Term::<Entity>::var("any"))
-                    .is(Term::<String>::var("source")),
-            ))
-            .perform(&operator)
-            .try_vec()
-            .await?;
-        assert_eq!(
-            all_sources.len(),
-            1,
-            "exactly one installed effect across the branch; saw {all_sources:?}"
-        );
-        assert_eq!(
-            all_sources[0].of, chosen,
-            "the single installed effect lives at the chosen entity"
+        {
+            Err(error) => error,
+            Ok(_) => panic!("a pinned rule install must be rejected"),
+        };
+        assert!(
+            error.to_string().contains("content-addressed"),
+            "refusal should name the content-addressing rule, got: {error}"
         );
 
         Ok(())
@@ -2214,11 +2144,11 @@ concept!: &pong
 
     /// `rule!: this: <entity> ..: _` deletes an installed rule end
     /// to end through the notation path: parse → analyze →
-    /// `Statement::RetractEffect` → evaluator resolves a `Rule`
-    /// retract handle off the branch → transaction.retract →
-    /// commit. After the commit the `db.effect/source` claim
-    /// at the named entity must be gone (proving #87's
-    /// stored-bytes dissociate) and the rule must stop firing.
+    /// the analyzer resolves the stored rule off the branch →
+    /// transaction.retract → commit. After the commit the
+    /// `dialog.rule/source` claim at the rule's content-derived
+    /// entity must be gone (the canonical encoding makes the
+    /// dissociate byte-exact) and the rule must stop firing.
     #[dialog_common::test]
     async fn it_retracts_an_installed_rule_via_notation() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
@@ -2255,11 +2185,8 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
 
-        // Install at a chosen entity so the retract notation has a
-        // stable URI to name.
-        let chosen: Entity = "id:my-rule".parse()?;
+        // Install; the rule lands at its content-derived entity.
         let install_doc = r#"rule!:
-  this: id:my-rule
   assert!: pong
   when:
     - assert: ping
@@ -2277,27 +2204,39 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        // Sanity: the source claim is at the chosen entity.
-        let source_query = dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
-                .of(Term::<Entity>::from(chosen.clone()))
-                .is(Term::<String>::var("source")),
-        );
-        let pre: Vec<dialog_query::Claim> = branch
+        // Discover the installed rule's content-derived entity so the
+        // retract notation can name it.
+        let installed: Vec<dialog_query::Claim> = branch
             .query()
-            .select(source_query.clone())
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                    .of(Term::<Entity>::var("rule"))
+                    .is(Term::<Vec<u8>>::var("source")),
+            ))
             .perform(&operator)
             .try_vec()
             .await?;
-        assert_eq!(pre.len(), 1, "the rule should be installed pre-retract");
+        assert_eq!(
+            installed.len(),
+            1,
+            "the rule should be installed pre-retract"
+        );
+        let chosen = installed[0].of.clone();
+        let source_query = dialog_query::AttributeQuery::from(
+            Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                .of(Term::<Entity>::from(chosen.clone()))
+                .is(Term::<Vec<u8>>::var("source")),
+        );
 
         // Retract via the notation deletion form. `..: _` is the
-        // sentinel for "delete the named effect."
-        let retract_doc = r#"rule!:
-  this: id:my-rule
+        // sentinel for "delete the named rule."
+        let retract_doc = format!(
+            r#"rule!:
+  this: {chosen}
   ..: _
-"#;
-        parse(retract_doc)
+"#
+        );
+        parse(&retract_doc)
             .syntax
             .expect("retract syntax")
             .evaluate(branch.transaction())
@@ -2320,7 +2259,7 @@ concept!: &pong
             .await?;
         assert!(
             post.is_empty(),
-            "db.effect/source at {chosen} must be empty after retract, saw {post:?}"
+            "dialog.rule/source at {chosen} must be empty after retract, saw {post:?}"
         );
 
         Ok(())
@@ -2384,10 +2323,9 @@ concept!: &pong
             "pong should be empty before the rule is installed"
         );
 
-        // Install the deductive rule (`assert:` no-bang) at a stable
-        // entity so the retract notation can name it.
+        // Install the deductive rule (`assert:` no-bang); it lands at
+        // its content-derived entity.
         let install_doc = r#"rule!:
-  this: id:ping-to-pong
   assert: pong
   when:
     - assert: ping
@@ -2414,12 +2352,26 @@ concept!: &pong
             "the installed rule should deduce one pong from the ping fact; saw {deduced:?}"
         );
 
-        // Retract the rule.
-        let retract_doc = r#"rule!:
-  this: id:ping-to-pong
+        // Discover the rule's content-derived entity, then retract it.
+        let installed: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                    .of(Term::<dialog_artifacts::Entity>::var("rule"))
+                    .is(Term::<Vec<u8>>::var("source")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(installed.len(), 1, "the deductive rule should be stored");
+        let rule_entity = installed[0].of.clone();
+        let retract_doc = format!(
+            r#"rule!:
+  this: {rule_entity}
   ..: _
-"#;
-        parse(retract_doc)
+"#
+        );
+        parse(&retract_doc)
             .syntax
             .expect("retract syntax")
             .evaluate(branch.transaction())
@@ -2937,14 +2889,9 @@ workspace!:
             .is(sheet_b.clone())
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(transients.clone())
-            .induce(transients)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce (close bg): {e}"))?
+            .dispatch(transients)
             .commit()
             .perform(&operator)
             .await?;
@@ -3108,14 +3055,9 @@ workspace!:
             .is(sheet_b.clone())
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(transients.clone())
-            .induce(transients)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce (close active): {e}"))?
+            .dispatch(transients)
             .commit()
             .perform(&operator)
             .await?;
@@ -3304,14 +3246,9 @@ workspace!:
             .is("e".to_string())
             .assert(&mut create);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(create.clone())
-            .induce(create)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce (create): {e}"))?
+            .dispatch(create)
             .commit()
             .perform(&operator)
             .await?;
@@ -3353,11 +3290,7 @@ workspace!:
             .assert(&mut close);
         branch
             .transaction()
-            .integrate(close.clone())
-            .induce(close)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce (close new): {e}"))?
+            .dispatch(close)
             .commit()
             .perform(&operator)
             .await?;
@@ -3526,14 +3459,9 @@ workspace!:
             .is("bz".to_string())
             .assert(&mut create);
 
-        use crate::effects::TransactionExt as _;
         branch
             .transaction()
-            .integrate(create.clone())
-            .induce(create)
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("induce (create): {e}"))?
+            .dispatch(create)
             .commit()
             .perform(&operator)
             .await?;

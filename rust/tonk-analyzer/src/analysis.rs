@@ -40,8 +40,8 @@ use dialog_artifacts::Entity;
 use tonk_notation::{Application as SyntaxApplication, Expression, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
+use dialog_query::InductiveRule;
 use tonk_core::claim::{ConceptDescriptor, SourceApplication, SourceClaim, TransactRequest};
-use tonk_core::effect::Effect;
 use tonk_schema::transact::{Application, Statement, ThisIntent};
 
 /// A syntax node type that carries a computed analysis payload.
@@ -256,7 +256,7 @@ impl DocumentAnalysis {
     ///
     /// Only `assert` rule installs are returned; a rule retract has
     /// no place in a fresh bootstrap.
-    pub fn rule_installs(&self) -> Vec<tonk_schema::rule::Rule> {
+    pub fn rule_installs(&self) -> Vec<InductiveRule> {
         let mut rules = Vec::new();
         for planned in self.statements() {
             if let Statement::Assert(Application::Rule { rule, .. }) = &planned.statement {
@@ -272,7 +272,7 @@ impl DocumentAnalysis {
     /// in document/eval order. Like [`rule_installs`](Self::rule_installs),
     /// these have no [`TransactRequest`] representation and are returned
     /// separately for a seed loop to `assert` directly.
-    pub fn deductive_rule_installs(&self) -> Vec<tonk_schema::deductive_rule::DeductiveRule> {
+    pub fn deductive_rule_installs(&self) -> Vec<dialog_query::DeductiveRule> {
         let mut rules = Vec::new();
         for planned in self.statements() {
             if let Statement::Assert(Application::DeductiveRule { rule, .. }) = &planned.statement {
@@ -477,7 +477,7 @@ pub struct AssertionAnalysis {
     /// inductive [`Effect`]. The lowered [`Statement`] then sits in
     /// `claims` as a [`Statement::InstallEffect`], so the regular
     /// document-order walk picks it up like any other write.
-    pub effect: Option<Effect>,
+    pub effect: Option<InductiveRule>,
 }
 
 /// What an assertion's head resolved to.

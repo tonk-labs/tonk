@@ -80,28 +80,18 @@ fn build(lit: &LitStr) -> Result<TokenStream, String> {
         .map_err(|e| format!("claim!: serialization failed: {e}"))?;
     let byte_literal = proc_macro2::Literal::byte_string(&bytes);
 
-    // Each `rule!:` install is carried as its `(source, polarity)`
-    // and rebuilt at runtime — the round-trip carrier (see
-    // `Rule::source` / `Effect::from_source`). The demo rules install
-    // at the effect's content-derived entity (no `this:` pin), so
-    // `Rule::asserting` reproduces the same `this` from the rebuilt
-    // effect — no entity round-trip needed.
+    // Each `rule!:` install is carried as its canonical dag-cbor
+    // encoding and rebuilt at runtime — the round-trip carrier.
+    // Rules install at their content-derived entity, which the
+    // rebuilt rule reproduces from the same bytes.
     let rules = tree.analysis.rule_installs();
     let rule_entries: Vec<_> = rules
         .iter()
         .map(|rule| {
-            let source = rule.source().to_owned();
-            let polarity = rule.polarity().as_str().to_owned();
+            let encoded = proc_macro2::Literal::byte_string(&rule.encode());
             quote! {
-                {
-                    let effect = ::tonk_core::effect::Effect::from_source(
-                        #source,
-                        ::tonk_core::effect::EffectPolarity::parse(#polarity)
-                            .expect("embedded polarity always parses"),
-                    )
-                    .expect("embedded effect source always deserializes");
-                    ::tonk_schema::rule::Rule::asserting(effect)
-                }
+                ::tonk_schema::rule::InductiveRule::decode(#encoded)
+                    .expect("embedded rule encoding always decodes")
             }
         })
         .collect();

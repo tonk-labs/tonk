@@ -29,9 +29,8 @@ use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
-use crate::deductive_rule::DeductiveRule;
 use crate::prelude::EntityExt;
-use crate::rule::Rule;
+use crate::rule::{DeductiveRule, InductiveRule};
 use indexmap::IndexMap;
 use serde::Serialize;
 use tonk_core::claim::{ConceptDescriptor, PredicateApplication, ValueMap};
@@ -157,46 +156,40 @@ pub enum Application {
         /// `&anchor` on the value side, if any.
         name: Option<AnchorName>,
     },
-    /// `rule!:` head — an installed or to-be-installed rule.
-    /// Distinct from `Concept` because a rule's storage shape is
-    /// the `db.effect/*` claim set, not a per-attribute
-    /// `db.concept.with/*` map.
+    /// `rule!:` head with the inductive (`assert!:` / `retract!:`)
+    /// form — a rule that fires at commit time. Distinct from
+    /// `Concept` because a rule's storage shape is dialog's
+    /// `dialog.rule/*` claim set, not a per-attribute map.
     ///
-    /// For an install, the carried [`Rule`] was built fresh from
-    /// the body lift; for a retract it was resolved off the branch
-    /// (so the carried `source` bytes match what was stored). The
-    /// outer [`Statement::Assert`] / [`Statement::Retract`] picks
-    /// the direction.
+    /// For an install, the carried [`InductiveRule`] was built fresh
+    /// from the body lift; for a retract it was resolved off the
+    /// branch (the canonical encoding makes the dissociate
+    /// byte-exact). The outer [`Statement::Assert`] /
+    /// [`Statement::Retract`] picks the direction.
     ///
-    /// `rule` is boxed because [`Rule`]'s embedded [`InductiveRule`]
-    /// would otherwise inflate every `Application` variant. The
-    /// boxed value is consumed once per claim, so the heap hop is
-    /// paid at most once per `rule!:`.
+    /// `rule` is boxed because the compiled rule would otherwise
+    /// inflate every `Application` variant. The boxed value is
+    /// consumed once per claim, so the heap hop is paid at most once
+    /// per `rule!:`.
     Rule {
-        /// The rule, packaged with its stored source bytes and
-        /// polarity so an `assert` / `retract` writes the exact
-        /// EAVs that were (or will be) stored.
-        rule: Box<Rule>,
-        /// Where the install / retract target entity came from.
-        /// `Derived` is the content-addressed install (default for
-        /// `rule!:` without `this:`); `Uri(entity)` is the
-        /// caller-pinned install/retract URI.
+        /// The compiled rule; dialog's `Statement` impl writes the
+        /// native `dialog.rule/*` facts.
+        rule: Box<InductiveRule>,
+        /// Where the retract target entity came from. Rules are
+        /// content-addressed, so installs are always `Derived`; a
+        /// retract addressed by `this: <entity>` carries `Uri`.
         this: ThisIntent,
     },
     /// `rule!:` head with the deductive (`assert:`, no bang) form —
     /// a rule that derives on query rather than firing on commit.
-    /// Distinct from [`Application::Rule`] because its storage shape
-    /// is the `db.rule/*` claim set and it has no polarity.
+    /// Same native `dialog.rule/*` storage, minus the trigger index.
     ///
-    /// `rule` is boxed for the same reason as [`Application::Rule`]:
-    /// the embedded compiled rule would otherwise inflate every
-    /// `Application` variant.
+    /// `rule` is boxed for the same reason as [`Application::Rule`].
     DeductiveRule {
-        /// The deductive rule, packaged with its stored source bytes
-        /// so an `assert` / `retract` writes the exact EAVs.
+        /// The compiled deductive rule.
         rule: Box<DeductiveRule>,
-        /// Where the install target entity came from — `Derived` for
-        /// the content-addressed default, `Uri(entity)` when pinned.
+        /// Where the retract target entity came from — `Derived` for
+        /// the content-addressed install.
         this: ThisIntent,
     },
 }
@@ -419,8 +412,8 @@ impl Planner for Application {
 /// [`ConceptQuery`] (the per-attribute storage shape used by every
 /// concept-like application — built-in `attribute`/`concept`,
 /// user-defined concepts, and synthesised domain predicates).
-/// [`ApplicationPlan::Rule`] carries the resolved [`Rule`] whose
-/// [`ArtifactsStatement`] impl emits the `db.effect/*` storage
+/// [`ApplicationPlan::Rule`] carries the compiled rule whose native
+/// [`ArtifactsStatement`] impl emits the `dialog.rule/*` storage
 /// shape.
 pub enum ApplicationPlan {
     /// Per-attribute concept storage (concept / domain / built-in).
@@ -429,12 +422,12 @@ pub enum ApplicationPlan {
     /// `Rule` variant) would otherwise leave a large size gap between
     /// variants.
     Concept(Box<ConceptPlan>),
-    /// `db.effect/*` rule storage. Boxed because [`Rule`]'s
-    /// embedded [`InductiveRule`] would otherwise inflate every
-    /// concept-shaped plan to rule-storage size.
-    Rule(Box<Rule>),
-    /// `db.rule/*` deductive-rule storage. Boxed for the same
-    /// size reason as [`ApplicationPlan::Rule`].
+    /// Native `dialog.rule/*` rule storage. Boxed because the
+    /// compiled rule would otherwise inflate every concept-shaped
+    /// plan to rule-storage size.
+    Rule(Box<InductiveRule>),
+    /// Native `dialog.rule/*` deductive-rule storage. Boxed for the
+    /// same size reason as [`ApplicationPlan::Rule`].
     DeductiveRule(Box<DeductiveRule>),
 }
 

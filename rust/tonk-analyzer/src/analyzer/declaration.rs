@@ -199,7 +199,7 @@ pub(crate) struct ConceptBody {
     pub asserts_nothing: bool,
     /// `true` when the body carried the `transient:` tag (bare
     /// key with no value, or the explicit `transient: true`).
-    /// Drives emission of the `db.concept/transient` marker
+    /// Drives emission of the `dialog.concept/transient` marker
     /// fact in [`concept_application`] so the reactor's effects
     /// loop classifies this concept's facts as transient.
     pub transient: bool,
@@ -638,20 +638,13 @@ pub(crate) fn concept_application(
             Term::Constant(Value::String(desc.to_owned())),
         );
     }
-    // `transient: true` adds a `(this, db.concept/transient,
-    // db:transient)` marker fact. The synthesized
-    // `concept_schema` includes a matching field; durable
-    // concepts skip the term so no claim is emitted (the
+    // `transient: true` adds dialog's `(this,
+    // dialog.concept/transient, true)` marker fact. The
+    // synthesized `concept_schema` includes a matching field;
+    // durable concepts skip the term so no claim is emitted (the
     // emitter ignores fields whose term is absent).
     if transient {
-        terms.insert(
-            "transient".into(),
-            Term::Constant(Value::Entity(
-                "db:transient"
-                    .parse()
-                    .expect("`db:transient` is a valid entity URI"),
-            )),
-        );
+        terms.insert("transient".into(), Term::Constant(Value::Boolean(true)));
     }
     Application::Concept {
         query: ConceptQuery {
@@ -861,8 +854,8 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     with.insert(
         "transient".into(),
         serde_json::json!({
-            "the": "db.concept/transient",
-            "as": "Entity",
+            "the": "dialog.concept/transient",
+            "as": "Boolean",
             "cardinality": "one",
         }),
     );

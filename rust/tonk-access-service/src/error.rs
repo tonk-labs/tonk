@@ -1,115 +1,83 @@
-//! Error types for the service.
+//! Typed refusal responses.
+//!
+//! The reason a request was refused travels as itself: the body of a
+//! non-2xx answer is the serde-tagged [`AuthorizeError`] or
+//! [`Rejection`] built while deciding, exactly the value
+//! `dialog-remote-ucan-s3`'s client reads back out. There is no code
+//! table on either side — adding a reason upstream does not mean
+//! teaching two codebases a new string.
 
-use serde::{Deserialize, Serialize};
+use dialog_capability::access::AuthorizeError;
+use dialog_effects::Rejection;
 use worker::Response;
 
-/// Error codes returned by the API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ErrorCode {
-    // 400 Bad Request - Input validation errors
-    InvalidArgument,
-
-    // 401 Unauthorized - Authentication errors
-    SignatureInvalid,
-    AudienceMismatch,
-    InvocationExpired,
-
-    // 403 Forbidden - Authorization errors
-    ChainInvalid,
-    CommandMismatch,
-    SubjectNotAllowed,
-    // Only constructed from the wasm-gated revocation screen
-    // (`handlers::ucan::screen_revoked`); a native build never
-    // constructs it even though `status_code` matches it exhaustively.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    CredentialRevoked,
-
-    // 500 Internal Server Error
-    InternalError,
-
-    // 503 Service Unavailable - the revocation registry could not be
-    // consulted and no cached verdict covers the request. Retryable,
-    // unlike the 403s above. Same wasm-only construction as
-    // `CredentialRevoked`.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    RevocationUnavailable,
-}
-
-impl ErrorCode {
-    /// Get the HTTP status code for this error.
-    pub fn status_code(&self) -> u16 {
-        match self {
-            // 400 Bad Request
-            ErrorCode::InvalidArgument => 400,
-
-            // 401 Unauthorized
-            ErrorCode::SignatureInvalid
-            | ErrorCode::AudienceMismatch
-            | ErrorCode::InvocationExpired => 401,
-
-            // 403 Forbidden
-            ErrorCode::ChainInvalid
-            | ErrorCode::CommandMismatch
-            | ErrorCode::SubjectNotAllowed
-            | ErrorCode::CredentialRevoked => 403,
-
-            // 500 Internal Server Error
-            ErrorCode::InternalError => 500,
-
-            // 503 Service Unavailable
-            ErrorCode::RevocationUnavailable => 503,
-        }
-    }
-}
-
-/// Structured error response.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ErrorResponse {
-    pub error: ErrorDetail,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ErrorDetail {
-    pub code: ErrorCode,
-    pub message: String,
-}
-
-impl ErrorResponse {
-    /// Create a new error response.
-    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
-            error: ErrorDetail {
-                code,
-                message: message.into(),
-            },
-        }
-    }
-
-    /// Convert to a worker Response.
-    pub fn to_response(&self) -> worker::Result<Response> {
-        let status = self.error.code.status_code();
-        Response::from_json(self).map(|r| r.with_status(status))
-    }
-}
-
-/// Service error type for internal use.
+/// A refused request: the typed reason plus nothing else.
 #[derive(Debug)]
-pub struct ServiceError {
-    pub code: ErrorCode,
-    pub message: String,
+pub enum Refusal {
+    /// The request was understood and the answer is no — or no
+    /// decision could be reached about the caller's input.
+    Authorization(AuthorizeError),
+    /// The request was not carried out for a reason that is not an
+    /// access decision (our own machinery, an unrecognized failure).
+    Rejection(Rejection),
 }
 
-impl ServiceError {
-    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
+impl From<AuthorizeError> for Refusal {
+    fn from(reason: AuthorizeError) -> Self {
+        Self::Authorization(reason)
+    }
+}
+
+impl From<Rejection> for Refusal {
+    fn from(rejection: Rejection) -> Self {
+        Self::Rejection(rejection)
+    }
+}
+
+impl Refusal {
+    /// A refusal for a failure of our own machinery that is not worth
+    /// retrying as-is.
+    pub fn unclassified(detail: impl Into<String>) -> Self {
+        Self::Rejection(Rejection::Unclassified {
+            detail: detail.into(),
+        })
+    }
+
+    /// The HTTP status this refusal answers with. Advisory — the
+    /// client classifies by parsing the body, not the status — but
+    /// kept honest for logs, proxies, and anything else that only
+    /// sees the status line.
+    pub fn status(&self) -> u16 {
+        match self {
+            Self::Authorization(reason) => match reason {
+                AuthorizeError::InvalidSignature { .. }
+                | AuthorizeError::InvalidAudience { .. }
+                | AuthorizeError::Expired { .. }
+                | AuthorizeError::NotValidBefore { .. } => 401,
+                AuthorizeError::UnprovenSubject { .. }
+                | AuthorizeError::CommandEscalation { .. }
+                | AuthorizeError::PolicyViolation { .. }
+                | AuthorizeError::Revoked { .. } => 403,
+                AuthorizeError::Malformed { .. } | AuthorizeError::UnavailableProof { .. } => 400,
+                AuthorizeError::Unavailable { .. } => 503,
+            },
+            Self::Rejection(rejection) => {
+                if rejection.is_transient() {
+                    503
+                } else {
+                    500
+                }
+            }
         }
     }
 
-    /// Convert to an error response.
+    /// Convert to a worker [`Response`]: the JSON-encoded reason under
+    /// the matching status.
     pub fn to_response(&self) -> worker::Result<Response> {
-        ErrorResponse::new(self.code, &self.message).to_response()
+        let response = match self {
+            Self::Authorization(reason) => Response::from_json(reason),
+            Self::Rejection(rejection) => Response::from_json(rejection),
+        }?;
+        Ok(response.with_status(self.status()))
     }
 }

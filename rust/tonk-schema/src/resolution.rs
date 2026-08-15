@@ -135,7 +135,7 @@ impl AttributeReference {
 /// `descriptor` is tonk's durability-tagged [`ConceptDescriptor`]:
 /// [`resolve`](ConceptReference::resolve)'s `perform` reconstructs
 /// the dialog field-set from the entity's EAV facts and reads the
-/// `db.concept/transient` marker to pick the `Durable` /
+/// `dialog.concept/transient` marker to pick the `Durable` /
 /// `Transient` variant.
 #[derive(Debug, Clone)]
 pub struct ConceptDefinition {
@@ -175,7 +175,7 @@ impl ResolveConcept<'_> {
     /// (`db.name/referent` on `id:<n>`); the entity is then
     /// reconstructed by enumerating its `db.concept.with/*`
     /// claims, resolving each field attribute, and reading the
-    /// `db.concept/transient` marker to tag durability.
+    /// `dialog.concept/transient` marker to tag durability.
     ///
     /// Returns `None` when the name has no published claim, or the
     /// entity carries no concept facts.

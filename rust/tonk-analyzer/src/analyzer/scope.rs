@@ -12,7 +12,6 @@ use dialog_artifacts::Entity;
 use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use tonk_schema::deductive_rule::DeductiveRule;
 use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
 use tonk_schema::rule::Rule;
 
@@ -64,15 +63,9 @@ pub(crate) struct Scope {
     /// [`record_resolved_rule`](Self::record_resolved_rule) during
     /// the graph's resolve phase so the retract lowering reads it
     /// synchronously. A key present with no entry means the entity
-    /// holds no installed rule (retracting something absent).
+    /// holds no installed rule (retracting something absent); the
+    /// decoded body's head field decided its kind.
     pub(crate) resolved_rules: Mutex<HashMap<String, Option<Rule>>>,
-    /// Entity → installed [`DeductiveRule`] read off the branch for a
-    /// `rule!: ..: _` retract. The deductive counterpart to
-    /// [`resolved_rules`](Self::resolved_rules): a retract entity may
-    /// name either kind, so both maps are filled during resolve and the
-    /// retract lowering picks whichever resolved. `None` means the
-    /// entity holds no deductive rule.
-    pub(crate) resolved_deductive_rules: Mutex<HashMap<String, Option<DeductiveRule>>>,
     /// Entity → [`ConceptDefinition`] read off the branch for a
     /// `concept!:` field retraction (`with: { f: _ }` / `..: _`).
     /// Populated by
@@ -96,7 +89,6 @@ impl Scope {
             in_doc_concepts_by_entity: Mutex::new(HashMap::new()),
             named_entities: Mutex::new(HashMap::new()),
             resolved_rules: Mutex::new(HashMap::new()),
-            resolved_deductive_rules: Mutex::new(HashMap::new()),
             resolved_concepts: Mutex::new(HashMap::new()),
         }
     }
@@ -294,27 +286,6 @@ impl Scope {
     /// nothing is installed at `entity`.
     pub(crate) fn record_resolved_rule(&self, entity: &Entity, rule: Option<Rule>) {
         self.resolved_rules.lock().insert(entity.to_string(), rule);
-    }
-
-    /// Sync lookup of an installed *deductive* rule resolved for a
-    /// retract. Same tri-state as [`resolved_rule`](Self::resolved_rule).
-    pub(crate) fn resolved_deductive_rule(&self, entity: &Entity) -> Option<Option<DeductiveRule>> {
-        self.resolved_deductive_rules
-            .lock()
-            .get(&entity.to_string())
-            .cloned()
-    }
-
-    /// Record the deductive rule resolved for a `rule!: ..: _` retract.
-    /// `None` means no deductive rule is installed at `entity`.
-    pub(crate) fn record_resolved_deductive_rule(
-        &self,
-        entity: &Entity,
-        rule: Option<DeductiveRule>,
-    ) {
-        self.resolved_deductive_rules
-            .lock()
-            .insert(entity.to_string(), rule);
     }
 
     /// Sync lookup of a concept resolved off the branch for a field

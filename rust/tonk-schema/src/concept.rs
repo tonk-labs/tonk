@@ -554,18 +554,6 @@ impl Statement for AnonymousConcept {
     }
 }
 
-/// Marker entity asserted as the value of
-/// `db.concept/transient` on every transient concept. Same
-/// role as [`concept_marker_entity`] for the
-/// `db.meta/concept` marker: gives queries a known triple
-/// to start from when looking for all transient concepts on a
-/// branch.
-fn transient_marker_entity() -> Entity {
-    "db:transient"
-        .parse()
-        .expect("`db:transient` is a valid entity URI")
-}
-
 /// A concept declared as **transient**: facts of this concept
 /// exist for the duration of one commit cycle and are stripped
 /// from the persistable delta before the branch state is
@@ -578,9 +566,9 @@ fn transient_marker_entity() -> Entity {
 ///
 /// Storage: emits everything [`AnonymousConcept`] emits
 /// (concept marker, attribute field claims, optional
-/// description), plus a `db.concept/transient: true` marker
-/// triple that the reactor reads at commit time to decide which
-/// facts to strip.
+/// description), plus dialog's `dialog.concept/transient: true`
+/// marker triple that commit-time induction reads to decide
+/// which facts are commands rather than durable data.
 #[derive(Debug, Clone)]
 pub struct TransientConcept {
     /// `descriptor.this()` — same content-derived entity as
@@ -607,7 +595,7 @@ impl TransientConcept {
 impl TransientConcept {
     /// Look up whether a concept entity is marked transient on
     /// a branch. Returns `true` iff
-    /// `(<entity>, db.concept/transient, db:transient)`
+    /// `(<entity>, dialog.concept/transient, true)`
     /// holds; `false` if the marker is absent.
     pub fn is_transient(entity: Entity) -> IsTransient {
         IsTransient { entity }
@@ -615,7 +603,7 @@ impl TransientConcept {
 }
 
 /// Builder for [`TransientConcept::is_transient`]. Resolves the
-/// `db.concept/transient` marker claim and answers a yes/no.
+/// `dialog.concept/transient` marker claim and answers a yes/no.
 pub struct IsTransient {
     entity: Entity,
 }
@@ -627,15 +615,14 @@ impl IsTransient {
         source: &Source<'_>,
         env: &Env,
     ) -> Result<bool, ConceptLookupError> {
-        let marker: Entity = transient_marker_entity();
         let claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::The>::from(meta_attr_typed(
-                    "db.concept",
+                    "dialog.concept",
                     "transient",
                 ))
                 .of(Term::from(self.entity))
-                .is(Term::from(marker)),
+                .is(Term::from(true)),
             ))
             .perform(env)
             .try_vec()
@@ -659,20 +646,12 @@ fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
 impl Statement for TransientConcept {
     fn assert(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
-        update.associate_unique(
-            meta_attr("db.concept", "transient"),
-            self.this,
-            Value::Entity(transient_marker_entity()),
-        );
+        dialog_repository::Transient(self.this).assert(update);
     }
 
     fn retract(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
-        update.dissociate(
-            meta_attr("db.concept", "transient"),
-            self.this,
-            Value::Entity(transient_marker_entity()),
-        );
+        dialog_repository::Transient(self.this).retract(update);
     }
 }
 
@@ -854,10 +833,9 @@ impl Application for AnonymousConceptQuery {
                 let transient_entities: HashSet<Entity> = if transient_term.is_some()
                     || app.transient_only
                 {
-                    let transient_marker = transient_marker_entity();
-                    let transient_claims: Vec<Claim> = the!("db.concept/transient")
+                    let transient_claims: Vec<Claim> = the!("dialog.concept/transient")
                         .of(Term::<Entity>::var("__concept_query_transient_this"))
-                        .is(transient_marker)
+                        .is(true)
                         .perform(env)
                         .try_vec()
                         .await?;
@@ -969,7 +947,7 @@ pub fn concept_of_concept_descriptor() -> &'static ConceptDescriptor {
                 "name":        { "the": "db.meta/name",        "as": "Text",    "cardinality": "one" },
                 "description": { "the": "db.meta/description", "as": "Text",    "cardinality": "one" },
                 "source":      { "the": "db.meta/source",      "as": "Text",    "cardinality": "one" },
-                "transient":   { "the": "db.concept/transient", "as": "Boolean", "cardinality": "one" }
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }))
         .expect("concept-of-concept descriptor is well-formed")
@@ -1008,7 +986,7 @@ pub fn command_of_command_descriptor() -> &'static ConceptDescriptor {
                 "name":        { "the": "db.meta/name",         "as": "Text",    "cardinality": "one" },
                 "description": { "the": "db.meta/description",   "as": "Text",    "cardinality": "one" },
                 "source":      { "the": "db.meta/source",       "as": "Text",    "cardinality": "one" },
-                "transient":   { "the": "db.concept/transient", "as": "Boolean", "cardinality": "one" }
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }))
         .expect("command-of-command descriptor is well-formed")
@@ -1524,7 +1502,7 @@ mod tests {
 
     /// `TransientConcept::assert` should write everything
     /// `AnonymousConcept::assert` writes plus a
-    /// `(?this, db.concept/transient, db:transient)` marker
+    /// `(?this, dialog.concept/transient, true)` marker
     /// triple. The marker is what the reactor reads at commit
     /// time to decide which facts to strip from the persistable
     /// delta.
@@ -1544,19 +1522,16 @@ mod tests {
         concept.assert(&mut changes);
 
         let instructions = changes.into_instructions();
-        let marker_target = transient_marker_entity();
-        let transient_attr = meta_attr("db.concept", "transient");
+        let transient_attr = meta_attr("dialog.concept", "transient");
 
         assert!(
             instructions.iter().any(|inst| match inst {
                 Instruction::Assert(a) | Instruction::Replace(a) => {
-                    a.the == transient_attr
-                        && a.of == this
-                        && matches!(&a.is, Value::Entity(e) if *e == marker_target)
+                    a.the == transient_attr && a.of == this && matches!(&a.is, Value::Boolean(true))
                 }
                 _ => false,
             }),
-            "missing db.concept/transient marker"
+            "missing dialog.concept/transient marker"
         );
 
         // Also writes the normal concept-marker so concept-enumeration

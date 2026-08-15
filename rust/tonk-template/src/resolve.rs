@@ -303,7 +303,7 @@ pub fn phase1_query(parsed: &ParsedSource) -> Query {
                 "name":        { "the": "db.meta/name",        "as": "Text",    "cardinality": "one" },
                 "description": { "the": "db.meta/description", "as": "Text",    "cardinality": "one" },
                 "source":      { "the": "db.meta/source",      "as": "Text",    "cardinality": "one" },
-                "transient":   { "the": "db.concept/transient", "as": "Boolean", "cardinality": "one" }
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }
     });
