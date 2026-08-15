@@ -3370,16 +3370,14 @@ mod tests {
     /// or a revoked invite reads as a flaky network and offers retry.
     #[dialog_common::test]
     fn it_reads_a_revoked_credential_out_of_the_pull_error_chain() {
+        use dialog_capability::access::AuthorizeError;
         use dialog_effects::memory::MemoryError;
-        use dialog_effects::service::ServiceResponseError;
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
         let refusal = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
-            ResolveError::from(MemoryError::ServiceResponse(ServiceResponseError::new(
-                403,
-                Some("CREDENTIAL_REVOKED".to_string()),
-                "credential revoked",
-            ))),
+            ResolveError::from(MemoryError::Authorization(AuthorizeError::Revoked {
+                subject: dialog_capability::did!("key:zSubject"),
+            })),
         ));
 
         assert_eq!(
@@ -3390,17 +3388,17 @@ mod tests {
 
     #[dialog_common::test]
     fn it_does_not_misreport_an_unrelated_forbidden_response_as_revocation() {
+        use dialog_capability::access::AuthorizeError;
         use dialog_effects::memory::MemoryError;
-        use dialog_effects::service::ServiceResponseError;
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
-        let refusal = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
-            ResolveError::from(MemoryError::ServiceResponse(ServiceResponseError::new(
-                403,
-                Some("COMMAND_MISMATCH".to_string()),
-                "wrong command",
-            ))),
-        ));
+        let refusal =
+            PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(ResolveError::from(
+                MemoryError::Authorization(AuthorizeError::CommandEscalation {
+                    claimed: "/storage/put".to_string(),
+                    authorized: "/storage/get".to_string(),
+                }),
+            )));
         assert_eq!(
             super::classify_pull(&refusal).kind(),
             super::JoinFailureKind::ClaimFailed,
@@ -3411,14 +3409,15 @@ mod tests {
     /// terminal.
     #[dialog_common::test]
     fn it_reads_an_unwell_service_as_retryable() {
+        use dialog_effects::Rejection;
         use dialog_effects::memory::MemoryError;
-        use dialog_effects::service::ServiceResponseError;
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
-        let outage =
-            PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(ResolveError::from(
-                MemoryError::ServiceResponse(ServiceResponseError::new(503, None, "unavailable")),
-            )));
+        let outage = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
+            ResolveError::from(MemoryError::Rejected(Rejection::Unavailable {
+                reason: "unavailable".to_string(),
+            })),
+        ));
 
         assert_eq!(
             super::classify_pull(&outage).kind(),
