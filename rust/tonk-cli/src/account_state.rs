@@ -302,24 +302,19 @@ async fn hydrate(
     match probe_remote_main(&remote, operator).await {
         Ok(RemotePresence::Present(_)) => {
             branch.pull().perform(operator).await?;
-            let winner = match probe_remote_main(&remote, operator).await? {
-                RemotePresence::Present(winner) => winner,
-                RemotePresence::Absent => bail!("account remote disappeared after pull"),
-            };
-            if branch.revision().as_ref() != Some(&winner) {
-                branch.reset(winner).perform(operator).await?;
-            }
         }
         Ok(RemotePresence::Absent) => {
-            let genesis = branch.transaction().commit().perform(operator).await?;
-            if let CreateGenesis::Loser(winner) =
-                publish_genesis_if_absent(&remote, genesis, operator).await?
+            branch.transaction().commit().perform(operator).await?;
+            if let CreateGenesis::Loser(_) =
+                publish_genesis_if_absent(&branch, &remote, operator).await?
             {
-                // Adopt the winner directly, with no fetch ahead of it: fact
-                // reads resolve missing blocks through the configured remote,
-                // so this is readable even when the winner already wrote past
-                // genesis. See `account_remote`'s losing-adoption test.
-                branch.reset(winner).perform(operator).await?;
+                // Adopt the winner by pulling: the pull integrates the
+                // established head AND records it as this branch's sync
+                // base, so the next push fast-forwards instead of CASing
+                // against an empty upstream. Reads resolve missing blocks
+                // through the configured remote. See `account_remote`'s
+                // losing-adoption test.
+                branch.pull().perform(operator).await?;
             }
         }
         Err(error) => return Err(error.into()),
