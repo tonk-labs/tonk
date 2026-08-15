@@ -295,12 +295,19 @@ mod tests {
         let _ = resp.revision;
 
         // The destination now exports the same artifact rows the
-        // source did (header + data, set-equal). Membership rows are
-        // excluded: each repo stamps its OWN founder membership (keyed
-        // by its own subject DID) on the content branch, so those rows
-        // legitimately differ between source and dest.
+        // source did (header + data, set-equal). Two families are
+        // excluded because they are per-repo by construction, not
+        // content the round-trip is meant to carry:
+        //
+        // - membership: each repo stamps its OWN founder membership,
+        //   keyed by its own subject DID;
+        // - `dialog.db/revision`: the version-control records dialog
+        //   writes into the tree, whose issuer and edition belong to
+        //   the repo that minted them.
         let (_, _, dest_csv) = get_export(&state, &dest).await;
-        let is_artifact_row = |row: &&str| !row.contains("xyz.tonk.membership/");
+        let is_artifact_row = |row: &&str| {
+            !row.contains("xyz.tonk.membership/") && !row.contains("dialog.db/revision")
+        };
         let mut source_rows: Vec<&str> =
             source_csv.lines().skip(1).filter(is_artifact_row).collect();
         let mut dest_rows: Vec<&str> = dest_csv.lines().skip(1).filter(is_artifact_row).collect();
