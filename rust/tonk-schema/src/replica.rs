@@ -238,14 +238,14 @@ impl Replica {
             return None;
         }
         Some(Self {
-            // Derive `this` via dialog's own `Origin` so a tonk `Replica` and a
-            // dialog `Origin` for the same `(profile, subject)` are the SAME
+            // Derive `this` via dialog's own `Replica` so a tonk `Replica` and a
+            // dialog `Replica` for the same `(profile, subject)` are the SAME
             // entity. They are the same thing — this device's view of a repo —
             // and the library's `tonk/replica` / `tonk:binder` concepts key on
-            // `dialog.origin/*`, so they must land on this entity. (Deriving a
+            // `dialog.replica/*`, so they must land on this entity. (Deriving a
             // separate `This::Replica`-tagged hash split them, which silently
             // put binder/replica facts on two different entities.)
-            this: dialog_repository::schema::Origin::new(profile.clone(), subject.clone()).this,
+            this: dialog_repository::schema::Replica::new(profile.clone(), subject.clone()).this,
             subject: Subject(subject.this()),
             profile: Profile(profile.this()),
             kind,

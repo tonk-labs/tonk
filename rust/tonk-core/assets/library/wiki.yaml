@@ -206,7 +206,7 @@ concept!: &wiki/link
       as: entity
 
 # The wiki root, bound to the replica entity exactly like the sheets
-# binder: it shares `dialog.origin/subject` with `tonk/replica`, so
+# binder: it shares `dialog.replica/subject` with `tonk/replica`, so
 # every replica IS a wiki row and the shell view can render for it
 # without any extra seeding. `active` records the last selected page
 # so it survives a reload; the components own the live selection.
@@ -216,7 +216,7 @@ concept!: &wiki
   with:
     subject:
       description: The repository's subject DID (shared with tonk/replica)
-      the: dialog.origin/subject
+      the: dialog.replica/subject
       as: entity
   maybe:
     active:

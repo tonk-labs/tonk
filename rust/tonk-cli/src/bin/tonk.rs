@@ -1898,10 +1898,9 @@ async fn import_op(file: PathBuf, spot: Option<&str>) -> ExitCode {
     match transfer::import(&site, &file).await {
         Ok(revision) => {
             println!(
-                "imported {} -> revision {}.{}",
+                "imported {} -> revision {}",
                 file.display(),
-                revision.period,
-                revision.moment,
+                revision.edition.value(),
             );
             ExitCode::Success
         }

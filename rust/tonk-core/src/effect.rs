@@ -24,21 +24,21 @@
 //!
 //! Each effect entity carries:
 //!
-//! - `dialog.effect/source` — the full
+//! - `db.effect/source` — the full
 //!   [`InductiveRuleDescriptor`](dialog_query::InductiveRuleDescriptor)
 //!   serialized as JSON. Source of truth: anything we need to
 //!   re-evaluate the rule can be reconstructed from this single
 //!   text claim.
-//! - `dialog.effect/conclusion` — index pointing at the head
+//! - `db.effect/conclusion` — index pointing at the head
 //!   concept entity, equal to
 //!   [`ConceptDescriptor::this`](dialog_query::ConceptDescriptor::this).
 //!   One claim per effect; the name matches the upstream
 //!   `InductiveRule::conclusion()` accessor regardless of
 //!   polarity.
-//! - `dialog.effect/polarity` — `"assert"` or `"retract"`, the
+//! - `db.effect/polarity` — `"assert"` or `"retract"`, the
 //!   polarity of the rule's head. Disambiguates two effects with
 //!   structurally-identical descriptors but different intent.
-//! - `dialog.effect/on` — index listing every attribute the
+//! - `db.effect/on` — index listing every attribute the
 //!   body reads from, encoded as `on:<domain>/<name>` entity
 //!   URIs. Cardinality-many; one claim per distinct attribute
 //!   in any premise (positive `when` ∪ negative `unless`). The
@@ -49,7 +49,7 @@
 //!   prefix into 32 bytes and hashes any overflow, so short
 //!   attribute names get full sort-locality and long ones still
 //!   collide cleanly.
-//! - `dialog.meta/description` — optional human-readable
+//! - `db.meta/description` — optional human-readable
 //!   description.
 //!
 //! The index attributes are pure projections of the source.
@@ -97,10 +97,10 @@ pub static EFFECT_SYSTEM: LazyLock<Entity> = LazyLock::new(|| {
 // ---------------------------------------------------------------- //
 
 /// The canonical JSON of an effect's [`InductiveRuleDescriptor`].
-/// Source of truth — every other `dialog.effect/*` attribute is a
+/// Source of truth — every other `db.effect/*` attribute is a
 /// derived index that the reactor recomputes from this claim.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[domain("dialog.effect")]
+#[domain("db.effect")]
 pub struct Source(pub String);
 
 /// The head concept entity referenced by the rule, regardless of
@@ -110,14 +110,14 @@ pub struct Source(pub String);
 /// [`InductiveRule::conclusion`](dialog_query::InductiveRule::conclusion).
 /// One claim per effect.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[domain("dialog.effect")]
+#[domain("db.effect")]
 pub struct Conclusion(pub Entity);
 
 /// `"assert"` or `"retract"`. Distinguishes effects whose head
 /// produces new persistent facts from effects whose head
 /// produces retracts of existing cells.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[domain("dialog.effect")]
+#[domain("db.effect")]
 pub struct Polarity(pub String);
 
 /// An attribute the effect's body reads from, encoded as the
@@ -129,7 +129,7 @@ pub struct Polarity(pub String);
 /// reads (positive `when` ∪ negative `unless`).
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cardinality(many)]
-#[domain("dialog.effect")]
+#[domain("db.effect")]
 pub struct On(pub Entity);
 
 // ---------------------------------------------------------------- //
@@ -150,7 +150,7 @@ pub enum EffectPolarity {
 }
 
 impl EffectPolarity {
-    /// String form for the `dialog.effect/polarity` claim's
+    /// String form for the `db.effect/polarity` claim's
     /// value. Matches the lowercase variant name.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -160,7 +160,7 @@ impl EffectPolarity {
     }
 
     /// Parse from the string form stored in
-    /// `dialog.effect/polarity`. Returns `None` on unknown
+    /// `db.effect/polarity`. Returns `None` on unknown
     /// variants.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -186,14 +186,14 @@ pub enum EffectError {
     )]
     MissingTrigger,
 
-    /// Could not deserialize the effect's `dialog.effect/source`
+    /// Could not deserialize the effect's `db.effect/source`
     /// claim as an [`InductiveRuleDescriptor`].
     #[error("failed to parse stored effect source: {0}")]
     Deserialize(String),
 
-    /// The effect's `dialog.effect/polarity` claim was missing or
+    /// The effect's `db.effect/polarity` claim was missing or
     /// unrecognized.
-    #[error("missing or invalid dialog.effect/polarity for stored effect")]
+    #[error("missing or invalid db.effect/polarity for stored effect")]
     InvalidPolarity,
 }
 
@@ -270,14 +270,14 @@ impl Effect {
     }
 
     /// Canonical JSON form of the rule descriptor — the value of
-    /// the `dialog.effect/source` claim.
+    /// the `db.effect/source` claim.
     pub fn source(&self) -> String {
         serde_json::to_string(&self.rule.descriptor())
             .expect("InductiveRuleDescriptor always serializes to JSON")
     }
 
     /// The head concept entity — the value of the
-    /// `dialog.effect/conclusion` claim.
+    /// `db.effect/conclusion` claim.
     pub fn conclusion(&self) -> Entity {
         self.rule.conclusion().this()
     }
@@ -286,7 +286,7 @@ impl Effect {
     /// attribute the body reads from. For each
     /// `Proposition::Concept` premise in `when` or `unless`,
     /// every attribute referenced by the premise's predicate
-    /// contributes one URI. Values of the `dialog.effect/on`
+    /// contributes one URI. Values of the `db.effect/on`
     /// claims.
     ///
     /// The URI form is recoverable at runtime from a `Changes`

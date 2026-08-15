@@ -46,7 +46,7 @@ pub type ResolveError = ConceptLookupError;
 // References — names of things to resolve.
 // -----------------------------------------------------------------
 
-/// A published name — `id:<n>` carries a `dialog.name/referent`
+/// A published name — `id:<n>` carries a `db.name/referent`
 /// claim pointing at whatever the name currently identifies.
 ///
 /// Distinct from the [`Name`] concept schema type: this is the
@@ -135,7 +135,7 @@ impl AttributeReference {
 /// `descriptor` is tonk's durability-tagged [`ConceptDescriptor`]:
 /// [`resolve`](ConceptReference::resolve)'s `perform` reconstructs
 /// the dialog field-set from the entity's EAV facts and reads the
-/// `dialog.concept/transient` marker to pick the `Durable` /
+/// `db.concept/transient` marker to pick the `Durable` /
 /// `Transient` variant.
 #[derive(Debug, Clone)]
 pub struct ConceptDefinition {
@@ -172,10 +172,10 @@ impl ResolveConcept<'_> {
     /// Resolve the reference to a [`ConceptDefinition`].
     ///
     /// A name reference is resolved to an entity first
-    /// (`dialog.name/referent` on `id:<n>`); the entity is then
-    /// reconstructed by enumerating its `dialog.concept.with/*`
+    /// (`db.name/referent` on `id:<n>`); the entity is then
+    /// reconstructed by enumerating its `db.concept.with/*`
     /// claims, resolving each field attribute, and reading the
-    /// `dialog.concept/transient` marker to tag durability.
+    /// `db.concept/transient` marker to tag durability.
     ///
     /// Returns `None` when the name has no published claim, or the
     /// entity carries no concept facts.
@@ -221,7 +221,7 @@ impl ResolveAttribute<'_> {
     /// Resolve the reference to an [`AttributeDefinition`].
     ///
     /// A name reference is resolved to an entity first; the entity
-    /// is then reconstructed from its `dialog.attribute/*` facts.
+    /// is then reconstructed from its `db.attribute/*` facts.
     /// An entity that carries no attribute facts but does carry a
     /// published-name referent (an `id:<name>` URI used directly)
     /// is chased one step: the referent is the attribute, exactly
@@ -261,7 +261,7 @@ impl ResolveAttribute<'_> {
     }
 }
 
-/// Read the `dialog.name/referent` claim attached to `entity`, if
+/// Read the `db.name/referent` claim attached to `entity`, if
 /// any — the one-step name indirection behind `id:<name>` URIs.
 async fn lookup_referent<Env: QueryEnv>(
     entity: &Entity,
@@ -282,7 +282,7 @@ async fn lookup_referent<Env: QueryEnv>(
 }
 
 /// Resolve a [`Target`] to the entity it names — a direct entity
-/// passes through, a name is chased through `dialog.name/referent`.
+/// passes through, a name is chased through `db.name/referent`.
 async fn resolve_target<Env: QueryEnv>(
     target: Target,
     source: &Source<'_>,
@@ -327,7 +327,7 @@ pub struct ListConcepts<'a> {
 impl ListConcepts<'_> {
     /// Resolve every concept the source holds.
     ///
-    /// Enumerates the branch via the `dialog.meta/concept` marker,
+    /// Enumerates the branch via the `db.meta/concept` marker,
     /// then resolves each entity through
     /// [`ConceptReference::resolve`] so every returned definition
     /// carries its durability tag.
@@ -344,9 +344,9 @@ impl ListConcepts<'_> {
             .source
             .select(AttributeQuery::from(
                 Term::<The>::from(
-                    "dialog.meta/concept"
+                    "db.meta/concept"
                         .parse::<The>()
-                        .expect("`dialog.meta/concept` is a valid attribute"),
+                        .expect("`db.meta/concept` is a valid attribute"),
                 )
                 .of(Term::<Entity>::var("concept"))
                 .is(Term::from(marker)),
@@ -420,30 +420,31 @@ mod tests {
     where
         Env: QueryEnv
             + dialog_capability::Provider<dialog_effects::memory::Publish>
-            + dialog_capability::Provider<dialog_effects::archive::Import>,
+            + dialog_capability::Provider<dialog_effects::archive::Import>
+            + dialog_capability::Provider<dialog_effects::authority::Attest>,
     {
         let txn = branch.transaction();
         let mut txn = txn;
         for (_, attr) in descriptor.with().iter() {
             let attr_entity: Entity = attr.to_uri().parse()?;
             txn = txn
+                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                    "{}/{}",
+                    attr.domain(),
+                    attr.name()
+                )))
                 .assert(
-                    the!("dialog.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(format!("{}/{}", attr.domain(), attr.name())),
-                )
-                .assert(
-                    the!("dialog.attribute/type")
+                    the!("db.attribute/type")
                         .of(attr_entity.clone())
                         .is("Text".to_string()),
                 )
                 .assert(
-                    the!("dialog.attribute/cardinality")
+                    the!("db.attribute/cardinality")
                         .of(attr_entity.clone())
                         .is("one".to_string()),
                 )
                 .assert(
-                    the!("dialog.meta/description")
+                    the!("db.meta/description")
                         .of(attr_entity)
                         .is(String::new()),
                 );

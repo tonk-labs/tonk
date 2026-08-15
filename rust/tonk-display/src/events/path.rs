@@ -322,7 +322,7 @@ mod tests {
             Classification::Other
         ));
         assert!(matches!(
-            classify("dialog.name/referent"),
+            classify("db.name/referent"),
             Classification::Other
         ));
         // Looks like a prefix match but the next char isn't a

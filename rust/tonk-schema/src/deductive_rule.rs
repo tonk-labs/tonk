@@ -4,7 +4,7 @@
 //!
 //! Where [`Rule`](crate::rule::Rule) packages an
 //! [`Effect`](tonk_core::effect::Effect) (an inductive rule with
-//! polarity) with its `dialog.effect/*` storage shape, this packages
+//! polarity) with its `db.effect/*` storage shape, this packages
 //! a [`DeductiveRule`](dialog_query::DeductiveRule) with a
 //! `db.rule/*` storage shape so a deductive `rule!:` (the `assert:`
 //! no-bang form) flows through dialog's `Statement` trait.
@@ -33,9 +33,9 @@
 //!   entity ([`ConceptDescriptor::this`](dialog_query::ConceptDescriptor::this)).
 //!   The [`RuleSource`](dialog_repository::RuleSource) resolver looks
 //!   rules up by this: "every rule whose conclusion is concept X".
-//! - `dialog.meta/rule` — marker (value `db:rule`), so "all deductive
+//! - `db.meta/rule` — marker (value `db:rule`), so "all deductive
 //!   rules on this branch" has a known triple to start from.
-//! - `dialog.meta/description` — optional human-readable description.
+//! - `db.meta/description` — optional human-readable description.
 //!
 //! # Identity
 //!
@@ -225,9 +225,9 @@ impl dialog_artifacts::Statement for DeductiveRule {
         let description = self.rule.descriptor().description.clone();
         let conclusion = self.conclusion();
 
-        // Marker — `(?this, dialog.meta/rule, db:rule)`.
+        // Marker — `(?this, db.meta/rule, db:rule)`.
         update.associate_unique(
-            meta_attr("dialog.meta", "rule"),
+            meta_attr("db.meta", "rule"),
             this.clone(),
             Value::Entity(rule_marker_entity()),
         );
@@ -248,7 +248,7 @@ impl dialog_artifacts::Statement for DeductiveRule {
             && !description.is_empty()
         {
             update.associate_unique(
-                meta_attr("dialog.meta", "description"),
+                meta_attr("db.meta", "description"),
                 this,
                 Value::String(description),
             );
@@ -261,7 +261,7 @@ impl dialog_artifacts::Statement for DeductiveRule {
         let conclusion = self.conclusion();
 
         update.dissociate(
-            meta_attr("dialog.meta", "rule"),
+            meta_attr("db.meta", "rule"),
             this.clone(),
             Value::Entity(rule_marker_entity()),
         );
@@ -279,7 +279,7 @@ impl dialog_artifacts::Statement for DeductiveRule {
             && !description.is_empty()
         {
             update.dissociate(
-                meta_attr("dialog.meta", "description"),
+                meta_attr("db.meta", "description"),
                 this,
                 Value::String(description),
             );
@@ -308,7 +308,7 @@ fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
         .expect("dialog meta-attribute names should always be valid")
 }
 
-/// Marker entity asserted as the value of `dialog.meta/rule` on every
+/// Marker entity asserted as the value of `db.meta/rule` on every
 /// deductive-rule entity. Same role `db:effect` plays for effects and
 /// `db:concept` for concepts.
 fn rule_marker_entity() -> Entity {
@@ -411,7 +411,7 @@ mod tests {
         assert!(
             claims
                 .iter()
-                .any(|(e, a)| *e == this && a == "dialog.meta/rule"),
+                .any(|(e, a)| *e == this && a == "db.meta/rule"),
             "marker claim present"
         );
         assert!(

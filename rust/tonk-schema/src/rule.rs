@@ -2,12 +2,12 @@
 //! [`AnonymousConcept`](crate::concept::AnonymousConcept).
 //!
 //! `AnonymousConcept` packages a [`ConceptDescriptor`] with the
-//! storage shape (`dialog.meta/concept` marker plus
-//! `dialog.concept.with/*` per-field claims) so a `concept!:` notation
+//! storage shape (`db.meta/concept` marker plus
+//! `db.concept.with/*` per-field claims) so a `concept!:` notation
 //! can flow through dialog's `Statement` trait. [`Rule`] plays the
 //! same role for installed inductive rules: it packages an
-//! [`Effect`] with the storage shape (`dialog.meta/effect` marker
-//! plus `dialog.effect/{source,conclusion,polarity,on}` claims) so
+//! [`Effect`] with the storage shape (`db.meta/effect` marker
+//! plus `db.effect/{source,conclusion,polarity,on}` claims) so
 //! `rule!:` notation flows through the same trait.
 //!
 //! # Two construction paths — symmetric assert, careful retract
@@ -15,7 +15,7 @@
 //! Asserting a new rule is purely synthetic: hash the rule body,
 //! serialise the source, emit claims. Retracting needs to *match*
 //! what was previously stored. The risk lives in
-//! `dialog.effect/source`: it carries the JSON-encoded
+//! `db.effect/source`: it carries the JSON-encoded
 //! [`InductiveRuleDescriptor`], and serialisation is not guaranteed
 //! to round-trip byte-for-byte (premise order, optional fields,
 //! whitespace…). If a fresh [`Effect::source`] disagrees with the
@@ -31,7 +31,7 @@
 //!   string a moment later, so the symmetry holds for an
 //!   assert+retract pair issued back-to-back in the same process.
 //! - [`Rule::retracting`] — async builder that reads the stored
-//!   `dialog.effect/source` and `dialog.effect/polarity` claims off
+//!   `db.effect/source` and `db.effect/polarity` claims off
 //!   a branch and bakes them into a [`Rule`] whose `Statement`
 //!   impl dissociates using *those exact* bytes. This is the path
 //!   for `rule!: this: <entity> ..: _` deletions where the rule
@@ -67,7 +67,7 @@ use crate::concept::QueryEnv;
 use crate::query_source::Source;
 
 /// A rule installed on a branch — pairs an [`Effect`] with the
-/// exact `dialog.effect/source` string and polarity tag used to
+/// exact `db.effect/source` string and polarity tag used to
 /// store it (or to retract it).
 ///
 /// See the [module docs](self) for why this carries the source
@@ -81,7 +81,7 @@ use crate::query_source::Source;
 pub struct Rule {
     /// The installed effect — head, body, polarity.
     pub effect: Effect,
-    /// The entity URI the `dialog.effect/*` claims are written
+    /// The entity URI the `db.effect/*` claims are written
     /// against. Defaults to [`Effect::this`] (content-derived) for
     /// [`Rule::asserting`]; callers can override via
     /// [`Rule::asserting_at`] to install at a stable, user-chosen
@@ -90,12 +90,12 @@ pub struct Rule {
     /// the same EAVs that were written.
     this: Entity,
     /// The exact source string carried on
-    /// `dialog.effect/source`. Synthesised by
+    /// `db.effect/source`. Synthesised by
     /// [`Effect::source`](tonk_core::effect::Effect::source) on
     /// the assert path; read off the branch on the retract path.
     source: String,
     /// The polarity string carried on
-    /// `dialog.effect/polarity`. Stored as a separate field rather
+    /// `db.effect/polarity`. Stored as a separate field rather
     /// than re-derived so the retract path is symmetric with
     /// assert.
     polarity: EffectPolarity,
@@ -108,7 +108,7 @@ impl Rule {
     /// The carried `source` string is whatever the effect
     /// serialises to right now. That's exactly what
     /// [`Statement::assert`](dialog_artifacts::Statement::assert)
-    /// will write under the `dialog.effect/source` claim, so the
+    /// will write under the `db.effect/source` claim, so the
     /// pair is consistent by construction.
     pub fn asserting(effect: Effect) -> Self {
         let this = effect.this();
@@ -133,7 +133,7 @@ impl Rule {
 
     /// Begin building a [`Rule`] for a `retract` mutation. The
     /// returned [`Retracting`] resolves against a branch to read
-    /// the stored `dialog.effect/source` + `dialog.effect/polarity`
+    /// the stored `db.effect/source` + `db.effect/polarity`
     /// claims and bake those exact bytes into the resulting `Rule`,
     /// so the dissociate matches byte-for-byte and the source claim
     /// is actually removed.
@@ -141,12 +141,12 @@ impl Rule {
         Retracting { entity }
     }
 
-    /// The entity URI the `dialog.effect/*` claims live under.
+    /// The entity URI the `db.effect/*` claims live under.
     pub fn this(&self) -> Entity {
         self.this.clone()
     }
 
-    /// The exact `dialog.effect/source` string (JSON-encoded
+    /// The exact `db.effect/source` string (JSON-encoded
     /// [`InductiveRuleDescriptor`]). Paired with [`Rule::polarity`]
     /// this round-trips through
     /// [`Effect::from_source`](tonk_core::effect::Effect::from_source),
@@ -158,7 +158,7 @@ impl Rule {
     }
 
     /// The polarity tag (`assert` / `retract`) carried on
-    /// `dialog.effect/polarity`.
+    /// `db.effect/polarity`.
     pub fn polarity(&self) -> EffectPolarity {
         self.polarity
     }
@@ -171,34 +171,34 @@ impl dialog_artifacts::Statement for Rule {
         let conclusion = self.effect.conclusion();
         let attributes = self.effect.on_entities();
 
-        // Marker — `(?this, dialog.meta/effect, db:effect)`.
+        // Marker — `(?this, db.meta/effect, db:effect)`.
         update.associate_unique(
-            meta_attr("dialog.meta", "effect"),
+            meta_attr("db.meta", "effect"),
             this.clone(),
             Value::Entity(effect_marker_entity()),
         );
         // Source-of-truth claim.
         update.associate_unique(
-            meta_attr("dialog.effect", "source"),
+            meta_attr("db.effect", "source"),
             this.clone(),
             Value::String(self.source),
         );
         // Head concept index.
         update.associate_unique(
-            meta_attr("dialog.effect", "conclusion"),
+            meta_attr("db.effect", "conclusion"),
             this.clone(),
             Value::Entity(conclusion),
         );
         // Polarity tag.
         update.associate_unique(
-            meta_attr("dialog.effect", "polarity"),
+            meta_attr("db.effect", "polarity"),
             this.clone(),
             Value::String(self.polarity.as_str().to_owned()),
         );
         // Per-attribute reverse index (cardinality-many).
         for attribute in attributes {
             update.associate(
-                meta_attr("dialog.effect", "on"),
+                meta_attr("db.effect", "on"),
                 this.clone(),
                 Value::Entity(attribute),
             );
@@ -208,7 +208,7 @@ impl dialog_artifacts::Statement for Rule {
             && !description.is_empty()
         {
             update.associate_unique(
-                meta_attr("dialog.meta", "description"),
+                meta_attr("db.meta", "description"),
                 this,
                 Value::String(description),
             );
@@ -222,28 +222,28 @@ impl dialog_artifacts::Statement for Rule {
         let attributes = self.effect.on_entities();
 
         update.dissociate(
-            meta_attr("dialog.meta", "effect"),
+            meta_attr("db.meta", "effect"),
             this.clone(),
             Value::Entity(effect_marker_entity()),
         );
         update.dissociate(
-            meta_attr("dialog.effect", "source"),
+            meta_attr("db.effect", "source"),
             this.clone(),
             Value::String(self.source),
         );
         update.dissociate(
-            meta_attr("dialog.effect", "conclusion"),
+            meta_attr("db.effect", "conclusion"),
             this.clone(),
             Value::Entity(conclusion),
         );
         update.dissociate(
-            meta_attr("dialog.effect", "polarity"),
+            meta_attr("db.effect", "polarity"),
             this.clone(),
             Value::String(self.polarity.as_str().to_owned()),
         );
         for attribute in attributes {
             update.dissociate(
-                meta_attr("dialog.effect", "on"),
+                meta_attr("db.effect", "on"),
                 this.clone(),
                 Value::Entity(attribute),
             );
@@ -252,7 +252,7 @@ impl dialog_artifacts::Statement for Rule {
             && !description.is_empty()
         {
             update.dissociate(
-                meta_attr("dialog.meta", "description"),
+                meta_attr("db.meta", "description"),
                 this,
                 Value::String(description),
             );
@@ -261,7 +261,7 @@ impl dialog_artifacts::Statement for Rule {
 }
 
 /// Builder for [`Rule::retracting`]. Reads the stored
-/// `dialog.effect/source` + `dialog.effect/polarity` claims off a
+/// `db.effect/source` + `db.effect/polarity` claims off a
 /// branch so the resulting [`Rule`]'s `retract` dissociates the
 /// stored bytes verbatim. See the [module docs](self) for why this
 /// extra round-trip matters.
@@ -272,7 +272,7 @@ pub struct Retracting {
 
 impl Retracting {
     /// Resolve against a branch. Returns `None` when the entity
-    /// has no `dialog.effect/source` claim (no such rule installed).
+    /// has no `db.effect/source` claim (no such rule installed).
     pub async fn resolve<Env: QueryEnv>(
         self,
         source: &Source<'_>,
@@ -293,7 +293,7 @@ impl Retracting {
         };
         let Value::String(source_string) = source_claim.is else {
             return Err(RuleResolveError::Storage(
-                "dialog.effect/source claim was not a string".to_owned(),
+                "db.effect/source claim was not a string".to_owned(),
             ));
         };
 
@@ -309,12 +309,12 @@ impl Retracting {
             .map_err(|e| RuleResolveError::Query(format!("polarity lookup failed: {e:?}")))?;
         let Some(polarity_claim) = polarity_claims.into_iter().next() else {
             return Err(RuleResolveError::Storage(
-                "missing dialog.effect/polarity claim".to_owned(),
+                "missing db.effect/polarity claim".to_owned(),
             ));
         };
         let Value::String(polarity_string) = polarity_claim.is else {
             return Err(RuleResolveError::Storage(
-                "dialog.effect/polarity claim was not a string".to_owned(),
+                "db.effect/polarity claim was not a string".to_owned(),
             ));
         };
         let polarity = EffectPolarity::parse(&polarity_string).ok_or_else(|| {
@@ -373,15 +373,15 @@ fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
 }
 
 /// Build the typed [`dialog_query::attribute::The`] selector for a
-/// `dialog.effect/<name>` attribute. The retract resolver needs the
+/// `db.effect/<name>` attribute. The retract resolver needs the
 /// typed form when constructing an [`AttributeQuery`].
 fn effect_attr(name: &str) -> dialog_query::attribute::The {
-    format!("dialog.effect/{name}")
+    format!("db.effect/{name}")
         .parse()
-        .expect("dialog.effect/<name> is a valid attribute URI")
+        .expect("db.effect/<name> is a valid attribute URI")
 }
 
-/// Marker entity asserted as the value of `dialog.meta/effect` on
+/// Marker entity asserted as the value of `db.meta/effect` on
 /// every effect entity. Same role as `db:concept` for concepts:
 /// gives "all effects on this branch" queries a known triple to
 /// start from.
@@ -493,7 +493,7 @@ mod tests {
     /// Install an effect, then retract it by resolving its
     /// [`Rule::retracting`] handle off the branch and committing the
     /// dissociates. After the retract commit the rule should *not*
-    /// surface in a `dialog.effect/source` query — proving the
+    /// surface in a `db.effect/source` query — proving the
     /// dissociate matched the stored bytes verbatim. This pins the
     /// regression that bit
     /// commit `fd1cea8f` (reverted at `2abb4b2f`): the previous
@@ -562,7 +562,7 @@ mod tests {
             .await?;
         assert!(
             post.is_empty(),
-            "dialog.effect/source claim should be gone after retract, saw {post:?}"
+            "db.effect/source claim should be gone after retract, saw {post:?}"
         );
 
         Ok(())
@@ -599,36 +599,36 @@ mod tests {
         let marker = effect_marker_entity();
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.meta/effect"
+                c.the.to_string() == "db.meta/effect"
                     && c.of == this
                     && matches!(&c.is, Value::Entity(e) if *e == marker)
             }),
-            "missing dialog.meta/effect marker"
+            "missing db.meta/effect marker"
         );
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/conclusion"
+                c.the.to_string() == "db.effect/conclusion"
                     && c.of == this
                     && matches!(&c.is, Value::Entity(e) if *e == conclusion)
             }),
-            "missing dialog.effect/conclusion claim"
+            "missing db.effect/conclusion claim"
         );
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/polarity"
+                c.the.to_string() == "db.effect/polarity"
                     && c.of == this
                     && matches!(&c.is, Value::String(s) if s == "assert")
             }),
-            "missing dialog.effect/polarity claim"
+            "missing db.effect/polarity claim"
         );
         for attribute in &on_set {
             assert!(
                 asserted.iter().any(|c| {
-                    c.the.to_string() == "dialog.effect/on"
+                    c.the.to_string() == "db.effect/on"
                         && c.of == this
                         && matches!(&c.is, Value::Entity(e) if *e == *attribute)
                 }),
-                "missing dialog.effect/on claim for {attribute}"
+                "missing db.effect/on claim for {attribute}"
             );
         }
     }
@@ -672,7 +672,7 @@ mod tests {
         let marker = effect_marker_entity();
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.meta/effect"
+                c.the.to_string() == "db.meta/effect"
                     && c.of == chosen
                     && matches!(&c.is, Value::Entity(e) if *e == marker)
             }),
@@ -681,12 +681,12 @@ mod tests {
         assert!(
             asserted
                 .iter()
-                .any(|c| { c.the.to_string() == "dialog.effect/source" && c.of == chosen }),
+                .any(|c| { c.the.to_string() == "db.effect/source" && c.of == chosen }),
             "source claim should hang off the chosen entity"
         );
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/conclusion"
+                c.the.to_string() == "db.effect/conclusion"
                     && c.of == chosen
                     && matches!(&c.is, Value::Entity(e) if *e == conclusion)
             }),
@@ -694,7 +694,7 @@ mod tests {
         );
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/polarity"
+                c.the.to_string() == "db.effect/polarity"
                     && c.of == chosen
                     && matches!(&c.is, Value::String(s) if s == "assert")
             }),
@@ -703,7 +703,7 @@ mod tests {
         for attribute in &on_set {
             assert!(
                 asserted.iter().any(|c| {
-                    c.the.to_string() == "dialog.effect/on"
+                    c.the.to_string() == "db.effect/on"
                         && c.of == chosen
                         && matches!(&c.is, Value::Entity(e) if *e == *attribute)
                 }),

@@ -163,7 +163,7 @@ pub(crate) trait Resolve {
         entity: &Entity,
     ) -> Result<Option<AttributeDefinition>, ResolveError>;
     /// Resolve an attribute by its `domain/name` selector id (the
-    /// `dialog.attribute/id` claim). Used by claim-domain heads to
+    /// `db.attribute/id` claim). Used by claim-domain heads to
     /// discover declared attributes for their body fields.
     async fn attribute_by_id(&self, id: &str) -> Result<Option<AttributeDefinition>, ResolveError>;
     async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError>;

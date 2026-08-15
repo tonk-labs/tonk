@@ -1059,7 +1059,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Install the `dialog.attribute/*` and `dialog.meta/description`
+    /// Install the `db.attribute/*` and `db.meta/description`
     /// facts a concept's fields need so the analyzer can rehydrate
     /// the descriptor from the branch.
     fn install_attribute_facts<'a>(
@@ -1070,23 +1070,23 @@ mod tests {
             let attr_entity: dialog_artifacts::Entity =
                 attr.to_uri().parse().expect("attribute URI");
             txn = txn
+                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                    "{}/{}",
+                    attr.domain(),
+                    attr.name()
+                )))
                 .assert(
-                    the!("dialog.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(format!("{}/{}", attr.domain(), attr.name())),
-                )
-                .assert(
-                    the!("dialog.attribute/type")
+                    the!("db.attribute/type")
                         .of(attr_entity.clone())
                         .is("Text".to_string()),
                 )
                 .assert(
-                    the!("dialog.attribute/cardinality")
+                    the!("db.attribute/cardinality")
                         .of(attr_entity.clone())
                         .is("one".to_string()),
                 )
                 .assert(
-                    the!("dialog.meta/description")
+                    the!("db.meta/description")
                         .of(attr_entity)
                         .is(String::new()),
                 );
@@ -1096,7 +1096,7 @@ mod tests {
 
     /// Install a concept and publish it under a name so the
     /// analyzer's resolver finds it via `lookup_concept`. Uses
-    /// the existing `name!` desugar through a `dialog.meta/name`
+    /// the existing `name!` desugar through a `db.meta/name`
     /// claim against `id:<name>`.
     fn install_named_concept<'a>(
         txn: Transaction<'a>,
@@ -1106,15 +1106,11 @@ mod tests {
     ) -> Transaction<'a> {
         let entity = descriptor.this();
         // Publish the name — `id:<name>` carries the
-        // `dialog.meta/name` claim pointing at the concept
+        // `db.meta/name` claim pointing at the concept
         // entity. This is the same shape `name!:` produces.
         let id_entity: dialog_artifacts::Entity =
             format!("id:{name}").parse().expect("id:<name> is valid");
-        let mut txn = txn.assert(
-            the!("dialog.name/referent")
-                .of(id_entity)
-                .is(entity.clone()),
-        );
+        let mut txn = txn.assert(the!("db.name/referent").of(id_entity).is(entity.clone()));
         if transient {
             txn = txn.assert(TransientConcept::new(descriptor.clone()));
         } else {
@@ -1289,7 +1285,7 @@ attribute!: &foo/title
         let id_demo: dialog_artifacts::Entity = "id:demo".parse()?;
         branch
             .transaction()
-            .assert(the!("dialog.name/referent").of(id_demo).is(target.clone()))
+            .assert(the!("db.name/referent").of(id_demo).is(target.clone()))
             .commit()
             .perform(&operator)
             .await?;
@@ -1327,7 +1323,7 @@ name!:
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
                     .of(Term::<dialog_artifacts::Entity>::from(id_copy))
                     .is(Term::<dialog_artifacts::Entity>::var("referent")),
             ))
@@ -1389,11 +1385,11 @@ name!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
 
-        // Sanity: the rule's dialog.effect/source claim landed.
+        // Sanity: the rule's db.effect/source claim landed.
         let effect_source_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+                Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
                     .of(Term::<dialog_artifacts::Entity>::var("effect"))
                     .is(Term::<String>::var("source")),
             ))
@@ -1478,7 +1474,7 @@ name!:
     /// directly).
     ///
     /// Verifies the `transient:` field on `concept!:` flows all
-    /// the way to the `dialog.concept/transient` marker fact —
+    /// the way to the `db.concept/transient` marker fact —
     /// without it, the rule would fail validate (no transient
     /// trigger) and the body wouldn't classify head emissions
     /// correctly.
@@ -1542,7 +1538,7 @@ rule!:
         let marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                Term::<dialog_query::attribute::The>::from(the!("db.concept/transient"))
                     .of(Term::from(ping_entity.clone()))
                     .is(Term::from(marker_target.clone())),
             ))
@@ -1552,7 +1548,7 @@ rule!:
         assert_eq!(
             marker_claims.len(),
             1,
-            "expected one dialog.concept/transient claim on ping; saw {marker_claims:?}"
+            "expected one db.concept/transient claim on ping; saw {marker_claims:?}"
         );
 
         // And the durable pong concept has no marker.
@@ -1561,7 +1557,7 @@ rule!:
         let pong_marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                Term::<dialog_query::attribute::The>::from(the!("db.concept/transient"))
                     .of(Term::from(pong_entity))
                     .is(Term::from(marker_target)),
             ))
@@ -1705,7 +1701,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -1878,7 +1874,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -1997,7 +1993,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -2112,7 +2108,7 @@ concept!: &pong
     }
 
     /// `rule!: this: <entity>, assert!: ..` installs the rule at the
-    /// user-chosen entity. The `dialog.effect/source` claim must land
+    /// user-chosen entity. The `db.effect/source` claim must land
     /// at that entity, not at the content-derived `Effect::this`.
     /// This is the install-at-named-entity path mirroring task #90's
     /// retract-at-named-entity flow.
@@ -2173,12 +2169,12 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("commit (rule): {e}"))?;
 
-        // The `dialog.effect/source` claim should hang off the
+        // The `db.effect/source` claim should hang off the
         // chosen entity, not off the content-derived hash.
         let at_chosen: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+                Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
                     .of(Term::<Entity>::from(chosen.clone()))
                     .is(Term::<String>::var("source")),
             ))
@@ -2188,7 +2184,7 @@ concept!: &pong
         assert_eq!(
             at_chosen.len(),
             1,
-            "dialog.effect/source must land at id:my-counter, saw {at_chosen:?}"
+            "db.effect/source must land at id:my-counter, saw {at_chosen:?}"
         );
 
         // And there's exactly one installed effect — no orphan at
@@ -2196,7 +2192,7 @@ concept!: &pong
         let all_sources: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+                Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
                     .of(Term::<Entity>::var("any"))
                     .is(Term::<String>::var("source")),
             ))
@@ -2220,7 +2216,7 @@ concept!: &pong
     /// to end through the notation path: parse → analyze →
     /// `Statement::RetractEffect` → evaluator resolves a `Rule`
     /// retract handle off the branch → transaction.retract →
-    /// commit. After the commit the `dialog.effect/source` claim
+    /// commit. After the commit the `db.effect/source` claim
     /// at the named entity must be gone (proving #87's
     /// stored-bytes dissociate) and the rule must stop firing.
     #[dialog_common::test]
@@ -2283,7 +2279,7 @@ concept!: &pong
 
         // Sanity: the source claim is at the chosen entity.
         let source_query = dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+            Term::<dialog_query::attribute::The>::from(the!("db.effect/source"))
                 .of(Term::<Entity>::from(chosen.clone()))
                 .is(Term::<String>::var("source")),
         );
@@ -2324,7 +2320,7 @@ concept!: &pong
             .await?;
         assert!(
             post.is_empty(),
-            "dialog.effect/source at {chosen} must be empty after retract, saw {post:?}"
+            "db.effect/source at {chosen} must be empty after retract, saw {post:?}"
         );
 
         Ok(())
@@ -2540,7 +2536,7 @@ concept!: &person
 
         // Re-open the branch from storage before the instance
         // commit — the rule must be *loaded* from the branch's
-        // dialog.effect/* facts, not held in memory. This is what
+        // db.effect/* facts, not held in memory. This is what
         // a separate /evaluate request does.
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3675,7 +3671,7 @@ workspace!:
     }
 
     /// End-to-end: a `concept!` with a `maybe:` block lands the
-    /// optional marker (`dialog.concept.optional/{field}`) on the
+    /// optional marker (`db.concept.optional/{field}`) on the
     /// branch for the optional field only — the required `with:`
     /// field carries none. Proves the notation → analyzer →
     /// storage round-trip for optionality.
@@ -3742,7 +3738,7 @@ workspace!:
         let entity = descriptor.this();
 
         let nickname_the: dialog_query::attribute::The =
-            "dialog.concept.optional/nickname".parse().unwrap();
+            "db.concept.optional/nickname".parse().unwrap();
         let nickname_markers: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
@@ -3760,8 +3756,7 @@ workspace!:
         );
         assert_eq!(nickname_markers[0].is, Value::Boolean(true));
 
-        let name_the: dialog_query::attribute::The =
-            "dialog.concept.optional/name".parse().unwrap();
+        let name_the: dialog_query::attribute::The = "db.concept.optional/name".parse().unwrap();
         let name_markers: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(

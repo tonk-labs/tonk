@@ -5202,6 +5202,57 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// The FAB space-rename must PERSIST. The repository banner writes a
+    /// transient `tonk/rename-repository` command (its `subject` is the repo's
+    /// own DID, `name` the typed value); the standard-library rule fires on
+    /// commit and asserts the durable `tonk/repository` name
+    /// (`xyz.tonk.repo/name`, keyed by the subject DID) on the content branch.
+    /// The banner then reads that fact back, so a refresh keeps the new name
+    /// rather than reverting.
+    ///
+    /// Regression guard: the rename flows entirely through the standard
+    /// library on the content branch, but the branch query that drives the
+    /// rule's fixpoint also carries dialog's auto-injected session/replica
+    /// facts. A drift in those injected names breaks the rule's evaluation
+    /// context, so the command commits nothing and the name silently reverts —
+    /// exactly the FAB "rename dropped on refresh" symptom.
+    #[dialog_common::test]
+    async fn it_persists_a_space_rename() {
+        use dialog_repository::RepositoryExt as _;
+
+        let (_app, state, key) = fresh_repo("test-space-rename").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+
+        // Fire the FAB's rename command: a transient `tonk/rename-repository`
+        // whose `subject` is the repository's own DID (the banner stamps it
+        // from `data-subject`) and whose `name` is the new value. Evaluating
+        // with `transact=true` commits it, which fires the library rule.
+        let rename =
+            format!("tonk/rename-repository!:\n  subject: {key}\n  name: \"brave-lynx\"\n");
+        seed(&state, repo, &rename).await;
+
+        // Read the name back exactly as the Hub/banner does — through
+        // `repository_label`, which queries `tonk/repository` on the content
+        // branch keyed by the subject DID.
+        let label = {
+            let tonk = state.read().await;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            super::repository_label(&tonk, &repository, repo).await
+        };
+
+        assert_eq!(
+            label, "brave-lynx",
+            "a space rename persists to xyz.tonk.repo/name; got {label:?}",
+        );
+    }
+
     /// The lean scaffold (core alone) carries the blank canvas concept,
     /// not the sheets workspace. The blank model resolves to exactly one
     /// instance — the repo's own subject — which the blank-canvas view
@@ -5214,7 +5265,7 @@ mod tests {
 
         // The lean scaffold carries the blank canvas concept, not the
         // sheets workspace. `blank:` resolves to the repo subject (its
-        // sole `dialog.origin/subject`-derived attribute); a
+        // sole `dialog.replica/subject`-derived attribute); a
         // `workspace/sheet:` query would fault on an unresolved concept.
         assert_eq!(
             count(&state, repo, "blank:\n").await,
@@ -5250,6 +5301,38 @@ mod tests {
         }
         assert!(CORE.contains("local spot &middot; no sync remote"));
         assert!(CORE.contains("Use Share to turn on sync and create an agent link."));
+    }
+
+    /// Regression guard for the dialog-injected replica identity fact the
+    /// standard library queries. Dialog materializes this device's replica
+    /// identity under the reserved `dialog.` namespace, and the blank canvas
+    /// resolves its `subject` from `dialog.replica/subject`. When dialog
+    /// renamed that attribute from `dialog.origin/subject` to
+    /// `dialog.replica/subject`, a stale name in the library silently unbound
+    /// the field: `blank:` resolved zero rows instead of one, so the space's
+    /// content rendered an empty "Concept mismatch: subject: _" instead of the
+    /// canvas.
+    ///
+    /// `it_seeds_blank_scaffold` above already asserts the count is 1; this
+    /// test pins the *reason* — the attribute name must track what dialog
+    /// injects — so a future dialog rename fails here with a clear message
+    /// rather than as a blank space in the browser. This is the exact failure
+    /// mode a native `cargo test` cannot catch: the fact exists only on a real
+    /// branch, materialized by the reactor, which only runs on wasm.
+    #[dialog_common::test]
+    async fn it_binds_the_dialog_injected_replica_subject() {
+        let (_app, state, repo) = fresh_repo("test-replica-subject-binds").await;
+        let repo = repo.as_str();
+        seed(&state, repo, CORE).await;
+
+        // `blank:` resolves `tonk:blank`, whose sole `with` field
+        // (`subject`) reads `dialog.replica/subject`. A zero means that
+        // attribute name drifted from what dialog injects for the replica.
+        assert_eq!(
+            count(&state, repo, "blank:\n").await,
+            1,
+            "blank resolves its subject via dialog.replica/subject",
+        );
     }
 
     /// A `RepositoryConfiguration` that attaches an `origin` remote at

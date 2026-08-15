@@ -569,26 +569,26 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
     }
 }
 
-/// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for
+/// The existing dialog [`Replica`](dialog_repository::schema::Replica) entity for
 /// this device's `(profile, subject)` on the branch — the entity `tonk/replica`
 /// and `tonk:binder` live on. Queried (not derived) so it stays correct even if
-/// tonk's and dialog's hashing drift. `None` if no origin is on the branch yet.
+/// tonk's and dialog's hashing drift. `None` if no replica is on the branch yet.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn origin_entity(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
 ) -> Option<dialog_artifacts::Entity> {
     use dialog_query::{Output as _, Query, Term};
-    use dialog_repository::schema::origin::{Profile, Subject};
-    use dialog_repository::schema::{DidExt as _, Origin};
+    use dialog_repository::schema::replica::{Profile, Subject};
+    use dialog_repository::schema::{DidExt as _, Replica};
 
     let subject = state.handle().of().this();
     let profile = tonk.profile.did().this();
 
-    let origins: Vec<Origin> = state
+    let replicas: Vec<Replica> = state
         .handle()
         .query()
-        .select(Query::<Origin> {
+        .select(Query::<Replica> {
             this: Term::var("this"),
             subject: Term::from(Subject(subject)),
             profile: Term::from(Profile(profile)),
@@ -598,7 +598,7 @@ async fn origin_entity(
         .await
         .unwrap_or_default();
 
-    origins.into_iter().next().map(|origin| origin.this)
+    replicas.into_iter().next().map(|replica| replica.this)
 }
 
 /// A matched route: the route-table entry, the model the shell mounts, and the

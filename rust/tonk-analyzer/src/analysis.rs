@@ -251,7 +251,7 @@ impl DocumentAnalysis {
     /// [`Rule`](tonk_schema::rule::Rule), in the same
     /// document/eval order as [`statements`](Self::statements). These
     /// have no [`TransactRequest`] representation (the `Claim` wire
-    /// can't carry `dialog.effect/*` triples), so they are returned
+    /// can't carry `db.effect/*` triples), so they are returned
     /// separately for a seed loop to `assert` directly.
     ///
     /// Only `assert` rule installs are returned; a rule retract has

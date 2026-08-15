@@ -135,7 +135,7 @@ fn the(domain: &str, name: &str) -> dialog_query::attribute::The {
 }
 
 /// Builder for [`effect_by_entity`]. Resolves the
-/// `dialog.effect/source` and `dialog.effect/polarity` claims and
+/// `db.effect/source` and `db.effect/polarity` claims and
 /// rehydrates the effect.
 pub struct EffectByEntity {
     entity: Entity,
@@ -152,7 +152,7 @@ impl EffectByEntity {
         let source_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "source"))
+                Term::<dialog_query::attribute::The>::from(the("db.effect", "source"))
                     .of(Term::from(self.entity.clone()))
                     .is(Term::<String>::var("source")),
             ))
@@ -168,7 +168,7 @@ impl EffectByEntity {
             Value::String(s) => s,
             other => {
                 return Err(EffectLookupError::Query(format!(
-                    "dialog.effect/source claim was not a string: {other:?}"
+                    "db.effect/source claim was not a string: {other:?}"
                 )));
             }
         };
@@ -177,7 +177,7 @@ impl EffectByEntity {
         let polarity_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "polarity"))
+                Term::<dialog_query::attribute::The>::from(the("db.effect", "polarity"))
                     .of(Term::from(self.entity.clone()))
                     .is(Term::<String>::var("polarity")),
             ))
@@ -201,7 +201,7 @@ impl EffectByEntity {
     }
 }
 
-/// Look up all effect entities whose `dialog.effect/on` index
+/// Look up all effect entities whose `db.effect/on` index
 /// contains the given attribute. `attribute_name` is the runtime
 /// `domain/name` form (what a [`Changes`](dialog_artifacts::Changes)
 /// instruction's `Attribute` displays as); this builder wraps it
@@ -224,7 +224,7 @@ pub struct EffectsByOn {
 }
 
 impl EffectsByOn {
-    /// Resolve every effect entity whose `dialog.effect/on`
+    /// Resolve every effect entity whose `db.effect/on`
     /// index includes `attribute_entity`.
     pub async fn resolve<Env: EffectEnv>(
         self,
@@ -234,7 +234,7 @@ impl EffectsByOn {
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "on"))
+                Term::<dialog_query::attribute::The>::from(the("db.effect", "on"))
                     .of(Term::<Entity>::var("effect"))
                     .is(Term::<Entity>::from(self.attribute_entity.clone())),
             ))
@@ -379,48 +379,48 @@ mod tests {
             .expect("`db:effect` is a valid entity URI");
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.meta/effect"
+                c.the.to_string() == "db.meta/effect"
                     && c.of == this
                     && matches!(&c.is, Value::Entity(e) if *e == marker)
             }),
-            "missing dialog.meta/effect marker"
+            "missing db.meta/effect marker"
         );
 
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/source"
+                c.the.to_string() == "db.effect/source"
                     && c.of == this
                     && matches!(&c.is, Value::String(s) if s == &source)
             }),
-            "missing dialog.effect/source claim"
+            "missing db.effect/source claim"
         );
 
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/conclusion"
+                c.the.to_string() == "db.effect/conclusion"
                     && c.of == this
                     && matches!(&c.is, Value::Entity(e) if *e == conclusion)
             }),
-            "missing dialog.effect/conclusion claim"
+            "missing db.effect/conclusion claim"
         );
 
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/polarity"
+                c.the.to_string() == "db.effect/polarity"
                     && c.of == this
                     && matches!(&c.is, Value::String(s) if s == "assert")
             }),
-            "missing dialog.effect/polarity claim"
+            "missing db.effect/polarity claim"
         );
 
         for attribute in &on_set {
             assert!(
                 asserted.iter().any(|c| {
-                    c.the.to_string() == "dialog.effect/on"
+                    c.the.to_string() == "db.effect/on"
                         && c.of == this
                         && matches!(&c.is, Value::Entity(e) if *e == *attribute)
                 }),
-                "missing dialog.effect/on claim for {attribute}"
+                "missing db.effect/on claim for {attribute}"
             );
         }
     }
@@ -447,11 +447,11 @@ mod tests {
 
         assert!(
             asserted.iter().any(|c| {
-                c.the.to_string() == "dialog.effect/polarity"
+                c.the.to_string() == "db.effect/polarity"
                     && c.of == this
                     && matches!(&c.is, Value::String(s) if s == "retract")
             }),
-            "missing dialog.effect/polarity = retract claim"
+            "missing db.effect/polarity = retract claim"
         );
     }
 

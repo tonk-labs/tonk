@@ -1,78 +1,134 @@
-//! Decoding a composite index key into its colored components, and
+//! Rendering the worker-decoded key components as colored chips, and
 //! formatting fact values so their type reads from the value itself.
 //!
-//! A key is the 162 bytes carried as a `0x<hex>` string. The byte layout
-//! depends on the leading tag byte (the index ordering): entity, attribute,
-//! and value index keys place the parts at different offsets (see `layout`).
+//! The M3 key format is variable-length and schema-driven, so the *decoding*
+//! lives on the worker (`dialog-reactor`'s `key_parts`): it hands us a list of
+//! `{kind, text, hex}` components already split and textualized (a `did:key:…`
+//! entity, a `db.meta/name` attribute, a typed value, a history `origin` /
+//! `edition`). This module maps each component to a display [`Component`]
+//! (label, color part, text with structural-byte glyphs) — no byte slicing.
 
-/// One component of a key: its label (for a tooltip), which `Part` of the
-/// key it is (selects the CSS class / background color), and the short
-/// displayed text plus the full value.
+use crate::model::KeyPart;
+
+/// One component of a key, ready to render: its label (for a tooltip), which
+/// [`Part`] it is (the CSS color class), and the displayed text plus the full
+/// text for the detail pane.
 pub struct Component {
     pub label: String,
     pub part: Part,
     pub text: String,
     pub full: String,
-    /// The byte range this component occupies in the 162-byte key. Used to
-    /// locate the routing pivot (the first byte that diverges from the
-    /// previous sibling) within the chip.
+    /// The byte range this component occupies in the raw key, for the routing
+    /// pivot. Derived from the parts' `hex` lengths in document order.
     pub bytes: std::ops::Range<usize>,
 }
 
-/// Which part of the composite key a segment is. Each maps to a CSS class
-/// (`seg-<part>`) carrying that part's Bauhaus background color, so all
-/// styling lives in the stylesheet, not inline: entity → circle/blue,
-/// attribute → triangle/yellow, value-type & value-ref → square/red. The
-/// index-type chip reuses the matching index part's color (via `tag_fill`)
-/// and `append_key` adds `seg-index-type` for its chip shape.
+/// Which part of a key a component is — selects the `seg-<part>` CSS color.
+/// entity → circle/blue, attribute → triangle/yellow, value & type →
+/// square/red, structural (index/origin/edition/blob/spill) → neutral.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Part {
     Entity,
     Attribute,
     ValueType,
     ValueRef,
+    Structural,
     Unknown,
 }
 
 impl Part {
-    /// The CSS class for this part — `seg-entity`, `seg-attribute`, etc.
-    /// The stylesheet keys the background color off it.
+    /// The CSS class for this part — the stylesheet keys the color off it.
     pub fn class(self) -> &'static str {
         match self {
             Part::Entity => "seg-entity",
             Part::Attribute => "seg-attribute",
             Part::ValueType => "seg-vtype",
             Part::ValueRef => "seg-value",
+            Part::Structural => "seg-index-type",
             Part::Unknown => "seg-unknown",
         }
     }
 }
 
-/// The index ordering a key belongs to, from its tag byte.
-pub fn tag_of(byte: u8) -> &'static str {
-    match byte {
-        0 => "entity",
-        1 => "attribute",
-        2 => "value",
-        _ => "unknown",
+/// Map a worker `kind` to its color part and human label.
+fn part_of(kind: &str) -> (Part, &'static str) {
+    match kind {
+        "index" => (Part::Structural, "Index"),
+        "entity" => (Part::Entity, "Entity"),
+        "attribute" => (Part::Attribute, "Attribute"),
+        "vtype" => (Part::ValueType, "Value type"),
+        "value" => (Part::ValueRef, "Value"),
+        "spill" => (Part::ValueRef, "Spilled value (hash reference)"),
+        "origin" => (Part::Structural, "Revision origin"),
+        "edition" => (Part::Structural, "Revision edition"),
+        "blob" => (Part::ValueRef, "Blob (content-addressed)"),
+        "min" => (Part::Structural, "Leftmost subtree (no lower bound)"),
+        "opaque" => (Part::Unknown, "Key"),
+        _ => (Part::Unknown, "Key"),
     }
 }
 
-/// The index-type chip's tooltip label — `Entity Index`, `Attribute
-/// Index`, `Value Index`.
-fn index_label(byte: u8) -> String {
-    match byte {
-        0 => "Entity Index",
-        1 => "Attribute Index",
-        2 => "Value Index",
-        _ => "Unknown Index",
-    }
-    .to_owned()
+/// Substitute glyphs for non-printing / structural bytes so a UTF-8-ish
+/// component reads as text: a NUL terminator becomes `␀`, other control bytes
+/// become `·`. Printable text passes through unchanged. Used for the `text`
+/// of entity/attribute chips (which are UTF-8 in the key) so a trailing `0x00`
+/// separator is visible rather than an invisible gap.
+fn glyphs(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\0' => '␀',
+            c if c.is_control() => '·',
+            c => c,
+        })
+        .collect()
 }
 
-/// Decode a `0x`-prefixed hex key into bytes. Keys travel as hex (they
-/// are 162 bytes — too long for base58 decode buffers). Returns `None`
-/// on malformed input.
+/// The number of raw bytes a hex string represents (2 hex digits per byte).
+fn hex_len(hex: &str) -> usize {
+    hex.strip_prefix("0x").unwrap_or(hex).len() / 2
+}
+
+/// Map the worker-decoded parts into display components, threading each part's
+/// byte offset (from its `hex` length) so the pivot logic can locate the
+/// routing divergence. `text` gets glyph substitution; the index chip shows
+/// its ordering name.
+pub fn components(parts: &[KeyPart]) -> Vec<Component> {
+    let mut out = Vec::with_capacity(parts.len());
+    let mut offset = 0usize;
+    for p in parts {
+        let (part, label) = part_of(&p.kind);
+        // The index and value-type chips carry a NAME in `hex` (not real
+        // bytes) for the tooltip, and always span one byte (the tag). Every
+        // other part's byte span comes from its `hex` length.
+        let (len, label) = match p.kind.as_str() {
+            "index" => (1usize, capitalize(&p.hex)),
+            "vtype" => (1usize, format!("Value type: {}", p.hex)),
+            _ => (hex_len(&p.hex).max(1), label.to_owned()),
+        };
+        let text = glyphs(&p.text);
+        out.push(Component {
+            label,
+            part,
+            full: text.clone(),
+            text,
+            bytes: offset..offset + len,
+        });
+        offset += len;
+    }
+    out
+}
+
+/// Title-case an ordering name for the index tooltip (`entity` → `Entity
+/// index`).
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => format!("{}{} index", first.to_uppercase(), chars.as_str()),
+        None => "Index".to_owned(),
+    }
+}
+
+/// Decode a `0x`-prefixed hex key into raw bytes, for the pivot comparison.
 fn decode(key: &str) -> Option<Vec<u8>> {
     let raw = key.strip_prefix("0x").unwrap_or(key);
     if !raw.len().is_multiple_of(2) {
@@ -84,220 +140,39 @@ fn decode(key: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Lowercase hex of a byte slice. Hex is order-preserving — the chips'
-/// left-to-right order then reflects the key's actual lexicographic sort
-/// (base58 would hide it, since base58 string order ≠ byte order).
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn trunc(s: &str, head: usize, tail: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > head + tail + 1 {
-        let h: String = chars[..head].iter().collect();
-        let t: String = chars[chars.len() - tail..].iter().collect();
-        format!("{h}…{t}")
-    } else {
-        s.to_owned()
-    }
-}
-
-const TYPE_NAMES: [&str; 9] = [
-    "Bytes",
-    "Entity",
-    "Boolean",
-    "Text",
-    "UnsignedInt",
-    "SignedInt",
-    "Float",
-    "Record",
-    "Symbol",
-];
-
-fn type_name(byte: u8) -> &'static str {
-    TYPE_NAMES.get(byte as usize).copied().unwrap_or("?")
-}
-
-/// A human, kebab-cased value-type name for tooltips
-/// (`SignedInt` → `signed-integer`).
-fn type_label(byte: u8) -> &'static str {
-    match byte {
-        0 => "bytes",
-        1 => "entity",
-        2 => "boolean",
-        3 => "text",
-        4 => "unsigned-integer",
-        5 => "signed-integer",
-        6 => "float",
-        7 => "record",
-        8 => "symbol",
-        _ => "unknown",
-    }
-}
-
-/// Where each part sits in the 162 key bytes for a given index tag. The
-/// byte order is index-dependent (the sort key puts the leading part
-/// first), so the offsets shift per tag — matching dialog-artifacts'
-/// `key/{entity,attribute,value}.rs`.
-struct Layout {
-    entity: usize,
-    attribute: usize,
-    value_type: usize,
-    value_ref: usize,
-}
-
-fn layout(tag: u8) -> Layout {
-    match tag {
-        // value : [tag][type 1][value 32][attribute 64][entity 64]
-        2 => Layout {
-            value_type: 1,
-            value_ref: 2,
-            attribute: 34,
-            entity: 98,
-        },
-        // attribute : [tag][attribute 64][entity 64][type 1][value 32]
-        1 => Layout {
-            attribute: 1,
-            entity: 65,
-            value_type: 129,
-            value_ref: 130,
-        },
-        // entity : [tag][entity 64][attribute 64][type 1][value 32]
-        _ => Layout {
-            entity: 1,
-            attribute: 65,
-            value_type: 129,
-            value_ref: 130,
-        },
-    }
-}
-
-/// Decode a key into its ordered, labeled, colored components. The tag
-/// segment is first and always present; the rest follow the index's byte
-/// order so the sort prefix reads left to right.
-pub fn components(key: &str) -> Vec<Component> {
-    let Some(bytes) = decode(key) else {
-        return vec![Component {
-            label: "key".into(),
-            part: Part::Unknown,
-            text: key.into(),
-            full: key.into(),
-            bytes: 0..0,
-        }];
-    };
-    if bytes.len() < 162 {
-        let n = bytes.len();
-        return vec![Component {
-            label: "key".into(),
-            part: Part::Unknown,
-            text: hex(&bytes),
-            full: key.into(),
-            bytes: 0..n,
-        }];
-    }
-
-    let tag = bytes[0];
-    let l = layout(tag);
-    let slice = |off: usize, len: usize| hex(&bytes[off..off + len]);
-
-    let entity = slice(l.entity, 64);
-    let attribute = slice(l.attribute, 64);
-    let value_ref = slice(l.value_ref, 32);
-    let type_byte = bytes[l.value_type];
-
-    let entity_seg = Component {
-        label: "Entity".into(),
-        part: Part::Entity,
-        text: trunc(&entity, 10, 4),
-        full: entity,
-        bytes: l.entity..l.entity + 64,
-    };
-    let attribute_seg = Component {
-        label: "Attribute".into(),
-        part: Part::Attribute,
-        text: trunc(&attribute, 10, 4),
-        full: attribute,
-        bytes: l.attribute..l.attribute + 64,
-    };
-    // The value-type chip: its content is the type byte; the human type
-    // name is in the tooltip. It shares the value background so it reads as
-    // the value's type.
-    let type_seg = Component {
-        label: format!("Value type: {}", type_label(type_byte)),
-        part: Part::ValueType,
-        text: type_byte.to_string(),
-        full: format!("{type_byte} ({})", type_name(type_byte)),
-        bytes: l.value_type..l.value_type + 1,
-    };
-    let value_seg = Component {
-        label: "Value".into(),
-        part: Part::ValueRef,
-        text: trunc(&value_ref, 10, 4),
-        full: value_ref,
-        bytes: l.value_ref..l.value_ref + 32,
-    };
-    // The index-type chip is neutral (mode-inverse background via
-    // `seg-index-type`); its content is the tag byte (0/1/2).
-    let index_seg = Component {
-        label: index_label(tag),
-        part: Part::Unknown,
-        text: tag.to_string(),
-        full: format!("{tag} ({})", tag_of(tag)),
-        bytes: 0..1,
-    };
-
-    match tag {
-        2 => vec![index_seg, type_seg, value_seg, attribute_seg, entity_seg],
-        1 => vec![index_seg, attribute_seg, entity_seg, type_seg, value_seg],
-        _ => vec![index_seg, entity_seg, attribute_seg, type_seg, value_seg],
-    }
-}
-
 /// The routing pivot: the index of the last byte that must stay bright for
-/// this bound to be distinguishable from *both* its neighbors. A row's
-/// bright prefix has to show where it diverges from the previous sibling
-/// (proving it sorts after) AND from the next sibling (proving it sorts
-/// before) — otherwise two adjacent rows sharing a long prefix (e.g. several
-/// `concept:` keys) would all cut at byte 0 and look identical. So the pivot
-/// is the *max* of the two divergence points.
+/// this bound to be distinguishable from *both* its neighbors. A row's bright
+/// prefix has to show where it diverges from the previous sibling (proving it
+/// sorts after) AND from the next sibling (proving it sorts before) — the
+/// pivot is the *max* of the two divergence points. Computed on the raw key
+/// hex, so it is independent of how the components decode.
 ///
-/// `prev` is the previous sibling's bound (or the all-zero minimum key for a
-/// first child); `next` is the next sibling's bound, if any.
+/// `prev` is the previous sibling's bound (or the all-zero minimum for a first
+/// child); `next` is the next sibling's bound, if any.
 pub fn pivot_byte(key: &str, prev: Option<&str>, next: Option<&str>) -> Option<usize> {
     let a = decode(key)?;
-    // First byte where `a` diverges from `other`; `None` if `other` is a
-    // prefix of (or equal to) `a` over the shared length.
     let diverge = |other: &[u8]| -> Option<usize> {
         let n = a.len().min(other.len());
         (0..n).find(|&i| a[i] != other[i])
     };
-
-    // Lower edge: previous sibling, or the all-zero minimum key.
     let lower = match prev {
         Some(p) => decode(p)?,
         None => vec![0u8; a.len()],
     };
     let from_prev = diverge(&lower);
     let from_next = next.and_then(decode).and_then(|n| diverge(&n));
-
     match (from_prev, from_next) {
         (Some(p), Some(n)) => Some(p.max(n)),
         (Some(p), None) => Some(p),
         (None, Some(n)) => Some(n),
-        // Identical to both over the shared length — keep it all bright.
         (None, None) => Some(a.len()),
     }
 }
 
-/// Format a fact value so its type is legible from the value itself
-/// (entities underlined elsewhere; here we shape the text):
+/// Format a fact value so its type is legible from the value itself:
 ///   string → quoted, float → always a `.`, signed → ±, bytes → hex.
-/// `value` is the already-decoded JSON value the worker sent; `type_name`
-/// is its dialog `ValueDataType` name.
+/// `value` is the already-decoded JSON value the worker sent; `type_name` is
+/// its dialog `ValueDataType` name.
 pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
     use serde_json::Value as J;
     match type_name {
@@ -338,7 +213,6 @@ pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
                 .join(" "),
             other => other.to_string(),
         },
-        // Entity / Symbol / UnsignedInt / Boolean / Record: plain.
         _ => match value {
             J::String(s) => s.clone(),
             other => other.to_string(),
