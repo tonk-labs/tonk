@@ -87,8 +87,14 @@ mod tests {
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
+            // The text read is fallible for the same reason the find is:
+            // a list that re-renders between the two invalidates the
+            // handle ("stale element reference"). Treat that as "not yet"
+            // and go round again — propagating it aborts the wait on a
+            // race the wait exists to absorb.
             if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && found.text().await?.contains(expected)
+                && let Ok(text) = found.text().await
+                && text.contains(expected)
             {
                 return Ok(());
             }
