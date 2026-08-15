@@ -1021,6 +1021,16 @@ mod tests {
     use tonk_schema::concept::{AnonymousConcept, TransientConcept};
     // Aliased so the `.assert()` trait method stays in scope
     // without shadowing the analyzer's `Statement` enum.
+    // The crate's wasm tests must run in a browser: they drive dialog
+    // storage through web APIs Node.js does not provide. This lived in
+    // `effect_query.rs` until the native-rules migration deleted it, and
+    // its absence only surfaces on the web leg ("failed to find or
+    // execute Node.js"), never in a native run.
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
     use dialog_artifacts::Changes;
     use dialog_artifacts::Statement as ArtifactsStatement;
     use dialog_operator::helpers::{test_operator_with_profile, test_repo};
