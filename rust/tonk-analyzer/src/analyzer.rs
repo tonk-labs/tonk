@@ -61,7 +61,7 @@ use crate::analysis::{
 };
 use tonk_core::claim::ConceptDescriptor;
 
-pub use constraint::{ConstraintCompletion, constraint_completions};
+pub use constraint::{ConstraintCompletion, constraint_completions, notation_form};
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };

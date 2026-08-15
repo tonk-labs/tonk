@@ -1685,6 +1685,138 @@ rule!:
         );
     }
 
+    /// Every range predicate lifts in premise position, in both
+    /// operand orders.
+    ///
+    /// `of` is the left side and `with` the right, so `{ of: ?count,
+    /// with: 30 }` under `<` reads `?count < 30`. Putting the constant
+    /// on the left (`{ of: 5, with: ?count }`) is the mirror bound and
+    /// must lift just as well — dialog stamps the interval on whichever
+    /// side is the variable.
+    #[dialog_common::test]
+    async fn it_lifts_every_range_predicate_premise() {
+        for (predicate, of, with) in [
+            ("<", "?count", "30"),
+            ("<=", "?count", "30"),
+            // `>` opens a YAML folded scalar and `>=` is not a plain
+            // scalar either, so both must be quoted in notation. `<`
+            // has no such meaning and stays bare.
+            ("\">\"", "?count", "1"),
+            ("\">=\"", "?count", "1"),
+            // Constant on the left: the mirror bound.
+            ("<", "5", "?count"),
+        ] {
+            let fixture = new_fixture().await;
+            fixture
+                .declare("counter", one_uint_field("io.gozala.counter", "count"))
+                .await;
+            fixture
+                .declare("alert", one_uint_field("io.gozala.alert", "count"))
+                .await;
+
+            let doc = format!(
+                r#"
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: {{ this: ?this, count: ?count }}
+    - assert: {predicate}
+      where: {{ of: {of}, with: {with} }}
+"#
+            );
+            let parsed = parse(&doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "`{predicate}` should parse as a premise name: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("parsed syntax");
+            let analysis = fixture
+                .analyze(&syntax)
+                .await
+                .unwrap_or_else(|e| panic!("`{predicate}` should analyze: {e:?}"));
+            assert_eq!(
+                only_installed_effect(&analysis).polarity(),
+                Polarity::Assert,
+                "`{predicate}` should lift into an asserting rule"
+            );
+        }
+    }
+
+    /// `>` unquoted is a YAML folded-scalar indicator, not the name
+    /// of a predicate — the parser sees an empty name and the analyzer
+    /// reports an unknown concept. Pinned because the fix (quote it)
+    /// is not obvious from the diagnostic, and because a future
+    /// notation change that makes `>` bare-legal should update this
+    /// deliberately rather than by accident.
+    #[dialog_common::test]
+    async fn it_reads_an_unquoted_greater_than_as_a_folded_scalar() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
+        fixture
+            .declare("alert", one_uint_field("io.gozala.alert", "count"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?count }
+    - assert: >
+      where: { of: ?count, with: 1 }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let error = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("an unquoted `>` does not name a predicate");
+        assert!(
+            matches!(&error.kind, AnalyzeErrorKind::UnknownConcept { name } if name.is_empty()),
+            "expected the folded scalar to read as an empty name, got {error:?}"
+        );
+    }
+
+    /// A range predicate rejects an operand it does not declare, the
+    /// same way `==` does — the registry reads operand names off
+    /// dialog's own schema, so this cannot drift.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_range_predicate_operand() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
+        fixture
+            .declare("alert", one_uint_field("io.gozala.alert", "count"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?count }
+    - assert: <
+      where: { of: ?count, than: 30 }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let error = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("`than` is not an operand of `<`");
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::UnknownFormulaOperand { formula, operand, .. }
+                    if formula == "<" && operand == "than"
+            ),
+            "expected an unknown-operand diagnostic naming `<`/`than`, got {error:?}"
+        );
+    }
+
     /// A `where:` operand the `==` constraint doesn't have surfaces
     /// as [`AnalyzeErrorKind::UnknownFormulaOperand`] (constraints
     /// reuse the formula operand diagnostics).

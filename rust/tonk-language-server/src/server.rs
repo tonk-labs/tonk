@@ -988,7 +988,9 @@ fn constraint_completions_items() -> Vec<CompletionItem> {
             kind: Some(CompletionItemKind::OPERATOR),
             detail: Some(constraint.detail.clone()),
             documentation: Some(Documentation::String(constraint.detail)),
-            insert_text: Some(constraint.name.to_owned()),
+            // Insert the notation form, not the bare name: an
+            // unquoted `>` would parse as a folded scalar.
+            insert_text: Some(constraint.insert.clone()),
             ..CompletionItem::default()
         })
         .collect()

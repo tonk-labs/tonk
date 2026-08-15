@@ -93,3 +93,73 @@ concept!: &pong
 
     Ok(())
 }
+
+/// Range predicates select real rows on real storage.
+///
+/// Constraints live in premise position, so the surface that exercises
+/// them is a rule body: three counters are written, and a rule bounded
+/// by `>` and `<=` derives an alert for exactly the ones inside the
+/// interval. The analyzer test proves the predicates lift; this proves
+/// they select.
+#[dialog_common::test]
+async fn it_selects_rows_with_range_predicates() -> Result<()> {
+    let test = common::TestSite::new().await?;
+
+    test.eval_inline(
+        r#"concept!: &counter
+  with:
+    count:
+      the: live.check/counter-count
+      as: unsigned-integer
+      cardinality: one
+      description: "count"
+
+concept!: &alert
+  with:
+    count:
+      the: live.check/alert-count
+      as: unsigned-integer
+      cardinality: one
+      description: "count"
+"#,
+    )
+    .await?;
+
+    // The half-open interval (1, 100]: excludes the open lower bound,
+    // keeps the inclusive upper one. `>` needs quoting — bare `>` opens
+    // a YAML folded scalar — while `<=` is a plain scalar.
+    test.eval_inline(
+        r#"rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?count }
+    - assert: ">"
+      where: { of: ?count, with: 1 }
+    - assert: <=
+      where: { of: ?count, with: 100 }
+"#,
+    )
+    .await?;
+
+    for (anchor, count) in [("low", 1u32), ("mid", 10), ("high", 100)] {
+        test.eval_inline(&format!("counter!: &{anchor}\n  count: {count}\n"))
+            .await?;
+    }
+
+    let alerts = test
+        .eval_inline("alert:\n  this: ?this\n  count: ?count\n")
+        .await?
+        .stdout;
+
+    assert!(
+        alerts.contains("10") && alerts.contains("100"),
+        "the interval (1, 100] must alert on 10 and 100; saw:\n{alerts}"
+    );
+    assert!(
+        !alerts.contains("count: 1\n"),
+        "the interval (1, 100] must exclude the open lower bound 1; saw:\n{alerts}"
+    );
+
+    Ok(())
+}
