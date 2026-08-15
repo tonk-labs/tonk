@@ -700,3 +700,27 @@ reference feeds the next node lookup:
 
 Operands you leave out are simply not bound, exactly as with a
 formula's outputs; only the required input (`of:`) must be given.
+
+A resolver also heads a query on its own, not just a rule premise:
+
+```yaml
+tree/node:
+  of: "8QsR69j39jU7acb4H9VfsSpR2SrHJ6f2PPKHoosnsAPr"
+  kind: ?kind
+```
+
+### Built-in names are reserved
+
+Premise heads resolve built-ins — formulas, predicates, resolvers —
+before concepts. A concept declared under one of those names could
+never be referenced, since every mention would mean the built-in, so
+declaring one is an error rather than a silent shadowing:
+
+```yaml
+concept!: &tree/node   # error: "tree/node" is a built-in resolver
+```
+
+In the editor each `assert:` completion is labelled with the
+namespace it comes from (`concept`, `formula`, `constraint`,
+`resolver`), and a resolver's `where:` block completes to that
+resolver's own operands, with the required input listed first.

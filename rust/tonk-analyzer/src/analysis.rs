@@ -291,6 +291,9 @@ pub enum AnalyzeLowerError {
     /// `Claim`s on the structured transact wire (yet).
     #[error("rule applications cannot be lowered to a transact claim")]
     Rule,
+    /// A `tree/*` resolver — read-only, so it has no claim form.
+    #[error("resolver applications are read-only and cannot be lowered to a transact claim")]
+    Resolver,
     /// A bare `xyz.tonk/...` domain claim — no concept descriptor
     /// to carry on the predicate.
     #[error("domain applications cannot be lowered to a transact claim")]
@@ -322,6 +325,9 @@ fn lower_statement(
         Application::Rule { .. } | Application::DeductiveRule { .. } => {
             return Err(AnalyzeLowerError::Rule);
         }
+        // Read-only: a resolver heads a query, never a mutation, so it
+        // never reaches the transact wire.
+        Application::Resolver { .. } => return Err(AnalyzeLowerError::Resolver),
     };
     let this = query.terms.get("this").and_then(term_entity);
     let descriptor = query.predicate.clone();

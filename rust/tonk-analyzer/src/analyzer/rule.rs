@@ -623,6 +623,24 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
 /// Formulas and constraints are recognised first — they're fixed
 /// sets that never live on the branch, so the registry lookups are
 /// authoritative. Anything else resolves as a concept.
+/// What kind of built-in claims `name`, if any.
+///
+/// Premise heads resolve built-ins before concepts (see
+/// [`lift_premise`]), so this is also the authority on which names a
+/// concept may not take: anything this reports is unreachable as a
+/// concept name.
+pub fn builtin_kind(name: &str) -> Option<&'static str> {
+    if lookup_formula(name).is_some() {
+        Some("formula")
+    } else if lookup_constraint(name).is_some() {
+        Some("constraint")
+    } else if lookup_resolver(name).is_some() {
+        Some("resolver")
+    } else {
+        None
+    }
+}
+
 fn lift_premise(
     premise: &NotationPremise,
     scope: &Scope,

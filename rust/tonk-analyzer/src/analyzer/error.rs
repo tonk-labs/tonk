@@ -257,6 +257,19 @@ pub enum AnalyzeErrorKind {
         /// The name that was duplicated.
         name: String,
     },
+    /// A concept was declared under a name a built-in premise
+    /// already claims. Premise heads resolve built-ins before
+    /// concepts, so the declaration would be unreachable.
+    #[error(
+        "{name:?} is a built-in {kind} — a concept declared under that name could never be referenced; pick another name"
+    )]
+    ReservedName {
+        /// The name that collides with a built-in.
+        name: String,
+        /// What kind of built-in claims it: `formula`, `constraint`,
+        /// or `resolver`.
+        kind: &'static str,
+    },
     /// An anchor and a `?variable` are used with the same name —
     /// they share the same namespace.
     #[error("name {name:?} is used as both an anchor declaration and a variable — pick one")]
@@ -515,6 +528,7 @@ impl AnalyzeErrorKind {
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
+            Self::ReservedName { .. } => "E_RESERVED_NAME",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",

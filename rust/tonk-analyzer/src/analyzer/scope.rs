@@ -12,6 +12,7 @@ use dialog_artifacts::Entity;
 use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
+use super::rule::builtin_kind;
 use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
 use tonk_schema::rule::Rule;
 
@@ -100,6 +101,20 @@ impl Scope {
         entity: Entity,
         range: lsp_types::Range,
     ) -> Result<(), AnalyzeError> {
+        // Premise heads resolve built-in formulas, constraints and
+        // resolvers before concepts, so a declaration under one of
+        // their names could never be referenced — every mention would
+        // silently mean the built-in. Reject it here, at the one
+        // chokepoint every declaration passes through.
+        if let Some(kind) = builtin_kind(name) {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::ReservedName {
+                    name: name.to_owned(),
+                    kind,
+                },
+                range,
+            ));
+        }
         if self.variables.lock().contains_key(name) {
             return Err(AnalyzeError::at(
                 AnalyzeErrorKind::NameShadowing {
