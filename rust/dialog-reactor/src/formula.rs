@@ -7,7 +7,12 @@
 //! queries produce, so the host / display path is unchanged.
 //!
 //! The first family is `tree/*` — introspection of the branch's index
-//! tree (node structure, sizes, entries). See `plan/tree-inspector.md`.
+//! tree (node structure, sizes, entries). The decoding itself is
+//! dialog's own [`dialog_artifacts::inspect`] surface (the same one
+//! the native `tree/*` query resolvers are built on): node bytes are
+//! fetched by content hash and summarized by `inspect_*`, and keys
+//! decompose through `key_components` / `separator_components` — the
+//! upstreamed form of the split this inspector originally proved out.
 //!
 //! Node hashes travel as `#<base58>` strings: that is what each row's
 //! `this` carries, and what a `hash`/`child` input term is parsed from,
@@ -16,23 +21,23 @@
 use std::collections::BTreeMap;
 
 use base58::{FromBase58, ToBase58};
-use dialog_artifacts::{Artifact, Datum, Key, State, Value};
+use dialog_artifacts::inspect::{
+    EntrySummary, KeyComponent, KeySummary, NodeSummary, SpanSummary, inspect_entries,
+    inspect_keys, inspect_node, inspect_spans, key_components, separator_components,
+};
+use dialog_artifacts::{
+    ATTRIBUTE_KEY_TAG, Artifact, Datum, DialogArtifactsError, ENTITY_KEY_TAG, Key, VALUE_KEY_TAG,
+    Value,
+};
 use dialog_query::Term;
 use dialog_repository::{
     Branch, LocalIndex, NetworkedIndex, RepositoryArchiveExt, RepositoryMemoryExt, Upstream,
-};
-use dialog_search_tree::{
-    ArchivedNodeBody, Buffer, DialogSearchTreeError, Distribution, Geometric, PersistentNode,
-    into_owned,
 };
 use dialog_storage::{Blake3Hash, StorageBackend};
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
 
 use crate::{Conclusion, Query, SelectProvider};
-
-/// A decoded tree node, instantiated for the artifact key/value types.
-type TreeNode = PersistentNode<Key, State<Datum>>;
 
 /// Failure modes for [`resolve_formula`].
 #[derive(Debug, Error)]
@@ -62,6 +67,12 @@ pub enum FormulaError {
     /// Decoding a node block failed.
     #[error("node decode failed: {0}")]
     Decode(String),
+}
+
+impl From<DialogArtifactsError> for FormulaError {
+    fn from(error: DialogArtifactsError) -> Self {
+        Self::Decode(error.to_string())
+    }
 }
 
 /// Resolve a formula [`Query`] against `branch`, returning its rows.
@@ -101,7 +112,7 @@ pub async fn resolve_formula<Env: SelectProvider>(
         // Decompose a composite key into its components. Pure: no
         // block read. `key` is required.
         "tree/key" => match key_input(query, "key", name)? {
-            Some(key) => Ok(vec![key_row(key)?]),
+            Some(key) => Ok(vec![key_row(key)]),
             None => Ok(vec![]),
         },
 
@@ -151,21 +162,20 @@ fn root_hash(branch: &Branch) -> Option<Blake3Hash> {
     (hash != [0u8; 32]).then_some(hash)
 }
 
-/// Read and decode one node, falling back to the remote when the block is
+/// Read one node's raw bytes, falling back to the remote when the block is
 /// not cached locally — so expanding a not-yet-fetched node transparently
 /// pulls it (and caches it) the same way a normal lazy expansion does.
 async fn read_node<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
-) -> Result<TreeNode, FormulaError> {
+) -> Result<Vec<u8>, FormulaError> {
     let index = NetworkedIndex::new(env, branch.archive().index(), remote(branch, env).await);
-    let bytes = index
+    index
         .get(&hash)
         .await
         .map_err(|e| FormulaError::Read(e.to_string()))?
-        .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))?;
-    Ok(TreeNode::new(Buffer::from(bytes)))
+        .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))
 }
 
 /// Load the branch's upstream remote, if it tracks one, so a networked read
@@ -184,59 +194,48 @@ async fn remote<Env: SelectProvider>(
     }
 }
 
-/// Read a node from the *local* archive only (no remote fallback), returning
-/// `None` when the block is not cached. This is what the dot's locality
-/// reflects (a local hit is cached, a miss would have to be fetched) and lets
-/// `tree/child` list a not-cached child from the parent's link without
-/// pulling it — the pull happens only when that child is expanded.
+/// Read a node's bytes from the *local* archive only (no remote fallback),
+/// returning `None` when the block is not cached. This is what the dot's
+/// locality reflects (a local hit is cached, a miss would have to be fetched)
+/// and lets `tree/child` list a not-cached child from the parent's link
+/// without pulling it — the pull happens only when that child is expanded.
 async fn read_local<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
-) -> Result<Option<TreeNode>, FormulaError> {
+) -> Result<Option<Vec<u8>>, FormulaError> {
     let index = LocalIndex::new(env, branch.archive().index());
-    let bytes = index
+    index
         .get(&hash)
         .await
-        .map_err(|e| FormulaError::Read(e.to_string()))?;
-    Ok(bytes.map(|b| TreeNode::new(Buffer::from(b))))
+        .map_err(|e| FormulaError::Read(e.to_string()))
 }
 
 /// The scalar fields describing a node: `kind` (`index` for a node of
 /// child links, `segment` for a node of entries), byte size, child/entry
-/// count, and the node's upper-bound key (`bound`, as a `#<base58>` of
-/// the raw 162 key bytes — the inspector slices it into tag-colored
-/// segments client-side). Shared by `tree/node` and `tree/child` so a
-/// child row carries the child's own node fields.
-fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> {
-    let decode = |e: DialogSearchTreeError| FormulaError::Decode(e.to_string());
-    let body = node.body().map_err(decode)?;
-
-    let (kind, count) = match body {
-        ArchivedNodeBody::Index(index) => ("index", index.len()),
-        ArchivedNodeBody::Segment(segment) => ("segment", segment.len()),
-    };
-    let size = node.buffer().as_ref().len();
+/// count, and — for a segment — its upper-bound key (`bound`, raw hex; the
+/// decoded components ride `bound-parts`). An index's table holds
+/// separators, not whole keys, so it reports no bound of its own (its
+/// outline boundary is the link separator `child_rows` stamps).
+fn node_fields(bytes: &[u8]) -> Result<BTreeMap<String, Ipld>, FormulaError> {
+    let summary: NodeSummary = inspect_node(bytes.to_vec())?;
 
     let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
-    fields.insert("kind".into(), Ipld::String(kind.into()));
-    fields.insert("size".into(), Ipld::Integer(size as i128));
-    fields.insert("count".into(), Ipld::Integer(count as i128));
-    // Only a segment carries a full upper-bound key; an index's table
-    // holds separators, not whole keys, so it reports no bound.
-    if let Some(bound) = node.upper_bound().map_err(decode)? {
-        let manifest = node.manifest().map_err(decode)?;
-        fields.insert("bound".into(), Ipld::String(bytes_hex(&bound)));
-        // The decoded, self-describing components of the bound key — the
-        // inspector renders these as textual/colored chips (see `key_parts`).
-        fields.insert("bound-parts".into(), Ipld::List(key_parts(&bound)));
-        // The node's rank — the boundary level its upper-bound key
-        // falls on (geometric over the key bytes). Higher rank ⇒
-        // higher in the tree; it's what determines the tree's shape.
-        fields.insert(
-            "rank".into(),
-            Ipld::Integer(Geometric::rank(&bound, &manifest) as i128),
-        );
+    fields.insert("kind".into(), Ipld::String(summary.kind.into()));
+    fields.insert("size".into(), Ipld::Integer(summary.size as i128));
+    fields.insert("count".into(), Ipld::Integer(summary.count as i128));
+    if summary.kind == "segment" {
+        let keys: Vec<KeySummary> = inspect_keys(bytes.to_vec())?;
+        if let Some(last) = keys.last() {
+            fields.insert("bound".into(), Ipld::String(bytes_hex(&last.key)));
+            // The decoded, self-describing components of the bound key — the
+            // inspector renders these as textual/colored chips.
+            fields.insert("bound-parts".into(), Ipld::List(key_parts(&last.key)));
+            // The key's leaf-coin rank under the node's embedded manifest —
+            // what decides whether a boundary forms after it. Higher rank ⇒
+            // higher in the tree; it's what determines the tree's shape.
+            fields.insert("rank".into(), Ipld::Integer(last.rank as i128));
+        }
     }
     Ok(fields)
 }
@@ -247,10 +246,10 @@ async fn node_row<Env: SelectProvider>(
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Conclusion, FormulaError> {
-    let node = read_node(branch, env, hash).await?;
+    let bytes = read_node(branch, env, hash).await?;
     Ok(Conclusion {
         this: to_base58(&hash),
-        fields: node_fields(&node)?,
+        fields: node_fields(&bytes)?,
     })
 }
 
@@ -258,41 +257,29 @@ async fn node_row<Env: SelectProvider>(
 ///
 /// Each row is self-contained: it names the child (`child` field + the
 /// row's `this`), its sibling position (`at`), and the child's own node
-/// fields (kind/size/count/leaf), read from the child block. A leaf
+/// fields (kind/size/count), read from the child block. A segment
 /// node has no children and yields no rows.
 async fn child_rows<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Vec<Conclusion>, FormulaError> {
-    let decode = |e: DialogSearchTreeError| FormulaError::Decode(e.to_string());
     let parent = read_node(branch, env, hash).await?;
-    let body = parent.body().map_err(decode)?;
-
-    let ArchivedNodeBody::Index(index) = body else {
+    if inspect_node(parent.clone())?.kind != "index" {
         return Ok(vec![]); // a segment has no children
-    };
-    let manifest = parent.manifest().map_err(decode)?;
+    }
+    let spans: Vec<SpanSummary> = inspect_spans(parent)?;
 
-    // Collect each child's hash and separator up front so we can drop the
-    // borrow on `parent` before the awaits that read each child. The link
-    // carries the separator, so a not-cached child can still show its bound.
-    let children: Vec<(Blake3Hash, Vec<u8>)> = index
-        .links()
-        .map_err(decode)?
-        .into_iter()
-        .map(|link| (*link.node.as_bytes(), link.separator))
-        .collect();
-
-    let mut rows = Vec::with_capacity(children.len());
-    for (at, (child, separator)) in children.into_iter().enumerate() {
+    let mut rows = Vec::with_capacity(spans.len());
+    for span in spans {
+        let child = span.node;
         // Local-only read: a hit is cached, a miss is remote (the block
         // would have to be fetched). A cached child carries its full node
         // fields (size/count/kind); a remote one carries only what the
-        // parent's link knows, flagged `cached: false`.
+        // parent's span knows, flagged `cached: false`.
         let mut fields = match read_local(branch, env, child).await? {
-            Some(node) => {
-                let mut fields = node_fields(&node)?;
+            Some(bytes) => {
+                let mut fields = node_fields(&bytes)?;
                 fields.insert("cached".into(), Ipld::Bool(true));
                 fields
             }
@@ -302,27 +289,26 @@ async fn child_rows<Env: SelectProvider>(
                 fields
             }
         };
-        // The child's boundary in the outline is its LINK SEPARATOR — the
+        // The child's boundary in the outline is its SPAN SEPARATOR — the
         // left-edge key of the subtree it roots — for both cached and remote
         // children. This is the right thing to show on the left: an index node
         // has no whole upper-bound key of its own (its table holds
         // separators), so without this a cached index row falls back to its
         // opaque hash fragment. The separator is a front-coded PREFIX, so it
-        // may decode only partially; `key_parts` still surfaces its tag and as
-        // many leading components as the prefix carries. Overrides any
+        // may decode only partially; `separator_parts` still surfaces its tag
+        // and as many leading bytes as the prefix carries. Overrides any
         // `bound`/`bound-parts` a segment child's `node_fields` set from its
         // own upper key, so the whole outline is keyed uniformly by separator.
-        fields.insert("bound".into(), Ipld::String(bytes_hex(&separator)));
+        fields.insert("bound".into(), Ipld::String(bytes_hex(&span.separator)));
         fields.insert(
             "bound-parts".into(),
-            Ipld::List(separator_parts(&separator)),
+            Ipld::List(separator_parts(&span.separator)),
         );
-        fields.insert(
-            "rank".into(),
-            Ipld::Integer(Geometric::rank(&separator, &manifest) as i128),
-        );
+        // The separator's seam rank: the level coin that made this boundary
+        // exist (0 for the leftmost span and forced seams).
+        fields.insert("rank".into(), Ipld::Integer(span.rank as i128));
         fields.insert("child".into(), Ipld::String(to_base58(&child)));
-        fields.insert("at".into(), Ipld::Integer(at as i128));
+        fields.insert("at".into(), Ipld::Integer(span.at as i128));
         rows.push(Conclusion {
             this: to_base58(&child),
             fields,
@@ -343,63 +329,53 @@ async fn entry_rows<Env: SelectProvider>(
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Vec<Conclusion>, FormulaError> {
-    let decode = |e: DialogSearchTreeError| FormulaError::Decode(e.to_string());
-    let leaf = read_node(branch, env, hash).await?;
-    let body = leaf.body().map_err(decode)?;
-
-    let ArchivedNodeBody::Segment(segment) = body else {
+    let bytes = read_node(branch, env, hash).await?;
+    if inspect_node(bytes.clone())?.kind != "segment" {
         return Ok(vec![]); // an index has no entries
-    };
-    let manifest = leaf.manifest().map_err(decode)?;
-
-    // The columnar leaf stores keys and values in separate tables; stream
-    // the keys (in entry order) and pair each with its value slot by index.
-    // Copy each key out of the borrowed streamer so it survives the
-    // per-entry `value_at` borrow.
-    let mut keys = segment.keys::<Key>().map_err(decode)?;
-    let mut owned_keys: Vec<Vec<u8>> = Vec::with_capacity(segment.len());
-    while let Some((_, key)) = keys.next_key().map_err(decode)? {
-        owned_keys.push(key.to_vec());
     }
+    let keys: Vec<KeySummary> = inspect_keys(bytes.clone())?;
+    let entries: Vec<EntrySummary> = inspect_entries(bytes)?;
 
-    let mut rows = Vec::with_capacity(owned_keys.len());
-    for (at, key_bytes) in owned_keys.into_iter().enumerate() {
-        let state: State<Datum> =
-            into_owned(segment.value_at(at).map_err(decode)?).map_err(decode)?;
-
-        let key_hex = bytes_hex(&key_bytes);
+    let mut rows = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let key_hex = bytes_hex(&entry.key);
         let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
         fields.insert("key".into(), Ipld::String(key_hex.clone()));
         // The decoded, self-describing key components for the entry's key row.
-        fields.insert("key-parts".into(), Ipld::List(key_parts(&key_bytes)));
-        fields.insert("at".into(), Ipld::Integer(at as i128));
-        fields.insert(
-            "rank".into(),
-            Ipld::Integer(Geometric::rank(&key_bytes, &manifest) as i128),
-        );
+        fields.insert("key-parts".into(), Ipld::List(key_parts(&entry.key)));
+        fields.insert("at".into(), Ipld::Integer(entry.at as i128));
+        if let Some(key) = keys.get(entry.at as usize) {
+            fields.insert("rank".into(), Ipld::Integer(key.rank as i128));
+        }
 
         // A segment holds asserted facts; a retraction is a tombstone. The
-        // entity/attribute/value all live IN the key now (the datum carries
-        // only causal metadata), so reconstruct the fact from the key —
-        // standing in a placeholder for a spilled value, since the inspector
-        // has no store to fetch the block.
-        match state {
-            State::Added(datum) => {
-                let key = Key::from(key_bytes);
-                let artifact = Artifact::from_key_datum_placeholder(&key, &datum)
-                    .map_err(|e| FormulaError::Decode(e.to_string()))?;
-                fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
-                fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
-                fields.insert(
-                    "type".into(),
-                    Ipld::String(artifact.is.data_type().to_string()),
-                );
-                if let Some(ipld) = value_to_ipld(&artifact.is) {
-                    fields.insert("value".into(), ipld);
-                }
-            }
-            State::Removed => {
-                fields.insert("retracted".into(), Ipld::Bool(true));
+        // entity/attribute/value all live IN the key (the datum carries only
+        // causal metadata), so reconstruct the fact from the key — standing
+        // in a placeholder for a spilled value, since the inspector has no
+        // store to fetch the block. The synthesized datum carries no cause;
+        // the inspector doesn't render one.
+        if entry.state == "removed" {
+            fields.insert("retracted".into(), Ipld::Bool(true));
+        } else {
+            let key = Key::from(entry.key.clone());
+            let datum = Datum {
+                cause: None,
+                blob: None,
+                version: None,
+                collapsed: Vec::new(),
+                supersedes: Vec::new(),
+                retraction: false,
+            };
+            let artifact = Artifact::from_key_datum_placeholder(&key, &datum)
+                .map_err(|e| FormulaError::Decode(e.to_string()))?;
+            fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
+            fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
+            fields.insert(
+                "type".into(),
+                Ipld::String(artifact.is.data_type().to_string()),
+            );
+            if let Some(ipld) = value_to_ipld(&artifact.is) {
+                fields.insert("value".into(), ipld);
             }
         }
 
@@ -431,266 +407,47 @@ fn value_to_ipld(value: &Value) -> Option<Ipld> {
     })
 }
 
-/// Key tags, per dialog-artifacts/src/key.rs. The M3 key format is
-/// variable-length and columnar — a fixed byte layout no longer applies —
-/// so the components are recovered by decoding, not slicing.
-const ENTITY_KEY_TAG: u8 = 0;
-const ATTRIBUTE_KEY_TAG: u8 = 1;
-const VALUE_KEY_TAG: u8 = 2;
-const HISTORY_KEY_TAG: u8 = 3;
-const BLOB_KEY_TAG: u8 = 4;
-const COVERAGE_KEY_TAG: u8 = 5;
-
-/// The human name of a key's index ordering, from its leading tag byte.
-fn tag_name(tag: u8) -> &'static str {
-    match tag {
-        ENTITY_KEY_TAG => "entity",
-        ATTRIBUTE_KEY_TAG => "attribute",
-        VALUE_KEY_TAG => "value",
-        HISTORY_KEY_TAG => "history",
-        BLOB_KEY_TAG => "blob",
-        COVERAGE_KEY_TAG => "coverage",
-        _ => "unknown",
-    }
+/// One decoded component as the wire's `{ kind, text, hex }` map. `kind`
+/// selects the UI's color/glyph, `text` is the human rendering, and `hex`
+/// is the raw component bytes for the detail/tooltip.
+fn component_part(component: &KeyComponent) -> Ipld {
+    let mut m: BTreeMap<String, Ipld> = BTreeMap::new();
+    m.insert("kind".into(), Ipld::String(component.kind.into()));
+    m.insert("text".into(), Ipld::String(component.text.clone()));
+    m.insert("hex".into(), Ipld::String(bytes_hex(&component.bytes)));
+    Ipld::Map(m)
 }
 
 /// Decode a raw key into structured, self-describing parts for the tree
-/// inspector. Each part is a map `{ kind, text, hex }`: `kind` selects the
-/// UI's color/glyph, `text` is the human rendering (a `did:key:…` entity, a
-/// `db.meta/name` attribute, a typed value, a decimal edition), and `hex` is
-/// the raw bytes for the detail/tooltip. The client renders these directly —
-/// it no longer re-implements the variable-length key parse.
-///
-/// A key that does not parse under its tag's schema (a `min`/`max` sentinel,
-/// a truncated separator, or an unknown tag) falls back to a single opaque
-/// `hex` part so the row still shows *something* legible.
+/// inspector, via dialog's own `key_components`.
 fn key_parts(bytes: &[u8]) -> Vec<Ipld> {
-    use dialog_artifacts::{AttributeKey, EntityKey, Key, ValueKey};
-
-    let part = |kind: &str, text: String, hex: String| -> Ipld {
-        let mut m: BTreeMap<String, Ipld> = BTreeMap::new();
-        m.insert("kind".into(), Ipld::String(kind.into()));
-        m.insert("text".into(), Ipld::String(text));
-        m.insert("hex".into(), Ipld::String(hex));
-        Ipld::Map(m)
-    };
-    let opaque = |bytes: &[u8]| vec![part("opaque", bytes_hex(bytes), bytes_hex(bytes))];
-
-    // An empty separator is the boundary of the level's GLOBAL LEFTMOST
-    // subtree: it has no lower bound (everything sorts at or after it). Show a
-    // `⊥ start` marker so the outline reads it as "the beginning" rather than
-    // falling back to the node's opaque hash.
-    if bytes.is_empty() {
-        return vec![part("min", "⊥ start".into(), String::new())];
-    }
-    let Some(&tag) = bytes.first() else {
-        return opaque(bytes);
-    };
-    let key = Key::from(bytes.to_vec());
-    // The index chip shows just the tag byte; the ordering name (`entity` /
-    // `attribute` / …) rides `hex` so the client puts it in the hover tooltip.
-    let mut out = vec![part("index", tag.to_string(), tag_name(tag).into())];
-
-    // The EAV/AEV/VAE orderings share the same logical fields; the `KeyView`
-    // reads them regardless of physical byte order. `eav` emits the fields in
-    // EAV logical order (entity, attribute, vtype, value); the AEV/VAE arms
-    // reorder the chips to match their own sort. `part` is `Copy`-free so it
-    // is threaded in.
-    fn eav_fields<V: dialog_artifacts::KeyView>(view: &V) -> [(&'static str, String, String); 4] {
-        let entity = String::from_utf8_lossy(view.entity().raw()).into_owned();
-        let attribute = String::from_utf8_lossy(view.attribute().raw()).into_owned();
-        let vtype = view.value_type();
-        let (val_kind, val_text, val_hex) = if view.value_is_spilled() {
-            (
-                "spill",
-                "⇥ spilled".to_owned(),
-                view.value_spill_hash().map(bytes_hex).unwrap_or_default(),
-            )
-        } else {
-            (
-                "value",
-                format_inline_value(vtype, view.value_payload()),
-                bytes_hex(view.value_payload()),
-            )
-        };
-        [
-            ("entity", entity, bytes_hex(view.entity().raw())),
-            ("attribute", attribute, bytes_hex(view.attribute().raw())),
-            // The value-type chip shows just the type tag byte; the type name
-            // (`Entity` / `String` / …) rides `hex` for the hover tooltip, the
-            // same convention as the index chip.
-            ("vtype", (vtype as u8).to_string(), format!("{vtype}")),
-            (val_kind, val_text, val_hex),
-        ]
-    }
-    let push_fields =
-        |out: &mut Vec<Ipld>, order: &[usize], f: [(&'static str, String, String); 4]| {
-            // Clone into a reusable vec so we can pick fields by sort order.
-            let f: Vec<(&'static str, String, String)> = f.to_vec();
-            for &i in order {
-                let (k, t, h) = &f[i];
-                out.push(part(k, t.clone(), h.clone()));
-            }
-        };
-
-    match tag {
-        // Sort order: entity ‖ attribute ‖ vtype ‖ value (EAV logical order).
-        ENTITY_KEY_TAG => {
-            let f = eav_fields(&EntityKey(&key));
-            push_fields(&mut out, &[0, 1, 2, 3], f);
-        }
-        // Sort order: attribute ‖ entity ‖ vtype ‖ value.
-        ATTRIBUTE_KEY_TAG => {
-            let f = eav_fields(&AttributeKey(&key));
-            push_fields(&mut out, &[1, 0, 2, 3], f);
-        }
-        // Sort order: vtype ‖ value ‖ attribute ‖ entity.
-        VALUE_KEY_TAG => {
-            let f = eav_fields(&ValueKey(&key));
-            push_fields(&mut out, &[2, 3, 1, 0], f);
-        }
-        // History / coverage: tag ‖ origin(32) ‖ edition(8, big-endian) ‖ EAV…
-        // The version prefix (origin, edition) is what these regions sort by;
-        // surface it, then reuse the EAV view for the trailing fact fields.
-        HISTORY_KEY_TAG | COVERAGE_KEY_TAG => {
-            if bytes.len() >= 1 + 32 + 8 {
-                let origin = &bytes[1..33];
-                let edition = u64::from_be_bytes(bytes[33..41].try_into().unwrap_or_default());
-                out.push(part(
-                    "origin",
-                    format!("origin:{}", short_hex(origin)),
-                    bytes_hex(origin),
-                ));
-                out.push(part("edition", format!("@{edition}"), format!("{edition}")));
-                // The fact fields follow the version prefix under the ENTITY
-                // (EAV) ordering; parse the tail as an entity-tagged key.
-                let tail = &bytes[41..];
-                if !tail.is_empty() {
-                    let mut synthetic = Vec::with_capacity(tail.len() + 1);
-                    synthetic.push(ENTITY_KEY_TAG);
-                    synthetic.extend_from_slice(tail);
-                    let tail_key = Key::from(synthetic);
-                    let f = eav_fields(&EntityKey(&tail_key));
-                    push_fields(&mut out, &[0, 1, 2, 3], f);
-                }
-            } else {
-                return opaque(bytes);
-            }
-        }
-        // Blob: tag ‖ blob_hash. One content-addressed reference.
-        BLOB_KEY_TAG => {
-            let hash = &bytes[1..];
-            out.push(part(
-                "blob",
-                format!("blob:{}", short_hex(hash)),
-                bytes_hex(hash),
-            ));
-        }
-        _ => return opaque(bytes),
-    }
-    out
+    key_components(bytes).iter().map(component_part).collect()
 }
 
-/// Decode an index node's LINK SEPARATOR into parts. A separator is the
-/// front-coded left-edge key of a subtree — a *prefix* of a full key, not a
-/// self-contained one, so [`key_parts`]'s `KeyView` decode reads its columns as
-/// empty (the column framing that decode relies on lives past the prefix's
-/// truncation). Instead, surface the tag chip and render the post-tag prefix
-/// bytes as one glyphed-text chip, colored by the ordering's *leading* sort
-/// column (entity for EAV/history, attribute for AEV, value for VAE). This is
-/// what actually reads on the left of the outline: `\0concept:J4J64…` shows as
-/// `concept:J4J64…` in entity-blue rather than an empty `‹0 bytes›`.
+/// Decode an index node's SPAN SEPARATOR into parts, via dialog's own
+/// `separator_components`. Dialog reports the post-tag prefix as one
+/// structural `prefix` component; recolor it by the ordering's *leading*
+/// sort column (entity for EAV/history, attribute for AEV, value for VAE)
+/// so the outline's left edge reads in the right hue — `\0concept:J4J64…`
+/// shows as `concept:J4J64…` in entity-blue rather than structural gray.
 fn separator_parts(bytes: &[u8]) -> Vec<Ipld> {
-    let part = |kind: &str, text: String, hex: String| -> Ipld {
-        let mut m: BTreeMap<String, Ipld> = BTreeMap::new();
-        m.insert("kind".into(), Ipld::String(kind.into()));
-        m.insert("text".into(), Ipld::String(text));
-        m.insert("hex".into(), Ipld::String(hex));
-        Ipld::Map(m)
-    };
-
-    // The empty / leftmost-subtree separator: reuse `key_parts`' `⊥ start`.
-    if bytes.is_empty() {
-        return key_parts(bytes);
-    }
-    let Some(&tag) = bytes.first() else {
-        return vec![part("opaque", bytes_hex(bytes), bytes_hex(bytes))];
-    };
-    let prefix = &bytes[1..];
-
-    // The color/kind of the leading sort column, so the prefix text reads in
-    // the right hue. History / coverage lead with the version prefix (origin),
-    // blob with its hash; both are structural, so leave them opaque.
-    let lead_kind = match tag {
-        ENTITY_KEY_TAG => "entity",
-        ATTRIBUTE_KEY_TAG => "attribute",
-        VALUE_KEY_TAG => "value",
+    let lead_kind = match bytes.first() {
+        Some(&ENTITY_KEY_TAG) => "entity",
+        Some(&ATTRIBUTE_KEY_TAG) => "attribute",
+        Some(&VALUE_KEY_TAG) => "value",
         _ => "opaque",
     };
-
-    let mut out = vec![part("index", tag.to_string(), tag_name(tag).into())];
-    if prefix.is_empty() {
-        return out;
-    }
-    // Render the whole prefix as text (glyphs substituted client-side for the
-    // structural bytes); the raw hex rides `hex` for the tooltip.
-    out.push(part(
-        lead_kind,
-        String::from_utf8_lossy(prefix).into_owned(),
-        bytes_hex(prefix),
-    ));
-    out
-}
-
-/// A short hex preview (first 8 bytes) for origin / blob hashes shown in a
-/// chip; the full hex rides the `hex` field for the tooltip.
-fn short_hex(bytes: &[u8]) -> String {
-    let n = bytes.len().min(8);
-    let mut s = String::with_capacity(n * 2 + 1);
-    for b in &bytes[..n] {
-        s.push_str(&format!("{b:02x}"));
-    }
-    if bytes.len() > n {
-        s.push('…');
-    }
-    s
-}
-
-/// Render a key's inline value payload as legible text, by its declared type.
-/// Falls back to hex for bytes/records and undecodable payloads — the goal is
-/// a readable chip in the inspector, not a round-trip decode.
-fn format_inline_value(vtype: dialog_artifacts::ValueDataType, payload: &[u8]) -> String {
-    use dialog_artifacts::{Value, decode_value};
-    match decode_value(vtype, payload) {
-        Some((value, _rest)) => match value {
-            Value::String(s) => format!("\"{s}\""),
-            Value::Entity(e) => e.to_string(),
-            Value::Symbol(s) => s.to_string(),
-            Value::Boolean(b) => b.to_string(),
-            Value::UnsignedInt(u) => u.to_string(),
-            Value::SignedInt(i) => {
-                if i >= 0 {
-                    format!("+{i}")
-                } else {
-                    i.to_string()
-                }
-            }
-            Value::Float(f) => {
-                if f.fract() == 0.0 {
-                    format!("{f:.1}")
-                } else {
-                    f.to_string()
-                }
-            }
-            // Bytes / records are opaque binary — a full hex dump would swamp
-            // the chip (a revision record is hundreds of bytes). Label them
-            // with their size; the raw hex still rides the part's `hex` field
-            // for the inspector detail.
-            Value::Bytes(b) => format!("‹{} bytes›", b.len()),
-            Value::Record(b) => format!("‹record, {} bytes›", b.len()),
-        },
-        None => format!("‹{} bytes›", payload.len()),
-    }
+    separator_components(bytes)
+        .iter()
+        .map(|component| match component.kind {
+            "prefix" => component_part(&KeyComponent {
+                kind: lead_kind,
+                text: component.text.clone(),
+                bytes: component.bytes.clone(),
+            }),
+            _ => component_part(component),
+        })
+        .collect()
 }
 
 /// Resolve the required `key` input: a `0x`-prefixed hex string of the raw
@@ -718,21 +475,34 @@ fn key_input(query: &Query, param: &str, formula: &str) -> Result<Option<Key>, F
     }
 }
 
+/// The human name of a key's index ordering, from its leading tag byte.
+fn tag_name(tag: u8) -> &'static str {
+    match tag {
+        ENTITY_KEY_TAG => "entity",
+        ATTRIBUTE_KEY_TAG => "attribute",
+        VALUE_KEY_TAG => "value",
+        dialog_artifacts::HISTORY_KEY_TAG => "history",
+        dialog_artifacts::BLOB_KEY_TAG => "blob",
+        dialog_artifacts::COVERAGE_KEY_TAG => "coverage",
+        _ => "unknown",
+    }
+}
+
 /// One `tree/key` conclusion: the key's decoded components. The tag names
 /// the index ordering (entity / attribute / value); the entity, attribute,
 /// value type, and (for an inline key) value are reconstructed from the
-/// columnar key. A spilled value shows the placeholder.
-fn key_row(key: Key) -> Result<Conclusion, FormulaError> {
+/// key. A spilled value shows the placeholder.
+fn key_row(key: Key) -> Conclusion {
     let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
     fields.insert("tag".into(), Ipld::String(tag_name(key.tag()).into()));
     // The decoded, self-describing components — the single source of truth for
     // the inspector's key rendering (entity/attribute/value-type/value chips).
     fields.insert("parts".into(), Ipld::List(key_parts(key.as_ref())));
 
-    Ok(Conclusion {
+    Conclusion {
         this: bytes_hex(key.as_ref()),
         fields,
-    })
+    }
 }
 
 /// Format a node hash as the `#<base58>` string used across `tree/*`.

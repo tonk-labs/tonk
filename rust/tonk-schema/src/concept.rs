@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Select};
+use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -29,10 +29,9 @@ use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
-use dialog_query::source::SelectRules;
 use dialog_query::{
-    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Selection, Term,
-    the, try_stream,
+    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Scope, Selection,
+    Term, the, try_stream,
 };
 use dialog_repository::RemoteSite;
 use thiserror::Error;
@@ -774,7 +773,7 @@ impl Application for AnonymousConceptQuery {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         let app = self;
         try_stream! {
@@ -1098,7 +1097,7 @@ impl Application for QueryPlan {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         try_stream! {
             match self {
@@ -1176,7 +1175,7 @@ async fn resolve_branch_descriptor<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<ConceptDescriptor>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
     let with_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
         Term::<dialog_query::attribute::The>::var("the")
@@ -1274,7 +1273,7 @@ async fn lookup_entity_name<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<String>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
     use dialog_query::Output as _;
     use tonk_core::meta::Name;
@@ -1303,7 +1302,7 @@ async fn lookup_entity_description<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<String>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
     let claims: Vec<Claim> = the!("db.meta/description")
         .of(Term::<Entity>::from(entity.clone()))

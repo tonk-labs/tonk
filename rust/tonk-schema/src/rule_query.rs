@@ -13,15 +13,12 @@
 //! `tonk-schema`. The effect storage / lookup / evaluation side
 //! lives in `tonk_evaluator::effect_query`.
 
-use dialog_artifacts::{Entity, Select, Value};
-use dialog_capability::Provider;
-use dialog_common::ConditionalSync;
+use dialog_artifacts::{Entity, Value};
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
-use dialog_query::source::SelectRules;
 use dialog_query::{
-    Application, ConceptDescriptor, EvaluationError, Match, Output as _, Parameters, Selection,
-    Term, the, try_stream,
+    Application, ConceptDescriptor, EvaluationError, Match, Output as _, Parameters, Scope,
+    Selection, Term, the, try_stream,
 };
 use serde::{Deserialize, Serialize};
 
@@ -117,7 +114,7 @@ impl Application for AnonymousRuleQuery {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         let app = self;
         try_stream! {
@@ -208,7 +205,7 @@ async fn load_effect_facts<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<Effect>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
     let source_claims: Vec<dialog_query::Claim> = the!("db.effect/source")
         .of(Term::<Entity>::from(entity.clone()))

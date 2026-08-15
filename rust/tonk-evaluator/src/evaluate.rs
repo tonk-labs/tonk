@@ -539,7 +539,7 @@ impl<'a> Evaluated<'a> {
     /// intermediate destructure. The chain itself never commits;
     /// callers who want to commit call this (or drive
     /// `evaluated.txn.commit()` directly).
-    pub fn commit(self) -> dialog_repository::Commit<'a, dialog_artifacts::ChangeStream> {
+    pub fn commit(self) -> dialog_repository::TransactionCommit<'a> {
         self.txn.commit()
     }
 }

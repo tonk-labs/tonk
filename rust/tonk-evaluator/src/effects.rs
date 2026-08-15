@@ -25,7 +25,7 @@
 
 use std::collections::BTreeSet;
 
-use dialog_artifacts::{Attribute, Changes, Entity, Instruction, Select, Statement, Update, Value};
+use dialog_artifacts::{Attribute, Changes, Entity, Instruction, Statement, Update, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -34,8 +34,7 @@ use dialog_effects::memory::Resolve;
 use dialog_query::concept::query::ConceptQuery;
 use dialog_query::error::EvaluationError;
 use dialog_query::selection::{Match, Selection};
-use dialog_query::source::SelectRules;
-use dialog_query::{Cardinality, InductiveRule, Output as _, Parameters, Proposition, Term};
+use dialog_query::{Cardinality, InductiveRule, Output as _, Parameters, Proposition, Scope, Term};
 use dialog_repository::{RemoteSite, Transaction};
 use thiserror::Error;
 
@@ -673,7 +672,7 @@ impl dialog_query::Application for BodyApp {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         let plan = self.rule.plan(&Default::default());
         plan.evaluate(selection, env)

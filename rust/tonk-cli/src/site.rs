@@ -19,7 +19,7 @@ use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
-use dialog_operator::{Operator, Profile};
+use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};

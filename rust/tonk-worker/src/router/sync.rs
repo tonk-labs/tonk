@@ -12,6 +12,8 @@ use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_capability::access::AuthorizeError;
+use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
 use dialog_varsig::Did;
 use serde::Deserialize;
@@ -292,31 +294,62 @@ fn is_head_moved(error: &crate::reactor::ReactorError) -> bool {
     )
 }
 
+/// Walk an error's `source()` chain for the first typed `T` it carries.
+///
+/// Dialog's effect errors keep their reasons intact — an
+/// [`AuthorizeError`] or [`Rejection`] built at the service boundary
+/// rides the chain to the caller — so classification downcasts for the
+/// typed value instead of parsing a rendering.
+pub(crate) fn find_in_chain<'a, T: std::error::Error + 'static>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a T> {
+    let mut current: Option<&'a (dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if let Some(found) = error.downcast_ref::<T>() {
+            return Some(found);
+        }
+        current = error.source();
+    }
+    None
+}
+
 fn classified_service_failure(
     error: &(dyn std::error::Error + 'static),
 ) -> Option<TonkWorkerError> {
-    let response = dialog_effects::service::find_service_response(error)?;
-    Some(match response.code.as_deref() {
-        Some("CREDENTIAL_REVOKED" | "DEVICE_REVOKED") => TonkWorkerError::Upstream {
-            status: 403,
-            code: Some("CREDENTIAL_REVOKED".to_string()),
-            message: "remote access has been revoked".to_string(),
-        },
-        Some("REVOCATION_UNAVAILABLE") => TonkWorkerError::Upstream {
+    if let Some(authorization) = find_in_chain::<AuthorizeError>(error) {
+        return Some(match authorization {
+            AuthorizeError::Revoked { .. } => TonkWorkerError::Upstream {
+                status: 403,
+                code: Some("CREDENTIAL_REVOKED".to_string()),
+                message: "remote access has been revoked".to_string(),
+            },
+            AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
+                TonkWorkerError::Upstream {
+                    status: 503,
+                    code: Some("SYNC_UNAVAILABLE".to_string()),
+                    message: "synchronization is temporarily unavailable".to_string(),
+                }
+            }
+            _ => TonkWorkerError::Upstream {
+                status: 502,
+                code: Some("UPSTREAM_ERROR".to_string()),
+                message: "the upstream service could not complete synchronization".to_string(),
+            },
+        });
+    }
+    let rejection = find_in_chain::<Rejection>(error)?;
+    Some(if rejection.is_transient() {
+        TonkWorkerError::Upstream {
             status: 503,
             code: Some("SYNC_UNAVAILABLE".to_string()),
             message: "synchronization is temporarily unavailable".to_string(),
-        },
-        _ if response.status == 503 => TonkWorkerError::Upstream {
-            status: 503,
-            code: Some("SYNC_UNAVAILABLE".to_string()),
-            message: "synchronization is temporarily unavailable".to_string(),
-        },
-        _ => TonkWorkerError::Upstream {
+        }
+    } else {
+        TonkWorkerError::Upstream {
             status: 502,
             code: Some("UPSTREAM_ERROR".to_string()),
             message: "the upstream service could not complete synchronization".to_string(),
-        },
+        }
     })
 }
 

@@ -31,7 +31,7 @@
 
 use dialog_capability::access::{Prove, Retain};
 use dialog_capability::{Provider, Subject};
-use dialog_operator::{Operator, Profile};
+use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_storage::provider::space::SpaceProvider;
 use dialog_storage::provider::storage::Storage;
 use dialog_ucan::Ucan;
@@ -74,6 +74,9 @@ pub struct Session<S: Clone = DefaultSpace> {
 pub async fn open<S>(profile: &Profile, storage: &Storage<S>) -> Result<Session<S>, TonkWorkerError>
 where
     S: SpaceProvider + Clone + 'static,
+    S: Provider<dialog_effects::blob::Read>
+        + Provider<dialog_effects::blob::Write>
+        + Provider<dialog_effects::blob::Import>,
     S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
     // A random derivation context is what makes the operator key

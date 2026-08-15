@@ -165,7 +165,7 @@ fn map_publish_error(error: PublishRemoteBranchError) -> RemoteError {
 
 fn map_resolve_error(error: ResolveError) -> RemoteError {
     match error {
-        ResolveError::Authorization(message) => RemoteError::Unauthorized(message),
+        ResolveError::Authorization(error) => RemoteError::Unauthorized(error.to_string()),
         ResolveError::Io(error) => RemoteError::Unavailable(error.to_string()),
         ResolveError::Decode(message) => RemoteError::Malformed(message),
         other => RemoteError::Other(other.to_string()),
@@ -174,7 +174,7 @@ fn map_resolve_error(error: ResolveError) -> RemoteError {
 
 fn map_publish_leaf(error: PublishError) -> RemoteError {
     match error {
-        PublishError::Authorization(message) => RemoteError::Unauthorized(message),
+        PublishError::Authorization(error) => RemoteError::Unauthorized(error.to_string()),
         PublishError::Io(error) => RemoteError::Unavailable(error.to_string()),
         PublishError::Encode(message) => RemoteError::Malformed(message),
         other => RemoteError::Other(other.to_string()),
