@@ -20,6 +20,10 @@ use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 /// Credential CIDs and validity window presented to the presign endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentedCredentials {
+    /// The invocation's subject — the space whose access the chain
+    /// exercises. Carried so a refusal can name whose authority was
+    /// withdrawn.
+    pub subject: dialog_varsig::Did,
     /// CIDs of every referenced or carried delegation.
     pub delegation_cids: Vec<String>,
     /// Latest start bound in unix seconds.
@@ -59,6 +63,7 @@ pub fn collect_presented(container_bytes: &[u8]) -> Result<PresentedCredentials,
         }
     }
     Ok(PresentedCredentials {
+        subject: invocation.subject().clone(),
         delegation_cids: delegation_cids.into_iter().collect(),
         not_before,
         expires_at,

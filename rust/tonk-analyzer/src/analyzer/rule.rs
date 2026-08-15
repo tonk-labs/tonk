@@ -1,5 +1,6 @@
 //! Rule-side analysis — lifts a `rule!:` claim's body into a
-//! compiled [`tonk_core::effect::Effect`].
+//! compiled [`dialog_query::InductiveRule`] or
+//! [`dialog_query::DeductiveRule`].
 //!
 //! `rule!:` is structurally a [`tonk_notation::Expression::Claim`]
 //! over the built-in `rule` concept; the analyzer's mutation pass
@@ -32,61 +33,55 @@ use super::constraint::{ConstraintInfo, lookup_constraint};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
 use super::formula::{FormulaInfo, lookup_formula};
+use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
-use tonk_core::effect::{Effect, EffectPolarity};
-use tonk_schema::deductive_rule::DeductiveRule;
-use tonk_schema::rule::Rule;
+use dialog_query::rule::inductive::Polarity;
+use tonk_schema::rule::Rule as StoredRule;
 
 /// Outcome of inspecting a `rule!:` claim body — install (build a
-/// fresh [`Rule`]) or retract (resolve an existing rule from the
-/// branch). Both paths produce a [`Rule`] value the analyzer hands
-/// forward as `Application::Rule { rule, .. }`.
+/// fresh compiled rule) or retract (resolve an existing rule from
+/// the branch). Both paths produce a compiled dialog rule the
+/// analyzer hands forward as `Application::Rule` /
+/// `Application::DeductiveRule`.
 ///
 /// The two notation shapes:
 ///
 /// - Install: `rule!: assert!: <head>, when: [...]` — body carries
-///   polarity + premises, no `..: _`. A `this: <entity>` may
-///   additionally pin the install at a user-chosen entity.
-/// - Retract: `rule!: this: effect:<entity>, ..: _` — body carries
+///   polarity + premises, no `..: _`. Rules are content-addressed,
+///   so `this:` cannot pin an install entity.
+/// - Retract: `rule!: this: rule:<entity>, ..: _` — body carries
 ///   the rule's entity in `this:` and `..: _` as the
 ///   retract-everything sentinel.
 pub(crate) enum RuleAction {
-    /// Install a new rule. `rule` carries the freshly-built
-    /// [`Rule`] with `Effect::source()` already captured; `this`
-    /// carries `Some(entity)` when the user pinned the install with
-    /// `this: <entity>`, `None` for the content-addressed default.
+    /// Install a new inductive rule at its content-derived entity.
     Install {
-        /// The freshly-built rule packaged for assert.
-        rule: Box<Rule>,
-        /// Caller-supplied install-at entity from `this: <entity>`.
-        this: Option<Entity>,
+        /// The freshly-compiled rule; dialog's `Statement` impl
+        /// writes the `dialog.rule/*` facts.
+        rule: Box<InductiveRule>,
     },
-    /// Retract an installed rule. `rule` carries the [`Rule`]
-    /// resolved off the branch with the stored `source` / `polarity`
-    /// bytes — handed to `Statement::Retract` so the dissociate
-    /// matches what was written byte-for-byte.
-    Retract { rule: Box<Rule>, this: Entity },
-    /// Install a new deductive rule (the `assert:` no-bang form).
-    /// `rule` carries the freshly-built
-    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule);
-    /// `this` is `Some(entity)` when pinned via `this: <entity>`.
+    /// Retract an installed inductive rule. `rule` was resolved off
+    /// the branch, so re-encoding it dissociates the stored facts
+    /// byte-exactly (the encoding is canonical).
+    Retract {
+        /// The rule resolved off the branch.
+        rule: Box<InductiveRule>,
+        /// The entity the `dialog.rule/*` claims live under.
+        this: Entity,
+    },
+    /// Install a new deductive rule (the `assert:` no-bang form) at
+    /// its content-derived entity.
     InstallDeductive {
-        /// The freshly-built deductive rule packaged for assert.
-        rule: Box<DeductiveRule>,
-        /// Caller-supplied install-at entity from `this: <entity>`.
-        this: Option<Entity>,
+        /// The freshly-compiled deductive rule.
+        rule: Box<CompiledDeductiveRule>,
     },
-    /// Retract an installed deductive rule. `rule` carries the
-    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule)
-    /// resolved off the branch with its stored `db.rule/source` bytes —
-    /// handed to `Statement::Retract` so the dissociate matches what was
-    /// written. The deductive counterpart to [`Retract`](Self::Retract).
+    /// Retract an installed deductive rule. The deductive
+    /// counterpart to [`Retract`](Self::Retract).
     RetractDeductive {
-        /// The rule resolved off the branch, carrying exact stored bytes.
-        rule: Box<DeductiveRule>,
-        /// The entity the `db.rule/*` claims live under.
+        /// The rule resolved off the branch.
+        rule: Box<CompiledDeductiveRule>,
+        /// The entity the `dialog.rule/*` claims live under.
         this: Entity,
     },
 }
@@ -137,61 +132,54 @@ pub(crate) fn lift_rule_claim(
             )
         })?;
         // The stored rule was read off the branch during resolve's
-        // prefetch pass (so the carried `source` bytes match what's
-        // installed) and cached on the scope. A retract entity may name
-        // an inductive or a deductive rule, so resolve consulted both;
-        // whichever is present wins. `Some(None)` on a map means that
-        // kind is confirmed absent; `None` means resolve never
+        // prefetch pass and cached on the scope; the decoded body's
+        // head field decided its kind. `Some(None)` means the entity
+        // holds no installed rule; `None` means resolve never
         // prefetched it, which is an analyzer bug.
-        let inductive = scope.resolved_rule(&entity);
-        let deductive = scope.resolved_deductive_rule(&entity);
-        if inductive.is_none() && deductive.is_none() {
+        let Some(resolved) = scope.resolved_rule(&entity) else {
             return Err(AnalyzeError::at(
                 AnalyzeErrorKind::RuleCompileFailed {
                     reason: format!("rule retract at {entity} was not prefetched during resolve"),
                 },
                 application.range,
             ));
-        }
-        if let Some(Some(rule)) = inductive {
-            return Ok(Some(RuleAction::Retract {
+        };
+        match resolved {
+            Some(StoredRule::Inductive(rule)) => Ok(Some(RuleAction::Retract {
                 rule: Box::new(rule),
                 this: entity,
-            }));
-        }
-        if let Some(Some(rule)) = deductive {
-            return Ok(Some(RuleAction::RetractDeductive {
+            })),
+            Some(StoredRule::Deductive(rule)) => Ok(Some(RuleAction::RetractDeductive {
                 rule: Box::new(rule),
                 this: entity,
-            }));
+            })),
+            // Confirmed absent — retracting something not installed
+            // (or already retracted in this document); drop the claim
+            // silently.
+            None => Ok(None),
         }
-        // Both kinds confirmed absent — retracting something not
-        // installed (or already retracted in this document); drop the
-        // claim silently.
-        Ok(None)
     } else {
-        let this = parse_rule_this_entity(application)?;
+        // Rules are content-addressed: the entity IS the hash of the
+        // canonical body, and a reader treats facts stored under any
+        // other entity as inert. A pinned install would silently
+        // never fire, so reject it outright.
+        if let Some(entity) = parse_rule_this_entity(application)? {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: format!(
+                        "rules are content-addressed; `this: {entity}` cannot pin an install                          entity (omit `this:`, or use it only in the retract form)"
+                    ),
+                },
+                application.range,
+            ));
+        }
         match lift_rule(application, scope, analysis)? {
-            LiftedRule::Inductive(effect) => {
-                let rule = match this.clone() {
-                    Some(entity) => Rule::asserting_at(effect, entity),
-                    None => Rule::asserting(effect),
-                };
-                Ok(Some(RuleAction::Install {
-                    rule: Box::new(rule),
-                    this,
-                }))
-            }
-            LiftedRule::Deductive(compiled) => {
-                let rule = match this.clone() {
-                    Some(entity) => DeductiveRule::asserting_at(compiled, entity),
-                    None => DeductiveRule::asserting(compiled),
-                };
-                Ok(Some(RuleAction::InstallDeductive {
-                    rule: Box::new(rule),
-                    this,
-                }))
-            }
+            LiftedRule::Inductive(rule) => Ok(Some(RuleAction::Install {
+                rule: Box::new(rule),
+            })),
+            LiftedRule::Deductive(rule) => Ok(Some(RuleAction::InstallDeductive {
+                rule: Box::new(rule),
+            })),
         }
     }
 }
@@ -316,7 +304,7 @@ pub(crate) fn lift_rule(
     // only to inductive `assert!:` rules — a deductive rule that
     // re-states a premise simply yields that premise's rows on
     // query, which is harmless (no fixpoint to spin).
-    if body.head == RuleHead::Inductive(EffectPolarity::Assert)
+    if body.head == RuleHead::Inductive(Polarity::Assert)
         && let Some(reason) = trivially_tautological(&head_descriptor, &dialog_premises)
     {
         return Err(AnalyzeError::at(
@@ -338,7 +326,7 @@ pub(crate) fn lift_rule(
                     application.range,
                 )
             })?;
-            Ok(LiftedRule::Inductive(Effect::new(inductive, polarity)))
+            Ok(LiftedRule::Inductive(inductive.with_polarity(polarity)))
         }
         RuleHead::Deductive => {
             let deductive =
@@ -355,12 +343,12 @@ pub(crate) fn lift_rule(
     }
 }
 
-/// The compiled output of [`lift_rule`]: an inductive
-/// [`Effect`] (the `assert!:` / `retract!:` form) or a compiled
-/// [`DeductiveRule`](dialog_query::DeductiveRule) (the `assert:` form).
+/// The compiled output of [`lift_rule`]: an inductive rule (the
+/// `assert!:` / `retract!:` form, polarity carried on the rule) or a
+/// deductive rule (the `assert:` form).
 pub(crate) enum LiftedRule {
     /// An inductive rule with polarity.
-    Inductive(Effect),
+    Inductive(InductiveRule),
     /// A deductive rule.
     Deductive(CompiledDeductiveRule),
 }
@@ -441,7 +429,7 @@ struct RuleBody<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RuleHead {
     /// `assert!:` / `retract!:` — an inductive rule with a polarity.
-    Inductive(EffectPolarity),
+    Inductive(Polarity),
     /// `assert:` (no bang) — a deductive rule.
     Deductive,
 }
@@ -467,8 +455,8 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
         match field.name.as_str() {
             "assert!" | "retract!" | "assert" => {
                 let new_head = match field.name.as_str() {
-                    "assert!" => RuleHead::Inductive(EffectPolarity::Assert),
-                    "retract!" => RuleHead::Inductive(EffectPolarity::Retract),
+                    "assert!" => RuleHead::Inductive(Polarity::Assert),
+                    "retract!" => RuleHead::Inductive(Polarity::Retract),
                     // `assert:` (no bang) — deductive.
                     _ => RuleHead::Deductive,
                 };
@@ -648,6 +636,10 @@ fn lift_premise(
 
     if let Some(constraint) = lookup_constraint(name) {
         return lift_constraint_premise(premise, constraint, scope, analysis);
+    }
+
+    if let Some(resolver) = lookup_resolver(name) {
+        return lift_resolver_premise(premise, resolver, scope, analysis);
     }
 
     let resolved = scope.concept(name).ok_or_else(|| {
@@ -903,17 +895,86 @@ fn lift_constraint_premise(
     Ok(Proposition::Constraint(constraint_value))
 }
 
+/// Lift a resolver premise (`tree/node`, `tree/entry`, …) into a
+/// [`Proposition::Resolver`].
+///
+/// Resolvers select by content address over immutable blocks rather
+/// than by key range over the mutable head, which is why they are a
+/// premise kind of their own. Operand handling mirrors constraints:
+/// unknown operands are rejected against the resolver's own schema,
+/// and every declared operand is translated. Unlike a constraint,
+/// though, an omitted operand is NOT an error — a resolver's output
+/// cells are the values it produces, so leaving `size:` unbound
+/// simply means "don't bind it", exactly as with a formula's
+/// `#[output]` slots. Only the required inputs must be bound, and
+/// dialog's own planner enforces that (an unbound `of` is non-viable
+/// rather than misanalyzed).
+fn lift_resolver_premise(
+    premise: &NotationPremise,
+    resolver: &ResolverInfo,
+    scope: &Scope,
+    analysis: &Working,
+) -> Result<Proposition, AnalyzeError> {
+    // Reject `where:` operands the resolver doesn't declare.
+    for field in &premise.bindings {
+        if !resolver.operands().any(|operand| operand == field.name) {
+            let mut valid: Vec<&str> = resolver.operands().collect();
+            valid.sort_unstable();
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnknownFormulaOperand {
+                    formula: resolver.name.to_owned(),
+                    operand: field.name.clone(),
+                    valid: valid.join(", "),
+                },
+                field.name_range,
+            ));
+        }
+    }
+
+    // Translate the operands the document actually bound.
+    let mut terms = Parameters::new();
+    for field in &premise.bindings {
+        let term = field_value_to_term(
+            &field.name,
+            &field.value,
+            field.value_range,
+            scope,
+            analysis,
+            None,
+        )?;
+        terms.insert(field.name.clone(), term);
+    }
+
+    // Construct the typed `ResolverQuery` through its name-keyed serde
+    // representation, the same `{"assert": <name>, "where": <terms>}`
+    // shape constraints and formulas use. dialog-query owns the
+    // resolver↔name mapping, so routing through serde keeps the
+    // analyzer from matching resolver types by hand.
+    let value = serde_json::json!({ "assert": resolver.name, "where": terms });
+    let resolver_value: dialog_query::ResolverQuery =
+        serde_json::from_value(value).map_err(|e| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: format!("resolver {:?}: {e}", resolver.name),
+                },
+                premise.concept.range,
+            )
+        })?;
+
+    Ok(Proposition::Resolver(resolver_value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dialog_artifacts::Entity;
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::AttributeDescriptor;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
     use dialog_query::the;
     use dialog_repository::Branch;
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use tonk_notation::parse;
     use tonk_schema::concept::AnonymousConcept;
     use tonk_schema::query_source::Source;
@@ -926,6 +987,7 @@ mod tests {
         tonk_schema::concept::QueryEnv
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
+        + dialog_query::Provider<dialog_effects::authority::Attest>
     {
     }
 
@@ -933,6 +995,7 @@ mod tests {
         T: tonk_schema::concept::QueryEnv
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
+            + dialog_query::Provider<dialog_effects::authority::Attest>
     {
     }
 
@@ -978,34 +1041,30 @@ mod tests {
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| "String".to_owned());
                 txn = txn
+                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                        "{}/{}",
+                        attr.domain(),
+                        attr.name()
+                    )))
                     .assert(
-                        the!("dialog.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(format!("{}/{}", attr.domain(), attr.name())),
-                    )
-                    .assert(
-                        the!("dialog.attribute/type")
+                        the!("db.attribute/type")
                             .of(attr_entity.clone())
                             .is(type_label),
                     )
                     .assert(
-                        the!("dialog.attribute/cardinality")
+                        the!("db.attribute/cardinality")
                             .of(attr_entity.clone())
                             .is("one".to_owned()),
                     )
                     .assert(
-                        the!("dialog.meta/description")
+                        the!("db.meta/description")
                             .of(attr_entity)
                             .is(String::new()),
                     );
             }
             let concept_entity = descriptor.this();
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
-            txn = txn.assert(
-                the!("dialog.name/referent")
-                    .of(id_entity)
-                    .is(concept_entity),
-            );
+            txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
                 .perform(&self.operator)
@@ -1083,12 +1142,12 @@ mod tests {
     /// exactly one statement and it is not an effect install.
     fn only_installed_effect(
         tree: &crate::analysis::Analysis<tonk_notation::Syntax>,
-    ) -> tonk_core::effect::Effect {
+    ) -> InductiveRule {
         use tonk_schema::transact::{Application, Statement};
         let statements = tree.analysis.statements();
         assert_eq!(statements.len(), 1);
         match &statements[0].statement {
-            Statement::Assert(Application::Rule { rule, .. }) => rule.effect.clone(),
+            Statement::Assert(Application::Rule { rule, .. }) => (**rule).clone(),
             other => panic!("expected Statement::Assert(Application::Rule), got {other:?}"),
         }
     }
@@ -1126,17 +1185,16 @@ mod tests {
             .expect("analyze should succeed");
 
         let effect = only_installed_effect(&analysis);
-        assert_eq!(effect.polarity(), EffectPolarity::Assert);
+        assert_eq!(effect.polarity(), Polarity::Assert);
         // Head concept entity matches the pong descriptor.
         assert_eq!(
-            effect.conclusion(),
+            effect.conclusion().this(),
             one_text_field("io.gozala.pong", "tag").this()
         );
         // Reverse-index keys cover the body's attribute.
-        let on_uris: Vec<String> = effect
-            .on_entities()
+        let on_uris: Vec<String> = tonk_schema::rule::on_entities(&effect)
             .into_iter()
-            .map(|e| e.to_string())
+            .map(|entity| entity.to_string())
             .collect();
         assert!(
             on_uris.iter().any(|u| u == "on:io.gozala.ping/tag"),
@@ -1187,7 +1245,7 @@ mod tests {
         let installs = analysis.analysis.deductive_rule_installs();
         assert_eq!(installs.len(), 1);
         assert_eq!(
-            installs[0].conclusion(),
+            installs[0].conclusion().this(),
             one_text_field("io.gozala.pong", "tag").this()
         );
         // ...and not through the inductive accessor.
@@ -1287,7 +1345,7 @@ mod tests {
         );
     }
 
-    /// Retract-polarity head lifts to `EffectPolarity::Retract`.
+    /// Retract-polarity head lifts to `Polarity::Retract`.
     #[dialog_common::test]
     async fn it_lifts_retract_polarity() {
         let fixture = new_fixture().await;
@@ -1315,7 +1373,7 @@ mod tests {
 
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
-            EffectPolarity::Retract
+            Polarity::Retract
         );
     }
 
@@ -1358,12 +1416,12 @@ mod tests {
         );
     }
 
-    /// `rule!: this: <uri>, assert!: ..` pins the install at a
-    /// caller-chosen entity. The lifted `RuleAction::Install` carries
-    /// the chosen URI and the analyzer pushes a
-    /// `Statement::Assert(Application::Rule { this: Uri(<uri>), .. })`.
+    /// `rule!: this: <uri>, assert!: ..` is rejected: rules are
+    /// content-addressed, so facts pinned at any other entity would
+    /// be inert (a reader verifies the decoded body against the
+    /// entity it was stored under). The refusal names the pin.
     #[dialog_common::test]
-    async fn it_lifts_an_install_at_chosen_entity() {
+    async fn it_rejects_an_install_at_chosen_entity() {
         let fixture = new_fixture().await;
         fixture
             .declare("ping", one_text_field("io.gozala.ping", "tag"))
@@ -1380,23 +1438,17 @@ mod tests {
       where: { this: ?this, tag: ?tag }
 "#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
-        let analysis = fixture
+        let error = fixture
             .analyze(&syntax)
             .await
-            .expect("analyze should succeed");
-        use tonk_schema::transact::{Application, Statement, ThisIntent};
-        let statements = analysis.analysis.statements();
-        assert_eq!(statements.len(), 1);
-        let Statement::Assert(Application::Rule { this, .. }) = &statements[0].statement else {
-            panic!(
-                "expected Statement::Assert(Application::Rule), got {:?}",
-                statements[0].statement
-            );
-        };
-        let chosen: Entity = "id:my-counter".parse().expect("id URI parses");
+            .expect_err("a pinned rule install must be rejected");
         assert!(
-            matches!(this, ThisIntent::Uri(e) if e == &chosen),
-            "install-at entity should carry the user's `this: id:my-counter`, got {this:?}"
+            matches!(
+                &error.kind,
+                crate::analyzer::error::AnalyzeErrorKind::RuleCompileFailed { reason }
+                    if reason.contains("content-addressed")
+            ),
+            "refusal should name the content-addressing rule, got {error:?}"
         );
     }
 
@@ -1603,7 +1655,7 @@ mod tests {
             .expect("analyze should succeed");
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
-            EffectPolarity::Assert
+            Polarity::Assert
         );
     }
 
@@ -1703,7 +1755,283 @@ rule!:
             .expect("analyze should succeed");
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
-            EffectPolarity::Assert
+            Polarity::Assert
+        );
+    }
+
+    /// Every range predicate lifts in premise position, in both
+    /// operand orders.
+    ///
+    /// `of` is the left side and `with` the right, so `{ of: ?count,
+    /// with: 30 }` under `<` reads `?count < 30`. Putting the constant
+    /// on the left (`{ of: 5, with: ?count }`) is the mirror bound and
+    /// must lift just as well — dialog stamps the interval on whichever
+    /// side is the variable.
+    #[dialog_common::test]
+    async fn it_lifts_every_range_predicate_premise() {
+        for (predicate, of, with) in [
+            ("<", "?count", "30"),
+            ("<=", "?count", "30"),
+            // `>` opens a YAML folded scalar and `>=` is not a plain
+            // scalar either, so both must be quoted in notation. `<`
+            // has no such meaning and stays bare.
+            ("\">\"", "?count", "1"),
+            ("\">=\"", "?count", "1"),
+            // Constant on the left: the mirror bound.
+            ("<", "5", "?count"),
+        ] {
+            let fixture = new_fixture().await;
+            fixture
+                .declare("counter", one_uint_field("io.gozala.counter", "count"))
+                .await;
+            fixture
+                .declare("alert", one_uint_field("io.gozala.alert", "count"))
+                .await;
+
+            let doc = format!(
+                r#"
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: {{ this: ?this, count: ?count }}
+    - assert: {predicate}
+      where: {{ of: {of}, with: {with} }}
+"#
+            );
+            let parsed = parse(&doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "`{predicate}` should parse as a premise name: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("parsed syntax");
+            let analysis = fixture
+                .analyze(&syntax)
+                .await
+                .unwrap_or_else(|e| panic!("`{predicate}` should analyze: {e:?}"));
+            assert_eq!(
+                only_installed_effect(&analysis).polarity(),
+                Polarity::Assert,
+                "`{predicate}` should lift into an asserting rule"
+            );
+        }
+    }
+
+    /// The prefix predicate lifts too — documented in the guide's
+    /// predicate table alongside the range ones, so it must work.
+    #[dialog_common::test]
+    async fn it_lifts_a_starts_with_premise() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("person", one_text_field("io.gozala.person", "name"))
+            .await;
+        fixture
+            .declare("flagged", one_text_field("io.gozala.flagged", "name"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: flagged
+  when:
+    - assert: person
+      where: { this: ?this, name: ?name }
+    - assert: starts-with
+      where: { of: ?name, prefix: "A" }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("`starts-with` should analyze");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            Polarity::Assert
+        );
+    }
+
+    /// A `tree/*` resolver lifts in premise position, and joins to a
+    /// second resolver through a shared variable.
+    ///
+    /// This is what the old formula path could not do: the worker
+    /// intercepted `tree/*` before the planner saw it, so a tree query
+    /// could not be joined, subscribed to, or used in a rule. As a
+    /// resolver it is an ordinary premise — here `?child` carries a
+    /// span's child reference straight into the next `tree/node`.
+    #[dialog_common::test]
+    async fn it_lifts_and_joins_tree_resolver_premises() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("node-report", one_text_field("io.gozala.report", "kind"))
+            .await;
+        fixture
+            .declare("subject", one_text_field("io.gozala.subject", "label"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: node-report
+  when:
+    # `?this` is bound by an ordinary concept premise; the resolvers
+    # supply `?kind` by walking a span into the node it delegates to.
+    - assert: subject
+      where: { this: ?this }
+    - assert: tree/span
+      where: { of: "9Qak8VoKufBHVY6Ap5EUM9e4vweFaSm4u3KxS8rK38tD", node: ?child }
+    - assert: tree/node
+      where: { of: ?child, kind: ?kind }
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "resolver premises should parse: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("a joined pair of resolvers should analyze");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            Polarity::Assert
+        );
+    }
+
+    /// A resolver rejects an operand it does not declare, naming the
+    /// resolver — the operands come off dialog's schema, so this
+    /// tracks the real wire format rather than a local list.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_resolver_operand() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("node-report", one_text_field("io.gozala.report", "kind"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: node-report
+  when:
+    - assert: tree/node
+      where: { of: "9Qak8VoKufBHVY6Ap5EUM9e4vweFaSm4u3KxS8rK38tD", colour: ?kind }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let error = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("`colour` is not an operand of `tree/node`");
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::UnknownFormulaOperand { formula, operand, .. }
+                    if formula == "tree/node" && operand == "colour"
+            ),
+            "expected an unknown-operand diagnostic naming tree/node/colour, got {error:?}"
+        );
+    }
+
+    /// A resolver's output operands are optional: binding only the
+    /// required input is valid, and leaving `size:`/`count:` out just
+    /// means "don't bind them" — the formula convention, not the
+    /// constraint one (where every operand is required).
+    #[dialog_common::test]
+    async fn it_allows_a_resolver_to_omit_output_operands() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("node-report", one_text_field("io.gozala.report", "kind"))
+            .await;
+        fixture
+            .declare("subject", one_text_field("io.gozala.subject", "label"))
+            .await;
+
+        // `size:` and `count:` are output cells this premise simply
+        // doesn't bind — valid, unlike a constraint operand.
+        let doc = r#"
+rule!:
+  assert!: node-report
+  when:
+    - assert: subject
+      where: { this: ?this }
+    - assert: tree/node
+      where: { of: "9Qak8VoKufBHVY6Ap5EUM9e4vweFaSm4u3KxS8rK38tD", kind: ?kind }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        fixture
+            .analyze(&syntax)
+            .await
+            .expect("omitting a resolver's output operands is valid");
+    }
+
+    /// `>` unquoted is a YAML folded-scalar indicator, not the name
+    /// of a predicate — the parser sees an empty name and the analyzer
+    /// reports an unknown concept. Pinned because the fix (quote it)
+    /// is not obvious from the diagnostic, and because a future
+    /// notation change that makes `>` bare-legal should update this
+    /// deliberately rather than by accident.
+    #[dialog_common::test]
+    async fn it_reads_an_unquoted_greater_than_as_a_folded_scalar() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
+        fixture
+            .declare("alert", one_uint_field("io.gozala.alert", "count"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?count }
+    - assert: >
+      where: { of: ?count, with: 1 }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let error = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("an unquoted `>` does not name a predicate");
+        assert!(
+            matches!(&error.kind, AnalyzeErrorKind::UnknownConcept { name } if name.is_empty()),
+            "expected the folded scalar to read as an empty name, got {error:?}"
+        );
+    }
+
+    /// A range predicate rejects an operand it does not declare, the
+    /// same way `==` does — the registry reads operand names off
+    /// dialog's own schema, so this cannot drift.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_range_predicate_operand() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
+        fixture
+            .declare("alert", one_uint_field("io.gozala.alert", "count"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?count }
+    - assert: <
+      where: { of: ?count, than: 30 }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let error = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("`than` is not an operand of `<`");
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::UnknownFormulaOperand { formula, operand, .. }
+                    if formula == "<" && operand == "than"
+            ),
+            "expected an unknown-operand diagnostic naming `<`/`than`, got {error:?}"
         );
     }
 

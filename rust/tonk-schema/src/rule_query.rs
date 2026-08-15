@@ -1,65 +1,71 @@
 //! The `rule:` query — surfacing installed rules as concept rows.
 //!
-//! [`effect`](crate::effect) holds the pure [`Effect`] data type
-//! and its storage-shape projections. This module holds the
-//! query side: the [`AnonymousRuleQuery`] that enumerates every
-//! inductive rule installed on a branch as a [`ConceptConclusion`]
-//! row, the [`RuleDefinition`] view it materialises, and the
-//! [`rule_of_rule_descriptor`] dispatch sentinel.
+//! Rules are dialog's native `dialog.rule/*` facts. This module
+//! holds the query side: the [`AnonymousRuleQuery`] that enumerates
+//! every inductive rule installed on a branch as a
+//! [`ConceptConclusion`] row, the [`RuleDefinition`] view it
+//! materialises, and the [`rule_of_rule_descriptor`] dispatch
+//! sentinel.
 //!
 //! `concept.rs` and `builtin.rs` import these — `rule:` is a
-//! queryable concept dispatched through `concept::QueryPlan`. This
-//! query/definition machinery belongs with `concept` in
-//! `tonk-schema`. The effect storage / lookup / evaluation side
-//! lives in `tonk_evaluator::effect_query`.
+//! queryable concept dispatched through `concept::QueryPlan`.
 
-use dialog_artifacts::{Entity, Select, Value};
-use dialog_capability::Provider;
-use dialog_common::ConditionalSync;
+use dialog_artifacts::{Entity, Value};
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
-use dialog_query::source::SelectRules;
 use dialog_query::{
-    Application, ConceptDescriptor, EvaluationError, Match, Output as _, Parameters, Selection,
-    Term, the, try_stream,
+    Application, ConceptDescriptor, EvaluationError, Match, Output as _, Parameters, Scope,
+    Selection, Term, the, try_stream,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::effect::{Effect, EffectPolarity};
+use crate::rule::{InductiveRule, Polarity};
 
-/// The well-known marker entity asserted as the value of
-/// `dialog.meta/effect` on every effect entity, mirroring how
-/// concept entities carry `(?this, dialog.meta/concept,
-/// db:concept)`. Lets "all effects on this branch" queries start
-/// from a selectable triple.
-fn effect_marker_entity() -> Entity {
-    "db:effect"
-        .parse()
-        .expect("`db:effect` is a valid entity URI")
+/// Wire form of a rule head's polarity — `"assert"` / `"retract"`
+/// on the JSON side, mirroring the notation's `assert!:` /
+/// `retract!:` fields. (Dialog's own [`Polarity`] is not a serde
+/// type; the head field of the embedded descriptor already carries
+/// the same information, so this is a convenience projection.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RulePolarity {
+    /// The head asserts when the body matches.
+    Assert,
+    /// The head retracts when the body matches.
+    Retract,
+}
+
+impl From<Polarity> for RulePolarity {
+    fn from(polarity: Polarity) -> Self {
+        match polarity {
+            Polarity::Assert => Self::Assert,
+            Polarity::Retract => Self::Retract,
+        }
+    }
 }
 
 /// JSON-serialisable view of a rule's definition — the value of an
 /// [`AnonymousRuleQuery`] row's synthesised `definition` field.
 ///
 /// Pairs the rule's [`InductiveRuleDescriptor`](dialog_query::InductiveRuleDescriptor)
-/// (head conclusion, `when` premises, `unless` premises) with its
-/// [`EffectPolarity`] so a `rule:` query surfaces what the rule
-/// does, mirroring how `concept:` puts a concept's descriptor in
-/// its `source` field.
+/// (head conclusion in its polarity's `assert!`/`retract!` field,
+/// `when` premises, `unless` premises) with the polarity projection
+/// so a `rule:` query surfaces what the rule does, mirroring how
+/// `concept:` puts a concept's descriptor in its `source` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleDefinition {
     /// The inductive rule descriptor: head concept + premises.
     pub rule: dialog_query::InductiveRuleDescriptor,
     /// Whether the head asserts or retracts when the body matches.
-    pub polarity: EffectPolarity,
+    pub polarity: RulePolarity,
 }
 
 impl RuleDefinition {
-    /// Build the definition view from an installed [`Effect`].
-    fn from_effect(effect: &Effect) -> Self {
+    /// Build the definition view from an installed rule.
+    fn from_rule(rule: &InductiveRule) -> Self {
         Self {
-            rule: effect.descriptor(),
-            polarity: effect.polarity(),
+            rule: rule.descriptor(),
+            polarity: rule.polarity().into(),
         }
     }
 }
@@ -67,12 +73,12 @@ impl RuleDefinition {
 /// Custom query application that surfaces every inductive rule
 /// installed on a branch as a [`ConceptConclusion`].
 ///
-/// Rules are reified as `dialog.effect/*` facts (see the
-/// [`effect`](crate::effect) module docs). This query enumerates
-/// every entity carrying the `dialog.meta/effect = db:effect`
-/// marker, rehydrates each via its `dialog.effect/*` claims, and
-/// materialises its definition into a synthesised `definition`
-/// field alongside `this` (the effect entity). It is the
+/// Rules are dialog's native `dialog.rule/*` facts. This query
+/// enumerates every entity carrying a `dialog.rule/induces` claim
+/// (the inductive head index), rehydrates each from its
+/// `dialog.rule/source` body, and materialises its definition into
+/// a synthesised `definition` field alongside `this` (the rule
+/// entity). It is the
 /// rule-side parallel of
 /// [`AnonymousConceptQuery`](crate::concept::AnonymousConceptQuery):
 /// same [`Application`] shape, same `terms` filter/emit
@@ -117,7 +123,7 @@ impl Application for AnonymousRuleQuery {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         let app = self;
         try_stream! {
@@ -129,18 +135,17 @@ impl Application for AnonymousRuleQuery {
 
                 let this_filter = resolve_entity_filter(&this_term, &input);
 
-                // Enumerate every effect entity via the
-                // `dialog.meta/effect = db:effect` marker. When
-                // `this` is a constant the selection is already
-                // narrowed to that entity.
-                let marker = effect_marker_entity();
+                // Enumerate every inductive rule entity via the
+                // `dialog.rule/induces` head index. When `this` is a
+                // constant the selection is already narrowed to that
+                // entity.
                 let this_term_for_marker: Term<Entity> = match &this_filter {
                     Some(e) => Term::Constant(Value::Entity(e.clone())),
                     None => Term::var("__rule_query_this"),
                 };
-                let claims: Vec<dialog_query::Claim> = the!("dialog.meta/effect")
+                let claims: Vec<dialog_query::Claim> = the!("dialog.rule/induces")
                     .of(this_term_for_marker)
-                    .is(marker)
+                    .is(Term::<Entity>::var("__rule_query_induces"))
                     .perform(env)
                     .try_vec()
                     .await?;
@@ -148,18 +153,24 @@ impl Application for AnonymousRuleQuery {
                 for claim in claims {
                     let entity = claim.of.clone();
 
-                    // Rehydrate the effect's source + polarity
+                    // Rehydrate the rule from its stored body,
                     // straight off the same selection environment.
-                    let Some(effect) = load_effect_facts(&entity, env).await? else {
+                    let Some(rule) = load_stored_rule(&entity, env).await? else {
                         continue;
                     };
+                    // Rules are content-addressed; an entry whose
+                    // decoded body does not hash back to the entity
+                    // it was stored under is inert.
+                    if rule.this() != entity {
+                        continue;
+                    }
 
                     let mut m = input.clone();
                     if let Some(ref t) = this_term {
                         m.bind(t, Value::Entity(entity.clone()))?;
                     }
                     if let Some(ref t) = definition_term {
-                        let definition = RuleDefinition::from_effect(&effect);
+                        let definition = RuleDefinition::from_rule(&rule);
                         let json = serde_json::to_string(&definition)
                             .map_err(|e| EvaluationError::Store(e.to_string()))?;
                         m.bind(t, Value::String(json))?;
@@ -183,7 +194,7 @@ impl Application for AnonymousRuleQuery {
             predicate: ConceptDescriptor::try_from(vec![(
                 "_",
                 dialog_query::AttributeDescriptor::new(
-                    the!("dialog.rule/stub"),
+                    the!("db.rule/stub"),
                     "",
                     dialog_query::Cardinality::default(),
                     None,
@@ -195,64 +206,43 @@ impl Application for AnonymousRuleQuery {
     }
 }
 
-/// Rehydrate an effect from its `dialog.effect/source` and
-/// `dialog.effect/polarity` claims read straight off a query
-/// selection environment.
+/// Rehydrate an inductive rule from its `dialog.rule/source` claim
+/// read straight off a query selection environment.
 ///
 /// Takes the raw `Provider<Select>` selection env that
 /// [`Application::evaluate`] is handed, rather than a `&Branch`.
-/// Returns `None` when the entity has no `source` claim (a
-/// dangling marker).
-async fn load_effect_facts<'a, Env>(
+/// Returns `None` when the entity has no `source` claim (a dangling
+/// index entry) or the body decodes as a deductive rule (a
+/// `dialog.rule/induces` claim on a deductive body is inert).
+async fn load_stored_rule<'a, Env>(
     entity: &Entity,
     env: &'a Env,
-) -> Result<Option<Effect>, EvaluationError>
+) -> Result<Option<InductiveRule>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
-    let source_claims: Vec<dialog_query::Claim> = the!("dialog.effect/source")
+    let source_claims: Vec<dialog_query::Claim> = the!("dialog.rule/source")
         .of(Term::<Entity>::from(entity.clone()))
-        .is(Term::<String>::var("__rule_query_source"))
+        .is(Term::<Vec<u8>>::var("__rule_query_source"))
         .perform(env)
         .try_vec()
         .await?;
     let Some(source_claim) = source_claims.into_iter().next() else {
         return Ok(None);
     };
-    let Value::String(source) = source_claim.is else {
+    let Value::Bytes(source) = source_claim.is else {
         return Err(EvaluationError::Store(
-            "dialog.effect/source claim was not a string".to_string(),
+            "dialog.rule/source claim was not bytes".to_string(),
         ));
     };
 
-    let polarity_claims: Vec<dialog_query::Claim> = the!("dialog.effect/polarity")
-        .of(Term::<Entity>::from(entity.clone()))
-        .is(Term::<String>::var("__rule_query_polarity"))
-        .perform(env)
-        .try_vec()
-        .await?;
-    let Some(polarity_claim) = polarity_claims.into_iter().next() else {
-        return Err(EvaluationError::Store(
-            "missing dialog.effect/polarity claim".to_string(),
-        ));
-    };
-    let Value::String(polarity_str) = polarity_claim.is else {
-        return Err(EvaluationError::Store(
-            "dialog.effect/polarity claim was not a string".to_string(),
-        ));
-    };
-    let polarity = EffectPolarity::parse(&polarity_str)
-        .ok_or_else(|| EvaluationError::Store(format!("invalid polarity {polarity_str:?}")))?;
-
-    let effect = Effect::from_source(&source, polarity)
-        .map_err(|e| EvaluationError::Store(format!("effect rehydrate failed: {e}")))?;
-    Ok(Some(effect))
+    Ok(InductiveRule::decode(&source).ok())
 }
 
 /// The well-known descriptor for the "rule of rules" head.
 ///
-/// Its `with` map names the marker (`dialog.meta/effect`) and the
-/// synthesised `definition` field — enough for the analyzer to
+/// Its `with` map names the head index (`dialog.rule/induces`) and
+/// the synthesised `definition` field — enough for the analyzer to
 /// project the fields a `rule:` head exposes. The `definition`
 /// claim has no real EAV backing; it is produced only by
 /// [`AnonymousRuleQuery::evaluate`], which the concept query
@@ -264,8 +254,8 @@ pub fn rule_of_rule_descriptor() -> &'static ConceptDescriptor {
         serde_json::from_value(serde_json::json!({
             "description": "Every inductive rule installed on a branch.",
             "with": {
-                "effect":     { "the": "dialog.meta/effect",     "as": "Entity", "cardinality": "one" },
-                "definition": { "the": "dialog.effect/source",   "as": "Text",   "cardinality": "one" }
+                "effect":     { "the": "dialog.rule/induces", "as": "Entity", "cardinality": "one" },
+                "definition": { "the": "dialog.rule/source",  "as": "Text",   "cardinality": "one" }
             }
         }))
         .expect("rule-of-rule descriptor is well-formed")
@@ -285,9 +275,6 @@ mod tests {
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::the;
     use dialog_query::{InductiveRule, Proposition};
-
-    use crate::effect::EFFECT_SYSTEM;
-    use crate::rule::Rule;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -362,7 +349,9 @@ mod tests {
             ),
             concept_premise(
                 increment_concept(),
-                Term::Constant(Value::Entity(EFFECT_SYSTEM.clone())),
+                Term::Constant(Value::Entity(
+                    "test:increment".parse().expect("test entity parses"),
+                )),
             ),
             Sum::apply(sum_terms)
                 .expect("Sum::apply should succeed")
@@ -378,21 +367,20 @@ mod tests {
     /// `concept.rs`'s `it_returns_concept_with_source_from_concept_query`.
     #[dialog_common::test]
     async fn it_enumerates_installed_rules_via_rule_query() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::{Any, Output as _, Parameters, Term};
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        // Install one assert-polarity effect on the branch.
+        // Install one assert-polarity rule on the branch.
         let rule = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
-        let effect = Effect::asserting(rule);
-        let effect_entity = effect.this();
-        let expected = effect.descriptor();
+        let rule_entity = rule.this();
+        let expected = rule.descriptor();
         branch
             .transaction()
-            .assert(Rule::asserting(effect.clone()))
+            .assert(&rule)
             .commit()
             .perform(&operator)
             .await?;
@@ -417,11 +405,11 @@ mod tests {
         );
         let row = &conclusions[0];
 
-        // `this` binds the effect entity.
+        // `this` binds the rule entity.
         let this: Entity =
             Entity::try_from(row.source().lookup(&Term::<Any>::var("this"))?.content()?)
                 .expect("this binding must be an entity");
-        assert_eq!(this, effect_entity);
+        assert_eq!(this, rule_entity);
 
         // `definition` carries the JSON-serialised RuleDefinition.
         let definition_json: String = String::try_from(
@@ -431,8 +419,18 @@ mod tests {
         )
         .expect("definition binding must be a string");
         let definition: RuleDefinition = serde_json::from_str(&definition_json)?;
-        assert_eq!(definition.polarity, EffectPolarity::Assert);
-        assert_eq!(definition.rule.assert.this(), expected.assert.this());
+        assert_eq!(definition.polarity, RulePolarity::Assert);
+        assert_eq!(
+            definition
+                .rule
+                .assert
+                .as_ref()
+                .map(dialog_query::ConceptDescriptor::this),
+            expected
+                .assert
+                .as_ref()
+                .map(dialog_query::ConceptDescriptor::this)
+        );
         assert_eq!(definition.rule.when.len(), expected.when.len());
         assert_eq!(definition.rule.unless.len(), expected.unless.len());
         Ok(())

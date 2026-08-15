@@ -18,10 +18,12 @@ pub use provider::{AccountProviderError, AccountProviderRecord};
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_effects::archive::{Get, Put};
+use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish as MemoryPublish, Resolve};
 use dialog_repository::{
-    FetchRemoteBranchError, PublishError, PublishRemoteBranchError, RemoteBranch, RemoteSite,
-    ResolveError, Revision,
+    Branch, FetchRemoteBranchError, PublishError, PublishRemoteBranchError, PushError,
+    RemoteBranch, RemoteSite, ResolveError, Revision,
 };
 use thiserror::Error;
 
@@ -111,39 +113,69 @@ where
     }
 }
 
-/// Publish `genesis` only when `origin/main` is absent.
+/// Establish `genesis` as `origin/main`, only if no revision exists there.
 ///
-/// The operation probes first so retries are idempotent. If another caller
-/// wins between the probe and conditional publish, this fetches and returns
-/// the exact winning revision rather than treating the CAS failure as an
-/// availability error.
+/// A push, not a bare cell publish: the genesis tree's blocks and blobs
+/// upload BEFORE the head cell points at them (the same invariant every
+/// sync push keeps), and the winner's local branch comes out tracking the
+/// upstream it just established, so its next push fast-forwards. The
+/// atomic create-if-absent semantics ride the push's own CAS: a fresh
+/// branch's sync base is empty, so the publish expects an absent cell and
+/// loses cleanly to any racer. The loser fetches and returns the exact
+/// winning revision rather than treating the refusal as an availability
+/// error.
 pub async fn publish_genesis_if_absent<Env>(
-    branch: &RemoteBranch,
-    genesis: Revision,
+    branch: &Branch,
+    remote: &RemoteBranch,
     env: &Env,
 ) -> Result<CreateGenesis, RemoteError>
 where
-    Env: Provider<Fork<RemoteSite, Resolve>>
-        + Provider<Fork<RemoteSite, MemoryPublish>>
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
         + Provider<MemoryPublish>
-        + ConditionalSync,
+        + Provider<BlobRead>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Put>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + Provider<Fork<RemoteSite, MemoryPublish>>
+        + Provider<Fork<RemoteSite, BlobImport>>
+        + ConditionalSync
+        + 'static,
 {
-    match probe_remote_main(branch, env).await? {
+    // Probe first so retries are idempotent: an established remote wins
+    // without this caller attempting anything.
+    match probe_remote_main(remote, env).await? {
         RemotePresence::Present(winner) => return Ok(CreateGenesis::Loser(winner)),
         RemotePresence::Absent => {}
     }
 
-    match branch.publish(genesis.clone()).perform(env).await {
-        Ok(()) => Ok(CreateGenesis::Winner(genesis)),
-        Err(PublishRemoteBranchError::Publish(PublishError::VersionMismatch { .. })) => {
-            match probe_remote_main(branch, env).await? {
-                RemotePresence::Present(winner) => Ok(CreateGenesis::Loser(winner)),
-                RemotePresence::Absent => Err(RemoteError::Malformed(
-                    "conditional publish lost, but the winning revision is absent".to_string(),
-                )),
-            }
-        }
-        Err(error) => Err(map_publish_error(error)),
+    match branch.push().perform(env).await {
+        Ok(Some(published)) => Ok(CreateGenesis::Winner(published)),
+        Ok(None) => Err(RemoteError::Malformed(
+            "no local revision to establish as genesis".to_string(),
+        )),
+        Err(
+            PushError::NonFastForward { .. }
+            | PushError::Publish(PublishError::VersionMismatch { .. })
+            | PushError::PublishRemoteBranch(PublishRemoteBranchError::Publish(
+                PublishError::VersionMismatch { .. },
+            )),
+        ) => match probe_remote_main(remote, env).await? {
+            RemotePresence::Present(winner) => Ok(CreateGenesis::Loser(winner)),
+            RemotePresence::Absent => Err(RemoteError::Malformed(
+                "genesis push lost the race, but the winning revision is absent".to_string(),
+            )),
+        },
+        Err(error) => Err(map_push_error(error)),
+    }
+}
+
+fn map_push_error(error: PushError) -> RemoteError {
+    match error {
+        PushError::Publish(error) => map_publish_leaf(error),
+        PushError::Resolve(error) => map_resolve_error(error),
+        other => RemoteError::Other(other.to_string()),
     }
 }
 
@@ -154,18 +186,9 @@ fn map_fetch_error(error: FetchRemoteBranchError) -> RemoteError {
     }
 }
 
-fn map_publish_error(error: PublishRemoteBranchError) -> RemoteError {
-    match error {
-        PublishRemoteBranchError::Publish(error) => map_publish_leaf(error),
-        PublishRemoteBranchError::MissingEdition => {
-            RemoteError::Malformed("published remote revision has no edition".to_string())
-        }
-    }
-}
-
 fn map_resolve_error(error: ResolveError) -> RemoteError {
     match error {
-        ResolveError::Authorization(message) => RemoteError::Unauthorized(message),
+        ResolveError::Authorization(error) => RemoteError::Unauthorized(error.to_string()),
         ResolveError::Io(error) => RemoteError::Unavailable(error.to_string()),
         ResolveError::Decode(message) => RemoteError::Malformed(message),
         other => RemoteError::Other(other.to_string()),
@@ -174,7 +197,7 @@ fn map_resolve_error(error: ResolveError) -> RemoteError {
 
 fn map_publish_leaf(error: PublishError) -> RemoteError {
     match error {
-        PublishError::Authorization(message) => RemoteError::Unauthorized(message),
+        PublishError::Authorization(error) => RemoteError::Unauthorized(error.to_string()),
         PublishError::Io(error) => RemoteError::Unavailable(error.to_string()),
         PublishError::Encode(message) => RemoteError::Malformed(message),
         other => RemoteError::Other(other.to_string()),
@@ -197,7 +220,11 @@ mod tests {
     #[test]
     fn it_preserves_concrete_remote_error_classes() {
         assert!(matches!(
-            map_resolve_error(ResolveError::Authorization("denied".to_string())),
+            map_resolve_error(ResolveError::Authorization(
+                dialog_capability::AuthorizeError::Malformed {
+                    detail: "denied".to_string(),
+                }
+            )),
             RemoteError::Unauthorized(_)
         ));
         assert!(matches!(

@@ -4,8 +4,29 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     use tonk_access_service::helpers::{AccessServiceSettings, access_service};
+    use tonk_worker_api::DeploymentConfig;
 
-    let service = access_service(AccessServiceSettings::default()).await?;
+    // Serve `/.well-known/tonk` when the account service's URLs are in
+    // the environment. Without it the endpoint 404s, the browser reads
+    // that as "deployment configuration is invalid", and the account
+    // panel dead-ends — so a dev stack that starts an account service
+    // must pass its URLs through.
+    let deployment = match (
+        std::env::var("ACCOUNT_SERVICE_URL"),
+        std::env::var("REVOCATION_RELAY_URL"),
+    ) {
+        (Ok(account), Ok(revocations)) => Some(DeploymentConfig {
+            account_service_url: account.parse()?,
+            revocation_relay_url: revocations.parse()?,
+        }),
+        _ => None,
+    };
+
+    let service = access_service(AccessServiceSettings {
+        deployment,
+        ..Default::default()
+    })
+    .await?;
     let url = &service.address.access_service_url;
     println!("ACCESS_SERVICE_URL={url}");
     std::io::Write::flush(&mut std::io::stdout())?;

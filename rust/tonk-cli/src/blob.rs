@@ -120,7 +120,7 @@ pub async fn add(
     let source = tokio_util::io::ReaderStream::new(file).map(|chunk| {
         chunk
             .map(|bytes| bytes.to_vec())
-            .map_err(|e| dialog_effects::blob::BlobError::Io(e.to_string()))
+            .map_err(|e| dialog_effects::blob::BlobError::Storage(e.to_string()))
     });
 
     let session = site
@@ -281,8 +281,13 @@ async fn query_content_type(
 
     match artifacts.next().await {
         Some(Ok(artifact)) => {
-            let value = String::try_from(artifact.is)
-                .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))?;
+            let value = artifact
+                .value()
+                .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))
+                .and_then(|value| {
+                    String::try_from(value)
+                        .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))
+                })?;
             Ok(Some(value))
         }
         Some(Err(e)) => Err(BlobError::Site(format!("content-type query: {e}"))),

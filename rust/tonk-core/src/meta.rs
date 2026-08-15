@@ -18,16 +18,16 @@ use dialog_query::{Attribute, Concept};
 /// Newtype for the attribute backing the [`Name`] concept's
 /// `entity` field. Submodule so the struct name `Referent`
 /// kebab-cases into `referent` (yielding the relation
-/// `dialog.name/referent`) without colliding with [`Name`].
+/// `db.name/referent`) without colliding with [`Name`].
 pub mod name {
     use super::{Attribute, Entity};
 
-    /// The `dialog.name/referent` attribute — the entity a name
+    /// The `db.name/referent` attribute — the entity a name
     /// currently points at. Cardinality `one` (the derive
     /// default), so re-pointing a name supersedes the prior
     /// claim instead of accumulating.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("dialog.name")]
+    #[domain("db.name")]
     pub struct Referent(pub Entity);
 }
 
@@ -137,51 +137,51 @@ pub struct Name {
 
 /// Human-readable description for any entity.
 ///
-/// Stored as `dialog.meta/description` with cardinality `one`.
+/// Stored as `db.meta/description` with cardinality `one`.
 /// Conventionally a short prose paragraph explaining what the
 /// entity represents; not used in identity derivation by either
 /// `dialog_query::AttributeDescriptor` or
 /// `dialog_query::ConceptDescriptor`, so changing it is safe and
 /// does not fork the entity.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[domain("dialog.meta")]
+#[domain("db.meta")]
 pub struct Description(pub String);
 
 /// Newtypes for the `dialog.attribute` namespace.
 ///
 /// Submodule so each newtype's *struct name* ends up
 /// kebab-cased into the right relation slot (`Id` →
-/// `dialog.attribute/id`, etc.) without colliding with the
+/// `db.attribute/id`, etc.) without colliding with the
 /// `Attribute` derive trait re-imported by anyone using
 /// `tonk_schema::meta::*`.
 pub mod attribute {
     use super::Attribute;
 
     /// The selector value of an attribute entity —
-    /// `dialog.attribute/id`. Carries the human-readable
+    /// `db.attribute/id`. Carries the human-readable
     /// `domain/name` form (e.g. `io.gozala.person/name`); one
     /// claim per attribute entity, cardinality `one`. Written by
     /// the interpreter so "find the attribute entity for
     /// selector `xyz/foo`" runs as a normal EAV match.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("dialog.attribute")]
+    #[domain("db.attribute")]
     pub struct Id(pub String);
 
     /// The dialog `Type` discriminant of an attribute entity —
-    /// `dialog.attribute/type`. The string form (e.g. `"Text"`,
+    /// `db.attribute/type`. The string form (e.g. `"Text"`,
     /// `"UnsignedInteger"`) is what
     /// `dialog_query::AttributeDescriptor` round-trips through
     /// serde, not the underlying `ValueDataType` variant name.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("dialog.attribute")]
+    #[domain("db.attribute")]
     pub struct Type(pub String);
 
     /// The cardinality of an attribute entity —
-    /// `dialog.attribute/cardinality`. Takes `"one"` or
+    /// `db.attribute/cardinality`. Takes `"one"` or
     /// `"many"`; the textual form matches what
     /// `dialog_query::Cardinality` serialises to.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("dialog.attribute")]
+    #[domain("db.attribute")]
     pub struct Cardinality(pub String);
 }
 

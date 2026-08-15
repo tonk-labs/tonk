@@ -172,6 +172,43 @@
               # real remote (staging, prod, a teammate's tunnel) instead.
               ACCESS_PID=""
               SHORTCUT_ORIGIN=""
+              ACCOUNT_PID=""
+              ACCOUNT_ORIGIN=""
+              # Accounts are their own service: signing up, verifying an email,
+              # and publishing revocations all live there, and the browser
+              # discovers it through `/.well-known/tonk`. Without it the account
+              # panel reports "deployment configuration is invalid" and every
+              # flow that needs an account (creating a spot, sharing) dead-ends.
+              if [ -z "''${UCAN_ENDPOINT:-}" ]; then
+                echo "dev:web: starting a local account service..."
+                ACCOUNT_LOG="$(mktemp)"
+                cargo run --bin tonk-account-local --features helpers >"$ACCOUNT_LOG" &
+                ACCOUNT_PID=$!
+                tries=0
+                while [ "$tries" -lt 600 ]; do
+                  ACCOUNT_ORIGIN="$(sed -n 's|^ACCOUNT_SERVICE_URL=||p' "$ACCOUNT_LOG" 2>/dev/null | head -n1)"
+                  if [ -n "$ACCOUNT_ORIGIN" ]; then
+                    break
+                  fi
+                  if ! kill -0 "$ACCOUNT_PID" 2>/dev/null; then
+                    echo "dev:web: the local account service exited before printing its URL" >&2
+                    exit 1
+                  fi
+                  tries=$((tries + 1))
+                  sleep 0.5
+                done
+                if [ -z "$ACCOUNT_ORIGIN" ]; then
+                  echo "dev:web: timed out waiting for the local account service" >&2
+                  kill "$ACCOUNT_PID" 2>/dev/null || true
+                  exit 1
+                fi
+                # Verification codes are captured, never emailed, so the sign-up
+                # flow is only completable if they reach the terminal.
+                tail -f "$ACCOUNT_LOG" | grep --line-buffered "ACCOUNT_VERIFICATION_CODE" &
+                echo "dev:web: local account service ready at $ACCOUNT_ORIGIN"
+                export ACCOUNT_SERVICE_URL="$ACCOUNT_ORIGIN"
+                export REVOCATION_RELAY_URL="$ACCOUNT_ORIGIN/revocations"
+              fi
               if [ -n "''${UCAN_ENDPOINT:-}" ]; then
                 ENDPOINT="$UCAN_ENDPOINT"
                 echo "dev:web: proxying /ucan/ to $ENDPOINT (from UCAN_ENDPOINT)"
@@ -247,10 +284,15 @@
                 # string around.
                 printf '\n[[proxies]]\nbackend = "%s/@"\nno_redirect = true\n' \
                   "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
+                # The browser reads its service endpoints from this path. Trunk
+                # otherwise serves index.html for it, and the JSON parse fails
+                # as "deployment configuration is invalid".
+                printf '\n[[proxies]]\nbackend = "%s/.well-known/tonk"\n' \
+                  "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
               fi
-              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
+              trap 'kill "$GUIDE_PID" "$ACCESS_PID" "$ACCOUNT_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
 
               trunk serve --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
             '';

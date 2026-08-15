@@ -12,5 +12,4 @@
 
 pub mod claim;
 pub mod conclusion;
-pub mod effect;
 pub mod meta;

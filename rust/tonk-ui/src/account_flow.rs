@@ -37,6 +37,32 @@ mod tests {
         }
     }
 
+    /// Click the element `selector` names, re-finding it if the DOM
+    /// replaced it in between.
+    ///
+    /// `element` retries the *find*, but a list that re-renders between
+    /// resolving the handle and clicking it invalidates the handle —
+    /// WebDriver answers "stale element reference". The profile
+    /// switcher does exactly that: activating a profile re-renders the
+    /// list the button lives in. Re-finding on staleness is the fix;
+    /// sleeping before the click would only make the race rarer.
+    async fn click(driver: &WebDriver, selector: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let found = element(driver, selector).await?;
+            match found.click().await {
+                Ok(()) => return Ok(()),
+                Err(error) if tokio::time::Instant::now() < deadline => {
+                    let _ = error;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("timed out clicking `{selector}`"));
+                }
+            }
+        }
+    }
+
     async fn wait_for_text(driver: &WebDriver, selector: &str, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -61,8 +87,14 @@ mod tests {
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
+            // The text read is fallible for the same reason the find is:
+            // a list that re-renders between the two invalidates the
+            // handle ("stale element reference"). Treat that as "not yet"
+            // and go round again — propagating it aborts the wait on a
+            // race the wait exists to absorb.
             if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && found.text().await?.contains(expected)
+                && let Ok(text) = found.text().await
+                && text.contains(expected)
             {
                 return Ok(());
             }
@@ -751,7 +783,7 @@ mod tests {
 
         // Switch back through the switcher; the first Hub returns.
         let selector = format!("#account-profile-list button[data-activate=\"{first_profile}\"]");
-        element(&driver, &selector).await?.click().await?;
+        click(&driver, &selector).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         wait_for_text_containing(&driver, "#account-email-value", "first@example.com").await?;
         let listed = get_json(&driver, "/api/profile").await?;
@@ -818,7 +850,7 @@ mod tests {
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         wait_for_text_containing(&driver, "#account-device-list", "e2e terminal").await?;
         let selector = format!("#account-device-list button[data-revoke=\"{cli_did}\"]");
-        element(&driver, &selector).await?.click().await?;
+        click(&driver, &selector).await?;
         driver.accept_alert().await?;
         wait_for_text_containing(&driver, "#account-working", "Access removed").await?;
 

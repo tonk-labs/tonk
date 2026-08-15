@@ -229,7 +229,6 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         }
         ReactorError::QueryFailed(_)
         | ReactorError::Commit(_)
-        | ReactorError::Induce(_)
         | ReactorError::Pull(_)
         | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
     }

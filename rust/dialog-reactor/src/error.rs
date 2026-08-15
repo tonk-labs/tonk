@@ -1,7 +1,6 @@
 use dialog_query::EvaluationError;
 use dialog_repository::{CommitError, PullError, PushError};
 use thiserror::Error;
-use tonk_evaluator::effects::InduceError;
 
 /// Errors surfaced by the reactor's chain effects. Consumers map
 /// these into their own error envelope (e.g. the worker's
@@ -25,10 +24,6 @@ pub enum ReactorError {
     /// A commit against the branch failed.
     #[error("commit failed: {0}")]
     Commit(#[from] CommitError),
-    /// The inductive-rule fixpoint failed (cycle, query error,
-    /// etc.).
-    #[error("induce failed: {0}")]
-    Induce(#[from] InduceError),
     /// A pull from upstream failed.
     #[error("pull failed: {0}")]
     Pull(#[from] PullError),

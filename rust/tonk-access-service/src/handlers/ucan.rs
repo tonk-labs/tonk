@@ -5,8 +5,9 @@
 //! 2. Passing it to UcanAuthorizer for verification and authorization
 //! 3. Returning the serialized AuthorizedRequest as CBOR
 
-use crate::error::{ErrorCode, ServiceError};
-use dialog_remote_s3::{Address, s3::S3Credential};
+use crate::error::Refusal;
+use dialog_capability::access::AuthorizeError;
+use dialog_remote_s3::{Address, S3Error, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
@@ -42,13 +43,10 @@ pub async fn handle(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
 async fn handle_inner(
     req: &mut Request,
     ctx: &RouteContext<()>,
-) -> std::result::Result<Response, ServiceError> {
+) -> std::result::Result<Response, Refusal> {
     // 1. Read the request body as bytes
-    let body_bytes = req.bytes().await.map_err(|e| {
-        ServiceError::new(
-            ErrorCode::InvalidArgument,
-            format!("Failed to read request body: {}", e),
-        )
+    let body_bytes = req.bytes().await.map_err(|e| AuthorizeError::Malformed {
+        detail: format!("failed to read request body: {e}"),
     })?;
 
     // 2. Create the UcanAuthorizer from environment config
@@ -68,12 +66,8 @@ async fn handle_inner(
     screen_credentials(&body_bytes, ctx).await?;
 
     // 4. Serialize the response as CBOR
-    let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request).map_err(|e| {
-        ServiceError::new(
-            ErrorCode::InternalError,
-            format!("Failed to serialize response: {}", e),
-        )
-    })?;
+    let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request)
+        .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))?;
 
     // 5. Return CBOR response
     Response::from_bytes(cbor_bytes)
@@ -82,14 +76,14 @@ async fn handle_inner(
             let _ = headers.set("Content-Type", "application/cbor");
             r.with_headers(headers)
         })
-        .map_err(|e| ServiceError::new(ErrorCode::InternalError, format!("Response error: {}", e)))
+        .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn screen_credentials(
     body_bytes: &[u8],
     ctx: &RouteContext<()>,
-) -> std::result::Result<(), ServiceError> {
+) -> std::result::Result<(), Refusal> {
     use crate::expiry::{WindowVerdict, check_window};
     use crate::revocation::{self, SetVerdict, r2::R2RevocationSource};
 
@@ -112,17 +106,19 @@ async fn screen_credentials(
         WindowVerdict::Valid => {}
         WindowVerdict::Expired => {
             worker::console_log!("presign rejected: presented chain has expired");
-            return Err(ServiceError::new(
-                ErrorCode::InvocationExpired,
-                "the presented chain is outside its valid window",
-            ));
+            return Err(AuthorizeError::Expired {
+                expiration: presented.expires_at.unwrap_or_default(),
+                at: now_ms / 1_000,
+            }
+            .into());
         }
         WindowVerdict::NotYetValid => {
             worker::console_log!("presign rejected: presented chain is not yet valid");
-            return Err(ServiceError::new(
-                ErrorCode::InvocationExpired,
-                "the presented chain is outside its valid window",
-            ));
+            return Err(AuthorizeError::NotValidBefore {
+                not_before: presented.not_before.unwrap_or_default(),
+                at: now_ms / 1_000,
+            }
+            .into());
         }
     }
 
@@ -141,10 +137,10 @@ async fn screen_credentials(
         }
         SetVerdict::Revoked => {
             worker::console_log!("presign rejected: revoked credential present");
-            Err(ServiceError::new(
-                ErrorCode::CredentialRevoked,
-                "a credential in the presented chain has been revoked",
-            ))
+            Err(AuthorizeError::Revoked {
+                subject: presented.subject.clone(),
+            }
+            .into())
         }
         SetVerdict::Unavailable(reason) => {
             console_error!("presign refused, revocation registry unreachable: {reason}");
@@ -157,11 +153,11 @@ async fn screen_credentials(
 /// internal infrastructure and the caller can do nothing with it but
 /// retry.
 #[cfg(target_arch = "wasm32")]
-fn unavailable() -> ServiceError {
-    ServiceError::new(
-        ErrorCode::RevocationUnavailable,
-        "revocation registry unavailable, retry shortly",
-    )
+fn unavailable() -> Refusal {
+    AuthorizeError::Unavailable {
+        detail: "revocation registry unavailable, retry shortly".to_string(),
+    }
+    .into()
 }
 
 thread_local! {
@@ -176,7 +172,7 @@ thread_local! {
 /// an isolate cannot see change — so reading the bindings once and
 /// reusing the result costs nothing in freshness. A failed build is
 /// not cached: the next request tries again.
-fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, ServiceError> {
+fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, Refusal> {
     AUTHORIZER.with(|cached| {
         if let Some(authorizer) = cached.get() {
             return Ok(authorizer.clone());
@@ -188,46 +184,26 @@ fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthoriz
 }
 
 /// Create UcanAuthorizer from environment configuration.
-fn build_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, ServiceError> {
+fn build_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, Refusal> {
     // Get R2 configuration from environment
     let account_id = ctx
         .var("R2_ACCOUNT_ID")
-        .map_err(|e| {
-            ServiceError::new(
-                ErrorCode::InternalError,
-                format!("Missing R2_ACCOUNT_ID: {}", e),
-            )
-        })?
+        .map_err(|e| Refusal::unclassified(format!("Missing R2_ACCOUNT_ID: {e}")))?
         .to_string();
 
     let access_key_id = ctx
         .secret("R2_ACCESS_KEY_ID")
-        .map_err(|e| {
-            ServiceError::new(
-                ErrorCode::InternalError,
-                format!("Missing R2_ACCESS_KEY_ID: {}", e),
-            )
-        })?
+        .map_err(|e| Refusal::unclassified(format!("Missing R2_ACCESS_KEY_ID: {e}")))?
         .to_string();
 
     let secret_access_key = ctx
         .secret("R2_SECRET_ACCESS_KEY")
-        .map_err(|e| {
-            ServiceError::new(
-                ErrorCode::InternalError,
-                format!("Missing R2_SECRET_ACCESS_KEY: {}", e),
-            )
-        })?
+        .map_err(|e| Refusal::unclassified(format!("Missing R2_SECRET_ACCESS_KEY: {e}")))?
         .to_string();
 
     let bucket = ctx
         .var("R2_BUCKET_NAME")
-        .map_err(|e| {
-            ServiceError::new(
-                ErrorCode::InternalError,
-                format!("Missing R2_BUCKET_NAME: {}", e),
-            )
-        })?
+        .map_err(|e| Refusal::unclassified(format!("Missing R2_BUCKET_NAME: {e}")))?
         .to_string();
 
     // Build R2 endpoint URL
@@ -238,34 +214,20 @@ fn build_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorize
         .region("auto")
         .bucket(&bucket)
         .build()
-        .map_err(|e| {
-            ServiceError::new(
-                ErrorCode::InternalError,
-                format!("Failed to create address: {}", e),
-            )
-        })?;
+        .map_err(|e| Refusal::unclassified(format!("Failed to create address: {e}")))?;
 
     let credential = S3Credential::new(access_key_id, secret_access_key);
 
     Ok(UcanAuthorizer::new(address, Some(credential)))
 }
 
-/// Map S3Error to ServiceError with appropriate error codes.
-fn map_access_error(err: dialog_remote_s3::S3Error) -> ServiceError {
-    let msg = err.to_string();
-    if msg.contains("expired") {
-        ServiceError::new(ErrorCode::InvocationExpired, msg)
-    } else if msg.contains("signature") {
-        ServiceError::new(ErrorCode::SignatureInvalid, msg)
-    } else if msg.contains("audience") {
-        ServiceError::new(ErrorCode::AudienceMismatch, msg)
-    } else if msg.contains("subject") {
-        ServiceError::new(ErrorCode::SubjectNotAllowed, msg)
-    } else if msg.contains("command") || msg.contains("Command") {
-        ServiceError::new(ErrorCode::CommandMismatch, msg)
-    } else if msg.contains("delegation") || msg.contains("chain") {
-        ServiceError::new(ErrorCode::ChainInvalid, msg)
-    } else {
-        ServiceError::new(ErrorCode::InvalidArgument, msg)
+/// The typed refusal for an authorization failure: the reason itself
+/// where the authorizer produced one, `Unclassified` for anything
+/// that is not an access decision.
+fn map_access_error(err: S3Error) -> Refusal {
+    match err {
+        S3Error::Authorization(reason) => Refusal::Authorization(reason),
+        S3Error::Rejected(rejection) => Refusal::Rejection(rejection),
+        other => Refusal::unclassified(other.to_string()),
     }
 }

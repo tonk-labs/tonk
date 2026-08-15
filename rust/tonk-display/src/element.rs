@@ -1042,12 +1042,12 @@ fn first_field(value: &JsValue, field: &str) -> Result<Option<String>, ErrorDeta
 /// `(entity, descriptor_json)`.
 ///
 /// A bare name is first resolved through the **Name concept**
-/// (`id:<name>` → `dialog.name/referent`) into a concept entity URI,
+/// (`id:<name>` → `db.name/referent`) into a concept entity URI,
 /// then that URI drives the Phase-1 concept-of-concepts lookup by
 /// `this`. This is the path that makes a model or view named after a
 /// concept pinned to a `this:` URI (e.g. `workspace` → `tonk:workspace`)
 /// resolve — the concept carries a `Name` claim but no
-/// `dialog.meta/name`, so a direct `name`-filtered Phase-1 would miss
+/// `db.meta/name`, so a direct `name`-filtered Phase-1 would miss
 /// it. A value that is already a URI skips name resolution.
 async fn resolve_model(host: &Element, source: &str) -> Result<(String, String), ErrorDetail> {
     let phase1_q = resolve_model_query(host, source).await?;
@@ -1059,7 +1059,7 @@ async fn resolve_model(host: &Element, source: &str) -> Result<(String, String),
 ///
 /// Splits the front half of [`resolve_model`]: a bare bookmark name is
 /// resolved through the Name concept (`id:<name>` →
-/// `dialog.name/referent`) into a concept URI (a one-shot `query`),
+/// `db.name/referent`) into a concept URI (a one-shot `query`),
 /// then `phase1_query` is built from the resolved `ParsedSource`. The
 /// caller decides whether to run it once or open a subscription on it —
 /// the model link subscribes so a late-seeded concept recovers.
@@ -3104,7 +3104,7 @@ mod tests {
         // each view frame carries the value that decides portal mode.
         //
         // `resolve_model` resolves a bare name through the Name concept
-        // first (`id:<name>` → `dialog.name/referent`), then runs the
+        // first (`id:<name>` → `db.name/referent`), then runs the
         // Phase-1 concept query by `this`. So each bare-name resolution
         // is TWO queries: a name lookup, then the concept lookup. The
         // fixture answers in dispatch order, so a name-resolution row

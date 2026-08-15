@@ -273,12 +273,19 @@ pub async fn guest(
     while let Some(result) = stream.next().await {
         match result {
             Ok(artifact) => {
+                let value = match artifact.value() {
+                    Ok(value) => value,
+                    Err(e) => {
+                        log!("guest: error materializing artifact: {:?}", e);
+                        continue;
+                    }
+                };
                 let body = if attribute_str == "text/html"
-                    && let Value::String(s) = &artifact.is
+                    && let Value::String(s) = &value
                 {
-                    Body::from(wrap_html_body(s))
+                    Body::from(wrap_html_body(s.as_str()))
                 } else {
-                    body_for(artifact.is)
+                    body_for(value)
                 };
                 let mut response = (StatusCode::OK, body).into_response();
                 if let Ok(value) = HeaderValue::from_str(&attribute_str) {

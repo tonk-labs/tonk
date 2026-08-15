@@ -75,8 +75,8 @@ impl AccountPasskeyCreated {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use dialog_operator::helpers;
     use dialog_query::{Output as _, Query, Term};
-    use dialog_repository::helpers;
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;

@@ -62,12 +62,12 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Attribute, Changes, Entity, Statement as _, Value};
-use dialog_capability::access::{Prove, Retain};
+use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider, Subject};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, Ed25519Verifier};
 use dialog_effects::archive::{Get, Import, Put};
-use dialog_effects::authority::Identify;
+use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
@@ -120,18 +120,18 @@ const DEFAULT_REMOTE: &str = "origin";
 const SPACE_MODEL_NAME: &str = "tonk/space";
 
 /// Attribute binding a bookmark name to the entity it refers to.
-const NAME_REFERENT: &str = "dialog.name/referent";
+const NAME_REFERENT: &str = "db.name/referent";
 
 /// Marker claim every concept declared on a branch carries. Its presence is
 /// what separates "the name resolves" from "the model behind it exists".
 ///
-/// Deliberately the marker and not `dialog.meta/source`: `source` is the
+/// Deliberately the marker and not `db.meta/source`: `source` is the
 /// descriptor materialised as JSON by the concept-of-concept query, which
 /// reconstructs it from the branch's facts. Nothing ever asserts it, so a raw
 /// claims read for `source` answers "no" for every concept that has ever
 /// existed (see `tonk_schema::concept::concept_of_concept_descriptor`). The
 /// marker is the fact the query itself enumerates concepts by.
-const CONCEPT_MARKER: &str = "dialog.meta/concept";
+const CONCEPT_MARKER: &str = "db.meta/concept";
 
 /// The provider surface a branch read, commit, or remote fallback needs.
 ///
@@ -146,6 +146,7 @@ pub(crate) trait BranchEnv:
     + Provider<Resolve>
     + Provider<Publish>
     + Provider<Identify>
+    + Provider<Attest>
     + Provider<Prove<Ucan>>
     + Provider<Retain<Ucan>>
     + Provider<Fork<RemoteSite, Get>>
@@ -162,6 +163,7 @@ impl<T> BranchEnv for T where
         + Provider<Resolve>
         + Provider<Publish>
         + Provider<Identify>
+        + Provider<Attest>
         + Provider<Prove<Ucan>>
         + Provider<Retain<Ucan>>
         + Provider<Fork<RemoteSite, Get>>
@@ -1484,20 +1486,16 @@ async fn copy_existing_to_stage(
     let Some(revision) = source.revision() else {
         return Ok(());
     };
-    let installed = source
-        .install(revision.clone())
-        .perform(&tonk.operator, destination_env)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to stage existing content: {error}"))
-        })?;
-    if installed != revision {
-        return Err(JoinFailure::claim_failed(
-            "staged existing revision does not match the local head",
-        ));
-    }
+    install_revision_between(
+        &source,
+        &repository,
+        &revision,
+        &tonk.operator,
+        destination_env,
+    )
+    .await?;
     destination
-        .reset(installed)
+        .reset(revision)
         .perform(destination_env)
         .await
         .map_err(|error| {
@@ -1713,20 +1711,8 @@ async fn install_revision(
             log!("join: installed {nodes} claim node(s); the rest reads through the remote");
         }
         None => {
-            let installed = source
-                .install(revision.clone())
-                .perform(source_env, &tonk.operator)
-                .await
-                .map_err(|error| {
-                    JoinFailure::claim_failed(format!(
-                        "failed to install the staged content: {error}"
-                    ))
-                })?;
-            if installed != revision {
-                return Err(JoinFailure::claim_failed(
-                    "installed revision does not match the staged one",
-                ));
-            }
+            install_revision_between(source, repository, &revision, source_env, &tonk.operator)
+                .await?;
         }
     }
     let installed = revision.clone();
@@ -1785,6 +1771,57 @@ async fn install_revision(
             JoinFailure::claim_failed(format!("failed to adopt the installed branch: {error}"))
         })?;
 
+    Ok(())
+}
+
+/// Copy `revision`'s complete reachable tree and referenced blobs from
+/// `source_env`'s storage into `destination_env`'s without publishing a
+/// head — dialog's snapshot export/import (the successor of the backported
+/// `Branch::install`). Reads fall back to `branch`'s remote upstream when
+/// it tracks one, so a sparse source replica still exports a complete
+/// snapshot.
+async fn install_revision_between<Source, Destination>(
+    branch: &Branch,
+    repository: &Repository<Credential>,
+    revision: &Revision,
+    source_env: &Source,
+    destination_env: &Destination,
+) -> Result<(), JoinFailure>
+where
+    Source: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<dialog_effects::blob::Read>
+        + Provider<dialog_effects::blob::Import>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, dialog_effects::blob::Read>>
+        + ConditionalSync
+        + 'static,
+    Destination: Provider<Put> + Provider<dialog_effects::blob::Import> + ConditionalSync + 'static,
+{
+    use dialog_repository::{RepositoryMemoryExt as _, Upstream};
+
+    let mut export = repository.snapshot(revision.clone()).export();
+    if let Some(Upstream::Remote { remote, .. }) = branch.upstream() {
+        let remote = branch
+            .subject()
+            .remote(remote)
+            .load()
+            .perform(source_env)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to read the source remote: {error}"))
+            })?;
+        export = export.download(remote);
+    }
+    let items = export.perform(source_env);
+    repository
+        .import(items)
+        .perform(destination_env)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to install the staged content: {error}"))
+        })?;
     Ok(())
 }
 
@@ -1887,24 +1924,27 @@ async fn pull_staged<Env: BranchEnv>(branch: &Branch, env: &Env) -> Result<(), J
 }
 
 fn classify_pull(error: &PullError) -> JoinFailure {
-    let Some(response) = dialog_effects::service::find_service_response(error) else {
-        return JoinFailure::unavailable("the remote could not be reached");
-    };
-    match response.code.as_deref() {
-        Some("CREDENTIAL_REVOKED" | "DEVICE_REVOKED") => {
-            JoinFailure::revoked(format!("remote refused with {}", response.status))
-        }
-        Some("AUDIENCE_MISMATCH" | "SUBJECT_NOT_ALLOWED") => JoinFailure::audience_mismatch(
-            format!("remote refused the audience with {}", response.status),
-        ),
-        Some("REVOCATION_UNAVAILABLE") => {
-            JoinFailure::unavailable(format!("remote answered {}", response.status))
-        }
-        _ if response.status == 401 || response.status == 403 => {
-            JoinFailure::claim_failed(format!("remote refused with {}", response.status))
-        }
-        _ => JoinFailure::unavailable(format!("remote answered {}", response.status)),
+    // The typed reasons survive the pull's error chain (dialog carries
+    // `AuthorizeError` / `Rejection` intact from the service boundary),
+    // so classification is a match, not a code-table lookup.
+    if let Some(authorization) = crate::router::sync::authorization_reason(error) {
+        return match authorization {
+            AuthorizeError::Revoked { .. } => {
+                JoinFailure::revoked("remote access has been revoked")
+            }
+            AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
+                JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
+            }
+            AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
+                JoinFailure::unavailable(format!("remote answered: {authorization}"))
+            }
+            _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
+        };
     }
+    if let Some(rejection) = crate::router::sync::rejection_reason(error) {
+        return JoinFailure::unavailable(format!("remote answered: {rejection}"));
+    }
+    JoinFailure::unavailable("the remote could not be reached")
 }
 
 /// Check that a branch carries what navigating into the space needs: the
@@ -1981,7 +2021,12 @@ async fn first_value<Env: BranchEnv>(
     futures_util::pin_mut!(claims);
     match claims.next().await {
         None => Ok(None),
-        Some(Ok(artifact)) => Ok(Some(artifact.is)),
+        Some(Ok(artifact)) => match artifact.value() {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => Err(JoinFailure::unavailable(format!(
+                "staged content did not decode: {error}"
+            ))),
+        },
         Some(Err(error)) => Err(JoinFailure::unavailable(format!(
             "staged content did not decode: {error}"
         ))),
@@ -3325,16 +3370,14 @@ mod tests {
     /// or a revoked invite reads as a flaky network and offers retry.
     #[dialog_common::test]
     fn it_reads_a_revoked_credential_out_of_the_pull_error_chain() {
+        use dialog_capability::access::AuthorizeError;
         use dialog_effects::memory::MemoryError;
-        use dialog_effects::service::ServiceResponseError;
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
         let refusal = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
-            ResolveError::from(MemoryError::ServiceResponse(ServiceResponseError::new(
-                403,
-                Some("CREDENTIAL_REVOKED".to_string()),
-                "credential revoked",
-            ))),
+            ResolveError::from(MemoryError::Authorization(AuthorizeError::Revoked {
+                subject: dialog_capability::did!("key:zSubject"),
+            })),
         ));
 
         assert_eq!(
@@ -3345,17 +3388,17 @@ mod tests {
 
     #[dialog_common::test]
     fn it_does_not_misreport_an_unrelated_forbidden_response_as_revocation() {
+        use dialog_capability::access::AuthorizeError;
         use dialog_effects::memory::MemoryError;
-        use dialog_effects::service::ServiceResponseError;
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
-        let refusal = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
-            ResolveError::from(MemoryError::ServiceResponse(ServiceResponseError::new(
-                403,
-                Some("COMMAND_MISMATCH".to_string()),
-                "wrong command",
-            ))),
-        ));
+        let refusal =
+            PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(ResolveError::from(
+                MemoryError::Authorization(AuthorizeError::CommandEscalation {
+                    claimed: "/storage/put".to_string(),
+                    authorized: "/storage/get".to_string(),
+                }),
+            )));
         assert_eq!(
             super::classify_pull(&refusal).kind(),
             super::JoinFailureKind::ClaimFailed,
@@ -3366,14 +3409,15 @@ mod tests {
     /// terminal.
     #[dialog_common::test]
     fn it_reads_an_unwell_service_as_retryable() {
+        use dialog_effects::Rejection;
         use dialog_effects::memory::MemoryError;
-        use dialog_effects::service::ServiceResponseError;
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
-        let outage =
-            PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(ResolveError::from(
-                MemoryError::ServiceResponse(ServiceResponseError::new(503, None, "unavailable")),
-            )));
+        let outage = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
+            ResolveError::from(MemoryError::Rejected(Rejection::Unavailable {
+                reason: "unavailable".to_string(),
+            })),
+        ));
 
         assert_eq!(
             super::classify_pull(&outage).kind(),

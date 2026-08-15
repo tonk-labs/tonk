@@ -282,7 +282,7 @@ pub enum AnalyzeErrorKind {
         reason: String,
     },
     /// An `&anchor` name doesn't form a valid `id:<name>` entity
-    /// URI. The anchor desugars to a `dialog.meta/name` claim on
+    /// URI. The anchor desugars to a `db.meta/name` claim on
     /// `id:<name>`; if that URI can't be built the name could never
     /// be published or resolved. Caught here so it's a clear error
     /// rather than a silently-dropped name at write time.

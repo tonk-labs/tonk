@@ -24,7 +24,6 @@
 
 use dialog_artifacts::{Changes, Statement};
 use dialog_repository::{CommitError, Revision};
-use tonk_evaluator::effects::TransactionExt;
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
 
@@ -189,23 +188,19 @@ impl Commit<'_> {
         let mut attempt = 0;
         let revision = loop {
             let branch = cached.handle();
-            let t_induce = web_time::Instant::now();
+            // Durable changes are asserted; transients are dispatched
+            // as commands. Commit-time induction (dialog's) fires
+            // installed rules over both and sweeps the transients.
             let txn = branch
                 .transaction()
                 .integrate(changes.clone())
-                .integrate(transients.clone())
-                .induce(transients.clone())
-                .perform(env)
-                .await?;
-            let induce_ms = t_induce.elapsed().as_millis();
+                .dispatch(transients.clone());
 
             let t_commit = web_time::Instant::now();
             match txn.commit().perform(env).await {
                 Ok(revision) => {
                     let commit_ms = t_commit.elapsed().as_millis();
-                    dialog_common::log!(
-                        "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms"
-                    );
+                    dialog_common::log!("reactor commit timing: commit {commit_ms}ms");
                     break revision;
                 }
                 Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {

@@ -44,6 +44,7 @@ mod field;
 mod formula;
 mod graph;
 mod query;
+mod resolver_registry;
 mod rule;
 mod scan;
 mod scope;
@@ -61,11 +62,12 @@ use crate::analysis::{
 };
 use tonk_core::claim::ConceptDescriptor;
 
-pub use constraint::{ConstraintCompletion, constraint_completions};
+pub use constraint::{ConstraintCompletion, constraint_completions, notation_form};
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
 pub use formula::{FormulaCompletion, formula_completions};
+pub use resolver_registry::{ResolverCompletion, resolver_completions};
 pub use scan::scan_variables;
 
 use tonk_schema::concept::QueryEnv;
@@ -296,7 +298,7 @@ fn expand(
                 let this;
                 let anchor;
                 let mut transient_entity: Option<Entity> = None;
-                let mut rule_effect: Option<tonk_core::effect::Effect> = None;
+                let mut rule_effect: Option<dialog_query::InductiveRule> = None;
                 let is_declaration;
 
                 if let Some(declaration) = declared.remove(&index) {
@@ -363,22 +365,13 @@ fn expand(
                     predicate = Predicate::Domain(a.predicate.source.clone());
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
                     match rule::lift_rule_claim(a, scope, &working)? {
-                        Some(rule::RuleAction::Install {
-                            rule,
-                            this: install_at,
-                        }) => {
-                            // When the user pinned the install at a
-                            // URI (`rule!: this: <entity>`), surface
-                            // it on the application so the labelled
-                            // entity flows through the analysis tree;
-                            // otherwise the install lands at the
-                            // effect's content-derived `this()`.
-                            let intent = match install_at {
-                                Some(entity) => ThisIntent::Uri(entity),
-                                None => ThisIntent::Derived,
-                            };
+                        Some(rule::RuleAction::Install { rule }) => {
+                            // Rules are content-addressed, so the
+                            // install always lands at the rule's own
+                            // content-derived `this()`.
+                            let intent = ThisIntent::Derived;
                             this = intent.clone();
-                            rule_effect = Some(rule.effect.clone());
+                            rule_effect = Some((*rule).clone());
                             claims
                                 .push(Statement::Assert(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
@@ -390,14 +383,8 @@ fn expand(
                                 .push(Statement::Retract(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
                         }
-                        Some(rule::RuleAction::InstallDeductive {
-                            rule,
-                            this: install_at,
-                        }) => {
-                            let intent = match install_at {
-                                Some(entity) => ThisIntent::Uri(entity),
-                                None => ThisIntent::Derived,
-                            };
+                        Some(rule::RuleAction::InstallDeductive { rule }) => {
+                            let intent = ThisIntent::Derived;
                             this = intent.clone();
                             claims.push(Statement::Assert(Application::DeductiveRule {
                                 rule,
@@ -624,7 +611,7 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
             continue;
         }
         // Rules don't write a snapshotable entity — install /
-        // retract of `dialog.effect/*` claims contributes no
+        // retract of `db.effect/*` claims contributes no
         // implicit query.
         let application = planned.statement.application();
         if matches!(
@@ -766,9 +753,9 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 mod tests {
     use super::*;
     use dialog_artifacts::{Entity, Value};
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use tonk_core::meta::AnchorName;
     use tonk_notation::parse;
     use tonk_schema::concept::AnonymousConcept;
@@ -791,6 +778,7 @@ mod tests {
         tonk_schema::concept::QueryEnv
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
+        + dialog_query::Provider<dialog_effects::authority::Attest>
     {
     }
 
@@ -798,6 +786,7 @@ mod tests {
         T: tonk_schema::concept::QueryEnv
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
+            + dialog_query::Provider<dialog_effects::authority::Attest>
     {
     }
 
@@ -897,34 +886,30 @@ mod tests {
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| "Text".to_owned());
                 txn = txn
+                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                        "{}/{}",
+                        attr.domain(),
+                        attr.name()
+                    )))
                     .assert(
-                        the!("dialog.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(format!("{}/{}", attr.domain(), attr.name())),
-                    )
-                    .assert(
-                        the!("dialog.attribute/type")
+                        the!("db.attribute/type")
                             .of(attr_entity.clone())
                             .is(type_label),
                     )
                     .assert(
-                        the!("dialog.attribute/cardinality")
+                        the!("db.attribute/cardinality")
                             .of(attr_entity.clone())
                             .is("one".to_owned()),
                     )
                     .assert(
-                        the!("dialog.meta/description")
+                        the!("db.meta/description")
                             .of(attr_entity)
                             .is(String::new()),
                     );
             }
             let concept_entity = descriptor.this();
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
-            txn = txn.assert(
-                the!("dialog.name/referent")
-                    .of(id_entity)
-                    .is(concept_entity),
-            );
+            txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
                 .perform(&self.operator)
@@ -934,9 +919,9 @@ mod tests {
 
         /// Assert standalone attributes on the branch and publish
         /// each under a name. Builds a throwaway concept descriptor
-        /// so [`assert_concept_named`] writes the `dialog.attribute/
+        /// so [`assert_concept_named`] writes the `db.attribute/
         /// {id,type,cardinality}` claims an `AttributeDefinition`
-        /// needs, then publishes a `dialog.name/referent` for each
+        /// needs, then publishes a `db.name/referent` for each
         /// attribute entity so a bare-symbol reference resolves it by
         /// name (mirrors `attribute!: &name` in real notation).
         ///
@@ -986,38 +971,38 @@ mod tests {
             for (_, attr) in descriptor.with().iter() {
                 let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
                 txn = txn
+                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                        "{}/{}",
+                        attr.domain(),
+                        attr.name()
+                    )))
                     .assert(
-                        the!("dialog.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(format!("{}/{}", attr.domain(), attr.name())),
-                    )
-                    .assert(
-                        the!("dialog.attribute/type")
+                        the!("db.attribute/type")
                             .of(attr_entity.clone())
                             .is("Text".to_owned()),
                     )
                     .assert(
-                        the!("dialog.attribute/cardinality")
+                        the!("db.attribute/cardinality")
                             .of(attr_entity.clone())
                             .is("one".to_owned()),
                     )
                     .assert(
-                        the!("dialog.meta/description")
+                        the!("db.meta/description")
                             .of(attr_entity)
                             .is(String::new()),
                     );
             }
             // Pin the concept at `entity` by emitting its facts there
             // directly (mirrors `emit_concept_facts`): the marker plus
-            // one `dialog.concept.with/<field>` per field.
+            // one `db.concept.with/<field>` per field.
             txn = txn.assert(
-                the!("dialog.meta/concept")
+                the!("db.meta/concept")
                     .of(entity.clone())
                     .is("db:concept".parse::<Entity>().expect("db:concept")),
             );
             for (field, attr) in descriptor.with().iter() {
                 let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
-                let the = format!("dialog.concept.with/{field}")
+                let the = format!("db.concept.with/{field}")
                     .parse::<dialog_query::attribute::The>()
                     .expect("with attribute parses");
                 txn = txn.assert(the.of(entity.clone()).is(attr_entity));
@@ -1028,14 +1013,14 @@ mod tests {
                 .expect("pinned concept assertion commits");
         }
 
-        /// Publish a `dialog.name/referent` claim binding `name`
+        /// Publish a `db.name/referent` claim binding `name`
         /// to `entity`. Used by tests that need a name to resolve
         /// to a specific entity (not a concept the test asserted).
         async fn publish_name(&self, name: &str, entity: Entity) {
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
             self.branch
                 .transaction()
-                .assert(the!("dialog.name/referent").of(id_entity).is(entity))
+                .assert(the!("db.name/referent").of(id_entity).is(entity))
                 .commit()
                 .perform(&self.operator)
                 .await
@@ -1429,7 +1414,7 @@ concept!: &issue
     /// alongside bare-symbol references. Each inline definition
     /// becomes its own `Statement::Assert` so the attribute
     /// surfaces in `attribute:` queries; the inline attrs are
-    /// anonymous (no `dialog.meta/name` claim, since the field
+    /// anonymous (no `db.meta/name` claim, since the field
     /// key is the concept's local name, not a global label).
     #[dialog_common::test]
     async fn it_emits_inline_attribute_definitions_from_concept_with() {
@@ -1679,7 +1664,7 @@ concept!: &view
   with:
     source:
       description: "Source concept"
-      the:         dialog.view/source
+      the:         db.view/source
       as:          Entity
       cardinality: one
 view!: &title
@@ -1727,7 +1712,7 @@ attribute!: &foo
 
     /// Variable-form `attribute!:` with `this: ?foo` (no anchor)
     /// lands in `variables`, not `declarations`, and does NOT
-    /// emit a `dialog.meta/name` claim (the name is doc-scoped
+    /// emit a `db.meta/name` claim (the name is doc-scoped
     /// only).
     #[dialog_common::test]
     async fn it_keeps_variable_form_attribute_doc_scoped() {
@@ -1761,7 +1746,7 @@ attribute!:
 
     /// `attribute!: &foo` (anchored): the head's `name` slot
     /// records the published name. The planner emits the
-    /// `dialog.meta/name` claim on `id:<name>`, not as a
+    /// `db.meta/name` claim on `id:<name>`, not as a
     /// parameter on the predicate.
     #[dialog_common::test]
     async fn it_records_published_name_for_anchored_attribute() {
@@ -2351,7 +2336,7 @@ attribute:
         // cardinality/description — must all be present in the
         // unified term map. `name` is intentionally not in the
         // built-in `attribute:` view (only anchor-form attrs
-        // carry a `dialog.meta/name` claim).
+        // carry a `db.meta/name` claim).
         for field in ["id", "type", "cardinality", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
@@ -2456,7 +2441,7 @@ person:
 
     /// `name` is a built-in concept resolvable without a branch
     /// — same as `attribute` and `concept`. Backed by the single
-    /// `dialog.meta/name` attribute (cardinality one).
+    /// `db.meta/name` attribute (cardinality one).
     #[dialog_common::test]
     async fn it_resolves_builtin_name_concept() {
         let syntax = must_parse(
@@ -2480,7 +2465,7 @@ name:
     #[dialog_common::test]
     async fn it_uses_db_concept_uri_for_concept_marker() {
         // Asserting any concept emits a marker claim
-        // `(this, dialog.meta/concept, db:concept)`. We can read
+        // `(this, db.meta/concept, db:concept)`. We can read
         // it back by inspecting the `concept` term of the
         // emitted concept-head application.
         let syntax = must_parse(
@@ -4539,7 +4524,10 @@ person!:
     #[dialog_common::test]
     async fn it_compiles_a_negation_premise_omitting_a_concept_field() {
         let specs = [
-            fixed_concept_typed("replica", &[("subject", "dialog.origin/subject", "Entity")]),
+            fixed_concept_typed(
+                "replica",
+                &[("subject", "dialog.replica/subject", "Entity")],
+            ),
             fixed_concept_typed("binder", &[("active", "xyz.tonk.binder/active", "Entity")]),
         ];
 

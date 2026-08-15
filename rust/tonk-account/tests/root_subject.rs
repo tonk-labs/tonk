@@ -1,8 +1,8 @@
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
+use dialog_operator::helpers::test_operator_with_profile;
 use dialog_repository::Repository;
-use dialog_repository::helpers::test_operator_with_profile;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
@@ -52,7 +52,12 @@ async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> an
         .await?;
     let revision = branch.transaction().commit().perform(&operator).await?;
 
-    assert_eq!(revision.subject, root_did);
+    // The head no longer carries the subject DID; its opaque branch
+    // entity commits to (profile, subject, name) instead.
+    assert_eq!(
+        revision.branch,
+        dialog_repository::branch_of(&root_did, &profile.did(), tonk_account::MAIN_BRANCH)
+    );
     assert!(
         matches!(repository.credential(), Credential::Verifier(_)),
         "committing through root → device → operator must not add the root signer"

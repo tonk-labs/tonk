@@ -405,33 +405,9 @@ async fn hydrate_untrusted(
                         "failed to hydrate account repository: {error}"
                     ))
                 })?;
-            let winner = match probe_remote_main(&remote, &tonk.operator).await {
-                Ok(RemotePresence::Present(winner)) => winner,
-                Ok(RemotePresence::Absent) => {
-                    return Err(TonkWorkerError::Internal(
-                        "account remote disappeared after a successful pull".to_string(),
-                    ));
-                }
-                Err(error) => return Err(TonkWorkerError::Internal(error.to_string())),
-            };
-            if session.handle().revision().as_ref() != Some(&winner) {
-                // Pull can be an identical-empty-tree no-op. Adopt the exact
-                // established revision so future merges share one base.
-                session
-                    .handle()
-                    .reset(winner)
-                    .perform(&tonk.operator)
-                    .await
-                    .map_err(|error| {
-                        TonkWorkerError::Internal(format!(
-                            "failed to adopt account remote revision: {error}"
-                        ))
-                    })?;
-            }
         }
         Ok(RemotePresence::Absent) => {
-            let genesis = tonk
-                .reactor
+            tonk.reactor
                 .repository(key)
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
@@ -443,25 +419,28 @@ async fn hydrate_untrusted(
                         "failed to create local account genesis: {error}"
                     ))
                 })?;
-            match publish_genesis_if_absent(&remote, genesis, &tonk.operator).await {
+            match publish_genesis_if_absent(session.handle(), &remote, &tonk.operator).await {
                 Ok(CreateGenesis::Winner(_)) => {}
-                // Adopt the winner's revision directly. No fetch is needed
-                // ahead of it even when the winner has already written past
-                // genesis: fact reads resolve missing blocks through the
-                // configured remote, so the branch is readable as soon as it
-                // points at an established revision. Covered by
-                // `it_adopts_a_losing_candidate_onto_the_winners_content` in
-                // tonk-access-service's `account_remote` tests.
-                Ok(CreateGenesis::Loser(winner)) => session
-                    .handle()
-                    .reset(winner)
-                    .perform(&tonk.operator)
-                    .await
-                    .map_err(|error| {
-                        TonkWorkerError::Internal(format!(
-                            "failed to adopt winning account genesis: {error}"
-                        ))
-                    })?,
+                // Adopt the winner by pulling: the pull integrates the
+                // established head AND records it as this branch's sync
+                // base, so the next push fast-forwards instead of CASing
+                // against an empty upstream. Reads resolve missing blocks
+                // through the configured remote. Covered by
+                // `it_adopts_a_losing_candidate_onto_the_winners_content`
+                // in tonk-access-service's `account_remote` tests.
+                Ok(CreateGenesis::Loser(_)) => {
+                    session
+                        .handle()
+                        .pull()
+                        .perform(&tonk.operator)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| {
+                            TonkWorkerError::Internal(format!(
+                                "failed to adopt winning account genesis: {error}"
+                            ))
+                        })?;
+                }
                 Err(error) => return Err(TonkWorkerError::Internal(error.to_string())),
             }
         }

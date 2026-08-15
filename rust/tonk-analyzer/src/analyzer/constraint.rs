@@ -1,7 +1,8 @@
 //! Built-in constraint registry.
 //!
 //! dialog-query ships a fixed set of pure variable constraints
-//! (currently just `==`, equality) behind its `Constraint` enum.
+//! (equality, the range predicates, and prefix matching) behind its
+//! `Constraint` enum.
 //! Like formulas they aren't concepts: they don't live on the
 //! branch and they filter/infer bindings rather than querying
 //! stored facts. They're also a *separate* enum from `FormulaQuery`,
@@ -28,7 +29,7 @@
 
 use std::sync::OnceLock;
 
-use dialog_query::constraint::Equality;
+use dialog_query::constraint::{AtLeast, AtMost, Equality, GreaterThan, LessThan, StartsWith};
 use dialog_query::{Any, Term};
 
 /// One built-in constraint: its formal name plus its operand names.
@@ -63,8 +64,26 @@ pub(crate) fn lookup_constraint(name: &str) -> Option<&'static ConstraintInfo> {
 pub struct ConstraintCompletion {
     /// The formal name the user types after `assert:`.
     pub name: &'static str,
+    /// The name as it must appear in notation — quoted when the bare
+    /// form is not a plain YAML scalar. See [`notation_form`].
+    pub insert: String,
     /// Human-readable operand summary, e.g. `== — operands: is, this`.
     pub detail: String,
+}
+
+/// A constraint name as it must be written in notation.
+///
+/// `>` opens a folded scalar in YAML and `>=` is not a plain scalar
+/// either, so both have to be quoted: an unquoted `assert: >` parses
+/// as an EMPTY name and surfaces as "unknown concept" — a diagnostic
+/// that says nothing about quoting. Completion inserts the quoted form
+/// so the trap is unreachable from the editor.
+pub fn notation_form(name: &str) -> String {
+    if name.starts_with('>') {
+        format!("\"{name}\"")
+    } else {
+        name.to_owned()
+    }
 }
 
 /// Every built-in constraint, as completion candidates for an
@@ -78,6 +97,7 @@ pub fn constraint_completions() -> Vec<ConstraintCompletion> {
             operands.sort_unstable();
             ConstraintCompletion {
                 name: c.name,
+                insert: notation_form(c.name),
                 detail: format!("{} — operands: {}", c.name, operands.join(", ")),
             }
         })
@@ -98,13 +118,105 @@ pub(crate) fn registry() -> &'static [ConstraintInfo] {
 fn build_registry() -> Vec<ConstraintInfo> {
     // Materialise an instance per constraint and read its operand
     // names off the live schema. The terms are throwaway — only the
-    // schema's field names are used.
-    let equality = Equality::new(Term::<Any>::unique(), Term::<Any>::unique());
-    let mut operands: Vec<String> = equality.schema().iter().map(|(k, _)| k.clone()).collect();
-    operands.sort_unstable();
+    // schema's field names are used, so the registry cannot drift
+    // from what each constraint actually deserializes from.
+    fn operands_of(schema: dialog_query::Schema) -> Vec<String> {
+        let mut operands: Vec<String> = schema.iter().map(|(k, _)| k.clone()).collect();
+        operands.sort_unstable();
+        operands
+    }
+    let term = Term::<Any>::unique;
 
-    vec![ConstraintInfo {
-        name: "==",
-        operands,
-    }]
+    vec![
+        ConstraintInfo {
+            name: "==",
+            operands: operands_of(Equality::new(term(), term()).schema()),
+        },
+        // The range predicates compare `of` against `with`, in that
+        // order: `{ of: ?age, with: 30 }` under `<` reads `?age < 30`.
+        // A constant side additionally proves an interval bound on the
+        // other, which dialog pushes into the value scan as an index
+        // range — so these narrow what is read, not just what is kept.
+        ConstraintInfo {
+            name: "<",
+            operands: operands_of(LessThan::new(term(), term()).schema()),
+        },
+        ConstraintInfo {
+            name: "<=",
+            operands: operands_of(AtMost::new(term(), term()).schema()),
+        },
+        ConstraintInfo {
+            name: ">",
+            operands: operands_of(GreaterThan::new(term(), term()).schema()),
+        },
+        ConstraintInfo {
+            name: ">=",
+            operands: operands_of(AtLeast::new(term(), term()).schema()),
+        },
+        ConstraintInfo {
+            name: "starts-with",
+            operands: operands_of(StartsWith::new(term(), Term::<String>::unique()).schema()),
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Every constraint dialog serializes is reachable from notation.
+    ///
+    /// The registry is what the analyzer resolves premise names
+    /// against, so a name missing here is a predicate no document can
+    /// use — which is exactly how the range predicates went unexposed
+    /// after dialog added them.
+    #[dialog_common::test]
+    fn it_exposes_every_range_predicate() {
+        for name in ["==", "<", "<=", ">", ">=", "starts-with"] {
+            let found = lookup_constraint(name)
+                .unwrap_or_else(|| panic!("`{name}` must be resolvable as a premise name"));
+            assert_eq!(found.name, name);
+        }
+    }
+
+    /// The range predicates compare `of` against `with`, and the
+    /// operand names come off dialog's own schema — so this fails if
+    /// dialog renames a slot, rather than drifting silently.
+    #[dialog_common::test]
+    fn it_reads_range_operands_off_the_dialog_schema() {
+        for name in ["<", "<=", ">", ">="] {
+            let found = lookup_constraint(name).expect("registered");
+            let mut operands: Vec<&str> = found.operands().collect();
+            operands.sort_unstable();
+            assert_eq!(
+                operands,
+                vec!["of", "with"],
+                "`{name}` compares `of` against `with`"
+            );
+        }
+    }
+
+    /// Completion inserts a notation-safe name. `>` and `>=` open a
+    /// YAML folded scalar unquoted, so inserting the bare name would
+    /// produce a document that parses as an empty predicate name.
+    #[dialog_common::test]
+    fn it_quotes_the_yaml_hostile_names_for_insertion() {
+        let by_name = |name: &str| {
+            constraint_completions()
+                .into_iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("`{name}` must be offered as a completion"))
+        };
+
+        assert_eq!(by_name(">").insert, "\">\"");
+        assert_eq!(by_name(">=").insert, "\">=\"");
+        // `<` has no YAML meaning, so it stays bare.
+        assert_eq!(by_name("<").insert, "<");
+        assert_eq!(by_name("==").insert, "==");
+    }
 }
