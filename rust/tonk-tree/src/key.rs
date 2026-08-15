@@ -105,7 +105,15 @@ pub fn components(parts: &[KeyPart]) -> Vec<Component> {
             "vtype" => (1usize, format!("Value type: {}", p.hex)),
             _ => (hex_len(&p.hex).max(1), label.to_owned()),
         };
-        let text = glyphs(&p.text);
+        // The index chip spells out its ordering (`entity`, `attribute`,
+        // `value`), but the segments that follow are already colour-coded
+        // by exactly that, and hovering gives the full name. The word is
+        // redundant noise in a dense key, so the chip keeps one letter.
+        let text = if p.kind == "index" {
+            initial(&p.text)
+        } else {
+            glyphs(&p.text)
+        };
         out.push(Component {
             label,
             part,
@@ -116,6 +124,15 @@ pub fn components(parts: &[KeyPart]) -> Vec<Component> {
         offset += len;
     }
     out
+}
+
+/// The single-character stand-in for an ordering name: its first letter,
+/// upper-cased (`entity` → `E`). The tooltip still carries the full name.
+fn initial(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default()
 }
 
 /// Title-case an ordering name for the index tooltip (`entity` → `Entity

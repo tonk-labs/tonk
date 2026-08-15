@@ -10,6 +10,7 @@ use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
+use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
@@ -26,6 +27,12 @@ pub(crate) fn build_query_application(
     let head_range = query.predicate.range;
     match &query.predicate.name {
         HeadName::Concept(concept_name) => {
+            // A `tree/*` resolver reads the store's own structure, so it
+            // heads a query like a concept does — but it resolves from
+            // dialog's resolver registry rather than the branch.
+            if let Some(resolver) = lookup_resolver(concept_name) {
+                return build_resolver_query(query, resolver, scope, analysis);
+            }
             let resolved = scope.concept(concept_name).ok_or_else(|| {
                 AnalyzeError::at(
                     AnalyzeErrorKind::UnknownConcept {
@@ -144,6 +151,66 @@ pub(crate) fn build_query_application(
             head_range,
         )),
     }
+}
+
+/// Build a resolver query head (`tree/node:`, `tree/entry:`, …).
+///
+/// The body's fields are the resolver's operands, exactly as in premise
+/// position: unknown ones are rejected against dialog's own schema, and
+/// the ones a document omits stay unbound — a resolver's outputs are
+/// values it produces, not requirements. Only its required input must
+/// be bound, which dialog's planner enforces.
+fn build_resolver_query(
+    query: &SyntaxApplication,
+    resolver: &ResolverInfo,
+    scope: &Scope,
+    analysis: &Working,
+) -> Result<Application, AnalyzeError> {
+    let mut terms = Parameters::new();
+    for field in &query.fields {
+        if is_meta_field(&field.name) {
+            continue;
+        }
+        if !resolver.operands().any(|operand| operand == field.name) {
+            let mut valid: Vec<&str> = resolver.operands().collect();
+            valid.sort_unstable();
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnknownFormulaOperand {
+                    formula: resolver.name.to_owned(),
+                    operand: field.name.clone(),
+                    valid: valid.join(", "),
+                },
+                field.name_range,
+            ));
+        }
+        let term = field_value_to_term(
+            &field.name,
+            &field.value,
+            field.value_range,
+            scope,
+            analysis,
+            None,
+        )?;
+        terms.insert(field.name.clone(), term);
+    }
+
+    // Route through serde by name, the same way premises do, so the
+    // analyzer never names resolver types by hand.
+    let value = serde_json::json!({ "assert": resolver.name, "where": terms });
+    let resolver_query: dialog_query::ResolverQuery =
+        serde_json::from_value(value).map_err(|e| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::UnknownConcept {
+                    name: format!("{} ({e})", resolver.name),
+                },
+                query.predicate.range,
+            )
+        })?;
+
+    Ok(Application::Resolver {
+        query: Box::new(resolver_query),
+        terms,
+    })
 }
 
 fn this_term_for_query(this: &ThisIntent) -> Term<dialog_query::Any> {

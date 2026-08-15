@@ -67,7 +67,10 @@ pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
 pub use formula::{FormulaCompletion, formula_completions};
-pub use resolver_registry::{ResolverCompletion, resolver_completions};
+pub use resolver_registry::{
+    ResolverCompletion, ResolverOperand, resolver_completions, resolver_operands,
+};
+pub use rule::builtin_kind;
 pub use scan::scan_variables;
 
 use tonk_schema::concept::QueryEnv;
@@ -569,6 +572,7 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
         Application::Rule { .. } | Application::DeductiveRule { .. } => {
             Predicate::Domain("rule".to_owned())
         }
+        Application::Resolver { query, .. } => Predicate::Domain(query.name().to_owned()),
     }
 }
 
@@ -713,6 +717,11 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
             // synthesised one.
             Application::Rule { .. } | Application::DeductiveRule { .. } => unreachable!(
                 "rule applications should have been filtered out by the matches! check"
+            ),
+            // Snapshots read back what a MUTATION touched; a resolver
+            // is read-only, so it never appears among them.
+            Application::Resolver { .. } => unreachable!(
+                "resolver applications are read-only and never produce a mutation to snapshot"
             ),
         };
         // Reuse the assertion's head name so the rendered
@@ -1799,6 +1808,37 @@ concept!: &a
             matches!(err.kind, AnalyzeErrorKind::DuplicateName { .. }),
             "expected DuplicateName, got {err:?}"
         );
+    }
+
+    /// A concept declared under a built-in's name → `ReservedName`.
+    ///
+    /// Premise heads resolve formulas, constraints and resolvers
+    /// before concepts, so such a concept could never be referenced:
+    /// every mention would silently mean the built-in. Reporting it
+    /// at the declaration is the only place the user can still act.
+    #[dialog_common::test]
+    async fn it_rejects_a_concept_named_after_a_builtin() {
+        for reserved in ["tree/node", "math/sum"] {
+            let syntax = must_parse(&format!(
+                r#"
+concept!: &{reserved}
+  with:
+    tag:
+      the: x.y/tag
+      as: Text
+      cardinality: one
+      description: "T"
+"#
+            ));
+            let err = match analyze_empty(&syntax).await {
+                Err(err) => err,
+                Ok(_) => panic!("`{reserved}` must be rejected as a concept name"),
+            };
+            assert!(
+                matches!(err.kind, AnalyzeErrorKind::ReservedName { .. }),
+                "expected ReservedName for {reserved:?}, got {err:?}"
+            );
+        }
     }
 
     /// An anchor and a `this: ?var` that share a name →

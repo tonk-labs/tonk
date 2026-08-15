@@ -902,6 +902,13 @@ fn render_block(
     application: &Application,
     source_frames: &[Parameters],
 ) -> QueryMatchBlock {
+    // A resolver has no concept descriptor — its shape is its own
+    // operand slots — so it renders through its own path rather than
+    // borrowing a descriptor's field list.
+    if let Application::Resolver { query, terms } = application {
+        return render_resolver_block(label, query, terms, source_frames);
+    }
+
     let descriptor = match application {
         Application::Concept { query: q, .. } => q.predicate.clone(),
         Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
@@ -915,6 +922,7 @@ fn render_block(
                 results: Vec::new(),
             };
         }
+        Application::Resolver { .. } => unreachable!("handled above"),
     };
 
     // Variable names this expression binds — used to dedupe rows.
@@ -922,7 +930,9 @@ fn render_block(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+        Application::Rule { .. }
+        | Application::DeductiveRule { .. }
+        | Application::Resolver { .. } => {
             unreachable!("filtered above")
         }
     };
@@ -965,8 +975,10 @@ fn render_one_result(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } | Application::DeductiveRule { .. } => {
-            unreachable!("render_one_result is not called for rule applications")
+        Application::Rule { .. }
+        | Application::DeductiveRule { .. }
+        | Application::Resolver { .. } => {
+            unreachable!("render_one_result is not called for rule or resolver applications")
         }
     };
 
@@ -1009,6 +1021,67 @@ fn render_one_result(
     }
 
     QueryResult { this, fields }
+}
+
+/// Render a resolver expression's rows.
+///
+/// A resolver row is slot→value with no entity of its own, so `this`
+/// stays empty and every bound operand becomes a field. Rows dedupe on
+/// the same variables the concept path uses, so a resolver joined into
+/// a document behaves like any other expression.
+fn render_resolver_block(
+    label: String,
+    query: &dialog_query::ResolverQuery,
+    terms: &Parameters,
+    source_frames: &[Parameters],
+) -> QueryMatchBlock {
+    let _ = query;
+    let mut my_vars: Vec<String> = Vec::new();
+    for (_, term) in terms.iter() {
+        if let Term::Variable {
+            name: Some(name), ..
+        } = term
+            && !my_vars.contains(name)
+        {
+            my_vars.push(name.clone());
+        }
+    }
+
+    let mut seen = std::collections::HashSet::<Vec<String>>::new();
+    let mut results = Vec::new();
+    for frame in source_frames {
+        let mut key = Vec::with_capacity(my_vars.len());
+        for var in &my_vars {
+            key.push(match frame.get(var) {
+                Some(Term::Constant(v)) => format!("{v:?}"),
+                _ => String::new(),
+            });
+        }
+        if !seen.insert(key) {
+            continue;
+        }
+
+        let mut fields = BTreeMap::new();
+        for (slot, term) in terms.iter() {
+            let value = match term {
+                Term::Constant(value) => value_to_json(value),
+                Term::Variable {
+                    name: Some(name), ..
+                } => match frame.get(name) {
+                    Some(Term::Constant(value)) => value_to_json(value),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            fields.insert(slot.to_owned(), value);
+        }
+        results.push(QueryResult {
+            this: String::new(),
+            fields,
+        });
+    }
+
+    QueryMatchBlock { label, results }
 }
 
 fn value_to_json(value: &Value) -> serde_json::Value {

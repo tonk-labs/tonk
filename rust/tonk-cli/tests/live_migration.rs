@@ -163,3 +163,54 @@ concept!: &alert
 
     Ok(())
 }
+
+/// A `tree/*` resolver is usable as a top-level query head, not just
+/// inside a rule premise.
+///
+/// The inspector reads the store's structure through these; going
+/// through the evaluate endpoint (rather than the worker's bespoke
+/// `tree/*` formula interception) is what makes tree state ordinary
+/// queryable data — joinable, subscribable, composable.
+#[dialog_common::test]
+async fn it_answers_a_top_level_resolver_query() -> Result<()> {
+    let test = common::TestSite::new().await?;
+
+    // Something durable, so the tree has a root worth describing.
+    test.eval_inline(
+        r#"concept!: &marker
+  with:
+    tag:
+      the: live.check/marker-tag
+      as: text
+      cardinality: one
+      description: "tag"
+"#,
+    )
+    .await?;
+    test.eval_inline("marker!: &one\n  tag: \"hi\"\n").await?;
+
+    // The resolver selects by content address, so its `of` must be
+    // bound. A document reaches the root by joining through the
+    // branch's revision; here the reference is read back directly so
+    // the test pins the resolver, not the join.
+    let root = test.tree_root().await?;
+    let rows = test
+        .eval_inline(&format!("tree/node:\n  of: \"{root}\"\n  kind: ?kind\n"))
+        .await?
+        .stdout;
+
+    // The root of a tree holding real facts is a branch node, and the
+    // resolver must bind `?kind` to say so. Asserting the resolved
+    // value (not merely that some row came back) is what makes this
+    // fail if the resolver is reached but answers with nothing.
+    assert!(
+        rows.contains(r#"kind: "index""#),
+        "the resolver must bind ?kind to the root node's kind; saw:\n{rows}"
+    );
+    assert!(
+        rows.contains(&root),
+        "the row must describe the node that was asked for; saw:\n{rows}"
+    );
+
+    Ok(())
+}

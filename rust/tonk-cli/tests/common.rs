@@ -34,6 +34,23 @@ impl TestSite {
         })
     }
 
+    /// The base58 reference of this branch's current tree root.
+    ///
+    /// A resolver selects by content address, so `tree/*` needs this
+    /// bound before it can run. Real documents reach it by joining
+    /// through the branch revision; tests that are pinning resolver
+    /// behavior rather than the join read it directly.
+    pub async fn tree_root(&self) -> Result<String> {
+        let session = self.site.branch().await?;
+        let revision = session
+            .handle()
+            .revision()
+            .ok_or_else(|| anyhow::anyhow!("branch has no revision yet"))?;
+        // `TreeReference` displays as `#<base58>`; the resolver takes
+        // the bare reference.
+        Ok(revision.tree.to_string().trim_start_matches('#').to_owned())
+    }
+
     pub async fn eval_inline(&self, doc: &str) -> Result<eval::Outcome, eval::EvalError> {
         eval::run_against_site(
             &self.site,

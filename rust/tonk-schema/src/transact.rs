@@ -31,6 +31,7 @@ use thiserror::Error;
 
 use crate::prelude::EntityExt;
 use crate::rule::{DeductiveRule, InductiveRule};
+use dialog_query::ResolverQuery;
 use indexmap::IndexMap;
 use serde::Serialize;
 use tonk_core::claim::{ConceptDescriptor, PredicateApplication, ValueMap};
@@ -192,6 +193,28 @@ pub enum Application {
         /// the content-addressed install.
         this: ThisIntent,
     },
+    /// A resolver head (`tree/node:`, `tree/entry:`, …) — a premise
+    /// dialog answers by content address over immutable blocks rather
+    /// than by scanning the mutable head.
+    ///
+    /// Read-only by construction: a resolver describes what storage
+    /// already holds, so there is nothing to assert. It reaches the
+    /// query path so the tree inspector can read the store's own
+    /// structure as ordinary query rows.
+    Resolver {
+        /// The resolver, already validated against dialog's schema.
+        query: Box<ResolverQuery>,
+        /// The resolver's operand terms.
+        ///
+        /// Carried alongside the query because `ResolverQuery`
+        /// rebuilds its parameter map on every call (its terms are
+        /// per-variant struct fields, not a stored map), so there is
+        /// nothing to borrow — and [`Application::parameters`] must
+        /// return a reference. Callers read this to learn which
+        /// variables the expression binds; an empty map here silently
+        /// yields no rows.
+        terms: Parameters,
+    },
 }
 
 impl Application {
@@ -205,6 +228,10 @@ impl Application {
             Self::Concept { query, .. } => &query.terms,
             Self::Domain { application, .. } => &application.parameters,
             Self::Rule { .. } | Self::DeductiveRule { .. } => empty_parameters(),
+            // A resolver's operands ARE its parameters: callers read
+            // them to learn which variables the expression binds, so
+            // returning an empty set here silently yields no rows.
+            Self::Resolver { terms, .. } => terms,
         }
     }
 
@@ -215,6 +242,9 @@ impl Application {
             | Self::Domain { this, .. }
             | Self::Rule { this, .. }
             | Self::DeductiveRule { this, .. } => this,
+            // A resolver keys on its own `of:` reference, never on a
+            // `this:` entity.
+            Self::Resolver { .. } => &ThisIntent::Derived,
         }
     }
 
@@ -225,7 +255,7 @@ impl Application {
             Self::Concept { name, .. } | Self::Domain { name, .. } => {
                 name.as_ref().map(AnchorName::as_str)
             }
-            Self::Rule { .. } | Self::DeductiveRule { .. } => None,
+            Self::Rule { .. } | Self::DeductiveRule { .. } | Self::Resolver { .. } => None,
         }
     }
 
@@ -401,6 +431,15 @@ impl Planner for Application {
             }))),
             Self::Rule { rule, .. } => Ok(ApplicationPlan::Rule(rule)),
             Self::DeductiveRule { rule, .. } => Ok(ApplicationPlan::DeductiveRule(rule)),
+            // Read-only by construction: a resolver describes what
+            // storage already holds, so it never reaches the mutation
+            // planner. The analyzer only ever builds one for a query
+            // head — an assertion with a resolver name resolves as a
+            // concept and fails there first.
+            Self::Resolver { .. } => unreachable!(
+                "a resolver is read-only — it has no mutation plan and \
+                 the analyzer never lifts one into an assertion"
+            ),
         }
     }
 }

@@ -908,6 +908,19 @@ impl Application for AnonymousConceptQuery {
 /// Stable empty descriptor used as the unused `predicate` slot of
 /// the synthetic [`ConceptQuery`] in
 /// [`AnonymousConceptQuery::realize`].
+/// The entity a resolver row reports as its `this`.
+///
+/// Resolver rows describe blocks, not entities, so there is no real
+/// subject to report — but a `ConceptConclusion` requires one. Naming
+/// the resolver (`db:tree/node`) keeps it honest: the identity says
+/// which resolver produced the row rather than pretending the row is
+/// a fact about some entity.
+fn resolver_row_entity(name: &str) -> Entity {
+    format!("db:{name}")
+        .parse()
+        .expect("a resolver name forms a valid `db:` entity URI")
+}
+
 fn stub_predicate() -> ConceptDescriptor {
     // A descriptor must have at least one required field, so the
     // stub carries a single placeholder. `realize` never reads the
@@ -1026,6 +1039,10 @@ pub enum QueryPlan {
     AnonymousCommand(AnonymousConceptQuery),
     /// Rule-of-rule enumeration via [`AnonymousRuleQuery`].
     AnonymousRule(AnonymousRuleQuery),
+    /// A `tree/*` resolver — dialog answers it by content address
+    /// over immutable blocks, so it describes the store's own
+    /// structure rather than the facts inside it.
+    Resolver(Box<dialog_query::ResolverQuery>),
 }
 
 /// Convert an [`Application`](crate::transact::Application) into
@@ -1040,6 +1057,7 @@ pub fn application_to_plan(application: crate::transact::Application) -> QueryPl
     match application {
         Application::Concept { query, .. } => QueryPlan::from(query),
         Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
+        Application::Resolver { query, .. } => QueryPlan::Resolver(query),
         Application::Rule { .. } | Application::DeductiveRule { .. } => panic!(
             "rule applications have no QueryPlan projection — \
              rules are write-only via Statement::Assert/Retract"
@@ -1103,6 +1121,12 @@ impl Application for QueryPlan {
                         yield each?;
                     }
                 }
+                QueryPlan::Resolver(q) => {
+                    let stream = Application::evaluate(*q, selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
             }
         }
     }
@@ -1113,6 +1137,32 @@ impl Application for QueryPlan {
             QueryPlan::AnonymousConcept(q) => Application::realize(q, source),
             QueryPlan::AnonymousCommand(q) => Application::realize(q, source),
             QueryPlan::AnonymousRule(q) => Application::realize(q, source),
+            // A resolver row is slot→value with no entity of its own,
+            // while `ConceptConclusion` requires a bound `this` and
+            // keeps its fields private. The row's values travel in the
+            // `Match` (which is what the renderer reads), so the
+            // conclusion only needs to exist: give it the resolver's
+            // own subject reference as `this`, which is the closest
+            // thing a resolver row has to an identity.
+            QueryPlan::Resolver(q) => {
+                // A resolver row is slot→value describing a BLOCK, not
+                // a fact about an entity — and `ConceptConclusion`
+                // requires an Entity-typed `this`, while a resolver's
+                // subject is a content address (a base58 string). The
+                // row's values ride the `Match`, which is what the
+                // renderer reads, so the conclusion only needs a
+                // well-formed identity: name the resolver itself.
+                let mut terms = q.parameters().clone();
+                terms.insert(
+                    "this".to_string(),
+                    Term::Constant(Value::Entity(resolver_row_entity(q.name()))),
+                );
+                let synthetic = ConceptQuery {
+                    terms,
+                    predicate: stub_predicate(),
+                };
+                Application::realize(&synthetic, source)
+            }
         }
     }
 }

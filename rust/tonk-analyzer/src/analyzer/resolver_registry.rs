@@ -29,20 +29,49 @@ use std::sync::OnceLock;
 
 use dialog_query::ResolverQuery;
 
-/// One built-in resolver: its formal name plus its operand names.
+/// One operand of a resolver, as dialog's own schema describes it.
+#[derive(Clone)]
+pub struct ResolverOperand {
+    /// The operand name, written as a key under the premise's `where:`.
+    pub name: String,
+    /// Dialog's one-line description of what this operand carries.
+    pub description: String,
+    /// Whether the operand is a *required input* — a term that must
+    /// already be bound when the premise runs, rather than one the
+    /// resolver produces. `of` is required on every `tree/*` resolver:
+    /// they select by content address, so there is nothing to scan.
+    pub required: bool,
+}
+
+/// One built-in resolver: its formal name plus its operands.
 pub(crate) struct ResolverInfo {
     /// The formal name — the string [`ResolverQuery`] serializes under
     /// and the name a premise's `assert:` must carry (e.g. `tree/node`).
     pub name: &'static str,
-    /// The resolver's operand names, read off the dialog type's schema.
-    pub operands: Vec<String>,
+    /// The resolver's operands, read off the dialog type's schema.
+    pub operands: Vec<ResolverOperand>,
 }
 
 impl ResolverInfo {
     /// Operand names in this resolver's schema, unordered.
     pub fn operands(&self) -> impl Iterator<Item = &str> {
-        self.operands.iter().map(String::as_str)
+        self.operands.iter().map(|o| o.name.as_str())
     }
+}
+
+/// The operands of a built-in resolver, for completing keys under a
+/// resolver premise's `where:`. `None` for names that aren't resolvers.
+///
+/// Sorted with required inputs first, then alphabetically — the
+/// required term is the one a document cannot omit, so it leads.
+pub fn resolver_operands(name: &str) -> Option<Vec<ResolverOperand>> {
+    let mut operands = lookup_resolver(name)?.operands.clone();
+    operands.sort_by(|a, b| {
+        b.required
+            .cmp(&a.required)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Some(operands)
 }
 
 /// Look up a built-in resolver by its formal name. Returns `None` for
@@ -106,8 +135,16 @@ fn build_registry() -> Vec<ResolverInfo> {
         let query: ResolverQuery =
             serde_json::from_value(serde_json::json!({ "assert": name, "where": {} }))
                 .unwrap_or_else(|e| panic!("dialog resolver {name:?} must deserialize: {e}"));
-        let mut operands: Vec<String> = query.schema().iter().map(|(k, _)| k.clone()).collect();
-        operands.sort_unstable();
+        let mut operands: Vec<ResolverOperand> = query
+            .schema()
+            .iter()
+            .map(|(name, field)| ResolverOperand {
+                name: name.clone(),
+                description: field.description().to_owned(),
+                required: field.requirement().is_required(),
+            })
+            .collect();
+        operands.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         ResolverInfo {
             name: query.name(),
             operands,
@@ -159,6 +196,39 @@ mod tests {
                 "`{name}` keys on `of`; saw {operands:?}"
             );
         }
+    }
+
+    /// Operands carry dialog's own descriptions and requiredness, so
+    /// the editor can tell an input that must be bound apart from a
+    /// binding the resolver produces. `of` is the required one on
+    /// every `tree/*` resolver, and it must sort first.
+    #[dialog_common::test]
+    fn it_describes_resolver_operands() {
+        let operands = resolver_operands("tree/node").expect("`tree/node` is a resolver");
+
+        let of = &operands[0];
+        assert_eq!(of.name, "of", "the required input must lead");
+        assert!(
+            of.required,
+            "`of` selects by content address, so it is an input"
+        );
+        assert!(
+            !of.description.is_empty(),
+            "operand descriptions come off dialog's schema"
+        );
+
+        let kind = operands
+            .iter()
+            .find(|o| o.name == "kind")
+            .expect("`tree/node` reports a node kind");
+        assert!(!kind.required, "`kind` is produced, not supplied");
+        assert!(!kind.description.is_empty());
+    }
+
+    /// Names that are not resolvers have no operands to offer.
+    #[dialog_common::test]
+    fn it_offers_no_operands_for_non_resolvers() {
+        assert!(resolver_operands("person").is_none());
     }
 
     /// A name that is not a resolver falls through, so the caller can
