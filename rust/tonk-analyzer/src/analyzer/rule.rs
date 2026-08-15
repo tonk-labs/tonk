@@ -1818,6 +1818,38 @@ rule!:
         }
     }
 
+    /// The prefix predicate lifts too — documented in the guide's
+    /// predicate table alongside the range ones, so it must work.
+    #[dialog_common::test]
+    async fn it_lifts_a_starts_with_premise() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("person", one_text_field("io.gozala.person", "name"))
+            .await;
+        fixture
+            .declare("flagged", one_text_field("io.gozala.flagged", "name"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: flagged
+  when:
+    - assert: person
+      where: { this: ?this, name: ?name }
+    - assert: starts-with
+      where: { of: ?name, prefix: "A" }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("`starts-with` should analyze");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            Polarity::Assert
+        );
+    }
+
     /// A `tree/*` resolver lifts in premise position, and joins to a
     /// second resolver through a shared variable.
     ///
