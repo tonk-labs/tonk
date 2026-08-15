@@ -273,11 +273,12 @@ impl Server {
             head_completions(opened.as_ref()).await
         } else if is_premise_assert_position(&line_prefix) {
             // A premise's `assert:` value accepts a concept name, a
-            // built-in formula name, or a built-in constraint name —
-            // offer all three.
+            // built-in formula, a constraint, or a resolver — offer
+            // all four.
             let mut out = head_completions(opened.as_ref()).await;
             out.extend(formula_completions_items());
             out.extend(constraint_completions_items());
+            out.extend(resolver_completions_items());
             out
         } else if is_variable_position(&line_prefix) {
             variable_completions(text, position)
@@ -996,6 +997,30 @@ fn constraint_completions_items() -> Vec<CompletionItem> {
         .collect()
 }
 
+/// Every built-in resolver as a completion item. Reads the analyzer's
+/// resolver registry so the list never drifts from what the analyzer
+/// accepts — the `tree/*` family that replaced the worker-intercepted
+/// tree formulas.
+fn resolver_completions_items() -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_analyzer::analyzer::resolver_completions;
+
+    resolver_completions()
+        .into_iter()
+        .map(|resolver| CompletionItem {
+            label: resolver.name.to_owned(),
+            // A resolver reads structure out of the store rather than
+            // computing a value, so it presents as a function-like
+            // premise head, the same as a formula.
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(resolver.detail.clone()),
+            documentation: Some(Documentation::String(resolver.detail)),
+            insert_text: Some(resolver.name.to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 /// Find the identifier surrounding `col` on a single line. Returns
 /// `(start_col, end_col, name)` widened in both directions over
 /// [`is_symbol_char`]. `None` when the cursor isn't sitting on an
@@ -1599,12 +1624,46 @@ mod tests {
             "boolean/and",
             "text/concatenate",
             "==",
+            // Range predicates and the `tree/*` resolvers share this
+            // position: anything that can head a premise is offered
+            // here, or it is undiscoverable in the editor.
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "starts-with",
+            "tree/node",
+            "tree/span",
+            "tree/entry",
+            "tree/key",
         ] {
             assert!(
                 labels.contains(&name),
                 "expected `{name}` in completion list, got {labels:?}",
             );
         }
+
+        // `>` and `>=` must insert QUOTED: bare, they open a YAML
+        // folded scalar, and the document then parses with an empty
+        // predicate name.
+        // The server turns `insert_text` into an explicit `text_edit`
+        // so the client replaces the whole token (see `with_range`),
+        // so the inserted text is the edit's `newText`.
+        let insert_for = |name: &str| -> String {
+            items
+                .iter()
+                .find(|i| i["label"].as_str() == Some(name))
+                .and_then(|i| {
+                    i["textEdit"]["newText"]
+                        .as_str()
+                        .or_else(|| i["insertText"].as_str())
+                })
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(insert_for(">"), "\">\"");
+        assert_eq!(insert_for(">="), "\">=\"");
+        assert_eq!(insert_for("<"), "<");
     }
 
     /// Accepting a namespaced completion over a typed partial name

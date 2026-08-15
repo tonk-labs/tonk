@@ -44,6 +44,7 @@ mod field;
 mod formula;
 mod graph;
 mod query;
+mod resolver_registry;
 mod rule;
 mod scan;
 mod scope;
@@ -66,6 +67,7 @@ pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
 pub use formula::{FormulaCompletion, formula_completions};
+pub use resolver_registry::{ResolverCompletion, resolver_completions};
 pub use scan::scan_variables;
 
 use tonk_schema::concept::QueryEnv;

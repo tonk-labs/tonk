@@ -33,6 +33,7 @@ use super::constraint::{ConstraintInfo, lookup_constraint};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
 use super::formula::{FormulaInfo, lookup_formula};
+use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
@@ -637,6 +638,10 @@ fn lift_premise(
         return lift_constraint_premise(premise, constraint, scope, analysis);
     }
 
+    if let Some(resolver) = lookup_resolver(name) {
+        return lift_resolver_premise(premise, resolver, scope, analysis);
+    }
+
     let resolved = scope.concept(name).ok_or_else(|| {
         AnalyzeError::at(
             AnalyzeErrorKind::UnknownConcept { name: name.into() },
@@ -888,6 +893,75 @@ fn lift_constraint_premise(
     })?;
 
     Ok(Proposition::Constraint(constraint_value))
+}
+
+/// Lift a resolver premise (`tree/node`, `tree/entry`, …) into a
+/// [`Proposition::Resolver`].
+///
+/// Resolvers select by content address over immutable blocks rather
+/// than by key range over the mutable head, which is why they are a
+/// premise kind of their own. Operand handling mirrors constraints:
+/// unknown operands are rejected against the resolver's own schema,
+/// and every declared operand is translated. Unlike a constraint,
+/// though, an omitted operand is NOT an error — a resolver's output
+/// cells are the values it produces, so leaving `size:` unbound
+/// simply means "don't bind it", exactly as with a formula's
+/// `#[output]` slots. Only the required inputs must be bound, and
+/// dialog's own planner enforces that (an unbound `of` is non-viable
+/// rather than misanalyzed).
+fn lift_resolver_premise(
+    premise: &NotationPremise,
+    resolver: &ResolverInfo,
+    scope: &Scope,
+    analysis: &Working,
+) -> Result<Proposition, AnalyzeError> {
+    // Reject `where:` operands the resolver doesn't declare.
+    for field in &premise.bindings {
+        if !resolver.operands().any(|operand| operand == field.name) {
+            let mut valid: Vec<&str> = resolver.operands().collect();
+            valid.sort_unstable();
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnknownFormulaOperand {
+                    formula: resolver.name.to_owned(),
+                    operand: field.name.clone(),
+                    valid: valid.join(", "),
+                },
+                field.name_range,
+            ));
+        }
+    }
+
+    // Translate the operands the document actually bound.
+    let mut terms = Parameters::new();
+    for field in &premise.bindings {
+        let term = field_value_to_term(
+            &field.name,
+            &field.value,
+            field.value_range,
+            scope,
+            analysis,
+            None,
+        )?;
+        terms.insert(field.name.clone(), term);
+    }
+
+    // Construct the typed `ResolverQuery` through its name-keyed serde
+    // representation, the same `{"assert": <name>, "where": <terms>}`
+    // shape constraints and formulas use. dialog-query owns the
+    // resolver↔name mapping, so routing through serde keeps the
+    // analyzer from matching resolver types by hand.
+    let value = serde_json::json!({ "assert": resolver.name, "where": terms });
+    let resolver_value: dialog_query::ResolverQuery =
+        serde_json::from_value(value).map_err(|e| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: format!("resolver {:?}: {e}", resolver.name),
+                },
+                premise.concept.range,
+            )
+        })?;
+
+    Ok(Proposition::Resolver(resolver_value))
 }
 
 #[cfg(test)]
@@ -1742,6 +1816,118 @@ rule!:
                 "`{predicate}` should lift into an asserting rule"
             );
         }
+    }
+
+    /// A `tree/*` resolver lifts in premise position, and joins to a
+    /// second resolver through a shared variable.
+    ///
+    /// This is what the old formula path could not do: the worker
+    /// intercepted `tree/*` before the planner saw it, so a tree query
+    /// could not be joined, subscribed to, or used in a rule. As a
+    /// resolver it is an ordinary premise — here `?child` carries a
+    /// span's child reference straight into the next `tree/node`.
+    #[dialog_common::test]
+    async fn it_lifts_and_joins_tree_resolver_premises() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("node-report", one_text_field("io.gozala.report", "kind"))
+            .await;
+        fixture
+            .declare("subject", one_text_field("io.gozala.subject", "label"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: node-report
+  when:
+    # `?this` is bound by an ordinary concept premise; the resolvers
+    # supply `?kind` by walking a span into the node it delegates to.
+    - assert: subject
+      where: { this: ?this }
+    - assert: tree/span
+      where: { of: "9Qak8VoKufBHVY6Ap5EUM9e4vweFaSm4u3KxS8rK38tD", node: ?child }
+    - assert: tree/node
+      where: { of: ?child, kind: ?kind }
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "resolver premises should parse: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("a joined pair of resolvers should analyze");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            Polarity::Assert
+        );
+    }
+
+    /// A resolver rejects an operand it does not declare, naming the
+    /// resolver — the operands come off dialog's schema, so this
+    /// tracks the real wire format rather than a local list.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_resolver_operand() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("node-report", one_text_field("io.gozala.report", "kind"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: node-report
+  when:
+    - assert: tree/node
+      where: { of: "9Qak8VoKufBHVY6Ap5EUM9e4vweFaSm4u3KxS8rK38tD", colour: ?kind }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let error = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("`colour` is not an operand of `tree/node`");
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::UnknownFormulaOperand { formula, operand, .. }
+                    if formula == "tree/node" && operand == "colour"
+            ),
+            "expected an unknown-operand diagnostic naming tree/node/colour, got {error:?}"
+        );
+    }
+
+    /// A resolver's output operands are optional: binding only the
+    /// required input is valid, and leaving `size:`/`count:` out just
+    /// means "don't bind them" — the formula convention, not the
+    /// constraint one (where every operand is required).
+    #[dialog_common::test]
+    async fn it_allows_a_resolver_to_omit_output_operands() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("node-report", one_text_field("io.gozala.report", "kind"))
+            .await;
+        fixture
+            .declare("subject", one_text_field("io.gozala.subject", "label"))
+            .await;
+
+        // `size:` and `count:` are output cells this premise simply
+        // doesn't bind — valid, unlike a constraint operand.
+        let doc = r#"
+rule!:
+  assert!: node-report
+  when:
+    - assert: subject
+      where: { this: ?this }
+    - assert: tree/node
+      where: { of: "9Qak8VoKufBHVY6Ap5EUM9e4vweFaSm4u3KxS8rK38tD", kind: ?kind }
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        fixture
+            .analyze(&syntax)
+            .await
+            .expect("omitting a resolver's output operands is valid");
     }
 
     /// `>` unquoted is a YAML folded-scalar indicator, not the name
