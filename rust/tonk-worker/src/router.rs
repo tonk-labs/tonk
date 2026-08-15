@@ -3779,12 +3779,19 @@ employee:
             matches!(tag, "entity" | "attribute" | "value"),
             "key tag named: {row}"
         );
+        // The M3 key format is variable-length, so components come back
+        // as a decoded `parts` list rather than the fixed-offset
+        // `entity` / `value-type` fields the old layout could name.
+        let parts = row["fields"]["parts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("key parts present: {row}"));
+        let kinds: Vec<&str> = parts
+            .iter()
+            .filter_map(|part| part["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"entity"), "entity component present: {row}");
         assert!(
-            row["fields"]["entity"].as_str().is_some(),
-            "entity component present: {row}"
-        );
-        assert!(
-            row["fields"]["value-type"].as_i64().is_some(),
+            kinds.contains(&"vtype"),
             "value-type component present: {row}"
         );
     }
