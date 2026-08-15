@@ -403,9 +403,9 @@ impl ListNames<'_> {
 mod tests {
     use super::*;
     use crate::concept::{AnonymousConcept, TransientConcept};
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
     use dialog_query::the;
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use tonk_core::meta::name;
 
     /// Assert a concept's backing attribute facts plus the concept

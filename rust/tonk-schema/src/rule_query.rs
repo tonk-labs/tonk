@@ -375,8 +375,8 @@ mod tests {
     /// `concept.rs`'s `it_returns_concept_with_source_from_concept_query`.
     #[dialog_common::test]
     async fn it_enumerates_installed_rules_via_rule_query() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::{Any, Output as _, Parameters, Term};
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -429,7 +429,10 @@ mod tests {
         .expect("definition binding must be a string");
         let definition: RuleDefinition = serde_json::from_str(&definition_json)?;
         assert_eq!(definition.polarity, EffectPolarity::Assert);
-        assert_eq!(definition.rule.assert.this(), expected.assert.this());
+        assert_eq!(
+            definition.rule.assert.as_ref().map(|head| head.this()),
+            expected.assert.as_ref().map(|head| head.this())
+        );
         assert_eq!(definition.rule.when.len(), expected.when.len());
         assert_eq!(definition.rule.unless.len(), expected.unless.len());
         Ok(())

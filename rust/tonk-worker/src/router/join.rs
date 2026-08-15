@@ -66,7 +66,6 @@ use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider, Subject};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, Ed25519Verifier};
-use dialog_effects::Rejection;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
@@ -1928,7 +1927,7 @@ fn classify_pull(error: &PullError) -> JoinFailure {
     // The typed reasons survive the pull's error chain (dialog carries
     // `AuthorizeError` / `Rejection` intact from the service boundary),
     // so classification is a match, not a code-table lookup.
-    if let Some(authorization) = crate::router::sync::find_in_chain::<AuthorizeError>(error) {
+    if let Some(authorization) = crate::router::sync::authorization_reason(error) {
         return match authorization {
             AuthorizeError::Revoked { .. } => {
                 JoinFailure::revoked("remote access has been revoked")
@@ -1942,7 +1941,7 @@ fn classify_pull(error: &PullError) -> JoinFailure {
             _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
         };
     }
-    if let Some(rejection) = crate::router::sync::find_in_chain::<Rejection>(error) {
+    if let Some(rejection) = crate::router::sync::rejection_reason(error) {
         return JoinFailure::unavailable(format!("remote answered: {rejection}"));
     }
     JoinFailure::unavailable("the remote could not be reached")

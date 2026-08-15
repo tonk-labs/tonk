@@ -462,7 +462,7 @@ mod tests {
     /// reads it.
     #[dialog_common::test]
     async fn it_accepts_effect_with_transient_premise() -> anyhow::Result<()> {
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -490,7 +490,7 @@ mod tests {
     /// increment) is marked transient, so validation fails.
     #[dialog_common::test]
     async fn it_rejects_effect_without_transient_premise() -> anyhow::Result<()> {
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;

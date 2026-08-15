@@ -47,7 +47,7 @@ tonk-worker-api = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
-dialog-repository = { workspace = true, features = ["helpers"] }
+dialog-operator = { workspace = true, features = ["helpers"] }
 lsp-types = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tonk-evaluator = { workspace = true }

@@ -418,6 +418,14 @@ mod tests {
         async fn save(&self, _delegation: &UcanDelegation) -> Result<(), AuthorizeError> {
             Ok(())
         }
+
+        async fn export(&self) -> Result<Vec<UcanCertificate>, AuthorizeError> {
+            Ok(self.0.clone())
+        }
+
+        async fn forget(&self, _certificates: &[UcanCertificate]) -> Result<(), AuthorizeError> {
+            Ok(())
+        }
     }
 
     #[test]

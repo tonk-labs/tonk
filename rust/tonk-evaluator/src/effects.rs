@@ -723,8 +723,8 @@ impl Statement for RawReplace {
 mod tests {
     use super::*;
     use dialog_artifacts::Entity;
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::{Term, the};
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
     use dialog_artifacts::Statement;
     use dialog_query::artifact::Type;

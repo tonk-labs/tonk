@@ -503,8 +503,8 @@ mod tests {
     #[dialog_common::test]
     async fn it_retracts_by_reading_the_stored_source_string() -> anyhow::Result<()> {
         use crate::query_source::Source;
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::{AttributeQuery, Output as _};
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;

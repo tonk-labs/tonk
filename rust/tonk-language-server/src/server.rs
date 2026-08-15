@@ -1194,8 +1194,8 @@ fn server_capabilities() -> ServerCapabilities {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_repository::Branch;
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use serde_json::json;
     use tonk_schema::concept::QueryEnv;
     use tonk_schema::query_source::Source;

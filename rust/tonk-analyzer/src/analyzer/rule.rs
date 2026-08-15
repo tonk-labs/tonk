@@ -907,13 +907,13 @@ fn lift_constraint_premise(
 mod tests {
     use super::*;
     use dialog_artifacts::Entity;
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::AttributeDescriptor;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
     use dialog_query::the;
     use dialog_repository::Branch;
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use tonk_notation::parse;
     use tonk_schema::concept::AnonymousConcept;
     use tonk_schema::query_source::Source;

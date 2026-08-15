@@ -9,9 +9,9 @@ use dialog_common::helpers::Provisionable as _;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_operator::Operator;
+use dialog_operator::helpers::{test_operator_with_profile, unique_name};
 use dialog_query::{Attribute, Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::helpers::{test_operator_with_profile, unique_name};
 use dialog_repository::{Branch, RemoteBranch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::VolatileSpace;
 use dialog_ucan::UcanDelegation;
@@ -224,8 +224,16 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
 
     let genesis_a = branch_a.transaction().commit().perform(&operator_a).await?;
     let genesis_b = branch_b.transaction().commit().perform(&operator_b).await?;
-    assert_eq!(genesis_a.subject, root_did);
-    assert_eq!(genesis_b.subject, root_did);
+    // The head carries an opaque branch entity committing to
+    // (profile, subject, name) rather than the subject DID itself.
+    assert_eq!(
+        genesis_a.branch,
+        dialog_repository::branch_of(&root_did, &operator_a.profile_did(), "main")
+    );
+    assert_eq!(
+        genesis_b.branch,
+        dialog_repository::branch_of(&root_did, &operator_b.profile_did(), "main")
+    );
     assert_ne!(genesis_a, genesis_b, "the race must use distinct revisions");
 
     let (result_a, result_b) = tokio::join!(

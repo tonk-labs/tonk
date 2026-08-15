@@ -1115,6 +1115,7 @@ name = "dialog-operator"
 version = "0.1.0"
 source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-08-14#176a6046fb40ab3586e87a4464a6de1326aea43e"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base58",
  "blake3",
@@ -4621,6 +4622,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
+ "dialog-operator",
  "dialog-query",
  "dialog-repository",
  "lsp-types",
@@ -4784,6 +4786,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
+ "dialog-operator",
  "dialog-query",
  "dialog-repository",
  "serde",
@@ -4933,6 +4936,7 @@ dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
+ "dialog-operator",
  "dialog-repository",
  "lsp-types",
  "serde",
@@ -5043,6 +5047,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
+ "dialog-operator",
  "dialog-query",
  "dialog-repository",
  "dialog-ucan-core",

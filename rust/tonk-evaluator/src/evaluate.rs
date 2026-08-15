@@ -1036,11 +1036,11 @@ mod tests {
     // Aliased so the `.assert()` trait method stays in scope
     // without shadowing the analyzer's `Statement` enum.
     use dialog_artifacts::Statement as ArtifactsStatement;
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
     use dialog_query::{AttributeDescriptor, the};
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use tonk_notation::parse;
 
     /// Build a 1-field cardinality-one concept descriptor —

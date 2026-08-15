@@ -12,11 +12,11 @@
 #![cfg(feature = "integration-tests")]
 
 use dialog_artifacts::{ArtifactSelector, Entity};
+use dialog_operator::helpers::{test_operator_with_profile, unique_name};
 use dialog_query::Attribute;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::Blob;
 use dialog_repository::RepositoryExt as _;
-use dialog_repository::helpers::{test_operator_with_profile, unique_name};
 use futures_util::{StreamExt, stream};
 use tonk_access_service::helpers::AccessServiceAddress;
 

@@ -1251,6 +1251,7 @@ pub async fn revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_operator::DeriveOperator as _;
 
     #[test]
     fn it_formats_the_cli_device_name_with_os_version() {

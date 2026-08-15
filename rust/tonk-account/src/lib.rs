@@ -197,7 +197,11 @@ mod tests {
     #[test]
     fn it_preserves_concrete_remote_error_classes() {
         assert!(matches!(
-            map_resolve_error(ResolveError::Authorization("denied".to_string())),
+            map_resolve_error(ResolveError::Authorization(
+                dialog_capability::AuthorizeError::Malformed {
+                    detail: "denied".to_string(),
+                }
+            )),
             RemoteError::Unauthorized(_)
         ));
         assert!(matches!(

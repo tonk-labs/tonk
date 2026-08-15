@@ -32,8 +32,7 @@ url = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-dialog-operator = { workspace = true }
-dialog-repository = { workspace = true, features = ["helpers"] }
+dialog-operator = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
 dialog-ucan = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }

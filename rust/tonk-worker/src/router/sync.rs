@@ -294,29 +294,65 @@ fn is_head_moved(error: &crate::reactor::ReactorError) -> bool {
     )
 }
 
-/// Walk an error's `source()` chain for the first typed `T` it carries.
+/// Walk an error's `source()` chain and probe each node for the typed
+/// reason it carries.
 ///
 /// Dialog's effect errors keep their reasons intact — an
 /// [`AuthorizeError`] or [`Rejection`] built at the service boundary
-/// rides the chain to the caller — so classification downcasts for the
-/// typed value instead of parsing a rendering.
-pub(crate) fn find_in_chain<'a, T: std::error::Error + 'static>(
-    error: &'a (dyn std::error::Error + 'static),
-) -> Option<&'a T> {
-    let mut current: Option<&'a (dyn std::error::Error + 'static)> = Some(error);
-    while let Some(error) = current {
-        if let Some(found) = error.downcast_ref::<T>() {
-            return Some(found);
+/// rides the chain to the caller — but the carrier variants are
+/// `#[error(transparent)]`, which forwards `source()` PAST the reason,
+/// so a plain downcast walk never lands on it. Each node is therefore
+/// probed for the known carrier enums and the reason read out of the
+/// variant directly.
+macro_rules! chain_reason {
+    ($name:ident, $reason:ty, $variant:ident) => {
+        pub(crate) fn $name<'a>(
+            error: &'a (dyn std::error::Error + 'static),
+        ) -> Option<&'a $reason> {
+            use dialog_artifacts::DialogArtifactsError;
+            use dialog_effects::archive::ArchiveError;
+            use dialog_effects::blob::BlobError;
+            use dialog_effects::memory::MemoryError;
+            use dialog_repository::ResolveError;
+            let mut current: Option<&'a (dyn std::error::Error + 'static)> = Some(error);
+            while let Some(node) = current {
+                if let Some(reason) = node.downcast_ref::<$reason>() {
+                    return Some(reason);
+                }
+                if let Some(PublishError::$variant(reason)) = node.downcast_ref::<PublishError>() {
+                    return Some(reason);
+                }
+                if let Some(ResolveError::$variant(reason)) = node.downcast_ref::<ResolveError>() {
+                    return Some(reason);
+                }
+                if let Some(MemoryError::$variant(reason)) = node.downcast_ref::<MemoryError>() {
+                    return Some(reason);
+                }
+                if let Some(ArchiveError::$variant(reason)) = node.downcast_ref::<ArchiveError>() {
+                    return Some(reason);
+                }
+                if let Some(BlobError::$variant(reason)) = node.downcast_ref::<BlobError>() {
+                    return Some(reason);
+                }
+                if let Some(DialogArtifactsError::$variant(reason)) =
+                    node.downcast_ref::<DialogArtifactsError>()
+                {
+                    return Some(reason);
+                }
+                current = node.source();
+            }
+            None
         }
-        current = error.source();
-    }
-    None
+    };
 }
+
+chain_reason!(authorization_reason, AuthorizeError, Authorization);
+chain_reason!(rejection_reason, Rejection, Rejected);
 
 fn classified_service_failure(
     error: &(dyn std::error::Error + 'static),
 ) -> Option<TonkWorkerError> {
-    if let Some(authorization) = find_in_chain::<AuthorizeError>(error) {
+    if let Some(authorization) = authorization_reason(error) {
         return Some(match authorization {
             AuthorizeError::Revoked { .. } => TonkWorkerError::Upstream {
                 status: 403,
@@ -337,7 +373,7 @@ fn classified_service_failure(
             },
         });
     }
-    let rejection = find_in_chain::<Rejection>(error)?;
+    let rejection = rejection_reason(error)?;
     Some(if rejection.is_transient() {
         TonkWorkerError::Upstream {
             status: 503,
@@ -1423,34 +1459,30 @@ mod tests {
         assert!(branches_to_sync(&branches).is_empty());
     }
 
-    fn service_failure(status: u16, code: &str) -> crate::reactor::ReactorError {
-        crate::reactor::ReactorError::Pull(PullError::Publish(PublishError::ServiceResponse(
-            dialog_effects::service::ServiceResponseError::new(
-                status,
-                Some(code.to_string()),
-                "untrusted detail",
-            ),
-        )))
+    fn authorization_failure(error: AuthorizeError) -> crate::reactor::ReactorError {
+        crate::reactor::ReactorError::Pull(PullError::Publish(PublishError::Authorization(error)))
     }
 
     #[dialog_common::test]
-    fn it_classifies_new_and_legacy_revocation_codes_without_string_matching() {
-        for code in ["CREDENTIAL_REVOKED", "DEVICE_REVOKED"] {
-            let error = sync_failure(&service_failure(403, code));
-            assert!(matches!(
-                error,
-                TonkWorkerError::Upstream {
-                    status: 403,
-                    code: Some(ref code),
-                    ..
-                } if code == "CREDENTIAL_REVOKED"
-            ));
-        }
+    fn it_classifies_revocation_from_the_typed_reason() {
+        let error = sync_failure(&authorization_failure(AuthorizeError::Revoked {
+            subject: dialog_capability::did!("key:zSubject"),
+        }));
+        assert!(matches!(
+            error,
+            TonkWorkerError::Upstream {
+                status: 403,
+                code: Some(ref code),
+                ..
+            } if code == "CREDENTIAL_REVOKED"
+        ));
     }
 
     #[dialog_common::test]
     fn it_maps_revocation_registry_outages_to_sync_unavailable() {
-        let error = sync_failure(&service_failure(503, "REVOCATION_UNAVAILABLE"));
+        let error = sync_failure(&authorization_failure(AuthorizeError::Unavailable {
+            detail: "revocation registry offline".to_string(),
+        }));
         assert!(matches!(
             error,
             TonkWorkerError::Upstream {
