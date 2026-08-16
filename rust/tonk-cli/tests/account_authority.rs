@@ -106,6 +106,53 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     Ok(())
 }
 
+/// Migrating is safe to run with nothing to migrate, and reports so.
+///
+/// The command exists for profiles that predate delegations being facts: it
+/// drains the legacy certificate store into the access branch and retains
+/// each spot into the account space. A fresh profile has neither, so the run
+/// must succeed and report zero rather than erroring — which is what makes it
+/// safe to re-run.
+#[dialog_common::test]
+async fn it_migrates_delegations_idempotently() -> Result<()> {
+    use dialog_storage::provider::storage::{NativeSpace, Storage};
+
+    let fixture = common::AccountFixture::new().await?;
+    let store = tonk_cli::spot::SpotStore::at(fixture.tmp.path().join("registry"));
+    // Mount the fixture's profile so migration has a provider for its
+    // subject: it commits as the profile, and an unmounted one errors.
+    let storage = Storage::<NativeSpace>::default();
+    let profile = dialog_operator::Profile::load(&fixture.config.profile_name)
+        .at(fixture.config.profile_directory.clone())
+        .perform(&storage)
+        .await?;
+
+    let first = tonk_cli::account_state::migrate_delegations(
+        &profile,
+        fixture.pre_account_site.operator.inner(),
+        &storage,
+        &store,
+    )
+    .await?;
+
+    // Re-running must not double-count: the certificate store was drained by
+    // the first pass, and retaining is content-addressed.
+    let second = tonk_cli::account_state::migrate_delegations(
+        &profile,
+        fixture.pre_account_site.operator.inner(),
+        &storage,
+        &store,
+    )
+    .await?;
+    assert_eq!(
+        second.certificates, 0,
+        "a drained certificate store has nothing left to migrate; first pass moved {}",
+        first.certificates
+    );
+    assert_eq!(second.spots, 0, "no spot may be retained twice");
+    Ok(())
+}
+
 /// A spot created before the account existed chains to the device root this
 /// profile held at the time and reaches no account root at all. Linking an
 /// account must adopt it rather than strand it offline.

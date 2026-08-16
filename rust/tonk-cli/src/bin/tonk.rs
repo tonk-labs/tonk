@@ -518,6 +518,14 @@ enum AccountCommand {
         command: Option<AccountSpotsCommand>,
     },
 
+    /// Move stored delegations into their durable homes
+    ///
+    /// Drains the legacy certificate store into the profile's access branch
+    /// and retains each spot's authority into the account space, so another
+    /// device regains access by pulling the account. Safe to re-run.
+    #[command(after_help = "Examples:\n  tonk account migrate")]
+    Migrate,
+
     /// List the devices linked to this profile's account
     Devices {
         /// Account service base URL (for staging or local development).
@@ -888,6 +896,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                     None | Some(AccountSpotsCommand::List) => "spots-list",
                     Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
                 },
+                AccountCommand::Migrate => "migrate",
                 AccountCommand::Devices { .. } => "devices",
                 AccountCommand::Revoke { .. } => "revoke",
             }),
@@ -1256,6 +1265,25 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
+        AccountCommand::Migrate => {
+            match tonk_cli::account_state::migrate_delegations_here().await {
+                Ok(outcome) => {
+                    println!(
+                        "migrated {} certificate{} into access facts",
+                        outcome.certificates,
+                        if outcome.certificates == 1 { "" } else { "s" }
+                    );
+                    println!(
+                        "retained {} spot{} into the account space ({} already there)",
+                        outcome.spots,
+                        if outcome.spots == 1 { "" } else { "s" },
+                        outcome.already
+                    );
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            }
+        }
         AccountCommand::Link {
             name,
             service_url,

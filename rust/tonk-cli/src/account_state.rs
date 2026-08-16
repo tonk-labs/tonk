@@ -153,6 +153,124 @@ pub async fn retain_space_delegation(
         .context("failed to retain space delegation")
 }
 
+/// What a delegation migration did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationOutcome {
+    /// Legacy certificate-store entries drained into access-branch facts.
+    pub certificates: usize,
+    /// Spots whose authority was retained into the account space.
+    pub spots: usize,
+    /// Spots already retained, so nothing was written for them.
+    pub already: usize,
+}
+
+/// Move this profile's delegations into their durable homes.
+///
+/// Two things move, and both are idempotent:
+///
+/// 1. **The legacy certificate store into the access branch.** Dialog now
+///    keeps delegations as `dialog.ucan/*` facts; older profiles hold them in
+///    a certificate store the proof walk is migrating away from. Dialog's own
+///    `migrate` drains it, skipping self-issued certificates — an operator's
+///    session grants are re-minted in memory on every build, so persisting
+///    them only accumulated one per build forever.
+///
+/// 2. **Each spot's authority into the account space.** The account
+///    repository is the durable home of delegations: retaining a spot's
+///    `space → account-root` prefix there is what lets the next device regain
+///    access by pulling, instead of fetching a backup artifact.
+///
+/// Spots that fail individually are counted and skipped rather than aborting
+/// the run, so one unreadable spot cannot block migrating the rest.
+///
+/// This form resolves the operator and spot registry from the install; the
+/// [`migrate_delegations`] form takes them, for callers that already hold one.
+pub async fn migrate_delegations_here() -> Result<MigrationOutcome> {
+    let storage = Storage::<NativeSpace>::default();
+    let profile = Profile::load(crate::site::PROFILE_NAME)
+        .at(Directory::Profile)
+        .perform(&storage)
+        .await
+        .context("failed to mount the profile for delegation migration")?;
+    let operator = credential_operator(&profile).await?;
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    migrate_delegations(&profile, &operator, &storage, &store).await
+}
+
+/// [`migrate_delegations_here`] against a caller-supplied profile, operator,
+/// storage, and spot store.
+///
+/// `profile` must be mounted in `storage`: the certificate migration commits
+/// as the profile, so a storage without it errors rather than silently
+/// migrating nothing.
+pub async fn migrate_delegations(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    storage: &Storage<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<MigrationOutcome> {
+    use dialog_repository::MigrateAccess as _;
+
+    // Migration commits as the profile itself, so it runs against the storage
+    // the profile is mounted in. Passing a fresh `Storage::default()` would
+    // fail with "no provider found for subject" — the profile has to be
+    // mounted there first, which is what `Profile::load` does.
+    let certificates = profile
+        .access()
+        .migrate()
+        .perform(storage)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to migrate the certificate store: {error}"))?
+        .len();
+    let mut outcome = MigrationOutcome {
+        certificates,
+        ..MigrationOutcome::default()
+    };
+
+    // Without a hydrated account there is nowhere to retain, which is an
+    // ordinary state rather than a failure: the certificate migration above
+    // still stands on its own.
+    let Some(descriptor) = descriptor(profile, operator).await? else {
+        return Ok(outcome);
+    };
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+        return Ok(outcome);
+    }
+    let account_root = match crate::identity::local_root_with_operator(profile, operator).await? {
+        Some(root) => root
+            .root_did
+            .parse::<dialog_varsig::Did>()
+            .context("stored root DID is invalid")?,
+        None => return Ok(outcome),
+    };
+    let repository = mount(profile, operator, &descriptor).await?;
+    let branch = repository
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .context("failed to open account main branch")?;
+
+    for entry in store.load()?.spots.values() {
+        let Ok(site) = crate::site::TonkSite::open(&entry.site).await else {
+            continue;
+        };
+        let subject = site.repository.did();
+        let Ok(chain) =
+            crate::site::account_root_prefix_for(profile, operator, &subject, &account_root).await
+        else {
+            continue;
+        };
+        match tonk_account::delegations::retain_space_delegation(&branch, &chain, operator).await {
+            Ok(true) => outcome.spots += 1,
+            Ok(false) => outcome.already += 1,
+            Err(_) => continue,
+        }
+    }
+
+    Ok(outcome)
+}
+
 async fn operator_with_profile(
     profile: &Profile,
     root: &Path,
