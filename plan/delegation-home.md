@@ -237,17 +237,39 @@ survive — so the entity and the causal version are preserved by construction,
 not by luck. What still needs checking is whether that holds through *our*
 export/import path on a real spot rather than over hand-built artifacts.
 
-**Blocker: there is no force push, and this needs one.** Dialog states it
+**There is no force push, and re-import needs to replace a head.** Dialog states it
 plainly — "Push is fast-forward only" (`branch/push.rs:61`) — with
 `PushError::NonFastForward` and no force option anywhere in
 `dialog-repository`. Re-importing rebuilds the tree, so the upgraded spot's
 head is not a descendant of what the remote already holds: an ordinary push
 refuses it, exactly as observed while testing the account branch.
 
-This is a dialog-side change, not something tonk can route around. Worth
-raising upstream with the upgrade path as the motivating case, since the
-alternative — deleting the remote branch and re-pushing — loses the very
-history the import was meant to carry across.
+Two answers, and they are complementary rather than alternatives.
+
+**1. Adopt the remote head as the precondition (works today).** Push does not
+compare against the remote's ancestry — it compares the *locally recorded*
+sync point against what the remote currently holds:
+
+```rust
+let base = upstream_state.tree().clone();          // push.rs:120
+let current = upstream.revision().map(|r| r.tree).unwrap_or_default();
+if current != base { return Err(PushError::NonFastForward { .. }) }
+```
+
+So refreshing that recorded base to the remote's current head satisfies the
+check and the reset proceeds. `Upstream::with_tree` (`upstream.rs:47`) is
+public, so this needs no dialog change at all. It is also the *better*
+semantic: the precondition is still checked, against a head we deliberately
+read, so a concurrent writer between the read and the push is still caught —
+compare-and-swap rather than clobber.
+
+**2. An explicit force affordance upstream (worth having anyway).** Something
+like `push().override()`, so the intent is declared at the call site rather
+than implied by quietly rewriting a sync base. Option 1 makes the upgrade
+path unblocked; option 2 makes it legible.
+
+Either beats the alternative of deleting the remote branch and re-pushing,
+which loses the very history the import exists to carry across.
 
 **The open question is what CSV does not carry.** The columns are artifact
 facts. Delegations are now `dialog.ucan/*` facts and may round-trip, but the
