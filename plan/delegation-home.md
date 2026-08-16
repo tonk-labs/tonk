@@ -263,10 +263,17 @@ semantic: the precondition is still checked, against a head we deliberately
 read, so a concurrent writer between the read and the push is still caught —
 compare-and-swap rather than clobber.
 
-**2. An explicit force affordance upstream (worth having anyway).** Something
-like `push().override()`, so the intent is declared at the call site rather
-than implied by quietly rewriting a sync base. Option 1 makes the upgrade
-path unblocked; option 2 makes it legible.
+Better still, option 1 needs no new plumbing either: `pull` already does the
+base refresh. When the local context includes everything upstream has seen,
+it takes the branch that "keep[s] the head and advance[s] only the sync base"
+(`pull.rs:299`) — the local head is untouched, the precondition is refreshed.
+So the migration sequence is the ordinary one: **pull, then push.**
+
+Crucially this keeps the safety property. The base is refreshed from a head
+we deliberately fetched, so a writer that moves the remote *between* that
+fetch and the push still trips `NonFastForward`. A force flag would have
+clobbered them. Compare-and-swap, not override — which is why no dialog
+change is wanted here.
 
 Either beats the alternative of deleting the remote branch and re-pushing,
 which loses the very history the import exists to carry across.
@@ -276,3 +283,26 @@ facts. Delegations are now `dialog.ucan/*` facts and may round-trip, but the
 account descriptor, the trusted-base marker, and the local root live in the
 credential store, not on a branch. Verify by round-tripping a real spot and
 diffing, rather than reasoning from the column list.
+
+
+## The migration test: a fixture written by the OLD dialog
+
+An upgrade path is only as good as the evidence it upgrades something real,
+so the test needs a spot **populated by the pre-upgrade dialog**, not one
+this build wrote and then re-read. Reasoning about format compatibility from
+the current code cannot show that.
+
+Shape:
+
+1. Check in a fixture exported from a spot created under the old dialog —
+   CSV plus whatever credential-store state the upgrade must carry.
+2. Import it under the current build into a fresh spot.
+3. Assert the data is *there* (rows round-trip) and that identity survived:
+   same entity, same `cause`. A spot that comes back as a different spot to
+   its peers is a failed upgrade, not a partial one.
+4. Push to a live access service, exercising the pull-then-push sequence
+   above — the step that proves the rebuilt tree can actually reach a remote
+   that already holds the old head.
+
+Generating the fixture needs an old build to run once; committing its output
+is what makes the test reproducible afterwards.
