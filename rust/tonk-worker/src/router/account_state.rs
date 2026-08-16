@@ -14,6 +14,8 @@ use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
+use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::DelegationChain;
 use tonk_account::{
     AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
     probe_remote_main, publish_genesis_if_absent,
@@ -637,6 +639,65 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
         Err(error) => {
             log!("account passkey facts unreadable: {error}");
             None
+        }
+    }
+}
+
+/// Retain a `space → account-root` delegation into the account space, so the
+/// authority it carries is durable data rather than a device-local artifact.
+///
+/// The account repository is the durable home of delegations: a device that
+/// pulls it regains access, because the delegations are just facts in a branch
+/// it syncs. Retaining is content-addressed, so re-retaining the same chain
+/// commits nothing — a caller may run this on every space creation without
+/// checking first.
+///
+/// Best-effort by design, and deliberately not fatal to the operation that
+/// triggered it. A space is fully usable on this device the moment its
+/// delegation is saved to the profile's own access branch; retaining into the
+/// account is what makes it recoverable on the *next* device. Failing space
+/// creation because a hidden system repository was mid-hydration would trade a
+/// working space for a recoverable one. Returns whether it retained, and logs
+/// every reason it did not.
+pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &DelegationChain) -> bool {
+    let ready = match require_ready_account_state(tonk).await {
+        Ok(ready) => ready,
+        // Unconfigured and unhydrated are ordinary states for a signed-out or
+        // still-hydrating profile, not failures worth a line in the log.
+        Err(_) => return false,
+    };
+    let branch = match tonk
+        .reactor
+        .repository(&ready.key)
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("open account branch to retain space delegation: {error}");
+            return false;
+        }
+    };
+    match branch
+        .handle()
+        .delegations()
+        .retain(UcanDelegation(chain.clone()))
+        .perform(&tonk.operator)
+        .await
+    {
+        // An empty list means every certificate was already retained.
+        Ok(retained) => {
+            let wrote = !retained.is_empty();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            if wrote {
+                tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+            }
+            wrote
+        }
+        Err(error) => {
+            log!("retain space delegation into account space: {error}");
+            false
         }
     }
 }
@@ -1372,6 +1433,100 @@ mod tests {
 
         service.stop().await.unwrap();
         discard(state, &ready.key);
+    }
+
+    /// A space delegation retained into the account space becomes
+    /// `dialog.ucan/*` facts there — the whole point of the account being the
+    /// durable home of delegations, since a device regains access by pulling
+    /// them rather than by fetching an artifact.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_retains_a_space_delegation_into_the_account_space() {
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_varsig::Principal as _;
+
+        let (state, service, _descriptor) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        // A `space -> account-root` delegation, the shape space creation mints.
+        let space = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
+            .await
+            .unwrap();
+        let subject = space.did();
+        let root = super::super::identity::local_root(&state).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(space)
+            .audience(&root.root_did)
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(delegation);
+
+        assert!(
+            retain_space_delegation(&state, &chain).await,
+            "a ready account must retain the delegation"
+        );
+        assert!(
+            proves_space_access(&state, &ready, &subject).await,
+            "the retained delegation must prove access to the space it delegates"
+        );
+
+        // Content-addressed, so re-retaining the same chain commits nothing.
+        assert!(
+            !retain_space_delegation(&state, &chain).await,
+            "re-retaining an identical chain must not write again"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// Whether the account branch's retained delegations prove the local root
+    /// may act on `subject`.
+    ///
+    /// Asserts through dialog's own reader rather than by inspecting
+    /// `dialog.ucan/*` rows: proving is what these facts EXIST for, so a
+    /// passing proof is the claim that matters, and it cannot pass on facts
+    /// whose envelope does not back them.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn proves_space_access(
+        state: &TonkState,
+        ready: &ReadyAccountBranch,
+        subject: &dialog_varsig::Did,
+    ) -> bool {
+        use dialog_ucan::{Parameters, Scope};
+        use dialog_ucan_core::command::Command;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+
+        let root = super::super::identity::local_root(state).await.unwrap();
+        let branch = state
+            .reactor
+            .repository(&ready.key)
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        branch
+            .handle()
+            .delegations()
+            .prove(
+                root.root_did.clone(),
+                Scope {
+                    subject: UcanSubject::Specific(subject.clone()),
+                    command: Command::parse("/").unwrap(),
+                    parameters: Parameters::default(),
+                },
+            )
+            .perform(&state.operator)
+            .await
+            .is_ok()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

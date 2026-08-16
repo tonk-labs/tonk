@@ -2692,6 +2692,12 @@ pub async fn create_repository(
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to save repo delegation: {}", e)))?;
+    // The same authority, retained into the account space. The profile's own
+    // access branch above is what makes this space usable HERE; the account is
+    // what makes it recoverable on the next device, since a device regains
+    // access by pulling the account rather than by fetching an artifact.
+    super::account_state::retain_space_delegation(tonk, &prefix).await;
+
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
         RepositoryError::Internal(format!(
             "Failed to serialize space root delegation: {error}"
