@@ -281,10 +281,7 @@ pub async fn status(profile: &Profile) -> Result<AccountStatus> {
 /// no more trusted for it: one proof, subject-open (a powerline, so it covers
 /// everything the account holds), addressed to this profile, and signed by the
 /// issuer it names.
-pub(crate) async fn validate_account_grant(
-    profile: &Profile,
-    bytes: &[u8],
-) -> Result<DelegationChain> {
+pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<DelegationChain> {
     let chain =
         DelegationChain::try_from(bytes).context("authorization is not a delegation container")?;
     if chain.proof_cids().len() != 1 {

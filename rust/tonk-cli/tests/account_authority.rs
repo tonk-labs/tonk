@@ -101,6 +101,116 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     Ok(())
 }
 
+/// `account link --via` installs the authority a browser hands back.
+///
+/// The ceremony itself needs a browser, but the CONTRACT does not: the page
+/// posts a base64 payload carrying a delegation and a descriptor, and
+/// anything that can sign can produce one. Standing in for the browser here
+/// pins the CLI's whole half — validation, descriptor persistence, the union
+/// edge, and the retain — without a WebAuthn dependency. The browser's half
+/// is covered by the e2e suite, which drives a real ceremony.
+#[dialog_common::test]
+async fn it_installs_authority_from_a_callback_authorization(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    use base64::Engine as _;
+    use dialog_varsig::Principal as _;
+
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    let operator = fixture.pre_account_site.operator.inner();
+
+    // Exactly what the page mints: the account's powerline to this profile,
+    // plus the descriptor that says where the account repository lives.
+    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let authorized =
+        tonk_identity::ceremony::authorize_device(root.clone(), fixture.profile.did(), &remote)
+            .await?;
+    let payload = serde_json::json!({
+        "delegationHex": authorized.delegation_hex,
+        "descriptorHex": authorized.descriptor_hex,
+        "credentialId": authorized.root_did,
+    })
+    .to_string();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+
+    // Drive the CLI's receiving half against that payload.
+    let callback = tonk_cli::callback::Callback::bind().await?;
+    let url = callback.url().to_owned();
+    let posting = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(&url)
+            .form(&[("authorize", encoded)])
+            .send()
+            .await
+            .unwrap();
+    });
+    let authorization = callback.receive().await?;
+    posting.await?;
+
+    let bytes = match authorization {
+        tonk_cli::callback::Authorization::Granted(bytes) => bytes,
+        tonk_cli::callback::Authorization::Denied(reason) => {
+            anyhow::bail!("the authorizer declined: {reason}")
+        }
+    };
+    assert_eq!(
+        String::from_utf8(bytes)?,
+        payload,
+        "the payload must reach the CLI byte-identical"
+    );
+
+    // Install both halves the way the CLI does, then prove the result: the
+    // account's grant and this profile's return edge both readable from the
+    // account space, which is what makes a later device inherit them.
+    let chain = tonk_cli::account::validate_account_grant(
+        &fixture.profile,
+        &hex::decode(&authorized.delegation_hex)?,
+    )
+    .await?;
+    assert_eq!(
+        chain.issuer(),
+        &root.did(),
+        "the account root must be the issuer"
+    );
+    let union = tonk_account::delegations::mint_account_union(
+        &fixture.profile.signer().signer().clone(),
+        &root.did(),
+    )
+    .await?;
+
+    let account = tonk_cli::account_state::open_account_branch(&fixture.profile, operator)
+        .await?
+        .expect("the fixture's account is hydrated");
+    for edge in [chain, union] {
+        assert!(
+            tonk_account::delegations::retain_space_delegation(&account, &edge, operator).await?,
+            "both halves of the union must be retained into the account"
+        );
+    }
+
+    // The account can now prove it may act for this profile — the return
+    // edge, which is the half nothing else in the suite covers.
+    let proof = account
+        .delegations()
+        .prove(
+            root.did(),
+            dialog_ucan::Scope {
+                subject: dialog_ucan_core::subject::Subject::Specific(fixture.profile.did()),
+                command: dialog_ucan_core::command::Command::parse("/")?,
+                parameters: dialog_ucan::Parameters::default(),
+            },
+        )
+        .perform(operator)
+        .await;
+    assert!(
+        proof.is_ok(),
+        "the retained union must let the account act for this profile: {:?}",
+        proof.err()
+    );
+    Ok(())
+}
+
 /// The whole loop over a live access service and S3: a space created on one
 /// device is recoverable on a SECOND device that has never seen it, by pulling
 /// the account.
