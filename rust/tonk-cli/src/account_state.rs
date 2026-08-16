@@ -29,6 +29,9 @@ use tonk_schema::{Replica, prelude::DidExt as _};
 /// changing either context re-derives an operator DID and invalidates existing
 /// authority chains.
 const ACCOUNT_OPERATOR_CONTEXT: &[u8] = b"tonk/account-state/v1";
+/// Remote name for the account's access branch in the profile repository.
+const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
+
 const META_BRANCH: &str = "meta";
 
 /// Result of an ensure attempt. Remote failures are a durable Unhydrated
@@ -111,6 +114,66 @@ pub async fn status(profile: &Profile) -> Result<AccountStateStatus> {
     } else {
         Ok(AccountStateStatus::Unhydrated)
     }
+}
+
+/// Point this profile's access branch at the account and pull it.
+///
+/// The account repository syncing with its own remote is not enough: the
+/// operator resolves proofs from the PROFILE's access branch, so authority
+/// living in the account is present but unusable until the access branch
+/// adopts it. This is what makes a recovered delegation authorize anything.
+///
+/// `Ok(false)` means there was nothing to adopt — no account, or one with no
+/// trusted base — which is ordinary for a profile that has not signed in.
+pub async fn adopt_account_access(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+) -> Result<bool> {
+    let Some(descriptor) = descriptor(profile, operator).await? else {
+        return Ok(false);
+    };
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+        return Ok(false);
+    }
+    let subject = descriptor.account_subject().clone();
+    let repository = Repository::from(profile);
+    let access = repository
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .context("failed to open the profile access branch")?;
+
+    // A remote resolved against the ACCOUNT's DID. A local upstream would
+    // resolve against this profile's own subject and could only name a
+    // sibling branch, never the account's.
+    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let remote = match repository
+        .remote(ACCOUNT_ACCESS_REMOTE)
+        .load()
+        .perform(operator)
+        .await
+    {
+        Ok(remote) => remote,
+        Err(_) => repository
+            .remote(ACCOUNT_ACCESS_REMOTE)
+            .create(address)
+            .subject(subject)
+            .perform(operator)
+            .await
+            .context("failed to configure the account access remote")?,
+    };
+    let upstream = remote
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .context("failed to open the account access branch")?;
+
+    tonk_account::delegations::adopt_account_upstream(&access, upstream, operator)
+        .await
+        .context("failed to adopt the account as the access upstream")?;
+    Ok(true)
 }
 
 /// Mount this profile's account repository and open its branch.
@@ -544,6 +607,15 @@ async fn ensure_with_operator(
                 .err()
                 .map(|error| error.to_string()),
             Err(error) => Some(error.to_string()),
+        };
+        // Adopting the account as the access branch's upstream is what makes
+        // recovered authority usable: the operator proves from the access
+        // branch, not the account's. Best-effort, like the sync above — a
+        // device that cannot reach the account is still ready with whatever
+        // it already holds.
+        let warning = match adopt_account_access(profile, operator.local()).await {
+            Ok(_) => warning,
+            Err(error) => warning.or_else(|| Some(error.to_string())),
         };
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Ready,

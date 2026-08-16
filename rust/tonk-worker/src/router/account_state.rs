@@ -25,6 +25,9 @@ use tonk_schema::{AccountPasskeyCreated, Replica, prelude::DidExt as _};
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
+/// Remote name for the account's access branch in the profile repository.
+const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
+
 const META_BRANCH: &str = "meta";
 
 /// Identity returned only after the trusted-base gate has passed.
@@ -474,6 +477,11 @@ async fn sync_ready(tonk: &TonkState, key: &str) -> Result<(), String> {
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    // The account's own sync is not enough on its own: the operator proves
+    // from the PROFILE's access branch, so authority that arrived in the
+    // account above is present but unusable until the access branch adopts
+    // it. Runs on every sweep, and is a no-op once the upstream is set.
+    adopt_account_access(tonk).await;
     // After the pull, so the seed sees what other devices already recorded,
     // and before the push, so anything it writes leaves with this sweep.
     if seed_passkey_facts(tonk).await {
@@ -638,6 +646,83 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
         Err(error) => {
             log!("account passkey facts unreadable: {error}");
             None
+        }
+    }
+}
+
+/// Point this profile's access branch at the account and pull it.
+///
+/// The account repository syncing with its own remote is not enough: the
+/// operator resolves proofs from the PROFILE's access branch, so authority
+/// living in the account is present but unusable until the access branch
+/// adopts it. This is what makes a recovered delegation authorize anything.
+///
+/// Best-effort and non-fatal, like the rest of the sweep: a device that
+/// cannot reach the account keeps whatever authority it already holds.
+/// Returns whether it adopted, and logs every reason it did not.
+pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
+    let Ok(descriptor) = configured_descriptor(tonk).await.ok_or(()) else {
+        return false;
+    };
+    let subject = descriptor.account_subject().clone();
+    let repository = Repository::from(&tonk.profile);
+    let access = match repository
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("open profile access branch to adopt the account: {error}");
+            return false;
+        }
+    };
+
+    // A remote resolved against the ACCOUNT's DID. A local upstream would
+    // resolve against this profile's own subject and could only name a
+    // sibling branch, never the account's.
+    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let remote = match repository
+        .remote(ACCOUNT_ACCESS_REMOTE)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(remote) => remote,
+        Err(_) => match repository
+            .remote(ACCOUNT_ACCESS_REMOTE)
+            .create(address)
+            .subject(subject)
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(remote) => remote,
+            Err(error) => {
+                log!("configure the account access remote: {error}");
+                return false;
+            }
+        },
+    };
+    let upstream = match remote
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("open the account access branch: {error}");
+            return false;
+        }
+    };
+
+    match tonk_account::delegations::adopt_account_upstream(&access, upstream, &tonk.operator).await
+    {
+        Ok(_) => true,
+        Err(error) => {
+            log!("adopt the account as the access upstream: {error}");
+            false
         }
     }
 }

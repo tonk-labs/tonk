@@ -155,8 +155,30 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
         command: Command::parse("/").expect("root command parses"),
         parameters: Parameters::default(),
     };
+
+    // The operator resolves proofs from its OWN access branch, not the
+    // account's, so pulling the account is not enough on its own: the access
+    // branch has to adopt the account as its upstream and pull too. That is
+    // what makes recovered authority usable rather than merely present.
+    let second_access = dialog_repository::Repository::from(&second.profile)
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(second_operator)
+        .await?;
+    let second_remote = dialog_repository::Repository::from(&second.profile)
+        .remote("account")
+        .create(dialog_repository::SiteAddress::from(
+            dialog_remote_ucan_s3::UcanAddress::new(&remote),
+        ))
+        .subject(account_root.clone())
+        .perform(second_operator)
+        .await?
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(second_operator)
+        .await?;
     assert!(
-        second_account
+        second_access
             .delegations()
             .prove(account_root.clone(), scope())
             .perform(second_operator)
@@ -165,16 +187,26 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
         "a device that has not pulled must not already prove the space"
     );
 
+    tonk_account::delegations::adopt_account_upstream(
+        &second_access,
+        &second_remote,
+        second_operator,
+    )
+    .await?;
+
     // The pull IS the recovery.
     second_account.pull().perform(second_operator).await?;
-    let proof = second_account
+    // Prove from the ACCESS branch, which is where the operator resolves
+    // proofs at runtime — proving from the account branch alone would show
+    // the data arrived without showing it is usable.
+    let proof = second_access
         .delegations()
         .prove(account_root, scope())
         .perform(second_operator)
         .await;
     assert!(
         proof.is_ok(),
-        "after pulling, device two proves the space through the account: {:?}",
+        "after pulling, device two proves the space through its access branch: {:?}",
         proof.err()
     );
     Ok(())

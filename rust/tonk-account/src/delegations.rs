@@ -24,6 +24,7 @@ use dialog_effects::blob::Write as BlobWrite;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
     Branch, CommitError, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
+    UpstreamBranch,
 };
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -85,16 +86,18 @@ where
 ///   The pull is itself an authorized fetch, and the operator that authorizes
 ///   it resolves proofs only from what is already local — so a grant that
 ///   arrives *in* the pull cannot authorize the pull that carries it.
-/// - `account` must be a remote branch resolved against the account's DID.
-///   A local upstream resolves against the pulling branch's own subject, so
-///   it can only ever name a sibling branch in the same repository.
+/// - `account` must be a REMOTE branch resolved against the account's DID
+///   (`repository.remote(name).create(site).subject(account_did)`). A local
+///   upstream resolves against the pulling branch's own subject, so it can
+///   only ever name a sibling branch in the same repository — never another
+///   repository's.
 ///
 /// The upstream is set only when absent, so an established one is never
 /// silently repointed; a branch already tracking something else is reported
 /// rather than overwritten.
 pub async fn adopt_account_upstream<Env>(
     access: &Branch,
-    account: &Branch,
+    account: impl Into<UpstreamBranch>,
     env: &Env,
 ) -> Result<Option<Revision>, AdoptError>
 where
@@ -111,7 +114,7 @@ where
         + 'static,
 {
     match access.upstream() {
-        None => access.set_upstream(account).perform(env).await?,
+        None => access.set_upstream(account.into()).perform(env).await?,
         Some(Upstream::Remote { .. }) => {}
         Some(_) => return Err(AdoptError::ForeignUpstream),
     }
