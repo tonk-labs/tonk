@@ -22,6 +22,7 @@ web-integration-tests = ["helpers", "dialog-common/integration-tests"]
 [dependencies]
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+base64 = { workspace = true }
 console_error_panic_hook = { workspace = true }
 custom-elements = { workspace = true }
 futures-util = { workspace = true }
@@ -86,6 +87,7 @@ features = [
     "Event",
     "HtmlButtonElement",
     "HtmlCollection",
+    "HtmlFormElement",
     "HtmlHeadElement",
     "HtmlInputElement",
     "History",

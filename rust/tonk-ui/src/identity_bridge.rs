@@ -248,6 +248,34 @@ pub(crate) async fn complete_link(
     call("completeLink", input).await
 }
 
+/// Input for [`authorize_device`].
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuthorizeDeviceInput {
+    /// The device the account should delegate to.
+    pub device_did: String,
+    /// The account repository's remote, so the descriptor names it.
+    pub remote: String,
+}
+
+/// What the ceremony hands back for delivery to a waiting device.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuthorizedDevice {
+    /// The account root that issued the grant.
+    pub root_did: String,
+    /// Hex-encoded `account → device` delegation chain.
+    pub delegation_hex: String,
+    /// Exact signed account repository descriptor.
+    pub descriptor_hex: String,
+}
+
+pub(crate) async fn authorize_device(
+    input: AuthorizeDeviceInput,
+) -> Result<AuthorizedDevice, IdentityBridgeError> {
+    call("authorizeDevice", input).await
+}
+
 pub(crate) async fn sign_revocation(
     input: SignRevocationInput,
 ) -> Result<RevocationOutput, IdentityBridgeError> {
