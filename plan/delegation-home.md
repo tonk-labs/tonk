@@ -317,12 +317,19 @@ updated has lost the only thing that can read their data.
 moved in place. `tonk-staging` was updated 2026-08-15, after the dialog
 change, so no published tag points at a pre-upgrade build.
 
-So the first requirement is not code at all:
+**But the tag already exists.** `v0.6.7` points at `d7074057`, pins dialog
+`rev = e8bbe462`, and is an ancestor of the bump — it is precisely a
+pre-upgrade build. It simply was never *published*: `gh release view v0.6.7`
+finds nothing, because the release job only fires on a push to `staging` and
+publishes to the rolling `tonk-staging` tag.
 
-- **Cut an immutable, versioned release from `a39b60bb`** (the last commit
-  before the dialog bump, pinning dialog `rev = e8bbe462`), so there is
-  something for `TONK_RELEASE` to name. Without it the export half of the
-  migration has no binary to run.
+So the first requirement is one release, not new machinery:
+
+- **Publish binaries for the existing `v0.6.7` tag.** The CLI workflow already
+  allows `workflow_dispatch`, so it can build from that ref without code
+  changes; the assets need to land under `v0.6.7` rather than a rolling tag.
+  `install.sh` already honours `TONK_RELEASE=<tag>` (`install.sh:13`), so
+  users can then fetch the old build with a documented one-liner.
 
 Then the migration itself:
 
@@ -331,11 +338,15 @@ Then the migration itself:
 - **Import under the new build into a fresh repository**, since the remote's
   old head cannot be reconciled with (see above: push must `verify()` it and
   diff against its tree).
-- **Decide what happens to the remote.** A new branch, a new repository, or a
-  reset one — this decides whether peers follow automatically or must be
-  re-pointed, and it is a product decision rather than a technical one.
+- **The remote is re-established, not updated.** Import lands in a fresh
+  repository and pushes to a remote with no old head to reconcile against.
+  This is forced rather than chosen: push must `verify()` the upstream head
+  and diff against its tree, and both are unreadable old-format bytes. Peers
+  must be re-pointed at the new subject — a real cost, but the alternative is
+  pretending a reconciliation exists that cannot.
 
-**Worth considering instead:** teaching `tonk update` to keep the previous
-binary. It is a small change, it makes every *future* format change
-survivable without a release archaeology step, and it is the difference
-between "run this one command" and "re-install an old version first".
+**Also worth doing, but separately:** teach `tonk update` to keep the previous
+binary. It makes every *future* format change survivable without release
+archaeology. It cannot help here, though — anyone who has already updated has
+already lost the old binary, and they are exactly the population this
+migration exists for.
