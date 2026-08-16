@@ -204,3 +204,34 @@ its own, not something to fold into this branch.
 Until then `it_discovers_a_space_through_the_account` exercises the steps
 directly rather than through `link`, which is weaker: it pins that the
 authority works, not that the command performs the dance.
+
+## Next: a CSV migration path for old-format data
+
+Same shape as the pre-dialog-upgrade migration: rather than teach new code to
+read an old on-disk layout, round-trip the *data* through a
+format-independent intermediate. Export under the old build, import under the
+new one.
+
+**Most of it already exists.** `tonk export` and `tonk import` (both hidden,
+`rust/tonk-cli/src/transfer.rs`) go through dialog's own `CsvExporter` /
+`CsvImporter` over `(the, of, as, is, cause)` columns, committing rows as
+assertions on `main` in one transaction. `tonk migrate` is the precedent for
+the command shape, having moved `.carry/` to `.tonk/`.
+
+**What needs deciding before writing any code:**
+
+1. **What CSV does not carry.** The columns are artifact facts. Delegations
+   are now `dialog.ucan/*` facts, so they may round-trip — but the account
+   *descriptor*, the trusted-base marker, and the local root live in the
+   credential store, not the branch. A spot that exports and imports could
+   come back with its data and no authority. Check before assuming.
+
+2. **Which branches.** Export is `main`-only today. The account repository is
+   a separate repo, and history/meta branches are not covered.
+
+3. **Whether import preserves identity.** Rows commit as new assertions; if
+   entity identity or claim versions are regenerated, a re-imported spot is a
+   different spot to anyone syncing with it.
+
+Verify each by round-tripping a real spot and diffing, rather than reasoning
+from the column list.
