@@ -132,3 +132,21 @@ here, because neither blocks this one:
 A cloud session, "Account keys and device delegation", exists
 server-side and was not readable from this machine. If it settled
 anything about the above, it should be folded in before stage 2.
+
+## Follow-up: the authorizing page must retain and push
+
+`--via` gives the CLI a grant, but the *page* currently only hands it over.
+It should also:
+
+1. **Retain the grant into the account space** — `dialog.ucan/*` facts, the
+   same `retain_space_delegation` path a space creation uses. Otherwise the
+   only copy of the `account → CLI profile` delegation is on the CLI, and a
+   third device pulling the account learns nothing about it.
+2. **Push the account branch**, so the retained grant leaves the browser.
+
+Without both, the CLI is authorized but the account has no record of the
+device — the roster is incomplete and the grant cannot be revoked by pulling
+the account, only by the CLI forgetting it.
+
+The page lives in `rust/tonk-ui/src/account.rs` (`/account/link`), which is
+where `audience=` / `callback=` handling and this retain+push belong.
