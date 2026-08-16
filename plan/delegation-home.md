@@ -169,3 +169,38 @@ signature, never exposes the root).
 
 Prerequisites: `tonk-account` is not registered in the guest bundle today, and
 `tonk_identity::install()` stays in the top document as the signing authority.
+
+## Blocker: the account path resolves its own operator from the install
+
+Driving `account link` from a test is blocked by a pervasive coupling, not a
+missing hook. Nine call sites across `account.rs` (5), `account_state.rs` (2),
+and `identity.rs` (2) call `credential_operator(profile)`, which does:
+
+```rust
+let store = SpotStore::open()?;          // the real install directory
+let mounted = Profile::load(PROFILE_NAME).at(Directory::Profile)...
+if mounted.did() != profile.did() { bail!("account-state profile does not
+match the active CLI profile") }
+```
+
+So a caller that already holds a profile and operator cannot use them: the
+function re-mounts a profile *by name* from the install and rejects the
+caller's. Threading an operator through one layer just moves the failure to
+the next — `link` → `ensure` → `mount` → `save_local_root`, each resolving its
+own.
+
+Partial work exists (uncommitted): `link_with_operator`,
+`ensure_with_operator`, `ensure_with_operator_and_store`, and a
+`LinkOptions::announce` channel that hands a caller the approval URL (which
+carries a callback address only `link` knows, so a test cannot construct it).
+The callback round trip itself **works** — a stand-in page answers the URL and
+`link` receives and validates the grant.
+
+The fix is to take `(profile, operator)` as parameters throughout the account
+path and keep `credential_operator` as the thin binary-side default, rather
+than as the way every function acquires its operator. That is a refactor of
+its own, not something to fold into this branch.
+
+Until then `it_discovers_a_space_through_the_account` exercises the steps
+directly rather than through `link`, which is weaker: it pins that the
+authority works, not that the command performs the dance.
