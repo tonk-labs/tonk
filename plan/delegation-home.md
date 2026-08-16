@@ -350,3 +350,41 @@ binary. It makes every *future* format change survivable without release
 archaeology. It cannot help here, though — anyone who has already updated has
 already lost the old binary, and they are exactly the population this
 migration exists for.
+
+## Tested: CSV import refuses 45% of a real legacy export
+
+Generated a fixture the honest way — built the CLI at `a39b60bb` (dialog
+`rev = e8bbe462`) in a worktree, created a spot with an isolated `HOME`, wrote
+data, and ran `tonk export`. 1197 rows. Then imported it with the current
+build:
+
+```
+error: import failed: Artifact decode failed during commit:
+Reserved attribute (the dialog. namespace is reserved): dialog.concept.with/source
+```
+
+**533 of 1197 rows (45%) are `dialog.*`** — `dialog.concept.with/*`,
+`dialog.attribute/*`, `dialog.meta/*`. That is the schema: the concept and
+attribute definitions that make the other 664 application rows interpretable.
+The new dialog reserves that namespace against application writes
+(`dialog-artifacts/src/tree.rs:1327`), and `tonk import` commits through the
+ordinary application path, so every one of them is refused.
+
+So CSV round-tripping is **not** sufficient on its own, and this is not a
+tuning problem — it is a design gap:
+
+1. **Schema rows need a privileged import path.** Dialog writes `dialog.*`
+   through `.machinery()`, which bypasses the reserved-attribute gate (that is
+   how `Delegations::retain` commits `dialog.ucan/*`). Import would need the
+   same, and deliberately: an import is a system operation, not an application
+   write.
+
+2. **Or the schema is re-seeded rather than carried.** Concepts and attributes
+   are content-addressed, so re-declaring them under the new build should
+   reproduce the same entities — in which case only the 664 application rows
+   need to migrate. This is the more likely right answer, and it is testable:
+   compare the concept entities a fresh seed produces against the ones in the
+   fixture.
+
+Either way the fixture is now real and reproducible, which is what makes the
+question answerable rather than speculative.
