@@ -503,3 +503,53 @@ store, no account link, no descriptor. So `access().migrate()` is *the right
 tool* by inspection, but this fixture does not exercise it. Proving that half
 needs a fixture built by an old build that linked a real account, which needs
 an account service the old build can talk to.
+
+## Publishing a pre-upgrade release instead of reverting
+
+Reverting the dialog upgrade to build migrations would undo working, tested
+code. Publishing a pinned release is additive, costs nothing to keep, and is
+what the migration actually needs — the export half runs under the old build,
+so users need a way to *get* the old build.
+
+**The tag already exists and is already correct.** `v0.6.7` points at
+`d7074057`, which pins dialog `rev = e8bbe462` and predates the bump. Nothing
+needs tagging.
+
+**But a git tag is not enough.** `install.sh` resolves
+`TONK_RELEASE=<tag>` to
+`https://github.com/<repo>/releases/download/<tag>/<asset>` (`install.sh:79`),
+so it needs a *published release with binary assets*. A bare tag 404s.
+`gh release view v0.6.7` currently finds nothing.
+
+**The workflow is one condition away from being able to do this.**
+`cli.yml` already allows `workflow_dispatch`, and the build job produces the
+platform binaries. The publish job does not run, because it is gated:
+
+```yaml
+if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+```
+
+and it hardcodes `tag_name: tonk-staging`, deleting and recreating that
+rolling tag each time.
+
+Two options, in preference order:
+
+1. **Publish `v0.6.7` once, by hand.** Run the workflow on the `v0.6.7` ref to
+   get the binaries as CI artifacts, download them, and attach them to a
+   release created at that tag with `gh release create v0.6.7`. No workflow
+   change; one maintainer action; produces exactly the immutable release the
+   installer needs.
+
+2. **Teach the workflow to publish version tags.** Let a dispatch carry a tag
+   input and publish there instead of `tonk-staging`. Better long-term — every
+   future format change gets a downloadable predecessor for free — but it
+   changes release plumbing, which deserves its own PR rather than riding
+   along with a migration.
+
+Either way the user-facing instruction becomes a one-liner that already works
+today:
+
+```
+curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh \
+  | TONK_RELEASE=v0.6.7 sh
+```
