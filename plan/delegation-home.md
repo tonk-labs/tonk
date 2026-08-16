@@ -439,3 +439,47 @@ old export is not the address the new build derives for the same declaration,
 the carried rows point at nothing and step 3 fails. That is the next
 measurement, and the fixture makes it a five-minute check rather than a
 guess.
+
+## Tested: materialize the schema as notation, re-evaluate under the new build
+
+`tonk schema` already does exactly what the migration needs — "Print the
+branch's schema as re-submittable notation" (`bin/tonk.rs:108`). So the schema
+does not have to be *translated* between encodings at all: read it out as
+source, and let the new build lower it however it now lowers things.
+
+Measured against the real legacy fixture:
+
+- `tonk schema` under the old build → **1057 lines** of notation, 69
+  `attribute!:` and 42 `concept!:` blocks.
+- Evaluating that under the new build fails on one thing: 18 blocks declare
+  **dialog's own vocabulary** (`the: dialog.*`), and three of their fields
+  carry no `description`, which the new build requires. Those are dialog
+  internals, not user data — the new build defines them itself, differently.
+- Dropping those 18 leaves **93 blocks, which evaluate cleanly.**
+
+And the identity question is answered:
+
+```
+legacy concepts:    15
+reseeded concepts:  38   (the new build seeds more of its own)
+PRESERVED:          15
+LOST:                0
+```
+
+**Every legacy concept address survives re-evaluation.** `concept:5ksSpHB5…`
+in the old export is `concept:5ksSpHB5…` after re-seeding under the new build.
+Concepts are content-addressed over their declaration, and the declaration
+round-trips through notation unchanged — so application rows that reference
+them still point at something real.
+
+That makes the migration concrete:
+
+1. `tonk schema` under the old build; drop blocks declaring `dialog.*`.
+2. `tonk export` under the old build for the data.
+3. Fresh spot under the new build; `tonk eval` the schema; `tonk import` the
+   application rows.
+4. Push to a re-established remote.
+
+Steps 1-3 are verified end to end against a real pre-upgrade fixture. Step 4
+and the credential-store question (local root, account link, descriptor —
+none of which ride in CSV) are what remain.
