@@ -56,7 +56,6 @@ tonk-access-service = { workspace = true, features = ["helpers"], optional = tru
 tonk-account-service = { workspace = true, features = ["helpers"], optional = true }
 
 [dev-dependencies]
-axum = { workspace = true, features = ["form", "http1", "tokio"] }
 dialog-common = { workspace = true, features = [
     "helpers",
     "integration-tests",
@@ -65,6 +64,10 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = { workspace = true }
+# The e2e callback listener is native-only, and axum pulls in mio, which
+# does not compile for wasm32 — the web test build is a workspace-wide
+# `cargo test --no-run`, so an ungated dev-dependency would reach it.
+axum = { workspace = true, features = ["form", "http1", "tokio"] }
 dialog-credentials = { workspace = true }
 dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
