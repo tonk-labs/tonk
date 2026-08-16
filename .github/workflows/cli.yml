@@ -1,5 +1,18 @@
 on:
   workflow_dispatch:
+    inputs:
+      # Publish to an immutable tag instead of the rolling one.
+      #
+      # The rolling tags (`tonk-latest`, `tonk-staging`) are what the
+      # installer resolves by channel, so they must keep moving. But a
+      # format change needs its predecessor to stay downloadable forever,
+      # and a tag that gets deleted and recreated cannot be that. Dispatch
+      # this workflow on the older ref with `release_tag: v0.6.7` to leave
+      # a permanent release beside the rolling ones.
+      release_tag:
+        description: 'Immutable tag to publish to (e.g. v0.6.7). Empty publishes to the rolling channel tag.'
+        required: false
+        type: string
   pull_request:
   push:
     branches:
@@ -36,6 +49,23 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Build tonk'
         run: nix build --accept-flake-config .#tonk-cli
+      # Name the build by the hash of its Rust source tree rather than by
+      # commit: a doc-only change leaves it identical, and the same tree
+      # reached from `stable` or `staging` is one build. Computed here
+      # because only this job has nix.
+      - name: 'Record the source-tree hash'
+        if: matrix.artifact-name == 'tonk-linux-x86_64'
+        run: |
+          mkdir -p tree
+          src="$(nix eval --raw --accept-flake-config .#tonk-cli.src)"
+          basename "$src" | cut -d- -f1 | cut -c1-12 > tree/tree.txt
+          cat tree/tree.txt
+      - uses: actions/upload-artifact@v4
+        if: matrix.artifact-name == 'tonk-linux-x86_64'
+        with:
+          name: tree
+          path: tree/tree.txt
+          overwrite: true
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -58,6 +88,10 @@ jobs:
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tree
+          path: artifacts/tree
       - name: Prepare release assets
         run: |
           # Archive each binary as `tonk` so it extracts ready to run,
@@ -75,10 +109,14 @@ jobs:
           version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
+          # Content hash of the filtered Rust source tree, computed by the
+          # build job (which has nix) and carried here as an artifact.
+          tree="$(cat artifacts/tree/tree.txt)"
           cat > manifest.json <<EOF
           {
             "version": "$version",
             "commit": "${{ github.sha }}",
+            "tree": "$tree",
             "channel": "staging",
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
@@ -87,6 +125,35 @@ jobs:
           # cannot parse.
           python3 -c 'import json,sys; m=json.load(open("manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
           cat manifest.json
+          echo "tree=$tree" >> "$GITHUB_ENV"
+      # Same pinned release the stable job publishes. Which channel a build
+      # came from does not matter to the person migrating data it wrote —
+      # only that the exact build stays downloadable. Content addressing is
+      # what makes the channel irrelevant, and a tree already released from
+      # the other channel simply resolves to the same tag.
+      - name: Create pinned release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tonk-${{ env.tree }}
+          name: tonk CLI ${{ env.tree }}
+          body: |
+            Immutable release of the tonk CLI, named for the hash of its
+            Rust source tree. Kept downloadable so data written by this
+            build can always be migrated forward.
+
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh \
+              | TONK_RELEASE=tonk-${{ env.tree }} sh
+            ```
+          prerelease: true
+          make_latest: false
+          files: |
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            checksums.txt
+            manifest.json
+            install.sh
+
       - name: Delete existing staging release
         run: gh release delete tonk-staging --yes --cleanup-tag || true
         env:
@@ -140,6 +207,10 @@ jobs:
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tree
+          path: artifacts/tree
       - name: Prepare release assets
         run: |
           # Archive each binary as `tonk` so it extracts ready to run,
@@ -157,10 +228,14 @@ jobs:
           version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
+          # Content hash of the filtered Rust source tree, computed by the
+          # build job (which has nix) and carried here as an artifact.
+          tree="$(cat artifacts/tree/tree.txt)"
           cat > manifest.json <<EOF
           {
             "version": "$version",
             "commit": "${{ github.sha }}",
+            "tree": "$tree",
             "channel": "stable",
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
@@ -169,18 +244,52 @@ jobs:
           # cannot parse.
           python3 -c 'import json,sys; m=json.load(open("manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
           cat manifest.json
+          echo "tree=$tree" >> "$GITHUB_ENV"
+      # Only when publishing the rolling tag. A pinned release must not
+      # delete `tonk-latest` — that is the tag the stable channel resolves,
+      # and removing it would break every plain `install.sh` run.
       - name: Delete existing rolling release
+        if: ${{ !inputs.release_tag }}
         run: gh release delete tonk-latest --yes --cleanup-tag || true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-      - name: Create rolling release
+      # Every stable build also leaves a permanent, content-named release.
+      # The rolling tag answers "what is current"; this answers "give me
+      # exactly the build that wrote my data", which is what a format
+      # migration needs and what a moving tag can never provide.
+      - name: Create pinned release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tonk-latest
-          name: tonk CLI (latest)
+          tag_name: tonk-${{ env.tree }}
+          name: tonk CLI ${{ env.tree }}
           body: |
-            Rolling release of the tonk CLI, built from the latest `stable` branch.
+            Immutable release of the tonk CLI, named for the hash of its
+            Rust source tree. Kept downloadable so data written by this
+            build can always be migrated forward.
+
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh \
+              | TONK_RELEASE=tonk-${{ env.tree }} sh
+            ```
+          # Never the newest thing: `make_latest` here would point
+          # `releases/latest` at whichever pinned build ran last.
+          prerelease: true
+          make_latest: false
+          files: |
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            checksums.txt
+            manifest.json
+            install.sh
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || 'tonk-latest' }}
+          name: ${{ inputs.release_tag && format('tonk CLI {0}', inputs.release_tag) || 'tonk CLI (latest)' }}
+          body: |
+            ${{ inputs.release_tag && format('Pinned release of the tonk CLI at `{0}`, kept downloadable so data written by this build can be migrated forward.', inputs.release_tag) || 'Rolling release of the tonk CLI, built from the latest `stable` branch.' }}
 
             **Install (macOS / Linux):**
             ```
@@ -200,8 +309,11 @@ jobs:
             On macOS the binary is unsigned. The install script clears the
             Gatekeeper quarantine for you; if you extract by hand and macOS
             blocks it, run `xattr -d com.apple.quarantine tonk`.
-          prerelease: false
-          make_latest: true
+          # A pinned release is a historical artifact, never the newest
+          # thing: `make_latest` would point `releases/latest` at an older
+          # build and downgrade everyone installing from the stable channel.
+          prerelease: ${{ inputs.release_tag != '' }}
+          make_latest: ${{ inputs.release_tag == '' }}
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
