@@ -2,7 +2,7 @@
 
 mod common;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_account::backup::space_root_site;
 use tonk_cli::site::{SiteConfig, TonkSite};
@@ -208,6 +208,28 @@ async fn it_installs_authority_from_a_callback_authorization(
         "the retained union must let the account act for this profile: {:?}",
         proof.err()
     );
+
+    // Finally: exercise the capability rather than only proving it resolves.
+    // `account_config` puts the account boundary in front of every remote
+    // fork, so this push authorizes against a chain reaching the account
+    // root and fails outright if that authority is absent.
+    //
+    // What this does NOT isolate: the fixture already holds an equivalent
+    // `root -> profile` link, derived from the same passkey, so the push
+    // would also succeed on that. Proving the callback-delivered grant is
+    // separately sufficient needs a profile with no prior account, which is
+    // what the browser e2e covers — it authorizes a CLI profile that never
+    // linked.
+    let site = TonkSite::init_at_with(
+        &fixture.tmp.path().join("authorized-spot"),
+        account_config(&fixture),
+    )
+    .await?;
+    configure_upstream(&site, &env.access_service_url).await?;
+    tonk_cli::sync::push(&site)
+        .await
+        .context("a spot must push under authority that reaches the account root")?;
+
     Ok(())
 }
 
