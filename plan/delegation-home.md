@@ -244,39 +244,30 @@ plainly — "Push is fast-forward only" (`branch/push.rs:61`) — with
 head is not a descendant of what the remote already holds: an ordinary push
 refuses it, exactly as observed while testing the account branch.
 
-Two answers, and they are complementary rather than alternatives.
+**The sync-base idea does not work, and neither would a force flag.** Both
+assume the new build can talk to the old remote at all. It cannot — that is
+what the format change broke. Push against a remote upstream does three
+things before publishing (`push.rs:176-207`):
 
-**1. Adopt the remote head as the precondition (works today).** Push does not
-compare against the remote's ancestry — it compares the *locally recorded*
-sync point against what the remote currently holds:
+1. `fetch()` the upstream revision,
+2. `verify()` that head,
+3. `TreeDifference::compute(&base_tree, ...)` — which **walks the old tree's
+   nodes** to decide what to upload.
 
-```rust
-let base = upstream_state.tree().clone();          // push.rs:120
-let current = upstream.revision().map(|r| r.tree).unwrap_or_default();
-if current != base { return Err(PushError::NonFastForward { .. }) }
-```
+Steps 2 and 3 require reading old-format data. No amount of base manipulation
+or `.override()` avoids that, so this is not a precondition problem.
 
-So refreshing that recorded base to the remote's current head satisfies the
-check and the reset proceeds. `Upstream::with_tree` (`upstream.rs:47`) is
-public, so this needs no dialog change at all. It is also the *better*
-semantic: the precondition is still checked, against a head we deliberately
-read, so a concurrent writer between the read and the push is still caught —
-compare-and-swap rather than clobber.
+**So the migration is local, and the remote is re-established rather than
+updated.** The old build exports; the new build imports into a *fresh*
+repository and pushes to a remote that has no old head to reconcile with.
+The pull half has to happen under the old binary, because only it can read
+what is there.
 
-Better still, option 1 needs no new plumbing either: `pull` already does the
-base refresh. When the local context includes everything upstream has seen,
-it takes the branch that "keep[s] the head and advance[s] only the sync base"
-(`pull.rs:299`) — the local head is untouched, the precondition is refreshed.
-So the migration sequence is the ordinary one: **pull, then push.**
-
-Crucially this keeps the safety property. The base is refreshed from a head
-we deliberately fetched, so a writer that moves the remote *between* that
-fetch and the push still trips `NonFastForward`. A force flag would have
-clobbered them. Compare-and-swap, not override — which is why no dialog
-change is wanted here.
-
-Either beats the alternative of deleting the remote branch and re-pushing,
-which loses the very history the import exists to carry across.
+That makes the sequencing concrete, and it is what the fixture test below has
+to model: two binaries, not one. The open design question is what the remote
+looks like afterwards — a new branch, a new repository, or a deliberately
+reset one — and that decides whether peers follow automatically or have to be
+re-pointed.
 
 **The open question is what CSV does not carry.** The columns are artifact
 facts. Delegations are now `dialog.ucan/*` facts and may round-trip, but the
