@@ -218,20 +218,27 @@ new one.
 assertions on `main` in one transaction. `tonk migrate` is the precedent for
 the command shape, having moved `.carry/` to `.tonk/`.
 
-**What needs deciding before writing any code:**
+**Scope: data repositories first, the profile repository too.** A spot's own
+data is the point; the profile repository carries the local root and account
+link, so an upgrade that restores data without it leaves an instance with its
+spots and no authority over them.
 
-1. **What CSV does not carry.** The columns are artifact facts. Delegations
-   are now `dialog.ucan/*` facts, so they may round-trip — but the account
-   *descriptor*, the trusted-base marker, and the local root live in the
-   credential store, not the branch. A spot that exports and imports could
-   come back with its data and no authority. Check before assuming.
+**Branch: `main` by default, with a flag to name another.** Export is
+`main`-only today, which is the right default — a flag covers meta and
+history without making the common case verbose.
 
-2. **Which branches.** Export is `main`-only today. The account repository is
-   a separate repo, and history/meta branches are not covered.
+**Identity must be retained.** This is an upgrade path for instances that
+predate the DB change, not a copy tool: a re-imported spot that peers treat
+as a *different* spot is a failed upgrade, not a partial one.
 
-3. **Whether import preserves identity.** Rows commit as new assertions; if
-   entity identity or claim versions are regenerated, a re-imported spot is a
-   different spot to anyone syncing with it.
+Encouragingly, dialog already does this. Its own round-trip test
+(`dialog-csv/src/lib.rs:77`) asserts `the`, `of`, `is`, **and `cause`** all
+survive — so the entity and the causal version are preserved by construction,
+not by luck. What still needs checking is whether that holds through *our*
+export/import path on a real spot rather than over hand-built artifacts.
 
-Verify each by round-tripping a real spot and diffing, rather than reasoning
-from the column list.
+**The open question is what CSV does not carry.** The columns are artifact
+facts. Delegations are now `dialog.ucan/*` facts and may round-trip, but the
+account descriptor, the trusted-base marker, and the local root live in the
+credential store, not on a branch. Verify by round-tripping a real spot and
+diffing, rather than reasoning from the column list.
