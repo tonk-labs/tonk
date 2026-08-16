@@ -578,3 +578,53 @@ and has source-tree hash `yrv5fymlyxdz` — distinct from the current tree's
 archive; there is no way to cross-compile the Linux binary here, and a release
 missing it would break Linux users. So the manual route is not a shortcut past
 the merge — the workflow is the way.
+
+## Correction: the schema attributes were renamed, not removed
+
+An earlier note here said `dialog.attribute/*`, `dialog.concept.with/*`, and
+`dialog.meta/*` had no counterpart in the new format. That was wrong — they
+were **renamed**, from the `dialog.` prefix to `db.`:
+
+```
+dialog.attribute/id       ->  db.attribute/id
+dialog.concept.with/name  ->  db.concept.with/name
+dialog.meta/description   ->  db.meta/description
+```
+
+Measured against the fixture: **49 of 58** legacy `dialog.*` names exist in a
+new spot under `db.*`. The split is principled — *user-facing schema* moved to
+`db.*`, while *dialog's own machinery* kept `dialog.*` and only that stayed
+reserved:
+
+```
+dialog.concept/transient   dialog.db/revision
+dialog.rule/induces        dialog.rule/on      dialog.rule/source
+```
+
+The 9 with no counterpart are genuinely retired, and all but four are the old
+rules system that went native:
+
+```
+dialog.effect/conclusion  dialog.effect/on  dialog.effect/polarity
+dialog.effect/source      dialog.meta/effect
+dialog.concept.with/moment  dialog.concept.with/origin
+dialog.concept.with/period  dialog.concept.with/title
+```
+
+### So the export needs filtering *and* remapping
+
+Two distinct operations, and both are needed:
+
+1. **Remap `dialog.` → `db.`** for the 49 renamed attributes. Without this,
+   the schema half of a legacy export is unusable even though the data is
+   perfectly good.
+2. **Drop** rows whose attribute is still reserved (`dialog.rule/*`,
+   `dialog.concept/transient`, `dialog.db/revision`) or retired
+   (`dialog.effect/*`). These are dialog's own bookkeeping: the new build
+   regenerates them, and importing them is what triggers the reserved-attribute
+   refusal.
+
+This is a better answer than the schema-re-seeding route sketched above. Both
+work, but remapping carries the *data* rather than re-deriving it, so a spot
+whose schema drifted from the standard library keeps what it actually had —
+and it is a table, not a re-evaluation, so it cannot fail halfway.
