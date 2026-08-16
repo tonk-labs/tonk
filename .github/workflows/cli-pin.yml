@@ -141,7 +141,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.tag }}
-          target_commitish: ${{ inputs.ref }}
+          # No `target_commitish`: GitHub accepts only a branch name or a
+          # SHA there, so passing a tag ref fails validation outright. When
+          # the tag already exists — the usual case for publishing history —
+          # the tag decides the commit anyway.
           name: tonk CLI ${{ env.tag }}
           body: |
             Immutable release of the tonk CLI built from `${{ inputs.ref }}`,
