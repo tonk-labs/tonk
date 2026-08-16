@@ -18,6 +18,7 @@
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_credentials::Ed25519Signer;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::Write as BlobWrite;
@@ -27,7 +28,9 @@ use dialog_repository::{
     UpstreamBranch,
 };
 use dialog_ucan::UcanDelegation;
-use dialog_ucan_core::DelegationChain;
+use dialog_ucan_core::subject::Subject as UcanSubject;
+use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+use dialog_varsig::Did;
 
 /// Retain a `space → account-root` delegation into the account repository's
 /// branch, so the authority it carries replicates with the account.
@@ -145,6 +148,27 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// The union edge is subject-open and command-open, matching the grant
+    /// it mirrors. A narrower return edge would make the union asymmetric,
+    /// and the asymmetry would only surface later as a proof that fails for
+    /// no visible reason.
+    #[dialog_common::test]
+    async fn it_mints_a_symmetric_union_edge() {
+        use dialog_varsig::Principal as _;
+
+        let profile = Ed25519Signer::generate().await.unwrap();
+        let account = Ed25519Signer::generate().await.unwrap();
+        let union = mint_account_union(&profile, &account.did()).await.unwrap();
+
+        assert_eq!(union.issuer(), &profile.did());
+        assert_eq!(union.audience(), &account.did());
+        assert!(
+            union.subject().is_none(),
+            "the union edge must be a powerline, not scoped to one space"
+        );
+        assert_eq!(union.proof_cids().len(), 1);
+    }
+
     /// A branch already tracking a local upstream is reported rather than
     /// silently repointed at the account — repointing would change what the
     /// profile syncs against without anyone asking for it.
@@ -156,4 +180,39 @@ mod tests {
             "the error must say what it refused to overwrite, got {error}"
         );
     }
+}
+
+/// Mint the profile's half of the account union: `profile → account`.
+///
+/// The account grants the profile a powerline at sign-in, which is what lets
+/// a device act. This is the other direction, and it is what makes the
+/// account's authority *complete*: with both edges retained, anything either
+/// side can prove, the other can prove too — so a later device pulling the
+/// account inherits what this profile holds, not merely what the account was
+/// given directly.
+///
+/// Subject-open and command-open, matching the grant it mirrors: a narrower
+/// return edge would silently make the union asymmetric, and the asymmetry
+/// would only surface later as a proof that inexplicably fails.
+pub async fn mint_account_union(
+    profile: &Ed25519Signer,
+    account: &Did,
+) -> Result<DelegationChain, UnionError> {
+    let delegation = DelegationBuilder::new()
+        .issuer(profile.clone())
+        .audience(account)
+        .subject(UcanSubject::Any)
+        .command(vec![])
+        .try_build()
+        .await
+        .map_err(|error| UnionError::Mint(format!("{error:?}")))?;
+    Ok(DelegationChain::new(delegation))
+}
+
+/// Why minting the profile's half of the union failed.
+#[derive(Debug, thiserror::Error)]
+pub enum UnionError {
+    /// The delegation could not be built or signed.
+    #[error("failed to mint the profile to account delegation: {0}")]
+    Mint(String),
 }

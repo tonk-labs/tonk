@@ -597,37 +597,104 @@ async fn link_via_callback(
             bail!("authorization was declined in the browser: {reason}");
         }
     };
-    let chain = validate_account_grant(profile, &bytes).await?;
-    let root_did = chain.issuer().to_string();
-    let delegation_hex = hex::encode(&bytes);
+    let authorization: CallbackAuthorization =
+        serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
+    let grant_bytes = hex::decode(&authorization.delegation_hex)
+        .context("authorization delegation is not hex")?;
+    let chain = validate_account_grant(profile, &grant_bytes).await?;
+    let account_did = chain.issuer().clone();
+    let root_did = account_did.to_string();
 
-    // Retain it the way every cross-party grant is retained, so the proof
-    // walk finds it and it replicates with the profile.
+    // Install the inbound half so this device can act, and record the root
+    // the way a linked device does.
     profile
         .access()
         .save(UcanDelegation(chain))
         .perform(&operator)
         .await
         .context("failed to install the account grant")?;
-    // The credential id belongs to the passkey the browser used and does not
-    // ride the delegation. It names the authenticator for display only, so a
-    // callback login records the page it came from instead of inventing one.
-    crate::identity::save_local_root(profile, page.to_owned(), delegation_hex).await?;
+    crate::identity::save_local_root(
+        profile,
+        authorization.credential_id.clone(),
+        authorization.delegation_hex.clone(),
+    )
+    .await?;
 
-    // No descriptor arrives with the grant, so the account repository stays
-    // unconfigured until `ensure` resolves one. The authority is usable
-    // immediately regardless: it is the grant, not the descriptor, that
-    // authorizes.
+    // The descriptor tells this device WHERE the account repository lives; a
+    // delegation only says who may act. Persisting it is what lets the
+    // account mount and sync at all.
+    let provider = AccountProviderRecord::attach(
+        &options.service_url,
+        &hex::decode(&authorization.descriptor_hex)
+            .context("authorization descriptor is not hex")?,
+        &account_did,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .await
+    .context("authorization returned an unusable repository descriptor")?;
+    profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .save(provider.encode()?)
+        .perform(&operator)
+        .await
+        .context("failed to persist the account link")?;
+
+    // Mount the account, then retain BOTH halves of the union into it and
+    // push. The page mints only the inbound grant; storing both ends here
+    // keeps the writes where the account repository is already mounted, and
+    // means a later device pulling the account inherits what this profile
+    // holds rather than only what the account issued.
+    let account_state = match crate::account_state::ensure(profile).await {
+        Ok(outcome) => outcome.status,
+        Err(_) => AccountStateStatus::Unhydrated,
+    };
+    let mut warning = None;
+    if let Some(branch) = crate::account_state::open_account_branch(profile, &operator).await? {
+        let signer = profile.signer().signer().clone();
+        let union = tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
+        let inbound = DelegationChain::try_from(grant_bytes.as_slice())
+            .context("account grant is not a delegation container")?;
+        for (label, chain) in [("account grant", inbound), ("profile union", union)] {
+            if let Err(error) =
+                tonk_account::delegations::retain_space_delegation(&branch, &chain, &operator).await
+            {
+                warning = Some(format!(
+                    "{label} was not retained into the account: {error}"
+                ));
+            }
+        }
+        if warning.is_none()
+            && let Err(error) = branch.push().perform(&operator).await
+        {
+            warning = Some(format!("account was authorized but not pushed: {error}"));
+        }
+    }
+
     Ok(LinkOutcome {
         url,
         root_did,
         device_did: profile.did().to_string(),
-        account_state: AccountStateStatus::Unconfigured,
-        warning: Some(
-            "authorized without an account repository descriptor;              run `tonk account link` against the service to hydrate it"
-                .to_owned(),
-        ),
+        account_state,
+        warning,
     })
+}
+
+/// What the authorizing page posts back to the waiting CLI.
+///
+/// The delegation alone would leave the device authorized but unable to find
+/// the account repository, so the descriptor rides along. The credential id
+/// names the passkey for display.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CallbackAuthorization {
+    delegation_hex: String,
+    descriptor_hex: String,
+    #[serde(default)]
+    credential_id: String,
 }
 
 /// Start or resume a browser handoff and activate its fresh generation.
