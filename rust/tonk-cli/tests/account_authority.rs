@@ -233,6 +233,128 @@ async fn it_installs_authority_from_a_callback_authorization(
     Ok(())
 }
 
+/// Discovering a space through the account: the flow that makes linking
+/// worth anything.
+///
+/// One device creates a space and delegates it to the account, retained in
+/// the account repository. A SECOND profile — which never created that space
+/// and holds no authority over it — links to the same account, pulls, and can
+/// then reach it. That is the whole promise of the account being the durable
+/// home of delegations, and unlike the tests above it isolates the received
+/// authority: the linking profile starts with nothing.
+#[dialog_common::test]
+async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let owner = common::AccountFixture::with_account_remote(&remote).await?;
+    let owner_operator = owner.pre_account_site.operator.inner();
+    let account_root = owner.link.issuer().clone();
+
+    // The owner creates a space and puts its authority in the account.
+    let site = TonkSite::init_at_with(
+        &owner.tmp.path().join("shared-space"),
+        account_config(&owner),
+    )
+    .await?;
+    configure_upstream(&site, &env.access_service_url).await?;
+    let subject = site.repository.did();
+    let prefix = tonk_cli::site::account_root_prefix_for(
+        &owner.profile,
+        owner_operator,
+        &subject,
+        &account_root,
+    )
+    .await?;
+    let account = tonk_cli::account_state::open_account_branch(&owner.profile, owner_operator)
+        .await?
+        .expect("the owner's account is hydrated");
+    assert!(
+        tonk_account::delegations::retain_space_delegation(&account, &prefix, owner_operator)
+            .await?,
+        "the space authority must reach the account"
+    );
+    account.push().perform(owner_operator).await?;
+
+    // A second profile, with no account and no knowledge of that space.
+    let joiner = common::TestSite::new().await?;
+    let joiner_profile = joiner.site.profile.clone();
+    let joiner_operator = joiner.site.operator.inner();
+    let scope = || dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
+        command: dialog_ucan_core::command::Command::parse("/").expect("root command"),
+        parameters: dialog_ucan::Parameters::default(),
+    };
+    let joiner_access = dialog_repository::Repository::from(&joiner_profile)
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(joiner_operator)
+        .await?;
+    assert!(
+        joiner_access
+            .delegations()
+            .prove(joiner_profile.did(), scope())
+            .perform(joiner_operator)
+            .await
+            .is_err(),
+        "a profile that has not linked must not reach a space it never created"
+    );
+
+    // Link: the account authorizes it, exactly as the browser would.
+    let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
+    let authorized =
+        tonk_identity::ceremony::authorize_device(root, joiner_profile.did(), &remote).await?;
+    let grant = tonk_cli::account::validate_account_grant(
+        &joiner_profile,
+        &hex::decode(&authorized.delegation_hex)?,
+    )
+    .await?;
+    joiner_profile
+        .access()
+        .save(dialog_ucan::UcanDelegation(grant))
+        .perform(joiner_operator)
+        .await?;
+
+    // Adopt the account as the access upstream and pull: this is discovery.
+    let joiner_remote = dialog_repository::Repository::from(&joiner_profile)
+        .remote("account")
+        .create(dialog_repository::SiteAddress::from(
+            dialog_remote_ucan_s3::UcanAddress::new(&remote),
+        ))
+        .subject(account_root.clone())
+        .perform(joiner_operator)
+        .await?
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(joiner_operator)
+        .await?;
+    // Re-open the access branch: saving the grant above advanced its head,
+    // and `ACCESS_BRANCH` is the profile's content branch too, so a handle
+    // taken before that write is stale by now.
+    let joiner_access = dialog_repository::Repository::from(&joiner_profile)
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(joiner_operator)
+        .await?;
+    tonk_account::delegations::adopt_account_upstream(
+        &joiner_access,
+        joiner_remote,
+        joiner_operator,
+    )
+    .await?;
+
+    let proof = joiner_access
+        .delegations()
+        .prove(joiner_profile.did(), scope())
+        .perform(joiner_operator)
+        .await;
+    assert!(
+        proof.is_ok(),
+        "after linking and pulling, the profile must reach the space it \
+         discovered through the account: {:?}",
+        proof.err()
+    );
+    Ok(())
+}
+
 /// The whole loop over a live access service and S3: a space created on one
 /// device is recoverable on a SECOND device that has never seen it, by pulling
 /// the account.
