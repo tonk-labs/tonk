@@ -150,3 +150,22 @@ the account, only by the CLI forgetting it.
 
 The page lives in `rust/tonk-ui/src/account.rs` (`/account/link`), which is
 where `audience=` / `callback=` handling and this retain+push belong.
+
+## Follow-up: move the account UI into the profile iframe
+
+`/account` renders in the top document today (`bin/ui.rs:52`: "Account routes
+bypass sealed guests because WebAuthn ceremonies must run in the RP ID's
+top-level origin"). That constraint is real but narrow — it binds the
+`navigator.credentials` call, not the surrounding UI — so the whole account
+page currently forgoes the isolation the rest of the app has to satisfy one
+function call.
+
+The split: the profile iframe renders the UI and, when a ceremony is needed,
+sends a **signing request** to the top document, which derives the
+passkey-backed key, signs, and returns only the signature. The key and the PRF
+output never cross the boundary — which is what makes this safe, and is the
+shape `signRevocation` already follows (it takes a target, returns a
+signature, never exposes the root).
+
+Prerequisites: `tonk-account` is not registered in the guest bundle today, and
+`tonk_identity::install()` stays in the top document as the signing authority.
