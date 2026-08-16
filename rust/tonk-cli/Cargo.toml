@@ -18,6 +18,10 @@ path = "src/bin/tonk.rs"
 # `tests/common.rs` from being built as its own empty test
 # binary; list the real test binaries here explicitly.
 [[test]]
+name = "legacy_migration"
+path = "tests/legacy_migration.rs"
+
+[[test]]
 name = "live_migration"
 path = "tests/live_migration.rs"
 

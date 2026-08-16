@@ -1,0 +1,1198 @@
+the,of,as,is,cause
+dialog.concept.with/source,concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fAawoxRXVrM,entity,the:5peBDvJJDJ82RNGqJ1jmA6xRCJT6yJDkCCeGj17qFh2Q,
+dialog.meta/concept,concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fAawoxRXVrM,entity,db:concept,
+dialog.meta/description,concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fAawoxRXVrM,text,"An inspector tile body — renders <tonk-inspector source=""…"">",
+dialog.concept.with/module,concept:6QkKpBFbGHAmdVgu5VixUEAKcDXqi1RCHbRbSFsRTNmy,entity,the:Eav3m4u5MAu1TaEQAZa61hwz1RecAELG12EWgCzD4cbd,
+dialog.meta/concept,concept:6QkKpBFbGHAmdVgu5VixUEAKcDXqi1RCHbRbSFsRTNmy,entity,db:concept,
+dialog.meta/description,concept:6QkKpBFbGHAmdVgu5VixUEAKcDXqi1RCHbRbSFsRTNmy,text,A JS module defining web components for the branch's views,
+dialog.concept.with/entity,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,entity,the:47guPX8tLWnsmT6UHdNeJQSWYa6HRXC1b5g9esbwbLV8,
+dialog.concept.with/model,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,entity,the:7L3BycF3Cxa7hEJYhVF1nqh9KUmurqaR57sySz7zMHdD,
+dialog.concept.with/order,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,entity,the:B3VGQ1KR5p1uoi8ZRLreHQ1LymXZHgVPrzi4mAT9aV16,
+dialog.meta/concept,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,entity,db:concept,
+dialog.meta/description,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,text,One tile in a column,
+dialog.concept.with/content,concept:7pyvhnW1RwvmrSgip69ecySZ2dLNmP6anuVaVqrLuEHP,entity,the:Ed3j1T65kps1kLeYtK9W4ZbxvgS68N2BU7w5JEXZgqT1,
+dialog.meta/concept,concept:7pyvhnW1RwvmrSgip69ecySZ2dLNmP6anuVaVqrLuEHP,entity,db:concept,
+dialog.meta/description,concept:7pyvhnW1RwvmrSgip69ecySZ2dLNmP6anuVaVqrLuEHP,text,Imperative HTML rendered in an isolated iframe,
+dialog.concept.with/name,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,entity,the:BXDVz5r3jJTRzqckbUwvGp47ZYqpJNdxwwDTMxZaN16J,
+dialog.concept.with/prevent-default,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,entity,the:CPBmufsiTSR7FPvkn4tKTUman7aA4YZQFeJzXKpkrN5P,
+dialog.concept.with/remote,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,entity,the:FPk8L7Qhsui1Q8RiA17MgBd74666afJYDhgRhPmg1Hzw,
+dialog.concept/transient,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,entity,db:transient,
+dialog.meta/concept,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,entity,db:concept,
+dialog.meta/description,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,text,A request to attach a sync remote to the current space.,
+dialog.concept.with/title,concept:AkeKK1zXY6ndgy3SL3q5d9TZTLXRRSAoccqhLCKakUZG,entity,the:DVD4psU8ged12zVR2JcyQNtL5Uny2xSCz2pcNGqveWSW,
+dialog.meta/concept,concept:AkeKK1zXY6ndgy3SL3q5d9TZTLXRRSAoccqhLCKakUZG,entity,db:concept,
+dialog.concept.with/column,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,entity,the:5Qr2vQF2Q8KDnBW9GLkvnGmtxNgQU2QkpufozHCRYwzq,
+dialog.concept.with/name,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,entity,the:BK6Cm7GjEHr7ektf1J8A2Xa8hfxYY39bPPMN9VcfnbVR,
+dialog.meta/concept,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,entity,db:concept,
+dialog.meta/description,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,text,"A named board (hierarchical v1, owns columns directly)",
+dialog.concept.with/order,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,entity,the:GY5FUE5EZEXQd2Rq8HSZoyi33CdaExgVvQnjUD1zY2CE,
+dialog.concept.with/tile,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,entity,the:8wJ78wpKHu3UdeZqL8dCiExUkSAhzWULedVyyBJk7Hyn,
+dialog.concept.with/width,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,entity,the:HgnKC8MVsRmHWuErqsna2nZmofRuVTe4igTVw2NbztJF,
+dialog.meta/concept,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,entity,db:concept,
+dialog.meta/description,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,text,A column on a board,
+dialog.concept.with/name,concept:FeDSxNLGXMavPdz7S2jgdS9BG4E9re5nj1ZcFoHR3PQG,entity,the:EpnZyDw4W9fga3WXGcALdQwwTgJhA4dfoNep7tX28EiC,
+dialog.concept.with/subject,concept:FeDSxNLGXMavPdz7S2jgdS9BG4E9re5nj1ZcFoHR3PQG,entity,the:TvAzWZfiaUGo57QdNroNhcLQTGPjciTjXsRfQpLUZve,
+dialog.concept/transient,concept:FeDSxNLGXMavPdz7S2jgdS9BG4E9re5nj1ZcFoHR3PQG,entity,db:transient,
+dialog.meta/concept,concept:FeDSxNLGXMavPdz7S2jgdS9BG4E9re5nj1ZcFoHR3PQG,entity,db:concept,
+dialog.meta/description,concept:FeDSxNLGXMavPdz7S2jgdS9BG4E9re5nj1ZcFoHR3PQG,text,Rename the repository.,
+dialog.concept.with/marker,concept:J4J64HgPdVXyhxAbnSw4ZnKSYLfd5Xw7zFmCnydjKWbX,entity,the:7L9KfWTCTUVA2UPyTDtJQ74sfkFebQJEBiB1aJn5XCmm,
+dialog.concept.with/name,concept:J4J64HgPdVXyhxAbnSw4ZnKSYLfd5Xw7zFmCnydjKWbX,entity,the:EpnZyDw4W9fga3WXGcALdQwwTgJhA4dfoNep7tX28EiC,
+dialog.concept/transient,concept:J4J64HgPdVXyhxAbnSw4ZnKSYLfd5Xw7zFmCnydjKWbX,entity,db:transient,
+dialog.meta/concept,concept:J4J64HgPdVXyhxAbnSw4ZnKSYLfd5Xw7zFmCnydjKWbX,entity,db:concept,
+dialog.meta/description,concept:J4J64HgPdVXyhxAbnSw4ZnKSYLfd5Xw7zFmCnydjKWbX,text,Rename the signed-in member (set their display name).,
+dialog.concept.with/moment,concept:branch,entity,the:G9v3K1G3JzzzPiQbkPuLARqa5teg7AQkqpundKGxR2jk,
+dialog.concept.with/name,concept:branch,entity,the:HjwYqrZBiuCmNFDFiRbSgNe95g9d5Wck39qWCotDdvWJ,
+dialog.concept.with/origin,concept:branch,entity,the:8LXKwgiZiwCHMHo8aieSaSQvauVnWDmnXRp5CCD6FSdz,
+dialog.concept.with/period,concept:branch,entity,the:4UTcqwY5v1jhJENfHLURgnHFVSu2B7eHxHSMcLiNnKK6,
+dialog.concept.with/tree,concept:branch,entity,the:6cCQiwvqDy24dmRi5yqWKwUBhQBLvrDN3V6ArPJEpNYA,
+dialog.meta/concept,concept:branch,entity,db:concept,
+dialog.meta/description,concept:branch,text,"This represents a branch on some origin.
+ Note that individual replicas can create same named branches and they
+ likely going to be an different revisions, which is why branch is unique
+ per origin as opposed to per repository.
+",
+dialog.concept.with/profile,concept:origin,entity,the:2aY6XemvYosT3YXYgi8dHZpxjYY5Az9QnvqdraFVJPDN,
+dialog.concept.with/subject,concept:origin,entity,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,
+dialog.meta/concept,concept:origin,entity,db:concept,
+dialog.meta/description,concept:origin,text,"Entity representing unique identifier for the active repository on this device.
+
+It can be used to assert/query device specific information.
+",
+dialog.concept.with/branch,concept:session,entity,the:EeZ5NwunCdcYEmL4uJL8HRR4PcmPZURJZodvZ6js2Ecb,
+dialog.concept.with/operator,concept:session,entity,the:HSy2yWd5Rj3nbKV6k4KEG6t2QXKeWJdzbM1hkitLb5Qs,
+dialog.concept.with/profile,concept:session,entity,the:Ew1zQcswSVLbukE5LctapyTaVNd5RaQp9cS2B7qLcPst,
+dialog.meta/concept,concept:session,entity,db:concept,
+dialog.meta/description,concept:session,text,Database session information,
+dialog.concept.with/name,dialog:diagnose,entity,the:AqpRFCZGH4Vhy7u5rSuJjXjPXkke7NvAgZFh8RKHHCNf,
+dialog.meta/concept,dialog:diagnose,entity,db:concept,
+dialog.meta/description,dialog:diagnose,text,Marker model for the search-tree inspector view.,
+legacy.note/title,did:key:z6Mk3VY17HUDh9rW6UpiDdtF9BGmdqfsYC2ZGzk4rAJadk2H,text,written by the old build,
+dialog.effect/conclusion,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,concept:6FTeichf8HN6oLVWuV3enNK5FecYhWgDsbieTAg2aB5S,
+dialog.effect/on,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,on:xyz.tonk.authorization/remote,
+dialog.effect/on,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,on:xyz.tonk.repo/name,
+dialog.effect/on,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,on:xyz.tonk.credential/link,
+dialog.effect/on,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,on:xyz.tonk.credential/seed,
+dialog.effect/on,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,on:xyz.tonk.authorization/proof,
+dialog.effect/polarity,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,text,assert,
+dialog.effect/source,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,text,"{""assert!"":{""description"":""A live invite joined with the repo's display name, for the agent prompt."",""with"":{""access"":{""the"":""xyz.tonk.authorization/proof"",""description"":""base58 delegation chain — the `?access=` part of the invite URL."",""cardinality"":""one"",""as"":""Text""},""code"":{""the"":""xyz.tonk.credential/seed"",""description"":""base58 keypair seed — the `#` fragment of the invite URL."",""cardinality"":""one"",""as"":""Text""},""link"":{""the"":""xyz.tonk.credential/link"",""description"":""The complete invite URL — what the prompt embeds."",""cardinality"":""one"",""as"":""Text""},""name"":{""the"":""xyz.tonk.repo/name"",""description"":""The repository's display name."",""cardinality"":""one"",""as"":""Text""},""remote"":{""the"":""xyz.tonk.authorization/remote"",""description"":""Sync endpoint — the `&remote=` part; empty when local-only."",""cardinality"":""one"",""as"":""Text""}}},""when"":[{""assert"":{""description"":""A shared repository which is the subject of a tonk/replica."",""with"":{""name"":{""the"":""xyz.tonk.repo/name"",""description"":""The repository's display name. Seeded at creation (the worker writes it into the repo's own `tonk/repository` on the content branch) and carried over sync on join, so a real repository always has one; the banner still falls back to \""Untitled\"" if a read races ahead of the fact.\n"",""cardinality"":""one"",""as"":""Text""}}},""where"":{""this"":{""?"":{""name"":""this""}},""name"":{""?"":{""name"":""name""}}}},{""assert"":{""description"":""An invite that can be used to join a space (authorization + credential)."",""with"":{""access"":{""the"":""xyz.tonk.authorization/proof"",""description"":""base58 delegation chain — the `?access=` part of the invite URL."",""cardinality"":""one"",""as"":""Text""},""code"":{""the"":""xyz.tonk.credential/seed"",""description"":""base58 keypair seed — the `#` fragment of the invite URL."",""cardinality"":""one"",""as"":""Text""},""link"":{""the"":""xyz.tonk.credential/link"",""description"":""The complete invite URL — what a view renders and copies."",""cardinality"":""one"",""as"":""Text""},""remote"":{""the"":""xyz.tonk.authorization/remote"",""description"":""Sync endpoint — the `&remote=` part; empty when local-only."",""cardinality"":""one"",""as"":""Text""}}},""where"":{""remote"":{""?"":{""name"":""remote""}},""this"":{""?"":{""name"":""this""}},""code"":{""?"":{""name"":""code""}},""access"":{""?"":{""name"":""access""}},""link"":{""?"":{""name"":""link""}}}}]}",
+dialog.meta/effect,effect:6M5oEKmL9ZxGtM7FyvG8GtzQs2yhfakmty1s4geiF8ZA,entity,db:effect,
+dialog.effect/conclusion,effect:CjcGwyDsrya3dWT4gNw6fWsYyzf2FoyxXHcvjRvj545F,entity,concept:QhYEjZ6cR6UZYsuAZFuwkK6VpkFqdGYzHDCV4SdAeZ6,
+dialog.effect/on,effect:CjcGwyDsrya3dWT4gNw6fWsYyzf2FoyxXHcvjRvj545F,entity,on:dom.event.current-target/value,
+dialog.effect/on,effect:CjcGwyDsrya3dWT4gNw6fWsYyzf2FoyxXHcvjRvj545F,entity,on:dom.event.current-target.dataset/subject,
+dialog.effect/polarity,effect:CjcGwyDsrya3dWT4gNw6fWsYyzf2FoyxXHcvjRvj545F,text,assert,
+dialog.effect/source,effect:CjcGwyDsrya3dWT4gNw6fWsYyzf2FoyxXHcvjRvj545F,text,"{""assert!"":{""description"":""A shared repository which is the subject of a tonk/replica."",""with"":{""name"":{""the"":""xyz.tonk.repo/name"",""description"":""The repository's display name. Seeded at creation (the worker writes it into the repo's own `tonk/repository` on the content branch) and carried over sync on join, so a real repository always has one; the banner still falls back to \""Untitled\"" if a read races ahead of the fact.\n"",""cardinality"":""one"",""as"":""Text""}}},""when"":[{""assert"":{""description"":""Rename the repository."",""with"":{""name"":{""the"":""dom.event.current-target/value"",""description"":""The new name, read from the banner input's value on commit."",""cardinality"":""one"",""as"":""Text""},""subject"":{""the"":""dom.event.current-target.dataset/subject"",""description"":""The repository's subject DID, stamped on the banner element."",""cardinality"":""one"",""as"":""Entity""}}},""where"":{""subject"":{""?"":{""name"":""this""}},""name"":{""?"":{""name"":""name""}},""this"":{""?"":{""name"":""__4""}}}}]}",
+dialog.meta/effect,effect:CjcGwyDsrya3dWT4gNw6fWsYyzf2FoyxXHcvjRvj545F,entity,db:effect,
+dialog.name/referent,id:adhoc/route,entity,tonk:adhoc/route,
+dialog.name/referent,id:adhoc/route/view,entity,id:tonk:adhoc/route/view,
+xyz.tonk.view/display,id:agent-invite/prompt,text,"<div class=""agent-prompt"">
+  <style>
+    .agent-prompt { border: var(--wa-border-width-s) solid var(--wa-color-surface-border); border-radius: var(--wa-border-radius-m); background: var(--wa-color-surface-lowered); overflow: hidden; }
+    .agent-prompt__bar { display: flex; align-items: center; justify-content: space-between; padding: var(--wa-space-s) var(--wa-space-m); border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+    .agent-prompt__label { font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-text-quiet); }
+    .agent-prompt__copy { color: var(--wa-color-text-quiet); }
+    .agent-prompt__copy::part(button) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--wa-space-xs);
+      border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+      border-radius: var(--wa-border-radius-m);
+      background: var(--wa-color-surface-default);
+      color: var(--wa-color-text-quiet);
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+    }
+    .agent-prompt__copy::part(button):hover {
+      background: var(--wa-color-neutral-fill-quiet);
+      border-color: var(--wa-color-neutral-border-loud);
+      color: var(--wa-color-text-normal);
+    }
+    .agent-prompt__copy::part(copy-icon) { font-size: 15px; }
+    .agent-prompt__pre { margin: 0; padding: var(--wa-space-l) var(--wa-space-m); font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-s); line-height: var(--wa-line-height-normal); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--wa-color-text-normal); }
+  </style>
+  <div class=""agent-prompt__bar"">
+    <span class=""agent-prompt__label"">prompt for your agent</span>
+    <wa-copy-button class=""agent-prompt__copy"" value=""You're helping build the &quot;{name}&quot; repo.
+
+Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+
+Ask me where I'd like to keep the &quot;{name}&quot; tonk on this machine, then cd into that folder and run:
+
+  npx @tonk/cli join '{link}'
+  npx @tonk/cli guide    # how to drive the CLI
+  npx @tonk/cli schema   # concepts already on the branch
+
+Then build.""></wa-copy-button>
+  </div>
+  <pre class=""agent-prompt__pre"">You're helping build the ""{name}"" repo.
+
+Claim access and orient yourself, then fill the ""{dom.host/data-page}"" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+
+Ask me where I'd like to keep the ""{name}"" tonk on this machine, then cd into that folder and run:
+
+  npx @tonk/cli join '{link}'
+  npx @tonk/cli guide    # how to drive the CLI
+  npx @tonk/cli schema   # concepts already on the branch
+
+Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.</pre>
+</div>
+",
+xyz.tonk.view/model,id:agent-invite/prompt,entity,tonk:agent-invite,
+dialog.name/referent,id:artifact/route,entity,tonk:artifact/route,
+dialog.name/referent,id:artifact/route/view,entity,id:tonk:artifact/route/view,
+dialog.name/referent,id:authorization,entity,tonk:authorization,
+dialog.name/referent,id:blank,entity,tonk:blank,
+dialog.name/referent,id:blob,entity,tonk:blob,
+dialog.name/referent,id:board,entity,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,
+dialog.name/referent,id:column-view,entity,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,
+dialog.name/referent,id:component,entity,concept:6QkKpBFbGHAmdVgu5VixUEAKcDXqi1RCHbRbSFsRTNmy,
+dialog.name/referent,id:credential,entity,tonk:credential,
+dialog.name/referent,id:db/branch,entity,concept:branch,
+dialog.name/referent,id:db/origin,entity,concept:origin,
+dialog.name/referent,id:db/session,entity,concept:session,
+dialog.name/referent,id:diagnose,entity,dialog:diagnose,
+xyz.tonk.view/directory,id:dialog:diagnose/view,text,"<tonk-tree></tonk-tree>
+",
+xyz.tonk.view/model,id:dialog:diagnose/view,entity,dialog:diagnose,
+dialog.name/referent,id:directory/route,entity,tonk:directory/route,
+dialog.name/referent,id:directory/route/view,entity,id:tonk:directory/route/view,
+dialog.name/referent,id:first,entity,did:key:z6Mk3VY17HUDh9rW6UpiDdtF9BGmdqfsYC2ZGzk4rAJadk2H,
+dialog.name/referent,id:inspector,entity,concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fAawoxRXVrM,
+dialog.name/referent,id:invitation,entity,tonk:invitation,
+dialog.name/referent,id:invitation/link,entity,id:invitation/link,
+xyz.tonk.view/display,id:invitation/link,text,"<div class=""invite-link"">
+  <style>
+    /* Full-width invite field: the URL input fills the row and the
+       copy button rides inside it as a suffix, so it reads as one
+       control (matching the wireframe) rather than a narrow box with
+       a tiny detached icon. */
+    .invite-link { display: block; }
+    .invite-link__url { display: block; width: 100%; }
+  </style>
+  <wa-input
+    class=""invite-link__url""
+    label=""Invite link""
+    readonly
+    value=""{link}""
+  >
+    <wa-copy-button
+      slot=""end""
+      class=""invite-link__copy""
+      value=""{link}""
+    ></wa-copy-button>
+  </wa-input>
+</div>
+",
+xyz.tonk.view/model,id:invitation/link,entity,tonk:invitation,
+dialog.name/referent,id:member,entity,tonk:member,
+dialog.name/referent,id:member/row,entity,id:tonk:member/row,
+dialog.name/referent,id:note,entity,concept:AkeKK1zXY6ndgy3SL3q5d9TZTLXRRSAoccqhLCKakUZG,
+dialog.name/referent,id:portal,entity,concept:7pyvhnW1RwvmrSgip69ecySZ2dLNmP6anuVaVqrLuEHP,
+dialog.name/referent,id:profile/rename,entity,concept:J4J64HgPdVXyhxAbnSw4ZnKSYLfd5Xw7zFmCnydjKWbX,
+dialog.name/referent,id:route,entity,tonk:route,
+dialog.name/referent,id:route/adhoc,entity,id:tonk:route/adhoc,
+dialog.name/referent,id:route/artifact,entity,id:tonk:route/artifact,
+dialog.name/referent,id:route/directory,entity,id:tonk:route/directory,
+dialog.name/referent,id:route/space,entity,id:tonk:route/space,
+dialog.name/referent,id:share/blocked,entity,tonk:share/blocked,
+dialog.name/referent,id:site,entity,tonk:site,
+dialog.name/referent,id:site/view,entity,id:tonk:site/view,
+dialog.name/referent,id:space,entity,tonk:space,
+dialog.name/referent,id:space/enable-sync,entity,concept:8SM9cP8NWr5iGK5DukQnyU2C81bRfHzzjmh4LDTmyLzz,
+dialog.name/referent,id:space/route,entity,tonk:space/route,
+dialog.name/referent,id:space/route/view,entity,id:tonk:space/route/view,
+dialog.name/referent,id:tile,entity,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,
+dialog.name/referent,id:tonk/agent-invite,entity,tonk:agent-invite,
+dialog.name/referent,id:tonk/agents,entity,tonk:agents,
+dialog.name/referent,id:tonk/agents-markdown,entity,the:4zHZYkgZQcAjcBacDbg9wibKKH5nZrAjmKNMHKQT5Di3,
+dialog.name/referent,id:tonk/identity,entity,tonk:identity,
+dialog.name/referent,id:tonk/invite,entity,tonk:invite,
+dialog.name/referent,id:tonk/load,entity,tonk:load,
+dialog.name/referent,id:tonk/rename-repository,entity,concept:FeDSxNLGXMavPdz7S2jgdS9BG4E9re5nj1ZcFoHR3PQG,
+dialog.name/referent,id:tonk/replica,entity,tonk:replica,
+dialog.name/referent,id:tonk/repository,entity,tonk:repository,
+dialog.name/referent,id:tonk/space,entity,tonk:blank,
+dialog.name/referent,id:tonk/sync,entity,tonk:sync,
+xyz.tonk.view/display,id:tonk:adhoc/route/view,text,"<tonk-display with=""{branch}@{repo}"" entity={entity} model={model} view={view} />
+",
+xyz.tonk.view/model,id:tonk:adhoc/route/view,entity,tonk:adhoc/route,
+xyz.tonk.view/display,id:tonk:artifact/route/view,text,"<tonk-display with=""{branch}@{repo}"" entity={entity} model={model} />
+",
+xyz.tonk.view/model,id:tonk:artifact/route/view,entity,tonk:artifact/route,
+xyz.tonk.view/display,id:tonk:blank/view,text,"<div class=""blank-canvas"">
+  <style>
+    .blank-canvas {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 100dvh;
+      gap: var(--wa-space-2xl);
+      width: 100%;
+      max-width: 620px;
+      margin: 0 auto;
+      padding: var(--wa-space-3xl) var(--wa-space-2xl);
+      color: var(--wa-color-text-normal);
+      font-family: var(--wa-font-family-body);
+    }
+    .blank-canvas__label {
+      font-family: var(--wa-font-family-code);
+      font-size: var(--wa-font-size-xs);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--wa-color-text-quiet);
+    }
+    .blank-canvas__title {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--wa-color-text-normal);
+      font-family: var(--wa-font-family-body);
+      font-size: var(--wa-font-size-2xl);
+      font-weight: var(--wa-font-weight-normal);
+      letter-spacing: -0.02em;
+    }
+    .blank-canvas__deeplink {
+      display: flex;
+      flex-direction: column;
+      gap: var(--wa-space-xs);
+      align-items: flex-start;
+    }
+    /* `tonk-display` is light DOM and projects lifecycle slots by
+       toggling `hidden`. Its custom-element display rule outranks the UA
+       default, so enforce the inactive state here. */
+    .blank-canvas__deeplink tonk-display > [slot][hidden] {
+      display: none !important;
+    }
+    .blank-canvas__instr {
+      display: flex;
+      flex-direction: column;
+      gap: var(--wa-space-2xs);
+      padding-left: var(--wa-space-m);
+      border-left: 2px solid var(--wa-color-brand-fill-loud);
+      font-size: var(--wa-font-size-m);
+      line-height: var(--wa-line-height-normal);
+      color: var(--wa-color-text-quiet);
+    }
+    .blank-canvas__instr p { margin: 0; }
+  </style>
+  <span class=""blank-canvas__label"">no template &middot; empty view</span>
+  <h1 class=""blank-canvas__title"">your starting layout is in place</h1>
+  <section class=""blank-canvas__deeplink"">
+    <tonk-page onmount=tonk:invite data-invite=""tonk:invite""></tonk-page>
+    <tonk-origin>
+      <tonk-display
+        entity={subject}
+        bind:base=""data-base""
+        model=tonk:agent-invite
+        data-page=""this repo"">
+        <tonk-display
+          slot=""no-entity""
+          entity={subject}
+          model=tonk:share/blocked>
+          <div slot=""no-entity"" class=""blank-canvas__label"">Generating link…</div>
+        </tonk-display>
+      </tonk-display>
+    </tonk-origin>
+  </section>
+  <div class=""blank-canvas__instr"">
+    <p>Keep building by hand, or paste this link into your agent to take it further.</p>
+  </div>
+</div>
+",
+xyz.tonk.view/model,id:tonk:blank/view,entity,tonk:blank,
+xyz.tonk.view/display,id:tonk:directory/route/view,text,"<tonk-display with=""{branch}@{repo}"" model={model} />
+",
+xyz.tonk.view/model,id:tonk:directory/route/view,entity,tonk:directory/route,
+xyz.tonk.view/directory,id:tonk:member/roster,text,"<div class=""roster"">
+  <style>
+    /* Share-dialog roster section: a labelled block under the invite
+       link. (Styled here because the roster view always mounts with
+       it, and the share dialog has no <style> of its own.) */
+    .roster-section {
+      margin-top: var(--wa-space-l);
+    }
+    .roster-section__label {
+      margin: 0 0 var(--wa-space-2xs);
+      font-size: var(--wa-font-size-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--wa-color-text-quiet);
+    }
+    .roster {
+      display: flex;
+      flex-direction: column;
+    }
+    /* Each member instance mounts as a nested <tonk-display>; let the
+       row fill the width so avatar / did / badge lay out across it. */
+    .roster > tonk-display,
+    .roster > tonk-display > tonk-view {
+      display: block;
+    }
+    .roster__row {
+      display: flex;
+      align-items: center;
+      gap: var(--wa-space-s);
+      padding: var(--wa-space-xs) 0;
+      border-bottom: 1px solid var(--wa-color-surface-border);
+      font-size: var(--wa-font-size-s);
+    }
+    .roster > tonk-display:last-child .roster__row {
+      border-bottom: none;
+    }
+    /* The sigil-glyph avatar: a deterministic identity glyph hashed
+       from the member DID, CLIPPED to a circle. The sigil renders a
+       square SVG; `border-radius:50%` + `overflow:hidden` on the host
+       clips it round (matching the wireframe avatars). The sprite is
+       supplied by the sealed guest, so it paints inside the opaque
+       iframe. */
+    .roster__avatar {
+      flex: none;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid var(--wa-color-surface-border);
+      overflow: hidden;
+    }
+    /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
+       the head (with a leading ellipsis), so the tail stays visible.
+       `<bdi>` keeps the DID itself rendering left-to-right inside the
+       rtl box. Monospace, quiet — a fallback identity until names land. */
+    /* The name + DID column. Grows to fill the row, pushing the role
+       badge to the right edge. */
+    .roster__identity {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    /* The display name — the primary identifier. */
+    .roster__name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: var(--wa-font-size-s);
+      color: var(--wa-color-text-normal);
+    }
+    .roster__did {
+      /* Cap to about the last 8 chars (+ the leading ellipsis); the
+         full DID is in `title`. A quiet sub-line under the name. */
+      max-width: 9ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      direction: rtl;
+      text-align: left;
+      font-family: var(--wa-font-family-code);
+      font-size: var(--wa-font-size-xs);
+      color: var(--wa-color-text-quiet);
+    }
+    /* The raw role URI is hidden; the badge label comes from ::after
+       keyed on data-role. Square brutalist chip, matching the wireframe:
+       founder is filled (loud), member is outline. */
+    .roster__role {
+      flex: none;
+      font-size: 0;
+      line-height: 0;
+      color: transparent;
+    }
+    .roster__role::after {
+      display: inline-block;
+      font-family: var(--wa-font-family-code);
+      font-size: 11px;
+      line-height: 1.4;
+      letter-spacing: 0.02em;
+      text-transform: lowercase;
+      padding: 1px 7px;
+      border: 1px solid var(--wa-color-text-normal);
+      color: var(--wa-color-text-normal);
+      content: attr(data-role);
+    }
+    .roster__role[data-role=""tonk:founder""]::after {
+      content: ""founder"";
+      background: var(--wa-color-text-normal);
+      color: var(--wa-color-surface-default);
+    }
+    .roster__role[data-role=""tonk:member""]::after {
+      content: ""member"";
+      color: var(--wa-color-text-quiet);
+      border-color: var(--wa-color-surface-border);
+    }
+  </style>
+  <tonk-display entity={this} model={dom.host/model} />
+</div>
+",
+xyz.tonk.view/model,id:tonk:member/roster,entity,tonk:member,
+xyz.tonk.view/display,id:tonk:member/row,text,"<div class=""roster__row"" data-role={role}>
+  <tonk-sigil class=""roster__avatar"" did={member}></tonk-sigil>
+  <span class=""roster__identity"">
+    <span class=""roster__name"">{name}</span>
+    <span class=""roster__did"" title={member}><bdi>{member}</bdi></span>
+  </span>
+  <span class=""roster__role"" data-role={role}>{role}</span>
+</div>
+",
+xyz.tonk.view/model,id:tonk:member/row,entity,tonk:member,
+xyz.tonk.view/label,id:tonk:repository/label-view,text,"{name}
+",
+xyz.tonk.view/model,id:tonk:repository/label-view,entity,tonk:repository,
+xyz.tonk.view/display,id:tonk:repository/name-view,text,"<tonk-editable
+  class=""workspace__title-input""
+  value={name}
+  data-subject={this}
+  onchange=tonk/rename-repository
+  aria-label=""Spot name""
+></tonk-editable>
+",
+xyz.tonk.view/model,id:tonk:repository/name-view,entity,tonk:repository,
+xyz.tonk.view/model,id:tonk:repository/title-view,entity,tonk:repository,
+xyz.tonk.view/title,id:tonk:repository/title-view,text,"<tonk-title text=""{name} — Tonk""></tonk-title>
+",
+xyz.tonk.route/concept,id:tonk:route/adhoc,entity,tonk:adhoc/route,
+xyz.tonk.route/path,id:tonk:route/adhoc,text,/{*entity}@{*model}!{*view},
+xyz.tonk.route/concept,id:tonk:route/artifact,entity,tonk:artifact/route,
+xyz.tonk.route/path,id:tonk:route/artifact,text,/{*entity}@{*model},
+xyz.tonk.route/concept,id:tonk:route/directory,entity,tonk:directory/route,
+xyz.tonk.route/path,id:tonk:route/directory,text,/{*model},
+xyz.tonk.route/concept,id:tonk:route/space,entity,tonk:workspace/shell,
+xyz.tonk.route/path,id:tonk:route/space,text,/,
+xyz.tonk.view/display,id:tonk:share/blocked/view,text,"<div class=""local-invite-notice"">
+  <style>
+    .local-invite-notice {
+      display: flex;
+      flex-direction: column;
+      gap: var(--wa-space-2xs);
+      color: var(--wa-color-text-quiet);
+    }
+    .local-invite-notice__label {
+      font-family: var(--wa-font-family-code);
+      font-size: var(--wa-font-size-xs);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .local-invite-notice p {
+      margin: 0;
+      font-family: var(--wa-font-family-body);
+      font-size: var(--wa-font-size-s);
+      line-height: var(--wa-line-height-normal);
+      text-wrap: pretty;
+    }
+  </style>
+  <span class=""local-invite-notice__label"">local spot &middot; no sync remote</span>
+  <p>{detail} Use Share to turn on sync and create an agent link.</p>
+</div>
+",
+xyz.tonk.view/model,id:tonk:share/blocked/view,entity,tonk:share/blocked,
+xyz.tonk.view/display,id:tonk:site/view,text,"<tonk-display entity={this} model={concept} />
+",
+xyz.tonk.view/model,id:tonk:site/view,entity,tonk:site,
+xyz.tonk.view/display,id:tonk:space/route/view,text,"<tonk-display entity={replica} model=tonk/space />
+",
+xyz.tonk.view/model,id:tonk:space/route/view,entity,tonk:space/route,
+xyz.tonk.view/directory,id:tonk:view/directory/default,text,"<wa-carousel class=""vertical seamless"" pagination orientation=""vertical"">
+  <wa-carousel-item subject={this}>
+    <tonk-display entity={this} model={dom.host/model} />
+  </wa-carousel-item>
+</wa-carousel>
+",
+xyz.tonk.view/model,id:tonk:view/directory/default,entity,tonk:_,
+xyz.tonk.view/display,id:tonk:workspace/shell/view,text,"<div class=""workspace-shell"" style=""display:flex; flex-direction:column; min-height:100dvh;"">
+  <div class='display-view-slot'>
+    <tonk-display entity={replica} model=tonk/space with=""{branch}@{repo}"" />
+  </div>
+</div>
+",
+xyz.tonk.view/model,id:tonk:workspace/shell/view,entity,tonk:workspace/shell,
+dialog.name/referent,id:view,entity,tonk:view,
+dialog.name/referent,id:view/directory,entity,tonk:view/directory,
+dialog.name/referent,id:view/label,entity,tonk:view/label,
+dialog.name/referent,id:view/title,entity,tonk:view/title,
+dialog.name/referent,id:workspace/shell,entity,tonk:workspace/shell,
+dialog.name/referent,id:workspace/shell/view,entity,id:tonk:workspace/shell/view,
+dialog.attribute/cardinality,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,text,one,
+dialog.attribute/id,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,text,xyz.tonk.site/branch,
+dialog.attribute/type,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,text,Text,
+dialog.meta/description,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,text,"The space branch, picked off the site entity.",
+dialog.attribute/cardinality,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,text,one,
+dialog.attribute/id,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,text,xyz.tonk.site/model,
+dialog.attribute/type,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,text,Text,
+dialog.meta/description,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,text,"The model name from the path, picked off the site entity.",
+dialog.attribute/cardinality,the:2aY6XemvYosT3YXYgi8dHZpxjYY5Az9QnvqdraFVJPDN,text,one,
+dialog.attribute/id,the:2aY6XemvYosT3YXYgi8dHZpxjYY5Az9QnvqdraFVJPDN,text,dialog.origin/profile,
+dialog.attribute/type,the:2aY6XemvYosT3YXYgi8dHZpxjYY5Az9QnvqdraFVJPDN,text,Entity,
+dialog.meta/description,the:2aY6XemvYosT3YXYgi8dHZpxjYY5Az9QnvqdraFVJPDN,text,"Profile entity (as did:key) representing persistent identity on this device
+",
+dialog.attribute/cardinality,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,text,one,
+dialog.attribute/id,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,text,xyz.tonk.authorization/proof,
+dialog.attribute/type,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,text,Text,
+dialog.meta/description,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,text,base58 delegation chain — the `?access=` part of the invite URL.,
+dialog.attribute/cardinality,the:3gf3WpixdpuWyjAoM862xe2HvFQdupBwCaRS2DnRUuRp,text,one,
+dialog.attribute/id,the:3gf3WpixdpuWyjAoM862xe2HvFQdupBwCaRS2DnRUuRp,text,xyz.tonk.membership/name,
+dialog.attribute/type,the:3gf3WpixdpuWyjAoM862xe2HvFQdupBwCaRS2DnRUuRp,text,Text,
+dialog.meta/description,the:3gf3WpixdpuWyjAoM862xe2HvFQdupBwCaRS2DnRUuRp,text,The member's self-asserted display name for this space,
+dialog.attribute/cardinality,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,text,one,
+dialog.attribute/id,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,text,xyz.tonk.credential/link,
+dialog.attribute/type,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,text,Text,
+dialog.meta/description,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,text,The complete invite URL — what the prompt embeds.,
+dialog.attribute/cardinality,the:47guPX8tLWnsmT6UHdNeJQSWYa6HRXC1b5g9esbwbLV8,text,one,
+dialog.attribute/id,the:47guPX8tLWnsmT6UHdNeJQSWYa6HRXC1b5g9esbwbLV8,text,xyz.tonk.tile/entity,
+dialog.attribute/type,the:47guPX8tLWnsmT6UHdNeJQSWYa6HRXC1b5g9esbwbLV8,text,Entity,
+dialog.meta/description,the:47guPX8tLWnsmT6UHdNeJQSWYa6HRXC1b5g9esbwbLV8,text,Entity the tile body renders,
+dialog.attribute/cardinality,the:4MFKa8pxEw1iuZrXk4FzHUjpiTvL1MqBEC3vDHAihDw4,text,one,
+dialog.attribute/id,the:4MFKa8pxEw1iuZrXk4FzHUjpiTvL1MqBEC3vDHAihDw4,text,xyz.tonk.membership/role,
+dialog.attribute/type,the:4MFKa8pxEw1iuZrXk4FzHUjpiTvL1MqBEC3vDHAihDw4,text,Entity,
+dialog.meta/description,the:4MFKa8pxEw1iuZrXk4FzHUjpiTvL1MqBEC3vDHAihDw4,text,The member's role: tonk:founder (creator) or tonk:member (joiner),
+dialog.attribute/cardinality,the:4UTcqwY5v1jhJENfHLURgnHFVSu2B7eHxHSMcLiNnKK6,text,one,
+dialog.attribute/id,the:4UTcqwY5v1jhJENfHLURgnHFVSu2B7eHxHSMcLiNnKK6,text,dialog.branch/period,
+dialog.attribute/type,the:4UTcqwY5v1jhJENfHLURgnHFVSu2B7eHxHSMcLiNnKK6,text,Entity,
+dialog.meta/description,the:4UTcqwY5v1jhJENfHLURgnHFVSu2B7eHxHSMcLiNnKK6,text,Synchronization point with an upstream,
+dialog.attribute/cardinality,the:4r2ARF999X5KsGYRz2S1W9E1mEL6SSYNANR24e3Jkfew,text,one,
+dialog.attribute/id,the:4r2ARF999X5KsGYRz2S1W9E1mEL6SSYNANR24e3Jkfew,text,xyz.tonk.site/path,
+dialog.attribute/type,the:4r2ARF999X5KsGYRz2S1W9E1mEL6SSYNANR24e3Jkfew,text,Text,
+dialog.meta/description,the:4r2ARF999X5KsGYRz2S1W9E1mEL6SSYNANR24e3Jkfew,text,Currently active path on this site.,
+dialog.attribute/cardinality,the:4zHZYkgZQcAjcBacDbg9wibKKH5nZrAjmKNMHKQT5Di3,text,one,
+dialog.attribute/id,the:4zHZYkgZQcAjcBacDbg9wibKKH5nZrAjmKNMHKQT5Di3,text,xyz.tonk.repo/agents,
+dialog.attribute/type,the:4zHZYkgZQcAjcBacDbg9wibKKH5nZrAjmKNMHKQT5Di3,text,Text,
+dialog.meta/description,the:4zHZYkgZQcAjcBacDbg9wibKKH5nZrAjmKNMHKQT5Di3,text,"Markdown working context for agents using this repository. Keep durable concepts, workflows, decisions, and recurring pitfalls here; omit credentials, invite links, transient status, and one-off completions.
+",
+dialog.attribute/cardinality,the:5M5bWw29NigeUMVcsTYTdUwQcfHBwEtc5W14sedKXt87,text,one,
+dialog.attribute/id,the:5M5bWw29NigeUMVcsTYTdUwQcfHBwEtc5W14sedKXt87,text,xyz.tonk.share/time,
+dialog.attribute/type,the:5M5bWw29NigeUMVcsTYTdUwQcfHBwEtc5W14sedKXt87,text,Float,
+dialog.meta/description,the:5M5bWw29NigeUMVcsTYTdUwQcfHBwEtc5W14sedKXt87,text,Timestamp of the invite request this refusal answers.,
+dialog.attribute/cardinality,the:5Qr2vQF2Q8KDnBW9GLkvnGmtxNgQU2QkpufozHCRYwzq,text,many,
+dialog.attribute/id,the:5Qr2vQF2Q8KDnBW9GLkvnGmtxNgQU2QkpufozHCRYwzq,text,xyz.tonk.board/column,
+dialog.attribute/type,the:5Qr2vQF2Q8KDnBW9GLkvnGmtxNgQU2QkpufozHCRYwzq,text,Entity,
+dialog.meta/description,the:5Qr2vQF2Q8KDnBW9GLkvnGmtxNgQU2QkpufozHCRYwzq,text,Columns in this board,
+dialog.attribute/cardinality,the:5nYQe4njfBNTN2f8CGXNUBG2a1dQoLiLMw9fw9BpAj4p,text,one,
+dialog.attribute/id,the:5nYQe4njfBNTN2f8CGXNUBG2a1dQoLiLMw9fw9BpAj4p,text,xyz.tonk.sync/status,
+dialog.attribute/type,the:5nYQe4njfBNTN2f8CGXNUBG2a1dQoLiLMw9fw9BpAj4p,text,Entity,
+dialog.meta/description,the:5nYQe4njfBNTN2f8CGXNUBG2a1dQoLiLMw9fw9BpAj4p,text,"Live observation — sync:idle | sync:pending | sync:offline | sync:local | sync:paused.
+",
+dialog.attribute/cardinality,the:5peBDvJJDJ82RNGqJ1jmA6xRCJT6yJDkCCeGj17qFh2Q,text,one,
+dialog.attribute/id,the:5peBDvJJDJ82RNGqJ1jmA6xRCJT6yJDkCCeGj17qFh2Q,text,xyz.tonk.inspector/source,
+dialog.attribute/type,the:5peBDvJJDJ82RNGqJ1jmA6xRCJT6yJDkCCeGj17qFh2Q,text,Text,
+dialog.meta/description,the:5peBDvJJDJ82RNGqJ1jmA6xRCJT6yJDkCCeGj17qFh2Q,text,Space name to inspect (passed through as the source attribute),
+dialog.attribute/cardinality,the:6FkovFmZ8hgEAnebNX8CfKVCZeXHxdNMeah1RgSvxn8B,text,one,
+dialog.attribute/id,the:6FkovFmZ8hgEAnebNX8CfKVCZeXHxdNMeah1RgSvxn8B,text,xyz.tonk.blob/content-type,
+dialog.attribute/type,the:6FkovFmZ8hgEAnebNX8CfKVCZeXHxdNMeah1RgSvxn8B,text,Text,
+dialog.meta/description,the:6FkovFmZ8hgEAnebNX8CfKVCZeXHxdNMeah1RgSvxn8B,text,MIME type of the blob's content,
+dialog.attribute/cardinality,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,text,one,
+dialog.attribute/id,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,text,xyz.tonk.site/repo,
+dialog.attribute/type,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,text,Text,
+dialog.meta/description,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,text,"The space repository, picked off the site entity.",
+dialog.attribute/cardinality,the:6cCQiwvqDy24dmRi5yqWKwUBhQBLvrDN3V6ArPJEpNYA,text,one,
+dialog.attribute/id,the:6cCQiwvqDy24dmRi5yqWKwUBhQBLvrDN3V6ArPJEpNYA,text,dialog.branch/tree,
+dialog.attribute/type,the:6cCQiwvqDy24dmRi5yqWKwUBhQBLvrDN3V6ArPJEpNYA,text,Entity,
+dialog.meta/description,the:6cCQiwvqDy24dmRi5yqWKwUBhQBLvrDN3V6ArPJEpNYA,text,The tree root of this branch,
+dialog.attribute/cardinality,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,text,one,
+dialog.attribute/id,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,text,xyz.tonk.view/model,
+dialog.attribute/type,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,text,Entity,
+dialog.meta/description,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,text,Concept this view renders,
+dialog.attribute/cardinality,the:787Hf5DdsPuRMUtfCoK3Q2JftEgDQiXajhRseZp8r9Uc,text,one,
+dialog.attribute/id,the:787Hf5DdsPuRMUtfCoK3Q2JftEgDQiXajhRseZp8r9Uc,text,xyz.tonk.identity/did,
+dialog.attribute/type,the:787Hf5DdsPuRMUtfCoK3Q2JftEgDQiXajhRseZp8r9Uc,text,Entity,
+dialog.meta/description,the:787Hf5DdsPuRMUtfCoK3Q2JftEgDQiXajhRseZp8r9Uc,text,The self profile DID (feeds the sigil glyph).,
+dialog.attribute/cardinality,the:7L3BycF3Cxa7hEJYhVF1nqh9KUmurqaR57sySz7zMHdD,text,one,
+dialog.attribute/id,the:7L3BycF3Cxa7hEJYhVF1nqh9KUmurqaR57sySz7zMHdD,text,xyz.tonk.tile/model,
+dialog.attribute/type,the:7L3BycF3Cxa7hEJYhVF1nqh9KUmurqaR57sySz7zMHdD,text,Entity,
+dialog.meta/description,the:7L3BycF3Cxa7hEJYhVF1nqh9KUmurqaR57sySz7zMHdD,text,Concept the tile body renders,
+dialog.attribute/cardinality,the:7L9KfWTCTUVA2UPyTDtJQ74sfkFebQJEBiB1aJn5XCmm,text,one,
+dialog.attribute/id,the:7L9KfWTCTUVA2UPyTDtJQ74sfkFebQJEBiB1aJn5XCmm,text,dom.event.current-target.dataset/rename,
+dialog.attribute/type,the:7L9KfWTCTUVA2UPyTDtJQ74sfkFebQJEBiB1aJn5XCmm,text,Entity,
+dialog.meta/description,the:7L9KfWTCTUVA2UPyTDtJQ74sfkFebQJEBiB1aJn5XCmm,text,Per-command marker (data-rename) distinguishing this from repo rename.,
+dialog.attribute/cardinality,the:7c184BJ3aHXtHRhpXHz6R5JJXWEwjBTcc37Kc6owmyNd,text,one,
+dialog.attribute/id,the:7c184BJ3aHXtHRhpXHz6R5JJXWEwjBTcc37Kc6owmyNd,text,xyz.tonk.membership/member,
+dialog.attribute/type,the:7c184BJ3aHXtHRhpXHz6R5JJXWEwjBTcc37Kc6owmyNd,text,Entity,
+dialog.meta/description,the:7c184BJ3aHXtHRhpXHz6R5JJXWEwjBTcc37Kc6owmyNd,text,The member profile's DID (the `member` of the Membership),
+dialog.attribute/cardinality,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,text,one,
+dialog.attribute/id,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,text,dialog.origin/subject,
+dialog.attribute/type,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,text,Entity,
+dialog.meta/description,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,text,"The repository subject (as did:key) representing it's unique identifier
+",
+dialog.attribute/cardinality,the:8LXKwgiZiwCHMHo8aieSaSQvauVnWDmnXRp5CCD6FSdz,text,one,
+dialog.attribute/id,the:8LXKwgiZiwCHMHo8aieSaSQvauVnWDmnXRp5CCD6FSdz,text,dialog.branch/origin,
+dialog.attribute/type,the:8LXKwgiZiwCHMHo8aieSaSQvauVnWDmnXRp5CCD6FSdz,text,Entity,
+dialog.meta/description,the:8LXKwgiZiwCHMHo8aieSaSQvauVnWDmnXRp5CCD6FSdz,text,The origin of this branch,
+dialog.attribute/cardinality,the:8wJ78wpKHu3UdeZqL8dCiExUkSAhzWULedVyyBJk7Hyn,text,many,
+dialog.attribute/id,the:8wJ78wpKHu3UdeZqL8dCiExUkSAhzWULedVyyBJk7Hyn,text,xyz.tonk.column/tile,
+dialog.attribute/type,the:8wJ78wpKHu3UdeZqL8dCiExUkSAhzWULedVyyBJk7Hyn,text,Entity,
+dialog.meta/description,the:8wJ78wpKHu3UdeZqL8dCiExUkSAhzWULedVyyBJk7Hyn,text,Tiles in this column,
+dialog.attribute/cardinality,the:9e9RTuWAGkohX289NQWtHwB54neDEk6H16nL2he92g1s,text,one,
+dialog.attribute/id,the:9e9RTuWAGkohX289NQWtHwB54neDEk6H16nL2he92g1s,text,xyz.tonk.share/blocked,
+dialog.attribute/type,the:9e9RTuWAGkohX289NQWtHwB54neDEk6H16nL2he92g1s,text,Text,
+dialog.meta/description,the:9e9RTuWAGkohX289NQWtHwB54neDEk6H16nL2he92g1s,text,Stable refusal class.,
+dialog.attribute/cardinality,the:AEMDM9HjGBxgqkfpDQyUEQDYRAHTHxuJqxNiy2tP1gBR,text,one,
+dialog.attribute/id,the:AEMDM9HjGBxgqkfpDQyUEQDYRAHTHxuJqxNiy2tP1gBR,text,xyz.tonk.route/path,
+dialog.attribute/type,the:AEMDM9HjGBxgqkfpDQyUEQDYRAHTHxuJqxNiy2tP1gBR,text,Text,
+dialog.meta/description,the:AEMDM9HjGBxgqkfpDQyUEQDYRAHTHxuJqxNiy2tP1gBR,text,The axum/matchit path pattern.,
+dialog.attribute/cardinality,the:AUJczwHiGy7bwXVJoNoCHA6LdumKSiiDMrZZjcwZfMC9,text,one,
+dialog.attribute/id,the:AUJczwHiGy7bwXVJoNoCHA6LdumKSiiDMrZZjcwZfMC9,text,xyz.tonk.view/directory,
+dialog.attribute/type,the:AUJczwHiGy7bwXVJoNoCHA6LdumKSiiDMrZZjcwZfMC9,text,Text,
+dialog.meta/description,the:AUJczwHiGy7bwXVJoNoCHA6LdumKSiiDMrZZjcwZfMC9,text,HTML template for the view,
+dialog.attribute/cardinality,the:Aez1WvdUoRw1Ay4MDoPbvpkSUuiRh6DVqzsbUo25j2g1,text,one,
+dialog.attribute/id,the:Aez1WvdUoRw1Ay4MDoPbvpkSUuiRh6DVqzsbUo25j2g1,text,xyz.tonk.identity/name,
+dialog.attribute/type,the:Aez1WvdUoRw1Ay4MDoPbvpkSUuiRh6DVqzsbUo25j2g1,text,Text,
+dialog.meta/description,the:Aez1WvdUoRw1Ay4MDoPbvpkSUuiRh6DVqzsbUo25j2g1,text,The self display name shown (and edited) in the chip.,
+dialog.attribute/cardinality,the:AqpRFCZGH4Vhy7u5rSuJjXjPXkke7NvAgZFh8RKHHCNf,text,one,
+dialog.attribute/id,the:AqpRFCZGH4Vhy7u5rSuJjXjPXkke7NvAgZFh8RKHHCNf,text,dialog.diagnose/name,
+dialog.attribute/type,the:AqpRFCZGH4Vhy7u5rSuJjXjPXkke7NvAgZFh8RKHHCNf,text,Text,
+dialog.meta/description,the:AqpRFCZGH4Vhy7u5rSuJjXjPXkke7NvAgZFh8RKHHCNf,text,A label for the inspector (unused; satisfies the concept shape).,
+dialog.attribute/cardinality,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,text,one,
+dialog.attribute/id,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,text,xyz.tonk.authorization/remote,
+dialog.attribute/type,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,text,Text,
+dialog.meta/description,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,text,Sync endpoint — the `&remote=` part; empty when local-only.,
+dialog.attribute/cardinality,the:B2uzNGttvidoKJgjpKvebawpK658GJ8X1p8HuJMZ2ZYP,text,one,
+dialog.attribute/id,the:B2uzNGttvidoKJgjpKvebawpK658GJ8X1p8HuJMZ2ZYP,text,xyz.tonk.site/anchor,
+dialog.attribute/type,the:B2uzNGttvidoKJgjpKvebawpK658GJ8X1p8HuJMZ2ZYP,text,Text,
+dialog.meta/description,the:B2uzNGttvidoKJgjpKvebawpK658GJ8X1p8HuJMZ2ZYP,text,Currently active anchor (URL hash) on this site.,
+dialog.attribute/cardinality,the:B3VGQ1KR5p1uoi8ZRLreHQ1LymXZHgVPrzi4mAT9aV16,text,one,
+dialog.attribute/id,the:B3VGQ1KR5p1uoi8ZRLreHQ1LymXZHgVPrzi4mAT9aV16,text,xyz.tonk.tile/order,
+dialog.attribute/type,the:B3VGQ1KR5p1uoi8ZRLreHQ1LymXZHgVPrzi4mAT9aV16,text,Text,
+dialog.meta/description,the:B3VGQ1KR5p1uoi8ZRLreHQ1LymXZHgVPrzi4mAT9aV16,text,Order key within the column,
+dialog.attribute/cardinality,the:BK6Cm7GjEHr7ektf1J8A2Xa8hfxYY39bPPMN9VcfnbVR,text,one,
+dialog.attribute/id,the:BK6Cm7GjEHr7ektf1J8A2Xa8hfxYY39bPPMN9VcfnbVR,text,xyz.tonk.board/name,
+dialog.attribute/type,the:BK6Cm7GjEHr7ektf1J8A2Xa8hfxYY39bPPMN9VcfnbVR,text,Text,
+dialog.meta/description,the:BK6Cm7GjEHr7ektf1J8A2Xa8hfxYY39bPPMN9VcfnbVR,text,Display name,
+dialog.attribute/cardinality,the:BMriRJYXTGB7DS1Sg8hvPa8ra68GFLxBgY49hiGfZNfw,text,one,
+dialog.attribute/id,the:BMriRJYXTGB7DS1Sg8hvPa8ra68GFLxBgY49hiGfZNfw,text,xyz.tonk.route/concept,
+dialog.attribute/type,the:BMriRJYXTGB7DS1Sg8hvPa8ra68GFLxBgY49hiGfZNfw,text,Entity,
+dialog.meta/description,the:BMriRJYXTGB7DS1Sg8hvPa8ra68GFLxBgY49hiGfZNfw,text,The route model to render when this path matches.,
+dialog.attribute/cardinality,the:BXDVz5r3jJTRzqckbUwvGp47ZYqpJNdxwwDTMxZaN16J,text,one,
+dialog.attribute/id,the:BXDVz5r3jJTRzqckbUwvGp47ZYqpJNdxwwDTMxZaN16J,text,dom.event.current-target.elements.name/value,
+dialog.attribute/type,the:BXDVz5r3jJTRzqckbUwvGp47ZYqpJNdxwwDTMxZaN16J,text,Text,
+dialog.meta/description,the:BXDVz5r3jJTRzqckbUwvGp47ZYqpJNdxwwDTMxZaN16J,text,"The space's local repository name, stamped into the hidden `name` input",
+dialog.attribute/cardinality,the:Bb9CTzCtWxutoCcPKwmKvdCfKU5Em9tRhY4Fdtg7scHY,text,one,
+dialog.attribute/id,the:Bb9CTzCtWxutoCcPKwmKvdCfKU5Em9tRhY4Fdtg7scHY,text,xyz.tonk.site/space,
+dialog.attribute/type,the:Bb9CTzCtWxutoCcPKwmKvdCfKU5Em9tRhY4Fdtg7scHY,text,Text,
+dialog.meta/description,the:Bb9CTzCtWxutoCcPKwmKvdCfKU5Em9tRhY4Fdtg7scHY,text,"The active space (repository name), picked off the site.",
+dialog.attribute/cardinality,the:Bw6ubZ966FgDRqD6s8FFYLgGT6ssBaRq4tsRGDeg4yeC,text,one,
+dialog.attribute/id,the:Bw6ubZ966FgDRqD6s8FFYLgGT6ssBaRq4tsRGDeg4yeC,text,xyz.tonk.replica/subject,
+dialog.attribute/type,the:Bw6ubZ966FgDRqD6s8FFYLgGT6ssBaRq4tsRGDeg4yeC,text,Entity,
+dialog.meta/description,the:Bw6ubZ966FgDRqD6s8FFYLgGT6ssBaRq4tsRGDeg4yeC,text,The repository's subject DID (stable identity),
+dialog.attribute/cardinality,the:CLHqGt4MwF8BcygrXHQvEtX8vjG2Tk3QLhdY8JXZ9MnU,text,one,
+dialog.attribute/id,the:CLHqGt4MwF8BcygrXHQvEtX8vjG2Tk3QLhdY8JXZ9MnU,text,xyz.tonk.site/route,
+dialog.attribute/type,the:CLHqGt4MwF8BcygrXHQvEtX8vjG2Tk3QLhdY8JXZ9MnU,text,Entity,
+dialog.meta/description,the:CLHqGt4MwF8BcygrXHQvEtX8vjG2Tk3QLhdY8JXZ9MnU,text,Matched route of this site.,
+dialog.attribute/cardinality,the:CPBmufsiTSR7FPvkn4tKTUman7aA4YZQFeJzXKpkrN5P,text,one,
+dialog.attribute/id,the:CPBmufsiTSR7FPvkn4tKTUman7aA4YZQFeJzXKpkrN5P,text,dom.event.do/prevent-default,
+dialog.attribute/type,the:CPBmufsiTSR7FPvkn4tKTUman7aA4YZQFeJzXKpkrN5P,text,,
+dialog.meta/description,the:CPBmufsiTSR7FPvkn4tKTUman7aA4YZQFeJzXKpkrN5P,text,Stop the form submission from reloading the page,
+dialog.attribute/cardinality,the:CntvqkeLn7kGRRhcxPND5BCAbKLXRQXjAS29xKnXSXth,text,one,
+dialog.attribute/id,the:CntvqkeLn7kGRRhcxPND5BCAbKLXRQXjAS29xKnXSXth,text,xyz.tonk.site/entity,
+dialog.attribute/type,the:CntvqkeLn7kGRRhcxPND5BCAbKLXRQXjAS29xKnXSXth,text,Entity,
+dialog.meta/description,the:CntvqkeLn7kGRRhcxPND5BCAbKLXRQXjAS29xKnXSXth,text,"The target entity from the path, picked off the site entity.",
+dialog.attribute/cardinality,the:D4MVj463EFn9eTJNZo5V9YHM7pCwwYTXZ25SD7bAXbhg,text,one,
+dialog.attribute/id,the:D4MVj463EFn9eTJNZo5V9YHM7pCwwYTXZ25SD7bAXbhg,text,xyz.tonk.blob/name,
+dialog.attribute/type,the:D4MVj463EFn9eTJNZo5V9YHM7pCwwYTXZ25SD7bAXbhg,text,Text,
+dialog.meta/description,the:D4MVj463EFn9eTJNZo5V9YHM7pCwwYTXZ25SD7bAXbhg,text,Human-readable file name,
+dialog.attribute/cardinality,the:DDeA4YLoSKMeFNqhn5Z4Lw7JjV8Bg2jUPPBCv2wVSYum,text,one,
+dialog.attribute/id,the:DDeA4YLoSKMeFNqhn5Z4Lw7JjV8Bg2jUPPBCv2wVSYum,text,xyz.tonk.site/view,
+dialog.attribute/type,the:DDeA4YLoSKMeFNqhn5Z4Lw7JjV8Bg2jUPPBCv2wVSYum,text,Text,
+dialog.meta/description,the:DDeA4YLoSKMeFNqhn5Z4Lw7JjV8Bg2jUPPBCv2wVSYum,text,"The view name from the path, picked off the site entity.",
+dialog.attribute/cardinality,the:DVD4psU8ged12zVR2JcyQNtL5Uny2xSCz2pcNGqveWSW,text,one,
+dialog.attribute/id,the:DVD4psU8ged12zVR2JcyQNtL5Uny2xSCz2pcNGqveWSW,text,legacy.note/title,
+dialog.attribute/type,the:DVD4psU8ged12zVR2JcyQNtL5Uny2xSCz2pcNGqveWSW,text,Text,
+dialog.meta/description,the:DVD4psU8ged12zVR2JcyQNtL5Uny2xSCz2pcNGqveWSW,text,title,
+dialog.attribute/cardinality,the:DWvSRMWJLkqDTh9jBg9zApMB7WUMkF3Dxq9YYrHGDVba,text,one,
+dialog.attribute/id,the:DWvSRMWJLkqDTh9jBg9zApMB7WUMkF3Dxq9YYrHGDVba,text,dom.event/time-stamp,
+dialog.attribute/type,the:DWvSRMWJLkqDTh9jBg9zApMB7WUMkF3Dxq9YYrHGDVba,text,Float,
+dialog.meta/description,the:DWvSRMWJLkqDTh9jBg9zApMB7WUMkF3Dxq9YYrHGDVba,text,The submit event's timestamp; makes each click distinct.,
+dialog.attribute/cardinality,the:Dh5ptBoFMjAvA4f69yMe8FKC7qQer3BEJii3MBhfbVXh,text,one,
+dialog.attribute/id,the:Dh5ptBoFMjAvA4f69yMe8FKC7qQer3BEJii3MBhfbVXh,text,xyz.tonk.view/label,
+dialog.attribute/type,the:Dh5ptBoFMjAvA4f69yMe8FKC7qQer3BEJii3MBhfbVXh,text,Text,
+dialog.meta/description,the:Dh5ptBoFMjAvA4f69yMe8FKC7qQer3BEJii3MBhfbVXh,text,HTML template for the label view,
+dialog.attribute/cardinality,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,text,one,
+dialog.attribute/id,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,text,xyz.tonk.credential/seed,
+dialog.attribute/type,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,text,Text,
+dialog.meta/description,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,text,base58 keypair seed — the `#` fragment of the invite URL.,
+dialog.attribute/cardinality,the:EKKYhacJ2rVJzJRVXdJTqHcyAn6mRf6WMZwganmhhuau,text,one,
+dialog.attribute/id,the:EKKYhacJ2rVJzJRVXdJTqHcyAn6mRf6WMZwganmhhuau,text,xyz.tonk.replica/kind,
+dialog.attribute/type,the:EKKYhacJ2rVJzJRVXdJTqHcyAn6mRf6WMZwganmhhuau,text,Entity,
+dialog.meta/description,the:EKKYhacJ2rVJzJRVXdJTqHcyAn6mRf6WMZwganmhhuau,text,"tonk:repository for a real space, tonk:profile for the profile's own self-replica. The Hub view hides the latter in CSS via [data-kind].
+",
+dialog.attribute/cardinality,the:Eav3m4u5MAu1TaEQAZa61hwz1RecAELG12EWgCzD4cbd,text,one,
+dialog.attribute/id,the:Eav3m4u5MAu1TaEQAZa61hwz1RecAELG12EWgCzD4cbd,text,xyz.tonk.component/module,
+dialog.attribute/type,the:Eav3m4u5MAu1TaEQAZa61hwz1RecAELG12EWgCzD4cbd,text,Text,
+dialog.meta/description,the:Eav3m4u5MAu1TaEQAZa61hwz1RecAELG12EWgCzD4cbd,text,"JS module source. Runs once per realm; guard definitions with
+`customElements.get(name) ||` since a name can't be redefined
+(replacing a component takes effect on the next page load).
+",
+dialog.attribute/cardinality,the:Ed3j1T65kps1kLeYtK9W4ZbxvgS68N2BU7w5JEXZgqT1,text,one,
+dialog.attribute/id,the:Ed3j1T65kps1kLeYtK9W4ZbxvgS68N2BU7w5JEXZgqT1,text,xyz.tonk.portal/content,
+dialog.attribute/type,the:Ed3j1T65kps1kLeYtK9W4ZbxvgS68N2BU7w5JEXZgqT1,text,Text,
+dialog.meta/description,the:Ed3j1T65kps1kLeYtK9W4ZbxvgS68N2BU7w5JEXZgqT1,text,HTML document written into the portal iframe,
+dialog.attribute/cardinality,the:EeZ5NwunCdcYEmL4uJL8HRR4PcmPZURJZodvZ6js2Ecb,text,many,
+dialog.attribute/id,the:EeZ5NwunCdcYEmL4uJL8HRR4PcmPZURJZodvZ6js2Ecb,text,dialog.session/branch,
+dialog.attribute/type,the:EeZ5NwunCdcYEmL4uJL8HRR4PcmPZURJZodvZ6js2Ecb,text,Entity,
+dialog.meta/description,the:EeZ5NwunCdcYEmL4uJL8HRR4PcmPZURJZodvZ6js2Ecb,text,"Active branch(es) in this session. Can be multiple when overlays are used.
+",
+dialog.attribute/cardinality,the:EpnZyDw4W9fga3WXGcALdQwwTgJhA4dfoNep7tX28EiC,text,one,
+dialog.attribute/id,the:EpnZyDw4W9fga3WXGcALdQwwTgJhA4dfoNep7tX28EiC,text,dom.event.current-target/value,
+dialog.attribute/type,the:EpnZyDw4W9fga3WXGcALdQwwTgJhA4dfoNep7tX28EiC,text,Text,
+dialog.meta/description,the:EpnZyDw4W9fga3WXGcALdQwwTgJhA4dfoNep7tX28EiC,text,"The new name, read from the editable's value on commit.",
+dialog.attribute/cardinality,the:Ew1zQcswSVLbukE5LctapyTaVNd5RaQp9cS2B7qLcPst,text,one,
+dialog.attribute/id,the:Ew1zQcswSVLbukE5LctapyTaVNd5RaQp9cS2B7qLcPst,text,dialog.session/profile,
+dialog.attribute/type,the:Ew1zQcswSVLbukE5LctapyTaVNd5RaQp9cS2B7qLcPst,text,Entity,
+dialog.meta/description,the:Ew1zQcswSVLbukE5LctapyTaVNd5RaQp9cS2B7qLcPst,text,"Profile entity (as did:key) representing persistent identity on this device
+",
+dialog.attribute/cardinality,the:FPk8L7Qhsui1Q8RiA17MgBd74666afJYDhgRhPmg1Hzw,text,one,
+dialog.attribute/id,the:FPk8L7Qhsui1Q8RiA17MgBd74666afJYDhgRhPmg1Hzw,text,dom.event.current-target.elements.remote/value,
+dialog.attribute/type,the:FPk8L7Qhsui1Q8RiA17MgBd74666afJYDhgRhPmg1Hzw,text,Text,
+dialog.meta/description,the:FPk8L7Qhsui1Q8RiA17MgBd74666afJYDhgRhPmg1Hzw,text,"The sync URL, read from the form's `remote` input on submit",
+dialog.attribute/cardinality,the:FZiKnXUcwJQGQQGupZp4rUeba4Gy75gG3U2JXAQd3tKi,text,one,
+dialog.attribute/id,the:FZiKnXUcwJQGQQGupZp4rUeba4Gy75gG3U2JXAQd3tKi,text,dom.event.current-target.dataset/invite,
+dialog.attribute/type,the:FZiKnXUcwJQGQQGupZp4rUeba4Gy75gG3U2JXAQd3tKi,text,Entity,
+dialog.meta/description,the:FZiKnXUcwJQGQQGupZp4rUeba4Gy75gG3U2JXAQd3tKi,text,"Per-command marker read from the share form's `data-invite`. Gives
+`tonk:invite` an attribute no other command carries, so a
+`tonk:pause-sync` transient (otherwise an identical {this, time}
+shape) does not also decode as an invite.
+",
+dialog.attribute/cardinality,the:FgF1JSDd9MgRnNULwyqY5CnZRQvE9ReLkpPe2v2RNi2d,text,one,
+dialog.attribute/id,the:FgF1JSDd9MgRnNULwyqY5CnZRQvE9ReLkpPe2v2RNi2d,text,xyz.tonk.share/detail,
+dialog.attribute/type,the:FgF1JSDd9MgRnNULwyqY5CnZRQvE9ReLkpPe2v2RNi2d,text,Text,
+dialog.meta/description,the:FgF1JSDd9MgRnNULwyqY5CnZRQvE9ReLkpPe2v2RNi2d,text,Human-readable refusal reason.,
+dialog.attribute/cardinality,the:G9v3K1G3JzzzPiQbkPuLARqa5teg7AQkqpundKGxR2jk,text,one,
+dialog.attribute/id,the:G9v3K1G3JzzzPiQbkPuLARqa5teg7AQkqpundKGxR2jk,text,dialog.branch/moment,
+dialog.attribute/type,the:G9v3K1G3JzzzPiQbkPuLARqa5teg7AQkqpundKGxR2jk,text,Entity,
+dialog.meta/description,the:G9v3K1G3JzzzPiQbkPuLARqa5teg7AQkqpundKGxR2jk,text,Number of commits made since last synchronization,
+dialog.attribute/cardinality,the:GY5FUE5EZEXQd2Rq8HSZoyi33CdaExgVvQnjUD1zY2CE,text,one,
+dialog.attribute/id,the:GY5FUE5EZEXQd2Rq8HSZoyi33CdaExgVvQnjUD1zY2CE,text,xyz.tonk.column/order,
+dialog.attribute/type,the:GY5FUE5EZEXQd2Rq8HSZoyi33CdaExgVvQnjUD1zY2CE,text,Text,
+dialog.meta/description,the:GY5FUE5EZEXQd2Rq8HSZoyi33CdaExgVvQnjUD1zY2CE,text,LexoRank-style order key within the board,
+dialog.attribute/cardinality,the:GmRTrxY9PejBmznqBPHJacZzCbdmrWJnnPYvPWGLsdoF,text,one,
+dialog.attribute/id,the:GmRTrxY9PejBmznqBPHJacZzCbdmrWJnnPYvPWGLsdoF,text,xyz.tonk.repo/name,
+dialog.attribute/type,the:GmRTrxY9PejBmznqBPHJacZzCbdmrWJnnPYvPWGLsdoF,text,Text,
+dialog.meta/description,the:GmRTrxY9PejBmznqBPHJacZzCbdmrWJnnPYvPWGLsdoF,text,"The repository's display name. Seeded at creation (the worker writes it into the repo's own `tonk/repository` on the content branch) and carried over sync on join, so a real repository always has one; the banner still falls back to ""Untitled"" if a read races ahead of the fact.
+",
+dialog.attribute/cardinality,the:HDF18NgBoJhLBdd7m9nXDn2veJsouobDkx7KVKBU8abc,text,one,
+dialog.attribute/id,the:HDF18NgBoJhLBdd7m9nXDn2veJsouobDkx7KVKBU8abc,text,xyz.tonk.site/concept,
+dialog.attribute/type,the:HDF18NgBoJhLBdd7m9nXDn2veJsouobDkx7KVKBU8abc,text,Entity,
+dialog.meta/description,the:HDF18NgBoJhLBdd7m9nXDn2veJsouobDkx7KVKBU8abc,text,Matched route's concept (the model the shell mounts).,
+dialog.attribute/cardinality,the:HSE4KUyzrdHZTATvQVZ9W8ypMPaNuFwnepJZJ6Y1qvGH,text,one,
+dialog.attribute/id,the:HSE4KUyzrdHZTATvQVZ9W8ypMPaNuFwnepJZJ6Y1qvGH,text,xyz.tonk.view/display,
+dialog.attribute/type,the:HSE4KUyzrdHZTATvQVZ9W8ypMPaNuFwnepJZJ6Y1qvGH,text,Text,
+dialog.meta/description,the:HSE4KUyzrdHZTATvQVZ9W8ypMPaNuFwnepJZJ6Y1qvGH,text,HTML template for the view,
+dialog.attribute/cardinality,the:HSy2yWd5Rj3nbKV6k4KEG6t2QXKeWJdzbM1hkitLb5Qs,text,one,
+dialog.attribute/id,the:HSy2yWd5Rj3nbKV6k4KEG6t2QXKeWJdzbM1hkitLb5Qs,text,dialog.session/operator,
+dialog.attribute/type,the:HSy2yWd5Rj3nbKV6k4KEG6t2QXKeWJdzbM1hkitLb5Qs,text,Entity,
+dialog.meta/description,the:HSy2yWd5Rj3nbKV6k4KEG6t2QXKeWJdzbM1hkitLb5Qs,text,"Operator entity (as did:key) representing an identifier used in this session to query and commit
+",
+dialog.attribute/cardinality,the:HgnKC8MVsRmHWuErqsna2nZmofRuVTe4igTVw2NbztJF,text,one,
+dialog.attribute/id,the:HgnKC8MVsRmHWuErqsna2nZmofRuVTe4igTVw2NbztJF,text,xyz.tonk.column/width,
+dialog.attribute/type,the:HgnKC8MVsRmHWuErqsna2nZmofRuVTe4igTVw2NbztJF,text,UnsignedInteger,
+dialog.meta/description,the:HgnKC8MVsRmHWuErqsna2nZmofRuVTe4igTVw2NbztJF,text,Column width in grid units (1 unit is 64px),
+dialog.attribute/cardinality,the:HjwYqrZBiuCmNFDFiRbSgNe95g9d5Wck39qWCotDdvWJ,text,one,
+dialog.attribute/id,the:HjwYqrZBiuCmNFDFiRbSgNe95g9d5Wck39qWCotDdvWJ,text,dialog.branch/name,
+dialog.attribute/type,the:HjwYqrZBiuCmNFDFiRbSgNe95g9d5Wck39qWCotDdvWJ,text,Text,
+dialog.meta/description,the:HjwYqrZBiuCmNFDFiRbSgNe95g9d5Wck39qWCotDdvWJ,text,The branch name,
+dialog.attribute/cardinality,the:HtJyr29XmNxzehvzKoDQZxMuKrsc9Ab1tfk5gn5XShBF,text,one,
+dialog.attribute/id,the:HtJyr29XmNxzehvzKoDQZxMuKrsc9Ab1tfk5gn5XShBF,text,xyz.tonk.replica/name,
+dialog.attribute/type,the:HtJyr29XmNxzehvzKoDQZxMuKrsc9Ab1tfk5gn5XShBF,text,Text,
+dialog.meta/description,the:HtJyr29XmNxzehvzKoDQZxMuKrsc9Ab1tfk5gn5XShBF,text,"Local name of the space, used in its `/space/{name}` URL",
+dialog.attribute/cardinality,the:TvAzWZfiaUGo57QdNroNhcLQTGPjciTjXsRfQpLUZve,text,one,
+dialog.attribute/id,the:TvAzWZfiaUGo57QdNroNhcLQTGPjciTjXsRfQpLUZve,text,dom.event.current-target.dataset/subject,
+dialog.attribute/type,the:TvAzWZfiaUGo57QdNroNhcLQTGPjciTjXsRfQpLUZve,text,Entity,
+dialog.meta/description,the:TvAzWZfiaUGo57QdNroNhcLQTGPjciTjXsRfQpLUZve,text,"The repository's subject DID, stamped on the banner element.",
+dialog.attribute/cardinality,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,text,one,
+dialog.attribute/id,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,text,xyz.tonk.site/replica,
+dialog.attribute/type,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,text,Entity,
+dialog.meta/description,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,text,"The active replica, picked off the site.",
+dialog.attribute/cardinality,the:zAxp5SMcxLBMZzpEtpZHWzVzaSkyesXa3ZDGDrcjGUk,text,one,
+dialog.attribute/id,the:zAxp5SMcxLBMZzpEtpZHWzVzaSkyesXa3ZDGDrcjGUk,text,xyz.tonk.view/title,
+dialog.attribute/type,the:zAxp5SMcxLBMZzpEtpZHWzVzaSkyesXa3ZDGDrcjGUk,text,Text,
+dialog.meta/description,the:zAxp5SMcxLBMZzpEtpZHWzVzaSkyesXa3ZDGDrcjGUk,text,HTML template for the title view,
+dialog.concept.with/branch,tonk:adhoc/route,entity,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,
+dialog.concept.with/entity,tonk:adhoc/route,entity,the:CntvqkeLn7kGRRhcxPND5BCAbKLXRQXjAS29xKnXSXth,
+dialog.concept.with/model,tonk:adhoc/route,entity,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,
+dialog.concept.with/repo,tonk:adhoc/route,entity,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,
+dialog.concept.with/view,tonk:adhoc/route,entity,the:DDeA4YLoSKMeFNqhn5Z4Lw7JjV8Bg2jUPPBCv2wVSYum,
+dialog.meta/concept,tonk:adhoc/route,entity,db:concept,
+dialog.meta/description,tonk:adhoc/route,text,An entity rendered with an explicit view (`{entity}@{model}!{view}`).,
+dialog.concept.with/access,tonk:agent-invite,entity,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,
+dialog.concept.with/code,tonk:agent-invite,entity,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,
+dialog.concept.with/link,tonk:agent-invite,entity,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,
+dialog.concept.with/name,tonk:agent-invite,entity,the:GmRTrxY9PejBmznqBPHJacZzCbdmrWJnnPYvPWGLsdoF,
+dialog.concept.with/remote,tonk:agent-invite,entity,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,
+dialog.meta/concept,tonk:agent-invite,entity,db:concept,
+dialog.meta/description,tonk:agent-invite,text,"A live invite joined with the repo's display name, for the agent prompt.",
+dialog.concept.with/markdown,tonk:agents,entity,the:4zHZYkgZQcAjcBacDbg9wibKKH5nZrAjmKNMHKQT5Di3,
+dialog.meta/concept,tonk:agents,entity,db:concept,
+dialog.meta/description,tonk:agents,text,AGENTS.md context attached to the repository subject DID.,
+dialog.concept.with/branch,tonk:artifact/route,entity,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,
+dialog.concept.with/entity,tonk:artifact/route,entity,the:CntvqkeLn7kGRRhcxPND5BCAbKLXRQXjAS29xKnXSXth,
+dialog.concept.with/model,tonk:artifact/route,entity,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,
+dialog.concept.with/repo,tonk:artifact/route,entity,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,
+dialog.meta/concept,tonk:artifact/route,entity,db:concept,
+dialog.meta/description,tonk:artifact/route,text,A single artifact page (`/space/{name}/{entity}@{model}`).,
+dialog.concept.with/proof,tonk:authorization,entity,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,
+dialog.concept.with/remote,tonk:authorization,entity,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,
+dialog.meta/concept,tonk:authorization,entity,db:concept,
+dialog.meta/description,tonk:authorization,text,"A delegation chain granting access to a repo, keyed by membership DID.",
+dialog.concept.with/subject,tonk:blank,entity,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,
+dialog.meta/concept,tonk:blank,entity,db:concept,
+dialog.meta/description,tonk:blank,text,A lean repo's starting canvas — connect an agent or build by hand.,
+dialog.concept.with/content-type,tonk:blob,entity,the:6FkovFmZ8hgEAnebNX8CfKVCZeXHxdNMeah1RgSvxn8B,
+dialog.concept.with/name,tonk:blob,entity,the:D4MVj463EFn9eTJNZo5V9YHM7pCwwYTXZ25SD7bAXbhg,
+dialog.meta/concept,tonk:blob,entity,db:concept,
+dialog.meta/description,tonk:blob,text,"A content-addressed binary blob (image, file, media)",
+xyz.tonk.view/display,tonk:blob/media-view,text,"<div subject={this}>
+  <tonk-component>
+    <script type=""tonk/module"">
+      customElements.get(""tonk-blob-media"") ||
+        customElements.define(""tonk-blob-media"", class extends HTMLElement {
+          static observedAttributes = [""entity"", ""content-type"", ""name"", ""with""];
+          #objectUrl = null;
+          #generation = 0;
+          connectedCallback() { this.render(); }
+          attributeChangedCallback() { if (this.isConnected) this.render(); }
+          disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
+          revoke() {
+            if (this.#objectUrl) {
+              URL.revokeObjectURL(this.#objectUrl);
+              this.#objectUrl = null;
+            }
+          }
+          url() {
+            const scope = this.getAttribute(""with"") || """";
+            const entity = this.getAttribute(""entity"") || """";
+            const at = scope.indexOf(""@"");
+            if (at < 1 || !entity || scope.includes(""{"")) return null;
+            return ""/api/repository/"" + scope.slice(at + 1) +
+              ""/branch/"" + scope.slice(0, at) + ""/blob/"" + entity;
+          }
+          async objectUrl() {
+            const url = this.url();
+            if (!url) return null;
+            const resp = await window.fetch(url);
+            if (!resp.ok) return null;
+            return URL.createObjectURL(await resp.blob());
+          }
+          render() {
+            const key = [
+              this.getAttribute(""with""),
+              this.getAttribute(""entity""),
+              this.getAttribute(""content-type""),
+              this.getAttribute(""name""),
+            ].join(""|"");
+            if (this.dataset.rendered === key) return;
+            this.dataset.rendered = key;
+            this.#generation++;
+            const root = this.shadowRoot || this.attachShadow({ mode: ""open"" });
+            const type = this.getAttribute(""content-type"") || """";
+            const name = this.getAttribute(""name"") || this.getAttribute(""entity"") || """";
+            this.revoke();
+            if (type.startsWith(""image/"")) {
+              root.innerHTML = ""<style>img { max-width: 100%; }</style>"" +
+                ""<img part=\""media\"">"";
+              root.querySelector(""img"").alt = name;
+              const generation = this.#generation;
+              this.objectUrl().then((u) => {
+                if (!u) {
+                  delete this.dataset.rendered;
+                  return;
+                }
+                if (generation !== this.#generation) {
+                  URL.revokeObjectURL(u);
+                  return;
+                }
+                this.#objectUrl = u;
+                root.querySelector(""img"").src = u;
+              }).catch(() => { delete this.dataset.rendered; });
+              return;
+            }
+            root.innerHTML =
+              ""<style>"" +
+              ""[part=card] { display: flex; align-items: center; gap: 0.75rem; "" +
+              ""padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; "" +
+              ""max-width: 28rem; font-family: system-ui, sans-serif; }"" +
+              ""[part=name] { flex: 1; overflow-wrap: anywhere; }"" +
+              ""[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; "" +
+              ""border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }"" +
+              ""[part=action] { cursor: pointer; }"" +
+              ""</style>"" +
+              ""<div part=\""card\""><span part=\""name\""></span>"" +
+              ""<span part=\""badge\""></span>"" +
+              ""<button part=\""action\"" type=\""button\"">Download</button></div>"";
+            root.querySelector(""[part=name]"").textContent = name;
+            root.querySelector(""[part=badge]"").textContent = type || ""file"";
+            root.querySelector(""[part=action]"").addEventListener(""click"", async () => {
+              let u;
+              try {
+                u = await this.objectUrl();
+              } catch {
+                return;
+              }
+              if (!u) return;
+              const a = document.createElement(""a"");
+              a.href = u;
+              a.download = name;
+              a.click();
+              URL.revokeObjectURL(u);
+            });
+          }
+        });
+    </script>
+  </tonk-component>
+  <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
+</div>
+",
+xyz.tonk.view/model,tonk:blob/media-view,entity,tonk:blob,
+xyz.tonk.view/display,tonk:board,text,"<tonk-strip>
+  <style>
+    /* Board layout travels with the view, so any route that
+       mounts `model=board` renders the strip identically
+       (board route, bare display route, embedded tile). The strip
+       caps its OWN height at the viewport (`block-size: 100dvh`)
+       rather than borrowing a fixed height from the document — so
+       its columns scroll vertically inside a bounded box and the
+       strip scrolls horizontally, without locking the page. (Other
+       views let the page scroll; the board is a self-contained
+       fixed-height scroller.)
+
+       The `tonk-display`/`tonk-view` layers that wrap each
+       level are pure rendering wrappers, not layout boxes;
+       `display: contents` makes them transparent so the strip
+       is a flex container over real `<tonk-column>` items. */
+    tonk-display:has(> tonk-view > tonk-strip),
+    tonk-display > tonk-view:has(> tonk-strip) {
+      display: contents;
+    }
+
+    tonk-strip {
+      --pitch: 16px;
+      --cell: 64px;
+      /* Narrow gutter between columns — just enough that the
+         contrasting strip fill reads as a seam. */
+      --gap: 4px;
+
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: var(--gap);
+      padding: 0;
+      box-sizing: border-box;
+      block-size: 100dvh;
+      inline-size: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scroll-snap-type: x proximity;
+      /* The strip's fill shows through every seam — between
+         columns AND between tiles within a column (since
+         `<tonk-column>` is transparent). The neutral-fill token
+         adapts with dark / light mode. */
+      background-color: var(--wa-color-neutral-fill-normal);
+    }
+
+    /* The `tonk-display`/`tonk-view` wrappers between the strip
+       and each column are transparent to the strip's flex flow,
+       so each `<tonk-column>` is a direct flex item (its
+       `flex: 0 0 calc(--col-w * --cell)` sizes the column, not
+       the wrapping display). */
+    tonk-strip > tonk-display,
+    tonk-strip > tonk-display > tonk-view {
+      display: contents;
+    }
+  </style>
+  <tonk-display entity={column} model=column-view />
+</tonk-strip>
+",
+xyz.tonk.view/model,tonk:board,entity,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,
+xyz.tonk.view/display,tonk:board/column,text,"<tonk-column style=""--col-w: {width};"">
+  <style>
+    tonk-column {
+      /* Width is driven by `--col-w` set on the element by this
+         template (one --cell unit is 64px). Tiles stack
+         top-to-bottom inside; overflow is handled here at the
+         column level so the column's dot-grid background scrolls
+         together with the tiles. */
+      flex: 0 0 calc(var(--col-w, 12) * 64px);
+      block-size: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scroll-snap-align: start;
+      min-block-size: 0;
+      /* Transparent so the strip's seam fill shows through the
+         column-to-column and tile-to-tile gaps. The column's
+         grid layer still paints (a `background-image`, not a
+         fill) against whatever the strip provides underneath. */
+      background-color: transparent;
+    }
+
+    tonk-column::-webkit-scrollbar { display: none; }
+
+    /* Tiles size to their content along the column's main axis
+       and stack top-to-bottom. Overflow happens at the COLUMN
+       level (the column is the scroller), never inside a tile,
+       so a tile renders its content unclipped and the user
+       scrolls the whole column. Tiles paint the dark canvas
+       fill; the gaps expose the strip's lighter seam fill. */
+    tonk-column > .tile {
+      flex: 0 0 auto;
+      inline-size: 100%;
+      box-sizing: border-box;
+      background-color: var(--wa-color-neutral-fill-quiet);
+
+      /* Two-layer engineering graph-paper background, applied to
+         each tile (the surface the dark canvas occupies). The
+         grid travels with the tile content because the tile is
+         the visible canvas. `background-attachment: local` ties
+         the grid to the column's scroll so the dots travel with
+         vertical scroll. */
+      --dot-gap: 16px;
+      --dot-size-dim: 0.5px;
+      --dot-size-bright: 0.5px;
+      --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
+      --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
+      background-image:
+        radial-gradient(
+          circle,
+          var(--dot-color-bright) var(--dot-size-bright),
+          transparent calc(var(--dot-size-bright) + 0.5px)
+        ),
+        radial-gradient(
+          circle,
+          var(--dot-color-dim) var(--dot-size-dim),
+          transparent calc(var(--dot-size-dim) + 0.5px)
+        );
+      background-size:
+        calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
+        var(--dot-gap) var(--dot-gap);
+      background-position:
+        calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
+        calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
+      background-attachment: local;
+    }
+
+    /* The inner `<tonk-display>` participates in the column's
+       scroll — it must NOT clip or scroll on its own. */
+    tonk-column > .tile > tonk-display,
+    tonk-column > .tile > tonk-display > tonk-view {
+      display: block;
+      inline-size: 100%;
+      overflow: visible;
+    }
+  </style>
+  <div class=""tile"" subject={tile}>
+    <tonk-display entity={tile} model=tile />
+  </div>
+</tonk-column>
+",
+xyz.tonk.view/model,tonk:board/column,entity,concept:FHHBrXrKPCtRqqem3tvVd9ABDw8dsx4gCpVoMfsYtag2,
+xyz.tonk.view/directory,tonk:board/directory,text,"<tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
+",
+xyz.tonk.view/model,tonk:board/directory,entity,concept:Ej7ASszsNqDSYJnQv5ph7S69cm5FHqJpEdAKFN1PSD8d,
+xyz.tonk.view/display,tonk:board/tile,text,"<tonk-display entity={entity} model={model} />
+",
+xyz.tonk.view/model,tonk:board/tile,entity,concept:7ptXg8Ck5is19i7Ku6K4BiqhwwWvaHozCEv1XoTNPod4,
+xyz.tonk.view/display,tonk:component,text,"<tonk-component module={module} />
+",
+xyz.tonk.view/model,tonk:component,entity,concept:6QkKpBFbGHAmdVgu5VixUEAKcDXqi1RCHbRbSFsRTNmy,
+xyz.tonk.view/directory,tonk:component/directory,text,"<div class=""component-loader"" hidden>
+  <tonk-component subject={this} module={module}></tonk-component>
+</div>
+",
+xyz.tonk.view/model,tonk:component/directory,entity,concept:6QkKpBFbGHAmdVgu5VixUEAKcDXqi1RCHbRbSFsRTNmy,
+dialog.concept.with/link,tonk:credential,entity,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,
+dialog.concept.with/seed,tonk:credential,entity,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,
+dialog.meta/concept,tonk:credential,entity,db:concept,
+dialog.meta/description,tonk:credential,text,"The private ed25519 seed of a membership principal, and its invite URL (overlay-only).",
+dialog.concept.with/branch,tonk:directory/route,entity,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,
+dialog.concept.with/model,tonk:directory/route,entity,the:26TxFm8ngqbPw3ZA7KuWjBw4yniEGCi9pZVT9pextbnz,
+dialog.concept.with/repo,tonk:directory/route,entity,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,
+dialog.meta/concept,tonk:directory/route,entity,db:concept,
+dialog.meta/description,tonk:directory/route,text,A model directory page (`/space/{name}/{model}`).,
+dialog.concept.with/did,tonk:identity,entity,the:787Hf5DdsPuRMUtfCoK3Q2JftEgDQiXajhRseZp8r9Uc,
+dialog.concept.with/name,tonk:identity,entity,the:Aez1WvdUoRw1Ay4MDoPbvpkSUuiRh6DVqzsbUo25j2g1,
+dialog.meta/concept,tonk:identity,entity,db:concept,
+dialog.meta/description,tonk:identity,text,The signed-in member's own identity for this space.,
+xyz.tonk.view/display,tonk:inspector,text,"<tonk-inspector source={source} />
+",
+xyz.tonk.view/model,tonk:inspector,entity,concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fAawoxRXVrM,
+xyz.tonk.view/directory,tonk:inspector/directory,text,"<tonk-inspector />
+",
+xyz.tonk.view/model,tonk:inspector/directory,entity,concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fAawoxRXVrM,
+dialog.concept.with/access,tonk:invitation,entity,the:3ahpkXk3EFqrorzJStqMfXhRW6Em9YY6ivUwZfX6gocR,
+dialog.concept.with/code,tonk:invitation,entity,the:ED6DhQXKL9KzWjJY3apzo8WPyhEXAoXd22yLf2EKRUKD,
+dialog.concept.with/link,tonk:invitation,entity,the:41MSh24L6KoeCDwxMSh9kCGdx3aGeSudiSEQUsBXCqRH,
+dialog.concept.with/remote,tonk:invitation,entity,the:AtiYDksKCTXViECRAFB1GVBreivCiKX3VUNJLNeeT98v,
+dialog.meta/concept,tonk:invitation,entity,db:concept,
+dialog.meta/description,tonk:invitation,text,An invite that can be used to join a space (authorization + credential).,
+dialog.concept.with/marker,tonk:invite,entity,the:FZiKnXUcwJQGQQGupZp4rUeba4Gy75gG3U2JXAQd3tKi,
+dialog.concept.with/prevent-default,tonk:invite,entity,the:CPBmufsiTSR7FPvkn4tKTUman7aA4YZQFeJzXKpkrN5P,
+dialog.concept.with/time,tonk:invite,entity,the:DWvSRMWJLkqDTh9jBg9zApMB7WUMkF3Dxq9YYrHGDVba,
+dialog.concept/transient,tonk:invite,entity,db:transient,
+dialog.meta/concept,tonk:invite,entity,db:concept,
+dialog.meta/description,tonk:invite,text,Mint a repo invite — generates a membership keypair and delegation.,
+dialog.concept.with/path,tonk:load,entity,the:4r2ARF999X5KsGYRz2S1W9E1mEL6SSYNANR24e3Jkfew,
+dialog.concept/transient,tonk:load,entity,db:transient,
+dialog.meta/concept,tonk:load,entity,db:concept,
+dialog.meta/description,tonk:load,text,Stamp the requesting tab's site for its current path on this branch.,
+dialog.concept.with/member,tonk:member,entity,the:7c184BJ3aHXtHRhpXHz6R5JJXWEwjBTcc37Kc6owmyNd,
+dialog.concept.with/name,tonk:member,entity,the:3gf3WpixdpuWyjAoM862xe2HvFQdupBwCaRS2DnRUuRp,
+dialog.concept.with/role,tonk:member,entity,the:4MFKa8pxEw1iuZrXk4FzHUjpiTvL1MqBEC3vDHAihDw4,
+dialog.meta/concept,tonk:member,entity,db:concept,
+dialog.meta/description,tonk:member,text,A member of a space — a profile on the roster.,
+xyz.tonk.view/display,tonk:portal,text,"<tonk-portal html:content={content} />
+",
+xyz.tonk.view/model,tonk:portal,entity,concept:7pyvhnW1RwvmrSgip69ecySZ2dLNmP6anuVaVqrLuEHP,
+dialog.concept.with/profile,tonk:replica,entity,the:2aY6XemvYosT3YXYgi8dHZpxjYY5Az9QnvqdraFVJPDN,
+dialog.concept.with/subject,tonk:replica,entity,the:7zidZAnERey9KGH4yAWCCWcqKzgsFuEtHHbP9rcSK2AK,
+dialog.meta/concept,tonk:replica,entity,db:concept,
+dialog.meta/description,tonk:replica,text,"Replica of the shared repositiory on this device. It is unique per device
+and can be used to associate device specific metadata about the repository.
+",
+dialog.concept.with/name,tonk:repository,entity,the:GmRTrxY9PejBmznqBPHJacZzCbdmrWJnnPYvPWGLsdoF,
+dialog.meta/concept,tonk:repository,entity,db:concept,
+dialog.meta/description,tonk:repository,text,A shared repository which is the subject of a tonk/replica.,
+dialog.concept.with/concept,tonk:route,entity,the:BMriRJYXTGB7DS1Sg8hvPa8ra68GFLxBgY49hiGfZNfw,
+dialog.concept.with/path,tonk:route,entity,the:AEMDM9HjGBxgqkfpDQyUEQDYRAHTHxuJqxNiy2tP1gBR,
+dialog.meta/concept,tonk:route,entity,db:concept,
+dialog.meta/description,tonk:route,text,A route — maps a path pattern to the model the SW mounts.,
+dialog.concept.with/blocked,tonk:share/blocked,entity,the:9e9RTuWAGkohX289NQWtHwB54neDEk6H16nL2he92g1s,
+dialog.concept.with/detail,tonk:share/blocked,entity,the:FgF1JSDd9MgRnNULwyqY5CnZRQvE9ReLkpPe2v2RNi2d,
+dialog.concept.with/time,tonk:share/blocked,entity,the:5M5bWw29NigeUMVcsTYTdUwQcfHBwEtc5W14sedKXt87,
+dialog.meta/concept,tonk:share/blocked,entity,db:concept,
+dialog.meta/description,tonk:share/blocked,text,Why the latest invite request could not produce a shareable link.,
+dialog.concept.with/anchor,tonk:site,entity,the:B2uzNGttvidoKJgjpKvebawpK658GJ8X1p8HuJMZ2ZYP,
+dialog.concept.with/branch,tonk:site,entity,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,
+dialog.concept.with/concept,tonk:site,entity,the:HDF18NgBoJhLBdd7m9nXDn2veJsouobDkx7KVKBU8abc,
+dialog.concept.with/path,tonk:site,entity,the:4r2ARF999X5KsGYRz2S1W9E1mEL6SSYNANR24e3Jkfew,
+dialog.concept.with/replica,tonk:site,entity,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,
+dialog.concept.with/route,tonk:site,entity,the:CLHqGt4MwF8BcygrXHQvEtX8vjG2Tk3QLhdY8JXZ9MnU,
+dialog.concept.with/space,tonk:site,entity,the:Bb9CTzCtWxutoCcPKwmKvdCfKU5Em9tRhY4Fdtg7scHY,
+dialog.meta/concept,tonk:site,entity,db:concept,
+dialog.meta/description,tonk:site,text,A tab's location and the route concept it renders.,
+dialog.concept.with/kind,tonk:space,entity,the:EKKYhacJ2rVJzJRVXdJTqHcyAn6mRf6WMZwganmhhuau,
+dialog.concept.with/name,tonk:space,entity,the:HtJyr29XmNxzehvzKoDQZxMuKrsc9Ab1tfk5gn5XShBF,
+dialog.concept.with/subject,tonk:space,entity,the:Bw6ubZ966FgDRqD6s8FFYLgGT6ssBaRq4tsRGDeg4yeC,
+dialog.meta/concept,tonk:space,entity,db:concept,
+dialog.meta/description,tonk:space,text,"A repository this profile can open, by its local name.",
+dialog.concept.with/replica,tonk:space/route,entity,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,
+dialog.meta/concept,tonk:space/route,entity,db:concept,
+dialog.meta/description,tonk:space/route,text,The space's default page.,
+dialog.concept.with/status,tonk:sync,entity,the:5nYQe4njfBNTN2f8CGXNUBG2a1dQoLiLMw9fw9BpAj4p,
+dialog.meta/concept,tonk:sync,entity,db:concept,
+dialog.meta/description,tonk:sync,text,This device's live sync status for the space in scope.,
+dialog.concept.with/display,tonk:view,entity,the:HSE4KUyzrdHZTATvQVZ9W8ypMPaNuFwnepJZJ6Y1qvGH,
+dialog.concept.with/model,tonk:view,entity,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,
+dialog.meta/concept,tonk:view,entity,db:concept,
+dialog.meta/description,tonk:view,text,"A display template (model, display) for rendering an entity",
+dialog.concept.with/display,tonk:view/directory,entity,the:AUJczwHiGy7bwXVJoNoCHA6LdumKSiiDMrZZjcwZfMC9,
+dialog.concept.with/model,tonk:view/directory,entity,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,
+dialog.meta/concept,tonk:view/directory,entity,db:concept,
+dialog.meta/description,tonk:view/directory,text,A directory view used by tonk-display when entity is not set.,
+dialog.concept.with/display,tonk:view/label,entity,the:Dh5ptBoFMjAvA4f69yMe8FKC7qQer3BEJii3MBhfbVXh,
+dialog.concept.with/model,tonk:view/label,entity,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,
+dialog.meta/concept,tonk:view/label,entity,db:concept,
+dialog.meta/description,tonk:view/label,text,"A plain, read-only label view selected via `view=tonk:view/label`.",
+dialog.concept.with/display,tonk:view/title,entity,the:zAxp5SMcxLBMZzpEtpZHWzVzaSkyesXa3ZDGDrcjGUk,
+dialog.concept.with/model,tonk:view/title,entity,the:73LgZF6eLGJrUmneDKBU8DbWt2wLQBzFXcdv1XFxaV7f,
+dialog.meta/concept,tonk:view/title,entity,db:concept,
+dialog.meta/description,tonk:view/title,text,A browser-tab-title view selected via `view=tonk:view/title`.,
+dialog.concept.with/branch,tonk:workspace/shell,entity,the:26NbpaxoqPZfzHJbJu6jNfhxnipTzRYqba56xDRqgBAW,
+dialog.concept.with/replica,tonk:workspace/shell,entity,the:YzAh3tpY84nZZEVhyeKY1S4UEP8ww9hLSRh4BA7NxmL,
+dialog.concept.with/repo,tonk:workspace/shell,entity,the:6Xn79WA7kp1w4tMnL7g6s1hJ3YQgTqH15CGiu2Qd3JBW,
+dialog.concept.with/space,tonk:workspace/shell,entity,the:Bb9CTzCtWxutoCcPKwmKvdCfKU5Em9tRhY4Fdtg7scHY,
+dialog.meta/concept,tonk:workspace/shell,entity,db:concept,
+dialog.meta/description,tonk:workspace/shell,text,Two-portal workspace shell — content portal plus FAB overlay.,
