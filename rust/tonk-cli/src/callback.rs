@@ -112,29 +112,52 @@ impl Callback {
     }
 }
 
+/// The page the browser lands on once the terminal has its answer.
+///
+/// A redirect back to the account page would be worse: the tab's purpose is
+/// finished, and sending the user somewhere else leaves them guessing whether
+/// it worked. This says what happened and offers to close, which browsers
+/// permit for a window that was scripted open and ignore otherwise — so the
+/// message stands on its own either way.
+fn confirmation(message: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<meta charset="utf-8">
+<title>Tonk</title>
+<style>
+  body {{ font: 16px/1.5 system-ui, sans-serif; margin: 0;
+         min-height: 100vh; display: grid; place-items: center; }}
+  main {{ text-align: center; padding: 2rem; }}
+  button {{ font: inherit; margin-top: 1rem; padding: 0.5rem 1rem; }}
+</style>
+<main>
+  <p>{message}</p>
+  <button onclick="window.close()">Close this window</button>
+</main>
+"#
+    )
+}
+
 /// Receive the page's POST, hand the result to the waiter, and stop.
 async fn deliver(State(state): State<Waiting>, Form(form): Form<CallbackForm>) -> Html<String> {
     let (outcome, page) = match (form.authorize, form.deny) {
         (Some(encoded), _) => match base64::engine::general_purpose::STANDARD.decode(&encoded) {
             Ok(bytes) => (
                 Authorization::Granted(bytes),
-                "Authorized. You can close this window.",
+                "Authorized. You can return to your terminal.",
             ),
             // A malformed body is reported as a denial rather than retried:
             // the page has already run its ceremony, so there is nothing to
             // wait for, and the caller learns why instead of timing out.
             Err(error) => (
                 Authorization::Denied(format!("authorization was not valid base64: {error}")),
-                "Could not read the authorization. You can close this window.",
+                "Could not read the authorization — check your terminal.",
             ),
         },
-        (None, Some(reason)) => (
-            Authorization::Denied(reason),
-            "Authorization declined. You can close this window.",
-        ),
+        (None, Some(reason)) => (Authorization::Denied(reason), "Authorization declined."),
         (None, None) => (
             Authorization::Denied("the page sent no authorization".to_owned()),
-            "Nothing was authorized. You can close this window.",
+            "Nothing was authorized.",
         ),
     };
 
@@ -144,7 +167,7 @@ async fn deliver(State(state): State<Waiting>, Form(form): Form<CallbackForm>) -
         let _ = sender.send(outcome);
     }
     state.shutdown.notify_one();
-    Html(format!("<!doctype html><meta charset=utf-8><p>{page}</p>"))
+    Html(confirmation(page))
 }
 
 #[cfg(test)]

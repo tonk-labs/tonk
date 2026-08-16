@@ -1369,6 +1369,27 @@ fn bind(host: &HtmlElement) {
         });
     });
 
+    // Cancelling a callback authorization tells the waiting process, rather
+    // than only navigating away. Without this the CLI sits until its
+    // five-minute deadline for a decision the user already made.
+    on_click(host, "#account-handoff-cancel", |host| {
+        let Some((_, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
+            .ok()
+            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+        else {
+            // No callback parked: this is the service handoff, whose Cancel
+            // is an ordinary link back to the account page. `on_click`
+            // already suppressed the navigation, so do it explicitly.
+            if let Some(window) = window() {
+                let _ = window.location().set_href("/account");
+            }
+            return;
+        };
+        if let Err(error) = post_to_callback(&callback, &[("deny", "declined in the browser")]) {
+            show_error(&host, error);
+        }
+    });
+
     on_click(host, "#account-unlink", |host| {
         clear_error(&host);
         let confirmed = window()
