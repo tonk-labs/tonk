@@ -237,6 +237,18 @@ survive — so the entity and the causal version are preserved by construction,
 not by luck. What still needs checking is whether that holds through *our*
 export/import path on a real spot rather than over hand-built artifacts.
 
+**Blocker: there is no force push, and this needs one.** Dialog states it
+plainly — "Push is fast-forward only" (`branch/push.rs:61`) — with
+`PushError::NonFastForward` and no force option anywhere in
+`dialog-repository`. Re-importing rebuilds the tree, so the upgraded spot's
+head is not a descendant of what the remote already holds: an ordinary push
+refuses it, exactly as observed while testing the account branch.
+
+This is a dialog-side change, not something tonk can route around. Worth
+raising upstream with the upgrade path as the motivating case, since the
+alternative — deleting the remote branch and re-pushing — loses the very
+history the import was meant to carry across.
+
 **The open question is what CSV does not carry.** The columns are artifact
 facts. Delegations are now `dialog.ucan/*` facts and may round-trip, but the
 account descriptor, the trusted-base marker, and the local root live in the
