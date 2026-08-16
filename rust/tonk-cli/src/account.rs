@@ -97,6 +97,15 @@ pub struct LinkOptions {
     pub open_browser: bool,
     /// Whether to drop undeliverable detach intents and link anyway.
     pub abandon_detach: bool,
+    /// Where account state lives. Defaults to the install's own store when
+    /// absent; a caller running outside an install supplies its own.
+    pub store: Option<crate::spot::SpotStore>,
+    /// Send the approval URL here instead of relying on the OS to open it.
+    ///
+    /// `webbrowser::open` is the product path; this exists for callers that
+    /// drive the ceremony themselves and so must see the URL the CLI built,
+    /// which carries a callback address only it knows.
+    pub announce: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// Authorize through a loopback callback against this page instead of the
     /// service's link registry.
     ///
@@ -144,6 +153,15 @@ pub(crate) async fn stored_provider_with_operator(
 ) -> Result<Option<AccountProviderRecord>> {
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     stored_provider_for_store(profile, operator, &store).await
+}
+
+/// [`stored_provider_with_operator`] against a caller-supplied store.
+pub(crate) async fn stored_provider_in(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<Option<AccountProviderRecord>> {
+    stored_provider_for_store(profile, operator, store).await
 }
 
 async fn stored_provider_for_store(
@@ -576,16 +594,22 @@ async fn clear_detach_for(
 /// elsewhere, scoped to one space, or unsigned installs no authority here.
 async fn link_via_callback(
     profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
     options: &LinkOptions,
     page: &str,
 ) -> Result<LinkOutcome> {
-    let operator = crate::account_state::credential_operator(profile).await?;
     let callback = crate::callback::Callback::bind().await?;
     let url = login_url(page, profile.did().as_ref(), callback.url());
 
     println!("Open this URL to approve the device:\n{url}");
     if options.open_browser && webbrowser::open(&url).is_err() {
         eprintln!("Could not open a browser; use the URL above.");
+    }
+    // A caller that drives the ceremony itself (tests, or an embedder with
+    // its own browser control) receives the URL rather than relying on the
+    // OS to open it.
+    if let Some(announce) = options.announce.as_ref() {
+        let _ = announce.send(url.clone());
     }
 
     let bytes = match callback.receive().await? {
@@ -607,11 +631,12 @@ async fn link_via_callback(
     profile
         .access()
         .save(UcanDelegation(chain))
-        .perform(&operator)
+        .perform(operator)
         .await
         .context("failed to install the account grant")?;
-    crate::identity::save_local_root(
+    crate::identity::save_local_root_with_operator(
         profile,
+        operator,
         authorization.credential_id.clone(),
         authorization.delegation_hex.clone(),
     )
@@ -636,7 +661,7 @@ async fn link_via_callback(
         .credential()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
-        .perform(&operator)
+        .perform(operator)
         .await
         .context("failed to persist the account link")?;
 
@@ -645,19 +670,31 @@ async fn link_via_callback(
     // keeps the writes where the account repository is already mounted, and
     // means a later device pulling the account inherits what this profile
     // holds rather than only what the account issued.
-    let account_state = match crate::account_state::ensure(profile).await {
+    // `ensure` mounts the account, adopts it as the access upstream, and
+    // syncs — the dance that turns a grant into usable, shared authority.
+    let store = match options.store.clone() {
+        Some(store) => store,
+        None => crate::spot::SpotStore::open().context("failed to locate account state")?,
+    };
+    let account_state = match crate::account_state::ensure_with_operator_and_store(
+        profile,
+        operator.clone(),
+        store,
+    )
+    .await
+    {
         Ok(outcome) => outcome.status,
         Err(_) => AccountStateStatus::Unhydrated,
     };
     let mut warning = None;
-    if let Some(branch) = crate::account_state::open_account_branch(profile, &operator).await? {
+    if let Some(branch) = crate::account_state::open_account_branch(profile, operator).await? {
         let signer = profile.signer().signer().clone();
         let union = tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
         let inbound = DelegationChain::try_from(grant_bytes.as_slice())
             .context("account grant is not a delegation container")?;
         for (label, chain) in [("account grant", inbound), ("profile union", union)] {
             if let Err(error) =
-                tonk_account::delegations::retain_space_delegation(&branch, &chain, &operator).await
+                tonk_account::delegations::retain_space_delegation(&branch, &chain, operator).await
             {
                 warning = Some(format!(
                     "{label} was not retained into the account: {error}"
@@ -665,7 +702,7 @@ async fn link_via_callback(
             }
         }
         if warning.is_none()
-            && let Err(error) = branch.push().perform(&operator).await
+            && let Err(error) = branch.push().perform(operator).await
         {
             warning = Some(format!("account was authorized but not pushed: {error}"));
         }
@@ -696,10 +733,24 @@ struct CallbackAuthorization {
 
 /// Start or resume a browser handoff and activate its fresh generation.
 pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcome> {
-    if let Some(page) = options.via.as_deref() {
-        return link_via_callback(profile, options, page).await;
-    }
     let operator = crate::account_state::credential_operator(profile).await?;
+    link_with_operator(profile, &operator, options).await
+}
+
+/// [`link`] against a caller-supplied operator.
+///
+/// [`link`] resolves one from the global install, mounting the profile by
+/// name, which a caller that already holds a profile cannot satisfy. This
+/// form takes the operator so the whole flow is reachable from a test.
+pub async fn link_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    options: &LinkOptions,
+) -> Result<LinkOutcome> {
+    if let Some(page) = options.via.as_deref() {
+        return link_via_callback(profile, operator, options, page).await;
+    }
+    let operator = operator.clone();
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     {
         let guard = crate::account_session::exclusive_transition_guard(&store)?;

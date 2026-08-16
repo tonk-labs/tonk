@@ -85,6 +85,21 @@ pub async fn save_local_root(
     credential_id: String,
     delegation_hex: String,
 ) -> Result<LocalRoot> {
+    let operator = crate::account_state::credential_operator(profile).await?;
+    save_local_root_with_operator(profile, &operator, credential_id, delegation_hex).await
+}
+
+/// [`save_local_root`] against a caller-supplied operator.
+///
+/// A caller that already holds an operator passes it rather than having one
+/// resolved from the install behind its back — which would mount a different
+/// profile and refuse.
+pub async fn save_local_root_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+    credential_id: String,
+    delegation_hex: String,
+) -> Result<LocalRoot> {
     let bytes = hex::decode(&delegation_hex).context("invalid local-root delegation hex")?;
     let chain = DelegationChain::try_from(bytes.as_slice())
         .context("invalid local-root delegation container")?;
@@ -110,17 +125,16 @@ pub async fn save_local_root(
     };
     // The latest handoff replaces this compatibility projection. Historical
     // UCAN certificates remain installed for local repository writes.
-    let operator = crate::account_state::credential_operator(profile).await?;
     profile
         .save(UcanDelegation(chain))
-        .perform(&operator)
+        .perform(operator)
         .await
         .context("failed to install the local-root delegation")?;
     profile
         .credential()
         .site(LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record).context("failed to serialize the local root")?)
-        .perform(&operator)
+        .perform(operator)
         .await
         .context("failed to persist the local root")?;
     Ok(record)

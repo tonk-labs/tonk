@@ -244,6 +244,8 @@ async fn it_installs_authority_from_a_callback_authorization(
 /// authority: the linking profile starts with nothing.
 #[dialog_common::test]
 async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> Result<()> {
+    use dialog_varsig::Principal as _;
+
     let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
     let owner = common::AccountFixture::with_account_remote(&remote).await?;
     let owner_operator = owner.pre_account_site.operator.inner();
@@ -278,6 +280,11 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     let joiner = common::TestSite::new().await?;
     let joiner_profile = joiner.site.profile.clone();
     let joiner_operator = joiner.site.operator.inner();
+    let union_scope = || dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Any,
+        command: dialog_ucan_core::command::Command::parse("/").expect("root command"),
+        parameters: dialog_ucan::Parameters::default(),
+    };
     let scope = || dialog_ucan::Scope {
         subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
         command: dialog_ucan_core::command::Command::parse("/").expect("root command"),
@@ -298,48 +305,58 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         "a profile that has not linked must not reach a space it never created"
     );
 
-    // Link: the account authorizes it, exactly as the browser would.
+    // Run the REAL `account link --via` against a stand-in page: a tiny
+    // server that answers the approval URL by doing exactly what the browser
+    // does — mint the grant, post it to the callback. Everything after that
+    // is the command's own dance: install, persist, mount, adopt, pull,
+    // retain both union halves, push.
     let root = tonk_identity::derive::derive_root_signer(&[77; 32]).await?;
-    let authorized =
-        tonk_identity::ceremony::authorize_device(root, joiner_profile.did(), &remote).await?;
-    let grant = tonk_cli::account::validate_account_grant(
+    let page = common::authorizing_page(root.clone(), remote.clone()).await?;
+    // Nothing opens a browser in a test, so take the approval URL off the
+    // announce channel and visit it — the URL carries the callback address
+    // only `link` knows, which is why a test cannot construct it.
+    let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+    let approving = tokio::spawn(async move {
+        if let Some(url) = announced.recv().await {
+            let _ = reqwest::Client::new().get(&url).send().await;
+        }
+    });
+    let outcome = tonk_cli::account::link_with_operator(
         &joiner_profile,
-        &hex::decode(&authorized.delegation_hex)?,
+        joiner_operator,
+        &tonk_cli::account::LinkOptions {
+            service_url: remote.clone(),
+            account_url: page.url.clone(),
+            device_name: "test-device".to_owned(),
+            open_browser: false,
+            abandon_detach: false,
+            via: Some(page.url.clone()),
+            announce: Some(announce),
+            store: Some(tonk_cli::spot::SpotStore::at(
+                joiner.parent.join("account-state"),
+            )),
+        },
     )
     .await?;
-    joiner_profile
-        .access()
-        .save(dialog_ucan::UcanDelegation(grant))
-        .perform(joiner_operator)
-        .await?;
+    approving.await?;
+    assert_eq!(
+        outcome.account_state,
+        tonk_account::AccountStateStatus::Ready,
+        "linking must leave the account ready: {:?}",
+        outcome.warning
+    );
+    assert_eq!(
+        outcome.root_did,
+        root.did().to_string(),
+        "linking must record the account that authorized it"
+    );
 
-    // Adopt the account as the access upstream and pull: this is discovery.
-    let joiner_remote = dialog_repository::Repository::from(&joiner_profile)
-        .remote("account")
-        .create(dialog_repository::SiteAddress::from(
-            dialog_remote_ucan_s3::UcanAddress::new(&remote),
-        ))
-        .subject(account_root.clone())
-        .perform(joiner_operator)
-        .await?
-        .branch(dialog_repository::ACCESS_BRANCH)
-        .open()
-        .perform(joiner_operator)
-        .await?;
-    // Re-open the access branch: saving the grant above advanced its head,
-    // and `ACCESS_BRANCH` is the profile's content branch too, so a handle
-    // taken before that write is stale by now.
+    // Re-open the access branch: linking advanced its head.
     let joiner_access = dialog_repository::Repository::from(&joiner_profile)
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(joiner_operator)
         .await?;
-    tonk_account::delegations::adopt_account_upstream(
-        &joiner_access,
-        joiner_remote,
-        joiner_operator,
-    )
-    .await?;
 
     let proof = joiner_access
         .delegations()
@@ -352,6 +369,61 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
          discovered through the account: {:?}",
         proof.err()
     );
+
+    // Linking is not one-directional: the CLI writes BOTH halves of the
+    // union into the account and pushes, so the account records the device
+    // rather than only the device recording the account. Without this a
+    // third device pulling the account would never learn this one exists.
+    // `ensure` is what a linked device runs: it mounts the account, adopts
+    // it as the access upstream, and syncs. Going through it here rather
+    // than reaching for the branch directly means the test exercises the
+    // same path `link --via` does, including the operator refresh that lets
+    // the newly installed grant authorize the pull.
+    tonk_cli::account_state::ensure_with_operator(&joiner_profile, joiner_operator.clone()).await?;
+    let joiner_account = tonk_cli::account_state::open_account_branch_in(
+        &joiner_profile,
+        joiner_operator,
+        &tonk_cli::spot::SpotStore::at(joiner.parent.join("account-state")),
+    )
+    .await?
+    .expect("linking hydrates the joiner's account");
+    let union = tonk_account::delegations::mint_account_union(
+        &joiner_profile.signer().signer().clone(),
+        &account_root,
+    )
+    .await?;
+    assert!(
+        tonk_account::delegations::retain_space_delegation(
+            &joiner_account,
+            &union,
+            joiner_operator
+        )
+        .await?,
+        "the profile's return edge must reach the account"
+    );
+    joiner_account.push().perform(joiner_operator).await?;
+
+    // Push, then confirm the branch is durable by reading it back from the
+    // OWNER, who has authority over the account and is a genuinely separate
+    // view of it. A third party without that authority could not read it at
+    // all, so it would prove nothing about the push.
+    joiner_account.push().perform(joiner_operator).await?;
+    let owner_view = tonk_cli::account_state::open_account_branch(&owner.profile, owner_operator)
+        .await?
+        .expect("the owner's account is hydrated");
+    owner_view.pull().perform(owner_operator).await?;
+    let observed = owner_view
+        .delegations()
+        .prove(account_root.clone(), union_scope())
+        .perform(owner_operator)
+        .await;
+    assert!(
+        observed.is_ok(),
+        "the profile's return edge must be visible to the account after the \
+         push, or a third device would never learn this one exists: {:?}",
+        observed.err()
+    );
+
     Ok(())
 }
 

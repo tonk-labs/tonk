@@ -1304,6 +1304,8 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 open_browser: !no_open,
                 abandon_detach,
                 via,
+                announce: None,
+                store: None,
             },
         )
         .await

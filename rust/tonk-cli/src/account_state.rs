@@ -96,11 +96,19 @@ async fn descriptor(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<Option<AccountRepositoryDescriptorV1>> {
-    Ok(
-        crate::account::stored_provider_with_operator(profile, operator)
-            .await?
-            .and_then(|provider| provider.descriptor().cloned()),
-    )
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    descriptor_in(profile, operator, &store).await
+}
+
+/// [`descriptor`] against a caller-supplied store.
+async fn descriptor_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<Option<AccountRepositoryDescriptorV1>> {
+    Ok(crate::account::stored_provider_in(profile, operator, store)
+        .await?
+        .and_then(|provider| provider.descriptor().cloned()))
 }
 
 /// Read durable native account-state status without contacting the remote.
@@ -129,7 +137,17 @@ pub async fn adopt_account_access(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<bool> {
-    let Some(descriptor) = descriptor(profile, operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    adopt_account_access_in(profile, operator, &store).await
+}
+
+/// [`adopt_account_access`] against a caller-supplied store.
+pub async fn adopt_account_access_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<bool> {
+    let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
         return Ok(false);
     };
     if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
@@ -190,7 +208,17 @@ pub async fn open_account_branch(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
 ) -> Result<Option<dialog_repository::Branch>> {
-    let Some(descriptor) = descriptor(profile, operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    open_account_branch_in(profile, operator, &store).await
+}
+
+/// [`open_account_branch`] against a caller-supplied store.
+pub async fn open_account_branch_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<Option<dialog_repository::Branch>> {
+    let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
         return Ok(None);
     };
     if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
@@ -569,24 +597,39 @@ pub async fn ensure(profile: &Profile) -> Result<EnsureOutcome> {
     ensure_with_operator(profile, credential_operator(profile).await?).await
 }
 
-async fn ensure_with_operator(
+/// [`ensure`] against a caller-supplied operator.
+///
+/// [`ensure`] resolves the operator from the global install, mounting the
+/// profile by name — which a caller that already holds a profile cannot
+/// satisfy. This form takes the operator, so the same path is reachable
+/// from a test or an embedder without reaching for install state.
+pub async fn ensure_with_operator(
     profile: &Profile,
     operator: Operator<NativeSpace>,
 ) -> Result<EnsureOutcome> {
-    let Some(descriptor) = descriptor(profile, &operator).await? else {
+    let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
+    ensure_with_operator_and_store(profile, operator, store).await
+}
+
+/// [`ensure_with_operator`] against a caller-supplied spot store.
+///
+/// The store locates account state on disk. A caller running outside an
+/// install — a test, or an embedder with its own layout — supplies one rather
+/// than having the real install directory resolved behind its back.
+pub async fn ensure_with_operator_and_store(
+    profile: &Profile,
+    operator: Operator<NativeSpace>,
+    store: crate::spot::SpotStore,
+) -> Result<EnsureOutcome> {
+    let Some(descriptor) = descriptor_in(profile, &operator, &store).await? else {
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Unconfigured,
             warning: None,
         });
     };
     let repository = mount(profile, &operator, &descriptor).await?;
-    let operator = crate::account_authority::wrap(
-        operator,
-        profile.clone(),
-        crate::spot::SpotStore::open().context("failed to locate account state")?,
-        true,
-    )
-    .await?;
+    let operator =
+        crate::account_authority::wrap(operator, profile.clone(), store.clone(), true).await?;
 
     if marker_matches(
         marker(profile, operator.local()).await?.as_deref(),
@@ -613,7 +656,7 @@ async fn ensure_with_operator(
         // branch, not the account's. Best-effort, like the sync above — a
         // device that cannot reach the account is still ready with whatever
         // it already holds.
-        let warning = match adopt_account_access(profile, operator.local()).await {
+        let warning = match adopt_account_access_in(profile, operator.local(), &store).await {
             Ok(_) => warning,
             Err(error) => warning.or_else(|| Some(error.to_string())),
         };
@@ -626,9 +669,18 @@ async fn ensure_with_operator(
     match hydrate(&repository, &operator).await {
         Ok(()) => {
             save_marker(profile, operator.local(), &descriptor).await?;
+            // A device reaching Ready for the FIRST time needs the access
+            // upstream just as much as one that was already ready — more so,
+            // since this is the path a fresh link takes. Adopting only in the
+            // marker-matched branch above left exactly that device unable to
+            // use the authority it had just been granted.
+            let warning = adopt_account_access_in(profile, operator.local(), &store)
+                .await
+                .err()
+                .map(|error| error.to_string());
             Ok(EnsureOutcome {
                 status: AccountStateStatus::Ready,
-                warning: None,
+                warning,
             })
         }
         Err(error) => Ok(EnsureOutcome {
