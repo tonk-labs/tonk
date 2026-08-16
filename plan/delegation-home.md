@@ -553,3 +553,28 @@ today:
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh \
   | TONK_RELEASE=v0.6.7 sh
 ```
+
+## Publishing a pre-upgrade release: what worked, what is blocked
+
+**Automated** (`.github/workflows/cli-pin.yml`). Dispatching `cli.yml` on an
+old tag fails — GitHub reads `workflow_dispatch` inputs from the file *at the
+dispatched ref*, so `release_tag` does not exist back there ("Unexpected
+inputs provided", HTTP 422), and history cannot be edited to add it. The new
+workflow inverts that: it lives on the default branch, so its inputs always
+exist, and *checks out* the ref being published. Any point in history becomes
+publishable.
+
+**Blocked on merge.** `workflow_dispatch` only registers from the default
+branch — dispatching it from a feature branch returns "workflow cli-pin.yml
+not found on the default branch". So it cannot run until this lands on
+`staging`. Nothing else gates it.
+
+**Verified locally in the meantime.** The old CLI builds reproducibly through
+nix from the `v0.6.7` worktree (`nix build .#tonk-cli`), reports `tonk 0.6.7`,
+and has source-tree hash `yrv5fymlyxdz` — distinct from the current tree's
+`4m5frrhgwdgz`, which is what makes content addressing work as a name.
+
+**Not doable by hand.** Staging the release manually only produces the macOS
+archive; there is no way to cross-compile the Linux binary here, and a release
+missing it would break Linux users. So the manual route is not a shortcut past
+the merge — the workflow is the way.
