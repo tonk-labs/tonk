@@ -297,3 +297,45 @@ Shape:
 
 Generating the fixture needs an old build to run once; committing its output
 is what makes the test reproducible afterwards.
+
+## What the upgrade path needs before it can exist
+
+The migration is inherently two binaries: only the old build can read old
+data, only the new one can write new data. Everything below follows from
+that, and none of it is in place today.
+
+**1. There is no old binary to fall back to.** `tonk update` swaps in place —
+`std::fs::rename(temp, target)` (`update/swap.rs:200`) overwrites the running
+binary with no `.old` copy and no rollback. The module's "nothing is ever
+half-applied" refers to atomicity, not preservation. A user who has already
+updated has lost the only thing that can read their data.
+
+**2. Re-installing an old build is not currently possible either.**
+`install.sh` supports `TONK_RELEASE=<tag>` to pin an explicit tag
+(`install.sh:13`), which would be the escape hatch — except the releases are
+**rolling tags**, not versioned ones: `tonk-latest` and `tonk-staging` are
+moved in place. `tonk-staging` was updated 2026-08-15, after the dialog
+change, so no published tag points at a pre-upgrade build.
+
+So the first requirement is not code at all:
+
+- **Cut an immutable, versioned release from `a39b60bb`** (the last commit
+  before the dialog bump, pinning dialog `rev = e8bbe462`), so there is
+  something for `TONK_RELEASE` to name. Without it the export half of the
+  migration has no binary to run.
+
+Then the migration itself:
+
+- **Export under the old build** — `tonk export` already exists and goes
+  through dialog's `CsvExporter`.
+- **Import under the new build into a fresh repository**, since the remote's
+  old head cannot be reconciled with (see above: push must `verify()` it and
+  diff against its tree).
+- **Decide what happens to the remote.** A new branch, a new repository, or a
+  reset one — this decides whether peers follow automatically or must be
+  re-pointed, and it is a product decision rather than a technical one.
+
+**Worth considering instead:** teaching `tonk update` to keep the previous
+binary. It is a small change, it makes every *future* format change
+survivable without a release archaeology step, and it is the difference
+between "run this one command" and "re-install an old version first".
