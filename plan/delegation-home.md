@@ -480,6 +480,26 @@ That makes the migration concrete:
    application rows.
 4. Push to a re-established remote.
 
-Steps 1-3 are verified end to end against a real pre-upgrade fixture. Step 4
-and the credential-store question (local root, account link, descriptor —
-none of which ride in CSV) are what remain.
+Steps 1-3 are verified end to end against a real pre-upgrade fixture.
+
+**Credentials have their own migration, and it is already wired up.**
+`profile.access().migrate()` (`dialog-repository/src/repository/access.rs:9`)
+moves a legacy *certificate store* into the access branch as `dialog.ucan/*`
+facts — which is exactly the pre-to-post-upgrade delegation move. `tonk
+account migrate` already calls it (added earlier on this branch), so the
+credential half of the upgrade is a command that exists rather than one to
+design.
+
+Two things it does deliberately, both worth knowing: **self-issued
+certificates are skipped** (the profile can re-sign those on demand, and
+persisting them caused "one session grant per build, forever"), and
+**interchangeable certificates compact** to one representative per semantic
+payload.
+
+**What the fixture cannot show.** The legacy spot was created with
+`TONK_UNSAFE_ALLOW_DEVICE_ROOT` and never linked an account, so its
+credential store holds only the repository's own signing key — no certificate
+store, no account link, no descriptor. So `access().migrate()` is *the right
+tool* by inspection, but this fixture does not exercise it. Proving that half
+needs a fixture built by an old build that linked a real account, which needs
+an account service the old build can talk to.
