@@ -388,3 +388,54 @@ tuning problem — it is a design gap:
 
 Either way the fixture is now real and reproducible, which is what makes the
 question answerable rather than speculative.
+
+## The encoding actually has to be remapped, not just re-committed
+
+Comparing the old fixture's `dialog.*` vocabulary against a spot the new build
+creates from scratch:
+
+**Gone in the new format** (present in the legacy export, absent from a fresh
+new spot):
+
+```
+dialog.attribute/cardinality   dialog.effect/conclusion   dialog.meta/concept
+dialog.attribute/id            dialog.effect/on           dialog.meta/description
+dialog.attribute/type          dialog.effect/polarity     dialog.meta/effect
+                               dialog.effect/source       dialog.name/referent
+```
+plus 46 `dialog.concept.with/*` attributes — one per declared field.
+
+**New in the new format:**
+
+```
+dialog.db/revision   dialog.rule/induces   dialog.rule/on   dialog.rule/source
+```
+
+So the schema is not merely reserved against import — it is *encoded
+differently*. The `dialog.effect/*` family is the clearest: that was the old
+rules system, which became `dialog.rule/*` when dialog took rules native.
+`dialog.concept.with/<field>` — an attribute per field — has no counterpart at
+all in a new spot, meaning concept structure is now stored some other way.
+
+This settles the earlier open question. **Re-seeding beats carrying**, and not
+merely because it is simpler: the old rows cannot be committed as they stand
+even with a privileged path, because the new build does not model concepts
+that way any more. Rewriting 533 rows into whatever the new encoding is would
+mean reimplementing dialog's schema layer inside a migration tool, and it
+would rot the moment dialog changed again.
+
+So the migration is:
+
+1. **Re-seed the schema** by re-running the source notation under the new
+   build — `core.yaml` already lowers at repository creation, so a fresh spot
+   arrives with the new-format schema for free.
+2. **Carry only application rows** — the 664 non-`dialog.*` rows — which are
+   ordinary facts and import cleanly.
+3. **Verify identity survived** on those rows: same `of`, same `cause`.
+
+What still needs checking is whether application rows *reference* concept
+entities whose addresses changed with the encoding. If `concept:Ake…` in the
+old export is not the address the new build derives for the same declaration,
+the carried rows point at nothing and step 3 fails. That is the next
+measurement, and the fixture makes it a five-minute check rather than a
+guess.
