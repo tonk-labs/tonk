@@ -504,6 +504,10 @@ enum AccountCommand {
         /// account service. Those devices may stay listed until revoked.
         #[arg(long)]
         abandon_detach: bool,
+        /// Authorize through a page that posts the grant back directly,
+        /// instead of registering a handoff with the account service.
+        #[arg(long, value_name = "URL")]
+        via: Option<String>,
     },
 
     /// Disconnect account services on this device
@@ -1290,6 +1294,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             account_url,
             no_open,
             abandon_detach,
+            via,
         } => match account::link(
             &profile,
             &account::LinkOptions {
@@ -1298,6 +1303,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
                 abandon_detach,
+                via,
             },
         )
         .await

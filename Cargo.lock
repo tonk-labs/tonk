@@ -4712,6 +4712,7 @@ dependencies = [
  "tonk-render",
  "tonk-schema",
  "url",
+ "urlencoding",
  "wasm-bindgen-test",
  "webbrowser",
 ]
