@@ -5131,6 +5131,7 @@ version = "0.6.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "base64",
  "bs58",
  "console_error_panic_hook",

@@ -56,6 +56,7 @@ tonk-access-service = { workspace = true, features = ["helpers"], optional = tru
 tonk-account-service = { workspace = true, features = ["helpers"], optional = true }
 
 [dev-dependencies]
+axum = { workspace = true, features = ["form", "http1", "tokio"] }
 dialog-common = { workspace = true, features = [
     "helpers",
     "integration-tests",

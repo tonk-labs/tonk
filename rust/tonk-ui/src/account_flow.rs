@@ -835,6 +835,140 @@ mod tests {
         Ok(())
     }
 
+    /// A listener standing in for a waiting `tonk account link --via`.
+    ///
+    /// The CLI's half is a loopback server that accepts one form POST; a test
+    /// needs no CLI process to play that part, only the same contract. It
+    /// hands back whatever the page delivered.
+    async fn waiting_cli() -> Result<(String, tokio::sync::oneshot::Receiver<(String, String)>)> {
+        use axum::extract::{Form, State};
+        use std::collections::HashMap;
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+
+        async fn deliver(
+            State(slot): State<
+                std::sync::Arc<
+                    std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, String)>>>,
+                >,
+            >,
+            Form(form): Form<HashMap<String, String>>,
+        ) -> &'static str {
+            let (field, value) = form
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| ("none".to_owned(), String::new()));
+            if let Ok(mut slot) = slot.lock()
+                && let Some(sender) = slot.take()
+            {
+                let _ = sender.send((field, value));
+            }
+            "received"
+        }
+
+        let app = axum::Router::new()
+            .route("/", axum::routing::post(deliver))
+            .with_state(slot);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok((url, receiver))
+    }
+
+    /// The browser half of `tonk account link --via`: the page reads the
+    /// waiting profile's DID and callback out of the URL, runs a real passkey
+    /// ceremony, and posts the grant back.
+    ///
+    /// No CLI process is involved — a listener plays its part, since what the
+    /// CLI contributes is one loopback endpoint and a contract. What this
+    /// proves is the half the CLI tests cannot: that the ceremony runs and
+    /// the page delivers something the CLI would accept.
+    #[dialog_common::test]
+    async fn it_authorizes_a_waiting_cli_from_the_browser(env: TestEnvironment) -> Result<()> {
+        use base64::Engine as _;
+
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+
+        let (callback, delivered) = waiting_cli().await?;
+        let audience = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let mut url = env.tonk_web.join("account/link")?;
+        url.query_pairs_mut()
+            .append_pair("audience", audience)
+            .append_pair("callback", &callback);
+        driver.goto(url.as_str()).await?;
+
+        // The panel names the profile that is waiting, so the user knows what
+        // they are approving.
+        element(&driver, "tonk-account[data-mode=\"handoff\"]").await?;
+        let shown = element(&driver, "#account-handoff-did")
+            .await?
+            .text()
+            .await?;
+        assert_eq!(shown, audience, "the page must name the waiting profile");
+
+        element(&driver, "#account-handoff-submit")
+            .await?
+            .click()
+            .await?;
+
+        let (field, value) = tokio::time::timeout(Duration::from_secs(30), delivered)
+            .await
+            .context("the page never delivered an authorization")??;
+        assert_eq!(field, "authorize", "approving must deliver a grant");
+
+        // What arrived is what the CLI decodes: base64 over a payload
+        // carrying both the delegation and the descriptor.
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&value)?;
+        let payload: serde_json::Value = serde_json::from_slice(&decoded)?;
+        for field in ["delegationHex", "descriptorHex"] {
+            assert!(
+                payload
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.is_empty()),
+                "the authorization must carry {field}: {payload}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Declining tells the waiting process, rather than leaving it to time
+    /// out on a decision the user already made.
+    #[dialog_common::test]
+    async fn it_declines_a_waiting_cli_from_the_browser(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+
+        let (callback, delivered) = waiting_cli().await?;
+        let mut url = env.tonk_web.join("account/link")?;
+        url.query_pairs_mut()
+            .append_pair(
+                "audience",
+                "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            )
+            .append_pair("callback", &callback);
+        driver.goto(url.as_str()).await?;
+
+        element(&driver, "tonk-account[data-mode=\"handoff\"]").await?;
+        element(&driver, "#account-handoff-cancel")
+            .await?
+            .click()
+            .await?;
+
+        let (field, _) = tokio::time::timeout(Duration::from_secs(30), delivered)
+            .await
+            .context("cancelling never reached the waiting process")??;
+        assert_eq!(
+            field, "deny",
+            "cancelling must report a denial, not leave the CLI waiting"
+        );
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_revokes_the_cli_device_from_the_browser(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
