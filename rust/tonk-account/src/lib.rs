@@ -6,6 +6,8 @@
 
 /// Provider-neutral account spot backup artifacts.
 pub mod backup;
+/// Retaining space authority into the account repository.
+pub mod delegations;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;

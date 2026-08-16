@@ -20,6 +20,7 @@ dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-repository = { workspace = true }
+dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 hex = { workspace = true }
@@ -34,6 +35,5 @@ url = { workspace = true }
 anyhow = { workspace = true }
 dialog-operator = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
-dialog-ucan = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

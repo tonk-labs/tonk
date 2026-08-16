@@ -14,7 +14,6 @@ use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
-use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use tonk_account::{
     AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
@@ -643,22 +642,18 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
     }
 }
 
-/// Retain a `space → account-root` delegation into the account space, so the
-/// authority it carries is durable data rather than a device-local artifact.
+/// Retain a `space → account-root` delegation into this device's account
+/// space, resolving the branch and swallowing every failure.
 ///
-/// The account repository is the durable home of delegations: a device that
-/// pulls it regains access, because the delegations are just facts in a branch
-/// it syncs. Retaining is content-addressed, so re-retaining the same chain
-/// commits nothing — a caller may run this on every space creation without
-/// checking first.
-///
-/// Best-effort by design, and deliberately not fatal to the operation that
-/// triggered it. A space is fully usable on this device the moment its
-/// delegation is saved to the profile's own access branch; retaining into the
-/// account is what makes it recoverable on the *next* device. Failing space
-/// creation because a hidden system repository was mid-hydration would trade a
-/// working space for a recoverable one. Returns whether it retained, and logs
-/// every reason it did not.
+/// The retain itself is [`tonk_account::delegations::retain_space_delegation`],
+/// shared with the CLI so both adapters retain the same thing. What is local
+/// to the worker is how the branch is reached (through the reactor, so the
+/// write joins the sync queue) and the decision to treat failure as
+/// non-fatal: a space is fully usable the moment its delegation reaches the
+/// profile's own access branch, so failing space creation because a hidden
+/// system repository was mid-hydration would trade a working space for a
+/// recoverable one. Returns whether it retained, and logs every reason it did
+/// not.
 pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &DelegationChain) -> bool {
     let ready = match require_ready_account_state(tonk).await {
         Ok(ready) => ready,
@@ -679,16 +674,10 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
             return false;
         }
     };
-    match branch
-        .handle()
-        .delegations()
-        .retain(UcanDelegation(chain.clone()))
-        .perform(&tonk.operator)
+    match tonk_account::delegations::retain_space_delegation(branch.handle(), chain, &tonk.operator)
         .await
     {
-        // An empty list means every certificate was already retained.
-        Ok(retained) => {
-            let wrote = !retained.is_empty();
+        Ok(wrote) => {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             if wrote {
                 tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());

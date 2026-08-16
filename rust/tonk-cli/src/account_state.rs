@@ -16,6 +16,7 @@ use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_ucan_core::DelegationChain;
 use tonk_account::{
     AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
     probe_remote_main, publish_genesis_if_absent,
@@ -110,6 +111,46 @@ pub async fn status(profile: &Profile) -> Result<AccountStateStatus> {
     } else {
         Ok(AccountStateStatus::Unhydrated)
     }
+}
+
+/// Retain a `space → account-root` delegation into this profile's account
+/// space, resolving the branch on the way.
+///
+/// The retain itself is [`tonk_account::delegations::retain_space_delegation`],
+/// shared with the worker so both adapters retain the same thing. What is
+/// local here is resolving the account repository against the caller's own
+/// operator, so the retain runs in whatever storage the caller already opened
+/// rather than reaching for the global install store.
+///
+/// `Ok(false)` means there was nowhere to retain — no account, or one whose
+/// repository is not mounted — which is an ordinary state for a profile that
+/// has not signed in or hydrated, rather than a failure. A real failure is
+/// returned rather than swallowed, so the caller can decide: space creation
+/// treats it as non-fatal, because a space is fully usable the moment its
+/// delegation reaches the profile's own access branch and failing creation
+/// over an unreachable account repository would trade a working space for a
+/// recoverable one.
+pub async fn retain_space_delegation(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    chain: &DelegationChain,
+) -> Result<bool> {
+    let Some(descriptor) = descriptor(profile, operator).await? else {
+        return Ok(false);
+    };
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+        return Ok(false);
+    }
+    let repository = mount(profile, operator, &descriptor).await?;
+    let branch = repository
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .context("failed to open account main branch")?;
+    tonk_account::delegations::retain_space_delegation(&branch, chain, operator)
+        .await
+        .context("failed to retain space delegation")
 }
 
 async fn operator_with_profile(

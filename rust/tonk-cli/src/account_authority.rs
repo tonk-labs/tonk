@@ -29,6 +29,16 @@ pub struct AccountBoundOperator {
 }
 
 impl AccountBoundOperator {
+    /// The operator underneath the account guard.
+    ///
+    /// Callers that need the concrete operator — account-state resolution
+    /// opens the account repository in the same storage — reach it here
+    /// rather than rebuilding one against the global install store, which
+    /// would mount a different profile.
+    pub fn inner(&self) -> &Operator<NativeSpace> {
+        &self.inner
+    }
+
     /// Wrap a raw local operator after canonical session initialization.
     pub fn new(
         inner: Operator<NativeSpace>,

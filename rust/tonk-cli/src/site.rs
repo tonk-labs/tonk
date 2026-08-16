@@ -325,10 +325,21 @@ async fn bootstrap_repository(
 
     profile
         .access()
-        .save(UcanDelegation(prefix))
+        .save(UcanDelegation(prefix.clone()))
         .perform(operator)
         .await
         .context("failed to persist repo→profile delegation")?;
+
+    // The same authority, retained into the account space. The access branch
+    // above is what makes this space usable HERE; the account is what makes it
+    // recoverable on the next device, since a device regains access by pulling
+    // the account rather than by fetching an artifact. Non-fatal: a space that
+    // works but is not yet backed up beats no space at all.
+    if let Err(error) =
+        crate::account_state::retain_space_delegation(profile, operator, &prefix).await
+    {
+        eprintln!("warning: space not retained into the account space: {error:#}");
+    }
 
     profile
         .repository(REPO_NAME)

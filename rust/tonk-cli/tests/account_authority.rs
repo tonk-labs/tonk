@@ -63,6 +63,49 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
     Ok(())
 }
 
+/// Creating a spot retains its authority into the ACCOUNT space when one is
+/// mounted, and is a quiet no-op when none is.
+///
+/// The retain itself is `tonk_account::delegations`, shared with the worker so
+/// the two adapters cannot drift into retaining different things; the worker
+/// side proves the facts land by proving out of the account branch. What this
+/// pins is the CLI's wiring: that space creation reaches the shared path at
+/// all, and that a profile whose account repository is not mounted returns
+/// `Ok(false)` rather than failing the creation.
+#[dialog_common::test]
+async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+
+    // This fixture attaches an account's credentials but never mounts its
+    // repository — the shape of a device that has linked an account and not
+    // yet hydrated it. Creating a spot must still succeed: retaining is what
+    // makes a spot recoverable on the NEXT device, and a spot that works but
+    // is not yet backed up beats no spot at all.
+    let site = TonkSite::init_at_with(
+        &fixture.tmp.path().join("retained"),
+        account_config(&fixture),
+    )
+    .await?;
+    assert!(
+        !site.repository.did().to_string().is_empty(),
+        "spot creation must survive an unmounted account repository"
+    );
+
+    // And the shared retain reports that it had nowhere to go, rather than
+    // failing.
+    let retained = tonk_cli::account_state::retain_space_delegation(
+        &fixture.profile,
+        fixture.pre_account_site.operator.inner(),
+        &fixture.link,
+    )
+    .await?;
+    assert!(
+        !retained,
+        "an unmounted account repository has nowhere to retain"
+    );
+    Ok(())
+}
+
 /// A spot created before the account existed chains to the device root this
 /// profile held at the time and reaches no account root at all. Linking an
 /// account must adopt it rather than strand it offline.
