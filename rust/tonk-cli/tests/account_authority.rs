@@ -63,24 +63,15 @@ async fn it_pushes_a_spot_whose_account_prefix_was_never_stored(
     Ok(())
 }
 
-/// Creating a spot retains its authority into the ACCOUNT space when one is
-/// mounted, and is a quiet no-op when none is.
+/// Creating a spot retains its authority into the account space.
 ///
 /// The retain itself is `tonk_account::delegations`, shared with the worker so
-/// the two adapters cannot drift into retaining different things; the worker
-/// side proves the facts land by proving out of the account branch. What this
-/// pins is the CLI's wiring: that space creation reaches the shared path at
-/// all, and that a profile whose account repository is not mounted returns
-/// `Ok(false)` rather than failing the creation.
+/// the two adapters cannot drift into retaining different things. This pins
+/// the CLI's half of that wiring; `it_recovers_space_access_on_a_second_device`
+/// proves the retained facts actually travel.
 #[dialog_common::test]
 async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-
-    // This fixture attaches an account's credentials but never mounts its
-    // repository — the shape of a device that has linked an account and not
-    // yet hydrated it. Creating a spot must still succeed: retaining is what
-    // makes a spot recoverable on the NEXT device, and a spot that works but
-    // is not yet backed up beats no spot at all.
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("retained"),
         account_config(&fixture),
@@ -88,20 +79,103 @@ async fn it_retains_a_created_spot_into_the_account_space() -> Result<()> {
     .await?;
     assert!(
         !site.repository.did().to_string().is_empty(),
-        "spot creation must survive an unmounted account repository"
+        "spot creation must succeed"
     );
 
-    // And the shared retain reports that it had nowhere to go, rather than
-    // failing.
-    let retained = tonk_cli::account_state::retain_space_delegation(
-        &fixture.profile,
-        fixture.pre_account_site.operator.inner(),
-        &fixture.link,
-    )
-    .await?;
+    let operator = fixture.pre_account_site.operator.inner();
     assert!(
-        !retained,
-        "an unmounted account repository has nowhere to retain"
+        tonk_cli::account_state::retain_space_delegation(&fixture.profile, operator, &fixture.link)
+            .await?,
+        "a hydrated account must retain the grant"
+    );
+    // Content-addressed, so a second retain of the same chain writes nothing.
+    assert!(
+        !tonk_cli::account_state::retain_space_delegation(
+            &fixture.profile,
+            operator,
+            &fixture.link
+        )
+        .await?,
+        "re-retaining an identical chain must not write again"
+    );
+    Ok(())
+}
+
+/// The whole loop over a live access service and S3: a space created on one
+/// device is recoverable on a SECOND device that has never seen it, by pulling
+/// the account.
+///
+/// This is the design end to end — `space -> account -> profile`. Device one
+/// retains its space authority into the account and pushes. Device two is a
+/// genuinely separate install (its own profile directory and storage) that
+/// derives the SAME account root, which is the property a shared passkey
+/// gives it. It adopts the account as its access-branch upstream, pulls, and
+/// only then can prove access. No backup artifact and no chain fetch: recovery
+/// is syncing a branch.
+#[dialog_common::test]
+async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) -> Result<()> {
+    use dialog_ucan::{Parameters, Scope};
+    use dialog_ucan_core::command::Command;
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+
+    // Device one: an account, and a spot whose authority it retains there.
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let first = common::AccountFixture::with_account_remote(&remote).await?;
+    let site = TonkSite::init_at_with(&first.tmp.path().join("device-one"), account_config(&first))
+        .await?;
+    configure_upstream(&site, &env.access_service_url).await?;
+    let subject = site.repository.did();
+
+    let account_root = first.link.issuer().clone();
+    let operator = first.pre_account_site.operator.inner();
+    let account = tonk_cli::account_state::open_account_branch(&first.profile, operator)
+        .await?
+        .expect("device one has a hydrated account");
+    // The space -> account-root prefix: the authority device two needs and
+    // cannot mint for itself. `tonk space create` retains exactly this.
+    let chain =
+        tonk_cli::site::account_root_prefix_for(&first.profile, operator, &subject, &account_root)
+            .await?;
+    assert!(
+        tonk_account::delegations::retain_space_delegation(&account, &chain, operator).await?,
+        "device one retains its space authority into the account"
+    );
+    account.push().perform(operator).await?;
+
+    // Device two: a separate install deriving the same account root. It must
+    // not already prove the space — it has never seen it.
+    let second = common::AccountFixture::with_account_remote(&remote).await?;
+    let second_operator = second.pre_account_site.operator.inner();
+    let second_account =
+        tonk_cli::account_state::open_account_branch(&second.profile, second_operator)
+            .await?
+            .expect("device two mounts the same account");
+    let scope = || Scope {
+        subject: UcanSubject::Specific(subject.clone()),
+        command: Command::parse("/").expect("root command parses"),
+        parameters: Parameters::default(),
+    };
+    assert!(
+        second_account
+            .delegations()
+            .prove(account_root.clone(), scope())
+            .perform(second_operator)
+            .await
+            .is_err(),
+        "a device that has not pulled must not already prove the space"
+    );
+
+    // The pull IS the recovery.
+    second_account.pull().perform(second_operator).await?;
+    let proof = second_account
+        .delegations()
+        .prove(account_root, scope())
+        .perform(second_operator)
+        .await;
+    assert!(
+        proof.is_ok(),
+        "after pulling, device two proves the space through the account: {:?}",
+        proof.err()
     );
     Ok(())
 }

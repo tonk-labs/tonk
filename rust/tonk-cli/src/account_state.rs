@@ -113,6 +113,36 @@ pub async fn status(profile: &Profile) -> Result<AccountStateStatus> {
     }
 }
 
+/// Mount this profile's account repository and open its branch.
+///
+/// Mounting is idempotent — an already-mounted repository loads, and its
+/// immutable remote configuration is verified rather than rewritten — so a
+/// caller may open the account branch without knowing whether this device has
+/// touched it before.
+///
+/// `Ok(None)` means there is nothing to mount: no account is configured, or
+/// the one that is has no trusted remote base yet. That is an ordinary state
+/// for a profile that has not signed in or hydrated.
+pub async fn open_account_branch(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+) -> Result<Option<dialog_repository::Branch>> {
+    let Some(descriptor) = descriptor(profile, operator).await? else {
+        return Ok(None);
+    };
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+        return Ok(None);
+    }
+    let repository = mount(profile, operator, &descriptor).await?;
+    let branch = repository
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .context("failed to open account main branch")?;
+    Ok(Some(branch))
+}
+
 /// Retain a `space → account-root` delegation into this profile's account
 /// space, resolving the branch on the way.
 ///
@@ -135,19 +165,9 @@ pub async fn retain_space_delegation(
     operator: &Operator<NativeSpace>,
     chain: &DelegationChain,
 ) -> Result<bool> {
-    let Some(descriptor) = descriptor(profile, operator).await? else {
+    let Some(branch) = open_account_branch(profile, operator).await? else {
         return Ok(false);
     };
-    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
-        return Ok(false);
-    }
-    let repository = mount(profile, operator, &descriptor).await?;
-    let branch = repository
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account main branch")?;
     tonk_account::delegations::retain_space_delegation(&branch, chain, operator)
         .await
         .context("failed to retain space delegation")

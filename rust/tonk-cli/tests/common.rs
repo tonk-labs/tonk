@@ -100,6 +100,15 @@ pub struct AccountFixture {
 #[cfg(feature = "integration-tests")]
 impl AccountFixture {
     pub async fn new() -> Result<Self> {
+        // A dead remote: fixtures that never sync the account repository do
+        // not need one, and a live URL would make them depend on a service
+        // they have no use for.
+        Self::with_account_remote("http://127.0.0.1:9/ucan/").await
+    }
+
+    /// A fixture whose account repository points at a REAL remote, for tests
+    /// that sync the account between devices.
+    pub async fn with_account_remote(remote: &str) -> Result<Self> {
         let test = TestSite::new().await?;
         let profile = test.site.profile.clone();
         let store = tonk_cli::spot::SpotStore::at(test.parent.join("state"));
@@ -131,7 +140,7 @@ impl AccountFixture {
             profile.did(),
             "fixture-device".to_string(),
             hex::encode(link.to_bytes()?),
-            "http://127.0.0.1:9/ucan/".to_string(),
+            remote.to_string(),
             None,
         )
         .await?;
@@ -157,6 +166,19 @@ impl AccountFixture {
             &descriptor,
         )
         .await?;
+
+        // Mark the descriptor trusted, so the fixture models a device that
+        // has hydrated its account rather than one that has only linked it.
+        // Without this the account reads as unhydrated and nothing will mount
+        // its repository.
+        let validated = tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
+        profile
+            .credential()
+            .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+            .save(validated.content_hash().to_vec())
+            .perform(&test.site.operator)
+            .await?;
+
         Ok(Self {
             pre_account_site: test.site,
             server,

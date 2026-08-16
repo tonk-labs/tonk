@@ -1264,6 +1264,8 @@ mod tests {
             tonk_access_service::helpers::AccessServer,
         >,
         AccountRepositoryDescriptorV1,
+        Ed25519Signer,
+        String,
     ) {
         use dialog_operator::Profile;
         use dialog_storage::provider::storage::Storage;
@@ -1301,6 +1303,7 @@ mod tests {
             .unwrap();
 
         let root = Ed25519Signer::generate().await.unwrap();
+        let root_signer = root.clone();
         let remote = format!(
             "{}/",
             service.address.access_service_url.trim_end_matches('/')
@@ -1349,7 +1352,7 @@ mod tests {
             .await
             .unwrap();
 
-        (state, service, descriptor)
+        (state, service, descriptor, root_signer, remote)
     }
 
     /// Every recorded creation fact on the ready account branch.
@@ -1392,7 +1395,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_passkey_creation_facts_from_the_local_root() {
-        let (state, service, _descriptor) =
+        let (state, service, _descriptor, _root, _remote) =
             ready_account_state(Some(tonk_worker_api::PasskeyMetadata {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".to_string(),
@@ -1435,7 +1438,7 @@ mod tests {
         use dialog_ucan_core::subject::Subject as UcanSubject;
         use dialog_varsig::Principal as _;
 
-        let (state, service, _descriptor) = ready_account_state(None).await;
+        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -1521,7 +1524,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_nothing_when_the_local_root_has_no_passkey_metadata() {
-        let (state, service, _descriptor) = ready_account_state(None).await;
+        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
 
         assert_eq!(
             ensure_account_state(&state).await,
@@ -1540,7 +1543,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_mounts_hydrates_and_keeps_readiness_offline() {
-        let (state, service, descriptor) = ready_account_state(None).await;
+        let (state, service, descriptor, _root, _remote) = ready_account_state(None).await;
 
         let before = crate::router::profile_name::resolve_display_name(&state).await;
         assert!(matches!(

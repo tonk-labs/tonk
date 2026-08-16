@@ -529,7 +529,7 @@ async fn optional_credential(
 /// strand data the device demonstrably owns. Extending that authority to
 /// the account root is local bookkeeping: it delegates to the root this
 /// profile already holds a grant from, and publishes nothing.
-pub(crate) async fn account_root_prefix_for(
+pub async fn account_root_prefix_for(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     subject: &Did,
