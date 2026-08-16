@@ -840,6 +840,10 @@ mod tests {
     /// The CLI's half is a loopback server that accepts one form POST; a test
     /// needs no CLI process to play that part, only the same contract. It
     /// hands back whatever the page delivered.
+    /// The one-shot slot a delivered authorization lands in.
+    type Delivery =
+        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, String)>>>>;
+
     async fn waiting_cli() -> Result<(String, tokio::sync::oneshot::Receiver<(String, String)>)> {
         use axum::extract::{Form, State};
         use std::collections::HashMap;
@@ -850,11 +854,7 @@ mod tests {
         let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
 
         async fn deliver(
-            State(slot): State<
-                std::sync::Arc<
-                    std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, String)>>>,
-                >,
-            >,
+            State(slot): State<Delivery>,
             Form(form): Form<HashMap<String, String>>,
         ) -> &'static str {
             let (field, value) = form
