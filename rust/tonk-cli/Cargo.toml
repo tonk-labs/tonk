@@ -20,6 +20,7 @@ path = "src/bin/tonk.rs"
 [[test]]
 name = "legacy_migration"
 path = "tests/legacy_migration.rs"
+required-features = ["integration-tests"]
 
 [[test]]
 name = "live_migration"
@@ -102,6 +103,10 @@ required-features = ["integration-tests"]
 
 [features]
 integration-tests = []
+# Downloads a published release archive to exercise the pre-dialog-upgrade
+# migration for real. Off by default: the ordinary test run should not
+# depend on the network or on a release existing.
+legacy-migration = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
