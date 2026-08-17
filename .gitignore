@@ -68,3 +68,7 @@ temp/**
 .plans/**
 .claude/scheduled_tasks.lock
 .Trunk.dev.toml
+
+# Repositories minted by test runs against ephemeral local services.
+# They carry throwaway credentials and must never be committed.
+rust/**/did:key:*
