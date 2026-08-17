@@ -132,23 +132,26 @@ impl TonkSite {
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
-        // Refuse before anything opens a branch — opening it is what fails on
-        // old data, and it fails deep enough to be unreadable. A site with no
-        // marker predates the marker, which dates it to before the upgrade.
-        let stamped = std::fs::read(root.join(tonk_account::SITE_FORMAT_FILE)).ok();
-        match tonk_account::read_site_format(stamped.as_deref()) {
-            Some(format) if format.is_readable() => {}
-            Some(format) => bail!(
-                "this spot is written in format {} and this tonk reads {}.\n\n{}",
-                format.format,
-                tonk_account::SITE_FORMAT,
-                tonk_account::LEGACY_FORMAT_REMEDY
-            ),
-            None => {
-                // Unmarked: either pre-upgrade data, or a site this build has
-                // simply not stamped yet. Only the first is a problem, and
-                // the branch open below tells them apart — so this falls
-                // through to the error sniffer rather than refusing outright.
+        // Ask the data itself, before anything opens a branch — opening it is
+        // what fails on old data, and it fails deep enough to be unreadable.
+        // Reading the revision record is only the I/O; the judgement is
+        // `tonk_account::readability`, which takes bytes so the worker can
+        // ask the same question of storage that has no filesystem.
+        // The branch this site actually reads. Branches migrate
+        // independently, so asking about `main` says nothing about any
+        // other — and `main` is the one every command below opens.
+        let revision =
+            std::fs::read(root.join(tonk_account::revision_path(REPO_NAME, BRANCH_NAME))).ok();
+        match tonk_account::readability(revision.as_deref()) {
+            tonk_account::Readability::Current => {}
+            tonk_account::Readability::Legacy => {
+                bail!("{}", tonk_account::LEGACY_FORMAT_REMEDY)
+            }
+            tonk_account::Readability::Unknown => {
+                // Not a revision this build understands, and not recognisably
+                // an old one either. Fall through: the branch open below
+                // reports whatever is actually wrong, which is more useful
+                // than guessing migration.
             }
         }
         let (profile, operator) = build_profile_and_operator(&root, &config).await?;

@@ -742,3 +742,26 @@ data already written, and the map probe can.
   but stops being the only durable one.
 - The probe is shared: both adapters read revisions, and neither needs to
   open a branch to run it.
+
+## Branches migrate independently
+
+Detection is per *branch*, not per site. A spot can have `main` on the
+current format while a meta or feature branch is still legacy, so a
+site-wide answer would report whichever branch happened to be probed and
+say nothing about the rest.
+
+`revision_path(repository, branch)` names one record; `readability` judges
+one set of bytes. The CLI checks the branch it is about to open, which is
+the honest scope for a check whose whole purpose is to fail before that
+open.
+
+**This shapes the migration too.** `tonk export` is `main`-only today, so a
+migration that carries only `main` leaves other branches unreadable —
+silently, since nothing opens them. Either the migration covers every branch
+a spot has, or it reports which ones it left behind. The second is
+acceptable; saying nothing is not.
+
+Worth noting the committed fixtures have only `main`, so no test here
+exercises the mixed case. It is real regardless: the worker uses meta
+branches, and `tonk-account` opens the account repository's `main`
+separately from a spot's.
