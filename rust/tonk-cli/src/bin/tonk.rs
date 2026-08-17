@@ -1941,6 +1941,22 @@ async fn legacy_migrate(
         Err(code) => return code,
     };
 
+    // Credentials first, repositories after. A repository's authority chain
+    // reaches the account root, so migrating the account is what makes the
+    // migrated repositories usable — doing it the other way round leaves
+    // data that imports cleanly and cannot be pushed anywhere.
+    match tonk_cli::account_state::migrate_delegations_here().await {
+        Ok(outcome) => println!(
+            "account: {} certificate(s) moved into access facts, \
+             {} spot(s) retained ({} already there)",
+            outcome.certificates, outcome.spots, outcome.already
+        ),
+        // An unlinked profile has no account to migrate, which is ordinary
+        // rather than a failure — but anything else is worth stopping for,
+        // since the repositories below would inherit the problem.
+        Err(error) => return print_failure(error),
+    }
+
     let workspace = match tempfile::tempdir() {
         Ok(dir) => dir,
         Err(error) => return print_failure(error),

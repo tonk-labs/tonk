@@ -179,3 +179,262 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
     );
     Ok(())
 }
+
+/// The whole `tonk migrate --legacy` command, credentials included.
+///
+/// The test above drives the pieces directly; this one runs the command a
+/// person would run, against a fixture that has an account attached. That
+/// ordering is the thing under test: the account carries the authority every
+/// migrated repository's chain terminates in, so a run that upgrades the data
+/// and leaves the credentials behind produces a spot that reads locally and
+/// cannot be pushed anywhere.
+#[dialog_common::test]
+#[cfg_attr(not(feature = "legacy-migration"), ignore)]
+async fn it_migrates_credentials_before_repositories(
+    env: tonk_access_service::helpers::AccessServiceAddress,
+) -> Result<()> {
+    let endpoint = env.access_service_url.trim_end_matches('/').to_owned();
+    // Every `tonk` invocation below is a blocking subprocess, and the access
+    // service it pushes to is running on this runtime's thread. Block that
+    // thread directly and the push can never be answered.
+    tokio::task::spawn_blocking(move || migrate_and_publish(&endpoint))
+        .await
+        .context("the migration steps join")?
+}
+
+fn migrate_and_publish(endpoint: &str) -> Result<()> {
+    let workspace = tempfile::tempdir()?;
+
+    // A fixture written by the old build *with an account linked*, which is
+    // the half `legacy-spot-v0.6.7` lacks: it carries the certificate
+    // directory as well as the repositories.
+    let home = workspace.path().join("home");
+    let state = home.join("Library/Application Support/tonk");
+    std::fs::create_dir_all(&state)?;
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy-account-v0.6.7.tar.gz");
+    let status = Command::new("tar")
+        .arg("-xzf")
+        .arg(&fixture)
+        .arg("-C")
+        .arg(&state)
+        .status()?;
+    if !status.success() {
+        bail!("failed to unpack the legacy account fixture");
+    }
+
+    // Both repositories in the fixture must be unreadable to this build
+    // before anything runs, or the migration under test is a no-op and the
+    // assertions below would pass without it having done anything.
+    for repo in ["linked/main", ".tonk/main"] {
+        let revision = state.join(repo).join("memory/branch/main/revision");
+        let bytes = std::fs::read(&revision)
+            .with_context(|| format!("fixture is missing {}", revision.display()))?;
+        assert_eq!(
+            tonk_account::readability(Some(&bytes)),
+            tonk_account::Readability::Legacy,
+            "{repo} must start in the pre-upgrade format"
+        );
+    }
+
+    // The fixture was produced by a test harness that isolates its profile
+    // under the spot directory; the shipped CLI reads its profile from
+    // `dialog/<name>`. Move it there so the command sees these credentials
+    // rather than quietly minting a fresh, empty profile.
+    let certificates = home.join("Library/Application Support/dialog/tonk");
+    std::fs::create_dir_all(
+        certificates
+            .parent()
+            .context("profile directory has no parent")?,
+    )?;
+    std::fs::rename(state.join("_profile/tonk"), &certificates)
+        .context("the fixture must carry a profile named `tonk`")?;
+    let before = count_files(&certificates)?;
+    assert!(before > 0, "the fixture must carry account certificates");
+
+    // Credentials first, and separately: this is the account root the old
+    // build minted, which every migrated repository's authority chain has to
+    // terminate in.
+    const ACCOUNT_ROOT: &str = "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX";
+
+    // The registry naming the fixture's data repository, written here because
+    // it stores absolute paths that belong to this run alone.
+    let registry = serde_json::json!({
+        "spots": { "linked": { "site": state.join("linked") } },
+        "bindings": {},
+    });
+    std::fs::write(
+        state.join("spots.json"),
+        serde_json::to_vec_pretty(&registry)?,
+    )?;
+
+    // Run the command itself, as a person would.
+    //
+    // `--site` names the source to export from; the destination is whichever
+    // spot is active here, so the run needs one of this build's own making
+    // to import into.
+    let work = workspace.path().join("work");
+    std::fs::create_dir_all(&work)?;
+    // Credentials first. The fixture's certificate store is in the old
+    // format, so until this runs the build cannot see an account at all --
+    // `spot new` below refuses outright with "A Tonk account is required".
+    // That refusal is why the account step has to lead.
+    let migrated_account = Command::new(env!("CARGO_BIN_EXE_tonk"))
+        .args(["account", "migrate"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .context("running tonk account migrate failed")?;
+    if !migrated_account.status.success() {
+        bail!(
+            "tonk account migrate failed: {}",
+            String::from_utf8_lossy(&migrated_account.stderr)
+        );
+    }
+    let account_report = String::from_utf8_lossy(&migrated_account.stdout).into_owned();
+    assert!(
+        !account_report.contains("migrated 0 certificates"),
+        "the account migration must move the fixture's certificates, not \
+         start from an empty profile; saw:\n{account_report}"
+    );
+
+    // Migrating the credentials is what makes the account visible at all.
+    let status = Command::new(env!("CARGO_BIN_EXE_tonk"))
+        .args(["account", "status"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .context("running tonk account status failed")?;
+    let status = String::from_utf8_lossy(&status.stdout).into_owned();
+    assert!(
+        status.contains(ACCOUNT_ROOT),
+        "after migrating, the profile must answer with the account root the \
+         old build minted; saw:\n{status}"
+    );
+
+    // `spot new` registers and binds in one step.
+    let created = Command::new(env!("CARGO_BIN_EXE_tonk"))
+        .args(["spot", "new", "upgraded"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .context("running tonk spot new failed")?;
+    if !created.status.success() {
+        bail!(
+            "tonk spot new failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_tonk"))
+        .args(["migrate", "--legacy", "--site", "linked"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .context("running tonk migrate failed")?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "tonk migrate --legacy failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // Credentials first: the run must say so, and it must say so before it
+    // reports any repository work. Ordering is the invariant, not merely
+    // that both happened.
+    let account_at = stdout
+        .find("account:")
+        .with_context(|| format!("no account migration in the output:\n{stdout}"))?;
+    if let Some(branch_at) = stdout.find("main") {
+        assert!(
+            account_at < branch_at,
+            "credentials must migrate before repositories; saw:\n{stdout}"
+        );
+    }
+
+    // The certificates survived the run rather than being dropped by it.
+    assert!(
+        count_files(&certificates)? >= before,
+        "the migration must not discard account certificates"
+    );
+
+    // The data half: the old build's note, answering under the entity the
+    // old build minted. A row with the right title under a fresh entity
+    // would be a copy rather than an upgrade.
+    std::fs::write(
+        work.join("q.tonk"),
+        "note:\n  this: ?this\n  title: ?title\n",
+    )?;
+    let queried = Command::new(env!("CARGO_BIN_EXE_tonk"))
+        .args(["eval", "q.tonk"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .context("running tonk eval failed")?;
+    let rows = String::from_utf8_lossy(&queried.stdout).into_owned();
+    assert!(
+        rows.contains("written by the old build with an account"),
+        "the migrated spot must answer the legacy note query; saw:\n{rows}"
+    );
+    assert!(
+        rows.contains("did:key:z6Mk68TsruaH39SRJqbBn5PJNzEuCBxAmePdWqSz9hqPxpfn"),
+        "the note must keep the entity the old build minted; saw:\n{rows}"
+    );
+
+    // Publishing the result is the part that proves the credentials came
+    // across intact: the push is authorized by the migrated account, so a
+    // migration that upgraded only the data would fail right here.
+    let tonk = |args: &[&str]| -> Result<std::process::Output> {
+        Command::new(env!("CARGO_BIN_EXE_tonk"))
+            .args(args)
+            .current_dir(&work)
+            .env("HOME", &home)
+            .env("DO_NOT_TRACK", "1")
+            .output()
+            .with_context(|| format!("running tonk {args:?} failed"))
+    };
+    let added = tonk(&["remote", "add", "origin", endpoint])?;
+    if !added.status.success() {
+        bail!(
+            "tonk remote add failed: {}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+    }
+    let upstream = tonk(&["remote", "set-upstream", "origin"])?;
+    if !upstream.status.success() {
+        bail!(
+            "tonk remote set-upstream failed: {}",
+            String::from_utf8_lossy(&upstream.stderr)
+        );
+    }
+    let pushed = tonk(&["push"])?;
+    assert!(
+        pushed.status.success(),
+        "the migrated spot must publish\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&pushed.stdout),
+        String::from_utf8_lossy(&pushed.stderr)
+    );
+
+    Ok(())
+}
+
+/// Number of regular files beneath a directory, recursively.
+fn count_files(root: &Path) -> Result<usize> {
+    let mut total = 0;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else {
+                total += 1;
+            }
+        }
+    }
+    Ok(total)
+}
