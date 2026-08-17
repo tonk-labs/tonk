@@ -132,14 +132,20 @@ impl TonkSite {
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
-        // Ask the data itself, before anything opens a branch — opening it is
+        let (profile, operator) = build_profile_and_operator(&root, &config).await?;
+
+        // Ask the data itself before anything opens a branch — opening it is
         // what fails on old data, and it fails deep enough to be unreadable.
-        // Reading the revision record is only the I/O; the judgement is
-        // `tonk_account::readability`, which takes bytes so the worker can
-        // ask the same question of storage that has no filesystem.
-        // The branch this site actually reads. Branches migrate
-        // independently, so asking about `main` says nothing about any
-        // other — and `main` is the one every command below opens.
+        //
+        // Reading it by path is the weak part, and deliberate for now.
+        // `BranchReference::cell` addresses the same record without knowing
+        // the layout, but `Cell<T>` carries a CBOR codec: `Cell<Vec<u8>>`
+        // tries to decode the record *into* a byte string and fails, since
+        // it is a map. Getting the bytes undecoded needs a codec-free read
+        // dialog does not expose — which is what dialog-db#449 asks for.
+        //
+        // Branches migrate independently, so this asks about the one every
+        // command below opens and says nothing about any other.
         let revision =
             std::fs::read(root.join(tonk_account::revision_path(REPO_NAME, BRANCH_NAME))).ok();
         match tonk_account::readability(revision.as_deref()) {
@@ -150,11 +156,10 @@ impl TonkSite {
             tonk_account::Readability::Unknown => {
                 // Not a revision this build understands, and not recognisably
                 // an old one either. Fall through: the branch open below
-                // reports whatever is actually wrong, which is more useful
-                // than guessing migration.
+                // reports whatever is actually wrong, which beats guessing
+                // migration.
             }
         }
-        let (profile, operator) = build_profile_and_operator(&root, &config).await?;
 
         let repository = profile
             .repository(REPO_NAME)
@@ -299,6 +304,20 @@ impl TonkSite {
     /// Every command reaches its data through here, so this is where an
     /// unreadable old spot becomes a sentence someone can act on rather than
     /// `missing field \`branch\`` from inside block decoding.
+    /// Acquire a named branch on this site's repository.
+    ///
+    /// Branches hold separate data and are migrated separately, so anything
+    /// walking a whole spot names each in turn rather than assuming `main`.
+    pub async fn named_branch(&self, branch: &str) -> Result<BranchSession, ReactorError> {
+        self.reactor
+            .repository(REPO_NAME)
+            .branch(branch)
+            .acquire(&self.operator)
+            .await
+    }
+
+    /// Acquire the site's `main` branch, naming the remedy when the data
+    /// predates this build's format.
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
         self.reactor
             .repository(REPO_NAME)

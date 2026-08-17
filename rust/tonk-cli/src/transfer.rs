@@ -52,14 +52,40 @@ pub enum Destination {
 
 /// Export every artifact on the site's `main` branch as CSV to
 /// `destination`. Returns the number of bytes written.
+/// [`export`] for a named branch.
+///
+/// Branches carry separate data and migrate separately, so an upgrade walks
+/// them one at a time rather than assuming `main` is the whole spot.
+pub async fn export_branch(
+    site: &TonkSite,
+    branch: &str,
+    destination: Destination,
+) -> Result<usize, TransferError> {
+    let session = site
+        .named_branch(branch)
+        .await
+        .map_err(|e| std::io::Error::other(format!("acquire branch {branch:?}: {e}")))?;
+    export_session(&session, site, destination).await
+}
+
+/// Write the site's `main` branch out as CSV.
 pub async fn export(site: &TonkSite, destination: Destination) -> Result<usize, TransferError> {
-    // Buffer in memory: the dialog exporter wants an `AsyncWrite`,
-    // and we want a byte count + a single flush to the real sink.
-    let mut buf: Vec<u8> = Vec::new();
     let session = site
         .branch()
         .await
         .map_err(|e| std::io::Error::other(format!("acquire branch: {e}")))?;
+    export_session(&session, site, destination).await
+}
+
+/// Write one already-acquired branch out as CSV.
+async fn export_session(
+    session: &dialog_reactor::BranchSession,
+    site: &TonkSite,
+    destination: Destination,
+) -> Result<usize, TransferError> {
+    // Buffer in memory: the dialog exporter wants an `AsyncWrite`,
+    // and we want a byte count + a single flush to the real sink.
+    let mut buf: Vec<u8> = Vec::new();
     session
         .handle()
         .export(CsvExporter::from(&mut buf))
@@ -86,6 +112,27 @@ pub async fn export(site: &TonkSite, destination: Destination) -> Result<usize, 
 /// Import artifacts from a CSV file at `path`, committing each row
 /// as an assertion on the site's `main` branch in one transaction.
 /// Returns the post-commit revision.
+/// [`import`] onto a named branch.
+pub async fn import_branch(
+    site: &TonkSite,
+    branch: &str,
+    path: &PathBuf,
+) -> Result<Revision, TransferError> {
+    let file = tokio::fs::File::open(path).await?;
+    let session = site
+        .named_branch(branch)
+        .await
+        .map_err(|e| std::io::Error::other(format!("acquire branch {branch:?}: {e}")))?;
+    session
+        .handle()
+        .import(CsvImporter::from(file))
+        .perform(&site.operator)
+        .await
+        .map_err(TransferError::Import)
+}
+
+/// Import artifacts from a CSV file onto the site's `main` branch,
+/// committing each row as an assertion in one transaction.
 pub async fn import(site: &TonkSite, path: &PathBuf) -> Result<Revision, TransferError> {
     let file = tokio::fs::File::open(path).await?;
     let importer = CsvImporter::from(file);

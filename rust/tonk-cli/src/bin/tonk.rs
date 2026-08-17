@@ -394,6 +394,10 @@ enum Command {
         /// Write the CSV to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
+        /// Branch to export. Branches carry separate data and migrate
+        /// separately, so an upgrade covers each in turn.
+        #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
+        branch: String,
     },
 
     /// Import artifacts from a CSV file onto local main
@@ -405,6 +409,9 @@ enum Command {
         /// The CSV file to read (`the,of,as,is,cause` columns).
         #[arg(value_name = "PATH")]
         file: PathBuf,
+        /// Branch to import onto.
+        #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
+        branch: String,
     },
 
     /// Migrate a .carry/ directory to .tonk/
@@ -1043,9 +1050,9 @@ async fn main() {
             field,
         } => retract_op(concept, entity, field, spot.as_deref()).await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
-        Command::Export { out } => export_op(out, spot.as_deref()).await,
+        Command::Export { out, branch } => export_op(out, &branch, spot.as_deref()).await,
         Command::Render { route, out } => render_op(route, out, spot.as_deref()).await,
-        Command::Import { file } => import_op(file, spot.as_deref()).await,
+        Command::Import { file, branch } => import_op(file, &branch, spot.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, spot.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, spot.as_deref()).await,
         Command::Status => status_op(spot.as_deref()).await,
@@ -1869,7 +1876,7 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
     }
 }
 
-async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
+async fn export_op(out: Option<PathBuf>, branch: &str, spot: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
@@ -1880,7 +1887,7 @@ async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
         None => transfer::Destination::Stdout,
     };
 
-    match transfer::export(&site, destination).await {
+    match transfer::export_branch(&site, branch, destination).await {
         Ok(bytes) => {
             // The CSV may be on stdout, so status goes to stderr.
             if let Some(path) = out {
@@ -1925,13 +1932,13 @@ async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> E
     }
 }
 
-async fn import_op(file: PathBuf, spot: Option<&str>) -> ExitCode {
+async fn import_op(file: PathBuf, branch: &str, spot: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
-    match transfer::import(&site, &file).await {
+    match transfer::import_branch(&site, branch, &file).await {
         Ok(revision) => {
             println!(
                 "imported {} -> revision {}",
