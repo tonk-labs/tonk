@@ -210,6 +210,26 @@ fn map_publish_leaf(error: PublishError) -> RemoteError {
 mod tests {
     use super::*;
 
+    /// The signature of a pre-upgrade spot, verbatim from opening the
+    /// committed `v0.6.7` fixture with this build.
+    #[test]
+    fn it_recognizes_the_legacy_format_signature() {
+        let observed = "acquire branch: branch \"main\" on repository \"main\" \
+             not found: Decode error: Failed to decode a block: \
+             Msg(\"missing field `branch`\")";
+        assert!(is_legacy_format(observed));
+    }
+
+    /// Narrow on purpose: a corrupt block or an unrelated schema change is
+    /// not something a migration fixes, and saying so would send someone
+    /// down a path that cannot help them.
+    #[test]
+    fn it_does_not_claim_unrelated_decode_failures() {
+        assert!(!is_legacy_format("Failed to decode a block: Msg(\"eof\")"));
+        assert!(!is_legacy_format("missing field `branch` in some config"));
+        assert!(!is_legacy_format("branch \"main\" not found"));
+    }
+
     #[test]
     fn it_keeps_account_lifecycle_states_distinct() {
         assert_ne!(
@@ -246,3 +266,34 @@ mod tests {
         ));
     }
 }
+
+/// Whether an error means the data predates the current on-disk format.
+///
+/// A spot written before the dialog upgrade fails when its branch is
+/// opened, deep inside block decoding:
+///
+/// ```text
+/// Failed to decode a block: Msg("missing field `branch`")
+/// ```
+///
+/// The revision block is still CBOR, so it parses — its *shape* changed, and
+/// serde reports the field it wanted. Nothing structured distinguishes that
+/// from an ordinary decode failure, so this matches the signature instead,
+/// which is why it is one function with one test against a real pre-upgrade
+/// fixture rather than a check scattered across call sites.
+///
+/// Deliberately narrow: a corrupt block or an unrelated schema change should
+/// keep reporting itself, not be mistaken for something a migration fixes.
+pub fn is_legacy_format(error: &str) -> bool {
+    error.contains("Failed to decode a block") && error.contains("missing field `branch`")
+}
+
+/// What to tell someone holding data this build cannot read.
+///
+/// The old binary is the only thing that can read the old format, so the
+/// remedy is to install it, export, and import — not to retry.
+pub const LEGACY_FORMAT_REMEDY: &str = "\
+this spot was written by an older tonk and cannot be opened by this one.
+
+Upgrade it with `tonk migrate --legacy`, which installs the last compatible
+build, exports the data, and imports it here.";

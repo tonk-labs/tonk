@@ -263,12 +263,31 @@ impl TonkSite {
     ///
     /// Hold the returned session for as long as you use its
     /// `handle()`: the handle borrows from the session.
+    /// Acquire the site's branch, naming the remedy when the data predates
+    /// this build's format.
+    ///
+    /// Every command reaches its data through here, so this is where an
+    /// unreadable old spot becomes a sentence someone can act on rather than
+    /// `missing field \`branch\`` from inside block decoding.
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
         self.reactor
             .repository(REPO_NAME)
             .branch(BRANCH_NAME)
             .acquire(&self.operator)
             .await
+            .map_err(|error| {
+                let text = error.to_string();
+                if tonk_account::is_legacy_format(&text) {
+                    // `reason` carries the remedy, so it travels with the
+                    // existing variant rather than needing a new one here.
+                    return ReactorError::BranchNotFound {
+                        repo: REPO_NAME.to_owned(),
+                        branch: BRANCH_NAME.to_owned(),
+                        reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
+                    };
+                }
+                error
+            })
     }
 }
 
