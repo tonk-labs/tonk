@@ -220,6 +220,33 @@ mod http {
             .send()
             .await?;
         assert_eq!(response.status(), 404);
+        assert_eq!(
+            response
+                .headers()
+                .get("Content-Type")
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Cache-Control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+        );
+        let body = response.text().await?;
+        assert!(
+            body.contains("This invite link is no longer available"),
+            "unexpected expired-link page: {body}",
+        );
+        assert!(
+            body.contains("expire after 7 days"),
+            "the page must explain the default lifetime: {body}",
+        );
+        assert!(
+            body.contains("Ask the person who shared it with you to create a new one"),
+            "the page must give the recipient a recovery action: {body}",
+        );
 
         // Re-publishing with a fresh TTL revives it — same key, same
         // content, refreshed expiry.

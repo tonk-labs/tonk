@@ -6,8 +6,11 @@
 mod common;
 
 use anyhow::Result;
+use dialog_query::{Output as _, Query, Term};
 use tonk_cli::site::TonkSite;
 use tonk_cli::spot::{self, SpotStore};
+use tonk_schema::RepositoryName;
+use tonk_schema::prelude::DidExt as _;
 
 mod when_creating_a_spot {
     use super::*;
@@ -30,6 +33,31 @@ mod when_creating_a_spot {
         // And the site actually opens.
         let opened = TonkSite::open_with(&resolved.site, config).await?;
         assert_eq!(opened.repository.did().to_string(), outcome.did);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_stamps_the_repository_identity_used_by_join() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpotStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+
+        let created = spot::create(&store, "garden", None, None, config.clone()).await?;
+        let site = TonkSite::open_with(&created.site, config).await?;
+        let branch = site.branch().await?;
+        let rows: Vec<RepositoryName> = branch
+            .handle()
+            .query()
+            .select(Query::<RepositoryName> {
+                this: Term::from(site.repository.did().this()),
+                name: Term::var("name"),
+            })
+            .perform(&site.operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(rows.len(), 1, "a joinable spot has one self identity row");
+        assert_eq!(rows[0].name.0, "garden");
         Ok(())
     }
 

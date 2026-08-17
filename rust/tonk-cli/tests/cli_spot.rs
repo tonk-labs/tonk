@@ -704,6 +704,47 @@ mod when_minting_against_a_live_remote {
     }
 }
 
+#[cfg(feature = "integration-tests")]
+mod when_status_is_synced {
+    use anyhow::Result;
+    use tonk_access_service::helpers::AccessServiceAddress;
+
+    use super::*;
+
+    #[dialog_common::test]
+    async fn it_includes_the_current_hash(env: AccessServiceAddress) -> Result<()> {
+        let state = tempfile::tempdir()?;
+        let state_dir = state.path().to_path_buf();
+        let endpoint = env.access_service_url.trim_end_matches('/').to_owned();
+
+        let (expected_hash, status) = tokio::task::spawn_blocking(move || {
+            spot_with_remotes(&state_dir, &[("origin", &endpoint)]);
+
+            let pushed = run(&state_dir, &["push"], &[]);
+            assert!(pushed.status.success(), "{}", stderr_of(&pushed));
+            let pushed = stdout_of(&pushed);
+            let expected_hash = pushed
+                .lines()
+                .find_map(|line| line.strip_prefix("after:  "))
+                .expect("push reports the current hash")
+                .to_owned();
+
+            let status = run(&state_dir, &["status"], &[]);
+            assert!(status.status.success(), "{}", stderr_of(&status));
+            (expected_hash, stdout_of(&status))
+        })
+        .await
+        .expect("blocking tonk invocations join");
+
+        assert!(status.contains("\nsynced\n"), "{status}");
+        assert!(
+            status.contains(&format!("hash: {expected_hash}")),
+            "current hash {expected_hash} missing from status output:\n{status}"
+        );
+        Ok(())
+    }
+}
+
 mod when_a_directory_is_bound {
     use super::*;
 
