@@ -121,11 +121,11 @@ enum Command {
         concept: Option<String>,
     },
 
-    /// Report how local main relates to its upstream
+    /// Report how local main relates to its upstream and its current hash
     ///
     /// Prints `synced`, `ahead`, `behind`, `diverged`, or
-    /// `no-upstream`. Read-only — fetches the upstream head without
-    /// merging.
+    /// `no-upstream`, followed by the current local tree hash. Read-only —
+    /// fetches the upstream head without merging.
     #[command(after_help = "Examples:\n  tonk status")]
     Status,
 
@@ -2124,9 +2124,12 @@ async fn status_op(spot: Option<&str>) -> ExitCode {
         source = resolved.source,
     );
 
-    match sync::status(&site).await {
-        Ok(state) => {
-            println!("{}", render_sync_state(state));
+    match sync::status_with_hash(&site).await {
+        Ok(status) => {
+            println!("{}", render_sync_state(status.state));
+            if let Some(hash) = status.hash {
+                println!("hash: {hash}");
+            }
             ExitCode::Success
         }
         Err(err) => {

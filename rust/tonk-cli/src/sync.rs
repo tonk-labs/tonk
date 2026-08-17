@@ -8,7 +8,7 @@
 //! no SSE clients), so this skips the reactor wrapper the
 //! worker uses.
 
-use dialog_repository::{FetchError, PullError, PushError, Revision};
+use dialog_repository::{FetchError, PullError, PushError, Revision, TreeReference};
 use thiserror::Error;
 use tonk_schema::{SyncState, classify};
 
@@ -29,6 +29,15 @@ pub struct SyncOutcome {
     /// pull. Lets the caller print "pushed" / "nothing to push"
     /// without comparing revisions itself.
     pub advanced: bool,
+}
+
+/// The local branch's relationship to its upstream and current tree hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncStatus {
+    /// How the local and upstream heads compare.
+    pub state: SyncState,
+    /// The local branch's current tree root, when it has a revision.
+    pub hash: Option<TreeReference>,
 }
 
 /// Failure modes for [`push`] / [`pull`].
@@ -125,21 +134,33 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
 /// [`SyncState::NoUpstream`] — not an error — so `tonk status`
 /// always has something to print.
 pub async fn status(site: &TonkSite) -> Result<SyncState, SyncError> {
+    Ok(status_with_hash(site).await?.state)
+}
+
+/// Classify the site's sync state and retain its current local tree hash.
+pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> {
     let session = site
         .branch()
         .await
         .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
     let local = branch.revision();
+    let hash = local.as_ref().map(|revision| revision.tree.clone());
     if branch.upstream().is_none() {
-        return Ok(SyncState::NoUpstream);
+        return Ok(SyncStatus {
+            state: SyncState::NoUpstream,
+            hash,
+        });
     }
     let remote = branch
         .fetch()
         .perform(&site.operator)
         .await
         .map_err(map_fetch_error)?;
-    Ok(classify(local.as_ref(), remote.as_ref()).into())
+    Ok(SyncStatus {
+        state: classify(local.as_ref(), remote.as_ref()).into(),
+        hash,
+    })
 }
 
 fn map_fetch_error(error: FetchError) -> SyncError {
