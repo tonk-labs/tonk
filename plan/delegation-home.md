@@ -669,13 +669,41 @@ error: this spot was written by an older tonk and cannot be opened.
    worth *reading* for the export. But this build cannot read it either, so
    refusing everything is honest — the alternative is pretending.
 
-2. **Where the version check lives.** In `tonk-cli` it only helps the CLI;
-   the worker has the same problem with the same fix. Shared placement in
-   `tonk-core` or `tonk-account` would cover both, as the delegation work
-   settled on.
+2. **Where the version check lives.** The *detection* is shared — both
+   adapters open branches and both hit the same decode failure — so it
+   belongs beside the other shared account policy rather than in
+   `tonk-cli`. What differs is the remedy, below.
 
-3. **Whether `tonk migrate` should drive it.** The command already exists for
-   `.carry/` → `.tonk/`. Teaching it to fetch the pinned binary, export,
-   remap, and import would make the whole upgrade one command instead of
-   four — the end-to-end test already performs exactly that sequence, so the
-   shape is proven.
+### The remedy differs by adapter
+
+**CLI: fetch the old binary and run it.** It can download the pinned
+release, so `tonk migrate` can do the whole upgrade in one command —
+install, export, remap, import. The end-to-end test already performs
+exactly that sequence, so the shape is proven rather than speculative. An
+error if the install fails is fine: it is a one-time, supervised operation,
+and a clear failure beats a silent partial migration.
+
+**Worker: not in the bundle.** The browser cannot fetch and execute a
+native binary, and carrying the old format's reader in the wasm bundle
+would make every user pay — forever — for a one-time migration most of
+them will never run. The import half already exists there
+(`rust/tonk-worker/src/router/transfer.rs` serves CSV export and import),
+so what is missing is only the *reading* of old data.
+
+Options, none of them free:
+
+- **Load a legacy reader on demand.** A separate wasm module fetched only
+  when an incompatible spot is detected. Keeps the common bundle unchanged,
+  which is the point; costs a second artifact to build and publish.
+- **Migrate through the CLI.** Direct browser users to run the CLI
+  migration against the same spot. Simplest, and correct for spots that
+  exist on disk — but a browser-only profile has no such path.
+- **Server-side conversion.** A service endpoint that accepts an old export
+  and returns a new one. Avoids shipping either reader to the client, but
+  puts user data through a service, which cuts against the local-first
+  premise.
+
+The on-demand module is the most likely right answer, and it is worth
+deciding only once a browser-only profile with pre-upgrade data is known to
+exist — that is what makes the difference between necessary and
+speculative.
