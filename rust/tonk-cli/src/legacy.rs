@@ -5,23 +5,27 @@
 //! the new build reserves `dialog.*` against application writes and refuses
 //! the whole transaction on the first such row.
 //!
-//! The rename is mechanical — `dialog.attribute/id` became `db.attribute/id`,
-//! and so on for 49 of the 58 names a real legacy export carries. What did
-//! *not* survive is dialog's own bookkeeping: the old rules system
-//! (`dialog.effect/*`), and the handful of markers the new build regenerates
-//! for itself. Those are dropped rather than translated, because the new
-//! build writes its own.
+//! Most renames are mechanical — `dialog.attribute/id` became
+//! `db.attribute/id`, and so on for 49 of the 58 names a real legacy export
+//! carries. Runtime-injected replica attributes also changed from
+//! `dialog.origin/*` to `dialog.replica/*`; those names live inside schema
+//! rows and are rewritten explicitly. What did *not* survive is dialog's own
+//! bookkeeping: the old rules system (`dialog.effect/*`), and the handful of
+//! markers the new build regenerates for itself. Those are dropped rather
+//! than translated, because the new build writes its own.
 //!
 //! Remapping is preferred over re-deriving the schema from
 //! `tonk schema` output. Both work, but this carries the data the spot
 //! actually had — a schema that drifted from the standard library keeps its
 //! drift — and a table cannot fail halfway through a re-evaluation.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+use dialog_artifacts::Entity;
 
 /// The last release that can read pre-upgrade data.
 ///
@@ -106,6 +110,45 @@ pub struct Upgraded {
     pub migration: Migration,
     /// The migrated CSV, ready to import.
     pub csv: PathBuf,
+    /// Content-addressed blobs referenced by the migrated facts.
+    pub blobs: Vec<Entity>,
+}
+
+/// Find every valid `blob:<hash>` entity referenced by an export.
+///
+/// Blob references may be subjects, entity-valued facts, or embedded in
+/// rendered text such as HTML, so discovery scans the complete CSV payload
+/// rather than only one column.
+pub fn blob_references<R: BufRead>(mut source: R) -> Result<Vec<Entity>> {
+    let mut export = String::new();
+    source
+        .read_to_string(&mut export)
+        .context("failed to read the export while finding blobs")?;
+
+    let mut references = BTreeSet::new();
+    for (start, _) in export.match_indices("blob:") {
+        let candidate: String = export[start + "blob:".len()..]
+            .chars()
+            .take_while(|character| {
+                matches!(
+                    character,
+                    '1'..='9'
+                        | 'A'..='H'
+                        | 'J'..='N'
+                        | 'P'..='Z'
+                        | 'a'..='k'
+                        | 'm'..='z'
+                )
+            })
+            .collect();
+        let Ok(entity) = format!("blob:{candidate}").parse::<Entity>() else {
+            continue;
+        };
+        if entity.blob_hash().is_some() {
+            references.insert(entity);
+        }
+    }
+    Ok(references.into_iter().collect())
 }
 
 /// Export a legacy branch and rewrite it into something this build imports.
@@ -123,12 +166,78 @@ pub fn upgrade_branch(cli: &Path, spot: &str, branch: &str, workspace: &Path) ->
     let sink = std::fs::File::create(&migrated)
         .with_context(|| format!("failed to write {}", migrated.display()))?;
     let migration = migrate_export(std::io::BufReader::new(source), sink)?;
+    let migrated_source = std::fs::File::open(&migrated)
+        .with_context(|| format!("failed to read {}", migrated.display()))?;
+    let blobs = blob_references(std::io::BufReader::new(migrated_source))?;
 
     Ok(Upgraded {
         branch: branch.to_owned(),
         migration,
         csv: migrated,
+        blobs,
     })
+}
+
+/// What copying the referenced blob payloads into a current branch did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BlobMigration {
+    /// Payloads copied and verified by their content address.
+    pub copied: usize,
+    /// Total payload bytes copied.
+    pub bytes: u64,
+}
+
+/// Copy legacy blob payloads into a current branch without inventing facts.
+///
+/// The legacy CLI is the reader because the current build cannot open the
+/// source branch. Each payload is streamed to a temporary file, attached to
+/// the destination, and accepted only when the resulting content address is
+/// exactly the entity referenced by the migrated facts.
+pub async fn migrate_blobs(
+    cli: &Path,
+    spot: &str,
+    branch: &str,
+    blobs: &[Entity],
+    destination: &crate::site::TonkSite,
+    workspace: &Path,
+) -> Result<BlobMigration> {
+    let mut migration = BlobMigration::default();
+    for (index, expected) in blobs.iter().enumerate() {
+        let payload = workspace.join(format!("legacy-blob-{index}"));
+        let output = std::fs::File::create(&payload)
+            .with_context(|| format!("failed to create {}", payload.display()))?;
+        let status = Command::new(cli)
+            .arg("blob")
+            .arg("cat")
+            .arg(expected.as_str())
+            .arg("--spot")
+            .arg(spot)
+            .env("DO_NOT_TRACK", "1")
+            .stdout(Stdio::from(output))
+            .status()
+            .with_context(|| format!("could not read legacy blob {expected}"))?;
+        if !status.success() {
+            bail!("legacy blob {expected} could not be read: {status}");
+        }
+
+        let attached = crate::blob::attach(destination, branch, &payload)
+            .await
+            .with_context(|| format!("failed to attach legacy blob {expected}"))?;
+        if attached.entity != *expected {
+            bail!(
+                "legacy blob content address mismatch: expected {expected}, got {}",
+                attached.entity
+            );
+        }
+        migration.copied += 1;
+        migration.bytes += attached.size;
+
+        let completed = index + 1;
+        if completed == 1 || completed % 25 == 0 || completed == blobs.len() {
+            eprintln!("blobs: {completed}/{} verified", blobs.len());
+        }
+    }
+    Ok(migration)
 }
 
 fn run(command: &mut Command) -> Result<()> {
@@ -146,6 +255,26 @@ fn run(command: &mut Command) -> Result<()> {
 fn split_attribute(line: &str) -> Option<(&str, &str)> {
     let end = line.find(',')?;
     Some((&line[..end], &line[end..]))
+}
+
+/// Runtime-owned attribute IDs that changed meaning without moving into the
+/// `db.*` schema namespace. They appear as values of `db.attribute/id` rows,
+/// so renaming only the CSV's first column leaves concepts bound to an
+/// attribute the current runtime never injects.
+const RUNTIME_ATTRIBUTE_RENAMES: &[(&str, &str)] = &[
+    ("dialog.origin/subject", "dialog.replica/subject"),
+    ("dialog.origin/profile", "dialog.replica/profile"),
+];
+
+fn rename_runtime_attribute_id(the: &str, rest: &str) -> Option<String> {
+    if !matches!(the, "dialog.attribute/id" | "db.attribute/id") {
+        return None;
+    }
+    RUNTIME_ATTRIBUTE_RENAMES.iter().find_map(|(old, new)| {
+        let old = format!(",text,{old},");
+        rest.contains(&old)
+            .then(|| rest.replacen(&old, &format!(",text,{new},"), 1))
+    })
 }
 
 /// Attribute families the new build owns and regenerates. Importing them is
@@ -170,7 +299,7 @@ const DROP_EXACT: &[&str] = &[
 pub struct Migration {
     /// Rows carried into the new export.
     pub kept: usize,
-    /// Rows whose attribute moved from `dialog.` to `db.`.
+    /// Rows whose schema or runtime attribute name was remapped.
     pub remapped: usize,
     /// Rows dropped because the new build owns that attribute.
     pub dropped: usize,
@@ -223,13 +352,14 @@ pub fn migrate_export<R: BufRead, W: Write>(source: R, mut out: W) -> Result<Mig
             continue;
         }
         dropping = false;
-        match rename(the) {
-            Some(renamed) => {
-                migration.remapped += 1;
-                writeln!(out, "{renamed}{rest}").context("failed to write a migrated row")?;
-            }
-            None => writeln!(out, "{line}").context("failed to write a migrated row")?,
+        let renamed = rename(the);
+        let remapped_id = rename_runtime_attribute_id(the, rest);
+        if renamed.is_some() || remapped_id.is_some() {
+            migration.remapped += 1;
         }
+        let output_the = renamed.as_deref().unwrap_or(the);
+        let output_rest = remapped_id.as_deref().unwrap_or(rest);
+        writeln!(out, "{output_the}{output_rest}").context("failed to write a migrated row")?;
         migration.kept += 1;
     }
     out.flush().context("failed to flush the migrated export")?;
@@ -248,6 +378,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn it_finds_blob_references_anywhere_in_an_export_once() {
+        let first = Entity::from_blob(&[1; 32]).unwrap();
+        let second = Entity::from_blob(&[2; 32]).unwrap();
+        let third = Entity::from_blob(&[3; 32]).unwrap();
+        let csv = format!(
+            "the,of,as,is,cause\n\
+             app/file,{first},entity,{second},\n\
+             app/view,id:page,text,\"<img src='{third}'> {first}\",\n\
+             app/note,id:note,text,blob:not-a-content-hash,\n"
+        );
+
+        assert_eq!(
+            blob_references(csv.as_bytes()).unwrap(),
+            vec![first, second, third]
+        );
+    }
+
+    #[test]
     fn it_renames_the_schema_namespace() {
         assert_eq!(
             rename("dialog.attribute/id").as_deref(),
@@ -259,6 +407,21 @@ mod tests {
         );
         // An application attribute is not dialog's to rename.
         assert_eq!(rename("xyz.tonk.view/model"), None);
+    }
+
+    #[test]
+    fn it_updates_runtime_attribute_ids_inside_schema_rows() {
+        let legacy = "the,of,as,is,cause\n\
+            dialog.attribute/id,the:subject,text,dialog.origin/subject,\n\
+            dialog.attribute/id,the:profile,text,dialog.origin/profile,\n";
+        let mut out = Vec::new();
+
+        migrate_export(legacy.as_bytes(), &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        assert!(text.contains(",text,dialog.replica/subject,"), "{text}");
+        assert!(text.contains(",text,dialog.replica/profile,"), "{text}");
+        assert!(!text.contains("dialog.origin/"), "{text}");
     }
 
     /// A quoted value may span lines, so a row is not a line. Treating each
