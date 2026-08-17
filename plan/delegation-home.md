@@ -628,3 +628,54 @@ This is a better answer than the schema-re-seeding route sketched above. Both
 work, but remapping carries the *data* rather than re-deriving it, so a spot
 whose schema drifted from the standard library keeps what it actually had —
 and it is a table, not a re-evaluation, so it cannot fail halfway.
+
+## Gating an incompatible spot behind a migration
+
+Today an old spot fails deep and cryptically — `Failed to decode a block:
+Msg("missing field `branch`")` from inside the branch open, with nothing
+pointing at what to do. The fix is to detect it at the door and refuse with
+the next step.
+
+**The signal already exists, and needs nothing new stored.** The search-tree
+manifest (`dialog-search-tree/src/manifest.rs`, `FORMAT_VERSION = 1`) was
+introduced *by* the upgrade: `manifest.rs` does not exist at all in
+`rev = e8bbe462`. So a spot written by the old build has no manifest, and
+its absence is the detection. Later format changes bump `FORMAT_VERSION`,
+so the same check keeps working without inventing a parallel version file
+that could disagree with the data.
+
+**Where.** `TonkSite::open_with` (`rust/tonk-cli/src/site.rs:137`) is the door
+every command enters through. Probing there means `tonk export` under a new
+build fails with advice rather than a decode error, and — importantly — the
+check must not block the commands a migration itself needs.
+
+**Shape.**
+
+```
+error: this spot was written by an older tonk and cannot be opened.
+
+  Upgrade it:
+    curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh \
+      | TONK_RELEASE=v0.6.7 sh -s -- --dir ./legacy-tonk
+    ./legacy-tonk/tonk export --out spot.csv
+    tonk import spot.csv
+
+  What this does: the old build reads the old format; this one cannot.
+```
+
+**Open questions, worth settling before building it:**
+
+1. **Read-only tolerance.** A spot that cannot be *written* may still be
+   worth *reading* for the export. But this build cannot read it either, so
+   refusing everything is honest — the alternative is pretending.
+
+2. **Where the version check lives.** In `tonk-cli` it only helps the CLI;
+   the worker has the same problem with the same fix. Shared placement in
+   `tonk-core` or `tonk-account` would cover both, as the delegation work
+   settled on.
+
+3. **Whether `tonk migrate` should drive it.** The command already exists for
+   `.carry/` → `.tonk/`. Teaching it to fetch the pinned binary, export,
+   remap, and import would make the whole upgrade one command instead of
+   four — the end-to-end test already performs exactly that sequence, so the
+   shape is proven.
