@@ -206,6 +206,37 @@ fn map_publish_leaf(error: PublishError) -> RemoteError {
     }
 }
 
+/// Whether an error means the data predates the current on-disk format.
+///
+/// A spot written before the dialog upgrade fails when its branch is
+/// opened, deep inside block decoding:
+///
+/// ```text
+/// Failed to decode a block: Msg("missing field `branch`")
+/// ```
+///
+/// The revision block is still CBOR, so it parses — its *shape* changed, and
+/// serde reports the field it wanted. Nothing structured distinguishes that
+/// from an ordinary decode failure, so this matches the signature instead,
+/// which is why it is one function with one test against a real pre-upgrade
+/// fixture rather than a check scattered across call sites.
+///
+/// Deliberately narrow: a corrupt block or an unrelated schema change should
+/// keep reporting itself, not be mistaken for something a migration fixes.
+pub fn is_legacy_format(error: &str) -> bool {
+    error.contains("Failed to decode a block") && error.contains("missing field `branch`")
+}
+
+/// What to tell someone holding data this build cannot read.
+///
+/// The old binary is the only thing that can read the old format, so the
+/// remedy is to install it, export, and import — not to retry.
+pub const LEGACY_FORMAT_REMEDY: &str = "\
+this spot was written by an older tonk and cannot be opened by this one.
+
+Upgrade it with `tonk migrate --legacy`, which installs the last compatible
+build, exports the data, and imports it here.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,34 +297,3 @@ mod tests {
         ));
     }
 }
-
-/// Whether an error means the data predates the current on-disk format.
-///
-/// A spot written before the dialog upgrade fails when its branch is
-/// opened, deep inside block decoding:
-///
-/// ```text
-/// Failed to decode a block: Msg("missing field `branch`")
-/// ```
-///
-/// The revision block is still CBOR, so it parses — its *shape* changed, and
-/// serde reports the field it wanted. Nothing structured distinguishes that
-/// from an ordinary decode failure, so this matches the signature instead,
-/// which is why it is one function with one test against a real pre-upgrade
-/// fixture rather than a check scattered across call sites.
-///
-/// Deliberately narrow: a corrupt block or an unrelated schema change should
-/// keep reporting itself, not be mistaken for something a migration fixes.
-pub fn is_legacy_format(error: &str) -> bool {
-    error.contains("Failed to decode a block") && error.contains("missing field `branch`")
-}
-
-/// What to tell someone holding data this build cannot read.
-///
-/// The old binary is the only thing that can read the old format, so the
-/// remedy is to install it, export, and import — not to retry.
-pub const LEGACY_FORMAT_REMEDY: &str = "\
-this spot was written by an older tonk and cannot be opened by this one.
-
-Upgrade it with `tonk migrate --legacy`, which installs the last compatible
-build, exports the data, and imports it here.";
