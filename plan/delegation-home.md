@@ -707,3 +707,38 @@ The on-demand module is the most likely right answer, and it is worth
 deciding only once a browser-only profile with pre-upgrade data is known to
 exist — that is what makes the difference between necessary and
 speculative.
+
+## Better detection: probe the revision as a map
+
+Matching a decode failure's text works and is brittle. A sidecar
+`format.json` is durable but can be separated from the data it describes.
+The revision record itself is the honest place, and it is readable — the
+old block is valid CBOR, so it decodes to a generic map even when it will
+not decode to the current struct. `missing field \`branch\`` is serde
+reporting a *shape* mismatch, not a parse failure.
+
+Confirmed by decoding the committed `v0.6.7` fixture's revision:
+
+```
+old (0xa7, 7 fields): tree cause issuer moment period subject authority
+new (0xa6, 6 fields): tree branch issuer context edition signature
+```
+
+So detection needs no new field at all: **`branch` is present in the new
+shape and absent in the old**, which is exactly what the decoder already
+complains about. Probing for it as a map key answers the question directly,
+before any typed decode, without depending on wording.
+
+Recording an explicit `version` in future revisions is still worth doing —
+key-set archaeology gets harder with every change, and a number says which
+migration applies rather than merely that one does. But it cannot help with
+data already written, and the map probe can.
+
+### What this changes
+
+- `is_legacy_format` (string matching) becomes the last resort rather than
+  the mechanism, kept only for a revision too damaged to decode as a map.
+- `format.json` stays useful as the cheap answer — it needs no block read —
+  but stops being the only durable one.
+- The probe is shared: both adapters read revisions, and neither needs to
+  open a branch to run it.
