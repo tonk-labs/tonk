@@ -188,8 +188,12 @@ async fn it_upgrades_a_legacy_spot_end_to_end() -> Result<()> {
 /// migrated repository's chain terminates in, so a run that upgrades the data
 /// and leaves the credentials behind produces a spot that reads locally and
 /// cannot be pushed anywhere.
+// Gated by `cfg` rather than `cfg_attr(.., ignore)`: `dialog_common::test`
+// does not carry a trailing attribute through, so an `ignore` written the
+// way the test above writes it is silently dropped and the test runs in CI,
+// where it fails for want of a fixture it downloads.
+#[cfg(feature = "legacy-migration")]
 #[dialog_common::test]
-#[cfg_attr(not(feature = "legacy-migration"), ignore)]
 async fn it_migrates_credentials_before_repositories(
     env: tonk_access_service::helpers::AccessServiceAddress,
 ) -> Result<()> {
