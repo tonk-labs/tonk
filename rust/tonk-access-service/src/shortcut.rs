@@ -48,6 +48,190 @@ pub const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 /// bucket lifecycle rule on [`KEY_PREFIX`] does the physical cleanup.
 pub const EXPIRES_METADATA_KEY: &str = "expires";
 
+/// Standalone recovery page for a missing or expired invite shortcut.
+///
+/// The shortcut is the only part available at this boundary: an invite's
+/// private seed stays in the URL fragment and never reaches the service. That
+/// means a missing object and one removed after expiry are deliberately
+/// presented with the same non-sensitive explanation.
+pub fn unavailable_invite_html() -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Invite link unavailable · Tonk</title>
+  <style>
+    @font-face {{
+      font-family: "GestalteName";
+      font-style: normal;
+      font-weight: 500;
+      font-display: swap;
+      src: url("/fonts/gestaltename-500.ttf") format("truetype");
+    }}
+    @font-face {{
+      font-family: "Gestalte";
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+      src: url("/fonts/gestalte-400.otf") format("opentype");
+    }}
+    @font-face {{
+      font-family: "IBM Plex Sans";
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+      src: url("/fonts/ibm-plex-sans-400-normal.woff2") format("woff2");
+    }}
+    :root {{
+      color-scheme: light dark;
+      --invite-ink: light-dark(#1d1d20, #f2f2f3);
+      --invite-muted: light-dark(#62646b, #a4a5aa);
+      --invite-surface: light-dark(#ffffff, #191a1d);
+      --invite-page: light-dark(#ffffff, #101113);
+      --invite-shadow:
+        0 0 0 1px rgb(0 0 0 / 6%),
+        0 1px 2px -1px rgb(0 0 0 / 6%),
+        0 12px 32px rgb(0 0 0 / 7%);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      min-height: 100dvh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 40px 24px;
+      background: var(--invite-page);
+      color: var(--invite-ink);
+      font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+    }}
+    main {{
+      width: min(100%, 760px);
+      padding: 40px;
+      background: var(--invite-surface);
+      box-shadow: var(--invite-shadow);
+    }}
+    .masthead {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }}
+    .brand {{
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: inherit;
+      text-decoration: none;
+    }}
+    .wordmark {{
+      font-family: "GestalteName", "Gestalte", sans-serif;
+      font-size: 34px;
+      font-weight: 500;
+      line-height: 1;
+      text-transform: lowercase;
+    }}
+    .badge {{
+      padding: 2px 8px;
+      background: #deff1a;
+      color: #2a3005;
+      font-size: 14px;
+      font-weight: 600;
+    }}
+    h1 {{
+      max-width: 16ch;
+      margin: 44px 0 28px;
+      font-family: "Gestalte", Georgia, serif;
+      font-size: clamp(36px, 7vw, 52px);
+      font-weight: 400;
+      line-height: 1;
+      letter-spacing: -0.035em;
+      text-wrap: balance;
+    }}
+    .lede {{
+      max-width: 48ch;
+      margin: 0 0 30px;
+      color: var(--invite-muted);
+      font-size: 16px;
+      line-height: 1.55;
+      text-wrap: pretty;
+    }}
+    .actions {{
+      width: min(100%, 208px);
+    }}
+    .button {{
+      min-height: 46px;
+      padding: 11px 16px;
+      display: grid;
+      place-items: center;
+      background: var(--invite-ink);
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 8%);
+      color: var(--invite-surface);
+      font-weight: 600;
+      text-decoration: none;
+      transition-property: scale, box-shadow;
+      transition-duration: 150ms;
+      transition-timing-function: ease-out;
+    }}
+    .button:hover {{
+      box-shadow:
+        0 0 0 1px rgb(0 0 0 / 10%),
+        0 4px 12px rgb(0 0 0 / 10%);
+    }}
+    .button:active {{ scale: 0.96; }}
+    .button:focus-visible,
+    .brand:focus-visible {{
+      outline: 3px solid color-mix(in oklab, #deff1a 70%, var(--invite-ink));
+      outline-offset: 3px;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --invite-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
+      }}
+    }}
+    @media (max-width: 620px) {{
+      body {{
+        place-items: stretch;
+        padding: 0;
+      }}
+      main {{
+        min-height: 100dvh;
+        padding: 24px 20px 32px;
+        box-shadow: none;
+      }}
+      h1 {{ margin: 36px 0 24px; }}
+      .actions {{ width: 100%; }}
+      .button {{ width: 100%; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      .button {{ transition-duration: 0s; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <a class="brand" href="/" aria-label="Tonk home">
+        <span class="wordmark">tonk</span>
+        <span class="badge">invite</span>
+      </a>
+    </header>
+    <h1>This invite link is no longer available</h1>
+    <p class="lede">Short invite links normally expire after {DEFAULT_TTL_DAYS} days. Ask the person who shared it with you to create a new one.</p>
+    <div class="actions">
+      <a class="button" href="/">Back to Tonk</a>
+    </div>
+  </main>
+</body>
+</html>"#
+    )
+}
+
 /// Effective lifetime in seconds for a `PUT /@` request: the `ttl`
 /// query parameter, expressed in **days** — mirroring the day
 /// granularity of the R2 lifecycle rules that do the physical

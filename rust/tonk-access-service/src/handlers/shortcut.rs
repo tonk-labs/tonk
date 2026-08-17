@@ -14,7 +14,9 @@
 //! reaches the server), and a relative redirect cannot leave the
 //! origin. See [`crate::shortcut`] for the validation rules.
 
-use crate::shortcut::{EXPIRES_METADATA_KEY, Shortcut, object_key_for, requested_ttl};
+use crate::shortcut::{
+    EXPIRES_METADATA_KEY, Shortcut, object_key_for, requested_ttl, unavailable_invite_html,
+};
 use std::collections::HashMap;
 use worker::*;
 
@@ -96,9 +98,18 @@ async fn put_inner(
 pub async fn handle_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match get_inner(&ctx).await {
         Ok(response) => response,
+        Err((404, _)) => unavailable_response()?,
         Err((status, message)) => Response::error(message, status)?,
     };
     Ok(with_cors_headers(response))
+}
+
+fn unavailable_response() -> Result<Response> {
+    let response = Response::from_bytes(unavailable_invite_html().into_bytes())?.with_status(404);
+    let headers = response.headers().clone();
+    headers.set("Content-Type", "text/html; charset=utf-8")?;
+    headers.set("Cache-Control", "no-store")?;
+    Ok(response.with_headers(headers))
 }
 
 async fn get_inner(ctx: &RouteContext<()>) -> std::result::Result<Response, (u16, String)> {
