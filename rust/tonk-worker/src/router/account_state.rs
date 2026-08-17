@@ -14,6 +14,7 @@ use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Repository, RepositoryExt as _, SiteAddress, Upstream};
+use dialog_ucan_core::DelegationChain;
 use tonk_account::{
     AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
     probe_remote_main, publish_genesis_if_absent,
@@ -23,6 +24,9 @@ use tonk_schema::{AccountPasskeyCreated, Replica, prelude::DidExt as _};
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
+
+/// Remote name for the account's access branch in the profile repository.
+const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
 
 const META_BRANCH: &str = "meta";
 
@@ -473,6 +477,11 @@ async fn sync_ready(tonk: &TonkState, key: &str) -> Result<(), String> {
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    // The account's own sync is not enough on its own: the operator proves
+    // from the PROFILE's access branch, so authority that arrived in the
+    // account above is present but unusable until the access branch adopts
+    // it. Runs on every sweep, and is a no-op once the upstream is set.
+    adopt_account_access(tonk).await;
     // After the pull, so the seed sees what other devices already recorded,
     // and before the push, so anything it writes leaves with this sweep.
     if seed_passkey_facts(tonk).await {
@@ -637,6 +646,132 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
         Err(error) => {
             log!("account passkey facts unreadable: {error}");
             None
+        }
+    }
+}
+
+/// Point this profile's access branch at the account and pull it.
+///
+/// The account repository syncing with its own remote is not enough: the
+/// operator resolves proofs from the PROFILE's access branch, so authority
+/// living in the account is present but unusable until the access branch
+/// adopts it. This is what makes a recovered delegation authorize anything.
+///
+/// Best-effort and non-fatal, like the rest of the sweep: a device that
+/// cannot reach the account keeps whatever authority it already holds.
+/// Returns whether it adopted, and logs every reason it did not.
+pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
+    let Ok(descriptor) = configured_descriptor(tonk).await.ok_or(()) else {
+        return false;
+    };
+    let subject = descriptor.account_subject().clone();
+    let repository = Repository::from(&tonk.profile);
+    let access = match repository
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("open profile access branch to adopt the account: {error}");
+            return false;
+        }
+    };
+
+    // A remote resolved against the ACCOUNT's DID. A local upstream would
+    // resolve against this profile's own subject and could only name a
+    // sibling branch, never the account's.
+    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let remote = match repository
+        .remote(ACCOUNT_ACCESS_REMOTE)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(remote) => remote,
+        Err(_) => match repository
+            .remote(ACCOUNT_ACCESS_REMOTE)
+            .create(address)
+            .subject(subject)
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(remote) => remote,
+            Err(error) => {
+                log!("configure the account access remote: {error}");
+                return false;
+            }
+        },
+    };
+    let upstream = match remote
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("open the account access branch: {error}");
+            return false;
+        }
+    };
+
+    match tonk_account::delegations::adopt_account_upstream(&access, upstream, &tonk.operator).await
+    {
+        Ok(_) => true,
+        Err(error) => {
+            log!("adopt the account as the access upstream: {error}");
+            false
+        }
+    }
+}
+
+/// Retain a `space → account-root` delegation into this device's account
+/// space, resolving the branch and swallowing every failure.
+///
+/// The retain itself is [`tonk_account::delegations::retain_space_delegation`],
+/// shared with the CLI so both adapters retain the same thing. What is local
+/// to the worker is how the branch is reached (through the reactor, so the
+/// write joins the sync queue) and the decision to treat failure as
+/// non-fatal: a space is fully usable the moment its delegation reaches the
+/// profile's own access branch, so failing space creation because a hidden
+/// system repository was mid-hydration would trade a working space for a
+/// recoverable one. Returns whether it retained, and logs every reason it did
+/// not.
+pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &DelegationChain) -> bool {
+    let ready = match require_ready_account_state(tonk).await {
+        Ok(ready) => ready,
+        // Unconfigured and unhydrated are ordinary states for a signed-out or
+        // still-hydrating profile, not failures worth a line in the log.
+        Err(_) => return false,
+    };
+    let branch = match tonk
+        .reactor
+        .repository(&ready.key)
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("open account branch to retain space delegation: {error}");
+            return false;
+        }
+    };
+    match tonk_account::delegations::retain_space_delegation(branch.handle(), chain, &tonk.operator)
+        .await
+    {
+        Ok(wrote) => {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            if wrote {
+                tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+            }
+            wrote
+        }
+        Err(error) => {
+            log!("retain space delegation into account space: {error}");
+            false
         }
     }
 }
@@ -1214,6 +1349,8 @@ mod tests {
             tonk_access_service::helpers::AccessServer,
         >,
         AccountRepositoryDescriptorV1,
+        Ed25519Signer,
+        String,
     ) {
         use dialog_operator::Profile;
         use dialog_storage::provider::storage::Storage;
@@ -1251,6 +1388,7 @@ mod tests {
             .unwrap();
 
         let root = Ed25519Signer::generate().await.unwrap();
+        let root_signer = root.clone();
         let remote = format!(
             "{}/",
             service.address.access_service_url.trim_end_matches('/')
@@ -1299,7 +1437,7 @@ mod tests {
             .await
             .unwrap();
 
-        (state, service, descriptor)
+        (state, service, descriptor, root_signer, remote)
     }
 
     /// Every recorded creation fact on the ready account branch.
@@ -1342,7 +1480,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_passkey_creation_facts_from_the_local_root() {
-        let (state, service, _descriptor) =
+        let (state, service, _descriptor, _root, _remote) =
             ready_account_state(Some(tonk_worker_api::PasskeyMetadata {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".to_string(),
@@ -1374,10 +1512,104 @@ mod tests {
         discard(state, &ready.key);
     }
 
+    /// A space delegation retained into the account space becomes
+    /// `dialog.ucan/*` facts there — the whole point of the account being the
+    /// durable home of delegations, since a device regains access by pulling
+    /// them rather than by fetching an artifact.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_retains_a_space_delegation_into_the_account_space() {
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_varsig::Principal as _;
+
+        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        // A `space -> account-root` delegation, the shape space creation mints.
+        let space = dialog_credentials::Ed25519Signer::import(&[7u8; 32])
+            .await
+            .unwrap();
+        let subject = space.did();
+        let root = super::super::identity::local_root(&state).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(space)
+            .audience(&root.root_did)
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(delegation);
+
+        assert!(
+            retain_space_delegation(&state, &chain).await,
+            "a ready account must retain the delegation"
+        );
+        assert!(
+            proves_space_access(&state, &ready, &subject).await,
+            "the retained delegation must prove access to the space it delegates"
+        );
+
+        // Content-addressed, so re-retaining the same chain commits nothing.
+        assert!(
+            !retain_space_delegation(&state, &chain).await,
+            "re-retaining an identical chain must not write again"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// Whether the account branch's retained delegations prove the local root
+    /// may act on `subject`.
+    ///
+    /// Asserts through dialog's own reader rather than by inspecting
+    /// `dialog.ucan/*` rows: proving is what these facts EXIST for, so a
+    /// passing proof is the claim that matters, and it cannot pass on facts
+    /// whose envelope does not back them.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn proves_space_access(
+        state: &TonkState,
+        ready: &ReadyAccountBranch,
+        subject: &dialog_varsig::Did,
+    ) -> bool {
+        use dialog_ucan::{Parameters, Scope};
+        use dialog_ucan_core::command::Command;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+
+        let root = super::super::identity::local_root(state).await.unwrap();
+        let branch = state
+            .reactor
+            .repository(&ready.key)
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        branch
+            .handle()
+            .delegations()
+            .prove(
+                root.root_did.clone(),
+                Scope {
+                    subject: UcanSubject::Specific(subject.clone()),
+                    command: Command::parse("/").unwrap(),
+                    parameters: Parameters::default(),
+                },
+            )
+            .perform(&state.operator)
+            .await
+            .is_ok()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_nothing_when_the_local_root_has_no_passkey_metadata() {
-        let (state, service, _descriptor) = ready_account_state(None).await;
+        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
 
         assert_eq!(
             ensure_account_state(&state).await,
@@ -1396,7 +1628,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_mounts_hydrates_and_keeps_readiness_offline() {
-        let (state, service, descriptor) = ready_account_state(None).await;
+        let (state, service, descriptor, _root, _remote) = ready_account_state(None).await;
 
         let before = crate::router::profile_name::resolve_display_name(&state).await;
         assert!(matches!(

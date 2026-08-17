@@ -6,6 +6,8 @@
 
 /// Provider-neutral account spot backup artifacts.
 pub mod backup;
+/// Retaining space authority into the account repository.
+pub mod delegations;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;
@@ -204,9 +206,268 @@ fn map_publish_leaf(error: PublishError) -> RemoteError {
     }
 }
 
+/// What a build can tell about data before opening it.
+///
+/// Deliberately a value rather than a `Result`: "cannot tell" is a real
+/// answer with its own handling, and collapsing it into an error would make
+/// a damaged record indistinguishable from an old one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readability {
+    /// Written by a build compatible with this one.
+    Current,
+    /// Written before the format this build reads. Migration applies.
+    Legacy,
+    /// Neither: damaged, or not a revision. No migration fixes this.
+    Unknown,
+}
+
+/// Judge data by the bytes of its revision record.
+///
+/// Takes bytes rather than a path so it holds on every target: a service
+/// worker has no filesystem, and reads the same record out of its own
+/// storage. Whoever can produce the bytes can ask the question.
+///
+/// `None` for the bytes means the record is absent, which for a site that
+/// has committed nothing is ordinary rather than suspicious — a spot with no
+/// revision has no data to migrate.
+pub fn readability(revision: Option<&[u8]>) -> Readability {
+    let Some(bytes) = revision else {
+        return Readability::Current;
+    };
+    match revision_is_current(bytes) {
+        Some(true) => Readability::Current,
+        Some(false) => Readability::Legacy,
+        None => Readability::Unknown,
+    }
+}
+
+/// Path of a branch's revision record, relative to a site directory.
+///
+/// Per branch, not per site: branches are migrated independently, so a spot
+/// can have `main` on the current format while a meta or feature branch is
+/// still legacy. Asking about a site as a whole would answer for whichever
+/// branch happened to be checked and stay silent about the rest.
+///
+/// This hardcodes dialog's storage layout, which is the weak part: dialog's
+/// own `Resolve` effect returns the same bytes as `Edition<Vec<u8>>` and
+/// would be layout-independent, but the cell it names
+/// (`Branch::induction_cell`) is `pub(crate)`. Reaching the record that way
+/// needs a small dialog-side accessor, and is worth asking for — the bytes
+/// are already there, only the address is private.
+///
+/// Callers that can produce the bytes some other way should: only
+/// [`readability`] is the contract, and it takes bytes precisely so a
+/// service worker reading its own storage never needs this function.
+pub fn revision_path(repository: &str, branch: &str) -> String {
+    format!("{repository}/memory/branch/{branch}/revision")
+}
+
+/// Field the current revision shape carries and the pre-upgrade one does
+/// not. Its absence is what the typed decoder reports when it refuses old
+/// data, so probing for it asks the same question directly.
+const REVISION_BRANCH_FIELD: &str = "branch";
+
+/// Whether a revision record was written by a build this one can read.
+///
+/// Decodes to a generic map rather than the current struct. The old record
+/// is valid CBOR — `missing field \`branch\`` is serde reporting a *shape*
+/// mismatch, not a parse failure — so its keys are readable even though its
+/// shape is not, and the key set answers the question without depending on
+/// the wording of an error.
+///
+/// Measured against a real pre-upgrade fixture:
+///
+/// ```text
+/// old (7 fields): tree cause issuer moment period subject authority
+/// new (6 fields): tree branch issuer context edition signature
+/// ```
+///
+/// `None` means the bytes are not a CBOR map at all — damaged, or something
+/// other than a revision. That is not the same as "old", so it is not
+/// reported as one; the caller decides what to do with an unreadable record.
+pub fn revision_is_current(bytes: &[u8]) -> Option<bool> {
+    // `IgnoredAny` for the values: only the key set is being asked about,
+    // and the values carry types this crate has no reason to model.
+    let record: std::collections::BTreeMap<String, serde::de::IgnoredAny> =
+        serde_ipld_dagcbor::from_slice(bytes).ok()?;
+    Some(record.contains_key(REVISION_BRANCH_FIELD))
+}
+
+/// The on-disk format this build writes.
+///
+/// Bumped when data this build writes can no longer be read by the previous
+/// one — the dialog upgrade that motivated all of this would have been a
+/// bump from 0 to 1.
+pub const SITE_FORMAT: u32 = 1;
+
+/// File recording [`SITE_FORMAT`], written beside a site's data.
+///
+/// Beside the data rather than in the CLI's spot registry, because the
+/// registry is one adapter's bookkeeping: a site created by the worker, or
+/// copied between machines by hand, carries no registry entry but still has
+/// this file. It also answers before anything opens a branch, which matters
+/// because opening the branch is exactly what fails on old data.
+pub const SITE_FORMAT_FILE: &str = "format.json";
+
+/// What a site's format file records.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteFormat {
+    /// The format the data beside this file is written in.
+    pub format: u32,
+}
+
+impl SiteFormat {
+    /// The format this build writes.
+    pub fn current() -> Self {
+        Self {
+            format: SITE_FORMAT,
+        }
+    }
+
+    /// Whether this build can read data recorded at this format.
+    pub fn is_readable(&self) -> bool {
+        self.format == SITE_FORMAT
+    }
+}
+
+/// Read a site's recorded format, if it has one.
+///
+/// `None` means the file is absent, which dates the site to before this
+/// marker existed — the pre-upgrade population. That is a real answer, not a
+/// missing one, so it is not defaulted to the current format: doing so would
+/// claim a compatibility nobody verified.
+pub fn read_site_format(bytes: Option<&[u8]>) -> Option<SiteFormat> {
+    serde_json::from_slice(bytes?).ok()
+}
+
+/// Whether an error means the data predates the current on-disk format.
+///
+/// A spot written before the dialog upgrade fails when its branch is
+/// opened, deep inside block decoding:
+///
+/// ```text
+/// Failed to decode a block: Msg("missing field `branch`")
+/// ```
+///
+/// The revision block is still CBOR, so it parses — its *shape* changed, and
+/// serde reports the field it wanted. Nothing structured distinguishes that
+/// from an ordinary decode failure, so this matches the signature instead,
+/// which is why it is one function with one test against a real pre-upgrade
+/// fixture rather than a check scattered across call sites.
+///
+/// Deliberately narrow: a corrupt block or an unrelated schema change should
+/// keep reporting itself, not be mistaken for something a migration fixes.
+///
+/// This is the *fallback*, for sites written before [`SITE_FORMAT_FILE`]
+/// existed and which therefore cannot announce themselves. Sites this build
+/// creates carry that file, so the next incompatible change is detected by
+/// comparing a number instead of matching a message dialog may reword.
+pub fn is_legacy_format(error: &str) -> bool {
+    error.contains("Failed to decode a block") && error.contains("missing field `branch`")
+}
+
+/// What to tell someone holding data this build cannot read.
+///
+/// The old binary is the only thing that can read the old format, so the
+/// remedy is to install it, export, and import — not to retry.
+pub const LEGACY_FORMAT_REMEDY: &str = "\
+this spot was written by an older tonk and cannot be opened by this one.
+
+Upgrade it with `tonk migrate --legacy`, which installs the last compatible
+build, exports the data, and imports it here.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Branches migrate independently, so the path names one rather than
+    /// standing for a whole site. A spot can have `main` current while a
+    /// meta branch is still legacy, and a site-wide answer would hide that.
+    #[test]
+    fn it_addresses_a_revision_per_branch() {
+        assert_eq!(
+            revision_path("main", "main"),
+            "main/memory/branch/main/revision"
+        );
+        assert_eq!(
+            revision_path("main", "meta"),
+            "main/memory/branch/meta/revision",
+            "a second branch has its own record and its own verdict"
+        );
+    }
+
+    /// The probe against real revisions from both builds: one written by
+    /// `v0.6.7`, one by this build. Committed bytes rather than
+    /// hand-assembled maps, because the question is what dialog actually
+    /// wrote, which no amount of reasoning about the struct can answer.
+    #[test]
+    fn it_tells_revisions_apart_by_their_key_set() {
+        let legacy = include_bytes!("../tests/fixtures/revision-legacy.cbor");
+        let current = include_bytes!("../tests/fixtures/revision-current.cbor");
+
+        assert_eq!(
+            revision_is_current(legacy),
+            Some(false),
+            "a pre-upgrade revision carries no `branch` field"
+        );
+        assert_eq!(
+            revision_is_current(current),
+            Some(true),
+            "this build's revision does"
+        );
+    }
+
+    /// Bytes that are not a revision are not reported as an old one: the
+    /// caller has a damaged record, which no migration fixes.
+    #[test]
+    fn it_declines_to_judge_bytes_that_are_not_a_revision() {
+        assert_eq!(revision_is_current(b"not cbor at all"), None);
+        assert_eq!(revision_is_current(&[]), None);
+    }
+
+    /// A site records the format it was written in, and a build reading a
+    /// different number knows without opening anything.
+    #[test]
+    fn it_reads_a_recorded_site_format() {
+        let stamped = serde_json::to_vec(&SiteFormat::current()).unwrap();
+        let read = read_site_format(Some(&stamped)).expect("a stamped site announces itself");
+        assert!(read.is_readable());
+
+        let future = serde_json::to_vec(&SiteFormat { format: 99 }).unwrap();
+        assert!(
+            !read_site_format(Some(&future)).unwrap().is_readable(),
+            "a format this build does not write is not one it can read"
+        );
+    }
+
+    /// An absent marker is an answer, not a default. Treating it as the
+    /// current format would claim a compatibility nobody verified — and the
+    /// sites without a marker are exactly the ones that need migrating.
+    #[test]
+    fn it_treats_an_unmarked_site_as_unknown() {
+        assert!(read_site_format(None).is_none());
+        assert!(read_site_format(Some(b"not json")).is_none());
+    }
+
+    /// The signature of a pre-upgrade spot, verbatim from opening the
+    /// committed `v0.6.7` fixture with this build.
+    #[test]
+    fn it_recognizes_the_legacy_format_signature() {
+        let observed = "acquire branch: branch \"main\" on repository \"main\" \
+             not found: Decode error: Failed to decode a block: \
+             Msg(\"missing field `branch`\")";
+        assert!(is_legacy_format(observed));
+    }
+
+    /// Narrow on purpose: a corrupt block or an unrelated schema change is
+    /// not something a migration fixes, and saying so would send someone
+    /// down a path that cannot help them.
+    #[test]
+    fn it_does_not_claim_unrelated_decode_failures() {
+        assert!(!is_legacy_format("Failed to decode a block: Msg(\"eof\")"));
+        assert!(!is_legacy_format("missing field `branch` in some config"));
+        assert!(!is_legacy_format("branch \"main\" not found"));
+    }
 
     #[test]
     fn it_keeps_account_lifecycle_states_distinct() {

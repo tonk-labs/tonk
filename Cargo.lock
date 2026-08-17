@@ -245,6 +245,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit 0.8.4",
  "memchr",
@@ -256,6 +258,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -4658,6 +4661,8 @@ version = "0.6.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
+ "base64",
  "blake3",
  "chrono",
  "clap",
@@ -4707,6 +4712,7 @@ dependencies = [
  "tonk-render",
  "tonk-schema",
  "url",
+ "urlencoding",
  "wasm-bindgen-test",
  "webbrowser",
 ]
@@ -5125,6 +5131,8 @@ version = "0.6.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
+ "base64",
  "bs58",
  "console_error_panic_hook",
  "custom-elements",

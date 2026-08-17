@@ -18,6 +18,8 @@ use crate::identity_bridge::{
 
 const STYLE_ID: &str = "tonk-account-styles";
 const HANDOFF: &str = "__tonkCliHandoff";
+/// Where a pending callback authorization's `(audience, callback)` is parked.
+const CALLBACK: &str = "__tonkCliCallback";
 
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
@@ -677,7 +679,10 @@ fn load_status(host: HtmlElement) {
         .and_then(|window| window.location().pathname().ok())
         .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if handoff_route {
-        load_handoff(host);
+        match callback_request() {
+            Some((audience, callback)) => load_callback_request(host, audience, callback),
+            None => load_handoff(host),
+        }
         return;
     }
     // The gate always arrives with a `next`. Without one the user came here
@@ -741,6 +746,78 @@ fn load_status(host: HtmlElement) {
             }
         }
     });
+}
+
+/// The loopback URL a `tonk account link --via` run is waiting on, if any.
+///
+/// Its presence is what distinguishes a callback authorization from the
+/// service handoff: the handoff carries a fragment secret and resolves
+/// against the account service, while this carries the waiting process's
+/// audience and callback in the query and never touches a service.
+fn callback_request() -> Option<(String, String)> {
+    Some((query_value("audience")?, query_value("callback")?))
+}
+
+/// Approve a waiting command-line profile and post the grant straight back.
+///
+/// The page runs the passkey ceremony, mints the `account → profile`
+/// powerline, and delivers it to the loopback listener the CLI is holding
+/// open. Delivery is a form POST rather than `fetch`: a cross-origin form
+/// submission needs no preflight and no permissive CORS header on a server
+/// that exists for one request. This page renders in the top document, not
+/// the sealed guest, so the submission is not subject to an iframe sandbox.
+fn load_callback_request(host: HtmlElement, audience: String, callback: String) {
+    if let Ok(Some(name)) = host.query_selector("#account-handoff-name") {
+        name.set_text_content(Some("Command-line profile"));
+    }
+    if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
+        did.set_text_content(Some(&audience));
+    }
+    // Park the request where the approve handler can find it, the same way
+    // the service handoff parks its resolved link.
+    if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback)) {
+        let _ = Reflect::set(host.as_ref(), &CALLBACK.into(), &value);
+    }
+    set_busy(&host, false, "");
+    set_mode(&host, "handoff");
+}
+
+/// Base64-encode an authorization payload for form delivery.
+///
+/// The callback decodes base64 before parsing, so the payload survives form
+/// encoding without the caller having to reason about escaping.
+pub(crate) fn encode_authorization(payload: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(payload)
+}
+
+/// Deliver an authorization to the waiting process by form POST.
+fn post_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), String> {
+    let document = window()
+        .and_then(|window| window.document())
+        .ok_or("document is unavailable")?;
+    let form = document
+        .create_element("form")
+        .map_err(|_| "could not build the delivery form")?;
+    form.set_attribute("method", "POST")
+        .map_err(|_| "could not address the delivery form")?;
+    form.set_attribute("action", callback)
+        .map_err(|_| "could not address the delivery form")?;
+    for (name, value) in fields {
+        let input = document
+            .create_element("input")
+            .map_err(|_| "could not build the delivery form")?;
+        let _ = input.set_attribute("type", "hidden");
+        let _ = input.set_attribute("name", name);
+        let _ = input.set_attribute("value", value);
+        let _ = form.append_child(&input);
+    }
+    let body = document.body().ok_or("document has no body")?;
+    body.append_child(&form)
+        .map_err(|_| "could not attach the delivery form")?;
+    form.unchecked_ref::<web_sys::HtmlFormElement>()
+        .submit()
+        .map_err(|_| "could not deliver the authorization".to_owned())
 }
 
 fn load_handoff(host: HtmlElement) {
@@ -1219,6 +1296,45 @@ fn bind(host: &HtmlElement) {
 
     on_click(host, "#account-handoff-submit", |host| {
         clear_error(&host);
+        // A callback authorization takes this button first: the panel asks
+        // the same question, but the answer goes back to a waiting process
+        // rather than to the account service.
+        if let Some((audience, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
+            .ok()
+            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+        {
+            set_busy(&host, true, "Waiting for your passkey…");
+            spawn_local(async move {
+                let result = async {
+                    let service_url = service(&host).await?;
+                    let authorized = crate::identity_bridge::authorize_device(
+                        crate::identity_bridge::AuthorizeDeviceInput {
+                            device_did: audience,
+                            remote: service_url,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    // The delegation alone would leave the device authorized
+                    // but unable to find the account repository, so the
+                    // descriptor rides along.
+                    let payload = serde_json::json!({
+                        "delegationHex": authorized.delegation_hex,
+                        "descriptorHex": authorized.descriptor_hex,
+                        "credentialId": authorized.root_did,
+                    })
+                    .to_string();
+                    let encoded = crate::account::encode_authorization(&payload);
+                    post_to_callback(&callback, &[("authorize", &encoded)])
+                }
+                .await;
+                if let Err(error) = result {
+                    set_busy(&host, false, "");
+                    show_error(&host, error);
+                }
+            });
+            return;
+        }
         let handoff = Reflect::get(host.as_ref(), &HANDOFF.into())
             .ok()
             .and_then(|value| serde_wasm_bindgen::from_value::<ResolvedLink>(value).ok());
@@ -1251,6 +1367,27 @@ fn bind(host: &HtmlElement) {
                 show_error(&host, error);
             }
         });
+    });
+
+    // Cancelling a callback authorization tells the waiting process, rather
+    // than only navigating away. Without this the CLI sits until its
+    // five-minute deadline for a decision the user already made.
+    on_click(host, "#account-handoff-cancel", |host| {
+        let Some((_, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
+            .ok()
+            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+        else {
+            // No callback parked: this is the service handoff, whose Cancel
+            // is an ordinary link back to the account page. `on_click`
+            // already suppressed the navigation, so do it explicitly.
+            if let Some(window) = window() {
+                let _ = window.location().set_href("/account");
+            }
+            return;
+        };
+        if let Err(error) = post_to_callback(&callback, &[("deny", "declined in the browser")]) {
+            show_error(&host, error);
+        }
     });
 
     on_click(host, "#account-unlink", |host| {
@@ -1587,6 +1724,28 @@ mod tests {
                 .get_attribute("href")
                 .as_deref(),
             Some("/")
+        );
+    }
+
+    /// A callback request is recognized by its query parameters, which is
+    /// what distinguishes it from the service handoff's fragment secret.
+    #[dialog_common::test]
+    fn it_encodes_an_authorization_for_form_delivery() {
+        use base64::Engine as _;
+
+        let payload = r#"{"delegationHex":"ab","descriptorHex":"cd"}"#;
+        let encoded = encode_authorization(payload);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .expect("the callback decodes base64 before parsing");
+        assert_eq!(
+            String::from_utf8(decoded).unwrap(),
+            payload,
+            "the payload must survive encoding unchanged"
+        );
+        assert!(
+            !encoded.contains('{') && !encoded.contains('"'),
+            "encoding is what keeps the payload safe through form fields, got {encoded}"
         );
     }
 

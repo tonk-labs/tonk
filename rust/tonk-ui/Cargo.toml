@@ -22,6 +22,7 @@ web-integration-tests = ["helpers", "dialog-common/integration-tests"]
 [dependencies]
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+base64 = { workspace = true }
 console_error_panic_hook = { workspace = true }
 custom-elements = { workspace = true }
 futures-util = { workspace = true }
@@ -63,6 +64,10 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = { workspace = true }
+# The e2e callback listener is native-only, and axum pulls in mio, which
+# does not compile for wasm32 — the web test build is a workspace-wide
+# `cargo test --no-run`, so an ungated dev-dependency would reach it.
+axum = { workspace = true, features = ["form", "http1", "tokio"] }
 dialog-credentials = { workspace = true }
 dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
@@ -86,6 +91,7 @@ features = [
     "Event",
     "HtmlButtonElement",
     "HtmlCollection",
+    "HtmlFormElement",
     "HtmlHeadElement",
     "HtmlInputElement",
     "History",

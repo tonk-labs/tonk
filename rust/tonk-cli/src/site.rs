@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
@@ -134,6 +134,33 @@ impl TonkSite {
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
         let (profile, operator) = build_profile_and_operator(&root, &config).await?;
 
+        // Ask the data itself before anything opens a branch — opening it is
+        // what fails on old data, and it fails deep enough to be unreadable.
+        //
+        // Reading it by path is the weak part, and deliberate for now.
+        // `BranchReference::cell` addresses the same record without knowing
+        // the layout, but `Cell<T>` carries a CBOR codec: `Cell<Vec<u8>>`
+        // tries to decode the record *into* a byte string and fails, since
+        // it is a map. Getting the bytes undecoded needs a codec-free read
+        // dialog does not expose — which is what dialog-db#449 asks for.
+        //
+        // Branches migrate independently, so this asks about the one every
+        // command below opens and says nothing about any other.
+        let revision =
+            std::fs::read(root.join(tonk_account::revision_path(REPO_NAME, BRANCH_NAME))).ok();
+        match tonk_account::readability(revision.as_deref()) {
+            tonk_account::Readability::Current => {}
+            tonk_account::Readability::Legacy => {
+                bail!("{}", tonk_account::LEGACY_FORMAT_REMEDY)
+            }
+            tonk_account::Readability::Unknown => {
+                // Not a revision this build understands, and not recognisably
+                // an old one either. Fall through: the branch open below
+                // reports whatever is actually wrong, which beats guessing
+                // migration.
+            }
+        }
+
         let repository = profile
             .repository(REPO_NAME)
             .load()
@@ -186,6 +213,14 @@ impl TonkSite {
     pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
         std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
+        // Record the format beside the data, so the next incompatible change
+        // is detected by reading a number rather than by matching the text of
+        // a decode failure.
+        std::fs::write(
+            root.join(tonk_account::SITE_FORMAT_FILE),
+            serde_json::to_vec_pretty(&tonk_account::SiteFormat::current())?,
+        )
+        .with_context(|| format!("failed to stamp the site format at {}", root.display()))?;
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
@@ -263,12 +298,45 @@ impl TonkSite {
     ///
     /// Hold the returned session for as long as you use its
     /// `handle()`: the handle borrows from the session.
+    /// Acquire the site's branch, naming the remedy when the data predates
+    /// this build's format.
+    ///
+    /// Every command reaches its data through here, so this is where an
+    /// unreadable old spot becomes a sentence someone can act on rather than
+    /// `missing field \`branch\`` from inside block decoding.
+    /// Acquire a named branch on this site's repository.
+    ///
+    /// Branches hold separate data and are migrated separately, so anything
+    /// walking a whole spot names each in turn rather than assuming `main`.
+    pub async fn named_branch(&self, branch: &str) -> Result<BranchSession, ReactorError> {
+        self.reactor
+            .repository(REPO_NAME)
+            .branch(branch)
+            .acquire(&self.operator)
+            .await
+    }
+
+    /// Acquire the site's `main` branch, naming the remedy when the data
+    /// predates this build's format.
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
         self.reactor
             .repository(REPO_NAME)
             .branch(BRANCH_NAME)
             .acquire(&self.operator)
             .await
+            .map_err(|error| {
+                let text = error.to_string();
+                if tonk_account::is_legacy_format(&text) {
+                    // `reason` carries the remedy, so it travels with the
+                    // existing variant rather than needing a new one here.
+                    return ReactorError::BranchNotFound {
+                        repo: REPO_NAME.to_owned(),
+                        branch: BRANCH_NAME.to_owned(),
+                        reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
+                    };
+                }
+                error
+            })
     }
 }
 
@@ -325,10 +393,21 @@ async fn bootstrap_repository(
 
     profile
         .access()
-        .save(UcanDelegation(prefix))
+        .save(UcanDelegation(prefix.clone()))
         .perform(operator)
         .await
         .context("failed to persist repo→profile delegation")?;
+
+    // The same authority, retained into the account space. The access branch
+    // above is what makes this space usable HERE; the account is what makes it
+    // recoverable on the next device, since a device regains access by pulling
+    // the account rather than by fetching an artifact. Non-fatal: a space that
+    // works but is not yet backed up beats no space at all.
+    if let Err(error) =
+        crate::account_state::retain_space_delegation(profile, operator, &prefix).await
+    {
+        eprintln!("warning: space not retained into the account space: {error:#}");
+    }
 
     profile
         .repository(REPO_NAME)
@@ -518,7 +597,7 @@ async fn optional_credential(
 /// strand data the device demonstrably owns. Extending that authority to
 /// the account root is local bookkeeping: it delegates to the root this
 /// profile already holds a grant from, and publishes nothing.
-pub(crate) async fn account_root_prefix_for(
+pub async fn account_root_prefix_for(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     subject: &Did,

@@ -97,6 +97,24 @@ pub struct LinkOptions {
     pub open_browser: bool,
     /// Whether to drop undeliverable detach intents and link anyway.
     pub abandon_detach: bool,
+    /// Where account state lives. Defaults to the install's own store when
+    /// absent; a caller running outside an install supplies its own.
+    pub store: Option<crate::spot::SpotStore>,
+    /// Send the approval URL here instead of relying on the OS to open it.
+    ///
+    /// `webbrowser::open` is the product path; this exists for callers that
+    /// drive the ceremony themselves and so must see the URL the CLI built,
+    /// which carries a callback address only it knows.
+    pub announce: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Authorize through a loopback callback against this page instead of the
+    /// service's link registry.
+    ///
+    /// The default flow registers a handoff with the account service and
+    /// polls it. With a page named here, the CLI instead binds a loopback
+    /// listener, passes it as `callback=`, and the page posts the grant
+    /// straight back — no remote registry, so nothing but the browser and
+    /// this process ever holds it.
+    pub via: Option<String>,
 }
 
 /// Successful browser handoff.
@@ -135,6 +153,15 @@ pub(crate) async fn stored_provider_with_operator(
 ) -> Result<Option<AccountProviderRecord>> {
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     stored_provider_for_store(profile, operator, &store).await
+}
+
+/// [`stored_provider_with_operator`] against a caller-supplied store.
+pub(crate) async fn stored_provider_in(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::spot::SpotStore,
+) -> Result<Option<AccountProviderRecord>> {
+    stored_provider_for_store(profile, operator, store).await
 }
 
 async fn stored_provider_for_store(
@@ -262,6 +289,39 @@ pub async fn status(profile: &Profile) -> Result<AccountStatus> {
             })
         }
     }
+}
+
+/// Validate a delegation the browser returned as an `account → this profile`
+/// grant.
+///
+/// The same shape [`active_from_consumed`] requires of a linked grant, checked
+/// here because a browser-delivered one arrives over a different path and is
+/// no more trusted for it: one proof, subject-open (a powerline, so it covers
+/// everything the account holds), addressed to this profile, and signed by the
+/// issuer it names.
+pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<DelegationChain> {
+    let chain =
+        DelegationChain::try_from(bytes).context("authorization is not a delegation container")?;
+    if chain.proof_cids().len() != 1 {
+        bail!("authorization must carry exactly one delegation");
+    }
+    if chain.subject().is_some() {
+        bail!("authorization must be subject-open, so it covers every space the account holds");
+    }
+    if chain.audience() != &profile.did() {
+        bail!(
+            "authorization is addressed to {}, not this profile",
+            chain.audience()
+        );
+    }
+    chain
+        .proofs()
+        .next()
+        .context("authorization is missing its proof")?
+        .verify_signature(&dialog_credentials::Ed25519KeyResolver)
+        .await
+        .context("authorization signature is invalid")?;
+    Ok(chain)
 }
 
 async fn active_from_consumed(
@@ -525,9 +585,172 @@ async fn clear_detach_for(
     );
 }
 
+/// Authorize this device through a loopback callback.
+///
+/// The browser runs the ceremony and posts the grant straight back to a
+/// listener on this machine, so no remote registry holds it in between. The
+/// grant is validated before anything is written — see
+/// [`validate_account_grant`] — so a page returning something addressed
+/// elsewhere, scoped to one space, or unsigned installs no authority here.
+async fn link_via_callback(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    options: &LinkOptions,
+    page: &str,
+) -> Result<LinkOutcome> {
+    let callback = crate::callback::Callback::bind().await?;
+    let url = login_url(page, profile.did().as_ref(), callback.url());
+
+    println!("Open this URL to approve the device:\n{url}");
+    if options.open_browser && webbrowser::open(&url).is_err() {
+        eprintln!("Could not open a browser; use the URL above.");
+    }
+    // A caller that drives the ceremony itself (tests, or an embedder with
+    // its own browser control) receives the URL rather than relying on the
+    // OS to open it.
+    if let Some(announce) = options.announce.as_ref() {
+        let _ = announce.send(url.clone());
+    }
+
+    let bytes = match callback.receive().await? {
+        crate::callback::Authorization::Granted(bytes) => bytes,
+        crate::callback::Authorization::Denied(reason) => {
+            bail!("authorization was declined in the browser: {reason}");
+        }
+    };
+    let authorization: CallbackAuthorization =
+        serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
+    let grant_bytes = hex::decode(&authorization.delegation_hex)
+        .context("authorization delegation is not hex")?;
+    let chain = validate_account_grant(profile, &grant_bytes).await?;
+    let account_did = chain.issuer().clone();
+    let root_did = account_did.to_string();
+
+    // Install the inbound half so this device can act, and record the root
+    // the way a linked device does.
+    profile
+        .access()
+        .save(UcanDelegation(chain))
+        .perform(operator)
+        .await
+        .context("failed to install the account grant")?;
+    crate::identity::save_local_root_with_operator(
+        profile,
+        operator,
+        authorization.credential_id.clone(),
+        authorization.delegation_hex.clone(),
+    )
+    .await?;
+
+    // The descriptor tells this device WHERE the account repository lives; a
+    // delegation only says who may act. Persisting it is what lets the
+    // account mount and sync at all.
+    let provider = AccountProviderRecord::attach(
+        &options.service_url,
+        &hex::decode(&authorization.descriptor_hex)
+            .context("authorization descriptor is not hex")?,
+        &account_did,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .await
+    .context("authorization returned an unusable repository descriptor")?;
+    profile
+        .credential()
+        .site(ACCOUNT_LINK_SITE)
+        .save(provider.encode()?)
+        .perform(operator)
+        .await
+        .context("failed to persist the account link")?;
+
+    // Mount the account, then retain BOTH halves of the union into it and
+    // push. The page mints only the inbound grant; storing both ends here
+    // keeps the writes where the account repository is already mounted, and
+    // means a later device pulling the account inherits what this profile
+    // holds rather than only what the account issued.
+    // `ensure` mounts the account, adopts it as the access upstream, and
+    // syncs — the dance that turns a grant into usable, shared authority.
+    let store = match options.store.clone() {
+        Some(store) => store,
+        None => crate::spot::SpotStore::open().context("failed to locate account state")?,
+    };
+    let account_state = match crate::account_state::ensure_with_operator_and_store(
+        profile,
+        operator.clone(),
+        store,
+    )
+    .await
+    {
+        Ok(outcome) => outcome.status,
+        Err(_) => AccountStateStatus::Unhydrated,
+    };
+    let mut warning = None;
+    if let Some(branch) = crate::account_state::open_account_branch(profile, operator).await? {
+        let signer = profile.signer().signer().clone();
+        let union = tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
+        let inbound = DelegationChain::try_from(grant_bytes.as_slice())
+            .context("account grant is not a delegation container")?;
+        for (label, chain) in [("account grant", inbound), ("profile union", union)] {
+            if let Err(error) =
+                tonk_account::delegations::retain_space_delegation(&branch, &chain, operator).await
+            {
+                warning = Some(format!(
+                    "{label} was not retained into the account: {error}"
+                ));
+            }
+        }
+        if warning.is_none()
+            && let Err(error) = branch.push().perform(operator).await
+        {
+            warning = Some(format!("account was authorized but not pushed: {error}"));
+        }
+    }
+
+    Ok(LinkOutcome {
+        url,
+        root_did,
+        device_did: profile.did().to_string(),
+        account_state,
+        warning,
+    })
+}
+
+/// What the authorizing page posts back to the waiting CLI.
+///
+/// The delegation alone would leave the device authorized but unable to find
+/// the account repository, so the descriptor rides along. The credential id
+/// names the passkey for display.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CallbackAuthorization {
+    delegation_hex: String,
+    descriptor_hex: String,
+    #[serde(default)]
+    credential_id: String,
+}
+
 /// Start or resume a browser handoff and activate its fresh generation.
 pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcome> {
     let operator = crate::account_state::credential_operator(profile).await?;
+    link_with_operator(profile, &operator, options).await
+}
+
+/// [`link`] against a caller-supplied operator.
+///
+/// [`link`] resolves one from the global install, mounting the profile by
+/// name, which a caller that already holds a profile cannot satisfy. This
+/// form takes the operator so the whole flow is reachable from a test.
+pub async fn link_with_operator(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    options: &LinkOptions,
+) -> Result<LinkOutcome> {
+    if let Some(page) = options.via.as_deref() {
+        return link_via_callback(profile, operator, options, page).await;
+    }
+    let operator = operator.clone();
     let store = crate::spot::SpotStore::open().context("failed to locate account state")?;
     {
         let guard = crate::account_session::exclusive_transition_guard(&store)?;
@@ -1090,6 +1313,27 @@ pub async fn devices(profile: &Profile, service_url: &str) -> Result<Vec<DeviceR
 /// secrets in the link handoff, and a device DID is neither secret nor
 /// sensitive to leak into a browser history. The DID needs no escaping —
 /// `:` is a legal query character and the rest is base58.
+/// The browser URL that asks the account to delegate to this CLI profile.
+///
+/// The same page `account link` opens, with two query parameters instead of a
+/// fragment secret: `audience` is the profile the account should delegate to,
+/// and `callback` is the loopback URL the page posts the grant back to. Both
+/// are percent-encoded — a callback URL contains `:` and `/`, and an
+/// unencoded one would truncate the parameter at the first `&` a port or path
+/// happened to introduce.
+///
+/// Neither value is secret. The audience is a public DID, and the callback
+/// points at loopback on this machine, so nothing here needs the fragment
+/// treatment the link handoff gives its bearer token.
+fn login_url(base: &str, audience: &str, callback: &str) -> String {
+    format!(
+        "{}?audience={}&callback={}",
+        base.trim_end_matches('#').trim_end_matches('/'),
+        urlencoding::encode(audience),
+        urlencoding::encode(callback),
+    )
+}
+
 fn revoke_url(base: &str, did: &str) -> String {
     format!(
         "{}?revoke={did}",
@@ -1404,6 +1648,95 @@ mod tests {
         );
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
         assert_eq!(profile.did(), device_did);
+    }
+
+    /// The login URL carries the audience and callback as query parameters,
+    /// both percent-encoded. A raw callback URL contains `:` and `/`, and an
+    /// unencoded one would truncate at the first `&` a port or path added.
+    #[test]
+    fn it_passes_the_audience_and_callback_as_encoded_query_parameters() {
+        let url = login_url(
+            DEFAULT_ACCOUNT_URL,
+            "did:key:zProfile",
+            "http://127.0.0.1:54321",
+        );
+        assert_eq!(
+            url,
+            "https://tonk.spot/account/link\
+             ?audience=did%3Akey%3AzProfile\
+             &callback=http%3A%2F%2F127.0.0.1%3A54321"
+        );
+    }
+
+    /// A grant addressed to another device installs nothing here. The page
+    /// is not trusted to address it correctly just because it delivered it.
+    #[dialog_common::test]
+    async fn it_refuses_a_grant_addressed_elsewhere() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_varsig::Principal as _;
+
+        let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
+        let profile = Profile::open("link-audience-test")
+            .perform(&storage)
+            .await
+            .unwrap();
+        let account = Ed25519Signer::generate().await.unwrap();
+        let elsewhere = Ed25519Signer::generate().await.unwrap();
+        let grant = DelegationBuilder::new()
+            .issuer(account)
+            .audience(&elsewhere.did())
+            .subject(UcanSubject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let bytes = DelegationChain::new(grant).to_bytes().unwrap();
+
+        let error = validate_account_grant(&profile, &bytes)
+            .await
+            .expect_err("a grant for another audience must be refused");
+        assert!(
+            error.to_string().contains("not this profile"),
+            "the error must name the mismatch, got {error}"
+        );
+    }
+
+    /// A grant scoped to one space is refused: the account's authority is a
+    /// powerline, and accepting a narrowed one would silently install less
+    /// than the device asked for.
+    #[dialog_common::test]
+    async fn it_refuses_a_grant_scoped_to_one_subject() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_varsig::Principal as _;
+
+        let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
+        let profile = Profile::open("link-subject-test")
+            .perform(&storage)
+            .await
+            .unwrap();
+        let account = Ed25519Signer::generate().await.unwrap();
+        let space = Ed25519Signer::generate().await.unwrap();
+        let grant = DelegationBuilder::new()
+            .issuer(account)
+            .audience(&profile.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let bytes = DelegationChain::new(grant).to_bytes().unwrap();
+
+        let error = validate_account_grant(&profile, &bytes)
+            .await
+            .expect_err("a subject-scoped grant must be refused");
+        assert!(
+            error.to_string().contains("subject-open"),
+            "the error must say what shape was required, got {error}"
+        );
     }
 
     #[test]
