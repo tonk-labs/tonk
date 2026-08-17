@@ -273,6 +273,20 @@ pub struct MigrationOutcome {
     pub spots: usize,
     /// Spots already retained, so nothing was written for them.
     pub already: usize,
+    /// The account repository was legacy and could not receive retained spots.
+    pub account_legacy: bool,
+}
+
+fn account_repository_readability(
+    store: &crate::spot::SpotStore,
+    subject: &dialog_varsig::Did,
+) -> tonk_account::Readability {
+    let revision = store.account_dir().join(tonk_account::revision_path(
+        subject.repo_key(),
+        tonk_account::MAIN_BRANCH,
+    ));
+    let bytes = std::fs::read(revision).ok();
+    tonk_account::readability(bytes.as_deref())
 }
 
 /// Move this profile's delegations into their durable homes.
@@ -354,6 +368,12 @@ pub async fn migrate_delegations(
             .context("stored root DID is invalid")?,
         None => return Ok(outcome),
     };
+    if account_repository_readability(store, descriptor.account_subject())
+        == tonk_account::Readability::Legacy
+    {
+        outcome.account_legacy = true;
+        return Ok(outcome);
+    }
     let repository = mount(profile, operator, &descriptor).await?;
     let branch = repository
         .branch(tonk_account::MAIN_BRANCH)
@@ -693,8 +713,34 @@ pub async fn ensure_with_operator_and_store(
 #[cfg(test)]
 mod tests {
     use dialog_credentials::Ed25519Signer;
+    use tonk_schema::prelude::DidExt as _;
 
     use super::*;
+
+    #[test]
+    fn it_detects_a_legacy_account_repository_before_opening_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::spot::SpotStore::at(temp.path().join("state"));
+        let subject: dialog_varsig::Did =
+            "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX"
+                .parse()
+                .unwrap();
+        let revision = store.account_dir().join(tonk_account::revision_path(
+            subject.repo_key(),
+            tonk_account::MAIN_BRANCH,
+        ));
+        std::fs::create_dir_all(revision.parent().unwrap()).unwrap();
+        std::fs::write(
+            &revision,
+            include_bytes!("../../tonk-account/tests/fixtures/revision-legacy.cbor"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            account_repository_readability(&store, &subject),
+            tonk_account::Readability::Legacy
+        );
+    }
 
     #[dialog_common::test]
     async fn it_requires_the_exact_descriptor_hash() {

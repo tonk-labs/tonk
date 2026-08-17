@@ -1327,6 +1327,12 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                         if outcome.spots == 1 { "" } else { "s" },
                         outcome.already
                     );
+                    if outcome.account_legacy {
+                        eprintln!(
+                            "warning: the account repository is still in the legacy format; \
+                             certificate migration completed, but spot retention was skipped"
+                        );
+                    }
                     ExitCode::Success
                 }
                 Err(error) => print_failure(error),
@@ -1946,11 +1952,19 @@ async fn legacy_migrate(
     // migrated repositories usable — doing it the other way round leaves
     // data that imports cleanly and cannot be pushed anywhere.
     match tonk_cli::account_state::migrate_delegations_here().await {
-        Ok(outcome) => println!(
-            "account: {} certificate(s) moved into access facts, \
-             {} spot(s) retained ({} already there)",
-            outcome.certificates, outcome.spots, outcome.already
-        ),
+        Ok(outcome) => {
+            println!(
+                "account: {} certificate(s) moved into access facts, \
+                 {} spot(s) retained ({} already there)",
+                outcome.certificates, outcome.spots, outcome.already
+            );
+            if outcome.account_legacy {
+                eprintln!(
+                    "warning: the account repository is still in the legacy format; \
+                     certificate migration completed, but spot retention was skipped"
+                );
+            }
+        }
         // An unlinked profile has no account to migrate, which is ordinary
         // rather than a failure — but anything else is worth stopping for,
         // since the repositories below would inherit the problem.
@@ -1973,12 +1987,30 @@ async fn legacy_migrate(
             Ok(upgraded) => upgraded,
             Err(error) => return print_failure(error),
         };
+        let blobs = match tonk_cli::legacy::migrate_blobs(
+            &cli,
+            &site,
+            branch,
+            &upgraded.blobs,
+            &destination,
+            workspace.path(),
+        )
+        .await
+        {
+            Ok(blobs) => blobs,
+            Err(error) => return print_failure(error),
+        };
         if let Err(error) = transfer::import_branch(&destination, branch, &upgraded.csv).await {
             return print_failure(error);
         }
         println!(
-            "{branch}: {} rows ({} renamed, {} dropped as dialog's own)",
-            upgraded.migration.kept, upgraded.migration.remapped, upgraded.migration.dropped
+            "{branch}: {} rows ({} remapped, {} dropped as dialog's own), \
+             {} blobs ({} bytes)",
+            upgraded.migration.kept,
+            upgraded.migration.remapped,
+            upgraded.migration.dropped,
+            blobs.copied,
+            blobs.bytes
         );
     }
     println!("upgraded {} branch(es)", branches.len());
