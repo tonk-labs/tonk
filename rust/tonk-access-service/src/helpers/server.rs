@@ -5,7 +5,7 @@
 //! as a native HTTP server with CORS support for browser-based testing.
 
 use super::AccessServiceAddress;
-use crate::shortcut::{Shortcut, object_key_for, requested_ttl};
+use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
 use dialog_common::helpers::{Provider, Service};
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
@@ -309,7 +309,9 @@ async fn serve_shortcut(
     let not_found = || {
         Response::builder()
             .status(StatusCode::NOT_FOUND)
-            .body(Full::new(Bytes::from("Not Found")))
+            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(CACHE_CONTROL, "no-store")
+            .body(Full::new(Bytes::from(unavailable_invite_html())))
             .unwrap()
     };
     match shortcuts.read().await.get(&key) {
