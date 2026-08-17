@@ -434,6 +434,31 @@ enum Command {
         /// filesystem; copy + delete fallback otherwise.
         #[arg(long = "move")]
         do_move: bool,
+
+        /// Upgrade a spot written before the dialog format change.
+        ///
+        /// Downloads the last build that can read it, exports each
+        /// branch, rewrites the schema namespace, and imports the
+        /// result here. Unrelated to the `.carry/` move above.
+        #[arg(long, conflicts_with_all = ["from", "do_move"])]
+        legacy: bool,
+
+        /// Name of the registered legacy spot to upgrade. Required with
+        /// `--legacy`.
+        ///
+        /// A name rather than a path: the build that reads it resolves
+        /// spots through the registry, so one that is not registered
+        /// cannot be exported by it at all.
+        #[arg(long, value_name = "NAME", requires = "legacy")]
+        site: Option<String>,
+
+        /// Branches to upgrade. Repeatable; defaults to `main`.
+        ///
+        /// Branches are not discoverable on a legacy spot — listing them
+        /// needs an open branch, which is what fails — so any beyond
+        /// `main` must be named.
+        #[arg(long, value_name = "NAME", requires = "legacy")]
+        branch: Vec<String>,
     },
 
     /// Show or toggle anonymous usage telemetry
@@ -1049,7 +1074,19 @@ async fn main() {
             entity,
             field,
         } => retract_op(concept, entity, field, spot.as_deref()).await,
-        Command::Migrate { from, do_move } => migrate(from, do_move).await,
+        Command::Migrate {
+            from,
+            do_move,
+            legacy,
+            site,
+            branch,
+        } => {
+            if legacy {
+                legacy_migrate(site, branch, spot.as_deref()).await
+            } else {
+                migrate(from, do_move).await
+            }
+        }
         Command::Export { out, branch } => export_op(out, &branch, spot.as_deref()).await,
         Command::Render { route, out } => render_op(route, out, spot.as_deref()).await,
         Command::Import { file, branch } => import_op(file, &branch, spot.as_deref()).await,
@@ -1874,6 +1911,62 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
             err.exit_code()
         }
     }
+}
+
+/// Upgrade a spot written before the dialog format change.
+///
+/// Runs the whole sequence: fetch the last build that can read the old
+/// format, export each branch with it, rewrite the schema namespace, and
+/// import the result into the active spot. Reports per branch rather than
+/// as one number, because branches migrate separately and a partial result
+/// should say which parts landed.
+async fn legacy_migrate(
+    site: Option<String>,
+    branches: Vec<String>,
+    spot: Option<&str>,
+) -> ExitCode {
+    let Some(site) = site else {
+        return print_failure(anyhow::anyhow!(
+            "--legacy needs --site <NAME>, the registered spot to upgrade"
+        ));
+    };
+    let branches = if branches.is_empty() {
+        vec![tonk_cli::site::BRANCH_NAME.to_owned()]
+    } else {
+        branches
+    };
+
+    let (_, destination) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+
+    let workspace = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(error) => return print_failure(error),
+    };
+    eprintln!("fetching {} …", tonk_cli::legacy::LEGACY_RELEASE);
+    let cli = match tonk_cli::legacy::fetch_legacy_cli(workspace.path()) {
+        Ok(path) => path,
+        Err(error) => return print_failure(error),
+    };
+
+    for branch in &branches {
+        let upgraded = match tonk_cli::legacy::upgrade_branch(&cli, &site, branch, workspace.path())
+        {
+            Ok(upgraded) => upgraded,
+            Err(error) => return print_failure(error),
+        };
+        if let Err(error) = transfer::import_branch(&destination, branch, &upgraded.csv).await {
+            return print_failure(error);
+        }
+        println!(
+            "{branch}: {} rows ({} renamed, {} dropped as dialog's own)",
+            upgraded.migration.kept, upgraded.migration.remapped, upgraded.migration.dropped
+        );
+    }
+    println!("upgraded {} branch(es)", branches.len());
+    ExitCode::Success
 }
 
 async fn export_op(out: Option<PathBuf>, branch: &str, spot: Option<&str>) -> ExitCode {

@@ -18,8 +18,126 @@
 //! drift — and a table cannot fail halfway through a re-evaluation.
 
 use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+
+/// The last release that can read pre-upgrade data.
+///
+/// Named rather than resolved: the point of a pinned release is that it does
+/// not move, so an upgrade path that asked for "latest compatible" would be
+/// asking a question with a changing answer.
+pub const LEGACY_RELEASE: &str = "v0.6.7";
+
+/// Download and unpack the legacy CLI into `into`, returning its path.
+///
+/// The published artifact, not a build from source: it is the same thing the
+/// install instructions name, so a broken release surfaces here rather than
+/// in someone's terminal.
+pub fn fetch_legacy_cli(into: &Path) -> Result<PathBuf> {
+    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "macos-arm64",
+        ("linux", "x86_64") => "linux-x86_64",
+        (os, arch) => bail!(
+            "no published {LEGACY_RELEASE} build for {os}/{arch}; \
+             export on a machine that has one, then `tonk import` here"
+        ),
+    };
+    let url = format!(
+        "https://github.com/tonk-labs/tonk/releases/download/\
+         {LEGACY_RELEASE}/tonk-{platform}.tar.gz"
+    );
+    std::fs::create_dir_all(into)
+        .with_context(|| format!("failed to create {}", into.display()))?;
+    let archive = into.join("legacy.tar.gz");
+    run(Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(&archive)
+        .arg(&url))
+    .with_context(|| format!("failed to download {LEGACY_RELEASE} from {url}"))?;
+    run(Command::new("tar")
+        .arg("-xzf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(into))
+    .context("failed to unpack the legacy CLI")?;
+    Ok(into.join("tonk"))
+}
+
+/// Export a branch using the legacy CLI, which is the only build that can
+/// read pre-upgrade data.
+///
+/// `site` is the spot's own directory. The legacy CLI resolves a spot
+/// through its registry rather than from the working directory, so it is
+/// named explicitly with `--spot` — a caller holding a directory should not
+/// have to register it first just to read it.
+pub fn legacy_export(cli: &Path, spot: &str, branch: &str, out: &Path) -> Result<()> {
+    let mut command = Command::new(cli);
+    command
+        .arg("export")
+        .arg("--spot")
+        .arg(spot)
+        .arg("--out")
+        .arg(out);
+    // `--branch` is newer than the build being driven here: the legacy CLI
+    // exports `main` and knows no flag for anything else. Passing it would
+    // fail outright, so a non-default branch is refused with an explanation
+    // rather than silently exporting the wrong one.
+    if branch != crate::site::BRANCH_NAME {
+        bail!(
+            "{LEGACY_RELEASE} can only export {:?}; branch {branch:?} predates \
+             per-branch export and cannot be migrated with it",
+            crate::site::BRANCH_NAME
+        );
+    }
+    run(command
+        // The old build measures usage; a migration is not a user session.
+        .env("DO_NOT_TRACK", "1"))
+    .with_context(|| format!("the legacy CLI could not export branch {branch:?}"))
+}
+
+/// What upgrading one branch did.
+#[derive(Debug, Clone)]
+pub struct Upgraded {
+    /// The branch that was upgraded.
+    pub branch: String,
+    /// How the export was rewritten on the way through.
+    pub migration: Migration,
+    /// The migrated CSV, ready to import.
+    pub csv: PathBuf,
+}
+
+/// Export a legacy branch and rewrite it into something this build imports.
+///
+/// Stops short of importing: the caller owns the destination, and a
+/// migration that both reads and writes in one step gives no chance to
+/// inspect what is about to land.
+pub fn upgrade_branch(cli: &Path, spot: &str, branch: &str, workspace: &Path) -> Result<Upgraded> {
+    let exported = workspace.join(format!("{branch}-legacy.csv"));
+    legacy_export(cli, spot, branch, &exported)?;
+
+    let migrated = workspace.join(format!("{branch}-migrated.csv"));
+    let source = std::fs::File::open(&exported)
+        .with_context(|| format!("failed to read {}", exported.display()))?;
+    let sink = std::fs::File::create(&migrated)
+        .with_context(|| format!("failed to write {}", migrated.display()))?;
+    let migration = migrate_export(std::io::BufReader::new(source), sink)?;
+
+    Ok(Upgraded {
+        branch: branch.to_owned(),
+        migration,
+        csv: migrated,
+    })
+}
+
+fn run(command: &mut Command) -> Result<()> {
+    let status = command.status().context("could not run the command")?;
+    if !status.success() {
+        bail!("command failed: {status}");
+    }
+    Ok(())
+}
 
 /// The attribute column is the first field of a row, and an attribute name
 /// never contains a comma or a quote — so the rename can be applied to the
