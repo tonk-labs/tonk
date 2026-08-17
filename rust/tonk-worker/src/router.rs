@@ -206,8 +206,9 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
 
 /// Largest accepted `POST …/blob` body. The handler buffers the whole
 /// upload in service-worker memory before writing it to the blob store,
-/// so this caps that buffer, not just the wire size.
-pub const BLOB_UPLOAD_LIMIT: usize = 32 * 1024 * 1024;
+/// so this caps that buffer, not just the wire size. Keep this conservative
+/// until the browser upload and remote sync paths stream end to end.
+pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Variant of [`api_router`] that also surfaces the wrapped
 /// [`AppState`] handle. The worker uses this so it can consult
