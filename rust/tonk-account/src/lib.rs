@@ -206,6 +206,53 @@ fn map_publish_leaf(error: PublishError) -> RemoteError {
     }
 }
 
+/// The on-disk format this build writes.
+///
+/// Bumped when data this build writes can no longer be read by the previous
+/// one — the dialog upgrade that motivated all of this would have been a
+/// bump from 0 to 1.
+pub const SITE_FORMAT: u32 = 1;
+
+/// File recording [`SITE_FORMAT`], written beside a site's data.
+///
+/// Beside the data rather than in the CLI's spot registry, because the
+/// registry is one adapter's bookkeeping: a site created by the worker, or
+/// copied between machines by hand, carries no registry entry but still has
+/// this file. It also answers before anything opens a branch, which matters
+/// because opening the branch is exactly what fails on old data.
+pub const SITE_FORMAT_FILE: &str = "format.json";
+
+/// What a site's format file records.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SiteFormat {
+    /// The format the data beside this file is written in.
+    pub format: u32,
+}
+
+impl SiteFormat {
+    /// The format this build writes.
+    pub fn current() -> Self {
+        Self {
+            format: SITE_FORMAT,
+        }
+    }
+
+    /// Whether this build can read data recorded at this format.
+    pub fn is_readable(&self) -> bool {
+        self.format == SITE_FORMAT
+    }
+}
+
+/// Read a site's recorded format, if it has one.
+///
+/// `None` means the file is absent, which dates the site to before this
+/// marker existed — the pre-upgrade population. That is a real answer, not a
+/// missing one, so it is not defaulted to the current format: doing so would
+/// claim a compatibility nobody verified.
+pub fn read_site_format(bytes: Option<&[u8]>) -> Option<SiteFormat> {
+    serde_json::from_slice(bytes?).ok()
+}
+
 /// Whether an error means the data predates the current on-disk format.
 ///
 /// A spot written before the dialog upgrade fails when its branch is
@@ -223,6 +270,11 @@ fn map_publish_leaf(error: PublishError) -> RemoteError {
 ///
 /// Deliberately narrow: a corrupt block or an unrelated schema change should
 /// keep reporting itself, not be mistaken for something a migration fixes.
+///
+/// This is the *fallback*, for sites written before [`SITE_FORMAT_FILE`]
+/// existed and which therefore cannot announce themselves. Sites this build
+/// creates carry that file, so the next incompatible change is detected by
+/// comparing a number instead of matching a message dialog may reword.
 pub fn is_legacy_format(error: &str) -> bool {
     error.contains("Failed to decode a block") && error.contains("missing field `branch`")
 }
@@ -240,6 +292,30 @@ build, exports the data, and imports it here.";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A site records the format it was written in, and a build reading a
+    /// different number knows without opening anything.
+    #[test]
+    fn it_reads_a_recorded_site_format() {
+        let stamped = serde_json::to_vec(&SiteFormat::current()).unwrap();
+        let read = read_site_format(Some(&stamped)).expect("a stamped site announces itself");
+        assert!(read.is_readable());
+
+        let future = serde_json::to_vec(&SiteFormat { format: 99 }).unwrap();
+        assert!(
+            !read_site_format(Some(&future)).unwrap().is_readable(),
+            "a format this build does not write is not one it can read"
+        );
+    }
+
+    /// An absent marker is an answer, not a default. Treating it as the
+    /// current format would claim a compatibility nobody verified — and the
+    /// sites without a marker are exactly the ones that need migrating.
+    #[test]
+    fn it_treats_an_unmarked_site_as_unknown() {
+        assert!(read_site_format(None).is_none());
+        assert!(read_site_format(Some(b"not json")).is_none());
+    }
 
     /// The signature of a pre-upgrade spot, verbatim from opening the
     /// committed `v0.6.7` fixture with this build.

@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
@@ -132,6 +132,25 @@ impl TonkSite {
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
+        // Refuse before anything opens a branch — opening it is what fails on
+        // old data, and it fails deep enough to be unreadable. A site with no
+        // marker predates the marker, which dates it to before the upgrade.
+        let stamped = std::fs::read(root.join(tonk_account::SITE_FORMAT_FILE)).ok();
+        match tonk_account::read_site_format(stamped.as_deref()) {
+            Some(format) if format.is_readable() => {}
+            Some(format) => bail!(
+                "this spot is written in format {} and this tonk reads {}.\n\n{}",
+                format.format,
+                tonk_account::SITE_FORMAT,
+                tonk_account::LEGACY_FORMAT_REMEDY
+            ),
+            None => {
+                // Unmarked: either pre-upgrade data, or a site this build has
+                // simply not stamped yet. Only the first is a problem, and
+                // the branch open below tells them apart — so this falls
+                // through to the error sniffer rather than refusing outright.
+            }
+        }
         let (profile, operator) = build_profile_and_operator(&root, &config).await?;
 
         let repository = profile
@@ -186,6 +205,14 @@ impl TonkSite {
     pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
         std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
+        // Record the format beside the data, so the next incompatible change
+        // is detected by reading a number rather than by matching the text of
+        // a decode failure.
+        std::fs::write(
+            root.join(tonk_account::SITE_FORMAT_FILE),
+            serde_json::to_vec_pretty(&tonk_account::SiteFormat::current())?,
+        )
+        .with_context(|| format!("failed to stamp the site format at {}", root.display()))?;
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
