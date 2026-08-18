@@ -402,8 +402,8 @@ async fn it_walks_a_device_issued_deposit_back_to_the_customer() -> anyhow::Resu
     // through the `root → device` grant riding in the same container.
     let root = Ed25519Signer::generate().await?;
     let device = Ed25519Signer::generate().await?;
-    let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
-        .await?;
+    let link =
+        tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did()).await?;
     let container = tonk_identity::request::build_enroll_invocation(
         device,
         &link,

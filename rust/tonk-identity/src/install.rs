@@ -398,17 +398,10 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let remote = string_property(&input, "remote")?;
-    let service = service_did_property(&input)?;
     let prf = crate::passkey::prf_output().await.map_err(js_error)?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
-    let deposits = match service {
-        Some(service) => crate::ceremony::mint_service_deposits(&root, &service)
-            .await
-            .map_err(js_error)?,
-        None => Vec::new(),
-    };
     let authorized = crate::ceremony::authorize_device(root, device_did, &remote)
         .await
         .map_err(js_error)?;
@@ -422,7 +415,6 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
     ] {
         Reflect::set(&output, &key.into(), &value.into())?;
     }
-    set_deposits(output.as_ref(), &deposits)?;
     Ok(output.into())
 }
 

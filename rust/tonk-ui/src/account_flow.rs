@@ -395,6 +395,14 @@ mod tests {
     }
 
     async fn link_cli(driver: &WebDriver, env: &TestEnvironment) -> Result<LinkedCli> {
+        link_cli_with(driver, env, false).await
+    }
+
+    async fn link_cli_with(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        register_first: bool,
+    ) -> Result<LinkedCli> {
         let profile = tempfile::tempdir()?;
         let mut command = tonk_command(&profile);
         command
@@ -443,6 +451,25 @@ mod tests {
         );
 
         driver.goto(approval_url.as_str()).await?;
+        if register_first {
+            // A browser with no account yet registers before approving:
+            // the link page opens on the signup panels, and the ceremony
+            // that creates and enrolls the account flows straight into
+            // the approval it was interrupted by.
+            element(driver, "tonk-account[data-mode=\"choice\"]").await?;
+            element(driver, "#account-choose-create")
+                .await?
+                .click()
+                .await?;
+            element(driver, "#account-email")
+                .await?
+                .send_keys(EMAIL)
+                .await?;
+            element(driver, "#account-create-submit")
+                .await?
+                .click()
+                .await?;
+        }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
         let handoff_did = element(driver, "#account-handoff-did")
@@ -825,6 +852,34 @@ mod tests {
         );
         assert!(devices.stdout.contains("active\te2e terminal\t"));
         assert!(devices.stdout.contains(" (this device)"));
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A CLI approved from a browser with no account yet: the link page
+    /// runs the signup ceremony first — creating and registering the
+    /// account is what makes there be something to delegate — then flows
+    /// straight into the approval panel.
+    #[dialog_common::test]
+    async fn it_registers_before_linking_a_cli_from_a_fresh_browser(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let linked = link_cli_with(&driver, &env, true).await?;
+
+        let status = run_cli(
+            &linked.profile,
+            &["account".to_string(), "status".to_string()],
+        )
+        .await?;
+        assert!(status.status.success(), "status failed: {}", status.stderr);
+        assert!(status.stdout.contains("signed in: yes"));
+        assert!(
+            linked.link.stdout.contains("registration:"),
+            "the link reports the registration the signup performed: {}",
+            linked.link.stdout
+        );
 
         driver.quit().await?;
         Ok(())

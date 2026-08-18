@@ -534,21 +534,6 @@ enum AccountCommand {
         via: Option<String>,
     },
 
-    /// Register this account with its sync service
-    ///
-    /// Probes the service first, so a registered account answers without
-    /// resending anything; an unknown or still-pending one is enrolled and
-    /// an activation email goes out.
-    #[command(
-        after_help = "Examples:\n  tonk account register\n  tonk account register --email you@example.com"
-    )]
-    Register {
-        /// Address the activation link is sent to; defaults to the
-        /// account's recorded email.
-        #[arg(long, value_name = "EMAIL")]
-        email: Option<String>,
-    },
-
     /// Disconnect account services on this device
     ///
     /// Preserves the local identity, root, and spots without revoking this
@@ -934,7 +919,6 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             Some(match command {
                 AccountCommand::Status => "status",
                 AccountCommand::Link { .. } => "link",
-                AccountCommand::Register { .. } => "register",
                 AccountCommand::Logout => "logout",
                 AccountCommand::Spots { command } => match command {
                     None | Some(AccountSpotsCommand::List) => "spots-list",
@@ -1308,46 +1292,26 @@ fn render_account_status(status: account::AccountStatus) -> String {
     }
 }
 
-/// One line per registration fact, matching the status output style.
-fn registration_lines(report: &tonk_cli::customer::RegistrationReport) -> String {
-    use tonk_account::customer::CustomerStatus;
-    match (&report.status, &report.emailed) {
-        (CustomerStatus::Active, _) => "registration: active".to_string(),
-        (CustomerStatus::Registered, Some(email)) => {
-            format!("registration: activation pending\nactivation email sent to {email}")
-        }
-        (CustomerStatus::Registered, None) => "registration: activation pending".to_string(),
-        (CustomerStatus::Suspended, _) => "registration: suspended".to_string(),
-    }
-}
-
-/// Best-effort registration line for `tonk account`, quiet about being
-/// offline: status must answer without the network.
+/// Best-effort registration line, quiet about being offline: status
+/// must answer without the network. Registration itself is web-only —
+/// the browser enrolls during its passkey ceremonies, which is where
+/// the account-signed deposits come from — so this only reads state
+/// and points at the account page when something is missing.
 async fn print_customer_line(profile: &dialog_operator::Profile) {
     use tonk_account::customer::CustomerStatus;
     match tonk_cli::customer::registration_state(profile).await {
         Ok(Some(Some(receipt))) => match receipt.status {
             CustomerStatus::Active => println!("registration: active"),
             CustomerStatus::Registered => {
-                println!("registration: activation pending (resend with `tonk account register`)")
+                println!("registration: activation pending (open the activation email)")
             }
             CustomerStatus::Suspended => println!("registration: suspended"),
         },
-        Ok(Some(None)) => println!("registration: none (run `tonk account register`)"),
+        Ok(Some(None)) => {
+            println!("registration: none (sign in on the account page in a browser to register)")
+        }
         Ok(None) => {}
         Err(_) => println!("registration: unreachable"),
-    }
-}
-
-/// Best-effort registration after a link: the account exists either way,
-/// so a refusal is a warning, not a failed link.
-async fn report_registration(profile: &dialog_operator::Profile, email: Option<String>) {
-    match tonk_cli::customer::ensure_registered(profile, email).await {
-        Ok(report) => println!("{}", registration_lines(&report)),
-        Err(error) => eprintln!(
-            "warning: could not register with the sync service: {error:#}\n\
-             retry with `tonk account register`"
-        ),
     }
 }
 
@@ -1423,21 +1387,12 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 if let Some(warning) = outcome.warning {
                     eprintln!("warning: account repository is not synchronized: {warning}");
                 }
-                report_registration(&profile, None).await;
+                print_customer_line(&profile).await;
                 back_up_all_best_effort(&profile).await;
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Register { email } => {
-            match tonk_cli::customer::ensure_registered(&profile, email).await {
-                Ok(report) => {
-                    println!("{}", registration_lines(&report));
-                    ExitCode::Success
-                }
-                Err(error) => print_failure(error),
-            }
-        }
         AccountCommand::Logout => match account::logout(&profile).await {
             Ok(()) => {
                 println!("logged out\ndevice: {}", profile.did());

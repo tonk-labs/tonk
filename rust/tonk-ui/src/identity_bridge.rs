@@ -274,10 +274,6 @@ pub(crate) struct AuthorizeDeviceInput {
     pub device_did: String,
     /// The account repository's remote, so the descriptor names it.
     pub remote: String,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
 }
 
 /// What the ceremony hands back for delivery to a waiting device.
@@ -290,10 +286,6 @@ pub(crate) struct AuthorizedDevice {
     pub delegation_hex: String,
     /// Exact signed account repository descriptor.
     pub descriptor_hex: String,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// input named the service.
-    #[serde(default)]
-    pub deposits_hex: Vec<String>,
 }
 
 pub(crate) async fn authorize_device(

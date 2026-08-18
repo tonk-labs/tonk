@@ -197,10 +197,35 @@ fn show_success(host: &HtmlElement) {
 /// its absence.
 fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
-        let state = match crate::api::customer_state().await {
+        let mut state = match crate::api::customer_state().await {
             Ok(state) => state,
             Err(_) => return,
         };
+        // A linked account the access service does not know is one that
+        // predates registration (or the service's control state was
+        // reset). This signed-in browser is the only party that can fix
+        // that — registration is web-only — so enroll right here, with
+        // the device-chained deposit since no ceremony is at hand, and
+        // fall through to the ordinary pending notice.
+        if state["status"].is_null()
+            && crate::deployment::get()
+                .await
+                .is_ok_and(|config| config.service_did.is_some())
+        {
+            match crate::api::enroll_customer(None, &[]).await {
+                // The receipt names no email; the recorded enrollment does.
+                Ok(_) => match crate::api::customer_state().await {
+                    Ok(fresh) => state = fresh,
+                    Err(_) => return,
+                },
+                Err(error) => {
+                    web_sys::console::error_1(
+                        &format!("customer re-enrollment failed: {error}").into(),
+                    );
+                    return;
+                }
+            }
+        }
         if state["status"].as_str() != Some("Registered") {
             return;
         }
@@ -706,7 +731,37 @@ fn load_status(host: HtmlElement) {
     if handoff_route {
         match callback_request() {
             Some((audience, callback, name)) => {
-                load_callback_request(host, audience, callback, name)
+                // An unlinked browser registers first: the signup or login
+                // ceremony is what creates the account and enrolls it with
+                // the access service, and only then is there an account to
+                // delegate from. The callback request rides the URL, so
+                // once the ceremony settles this reloads into the approval
+                // panel.
+                set_busy(&host, true, "Checking this browser…");
+                spawn_local(async move {
+                    match crate::api::account_status().await {
+                        Ok(AccountStatus::Registered { .. }) => {
+                            load_callback_request(host, audience, callback, name);
+                        }
+                        Ok(status) => {
+                            let root_persisted =
+                                matches!(status, AccountStatus::Unregistered { .. });
+                            set_busy(&host, false, "");
+                            set_mode(&host, "choice");
+                            show_error(
+                                &host,
+                                "Create your account or log in first; approving the \
+                                 command-line device comes right after.",
+                            );
+                            load_choice_profiles(host.clone(), root_persisted);
+                        }
+                        Err(error) => {
+                            set_busy(&host, false, "");
+                            set_mode(&host, "choice");
+                            show_error(&host, error.to_string());
+                        }
+                    }
+                });
             }
             None => load_handoff(host),
         }
@@ -805,6 +860,19 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
 /// service handoff: the handoff carries a fragment secret and resolves
 /// against the account service, while this carries the waiting process's
 /// audience and callback in the query and never touches a service.
+/// The callback request parked in this page's URL, when this is the
+/// link route carrying one.
+fn pending_callback_request() -> Option<(String, String, String)> {
+    let on_link_route = window()
+        .and_then(|window| window.location().pathname().ok())
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
+    if on_link_route {
+        callback_request()
+    } else {
+        None
+    }
+}
+
 fn callback_request() -> Option<(String, String, String)> {
     Some((
         query_value("audience")?,
@@ -1091,6 +1159,13 @@ async fn complete_remote(
             );
         }
     }
+    // A pending callback approval takes precedence over settling: the
+    // ceremony ran on the link page precisely to approve a waiting
+    // device, and the account it just made is what the grant issues from.
+    if let Some((audience, callback, name)) = pending_callback_request() {
+        load_callback_request(host.clone(), audience, callback, name);
+        return Ok(());
+    }
     settle(host);
     if initialize_name && is_unhydrated(&status) {
         show_error(
@@ -1353,7 +1428,6 @@ fn bind(host: &HtmlElement) {
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
                             remote: service_url,
-                            service_did: deployment_service_did().await,
                         },
                     )
                     .await
@@ -1383,7 +1457,6 @@ fn bind(host: &HtmlElement) {
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,
-                        "depositsHex": authorized.deposits_hex,
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);
