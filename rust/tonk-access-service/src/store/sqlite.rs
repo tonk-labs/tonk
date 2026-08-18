@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, Consumer, Customer, INSERT_CUSTOMER, INSERT_SELF_CONSUMER, SELECT_CONSUMER,
-    SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    ACTIVATE_CUSTOMER, ADD_CONSUMER, Consumer, Customer, INSERT_CUSTOMER, INSERT_SELF_CONSUMER,
+    SELECT_CONSUMER, SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -112,6 +112,14 @@ impl Store for SqliteStore {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(UPDATE_REGISTERED_EMAIL, params![did, email])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(ADD_CONSUMER, params![did, provider, now as i64])
             .map_err(map_err)?;
         Ok(changed > 0)
     }

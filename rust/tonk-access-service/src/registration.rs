@@ -30,9 +30,11 @@ use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::ipld::Ipld;
 use ipld_core::serde::from_ipld;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
-    Activate, Customer, CustomerStatus, Enroll, Receipt, RegistrationError,
+    Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Provider as ProviderRole,
+    Receipt, RegistrationError,
 };
 
 use crate::email::EmailSender;
@@ -44,6 +46,12 @@ pub const ENROLL_COMMAND: [&str; 2] = ["customer", "enroll"];
 
 /// The command path segments of [`Activate`].
 pub const ACTIVATE_COMMAND: [&str; 2] = ["customer", "activate"];
+
+/// The command path segments of [`Add`].
+pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
+
+/// The command path a consent delegation must grant, or a prefix of it.
+pub const CONSUMER_PROVISION_COMMAND: [&str; 2] = ["consumer", "provision"];
 
 /// How far in the future an enrollment invocation's mandatory
 /// expiration may sit: the five-minute ceremony window plus a one-minute
@@ -63,6 +71,8 @@ pub enum RegistrationCommand {
     Enroll,
     /// `/customer/activate`
     Activate,
+    /// `/provider/add`
+    ProviderAdd,
 }
 
 /// Peek at a container's invocation command without verifying anything.
@@ -76,8 +86,20 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
     match segments.as_slice() {
         segments if segments == ENROLL_COMMAND => Some(RegistrationCommand::Enroll),
         segments if segments == ACTIVATE_COMMAND => Some(RegistrationCommand::Activate),
+        segments if segments == PROVIDER_ADD_COMMAND => Some(RegistrationCommand::ProviderAdd),
         _ => None,
     }
+}
+
+/// The JSON answer to a registration invocation: a customer receipt for
+/// the `/customer` commands, a consumer receipt for `/provider/add`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum Answer {
+    /// `/customer/enroll` and `/customer/activate` answer the customer.
+    Customer(Receipt),
+    /// `/provider/add` answers the provisioned consumer.
+    Consumer(ConsumerReceipt),
 }
 
 /// The environment a registration invocation executes against: storage,
@@ -103,9 +125,9 @@ pub struct Registration<'a, S, E> {
 impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     /// Verify the container, decode its capability, and perform it
     /// against this environment.
-    pub async fn handle(&self) -> Result<Receipt, RegistrationError>
+    pub async fn handle(&self) -> Result<Answer, RegistrationError>
     where
-        Self: Provider<Enroll> + Provider<Activate>,
+        Self: Provider<Enroll> + Provider<Activate> + Provider<Add>,
     {
         match registration_command(self.container) {
             Some(RegistrationCommand::Enroll) => {
@@ -113,11 +135,26 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
                     .verified_chain(&ENROLL_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
                     .await?;
                 let effect: Enroll = deserialize_arguments(chain.arguments())?;
-                Subject::from(chain.subject().clone())
-                    .attenuate(Customer)
-                    .invoke(effect)
-                    .perform(self)
-                    .await
+                Ok(Answer::Customer(
+                    Subject::from(chain.subject().clone())
+                        .attenuate(Customer)
+                        .invoke(effect)
+                        .perform(self)
+                        .await?,
+                ))
+            }
+            Some(RegistrationCommand::ProviderAdd) => {
+                let chain = self
+                    .verified_chain(&PROVIDER_ADD_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
+                    .await?;
+                let effect: Add = deserialize_arguments(chain.arguments())?;
+                Ok(Answer::Consumer(
+                    Subject::from(chain.subject().clone())
+                        .attenuate(ProviderRole)
+                        .invoke(effect)
+                        .perform(self)
+                        .await?,
+                ))
             }
             Some(RegistrationCommand::Activate) => {
                 // The presented invocation is the one enrollment emailed:
@@ -138,11 +175,13 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
                     });
                 }
                 let effect: Activate = deserialize_arguments(chain.arguments())?;
-                Subject::from(service)
-                    .attenuate(Customer)
-                    .invoke(effect)
-                    .perform(self)
-                    .await
+                Ok(Answer::Customer(
+                    Subject::from(service)
+                        .attenuate(Customer)
+                        .invoke(effect)
+                        .perform(self)
+                        .await?,
+                ))
             }
             None => Err(RegistrationError::Invalid {
                 message: "not a registration invocation".to_string(),
@@ -252,6 +291,104 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             Some(_) => Err(RegistrationError::CustomerSuspended),
             None => Err(RegistrationError::UnknownCustomer),
         }
+    }
+
+    /// Execute a verified `/provider/add`: validate the deposited consent
+    /// and provision the consumer under the invoking customer.
+    /// Re-provisioning under the same customer is a no-op success; a
+    /// consumer another customer provides is refused. Activation is not
+    /// required to add, only to serve: consumers added while the provider
+    /// is `Registered` go live with its activation.
+    pub async fn add(
+        &self,
+        capability: Capability<Add>,
+    ) -> Result<ConsumerReceipt, RegistrationError> {
+        let provider = capability.subject().clone();
+        let effect = capability.into_effect();
+        match self
+            .store
+            .customer(provider.as_str())
+            .await
+            .map_err(internal)?
+        {
+            None => return Err(RegistrationError::UnknownCustomer),
+            Some(customer) if customer.status == CustomerStatus::Suspended => {
+                return Err(RegistrationError::CustomerSuspended);
+            }
+            Some(_) => {}
+        }
+        let consent = self.deposited_delegation(&effect.consent.to_string())?;
+        self.verify_consent(&consent.delegation, &effect.consumer, &provider)
+            .await?;
+        if !self
+            .store
+            .add_consumer(effect.consumer.as_str(), provider.as_str(), self.now)
+            .await
+            .map_err(internal)?
+        {
+            return Err(RegistrationError::ConsumerProvided);
+        }
+        Ok(ConsumerReceipt {
+            consumer: effect.consumer,
+            provider,
+        })
+    }
+
+    /// Validate the deposited consent: the consumer's own delegation to
+    /// the invoking customer, granting `/consumer/provision` or broader,
+    /// signature-valid and inside its window. The audience is what binds
+    /// it, so a consent given to one customer cannot enrol a different
+    /// one; a powerline delegation from the space satisfies it as-is.
+    async fn verify_consent(
+        &self,
+        consent: &Delegation<Ed25519Signature>,
+        consumer: &Did,
+        provider: &Did,
+    ) -> Result<(), RegistrationError> {
+        if consent.issuer() != consumer {
+            return Err(RegistrationError::Forbidden {
+                message: format!(
+                    "consent must be issued by {consumer}, got {}",
+                    consent.issuer()
+                ),
+            });
+        }
+        if consent.audience() != provider {
+            return Err(RegistrationError::Forbidden {
+                message: format!(
+                    "consent was issued to {}, not the invoking customer",
+                    consent.audience()
+                ),
+            });
+        }
+        if let DelegatedSubject::Specific(subject) = consent.subject()
+            && subject != consumer
+        {
+            return Err(RegistrationError::Forbidden {
+                message: format!("consent must cover the consumer space, got {subject}"),
+            });
+        }
+        let granted = &consent.command().0;
+        if !granted
+            .iter()
+            .zip(CONSUMER_PROVISION_COMMAND.iter())
+            .all(|(granted, required)| granted == required)
+            || granted.len() > CONSUMER_PROVISION_COMMAND.len()
+        {
+            return Err(RegistrationError::Forbidden {
+                message: format!(
+                    "consent grants /{}, which does not cover /consumer/provision",
+                    granted.join("/")
+                ),
+            });
+        }
+        self.check_window(consent)?;
+        consent
+            .verify_signature(&Ed25519KeyResolver)
+            .await
+            .map_err(|err| RegistrationError::Unauthorized {
+                message: format!("consent failed to verify: {err}"),
+            })
     }
 
     /// Mint the activation invocation and wrap it into a link. The
@@ -506,6 +643,18 @@ where
 {
     async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
         self.activate(input).await
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<S, E> Provider<Add> for Registration<'_, S, E>
+where
+    S: Store + ConditionalSync,
+    E: EmailSender + ConditionalSync,
+{
+    async fn execute(&self, input: Capability<Add>) -> Result<ConsumerReceipt, RegistrationError> {
+        self.add(input).await
     }
 }
 

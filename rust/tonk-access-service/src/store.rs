@@ -99,6 +99,11 @@ pub trait Store {
     /// a row changed; an `Active` customer's email is never touched here.
     async fn update_registered_email(&self, did: &str, email: &str) -> Result<bool, StoreError>;
 
+    /// Provision `did` as a consumer under `provider`. Idempotent for the
+    /// same provider; answers false when a different customer already
+    /// provides it, which the caller reports as a conflict.
+    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError>;
+
     /// Promote a `Registered` customer to `Active`, recording the
     /// activation time, terms acceptance, and cycle anchor. Returns false
     /// when no `Registered` row matched, which the caller disambiguates
@@ -135,6 +140,16 @@ pub const INSERT_SELF_CONSUMER: &str = r#"
 INSERT INTO consumer (did, provider, registered)
 VALUES (?1, ?1, ?2)
 ON CONFLICT (did) DO NOTHING
+"#;
+
+/// Provisioning is idempotent per provider: re-adding under the same
+/// customer re-runs the update, while a consumer someone else provides
+/// matches no row and changes nothing.
+pub const ADD_CONSUMER: &str = r#"
+INSERT INTO consumer (did, provider, registered)
+VALUES (?1, ?2, ?3)
+ON CONFLICT (did) DO UPDATE SET provider = excluded.provider
+WHERE consumer.provider IS NULL OR consumer.provider = excluded.provider
 "#;
 
 pub const UPDATE_REGISTERED_EMAIL: &str = r#"

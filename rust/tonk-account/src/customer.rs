@@ -58,6 +58,63 @@ impl Effect for Activate {
     type Output = Result<Receipt, RegistrationError>;
 }
 
+/// Ability segment `/provider`: acts a customer takes as the party
+/// paying for consumer spaces. Distinct from `/customer` so delegating
+/// one role can never leak the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provider;
+
+impl Attenuation for Provider {
+    type Of = Subject;
+}
+
+/// `/provider/add` — provision a consumer space under the invoking
+/// customer. The invocation's subject is the customer DID; the consumer's
+/// consent travels as a deposited delegation named by CID.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct Add {
+    /// The space being provisioned.
+    pub consumer: Did,
+    /// The consent delegation, by CID; its bytes travel in the same
+    /// container. It must root at the consumer and be issued to the
+    /// invoking customer, granting `/consumer/provision` or broader.
+    pub consent: Cid,
+}
+
+impl Effect for Add {
+    type Of = Provider;
+    type Output = Result<ConsumerReceipt, RegistrationError>;
+}
+
+/// Ability segment `/consumer`: acts a space takes on its own behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Consumer;
+
+impl Attenuation for Consumer {
+    type Of = Subject;
+}
+
+/// `/consumer/provision` — the consent a space delegates to the customer
+/// it accepts as its provider; the delegation's audience is what names
+/// that customer. Never invoked: it exists to be deposited with
+/// [`Add`], and a powerline delegation satisfies it as-is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Attenuate)]
+pub struct Provision;
+
+impl Effect for Provision {
+    type Of = Consumer;
+    type Output = ();
+}
+
+/// The successful answer to a `/provider/add` invocation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsumerReceipt {
+    /// The provisioned space.
+    pub consumer: Did,
+    /// The customer now providing it.
+    pub provider: Did,
+}
+
 /// Customer lifecycle state, as stored and as answered on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CustomerStatus {
@@ -126,6 +183,9 @@ pub enum RegistrationError {
     /// No customer to act on.
     #[error("no such customer")]
     UnknownCustomer,
+    /// The consumer already has a different provider.
+    #[error("this consumer already has a provider")]
+    ConsumerProvided,
     /// The customer is already active, so enrollment is refused.
     #[error("this customer is already active")]
     CustomerActive,
@@ -148,7 +208,9 @@ impl RegistrationError {
             RegistrationError::Unauthorized { .. } => 401,
             RegistrationError::Forbidden { .. } => 403,
             RegistrationError::UnknownCustomer => 404,
-            RegistrationError::CustomerActive | RegistrationError::CustomerSuspended => 409,
+            RegistrationError::CustomerActive
+            | RegistrationError::CustomerSuspended
+            | RegistrationError::ConsumerProvided => 409,
             RegistrationError::Internal { .. } => 500,
         }
     }
@@ -177,6 +239,15 @@ mod tests {
             terms: "2026-08".into(),
         });
         assert_eq!(activate.ability(), "/customer/activate");
+
+        let add: Capability<Add> = subject().attenuate(Provider).invoke(Add {
+            consumer: did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"),
+            consent: Cid::default(),
+        });
+        assert_eq!(add.ability(), "/provider/add");
+
+        let provision: Capability<Provision> = subject().attenuate(Consumer).invoke(Provision);
+        assert_eq!(provision.ability(), "/consumer/provision");
     }
 
     #[test]

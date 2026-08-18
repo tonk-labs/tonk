@@ -136,6 +136,48 @@ pub async fn enroll(profile: &Profile, email: Option<String>) -> Result<Receipt>
     }
 }
 
+/// Provision `consumer` with the access service under this profile's
+/// account, depositing `consent` — the space's powerline to the account.
+/// A consumer another customer already provides is left alone: the space
+/// exists and works locally either way.
+pub async fn provision(
+    profile: &Profile,
+    consumer: &Did,
+    consent: &dialog_ucan_core::DelegationChain,
+) -> Result<()> {
+    let connection = crate::account::optional_connection(profile)
+        .await?
+        .context("no active account; run `tonk account link`")?;
+    let origin = access_origin(profile)
+        .await?
+        .context("the account has no repository descriptor to locate its service by")?;
+    let body = tonk_identity::request::build_provider_add_invocation(
+        profile.signer().signer().clone(),
+        &connection.link,
+        consumer,
+        consent,
+    )
+    .await?;
+    let response = reqwest::Client::new()
+        .post(origin.join("ucan/")?)
+        .header("content-type", "application/cbor")
+        .body(body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .context("failed to reach the access service")?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let refusal: serde_json::Value = response.json().await.unwrap_or_default();
+    match serde_json::from_value::<RegistrationError>(refusal["error"].clone()) {
+        Ok(RegistrationError::ConsumerProvided) => Ok(()),
+        Ok(refusal) => bail!("the access service refused provisioning: {refusal}"),
+        Err(_) => bail!("access service rejected provisioning ({status})"),
+    }
+}
+
 /// The service's view of this profile's account: `Ok(None)` when the
 /// profile is not linked or its account has no located service, and an
 /// inner `None` when the service does not know the customer.

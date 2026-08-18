@@ -105,6 +105,47 @@ pub async fn build_enroll_invocation(
         .context("failed to encode the enroll container")
 }
 
+/// Build a `/provider/add` container for the access service.
+///
+/// The invocation is device-signed on the account's subject, and the
+/// space's consent chain — its powerline to the account — is deposited
+/// alongside, named by the CID of its head. The server walks the consent
+/// from the consumer to the invoking customer.
+pub async fn build_provider_add_invocation(
+    device: Ed25519Signer,
+    link: &DelegationChain,
+    consumer: &Did,
+    consent: &DelegationChain,
+) -> Result<Vec<u8>> {
+    let head = consent
+        .proofs()
+        .next()
+        .context("the consent chain carries no delegation")?;
+    let arguments = BTreeMap::from([
+        (
+            "consumer".to_string(),
+            Promised::String(consumer.to_string()),
+        ),
+        ("consent".to_string(), Promised::Link(head.to_cid())),
+    ]);
+    let invocation = build_device_invocation(
+        device,
+        link,
+        vec!["provider".to_string(), "add".to_string()],
+        arguments,
+    )
+    .await?;
+    let mut tokens = Container::from_bytes(&invocation)
+        .context("failed to reopen the add container")?
+        .into_tokens();
+    for delegation in consent.proofs() {
+        tokens.push(delegation.encoded().to_vec());
+    }
+    Container::new(tokens)
+        .to_bytes()
+        .context("failed to encode the add container")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

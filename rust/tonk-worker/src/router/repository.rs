@@ -1250,7 +1250,7 @@ async fn invite_url(proof: &str, remote: &str, seed: &str) -> String {
 /// test harness runs in a *window*, never a `ServiceWorkerGlobalScope`, so
 /// a test driving `invite_url` could only ever reach the no-origin branch.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn worker_origin() -> Option<String> {
+pub(super) fn worker_origin() -> Option<String> {
     use wasm_bindgen::JsCast;
 
     js_sys::global()
@@ -2697,6 +2697,15 @@ pub async fn create_repository(
     // what makes it recoverable on the next device, since a device regains
     // access by pulling the account rather than by fetching an artifact.
     super::account_state::retain_space_delegation(tonk, &prefix).await;
+
+    // The billing half of the same act: provision the new space as a
+    // consumer of the access service, depositing the powerline as its
+    // consent. Best effort for the same reason retain is — a space is
+    // usable the moment its delegations exist locally.
+    if let Err(error) = super::customer::provision_consumer(tonk, &repository.did(), &prefix).await
+    {
+        log!("consumer provisioning skipped: {error}");
+    }
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
         RepositoryError::Internal(format!(

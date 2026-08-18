@@ -36,7 +36,7 @@ async fn handle_inner(
     body: &[u8],
     req: &Request,
     ctx: &RouteContext<()>,
-) -> Result<tonk_account::customer::Receipt, RegistrationError> {
+) -> Result<crate::registration::Answer, RegistrationError> {
     use worker::Date;
 
     use crate::email::Resend;

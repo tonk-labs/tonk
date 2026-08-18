@@ -409,6 +409,13 @@ async fn bootstrap_repository(
         eprintln!("warning: space not retained into the account space: {error:#}");
     }
 
+    // The billing half of the same act: provision the new space as a
+    // consumer of the access service, depositing the powerline as its
+    // consent. Non-fatal for the same reason retain is.
+    if let Err(error) = crate::customer::provision(profile, &signer_repo.did(), &prefix).await {
+        eprintln!("warning: space not provisioned with the sync service: {error:#}");
+    }
+
     profile
         .repository(REPO_NAME)
         .load()

@@ -13,8 +13,8 @@ use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
-    ACTIVATE_CUSTOMER, Consumer, Customer, INSERT_CUSTOMER, INSERT_SELF_CONSUMER, SELECT_CONSUMER,
-    SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    ACTIVATE_CUSTOMER, ADD_CONSUMER, Consumer, Customer, INSERT_CUSTOMER, INSERT_SELF_CONSUMER,
+    SELECT_CONSUMER, SELECT_CUSTOMER, Store, StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -149,6 +149,22 @@ impl Store for D1Store {
             .0
             .prepare(UPDATE_REGISTERED_EMAIL)
             .bind(&[JsValue::from(did), JsValue::from(email)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+
+    async fn add_consumer(&self, did: &str, provider: &str, now: u64) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(ADD_CONSUMER)
+            .bind(&[
+                JsValue::from(did),
+                JsValue::from(provider),
+                JsValue::from_f64(now as f64),
+            ])
             .map_err(map_err)?
             .run()
             .await

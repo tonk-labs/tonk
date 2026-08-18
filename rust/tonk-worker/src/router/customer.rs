@@ -210,6 +210,59 @@ pub async fn get_state(
     }))
 }
 
+/// Provision `consumer` with the same-origin access service under this
+/// profile's account, depositing `consent` — the space's powerline to
+/// the account. A consumer another customer already provides is not an
+/// error here: the space exists and works locally either way, and the
+/// caller treats this whole call as best effort.
+pub(crate) async fn provision_consumer(
+    state: &crate::worker::TonkState,
+    consumer: &dialog_varsig::Did,
+    consent: &dialog_ucan_core::DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    use tonk_identity::request::build_provider_add_invocation;
+
+    let link = super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+    })?;
+    let device = state.profile.signer().signer().clone();
+    let body = build_provider_add_invocation(device, &link, consumer, consent)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
+        })?;
+    let origin = service_origin()?;
+    match post_cbor(&ucan_endpoint(&origin)?, &body).await {
+        Ok(_) => Ok(()),
+        Err(HttpError::Upstream(failure))
+            if failure.code.as_deref() == Some("ConsumerProvided") =>
+        {
+            log!("consumer {consumer} already has a provider; leaving it");
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The worker's own origin, which the access service serves. Known only
+/// inside a service-worker scope; callers outside one (native tests)
+/// carry an origin of their own through `RequestOrigin` instead.
+fn service_origin() -> Result<Url, TonkWorkerError> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let origin = super::repository::worker_origin().ok_or_else(|| {
+            TonkWorkerError::Internal("the worker origin is unavailable".to_string())
+        })?;
+        format!("{origin}/").parse().map_err(|error| {
+            TonkWorkerError::Internal(format!("worker origin is not a URL: {error}"))
+        })
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    Err(TonkWorkerError::Internal(
+        "the worker origin is only known in a service-worker scope".to_string(),
+    ))
+}
+
 /// The service DID from the same-origin deployment configuration.
 async fn service_did(origin: &Url) -> Result<dialog_varsig::Did, TonkWorkerError> {
     let endpoint = origin

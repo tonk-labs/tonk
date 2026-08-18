@@ -24,10 +24,10 @@ use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use dialog_varsig::{Did, Principal};
 use tonk_access_service::email::CapturedEmail;
 use tonk_access_service::helpers::AccessServiceAddress;
-use tonk_access_service::registration::{Registration, SIGNUP_TERMS};
+use tonk_access_service::registration::{Answer, Registration, SIGNUP_TERMS};
 use tonk_access_service::store::Store;
 use tonk_access_service::store::sqlite::SqliteStore;
-use tonk_account::customer::RegistrationError;
+use tonk_account::customer::{Receipt, RegistrationError};
 
 /// Current time as unix seconds.
 fn unix_now() -> u64 {
@@ -85,6 +85,14 @@ impl Fixture {
             .last()
             .cloned()
             .expect("an activation email was captured")
+    }
+}
+
+/// Unwrap a customer receipt, refusing the consumer-shaped answer.
+fn as_customer(answer: Answer) -> Receipt {
+    match answer {
+        Answer::Customer(receipt) => receipt,
+        Answer::Consumer(receipt) => panic!("expected a customer receipt, got {receipt:?}"),
     }
 }
 
@@ -183,7 +191,7 @@ async fn it_enrolls_a_customer_and_emails_an_activation_link() -> anyhow::Result
     let customer = Ed25519Signer::generate().await?;
     let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
 
-    let receipt = fixture.registration(&container).handle().await.unwrap();
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
     assert_eq!(receipt.customer, customer.did());
     assert_eq!(serde_json::to_value(receipt.status)?, "Registered");
 
@@ -204,7 +212,7 @@ async fn it_activates_by_presenting_the_emailed_invocation_from_any_device() -> 
     // it is activating, no customer key involved, so a click on any
     // device finalizes.
     let container = link_container(&fixture.last_email().1);
-    let receipt = fixture.registration(&container).handle().await.unwrap();
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
     assert_eq!(receipt.customer, customer.did());
     assert_eq!(serde_json::to_value(receipt.status)?, "Active");
 
@@ -219,7 +227,7 @@ async fn it_activates_by_presenting_the_emailed_invocation_from_any_device() -> 
 
     // Clicking twice leaves the customer active and writes no duplicate
     // state.
-    let receipt = fixture.registration(&container).handle().await.unwrap();
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
     assert_eq!(serde_json::to_value(receipt.status)?, "Active");
     Ok(())
 }
@@ -362,6 +370,120 @@ async fn it_registers_the_account_consumer_atomically_with_the_customer() -> any
         .unwrap()
         .expect("the account space is a consumer");
     assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
+    Ok(())
+}
+
+/// Build a `/provider/add` container: a customer-signed invocation
+/// depositing the space's consent delegation.
+async fn add_container(
+    customer: &Ed25519Signer,
+    space: &Ed25519Signer,
+    consent_to: &Did,
+) -> Vec<u8> {
+    let consent = DelegationBuilder::new()
+        .issuer(space.clone())
+        .audience(consent_to)
+        .subject(DelegatedSubject::Specific(space.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("consent delegation");
+    let invocation = InvocationBuilder::new()
+        .issuer(customer.clone())
+        .audience(&customer.did())
+        .subject(&customer.did())
+        .command(vec!["provider".to_string(), "add".to_string()])
+        .arguments(BTreeMap::from([
+            (
+                "consumer".to_string(),
+                Promised::String(space.did().to_string()),
+            ),
+            ("consent".to_string(), Promised::Link(consent.to_cid())),
+        ]))
+        .proofs(vec![])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .expect("add invocation");
+    let tokens = vec![
+        serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes"),
+        consent.encoded().to_vec(),
+    ];
+    Container::new(tokens)
+        .to_bytes()
+        .expect("container encodes")
+}
+
+#[dialog_common::test]
+async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // Activation is not required to add, only to serve: the customer is
+    // still Registered here.
+    let container = add_container(&customer, &space, &customer.did()).await;
+    let Answer::Consumer(receipt) = fixture.registration(&container).handle().await.unwrap() else {
+        panic!("expected a consumer receipt");
+    };
+    assert_eq!(receipt.consumer, space.did());
+    assert_eq!(receipt.provider, customer.did());
+
+    let consumer = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row exists");
+    assert_eq!(consumer.provider.as_deref(), Some(customer.did().as_str()));
+
+    // Re-provisioning under the same customer is a no-op success.
+    let container = add_container(&customer, &space, &customer.did()).await;
+    assert!(fixture.registration(&container).handle().await.is_ok());
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_provisioning_someone_elses_consumer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let alice = Ed25519Signer::generate().await?;
+    let mallory = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    for (customer, email) in [
+        (&alice, "alice@example.com"),
+        (&mallory, "mallory@example.com"),
+    ] {
+        let container = enroll_container(customer, &service, email).await;
+        fixture.registration(&container).handle().await.unwrap();
+    }
+
+    let container = add_container(&alice, &space, &alice.did()).await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    let container = add_container(&mallory, &space, &mallory.did()).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::ConsumerProvided));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_a_consent_issued_to_another_customer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let alice = Ed25519Signer::generate().await?;
+    let mallory = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    let container = enroll_container(&mallory, &service, "mallory@example.com").await;
+    fixture.registration(&container).handle().await.unwrap();
+
+    // The space consented to Alice; Mallory presenting that consent must
+    // not become its provider.
+    let container = add_container(&mallory, &space, &alice.did()).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
     Ok(())
 }
 
