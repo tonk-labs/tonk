@@ -2019,7 +2019,9 @@ async fn legacy_migrate(
             Ok(blobs) => blobs,
             Err(error) => return print_failure(error),
         };
-        if let Err(error) = transfer::import_branch(&destination, branch, &upgraded.csv).await {
+        if let Err(error) =
+            tonk_cli::legacy::import_migrated_branch(&destination, branch, &upgraded.csv).await
+        {
             return print_failure(error);
         }
         println!(

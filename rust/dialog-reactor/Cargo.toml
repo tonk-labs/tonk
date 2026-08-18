@@ -20,6 +20,7 @@ dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }
+futures-util = { workspace = true }
 ipld-core = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
