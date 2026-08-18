@@ -27,7 +27,7 @@ use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_access_service::registration::{Answer, Registration, SIGNUP_TERMS};
 use tonk_access_service::store::Store;
 use tonk_access_service::store::sqlite::SqliteStore;
-use tonk_account::customer::{Receipt, RegistrationError};
+use tonk_account::customer::{Receipt, RegistrationError, deposit_scopes};
 
 /// Current time as unix seconds.
 fn unix_now() -> u64 {
@@ -96,27 +96,44 @@ fn as_customer(answer: Answer) -> Receipt {
     }
 }
 
-/// Build an enroll container: a self-signed `/customer/enroll` invocation
-/// carrying the deposited access delegation as an extra container token.
-async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) -> Vec<u8> {
-    let deposit = DelegationBuilder::new()
-        .issuer(customer.clone())
-        .audience(service)
-        .subject(DelegatedSubject::Specific(customer.did()))
-        .command(vec![])
-        .try_build()
-        .await
-        .expect("deposit delegation");
-    enroll_container_with_deposit(customer, email, &deposit, true).await
+/// Mint the scoped deposits enrollment requires, issued directly by the
+/// customer to `audience` (the service, except in refusal tests).
+async fn scoped_deposits(
+    customer: &Ed25519Signer,
+    service: &Did,
+    audience: &Did,
+) -> Vec<Delegation<Ed25519Signature>> {
+    let mut deposits = Vec::new();
+    for scope in deposit_scopes(&customer.did(), service) {
+        deposits.push(
+            DelegationBuilder::new()
+                .issuer(customer.clone())
+                .audience(audience)
+                .subject(scope.subject.clone())
+                .command(scope.command.segments().clone())
+                .policy(scope.policy())
+                .try_build()
+                .await
+                .expect("deposit delegation"),
+        );
+    }
+    deposits
 }
 
-/// Build an enroll container with an explicit deposit, optionally leaving
-/// its bytes out of the container.
-async fn enroll_container_with_deposit(
+/// Build an enroll container: a self-signed `/customer/enroll` invocation
+/// carrying the deposited access delegations as extra container tokens.
+async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) -> Vec<u8> {
+    let deposits = scoped_deposits(customer, service, service).await;
+    enroll_container_with_deposits(customer, email, &deposits, true).await
+}
+
+/// Build an enroll container with explicit deposits, optionally leaving
+/// their bytes out of the container.
+async fn enroll_container_with_deposits(
     customer: &Ed25519Signer,
     email: &str,
-    deposit: &Delegation<Ed25519Signature>,
-    carry_deposit: bool,
+    deposits: &[Delegation<Ed25519Signature>],
+    carry_deposits: bool,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
         .issuer(customer.clone())
@@ -125,7 +142,15 @@ async fn enroll_container_with_deposit(
         .command(vec!["customer".to_string(), "enroll".to_string()])
         .arguments(BTreeMap::from([
             ("email".to_string(), Promised::String(email.to_string())),
-            ("access".to_string(), Promised::Link(deposit.to_cid())),
+            (
+                "access".to_string(),
+                Promised::List(
+                    deposits
+                        .iter()
+                        .map(|deposit| Promised::Link(deposit.to_cid()))
+                        .collect(),
+                ),
+            ),
         ]))
         .proofs(vec![])
         .expiration(Timestamp::five_minutes_from_now())
@@ -133,8 +158,10 @@ async fn enroll_container_with_deposit(
         .await
         .expect("enroll invocation");
     let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes")];
-    if carry_deposit {
-        tokens.push(deposit.encoded().to_vec());
+    if carry_deposits {
+        for deposit in deposits {
+            tokens.push(deposit.encoded().to_vec());
+        }
     }
     Container::new(tokens)
         .to_bytes()
@@ -319,18 +346,13 @@ async fn it_refuses_an_expired_activation_link_without_a_storage_lookup() -> any
 }
 
 #[dialog_common::test]
-async fn it_requires_the_deposited_delegation_to_travel_in_the_container() -> anyhow::Result<()> {
+async fn it_requires_the_deposited_delegations_to_travel_in_the_container() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
-    let deposit = DelegationBuilder::new()
-        .issuer(customer.clone())
-        .audience(&fixture.service.did())
-        .subject(DelegatedSubject::Specific(customer.did()))
-        .command(vec![])
-        .try_build()
-        .await?;
+    let service = fixture.service.did();
+    let deposits = scoped_deposits(&customer, &service, &service).await;
     let container =
-        enroll_container_with_deposit(&customer, "alice@example.com", &deposit, false).await;
+        enroll_container_with_deposits(&customer, "alice@example.com", &deposits, false).await;
     let refusal = fixture.registration(&container).handle().await.unwrap_err();
     assert!(matches!(refusal, RegistrationError::Invalid { .. }));
     Ok(())
@@ -341,16 +363,49 @@ async fn it_refuses_a_deposit_issued_to_someone_else() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
     let stranger = Ed25519Signer::generate().await?;
-    // The deposit must be issued to this service, not a third party.
-    let deposit = DelegationBuilder::new()
+    // The deposits must be issued to this service, not a third party.
+    let service = fixture.service.did();
+    let deposits = scoped_deposits(&customer, &service, &stranger.did()).await;
+    let container =
+        enroll_container_with_deposits(&customer, "alice@example.com", &deposits, true).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_refuses_a_deposit_broader_than_the_scopes() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    // The old shape of the deposit: an unscoped grant of `/` over the
+    // whole account space. Enrollment must refuse it rather than hold it.
+    let unscoped = DelegationBuilder::new()
         .issuer(customer.clone())
-        .audience(&stranger.did())
+        .audience(&service)
         .subject(DelegatedSubject::Specific(customer.did()))
         .command(vec![])
         .try_build()
         .await?;
     let container =
-        enroll_container_with_deposit(&customer, "alice@example.com", &deposit, true).await;
+        enroll_container_with_deposits(&customer, "alice@example.com", &[unscoped], true).await;
+    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_requires_the_deposits_to_cover_both_scopes() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let customer = Ed25519Signer::generate().await?;
+    let service = fixture.service.did();
+    // Only the memory grant, no index catalog: the service could publish
+    // a branch pointer but never ship its nodes, so enrollment refuses
+    // the incomplete set.
+    let mut deposits = scoped_deposits(&customer, &service, &service).await;
+    deposits.truncate(1);
+    let container =
+        enroll_container_with_deposits(&customer, "alice@example.com", &deposits, true).await;
     let refusal = fixture.registration(&container).handle().await.unwrap_err();
     assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
     Ok(())

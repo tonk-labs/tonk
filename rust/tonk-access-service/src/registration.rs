@@ -28,13 +28,14 @@ use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{Container, Delegation, Invocation, InvocationBuilder, InvocationChain};
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use dialog_varsig::{Did, Principal};
+use ipld_core::cid::Cid;
 use ipld_core::ipld::Ipld;
 use ipld_core::serde::from_ipld;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
     Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Provider as ProviderRole,
-    Receipt, RegistrationError,
+    Receipt, RegistrationError, deposit_scopes,
 };
 
 use crate::email::EmailSender;
@@ -206,8 +207,21 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             });
         }
 
-        let deposit = self.deposited_delegation(&effect.access.to_string())?;
-        self.verify_deposit(&deposit.delegation, &customer).await?;
+        self.verify_deposits(&effect.access, &customer).await?;
+        // What gets stored is everything the deposit needs to be
+        // exercised later: the scoped heads together with the chain
+        // links that walk them back to the customer, re-encoded as a
+        // container of their exact bytes.
+        let access = Container::new(
+            self.delegation_tokens()?
+                .into_iter()
+                .map(|token| token.bytes)
+                .collect(),
+        )
+        .to_bytes()
+        .map_err(|err| RegistrationError::Internal {
+            message: format!("encoding the access deposit failed: {err}"),
+        })?;
 
         match self
             .store
@@ -217,13 +231,7 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         {
             None => {
                 self.store
-                    .enroll_customer(
-                        customer.as_str(),
-                        &address,
-                        &deposit.bytes,
-                        SIGNUP_PLAN,
-                        self.now,
-                    )
+                    .enroll_customer(customer.as_str(), &address, &access, SIGNUP_PLAN, self.now)
                     .await
                     .map_err(internal)?;
             }
@@ -516,7 +524,47 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             })
     }
 
-    /// Validate the deposited access delegation: issued under the
+    /// Validate the deposited access delegations against the expected
+    /// [`deposit_scopes`]: each named deposit must match one scope
+    /// exactly — its command and its policy — and together they must
+    /// cover every scope, so the service ends up holding precisely its
+    /// own branch of the account space and the index catalog backing it.
+    /// A broader grant, `/` included, is refused rather than stored.
+    async fn verify_deposits(
+        &self,
+        access: &[Cid],
+        customer: &Did,
+    ) -> Result<(), RegistrationError> {
+        let expected = deposit_scopes(customer, &self.service.did());
+        let mut covered = [false; 2];
+        for cid in access {
+            let deposit = self.deposited_delegation(&cid.to_string())?;
+            let matched = expected.iter().position(|scope| {
+                deposit.delegation.command().segments() == scope.command.segments()
+                    && deposit.delegation.policy() == &scope.policy()
+            });
+            let Some(index) = matched else {
+                return Err(RegistrationError::Forbidden {
+                    message: format!(
+                        "deposit /{} is broader than the scopes enrollment accepts",
+                        deposit.delegation.command().segments().join("/")
+                    ),
+                });
+            };
+            covered[index] = true;
+            self.verify_deposit(&deposit.delegation, customer).await?;
+        }
+        if covered != [true; 2] {
+            return Err(RegistrationError::Forbidden {
+                message: "the deposit must cover the service's branch in memory and the index \
+                          catalog"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate one deposited access delegation: issued under the
     /// customer's authority to this service, signature-valid, and inside
     /// its own time window. It is an argument being deposited, not a
     /// proof, so it never extends the invocation's chain.
@@ -703,8 +751,6 @@ fn timestamp(seconds: u64) -> Result<Timestamp, RegistrationError> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use ipld_core::cid::Cid;
-
     use super::*;
 
     #[dialog_common::test]
@@ -716,7 +762,7 @@ mod tests {
         );
         let enroll = subject.clone().attenuate(Customer).invoke(Enroll {
             email: "alice@example.com".into(),
-            access: Cid::default(),
+            access: vec![Cid::default()],
         });
         assert_eq!(enroll.ability(), format!("/{}", ENROLL_COMMAND.join("/")));
         let activate = subject.attenuate(Customer).invoke(Activate {
