@@ -94,8 +94,9 @@ a DID document the custody key's did:web identifier resolves to:
   is exactly the property bootstrap needs. The document is uploaded at
   enrollment (authorized, customer-attributed PUT) and served
   statically.
-- The delegation is self-authenticating (signed by the account key);
-  `alsoKnownAs` is a convenience the delegation's issuer field proves.
+- The delegation is self-authenticating (a chain rooted in the account
+  subject); `alsoKnownAs` is a convenience the delegation's subject
+  field proves.
 - **The wrapped secret lives in the account DB** — where it always
   wanted to live. The circularity that previously forced it outside the
   gate is gone: authorization bootstraps from the public delegation, and
@@ -121,10 +122,14 @@ role-first beside `/customer/*` and `/provider/*`:
   customer and the custody DID never needs provisioning. Two deposits
   ride as container tokens named by CID (arguments, not proofs), the
   `/provider/add` shape exactly:
-  - `delegation`: the `account → custody-key` grant — the document's
-    payload. Verified issuer = invocation subject, audience = `custody`.
-  - `consent`: the custody key's countersignature — issuer = `custody`,
-    audience = the account, command covering `/custody/publish`. This
+  - `delegation`: the grant on the **account's subject** naming the
+    custody key — the document's payload. Verified subject = the
+    invocation's subject, audience = `custody`. Who signed it is not
+    checked beyond chain validity: authorization roots in the subject,
+    and any valid chain to it is as good as the root key itself.
+  - `consent`: a grant on the **custody key's subject** — subject =
+    `custody`, audience = the account, command covering
+    `/custody/publish`. This
     is what makes the binding bidirectional: without it an account
     could publish a document tying itself to any DID it likes, a false
     public linkage the named key's holder never agreed to. At
