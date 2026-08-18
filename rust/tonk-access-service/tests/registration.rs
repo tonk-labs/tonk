@@ -395,6 +395,28 @@ async fn it_refuses_a_deposit_broader_than_the_scopes() -> anyhow::Result<()> {
 }
 
 #[dialog_common::test]
+async fn it_walks_a_device_issued_deposit_back_to_the_customer() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    // The fallback shape a device without ceremony-minted deposits
+    // presents: deposits issued by the device, chained to the customer
+    // through the `root → device` grant riding in the same container.
+    let root = Ed25519Signer::generate().await?;
+    let device = Ed25519Signer::generate().await?;
+    let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
+        .await?;
+    let container = tonk_identity::request::build_enroll_invocation(
+        device,
+        &link,
+        &fixture.service.did(),
+        "alice@example.com",
+    )
+    .await?;
+    let receipt = as_customer(fixture.registration(&container).handle().await.unwrap());
+    assert_eq!(receipt.customer, root.did());
+    Ok(())
+}
+
+#[dialog_common::test]
 async fn it_requires_the_deposits_to_cover_both_scopes() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;

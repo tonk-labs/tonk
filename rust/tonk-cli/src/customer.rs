@@ -100,14 +100,29 @@ pub async fn enroll(profile: &Profile, email: Option<String>) -> Result<Receipt>
         Some(email) => email,
         None => account_email(profile, &connection).await?,
     };
-    let service = service_did(&origin).await?;
-    let body = tonk_identity::request::build_enroll_invocation(
-        profile.signer().signer().clone(),
-        &connection.link,
-        &service,
-        &email,
-    )
-    .await?;
+    // Prefer the account-signed deposits the linking ceremony delivered:
+    // they are issued by the customer directly and survive revocation of
+    // this device. Without a stored set — a link that predates them —
+    // fall back to a device-issued deposit chained through the link.
+    let deposits = crate::account::stored_service_deposits(profile).await?;
+    let body = if deposits.is_empty() {
+        let service = service_did(&origin).await?;
+        tonk_identity::request::build_enroll_invocation(
+            profile.signer().signer().clone(),
+            &connection.link,
+            &service,
+            &email,
+        )
+        .await?
+    } else {
+        tonk_identity::request::build_enroll_invocation_with_deposits(
+            profile.signer().signer().clone(),
+            &connection.link,
+            &email,
+            &deposits,
+        )
+        .await?
+    };
     let response = reqwest::Client::new()
         .post(origin.join("ucan/")?)
         .header("content-type", "application/cbor")

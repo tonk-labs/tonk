@@ -40,6 +40,10 @@ pub(crate) struct CreateAccountInput {
     pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
     /// Account repository remote this browser proposes for the new account.
     pub remote: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// Input for a fresh account whose passkey root does not exist yet.
@@ -51,6 +55,10 @@ pub(crate) struct CreateFreshAccountInput {
     pub device_name: String,
     pub remote: String,
     pub created_on: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// Input for the one-time account repository establishment ceremony.
@@ -78,6 +86,10 @@ pub(crate) struct EstablishCeremonyOutput {
 pub(crate) struct LinkDeviceInput {
     pub device_did: String,
     pub device_name: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// Input for signing a device-grant revocation.
@@ -109,6 +121,10 @@ pub(crate) struct CeremonyOutput {
     pub credential_id: String,
     pub delegation_hex: String,
     pub invocation_hex: String,
+    /// Hex-encoded account-signed access-service deposits, when the
+    /// input named the service.
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
 }
 
 /// Fresh-root account output, carrying both local persistence and remote
@@ -122,6 +138,10 @@ pub(crate) struct FreshAccountOutput {
     pub delegation_hex: String,
     pub passkey: tonk_worker_api::PasskeyMetadata,
     pub invocation_hex: String,
+    /// Hex-encoded account-signed access-service deposits, when the
+    /// input named the service.
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
 }
 
 /// Root-signed revocation returned by the ceremony API.
@@ -254,6 +274,10 @@ pub(crate) struct AuthorizeDeviceInput {
     pub device_did: String,
     /// The account repository's remote, so the descriptor names it.
     pub remote: String,
+    /// Access-service DID the ceremony mints account-signed deposits
+    /// for, when the deployment names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_did: Option<String>,
 }
 
 /// What the ceremony hands back for delivery to a waiting device.
@@ -266,6 +290,10 @@ pub(crate) struct AuthorizedDevice {
     pub delegation_hex: String,
     /// Exact signed account repository descriptor.
     pub descriptor_hex: String,
+    /// Hex-encoded account-signed access-service deposits, when the
+    /// input named the service.
+    #[serde(default)]
+    pub deposits_hex: Vec<String>,
 }
 
 pub(crate) async fn authorize_device(

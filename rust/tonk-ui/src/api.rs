@@ -524,11 +524,14 @@ pub async fn save_root(
 /// sending the activation link to `email`, or to the account's recorded
 /// address when none is given. Idempotent: re-enrolling while registered
 /// resends the link, and an already-active customer answers as active.
-pub async fn enroll_customer(email: Option<&str>) -> Result<serde_json::Value, TonkUiError> {
+pub async fn enroll_customer(
+    email: Option<&str>,
+    deposits: &[String],
+) -> Result<serde_json::Value, TonkUiError> {
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/customer/enroll", origin()))
-        .json(&serde_json::json!({ "email": email }))
+        .json(&serde_json::json!({ "email": email, "deposits": deposits }))
         .send()
         .await
         .map_err(into_api_error)?;

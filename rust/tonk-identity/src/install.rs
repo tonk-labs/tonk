@@ -233,6 +233,13 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
             "the evaluated passkey does not match rootDid",
         ));
     }
+    let service = service_did_property(&input)?;
+    let deposits = match service {
+        Some(service) => crate::ceremony::mint_service_deposits(&root, &service)
+            .await
+            .map_err(js_error)?,
+        None => Vec::new(),
+    };
     let result = ceremony_result(
         crate::ceremony::create_account(
             root,
@@ -248,7 +255,29 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         .map_err(js_error)?,
     )?;
     Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
+    set_deposits(&result, &deposits)?;
     Ok(result)
+}
+
+/// Parse the optional access-service DID a ceremony mints deposits for.
+fn service_did_property(input: &JsValue) -> Result<Option<dialog_varsig::Did>, JsValue> {
+    optional_string_property(input, "serviceDid")
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|error| JsValue::from_str(&format!("invalid serviceDid: {error}")))
+        })
+        .transpose()
+}
+
+/// Attach hex-encoded deposits to a ceremony result as `depositsHex`.
+fn set_deposits(result: &JsValue, deposits: &[String]) -> Result<(), JsValue> {
+    let array = js_sys::Array::new();
+    for deposit in deposits {
+        array.push(&JsValue::from_str(deposit));
+    }
+    Reflect::set(result, &"depositsHex".into(), &array)?;
+    Ok(())
 }
 
 async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
@@ -259,12 +288,14 @@ async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
     let device_name = string_property(&input, "deviceName")?;
     let remote = string_property(&input, "remote")?;
     let created_on = optional_string_property(&input, "createdOn");
+    let service = service_did_property(&input)?;
     let ceremony = crate::ceremony::create_fresh_account(
         email,
         device_did,
         device_name,
         remote,
         created_on.as_deref(),
+        service.as_ref(),
     )
     .await
     .map_err(js_error)?;
@@ -277,6 +308,7 @@ async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
     if let Some(descriptor_hex) = ceremony.account.descriptor_hex {
         Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
     }
+    set_deposits(&result, &ceremony.deposits_hex)?;
     Ok(result)
 }
 
@@ -285,6 +317,7 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let device_name = string_property(&input, "deviceName")?;
+    let service = service_did_property(&input)?;
     let evaluated = crate::passkey::evaluate_passkey().await.map_err(js_error)?;
     let credential_id = hex::encode(evaluated.id);
     let prf = evaluated
@@ -293,12 +326,19 @@ async fn link_device(input: JsValue) -> Result<JsValue, JsValue> {
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
+    let deposits = match service {
+        Some(service) => crate::ceremony::mint_service_deposits(&root, &service)
+            .await
+            .map_err(js_error)?,
+        None => Vec::new(),
+    };
     let result = ceremony_result(
         crate::ceremony::link_device(root, device_did, device_name)
             .await
             .map_err(js_error)?,
     )?;
     Reflect::set(&result, &"credentialId".into(), &credential_id.into())?;
+    set_deposits(&result, &deposits)?;
     Ok(result)
 }
 
@@ -358,10 +398,17 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
     let remote = string_property(&input, "remote")?;
+    let service = service_did_property(&input)?;
     let prf = crate::passkey::prf_output().await.map_err(js_error)?;
     let root = crate::derive::derive_root_signer(&prf)
         .await
         .map_err(js_error)?;
+    let deposits = match service {
+        Some(service) => crate::ceremony::mint_service_deposits(&root, &service)
+            .await
+            .map_err(js_error)?,
+        None => Vec::new(),
+    };
     let authorized = crate::ceremony::authorize_device(root, device_did, &remote)
         .await
         .map_err(js_error)?;
@@ -375,6 +422,7 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
     ] {
         Reflect::set(&output, &key.into(), &value.into())?;
     }
+    set_deposits(output.as_ref(), &deposits)?;
     Ok(output.into())
 }
 

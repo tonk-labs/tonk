@@ -20,7 +20,7 @@ use tokio::sync::oneshot;
 use tonk_account::CUSTOMER_CREDENTIAL_SITE;
 use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_common::log;
-use tonk_identity::request::build_enroll_invocation;
+use tonk_identity::request::{build_enroll_invocation, build_enroll_invocation_with_deposits};
 use url::Url;
 
 use super::AppState;
@@ -47,6 +47,12 @@ pub struct EnrollRequest {
     /// Address the activation link is sent to. Absent on the login path,
     /// where the account's recorded email is used instead.
     pub email: Option<String>,
+    /// Hex-encoded account-signed deposits the passkey ceremony minted.
+    /// Preferred over the device-issued fallback: an account-signed
+    /// deposit survives revocation of the device that carried it. Empty
+    /// when enrollment runs without a fresh ceremony (a resend).
+    #[serde(default)]
+    pub deposits: Vec<String>,
 }
 
 /// The answer to a customer state read: the service's view when it has
@@ -88,18 +94,30 @@ pub async fn enroll(
                 )
             })?,
     };
-    let service_did = service_did(origin.url()).await?;
     let device = state.profile.signer().signer().clone();
 
     // The deposits — the service's scoped grants into the account
-    // space — and their chain link (the `root → device` grant) all ride
-    // in the container `build_enroll_invocation` assembles, so the
-    // service can walk them back to the customer.
-    let body = build_enroll_invocation(device, &link, &service_did, &email)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
-        })?;
+    // space — ride in the container alongside the invocation. The
+    // account-signed set a ceremony minted is preferred; without one, a
+    // device-issued set chained through the `root → device` grant is the
+    // fallback the service walks back to the customer.
+    let body = if request.deposits.is_empty() {
+        let service_did = service_did(origin.url()).await?;
+        build_enroll_invocation(device, &link, &service_did, &email).await
+    } else {
+        let deposits = request
+            .deposits
+            .iter()
+            .map(hex::decode)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                TonkWorkerError::Router(format!("a ceremony deposit is not hex: {error}"))
+            })?;
+        build_enroll_invocation_with_deposits(device, &link, &email, &deposits).await
+    }
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
+    })?;
 
     let endpoint = ucan_endpoint(origin.url())?;
     let receipt = match post_cbor(&endpoint, &body).await {

@@ -22,6 +22,9 @@ pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.spot/account";
 pub const DEFAULT_LINK_PAGE: &str = "https://tonk.spot/account/link";
 /// Credential-store key for optional provider attachment metadata.
 pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
+/// Credential-store key for the account-signed access-service deposits
+/// the linking ceremony delivered, stored as a JSON array of hex.
+pub const SERVICE_DEPOSIT_SITE: &str = "tonk-service-deposit-v1";
 
 // Linking is complete once credentials are durable; repository hydration is
 // best-effort and must not leave the link command waiting indefinitely.
@@ -212,6 +215,33 @@ pub(crate) async fn require_account_with_operator(
 pub(crate) async fn stored_provider(profile: &Profile) -> Result<Option<AccountProviderRecord>> {
     let operator = crate::account_state::credential_operator(profile).await?;
     stored_provider_with_operator(profile, &operator).await
+}
+
+/// The account-signed access-service deposits the linking ceremony
+/// delivered, as raw delegation bytes. Empty for a link that predates
+/// them; enrollment then falls back to a device-issued deposit.
+pub(crate) async fn stored_service_deposits(profile: &Profile) -> Result<Vec<Vec<u8>>> {
+    let operator = crate::account_state::credential_operator(profile).await?;
+    let bytes = match profile
+        .credential()
+        .site(SERVICE_DEPOSIT_SITE)
+        .load::<Vec<u8>>()
+        .perform(&operator)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::account_state::credential_is_missing(&error) => return Ok(Vec::new()),
+        Err(error) => return Err(error).context("failed to load the service deposits"),
+    };
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let deposits: Vec<String> =
+        serde_json::from_slice(&bytes).context("stored service deposits are unreadable")?;
+    deposits
+        .iter()
+        .map(|deposit| hex::decode(deposit).context("a stored service deposit is not hex"))
+        .collect()
 }
 
 async fn retry_pending_detaches(profile: &Profile) -> Result<crate::account_session::FlushOutcome> {
@@ -454,6 +484,22 @@ async fn link_via_callback(
         .await
         .context("failed to persist the account link")?;
 
+    // The deposits are what a later `tonk account register` presents:
+    // account-signed, so worth keeping even though enrollment may also
+    // run right after this link.
+    if !authorization.deposits_hex.is_empty() {
+        profile
+            .credential()
+            .site(SERVICE_DEPOSIT_SITE)
+            .save(
+                serde_json::to_vec(&authorization.deposits_hex)
+                    .context("failed to serialize the service deposits")?,
+            )
+            .perform(operator)
+            .await
+            .context("failed to persist the service deposits")?;
+    }
+
     let store = match options.store.clone() {
         Some(store) => store,
         None => crate::spot::SpotStore::open().context("failed to locate account state")?,
@@ -529,6 +575,11 @@ struct CallbackAuthorization {
     /// registration-at-approval; the delegation CID stands in then.
     #[serde(default)]
     attachment_id: String,
+    /// Hex-encoded account-signed access-service deposits the ceremony
+    /// minted. Absent from pages that predate them; enrollment then
+    /// falls back to a device-issued deposit.
+    #[serde(default)]
+    deposits_hex: Vec<String>,
 }
 
 /// Start or resume a browser handoff and activate its fresh generation.

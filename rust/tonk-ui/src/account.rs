@@ -992,6 +992,17 @@ const UNESTABLISHED_ACCOUNT_GUIDANCE: &str = "This account was created before sh
      browser yet. Open /account on a browser that is already signed in to this account and \
      finish account setup there, then sign in here.";
 
+/// The access-service DID this deployment publishes, for ceremonies that
+/// mint account-signed deposits. Absent config or identity is ordinary:
+/// the ceremony then mints nothing and enrollment falls back to a
+/// device-issued deposit.
+async fn deployment_service_did() -> Option<String> {
+    crate::deployment::get()
+        .await
+        .ok()
+        .and_then(|config| config.service_did)
+}
+
 /// The account repository remote this browser proposes: its own origin's
 /// `/ucan/` endpoint. Only a ceremony ever signs one; the stored descriptor is
 /// always the service-selected winner.
@@ -1071,7 +1082,8 @@ async fn complete_remote(
         .unwrap_or(false);
     if wants_enrollment {
         set_busy(host, true, "Registering with the sync service…");
-        if let Err(error) = crate::api::enroll_customer(enroll_email).await {
+        if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
+        {
             web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
             show_error(
                 host,
@@ -1222,6 +1234,7 @@ fn bind(host: &HtmlElement) {
                 let status = crate::api::root_status()
                     .await
                     .map_err(|error| error.to_string())?;
+                let service_did = deployment_service_did().await;
                 let ceremony = match status {
                     tonk_worker_api::RootStatus::Ready {
                         root_did,
@@ -1239,6 +1252,7 @@ fn bind(host: &HtmlElement) {
                         delegation_hex,
                         passkey,
                         remote: proposed_remote()?,
+                        service_did,
                     })
                     .await
                     .map_err(|error| error.to_string())?,
@@ -1249,6 +1263,7 @@ fn bind(host: &HtmlElement) {
                             device_name,
                             remote: proposed_remote()?,
                             created_on: crate::device_name::current(),
+                            service_did,
                         })
                         .await
                         .map_err(|error| error.to_string())?;
@@ -1264,6 +1279,7 @@ fn bind(host: &HtmlElement) {
                             credential_id: created.credential_id,
                             delegation_hex: created.delegation_hex,
                             invocation_hex: created.invocation_hex,
+                            deposits_hex: created.deposits_hex,
                         }
                     }
                 };
@@ -1303,6 +1319,7 @@ fn bind(host: &HtmlElement) {
                 let ceremony = link_device(LinkDeviceInput {
                     device_did,
                     device_name,
+                    service_did: deployment_service_did().await,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -1336,6 +1353,7 @@ fn bind(host: &HtmlElement) {
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
                             remote: service_url,
+                            service_did: deployment_service_did().await,
                         },
                     )
                     .await
@@ -1365,6 +1383,7 @@ fn bind(host: &HtmlElement) {
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,
+                        "depositsHex": authorized.deposits_hex,
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);

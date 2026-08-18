@@ -11,9 +11,10 @@ use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
 use ipld_core::cid::Cid;
+use tonk_account::customer::deposit_scopes;
 
 use crate::delegation::mint_device_delegation;
 
@@ -68,6 +69,9 @@ pub struct FreshAccountCeremony {
     pub root: RootCeremony,
     /// Root-signed request submitted to the account service.
     pub account: AccountCeremony,
+    /// Hex-encoded account-signed access-service deposits, when the
+    /// caller named the service; empty otherwise.
+    pub deposits_hex: Vec<String>,
 }
 
 /// Informational metadata captured by the browser that created a passkey.
@@ -273,8 +277,13 @@ pub async fn create_fresh_account(
     device_name: String,
     remote: String,
     created_on: Option<&str>,
+    service: Option<&dialog_varsig::Did>,
 ) -> Result<FreshAccountCeremony> {
     let (root, credential_id, passkey) = create_root_material(Some(&email), created_on).await?;
+    let deposits_hex = match service {
+        Some(service) => mint_service_deposits(&root, service).await?,
+        None => Vec::new(),
+    };
     let root_ceremony = root_ceremony(
         root.clone(),
         credential_id.clone(),
@@ -296,7 +305,34 @@ pub async fn create_fresh_account(
     Ok(FreshAccountCeremony {
         root: root_ceremony,
         account,
+        deposits_hex,
     })
+}
+
+/// Mint the scoped access-service deposits enrollment presents, issued
+/// directly by the account root while a ceremony holds it. An
+/// account-signed deposit outlives the device that carried it: revoking
+/// that device leaves the service's grant standing, where a
+/// device-issued chain would die with its link. Returned hex-encoded so
+/// they cross the JS bridge and ride callback payloads as-is.
+pub async fn mint_service_deposits(
+    root: &Ed25519Signer,
+    service: &dialog_varsig::Did,
+) -> Result<Vec<String>> {
+    let mut deposits = Vec::new();
+    for scope in deposit_scopes(&root.did(), service) {
+        let deposit = DelegationBuilder::new()
+            .issuer(root.clone())
+            .audience(service)
+            .subject(scope.subject.clone())
+            .command(scope.command.segments().clone())
+            .policy(scope.policy())
+            .try_build()
+            .await
+            .context("failed to mint the access-service deposit")?;
+        deposits.push(hex::encode(deposit.encoded()));
+    }
+    Ok(deposits)
 }
 
 /// Build the root-signed request that links a new device to an existing account.
