@@ -6,6 +6,8 @@
 /// Top-document account creation and self-link element.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod account;
+/// Customer activation page reached from the activation email.
+pub mod activate;
 
 /// Top-document gate sending a signed-out user to sign up, and replaying
 /// what they were doing when it fired.

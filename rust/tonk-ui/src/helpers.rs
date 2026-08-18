@@ -11,6 +11,9 @@ pub struct TestEnvironment {
     pub chromedriver: Url,
     /// Base URL of the live native account service.
     pub account_service: Url,
+    /// Base URL of the live native access service, reached directly
+    /// (unproxied) for test inspection such as captured activation emails.
+    pub access_service: Url,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -164,6 +167,11 @@ mod native {
         pub async fn start() -> Result<(Self, TestEnvironment)> {
             let account_service = AccountServer::start().await;
             let account_service_url = Url::parse(&account_service.endpoint)?;
+            // Chosen before the access service starts: activation links
+            // must open on the page origin Caddy will serve, not on the
+            // access service's own port.
+            let web_port =
+                free_local_port().expect("Could not get a free local port for test server");
             let settings = AccessServiceSettings {
                 deployment: Some(DeploymentConfig {
                     account_service_url: account_service_url.clone(),
@@ -171,7 +179,10 @@ mod native {
                         "{}/revocations",
                         account_service.endpoint
                     ))?,
+                    // Filled in by the server with its own generated identity.
+                    service_did: None,
                 }),
+                public_origin: Some(format!("https://tonk.spot:{web_port}")),
                 ..Default::default()
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
@@ -181,10 +192,6 @@ mod native {
             let access_service_port = Url::parse(&access_service_address.access_service_url)?
                 .port()
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
-
-            // Start the web server (Caddy) with access service port for /ucan/* proxying
-            let web_port =
-                free_local_port().expect("Could not get a free local port for test server");
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
@@ -270,6 +277,7 @@ mod native {
                     tonk_web: Url::parse(&format!("https://tonk.spot:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                     account_service: account_service_url,
+                    access_service: Url::parse(&access_service_address.access_service_url)?,
                 },
             ))
         }

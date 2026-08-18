@@ -107,21 +107,19 @@ mod tests {
         }
     }
 
-    async fn captured_code(env: &TestEnvironment, email: &str) -> Result<String> {
-        let endpoint = env.account_service.join("_test/emails")?;
+    /// The latest activation link the access service captured for `email`.
+    async fn activation_link(env: &TestEnvironment, email: &str) -> Result<String> {
+        let endpoint = env.access_service.join("_test/emails")?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let inbox: Vec<serde_json::Value> =
-                reqwest::get(endpoint.clone()).await?.json().await?;
-            if let Some(code) = inbox.iter().rev().find_map(|entry| {
-                (entry["address"].as_str() == Some(email))
-                    .then(|| entry["code"].as_str().map(str::to_owned))
-                    .flatten()
-            }) {
-                return Ok(code);
+            let inbox: Vec<(String, String)> = reqwest::get(endpoint.clone()).await?.json().await?;
+            if let Some((_, link)) = inbox.iter().rev().find(|(to, _)| to == email) {
+                return Ok(link.clone());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("timed out waiting for a code for {email}"));
+                return Err(anyhow!(
+                    "timed out waiting for an activation email for {email}"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -175,14 +173,6 @@ mod tests {
             .await?
             .send_keys(email)
             .await?;
-        element(driver, "#account-send-code").await?.click().await?;
-        element(driver, "tonk-account[data-mode=\"verify\"]").await?;
-
-        let code = captured_code(env, email).await?;
-        element(driver, "#account-code")
-            .await?
-            .send_keys(code)
-            .await?;
         element(driver, "#account-create-submit")
             .await?
             .click()
@@ -229,12 +219,22 @@ mod tests {
             "a second sweep must not rewrite the recorded creation facts"
         );
 
+        // Signup enrolled the account as a customer: the dashboard names
+        // the pending activation, and the emailed link completes it from
+        // this (or any) device without a key.
+        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+            .await?;
+        let link = activation_link(&env, EMAIL).await?;
+        driver.goto(&link).await?;
+        element(&driver, "#activate-accept").await?.click().await?;
+        element(&driver, "#activate-done").await?;
+
         driver.quit().await?;
         Ok(())
     }
 
     #[dialog_common::test]
-    async fn it_rejects_an_existing_email_before_creating_a_passkey_and_can_retry(
+    async fn it_reports_an_existing_email_and_recovers_with_another_address(
         env: TestEnvironment,
     ) -> Result<()> {
         let existing_email = "existing@example.com";
@@ -274,56 +274,35 @@ mod tests {
             .await?
             .send_keys(existing_email)
             .await?;
-        element(&driver, "#account-send-code")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"verify\"]").await?;
-        element(&driver, "#account-code")
-            .await?
-            .send_keys(captured_code(&env, existing_email).await?)
-            .await?;
         element(&driver, "#account-create-submit")
             .await?
             .click()
             .await?;
 
+        // Without the code preflight, the conflict surfaces at account
+        // creation, after the passkey ceremony ran: the passkey exists
+        // and the retry below reuses it rather than minting another.
         wait_for_text(
             &driver,
             "#account-error",
             "an account already exists for this email address",
         )
         .await?;
-        assert_eq!(
-            credential_count(&driver, &authenticator_id).await?,
-            0,
-            "email conflicts must be reported before WebAuthn creates a credential"
-        );
+        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
 
-        element(&driver, "#account-verify-back")
-            .await?
-            .click()
-            .await?;
-        let code = element(&driver, "#account-code").await?;
-        assert_eq!(code.prop("value").await?.as_deref(), Some(""));
         let email = element(&driver, "#account-email").await?;
         email.clear().await?;
         email.send_keys(available_email).await?;
-        element(&driver, "#account-send-code")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"verify\"]").await?;
-        element(&driver, "#account-code")
-            .await?
-            .send_keys(captured_code(&env, available_email).await?)
-            .await?;
         element(&driver, "#account-create-submit")
             .await?
             .click()
             .await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
+        assert_eq!(
+            credential_count(&driver, &authenticator_id).await?,
+            1,
+            "the retry must reuse the persisted passkey rather than mint another"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -416,6 +395,14 @@ mod tests {
     }
 
     async fn link_cli(driver: &WebDriver, env: &TestEnvironment) -> Result<LinkedCli> {
+        link_cli_with(driver, env, false).await
+    }
+
+    async fn link_cli_with(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        register_first: bool,
+    ) -> Result<LinkedCli> {
         let profile = tempfile::tempdir()?;
         let mut command = tonk_command(&profile);
         command
@@ -427,7 +414,7 @@ mod tests {
                 "--no-open",
                 "--service-url",
                 env.account_service.as_str(),
-                "--account-url",
+                "--via",
                 env.tonk_web.join("account/link")?.as_str(),
             ])
             .stdout(Stdio::piped())
@@ -449,25 +436,60 @@ mod tests {
         assert_eq!(heading.trim_end(), "Open this URL to approve the device:");
         let approval_url = url::Url::parse(url_line.trim())?;
         assert_eq!(approval_url.path(), "/account/link");
+        let query: std::collections::HashMap<String, String> =
+            approval_url.query_pairs().into_owned().collect();
+        let audience = query
+            .get("audience")
+            .context("approval URL names no audience")?
+            .clone();
+        assert!(audience.starts_with("did:key:"));
         assert!(
-            approval_url
-                .fragment()
-                .is_some_and(|secret| !secret.is_empty())
+            query
+                .get("callback")
+                .is_some_and(|callback| callback.starts_with("http://127.0.0.1")),
+            "approval URL must carry the loopback callback"
         );
 
         driver.goto(approval_url.as_str()).await?;
+        if register_first {
+            // A browser with no account yet registers before approving:
+            // the link page opens on the signup panels, and the ceremony
+            // that creates and enrolls the account flows straight into
+            // the approval it was interrupted by.
+            element(driver, "tonk-account[data-mode=\"choice\"]").await?;
+            element(driver, "#account-choose-create")
+                .await?
+                .click()
+                .await?;
+            element(driver, "#account-email")
+                .await?
+                .send_keys(EMAIL)
+                .await?;
+            element(driver, "#account-create-submit")
+                .await?
+                .click()
+                .await?;
+        }
         element(driver, "tonk-account[data-mode=\"handoff\"]").await?;
         wait_for_text(driver, "#account-handoff-name", "e2e terminal").await?;
         let handoff_did = element(driver, "#account-handoff-did")
             .await?
             .text()
             .await?;
-        assert!(!handoff_did.is_empty());
+        assert_eq!(handoff_did, audience);
         element(driver, "#account-handoff-submit")
             .await?
             .click()
             .await?;
+        // The callback answers the form POST with a redirect back to the
+        // account page, which renders the outcome in its own styling.
         element(driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text(
+            driver,
+            "#account-success-message",
+            "Command-line device linked.",
+        )
+        .await?;
 
         let mut outcome_line = String::new();
         match tokio::time::timeout(Duration::from_secs(20), stdout.read_line(&mut outcome_line))
@@ -480,7 +502,7 @@ mod tests {
             Err(_) => {
                 child.kill().await?;
                 return Err(anyhow!(
-                    "CLI consumed the handoff but did not finish account-state hydration"
+                    "CLI received the grant but did not finish account-state hydration"
                 ));
             }
         }
@@ -490,8 +512,10 @@ mod tests {
         assert!(link.stdout.contains("linked\nroot: did:key:"));
         assert!(link.stdout.contains("device: did:key:"));
         assert!(
-            link.stdout.contains("account state: ready")
-                || link.stdout.contains("account state: unhydrated")
+            link.stdout.contains("account state: synced")
+                || link
+                    .stdout
+                    .contains("account state: waiting for first sync")
         );
 
         Ok(LinkedCli { profile, link })
@@ -797,7 +821,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_links_the_cli_through_the_browser_handoff(env: TestEnvironment) -> Result<()> {
+    async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
         let linked = link_cli(&driver, &env).await?;
@@ -835,6 +859,34 @@ mod tests {
         Ok(())
     }
 
+    /// A CLI approved from a browser with no account yet: the link page
+    /// runs the signup ceremony first — creating and registering the
+    /// account is what makes there be something to delegate — then flows
+    /// straight into the approval panel.
+    #[dialog_common::test]
+    async fn it_registers_before_linking_a_cli_from_a_fresh_browser(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let linked = link_cli_with(&driver, &env, true).await?;
+
+        let status = run_cli(
+            &linked.profile,
+            &["account".to_string(), "status".to_string()],
+        )
+        .await?;
+        assert!(status.status.success(), "status failed: {}", status.stderr);
+        assert!(status.stdout.contains("signed in: yes"));
+        assert!(
+            linked.link.stdout.contains("sync service:"),
+            "the link reports the registration the signup performed: {}",
+            linked.link.stdout
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// A listener standing in for a waiting `tonk account link --via`.
     ///
     /// The CLI's half is a loopback server that accepts one form POST; a test
@@ -857,9 +909,11 @@ mod tests {
             State(slot): State<Delivery>,
             Form(form): Form<HashMap<String, String>>,
         ) -> &'static str {
-            let (field, value) = form
+            // The page posts the outcome alongside a `redirect` field; the
+            // outcome field is the one under test.
+            let (field, value) = ["authorize", "deny"]
                 .into_iter()
-                .next()
+                .find_map(|key| form.get(key).map(|value| (key.to_owned(), value.clone())))
                 .unwrap_or_else(|| ("none".to_owned(), String::new()));
             if let Ok(mut slot) = slot.lock()
                 && let Some(sender) = slot.take()

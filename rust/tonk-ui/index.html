@@ -85,7 +85,8 @@
                flips after the fade so the shell can't intercept clicks
                it no longer visually owns. */
             body:has(tonk-site) #tonk-boot,
-            body:has(tonk-account) #tonk-boot {
+            body:has(tonk-account) #tonk-boot,
+            body:has(tonk-activate) #tonk-boot {
                 opacity: 0;
                 visibility: hidden;
                 pointer-events: none;

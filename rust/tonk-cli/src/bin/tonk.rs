@@ -521,14 +521,6 @@ enum AccountCommand {
             hide = true
         )]
         service_url: String,
-        /// Browser ceremony route (for staging or local development).
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_ACCOUNT_URL,
-            hide = true
-        )]
-        account_url: String,
         /// Print the approval URL without asking the OS to open it.
         #[arg(long)]
         no_open: bool,
@@ -564,14 +556,9 @@ enum AccountCommand {
 
     /// List the devices linked to this profile's account
     Devices {
-        /// Account service base URL (for staging or local development).
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_SERVICE_URL,
-            hide = true
-        )]
-        service_url: String,
+        /// Account service base URL; defaults to the linked provider.
+        #[arg(long, value_name = "URL", hide = true)]
+        service_url: Option<String>,
     },
 
     /// Revoke one of the account's devices by DID
@@ -1273,9 +1260,9 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, spot: Option<&str
 /// How `tonk account` prints the account repository's lifecycle state.
 fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str {
     match status {
-        tonk_account::AccountStateStatus::Unconfigured => "unconfigured",
-        tonk_account::AccountStateStatus::Unhydrated => "unhydrated",
-        tonk_account::AccountStateStatus::Ready => "ready",
+        tonk_account::AccountStateStatus::Unconfigured => "not set up yet",
+        tonk_account::AccountStateStatus::Unhydrated => "waiting for first sync",
+        tonk_account::AccountStateStatus::Ready => "synced",
     }
 }
 
@@ -1300,6 +1287,35 @@ fn render_account_status(status: account::AccountStatus) -> String {
     }
 }
 
+/// Best-effort registration line, quiet about being offline: status
+/// must answer without the network. Registration itself is web-only —
+/// the browser enrolls during its passkey ceremonies, which is where
+/// the account-signed deposits come from — so this only reads state
+/// and points at the account page when something is missing.
+async fn print_customer_line(profile: &dialog_operator::Profile) {
+    use tonk_account::customer::CustomerStatus;
+    match tonk_cli::customer::registration_state(profile).await {
+        Ok(Some(Some(receipt))) => match receipt.status {
+            CustomerStatus::Active => println!("sync service: registered"),
+            CustomerStatus::Registered => {
+                println!("sync service: waiting for email confirmation (check your inbox)")
+            }
+            CustomerStatus::Suspended => println!("sync service: suspended"),
+        },
+        Ok(Some(None)) => {
+            let page = tonk_cli::customer::access_origin(profile)
+                .await
+                .ok()
+                .flatten()
+                .map(|origin| format!("{origin}account"))
+                .unwrap_or_else(|| "the account page".to_string());
+            println!("sync service: not registered (open {page} in your browser to finish setup)")
+        }
+        Ok(None) => {}
+        Err(_) => println!("sync service: unreachable"),
+    }
+}
+
 async fn account_op(command: AccountCommand) -> ExitCode {
     let profile = match identity::open().await {
         Ok(profile) => profile,
@@ -1308,7 +1324,11 @@ async fn account_op(command: AccountCommand) -> ExitCode {
     match command {
         AccountCommand::Status => match account::status(&profile).await {
             Ok(status) => {
+                let linked = matches!(status, account::AccountStatus::Registered { .. });
                 println!("{}", render_account_status(status));
+                if linked {
+                    print_customer_line(&profile).await;
+                }
                 ExitCode::Success
             }
             Err(error) => print_failure(error),
@@ -1341,7 +1361,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
         AccountCommand::Link {
             name,
             service_url,
-            account_url,
             no_open,
             abandon_detach,
             via,
@@ -1349,7 +1368,6 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             &profile,
             &account::LinkOptions {
                 service_url,
-                account_url,
                 device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
                 abandon_detach,
@@ -1370,6 +1388,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 if let Some(warning) = outcome.warning {
                     eprintln!("warning: account repository is not synchronized: {warning}");
                 }
+                print_customer_line(&profile).await;
                 back_up_all_best_effort(&profile).await;
                 ExitCode::Success
             }
@@ -1433,7 +1452,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
         }
         AccountCommand::Devices { service_url } => {
-            match account::devices(&profile, &service_url).await {
+            match account::devices(&profile, service_url.as_deref()).await {
                 Ok(rows) => {
                     let own = profile.did().to_string();
                     for row in rows {
@@ -3137,7 +3156,7 @@ mod account_spots_parser_tests {
                 provider: "https://accounts.example".to_string(),
                 account_state: tonk_account::AccountStateStatus::Ready,
             }),
-            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: ready"
+            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: synced"
         );
     }
 

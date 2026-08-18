@@ -15,32 +15,6 @@ mod tests {
         not(target_arch = "wasm32"),
         any(feature = "integration-tests", feature = "web-integration-tests")
     ))]
-    async fn captured_code(env: &TestEnvironment, email: &str) -> Result<String> {
-        let endpoint = env.account_service.join("_test/emails")?;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let inbox: Vec<serde_json::Value> =
-                reqwest::get(endpoint.clone()).await?.json().await?;
-            if let Some(code) = inbox.iter().rev().find_map(|entry| {
-                (entry["address"].as_str() == Some(email))
-                    .then(|| entry["code"].as_str().map(str::to_owned))
-                    .flatten()
-            }) {
-                return Ok(code);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "timed out waiting for a verification code for {email}"
-                ));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        any(feature = "integration-tests", feature = "web-integration-tests")
-    ))]
     #[dialog_common::test]
     async fn it_serves_deployment_config_on_the_page_origin(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
@@ -213,14 +187,6 @@ mod tests {
 
         let client = reqwest::Client::new();
         let email = "person@example.com";
-        let response = client
-            .post(env.account_service.join("codes")?)
-            .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await?;
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let code = captured_code(&env, email).await?;
-
         let driver = driver_with_prf(&env).await?;
         let device = Ed25519Signer::import(&[8u8; 32]).await?;
         let device_did = device.did().to_string();
@@ -234,13 +200,12 @@ mod tests {
                 })
                     .then(root => window.tonkIdentity.createAccount({
                         email: arguments[1],
-                        code: arguments[2],
                         deviceDid: arguments[0],
                         deviceName: "test browser",
                         rootDid: root.rootDid,
                         credentialId: root.credentialId,
                         delegationHex: root.delegationHex,
-                        remote: arguments[3],
+                        remote: arguments[2],
                     }))
                     .then(result => done({ ok: result }))
                     .catch(error => done({ error: String(error) }));
@@ -248,7 +213,6 @@ mod tests {
                 vec![
                     serde_json::Value::String(device_did),
                     serde_json::Value::String(email.to_string()),
-                    serde_json::Value::String(code),
                     serde_json::Value::String(env.tonk_web.join("ucan/")?.to_string()),
                 ],
             )
@@ -264,13 +228,6 @@ mod tests {
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::CREATED);
 
-        let response = client
-            .post(env.account_service.join("codes")?)
-            .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await?;
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let competing_code = captured_code(&env, email).await?;
         let root = tonk_identity::derive::derive_root_signer(&[10u8; 32]).await?;
         let competing_device = Ed25519Signer::import(&[12u8; 32]).await?;
         let delegation = tonk_identity::delegation::mint_device_delegation(
@@ -281,7 +238,6 @@ mod tests {
         let ceremony = tonk_identity::ceremony::create_account(
             root,
             email.to_string(),
-            competing_code,
             "competing-credential".to_string(),
             competing_device.did(),
             "competing device".to_string(),

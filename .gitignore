@@ -72,3 +72,5 @@ temp/**
 # Repositories minted by test runs against ephemeral local services.
 # They carry throwaway credentials and must never be committed.
 rust/**/did:key:*
+# Local dev service state (dev:web ACCESS_STATE_DIR)
+.tonk-dev/

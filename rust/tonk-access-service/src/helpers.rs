@@ -25,6 +25,8 @@ pub struct AccessServiceAddress {
     pub access_key_id: String,
     /// AWS secret access key (used by access service, exposed for verification)
     pub secret_access_key: String,
+    /// The service's signing DID, issuer of activation delegations.
+    pub service_did: String,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

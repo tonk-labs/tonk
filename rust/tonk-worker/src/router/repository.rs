@@ -1250,7 +1250,7 @@ async fn invite_url(proof: &str, remote: &str, seed: &str) -> String {
 /// test harness runs in a *window*, never a `ServiceWorkerGlobalScope`, so
 /// a test driving `invite_url` could only ever reach the no-origin branch.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn worker_origin() -> Option<String> {
+pub(super) fn worker_origin() -> Option<String> {
     use wasm_bindgen::JsCast;
 
     js_sys::global()
@@ -2631,17 +2631,15 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
-    // Ahead of the root read, and ahead of every write: a spot created without
-    // an account is local-only and un-backed-up, and nothing later in this
-    // function would notice. The gate belongs here rather than only at the
-    // command handler so the HTTP route the gate replays through is held to
-    // the same rule.
-    super::account::require_account(tonk)
-        .await
-        .map_err(|_| RepositoryError::AccountRequired)?;
-    let local_root = match super::identity::local_root(tonk).await {
-        Ok(root) => root,
-        Err(TonkWorkerError::RootRequired) => return Err(RepositoryError::RootRequired),
+    // A space can be created before any account exists: it delegates to
+    // the most durable key the client holds — the passkey-derived root
+    // when one is persisted, else the profile's own device key
+    // (plan/Account model.md §2). Such a space is local-only and
+    // un-backed-up until linking redelegates it to the account and
+    // provisions it; see [`adopt_profile_spaces`].
+    let owner = match super::identity::local_root(tonk).await {
+        Ok(root) => root.root_did,
+        Err(TonkWorkerError::RootRequired) => tonk.profile.did(),
         Err(error) => {
             return Err(RepositoryError::Internal(format!(
                 "failed to load local root: {error}"
@@ -2674,11 +2672,11 @@ pub async fn create_repository(
         })?;
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate subject-specific authority to the stable local root.
+    // 2. Delegate subject-specific authority to the owner key.
     let delegation = repository
         .access()
         .claim(&repository)
-        .delegate(local_root.root_did.clone())
+        .delegate(owner)
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -2697,6 +2695,15 @@ pub async fn create_repository(
     // what makes it recoverable on the next device, since a device regains
     // access by pulling the account rather than by fetching an artifact.
     super::account_state::retain_space_delegation(tonk, &prefix).await;
+
+    // The billing half of the same act: provision the new space as a
+    // consumer of the access service, depositing the powerline as its
+    // consent. Best effort for the same reason retain is — a space is
+    // usable the moment its delegations exist locally.
+    if let Err(error) = super::customer::provision_consumer(tonk, &repository.did(), &prefix).await
+    {
+        log!("consumer provisioning skipped: {error}");
+    }
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
         RepositoryError::Internal(format!(
@@ -2755,6 +2762,102 @@ pub(crate) async fn space_root_prefix(
     DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
         TonkWorkerError::Internal(format!("stored space root delegation is invalid: {error}"))
     })
+}
+
+/// Bring pre-account spaces under the account after linking.
+///
+/// A space created before any account existed delegates to the profile's
+/// device key, the only durable key the client had. Once a root is
+/// persisted, each such space re-delegates from its own signer to the
+/// account root: the stored prefix is replaced, the new authority lands
+/// in the profile's access branch, is retained into the account space,
+/// and the space is provisioned as a consumer under the account's
+/// customer. Spaces already rooted at the account — created while signed
+/// out, or adopted by an earlier pass — skip the redelegation but still
+/// get the retain and the provisioning, both idempotent. Joined replicas
+/// (whose prefix reaches this profile through someone else's chain) are
+/// left alone. Best effort per space: adoption failing must never fail
+/// the link that triggered it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn adopt_profile_spaces(tonk: &TonkState) {
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return;
+    };
+    let profile_did = tonk.profile.did();
+    for key in super::profile_name::real_space_keys(tonk).await {
+        let Ok(repository) = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+        else {
+            continue;
+        };
+        let subject = repository.did();
+        let Ok(prefix) = space_root_prefix(tonk, &subject).await else {
+            continue;
+        };
+        let chain = if prefix.audience() == &profile_did {
+            // Joined replicas carry a verifier-only credential: nothing
+            // to redelegate from, their authority is the inviter's.
+            let Some(access) = repository.try_access() else {
+                continue;
+            };
+            let delegation = match access
+                .claim(&repository)
+                .delegate(root.root_did.clone())
+                .perform(&tonk.operator)
+                .await
+            {
+                Ok(delegation) => delegation,
+                Err(error) => {
+                    log!("space '{subject}' was not adopted by the account: {error}");
+                    continue;
+                }
+            };
+            let chain = delegation.into_chain();
+            if let Err(error) = tonk
+                .profile
+                .access()
+                .save(UcanDelegation(chain.clone()))
+                .perform(&tonk.operator)
+                .await
+            {
+                log!("adopted space '{subject}' delegation did not save: {error}");
+                continue;
+            }
+            match chain.to_bytes() {
+                Ok(bytes) => {
+                    if let Err(error) = tonk
+                        .profile
+                        .credential()
+                        .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
+                        .save(bytes)
+                        .perform(&tonk.operator)
+                        .await
+                    {
+                        log!("adopted space '{subject}' prefix did not persist: {error}");
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    log!("adopted space '{subject}' prefix did not serialize: {error}");
+                    continue;
+                }
+            }
+            log!("space '{subject}' adopted by the account");
+            chain
+        } else if prefix.audience() == &root.root_did {
+            prefix
+        } else {
+            continue;
+        };
+        super::account_state::retain_space_delegation(tonk, &chain).await;
+        if let Err(error) = super::customer::provision_consumer(tonk, &subject, &chain).await {
+            log!("adopted space '{subject}' provisioning skipped: {error}");
+        }
+    }
 }
 
 /// Lay down the meta-branch facts and profile-side index for an

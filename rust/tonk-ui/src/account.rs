@@ -119,7 +119,6 @@ fn set_mode(host: &HtmlElement, mode: &str) {
     for (name, selector) in [
         ("choice", "#account-choice"),
         ("create", "#account-create"),
-        ("verify", "#account-verify"),
         ("link", "#account-link"),
         ("handoff", "#account-handoff"),
         ("setup", "#account-setup"),
@@ -139,10 +138,8 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
     for selector in [
         "#account-choose-create",
         "#account-choose-link",
-        "#account-send-code",
         "#account-create-submit",
         "#account-create-back",
-        "#account-verify-back",
         "#account-link-submit",
         "#account-link-back",
         "#account-handoff-submit",
@@ -191,6 +188,80 @@ fn show_success(host: &HtmlElement) {
     load_summary(host.clone());
     load_devices(host.clone());
     load_profiles(host.clone());
+    load_activation_notice(host.clone());
+}
+
+/// Surface a pending customer activation on the dashboard. Quiet on
+/// every other answer: an active customer needs no notice, and a
+/// deployment without registration should not decorate the panel with
+/// its absence.
+fn load_activation_notice(host: HtmlElement) {
+    spawn_local(async move {
+        if !wants_enrollment().await {
+            set_text(&host, "#account-registration-value", "Not used here");
+            return;
+        }
+        let mut state = match crate::api::customer_state().await {
+            Ok(state) => state,
+            Err(_) => {
+                set_text(&host, "#account-registration-value", "Unreachable");
+                return;
+            }
+        };
+        // A linked account the access service does not know is one that
+        // predates registration (or the service's control state was
+        // reset). This signed-in browser is the only party that can fix
+        // that — registration is web-only — so enroll right here, with
+        // the device-chained deposit since no ceremony is at hand, and
+        // fall through to the ordinary pending notice.
+        if state["status"].is_null()
+            && crate::deployment::get()
+                .await
+                .is_ok_and(|config| config.service_did.is_some())
+        {
+            match crate::api::enroll_customer(None, &[]).await {
+                // The receipt names no email; the recorded enrollment does.
+                Ok(_) => match crate::api::customer_state().await {
+                    Ok(fresh) => state = fresh,
+                    Err(_) => return,
+                },
+                Err(error) => {
+                    web_sys::console::error_1(
+                        &format!("customer re-enrollment failed: {error}").into(),
+                    );
+                    set_text(
+                        &host,
+                        "#account-registration-value",
+                        "Not registered — reload to retry",
+                    );
+                    return;
+                }
+            }
+        }
+        // The facts row always answers; the banner below only nags while
+        // an activation is actually pending.
+        let label = match state["status"].as_str() {
+            Some("Active") => "Active",
+            Some("Registered") => "Waiting for email confirmation",
+            Some("Suspended") => "Suspended",
+            _ => "Not registered",
+        };
+        set_text(&host, "#account-registration-value", label);
+        if state["status"].as_str() != Some("Registered") {
+            return;
+        }
+        let Ok(Some(notice)) = host.query_selector("#account-activation-notice") else {
+            return;
+        };
+        let message = match state["email"].as_str() {
+            Some(email) => {
+                format!("Sync activation pending: open the link we emailed to {email}.")
+            }
+            None => "Sync activation pending: open the link in your activation email.".to_string(),
+        };
+        notice.set_text_content(Some(&message));
+        let _ = notice.remove_attribute("hidden");
+    });
 }
 
 fn set_text(host: &HtmlElement, selector: &str, value: &str) {
@@ -680,11 +751,46 @@ fn load_status(host: HtmlElement) {
         .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if handoff_route {
         match callback_request() {
-            Some((audience, callback)) => load_callback_request(host, audience, callback),
+            Some((audience, callback, name)) => {
+                // An unlinked browser registers first: the signup or login
+                // ceremony is what creates the account and enrolls it with
+                // the access service, and only then is there an account to
+                // delegate from. The callback request rides the URL, so
+                // once the ceremony settles this reloads into the approval
+                // panel.
+                set_busy(&host, true, "Checking this browser…");
+                spawn_local(async move {
+                    match crate::api::account_status().await {
+                        Ok(AccountStatus::Registered { .. }) => {
+                            load_callback_request(host, audience, callback, name);
+                        }
+                        Ok(status) => {
+                            let root_persisted =
+                                matches!(status, AccountStatus::Unregistered { .. });
+                            set_busy(&host, false, "");
+                            set_mode(&host, "choice");
+                            show_error(
+                                &host,
+                                "Create your account or log in first; approving the \
+                                 command-line device comes right after.",
+                            );
+                            load_choice_profiles(host.clone(), root_persisted);
+                        }
+                        Err(error) => {
+                            set_busy(&host, false, "");
+                            set_mode(&host, "choice");
+                            show_error(&host, error.to_string());
+                        }
+                    }
+                });
+            }
             None => load_handoff(host),
         }
         return;
     }
+    // A `?link=` query is the CLI callback sending the tab back with the
+    // authorization outcome, reported here in the page's own styling.
+    let link_outcome = query_value("link").map(|status| (status, query_value("message")));
     // The gate always arrives with a `next`. Without one the user came here
     // themselves, so anything parked belongs to an attempt they walked away
     // from — replaying it on this sign-in would create a spot nobody asked
@@ -718,6 +824,7 @@ fn load_status(host: HtmlElement) {
                     }
                     Landing::Success => {
                         settle_on_load(&host);
+                        apply_link_outcome(&host, link_outcome.as_ref());
                         if account_state == Some(AccountStateStatus::Unhydrated) {
                             show_error(
                                 &host,
@@ -729,6 +836,7 @@ fn load_status(host: HtmlElement) {
                         set_busy(&host, false, "");
                         set_mode(&host, "choice");
                         load_choice_profiles(host.clone(), root_persisted);
+                        apply_link_outcome(&host, link_outcome.as_ref());
                         if revoke_hint {
                             show_error(
                                 &host,
@@ -748,14 +856,52 @@ fn load_status(host: HtmlElement) {
     });
 }
 
-/// The loopback URL a `tonk account link --via` run is waiting on, if any.
+/// Report a `?link=` outcome the CLI callback sent this tab back with.
+fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<String>)>) {
+    let Some((status, message)) = outcome else {
+        return;
+    };
+    if status == "ok" {
+        set_text(
+            host,
+            "#account-success-message",
+            "Command-line device linked.",
+        );
+    } else {
+        let message = message
+            .as_deref()
+            .unwrap_or("the command-line link did not complete");
+        show_error(host, format!("Command-line link failed: {message}."));
+    }
+}
+
+/// The loopback URL a `tonk account link` run is waiting on, if any.
 ///
 /// Its presence is what distinguishes a callback authorization from the
 /// service handoff: the handoff carries a fragment secret and resolves
 /// against the account service, while this carries the waiting process's
 /// audience and callback in the query and never touches a service.
-fn callback_request() -> Option<(String, String)> {
-    Some((query_value("audience")?, query_value("callback")?))
+/// The callback request parked in this page's URL, when this is the
+/// link route carrying one.
+fn pending_callback_request() -> Option<(String, String, String)> {
+    let on_link_route = window()
+        .and_then(|window| window.location().pathname().ok())
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
+    if on_link_route {
+        callback_request()
+    } else {
+        None
+    }
+}
+
+fn callback_request() -> Option<(String, String, String)> {
+    Some((
+        query_value("audience")?,
+        query_value("callback")?,
+        query_value("name")
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Command-line profile".to_string()),
+    ))
 }
 
 /// Approve a waiting command-line profile and post the grant straight back.
@@ -766,20 +912,30 @@ fn callback_request() -> Option<(String, String)> {
 /// submission needs no preflight and no permissive CORS header on a server
 /// that exists for one request. This page renders in the top document, not
 /// the sealed guest, so the submission is not subject to an iframe sandbox.
-fn load_callback_request(host: HtmlElement, audience: String, callback: String) {
-    if let Ok(Some(name)) = host.query_selector("#account-handoff-name") {
-        name.set_text_content(Some("Command-line profile"));
+fn load_callback_request(host: HtmlElement, audience: String, callback: String, name: String) {
+    if let Ok(Some(label)) = host.query_selector("#account-handoff-name") {
+        label.set_text_content(Some(&name));
     }
     if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
         did.set_text_content(Some(&audience));
     }
     // Park the request where the approve handler can find it, the same way
     // the service handoff parks its resolved link.
-    if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback)) {
+    if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback, name)) {
         let _ = Reflect::set(host.as_ref(), &CALLBACK.into(), &value);
     }
     set_busy(&host, false, "");
     set_mode(&host, "handoff");
+}
+
+/// Where the CLI's callback should send this tab once the terminal has
+/// its answer: the account page, which renders the `?link=` outcome in
+/// its own styling.
+fn link_outcome_redirect() -> String {
+    window()
+        .and_then(|window| window.location().origin().ok())
+        .map(|origin| format!("{origin}/account"))
+        .unwrap_or_else(|| "/account".to_string())
 }
 
 /// Base64-encode an authorization payload for form delivery.
@@ -925,6 +1081,24 @@ const UNESTABLISHED_ACCOUNT_GUIDANCE: &str = "This account was created before sh
      browser yet. Open /account on a browser that is already signed in to this account and \
      finish account setup there, then sign in here.";
 
+/// Whether this deployment registers accounts with an access service at
+/// all: deployments that publish no service identity have nothing to
+/// enroll with.
+async fn wants_enrollment() -> bool {
+    deployment_service_did().await.is_some()
+}
+
+/// The access-service DID this deployment publishes, for ceremonies that
+/// mint account-signed deposits. Absent config or identity is ordinary:
+/// the ceremony then mints nothing and enrollment falls back to a
+/// device-issued deposit.
+async fn deployment_service_did() -> Option<String> {
+    crate::deployment::get()
+        .await
+        .ok()
+        .and_then(|config| config.service_did)
+}
+
 /// The account repository remote this browser proposes: its own origin's
 /// `/ucan/` endpoint. Only a ceremony ever signs one; the stored descriptor is
 /// always the service-selected winner.
@@ -960,6 +1134,7 @@ async fn complete_remote(
     path: &str,
     ceremony: CeremonyOutput,
     initialize_name: bool,
+    enroll_email: Option<&str>,
 ) -> Result<(), String> {
     let provider = service(host).await?;
     let response = crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
@@ -992,6 +1167,29 @@ async fn complete_remote(
             );
         }
     };
+    // Registration with the access service, on signup and login alike:
+    // the account exists either way, so a refused enrollment is surfaced
+    // but does not undo the attach. The login path names no email; the
+    // worker resolves the account's recorded address. Deployments that
+    // publish no service identity have no registration to perform.
+    if wants_enrollment().await {
+        set_busy(host, true, "Registering with the sync service…");
+        if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
+        {
+            web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
+            show_error(
+                host,
+                "Your account is ready, but registering it with the sync service failed. Reload /account to retry.",
+            );
+        }
+    }
+    // A pending callback approval takes precedence over settling: the
+    // ceremony ran on the link page precisely to approve a waiting
+    // device, and the account it just made is what the grant issues from.
+    if let Some((audience, callback, name)) = pending_callback_request() {
+        load_callback_request(host.clone(), audience, callback, name);
+        return Ok(());
+    }
     settle(host);
     if initialize_name && is_unhydrated(&status) {
         show_error(
@@ -1122,81 +1320,20 @@ fn bind(host: &HtmlElement) {
             set_mode(&host, "choice");
         });
     }
-    on_click(host, "#account-verify-back", |host| {
-        clear_error(&host);
-        set_busy(&host, false, "");
-        if let Ok(Some(code)) = host.query_selector("#account-code")
-            && let Ok(code) = code.dyn_into::<HtmlInputElement>()
-        {
-            code.set_value("");
-        }
-        if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
-            destination.set_text_content(None);
-        }
-        set_mode(&host, "create");
-        focus_input(&host, "#account-email");
-    });
-
-    on_click(host, "#account-send-code", |host| {
+    on_click(host, "#account-create-submit", |host| {
         clear_error(&host);
         let email = match input(&host, "#account-email") {
             Ok(value) => value,
             Err(error) => return show_error(&host, error),
         };
-        set_busy(&host, true, "Sending verification code…");
-        spawn_local(async move {
-            let service_url = match service(&host).await {
-                Ok(service_url) => service_url,
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error);
-                    return;
-                }
-            };
-            match crate::api::request_account_code(&service_url, &email).await {
-                Ok(()) => {
-                    set_busy(&host, false, "");
-                    if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
-                        destination.set_text_content(Some(&email));
-                    }
-                    set_mode(&host, "verify");
-                    if let Ok(Some(code)) = host.query_selector("#account-code")
-                        && let Ok(code) = code.dyn_into::<HtmlInputElement>()
-                    {
-                        code.set_value("");
-                        let _ = code.focus();
-                    }
-                }
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error.to_string());
-                }
-            }
-        });
-    });
-
-    on_click(host, "#account-create-submit", |host| {
-        clear_error(&host);
-        let fields = (
-            input(&host, "#account-email"),
-            input(&host, "#account-code"),
-        );
-        let (email, code) = match fields {
-            (Ok(email), Ok(code)) => (email, code),
-            (Err(error), _) | (_, Err(error)) => return show_error(&host, error),
-        };
         let device_name = crate::device_name::current();
-        set_busy(&host, true, "Checking verification code…");
+        set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let service_url = service(&host).await?;
-                crate::api::preflight_account(&service_url, &email, &code)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                set_busy(&host, true, "Waiting for your passkey…");
                 let status = crate::api::root_status()
                     .await
                     .map_err(|error| error.to_string())?;
+                let service_did = deployment_service_did().await;
                 let ceremony = match status {
                     tonk_worker_api::RootStatus::Ready {
                         root_did,
@@ -1206,8 +1343,7 @@ fn bind(host: &HtmlElement) {
                         passkey,
                         ..
                     } => create_account(CreateAccountInput {
-                        email,
-                        code,
+                        email: email.clone(),
                         device_did,
                         device_name,
                         root_did,
@@ -1215,17 +1351,18 @@ fn bind(host: &HtmlElement) {
                         delegation_hex,
                         passkey,
                         remote: proposed_remote()?,
+                        service_did,
                     })
                     .await
                     .map_err(|error| error.to_string())?,
                     tonk_worker_api::RootStatus::Missing { device_did } => {
                         let created = create_fresh_account(CreateFreshAccountInput {
-                            email,
-                            code,
+                            email: email.clone(),
                             device_did,
                             device_name,
                             remote: proposed_remote()?,
                             created_on: crate::device_name::current(),
+                            service_did,
                         })
                         .await
                         .map_err(|error| error.to_string())?;
@@ -1241,11 +1378,12 @@ fn bind(host: &HtmlElement) {
                             credential_id: created.credential_id,
                             delegation_hex: created.delegation_hex,
                             invocation_hex: created.invocation_hex,
+                            deposits_hex: created.deposits_hex,
                         }
                     }
                 };
                 set_busy(&host, true, "Creating your account…");
-                complete_remote(&host, "/accounts", ceremony, true).await
+                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await
             }
             .await;
             if let Err(error) = result {
@@ -1280,11 +1418,12 @@ fn bind(host: &HtmlElement) {
                 let ceremony = link_device(LinkDeviceInput {
                     device_did,
                     device_name,
+                    service_did: deployment_service_did().await,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking this browser…");
-                complete_remote(&host, "/devices/link", ceremony, false).await
+                complete_remote(&host, "/devices/link", ceremony, false, None).await
             }
             .await;
             if let Err(error) = result {
@@ -1299,33 +1438,85 @@ fn bind(host: &HtmlElement) {
         // A callback authorization takes this button first: the panel asks
         // the same question, but the answer goes back to a waiting process
         // rather than to the account service.
-        if let Some((audience, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
+        if let Some((audience, callback, name)) = Reflect::get(host.as_ref(), &CALLBACK.into())
             .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+            .and_then(|value| {
+                serde_wasm_bindgen::from_value::<(String, String, String)>(value).ok()
+            })
         {
             set_busy(&host, true, "Waiting for your passkey…");
             spawn_local(async move {
                 let result = async {
-                    let service_url = service(&host).await?;
+                    // Registration precedes linking: a device linked to an
+                    // unregistered account inherits a dead sync path, so a
+                    // signed-in browser the access service does not know
+                    // enrolls before it delegates. The fresh-browser path
+                    // covers this inside its signup ceremony.
+                    if wants_enrollment().await {
+                        let known = crate::api::customer_state()
+                            .await
+                            .map(|state| !state["status"].is_null())
+                            .unwrap_or(false);
+                        if !known {
+                            set_busy(&host, true, "Registering with the sync service…");
+                            crate::api::enroll_customer(None, &[])
+                                .await
+                                .map_err(|error| {
+                                    format!(
+                                        "register with the sync service before linking: {error}"
+                                    )
+                                })?;
+                        }
+                    }
+                    set_busy(&host, true, "Waiting for your passkey…");
+                    // The descriptor must name the same sync remote signup
+                    // established — the page's own `/ucan/` endpoint — or the
+                    // linked device mounts an account it can never reach.
                     let authorized = crate::identity_bridge::authorize_device(
                         crate::identity_bridge::AuthorizeDeviceInput {
-                            device_did: audience,
-                            remote: service_url,
+                            device_did: audience.clone(),
+                            remote: proposed_remote()?,
                         },
                     )
                     .await
                     .map_err(|error| error.to_string())?;
+                    // The service only accepts device registration from an
+                    // active member, which this browser is and the waiting
+                    // device is not: register it here, before the grant is
+                    // delivered, so a device that installs the grant is
+                    // already listed and able to reach the service.
+                    set_busy(&host, true, "Registering the device…");
+                    let registered = crate::api::register_account_device(
+                        &audience,
+                        &name,
+                        &authorized.delegation_hex,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let attachment_id = registered
+                        .get("attachmentId")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
                     // The delegation alone would leave the device authorized
                     // but unable to find the account repository, so the
                     // descriptor rides along.
+                    // The page knows which account service this deployment
+                    // uses; the CLI records it rather than guessing from a
+                    // flag default.
                     let payload = serde_json::json!({
                         "delegationHex": authorized.delegation_hex,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
+                        "attachmentId": attachment_id,
+                        "serviceUrl": service(&host).await.unwrap_or_default(),
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);
-                    post_to_callback(&callback, &[("authorize", &encoded)])
+                    let redirect = link_outcome_redirect();
+                    post_to_callback(
+                        &callback,
+                        &[("authorize", &encoded), ("redirect", &redirect)],
+                    )
                 }
                 .await;
                 if let Err(error) = result {
@@ -1373,9 +1564,12 @@ fn bind(host: &HtmlElement) {
     // than only navigating away. Without this the CLI sits until its
     // five-minute deadline for a decision the user already made.
     on_click(host, "#account-handoff-cancel", |host| {
-        let Some((_, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
-            .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+        let Some((_, callback, _)) =
+            Reflect::get(host.as_ref(), &CALLBACK.into())
+                .ok()
+                .and_then(|value| {
+                    serde_wasm_bindgen::from_value::<(String, String, String)>(value).ok()
+                })
         else {
             // No callback parked: this is the service handoff, whose Cancel
             // is an ordinary link back to the account page. `on_click`
@@ -1385,7 +1579,11 @@ fn bind(host: &HtmlElement) {
             }
             return;
         };
-        if let Err(error) = post_to_callback(&callback, &[("deny", "declined in the browser")]) {
+        let redirect = link_outcome_redirect();
+        if let Err(error) = post_to_callback(
+            &callback,
+            &[("deny", "declined in the browser"), ("redirect", &redirect)],
+        ) {
             show_error(&host, error);
         }
     });
@@ -1753,7 +1951,6 @@ mod tests {
     fn it_authors_the_create_and_self_link_controls() {
         let host = host();
         for selector in [
-            "#account-send-code",
             "#account-create-submit",
             "#account-link-submit",
             "#account-handoff-submit",
@@ -1795,16 +1992,6 @@ mod tests {
             input(&host, "#account-email").as_deref(),
             Ok("person@example.com")
         );
-
-        let code: HtmlInputElement = host
-            .query_selector("#account-code")
-            .unwrap()
-            .unwrap()
-            .unchecked_into();
-        code.set_value("12");
-        assert!(input(&host, "#account-code").is_err());
-        code.set_value("123456");
-        assert_eq!(input(&host, "#account-code").as_deref(), Ok("123456"));
     }
 
     #[dialog_common::test]
@@ -1825,13 +2012,12 @@ mod tests {
     #[dialog_common::test]
     fn it_disables_in_panel_navigation_while_account_work_is_in_flight() {
         let host = host();
-        set_busy(&host, true, "Checking verification code…");
+        set_busy(&host, true, "Creating your account…");
 
         for selector in [
             "#account-choose-create",
             "#account-choose-link",
             "#account-create-back",
-            "#account-verify-back",
             "#account-link-back",
         ] {
             let button: HtmlButtonElement = host
@@ -1841,40 +2027,6 @@ mod tests {
                 .unchecked_into();
             assert!(button.disabled(), "{selector} remained interactive");
         }
-    }
-
-    #[dialog_common::test]
-    fn it_clears_verification_state_before_trying_another_email() {
-        let host = host();
-        bind(&host);
-        let code: HtmlInputElement = host
-            .query_selector("#account-code")
-            .unwrap()
-            .unwrap()
-            .unchecked_into();
-        code.set_value("123456");
-        host.query_selector("#account-code-email")
-            .unwrap()
-            .unwrap()
-            .set_text_content(Some("old@example.com"));
-        set_mode(&host, "verify");
-
-        let back: HtmlElement = host
-            .query_selector("#account-verify-back")
-            .unwrap()
-            .unwrap()
-            .unchecked_into();
-        back.click();
-
-        assert_eq!(host.get_attribute("data-mode").as_deref(), Some("create"));
-        assert_eq!(code.value(), "");
-        assert_eq!(
-            host.query_selector("#account-code-email")
-                .unwrap()
-                .unwrap()
-                .text_content(),
-            Some(String::new())
-        );
     }
 
     #[dialog_common::test]
@@ -2226,30 +2378,30 @@ mod tests {
         );
     }
 
-    /// Enter has to do what Continue does, not nothing. Implicit submission
-    /// clicks the form's submit button, and that click is what carries the
-    /// send-code handler — so the button has to be the form's submit button
-    /// rather than an inert `type="button"` beside it.
+    /// Enter has to do what Create account does, not nothing. Implicit
+    /// submission clicks the form's submit button, and that click is what
+    /// carries the creation handler — so the button has to be the form's
+    /// submit button rather than an inert `type="button"` beside it.
     #[dialog_common::test]
-    fn it_lets_enter_send_the_verification_code() {
+    fn it_lets_enter_submit_account_creation() {
         let host = host();
         let button = host
-            .query_selector("#account-send-code")
+            .query_selector("#account-create-submit")
             .expect("query")
-            .expect("continue button");
+            .expect("create button");
         assert_eq!(
             button.get_attribute("type").as_deref(),
             Some("submit"),
-            "Continue must be the email form's submit button",
+            "Create account must be the email form's submit button",
         );
     }
 
     #[dialog_common::test]
     fn it_switches_between_account_panels_without_reauthoring_the_dom() {
         let host = host();
-        set_mode(&host, "verify");
+        set_mode(&host, "link");
         assert!(
-            host.query_selector("#account-verify")
+            host.query_selector("#account-link")
                 .unwrap()
                 .unwrap()
                 .get_attribute("hidden")
@@ -2260,12 +2412,6 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .has_attribute("hidden")
-        );
-        assert!(
-            host.query_selector("#account-create #account-code")
-                .unwrap()
-                .is_none(),
-            "email and verification fields should be on separate screens"
         );
     }
 

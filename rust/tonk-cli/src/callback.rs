@@ -44,12 +44,19 @@ struct CallbackForm {
     authorize: Option<String>,
     #[serde(default)]
     deny: Option<String>,
+    /// Where to send the browser once the terminal has its answer, so the
+    /// authorizing page reports the outcome in its own styling. Honored
+    /// only for a URL on the page's own origin.
+    #[serde(default)]
+    redirect: Option<String>,
 }
 
 #[derive(Clone)]
 struct Waiting {
     shutdown: Arc<Notify>,
     sender: Arc<std::sync::Mutex<Option<oneshot::Sender<Authorization>>>>,
+    /// The only origin a `redirect` may name: the page this process opened.
+    redirect_origin: Option<String>,
 }
 
 /// A bound loopback listener waiting for one authorization.
@@ -86,12 +93,15 @@ impl Callback {
     ///
     /// Times out after five minutes: a browser tab the user abandoned should
     /// not leave a listener bound for the life of the shell.
-    pub async fn receive(self) -> Result<Authorization> {
+    /// `redirect_origin` is the origin of the page this process opened, the
+    /// only place a delivered `redirect` may point back to.
+    pub async fn receive(self, redirect_origin: Option<String>) -> Result<Authorization> {
         let (sender, receiver) = oneshot::channel();
         let shutdown = Arc::new(Notify::new());
         let state = Waiting {
             shutdown: shutdown.clone(),
             sender: Arc::new(std::sync::Mutex::new(Some(sender))),
+            redirect_origin,
         };
         let app = Router::new().route("/", post(deliver)).with_state(state);
         let server = axum::serve(self.listener, app).with_graceful_shutdown(async move {
@@ -138,12 +148,38 @@ fn confirmation(message: &str) -> String {
     )
 }
 
+/// A page-styled landing for the finished exchange: `redirect` with the
+/// outcome appended, when the page asked for one on its own origin.
+fn redirect_back(
+    state: &Waiting,
+    redirect: Option<&str>,
+    status: &str,
+    message: Option<&str>,
+) -> Option<String> {
+    let allowed = state.redirect_origin.as_deref()?;
+    let mut target: url::Url = redirect?.parse().ok()?;
+    if target.origin().ascii_serialization() != allowed {
+        return None;
+    }
+    target.query_pairs_mut().append_pair("link", status);
+    if let Some(message) = message {
+        target.query_pairs_mut().append_pair("message", message);
+    }
+    Some(target.to_string())
+}
+
 /// Receive the page's POST, hand the result to the waiter, and stop.
-async fn deliver(State(state): State<Waiting>, Form(form): Form<CallbackForm>) -> Html<String> {
-    let (outcome, page) = match (form.authorize, form.deny) {
+async fn deliver(
+    State(state): State<Waiting>,
+    Form(form): Form<CallbackForm>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let (outcome, status, page) = match (form.authorize, form.deny) {
         (Some(encoded), _) => match base64::engine::general_purpose::STANDARD.decode(&encoded) {
             Ok(bytes) => (
                 Authorization::Granted(bytes),
+                ("ok", None),
                 "Authorized. You can return to your terminal.",
             ),
             // A malformed body is reported as a denial rather than retried:
@@ -151,23 +187,33 @@ async fn deliver(State(state): State<Waiting>, Form(form): Form<CallbackForm>) -
             // wait for, and the caller learns why instead of timing out.
             Err(error) => (
                 Authorization::Denied(format!("authorization was not valid base64: {error}")),
+                ("invalid", Some("the authorization was not readable")),
                 "Could not read the authorization — check your terminal.",
             ),
         },
-        (None, Some(reason)) => (Authorization::Denied(reason), "Authorization declined."),
+        (None, Some(reason)) => (
+            Authorization::Denied(reason),
+            ("denied", Some("authorization was declined")),
+            "Authorization declined.",
+        ),
         (None, None) => (
             Authorization::Denied("the page sent no authorization".to_owned()),
+            ("invalid", Some("nothing was authorized")),
             "Nothing was authorized.",
         ),
     };
 
+    let landing = redirect_back(&state, form.redirect.as_deref(), status.0, status.1);
     if let Ok(mut slot) = state.sender.lock()
         && let Some(sender) = slot.take()
     {
         let _ = sender.send(outcome);
     }
     state.shutdown.notify_one();
-    Html(confirmation(page))
+    match landing {
+        Some(target) => axum::response::Redirect::to(&target).into_response(),
+        None => Html(confirmation(page)).into_response(),
+    }
 }
 
 #[cfg(test)]
@@ -196,7 +242,7 @@ mod tests {
                 .unwrap();
         });
 
-        let authorization = callback.receive().await.unwrap();
+        let authorization = callback.receive(None).await.unwrap();
         posting.await.unwrap();
         match authorization {
             Authorization::Granted(bytes) => assert_eq!(bytes, b"delegation-bytes"),
@@ -220,7 +266,7 @@ mod tests {
                 .unwrap();
         });
 
-        let authorization = callback.receive().await.unwrap();
+        let authorization = callback.receive(None).await.unwrap();
         posting.await.unwrap();
         match authorization {
             Authorization::Denied(reason) => assert!(reason.contains("declined")),
@@ -244,7 +290,7 @@ mod tests {
                 .unwrap();
         });
 
-        let authorization = callback.receive().await.unwrap();
+        let authorization = callback.receive(None).await.unwrap();
         posting.await.unwrap();
         match authorization {
             Authorization::Denied(reason) => assert!(reason.contains("base64")),

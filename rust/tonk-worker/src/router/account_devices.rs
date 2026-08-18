@@ -92,6 +92,61 @@ pub async fn list(
     Ok(Json(fetch_devices(&state, &link, &service).await?))
 }
 
+/// `POST /api/account/devices/register` request: a device the approving
+/// page just authorized, to be recorded in the account service's
+/// registry under this profile's account.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterDeviceRequest {
+    /// The registered device's DID.
+    pub did: String,
+    /// Display name for the device registry.
+    pub name: String,
+    /// Hex-encoded `root → device` delegation the device will present.
+    pub delegation_hex: String,
+}
+
+/// Register a freshly authorized device in the account service's
+/// registry. The service only accepts registration from a device that is
+/// already an active member, which this browser is — a device authorized
+/// over a callback cannot register itself.
+#[wasm_compat]
+pub async fn register(
+    State(state): State<AppState>,
+    Json(request): Json<RegisterDeviceRequest>,
+) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    let state = state.read().await;
+    let (link, service) = linked_service(&state).await?;
+    let device = state.profile.signer().signer().clone();
+    let arguments = [
+        ("did".to_owned(), Promised::String(request.did)),
+        ("name".to_owned(), Promised::String(request.name)),
+        (
+            "delegation".to_owned(),
+            Promised::String(request.delegation_hex),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let body = tonk_identity::request::build_device_invocation(
+        device,
+        &link,
+        vec!["account".into(), "device".into(), "register".into()],
+        arguments,
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("build device-register invocation: {e}")))?;
+    let endpoint = url::Url::parse(&format!(
+        "{}/devices/register",
+        service.trim_end_matches('/')
+    ))
+    .map_err(|error| TonkWorkerError::Internal(format!("invalid account provider URL: {error}")))?;
+    let response = super::http::post_cbor(&endpoint, &body).await?;
+    let answer: serde_json::Value = serde_json::from_slice(&response.body)
+        .map_err(|e| TonkWorkerError::Internal(format!("parse registration answer: {e}")))?;
+    Ok(Json(answer))
+}
+
 /// The account service's `POST /account/summary` response.
 ///
 /// Deliberately its own type rather than [`AccountSummary`]: the provider hop
