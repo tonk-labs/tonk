@@ -59,7 +59,7 @@ async-trait = { workspace = true }
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-dialog-common = { workspace = true, optional = true }
+dialog-common = { workspace = true }
 dialog-storage = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }

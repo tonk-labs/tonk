@@ -4,6 +4,7 @@
 
 use std::sync::Mutex;
 
+use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
@@ -44,6 +45,7 @@ fn map_err(err: rusqlite::Error) -> StoreError {
     StoreError::Internal(err.to_string())
 }
 
+#[async_trait]
 impl Store for SqliteStore {
     async fn customer(&self, did: &str) -> Result<Option<Customer>, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");

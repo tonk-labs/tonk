@@ -10,7 +10,6 @@
 #![cfg(feature = "integration-tests")]
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -19,13 +18,13 @@ use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
 use dialog_ucan_core::{
-    Container, Delegation, DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain,
+    Container, Delegation, DelegationBuilder, InvocationBuilder, InvocationChain,
 };
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use dialog_varsig::{Did, Principal};
 use tonk_access_service::email::CapturedEmail;
 use tonk_access_service::helpers::AccessServiceAddress;
-use tonk_access_service::registration::Registration;
+use tonk_access_service::registration::{Registration, SIGNUP_TERMS};
 use tonk_access_service::store::Store;
 use tonk_access_service::store::sqlite::SqliteStore;
 use tonk_account::customer::RegistrationError;
@@ -134,53 +133,48 @@ async fn enroll_container_with_deposit(
         .expect("container encodes")
 }
 
-/// Decode the delegation carried by an activation link.
-fn link_delegation(link: &str) -> Delegation<Ed25519Signature> {
+/// Decode the invocation container carried by an activation link. It is
+/// complete and service-signed, so activating is presenting these bytes;
+/// no key is needed on the presenting device.
+fn link_container(link: &str) -> Vec<u8> {
     let encoded = link
         .split("ucan=")
         .nth(1)
-        .expect("link carries the delegation");
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).expect("valid base64url");
-    let chain = DelegationChain::try_from(bytes.as_slice()).expect("delegation chain decodes");
-    chain
-        .proofs()
-        .next()
-        .expect("chain carries one delegation")
-        .clone()
+        .expect("link carries the invocation");
+    URL_SAFE_NO_PAD.decode(encoded).expect("valid base64url")
 }
 
-/// Build an activate container: the customer invokes the emailed
-/// delegation against the service's subject.
-async fn activate_container(
-    invoker: &Ed25519Signer,
-    service: &Did,
+/// Mint an activation-shaped invocation with an arbitrary issuer,
+/// subject, and expiration, for the refusal tests.
+async fn activation_invocation(
+    issuer: &Ed25519Signer,
+    subject: &Did,
     customer: &Did,
-    link: &Delegation<Ed25519Signature>,
-    terms: &str,
+    expiration: Timestamp,
 ) -> Vec<u8> {
     let invocation = InvocationBuilder::new()
-        .issuer(invoker.clone())
-        .audience(service)
-        .subject(service)
+        .issuer(issuer.clone())
+        .audience(subject)
+        .subject(subject)
         .command(vec!["customer".to_string(), "activate".to_string()])
         .arguments(BTreeMap::from([
             (
                 "customer".to_string(),
                 Promised::String(customer.to_string()),
             ),
-            ("terms".to_string(), Promised::String(terms.to_string())),
+            (
+                "terms".to_string(),
+                Promised::String(SIGNUP_TERMS.to_string()),
+            ),
         ]))
-        .proofs(vec![link.to_cid()])
-        .expiration(Timestamp::five_minutes_from_now())
+        .proofs(vec![])
+        .expiration(expiration)
         .try_build()
         .await
-        .expect("activate invocation");
-    InvocationChain::new(
-        invocation,
-        HashMap::from([(link.to_cid(), Arc::new(link.clone()))]),
-    )
-    .to_bytes()
-    .expect("container encodes")
+        .expect("activation invocation");
+    InvocationChain::new(invocation, HashMap::new())
+        .to_bytes()
+        .expect("container encodes")
 }
 
 #[dialog_common::test]
@@ -196,25 +190,22 @@ async fn it_enrolls_a_customer_and_emails_an_activation_link() -> anyhow::Result
     let (address, link) = fixture.last_email();
     assert_eq!(address, "alice@example.com");
     assert!(link.starts_with("https://hub.test/activate?ucan="));
-
-    let delegation = link_delegation(&link);
-    assert_eq!(delegation.issuer(), &fixture.service.did());
-    assert_eq!(delegation.audience(), &customer.did());
     Ok(())
 }
 
 #[dialog_common::test]
-async fn it_activates_through_the_emailed_delegation_and_replays_as_a_noop() -> anyhow::Result<()> {
+async fn it_activates_by_presenting_the_emailed_invocation_from_any_device() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
-    let service = fixture.service.did();
-    let container = enroll_container(&customer, &service, "alice@example.com").await;
+    let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
     fixture.registration(&container).handle().await.unwrap();
 
-    let link = link_delegation(&fixture.last_email().1);
-    let container =
-        activate_container(&customer, &service, &customer.did(), &link, "2026-08").await;
+    // The link carries a complete service-signed invocation: presenting
+    // it is activating, no customer key involved, so a click on any
+    // device finalizes.
+    let container = link_container(&fixture.last_email().1);
     let receipt = fixture.registration(&container).handle().await.unwrap();
+    assert_eq!(receipt.customer, customer.did());
     assert_eq!(serde_json::to_value(receipt.status)?, "Active");
 
     let stored = fixture
@@ -223,13 +214,11 @@ async fn it_activates_through_the_emailed_delegation_and_replays_as_a_noop() -> 
         .await
         .unwrap()
         .expect("customer row exists");
-    assert_eq!(stored.terms_version.as_deref(), Some("2026-08"));
+    assert_eq!(stored.terms_version.as_deref(), Some(SIGNUP_TERMS));
     assert!(stored.verified > 0);
 
     // Clicking twice leaves the customer active and writes no duplicate
     // state.
-    let container =
-        activate_container(&customer, &service, &customer.did(), &link, "2026-08").await;
     let receipt = fixture.registration(&container).handle().await.unwrap();
     assert_eq!(serde_json::to_value(receipt.status)?, "Active");
     Ok(())
@@ -257,9 +246,7 @@ async fn it_refuses_enrolling_an_active_customer_and_resends_while_registered() 
         2
     );
 
-    let link = link_delegation(&fixture.last_email().1);
-    let container =
-        activate_container(&customer, &service, &customer.did(), &link, "2026-08").await;
+    let container = link_container(&fixture.last_email().1);
     fixture.registration(&container).handle().await.unwrap();
 
     let container = enroll_container(&customer, &service, "alice@example.com").await;
@@ -269,21 +256,36 @@ async fn it_refuses_enrolling_an_active_customer_and_resends_while_registered() 
 }
 
 #[dialog_common::test]
-async fn it_refuses_an_intercepted_link_invoked_by_another_key() -> anyhow::Result<()> {
+async fn it_refuses_a_forged_activation_invocation() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
-    let interceptor = Ed25519Signer::generate().await?;
+    let attacker = Ed25519Signer::generate().await?;
     let service = fixture.service.did();
     let container = enroll_container(&customer, &service, "alice@example.com").await;
     fixture.registration(&container).handle().await.unwrap();
 
-    let link = link_delegation(&fixture.last_email().1);
-    // The interceptor holds the link but not the customer's key: the
-    // delegation is audience-bound, so their invocation cannot verify.
-    let container =
-        activate_container(&interceptor, &service, &customer.did(), &link, "2026-08").await;
-    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    // An attacker naming the service as subject cannot prove the chain.
+    let forged = activation_invocation(
+        &attacker,
+        &service,
+        &customer.did(),
+        Timestamp::five_minutes_from_now(),
+    )
+    .await;
+    let refusal = fixture.registration(&forged).handle().await.unwrap_err();
     assert!(matches!(refusal, RegistrationError::Unauthorized { .. }));
+
+    // A self-signed invocation on the attacker's own subject verifies,
+    // but it is not an invocation this service minted.
+    let forged = activation_invocation(
+        &attacker,
+        &attacker.did(),
+        &customer.did(),
+        Timestamp::five_minutes_from_now(),
+    )
+    .await;
+    let refusal = fixture.registration(&forged).handle().await.unwrap_err();
+    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
     Ok(())
 }
 
@@ -293,41 +295,18 @@ async fn it_refuses_an_expired_activation_link_without_a_storage_lookup() -> any
     let customer = Ed25519Signer::generate().await?;
     let service = fixture.service.did();
 
-    // A link minted in the past, already expired. No enrollment exists,
-    // so a storage lookup would answer UnknownCustomer; the expired
-    // window must refuse before any lookup happens.
-    let expired = DelegationBuilder::new()
-        .issuer(fixture.service.clone())
-        .audience(&customer.did())
-        .subject(DelegatedSubject::Specific(service.clone()))
-        .command(vec!["customer".to_string(), "activate".to_string()])
-        .expiration(at(unix_now() - 60))
-        .try_build()
-        .await?;
-    let container =
-        activate_container(&customer, &service, &customer.did(), &expired, "2026-08").await;
-    let refusal = fixture.registration(&container).handle().await.unwrap_err();
+    // A genuinely service-signed link, already expired. No enrollment
+    // exists, so a storage lookup would answer UnknownCustomer; the
+    // expired window must refuse before any lookup happens.
+    let expired = activation_invocation(
+        &fixture.service,
+        &service,
+        &customer.did(),
+        at(unix_now() - 60),
+    )
+    .await;
+    let refusal = fixture.registration(&expired).handle().await.unwrap_err();
     assert!(matches!(refusal, RegistrationError::Unauthorized { .. }));
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn it_refuses_a_link_minted_for_a_different_customer() -> anyhow::Result<()> {
-    let fixture = Fixture::new().await;
-    let alice = Ed25519Signer::generate().await?;
-    let mallory = Ed25519Signer::generate().await?;
-    let service = fixture.service.did();
-
-    let container = enroll_container(&alice, &service, "alice@example.com").await;
-    fixture.registration(&container).handle().await.unwrap();
-    let container = enroll_container(&mallory, &service, "mallory@example.com").await;
-    fixture.registration(&container).handle().await.unwrap();
-
-    // Mallory holds their own link but names Alice in the arguments.
-    let link = link_delegation(&fixture.last_email().1);
-    let container = activate_container(&mallory, &service, &alice.did(), &link, "2026-08").await;
-    let refusal = fixture.registration(&container).handle().await.unwrap_err();
-    assert!(matches!(refusal, RegistrationError::Forbidden { .. }));
     Ok(())
 }
 
@@ -391,14 +370,7 @@ async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::
     let client = reqwest::Client::new();
     let base = env.access_service_url.trim_end_matches('/').to_string();
 
-    let service: serde_json::Value = client
-        .get(format!("{base}/_test/service"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let service_did: Did = service["did"].as_str().expect("service did").parse()?;
-
+    let service_did: Did = env.service_did.parse()?;
     let customer = Ed25519Signer::generate().await?;
     let container = enroll_container(&customer, &service_did, "alice@example.com").await;
     let response = client
@@ -420,19 +392,10 @@ async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::
     let (address, link) = emails.last().cloned().expect("an activation email");
     assert_eq!(address, "alice@example.com");
 
-    let delegation = link_delegation(&link);
-    let container = activate_container(
-        &customer,
-        &service_did,
-        &customer.did(),
-        &delegation,
-        "2026-08",
-    )
-    .await;
     let response = client
         .post(format!("{base}/ucan/"))
         .header("Content-Type", "application/cbor")
-        .body(container)
+        .body(link_container(&link))
         .send()
         .await?;
     assert_eq!(response.status(), 200);

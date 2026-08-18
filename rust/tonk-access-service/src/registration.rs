@@ -14,18 +14,18 @@
 //! emails it as a link, and the customer finalizes by invoking it, so
 //! the link is not a bearer credential.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_capability::{Capability, Provider, Subject};
+use dialog_common::ConditionalSync;
 use dialog_credentials::{Ed25519KeyResolver, Ed25519Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::{Duration, Timestamp, UNIX_EPOCH};
-use dialog_ucan_core::{
-    Container, Delegation, DelegationBuilder, DelegationChain, Invocation, InvocationChain,
-};
+use dialog_ucan_core::{Container, Delegation, Invocation, InvocationBuilder, InvocationChain};
 use dialog_varsig::algorithm::eddsa::Ed25519Signature;
 use dialog_varsig::{Did, Principal};
 use ipld_core::ipld::Ipld;
@@ -45,10 +45,16 @@ pub const ENROLL_COMMAND: [&str; 2] = ["customer", "enroll"];
 /// The command path segments of [`Activate`].
 pub const ACTIVATE_COMMAND: [&str; 2] = ["customer", "activate"];
 
-/// How far in the future a registration invocation's mandatory
+/// How far in the future an enrollment invocation's mandatory
 /// expiration may sit: the five-minute ceremony window plus a one-minute
-/// allowance for clock skew. Mirrors the account service.
+/// allowance for clock skew. Mirrors the account service. Activation is
+/// exempt: its invocation is the one this service minted, alive for
+/// `EMAIL_TOKEN_TTL`.
 const CEREMONY_WINDOW_SECONDS: u64 = 5 * 60 + 60;
+
+/// The terms-of-service version the activation page presents, baked into
+/// the minted activation invocation so the recorded acceptance names it.
+pub const SIGNUP_TERMS: &str = "2026-08";
 
 /// A registration command recognized at the `/ucan/` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +109,9 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     {
         match registration_command(self.container) {
             Some(RegistrationCommand::Enroll) => {
-                let chain = self.verified_chain(&ENROLL_COMMAND).await?;
+                let chain = self
+                    .verified_chain(&ENROLL_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
+                    .await?;
                 let effect: Enroll = deserialize_arguments(chain.arguments())?;
                 Subject::from(chain.subject().clone())
                     .attenuate(Customer)
@@ -112,13 +120,20 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
                     .await
             }
             Some(RegistrationCommand::Activate) => {
-                let chain = self.verified_chain(&ACTIVATE_COMMAND).await?;
+                // The presented invocation is the one enrollment emailed:
+                // self-issued by this service, alive for EMAIL_TOKEN_TTL
+                // rather than a ceremony window. `verify` already refuses
+                // any other issuer for a proofless chain on this subject;
+                // the explicit check keeps the intent visible.
+                let chain = self.verified_chain(&ACTIVATE_COMMAND, None).await?;
                 let service = self.service.did();
-                if chain.subject() != &service {
+                if chain.subject() != &service || chain.issuer() != &service {
                     return Err(RegistrationError::Forbidden {
                         message: format!(
-                            "activation subject must be this service, got {}",
-                            chain.subject()
+                            "activation must present the invocation this service minted, got \
+                             subject {} issued by {}",
+                            chain.subject(),
+                            chain.issuer()
                         ),
                     });
                 }
@@ -201,44 +216,17 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         })
     }
 
-    /// Execute a verified `/customer/activate`: enforce the emailed
-    /// delegation's window and audience, record terms acceptance, and
-    /// promote the customer to `Active`. Activating twice is a no-op
-    /// success.
+    /// Execute a verified `/customer/activate`: record terms acceptance
+    /// and promote the customer to `Active`. The invocation is the one
+    /// this service minted at enroll, so its arguments are trusted as
+    /// written; who presents it does not matter. Activating twice is a
+    /// no-op success.
     pub async fn activate(
         &self,
         capability: Capability<Activate>,
     ) -> Result<Receipt, RegistrationError> {
         let effect = capability.into_effect();
         let customer = effect.customer.clone();
-        let service = self.service.did();
-
-        // `InvocationChain::verify` checks that time windows are
-        // structurally coherent, not that they contain the present, so
-        // the emailed delegation's `exp` is enforced here against the
-        // clock. The same walk pins the activated customer to the
-        // audience of the service-issued link, so a link minted for one
-        // customer cannot activate another.
-        let mut link_audience = None;
-        for token in self.delegation_tokens()? {
-            self.check_window(&token.delegation)?;
-            if token.delegation.issuer() == &service {
-                link_audience = Some(token.delegation.audience().clone());
-            }
-        }
-        match link_audience {
-            Some(audience) if audience == customer => {}
-            Some(audience) => {
-                return Err(RegistrationError::Forbidden {
-                    message: format!("activation link was issued to {audience}, not {customer}"),
-                });
-            }
-            None => {
-                return Err(RegistrationError::Unauthorized {
-                    message: "activation requires the emailed service delegation".to_string(),
-                });
-            }
-        }
 
         if self
             .store
@@ -266,25 +254,37 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
         }
     }
 
-    /// Mint the activation delegation and wrap it into a link.
+    /// Mint the activation invocation and wrap it into a link. The
+    /// invocation is complete and service-signed: the accept button
+    /// presents it as-is, so activation needs no key on the presenting
+    /// device and a click on any device finalizes.
     pub async fn activation_link(&self, customer: &Did) -> Result<String, RegistrationError> {
         let expiration = timestamp(self.now + self.activation_ttl)?;
-        let delegation = DelegationBuilder::new()
+        let service = self.service.did();
+        let invocation = InvocationBuilder::new()
             .issuer(self.service.clone())
-            .audience(customer)
-            .subject(DelegatedSubject::Specific(self.service.did()))
+            .audience(&service)
+            .subject(&service)
             .command(ACTIVATE_COMMAND.iter().map(ToString::to_string).collect())
+            .arguments(BTreeMap::from([
+                (
+                    "customer".to_string(),
+                    Promised::String(customer.to_string()),
+                ),
+                ("terms".to_string(), Promised::String(SIGNUP_TERMS.into())),
+            ]))
+            .proofs(vec![])
             .expiration(expiration)
             .try_build()
             .await
             .map_err(|err| RegistrationError::Internal {
                 message: format!("minting activation failed: {err}"),
             })?;
-        let bytes = DelegationChain::new(delegation).to_bytes().map_err(|err| {
-            RegistrationError::Internal {
+        let bytes = InvocationChain::new(invocation, HashMap::new())
+            .to_bytes()
+            .map_err(|err| RegistrationError::Internal {
                 message: format!("encoding activation failed: {err}"),
-            }
-        })?;
+            })?;
         Ok(format!(
             "{}/activate?ucan={}",
             self.origin.trim_end_matches('/'),
@@ -293,10 +293,12 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     }
 
     /// Parse and cryptographically verify the container, require the
-    /// exact command, and require a fresh, bounded invocation expiration.
+    /// exact command, and require an expiration that has not passed and,
+    /// when a window is given, does not sit further ahead than it.
     async fn verified_chain(
         &self,
         expected_command: &[&str],
+        window: Option<u64>,
     ) -> Result<InvocationChain<Ed25519Signature>, RegistrationError> {
         let chain = InvocationChain::try_from(self.container).map_err(|err| {
             RegistrationError::Invalid {
@@ -330,7 +332,9 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
                 message: "invocation has expired".to_string(),
             });
         }
-        if expiration > self.now + CEREMONY_WINDOW_SECONDS {
+        if let Some(window) = window
+            && expiration > self.now + window
+        {
             return Err(RegistrationError::Unauthorized {
                 message: "invocation expiration exceeds the ceremony window".to_string(),
             });
@@ -443,58 +447,32 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
     }
 }
 
-// `Provider` is how dialog capabilities are performed, and its native
-// declaration requires `Send` futures, which a generic `S: Store` cannot
-// promise. So the impls are per concrete environment: the worker's D1 +
-// Resend pair, and the helpers' sqlite + captured pair.
+// [`Store`] and [`EmailSender`] are declared through the same dual
+// `async_trait` forms as `Provider` itself, so their futures carry the
+// platform-conditional `Send` and one generic impl serves every
+// environment. `ConditionalSync` bounds cover the `&self` captures.
 
-#[cfg(target_arch = "wasm32")]
-mod worker_provider {
-    use async_trait::async_trait;
-    use dialog_capability::{Capability, Provider};
-    use tonk_account::customer::{Activate, Enroll, Receipt, RegistrationError};
-
-    use super::Registration;
-    use crate::email::Resend;
-    use crate::store::d1::D1Store;
-
-    #[async_trait(?Send)]
-    impl Provider<Enroll> for Registration<'_, D1Store, Resend> {
-        async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
-            self.enroll(input).await
-        }
-    }
-
-    #[async_trait(?Send)]
-    impl Provider<Activate> for Registration<'_, D1Store, Resend> {
-        async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
-            self.activate(input).await
-        }
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<S, E> Provider<Enroll> for Registration<'_, S, E>
+where
+    S: Store + ConditionalSync,
+    E: EmailSender + ConditionalSync,
+{
+    async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
+        self.enroll(input).await
     }
 }
 
-#[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
-mod helper_provider {
-    use async_trait::async_trait;
-    use dialog_capability::{Capability, Provider};
-    use tonk_account::customer::{Activate, Enroll, Receipt, RegistrationError};
-
-    use super::Registration;
-    use crate::email::CapturedEmail;
-    use crate::store::sqlite::SqliteStore;
-
-    #[async_trait]
-    impl Provider<Enroll> for Registration<'_, SqliteStore, CapturedEmail> {
-        async fn execute(&self, input: Capability<Enroll>) -> Result<Receipt, RegistrationError> {
-            self.enroll(input).await
-        }
-    }
-
-    #[async_trait]
-    impl Provider<Activate> for Registration<'_, SqliteStore, CapturedEmail> {
-        async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
-            self.activate(input).await
-        }
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<S, E> Provider<Activate> for Registration<'_, S, E>
+where
+    S: Store + ConditionalSync,
+    E: EmailSender + ConditionalSync,
+{
+    async fn execute(&self, input: Capability<Activate>) -> Result<Receipt, RegistrationError> {
+        self.activate(input).await
     }
 }
 

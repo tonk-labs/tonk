@@ -7,6 +7,7 @@
 //! serde structs instead of `rusqlite`'s row API. D1 surfaces numbers as
 //! JS `f64`; the timestamps this crate deals with fit losslessly.
 
+use async_trait::async_trait;
 use serde::Deserialize;
 use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
@@ -83,6 +84,7 @@ impl From<ConsumerRowD1> for Consumer {
     }
 }
 
+#[async_trait(?Send)]
 impl Store for D1Store {
     async fn customer(&self, did: &str) -> Result<Option<Customer>, StoreError> {
         let row: Option<CustomerRowD1> = self

@@ -6,6 +6,7 @@
 //! backends implement [`Store`], so registration logic elsewhere in this
 //! crate is written once, generically over the trait.
 
+use async_trait::async_trait;
 use tonk_account::customer::CustomerStatus;
 
 /// The plan a customer lands on at activation. Repricing inserts a new
@@ -69,9 +70,12 @@ pub struct Consumer {
     pub registered: u64,
 }
 
-/// Storage operations registration needs. Methods are plain `async fn`;
-/// callers are generic over the trait, never `dyn Store`.
-#[allow(async_fn_in_trait)]
+/// Storage operations registration needs. Declared through the dual
+/// `async_trait` forms dialog uses, so the trait itself promises `Send`
+/// futures natively (and nothing on wasm32) and generic consumers can be
+/// written once.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Store {
     /// Look up a customer by DID.
     async fn customer(&self, did: &str) -> Result<Option<Customer>, StoreError>;
