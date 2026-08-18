@@ -901,37 +901,99 @@ pub mod tests {
     /// of "not signed in": no root at all, and a root with no account behind
     /// it. Neither may create a spot — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
-    async fn create_space_refusal(state: TonkState) -> serde_json::Value {
-        let (app, _lsp) = api_router(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/spaces")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"name":"Notes","remote":null,"template":null}"#,
-                    ))
-                    .unwrap(),
-            )
+    /// A space creates before any account exists, delegated to the most
+    /// durable key the profile holds (plan/Account model.md §2): the
+    /// device key when there is no root, the root when there is one.
+    #[dialog_common::test]
+    async fn it_creates_a_space_before_any_account_exists() {
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let key = put_repo(&app, "pre-account").await;
+        {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let prefix = super::repository::space_root_prefix(&tonk, &repository.did())
+                .await
+                .unwrap();
+            assert_eq!(
+                prefix.audience(),
+                &tonk.profile.did(),
+                "with no root, the space delegates to the profile's device key"
+            );
+        }
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_account().await);
+        let key = put_repo(&app, "signed-out").await;
+        let tonk = state.read().await;
+        let repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let prefix = super::repository::space_root_prefix(&tonk, &repository.did())
             .await
             .unwrap();
-        serde_json::from_slice(&body).unwrap()
+        let root = super::identity::local_root(&tonk).await.unwrap();
+        assert_eq!(
+            prefix.audience(),
+            &root.root_did,
+            "with a bare root, the space delegates to it"
+        );
     }
 
+    /// A space created before any root existed is adopted once one does:
+    /// its own signer re-delegates to the root and the stored prefix is
+    /// replaced, so the account holds the authority going forward.
     #[dialog_common::test]
-    async fn it_refuses_space_creation_without_an_account() {
-        let error = create_space_refusal(test_state_without_root().await).await;
-        assert_eq!(error["error"]["code"], "ACCOUNT_REQUIRED");
+    async fn it_adopts_profile_spaces_once_a_root_exists() {
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let key = put_repo(&app, "adopted").await;
 
-        let error = create_space_refusal(test_state_without_account().await).await;
+        let tonk = state.read().await;
+        let root = Ed25519Signer::import(&test_root_seed(&tonk.profile_name))
+            .await
+            .unwrap();
+        let root_did = {
+            use dialog_varsig::Principal as _;
+            root.did()
+        };
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+            .await
+            .unwrap();
+        super::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "test-credential".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        super::repository::adopt_profile_spaces(&tonk).await;
+
+        let repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let prefix = super::repository::space_root_prefix(&tonk, &repository.did())
+            .await
+            .unwrap();
         assert_eq!(
-            error["error"]["code"], "ACCOUNT_REQUIRED",
-            "a bare passkey root is not an account"
+            prefix.audience(),
+            &root_did,
+            "adoption re-delegates the space to the root"
         );
     }
 
@@ -947,24 +1009,6 @@ pub mod tests {
         let (app, _state, _lsp) = super::api_router_with_state(test_state().await);
         let key = put_repo(&app, "account-attached").await;
         assert!(key.starts_with("did:key:"));
-    }
-
-    /// Every creation route shares the gate, not just the one the page uses.
-    #[dialog_common::test]
-    async fn it_refuses_repository_creation_without_an_account() {
-        let (app, _lsp) = api_router(test_state_without_account().await);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/repository/no-account")
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[dialog_common::test]
