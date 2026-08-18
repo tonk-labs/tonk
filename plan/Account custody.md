@@ -116,32 +116,38 @@ derives the KEK for the wrapped-secret fact.
 Publishing is a customer act in the established deposit pattern,
 role-first beside `/customer/*` and `/provider/*`:
 
-- `/custody/publish { custody: Did, delegation: Cid, consent: Cid }` —
-  the invocation is device-signed on the **account's subject** through
-  the `root → device` link, so attribution and metering land on the
-  customer and the custody DID never needs provisioning. Two deposits
-  ride as container tokens named by CID (arguments, not proofs), the
-  `/provider/add` shape exactly:
-  - `delegation`: the grant on the **account's subject** naming the
-    custody key — the document's payload. Verified subject = the
-    invocation's subject, audience = `custody`. Who signed it is not
-    checked beyond chain validity: authorization roots in the subject,
-    and any valid chain to it is as good as the root key itself.
-  - `consent`: a grant on the **custody key's subject** — subject =
-    `custody`, audience = the account, command covering
-    `/custody/publish`. This
-    is what makes the binding bidirectional: without it an account
-    could publish a document tying itself to any DID it likes, a false
-    public linkage the named key's holder never agreed to. At
-    enrollment the device holds the just-derived custody private key,
-    so minting it is free.
-  The service verifies the chain, requires the subject to be a
-  registered customer, checks both deposits, and serves the document at
-  `/custody/{custody-key}/did.json`.
-- `/custody/retract { custody: Did }` — removal, paired with revoking
-  the delegation through the relay. Deliberately needs **no consent**:
-  retraction is the account withdrawing its own claim, and it must work
-  when the passkey is lost — which is the main occasion for it.
+The order of operations: the account mints the delegation first; the
+custody key then publishes it on its own subject.
+
+- `/custody/publish { delegation: Cid }` — invoked on the **custody
+  key's subject**; the chain roots in the custody key (at enrollment
+  the device holds the just-derived custody private key, so signing is
+  free). Consent is not a separate artifact: invoking on your own
+  subject *is* the agreement, so the binding is bidirectional with one
+  deposit — the account through the delegation, the custody key
+  through the invocation subject. The delegation rides as a container
+  token named by CID (an argument, not a proof), verified:
+  - audience = the invocation subject (the delegation names this
+    custody key);
+  - subject = a **registered customer** — that customer gets the
+    attribution and metering, so the custody DID never needs
+    provisioning: it is a subject whose one invocation is billed
+    through the account the deposit names;
+  - subject ≠ invocation subject — a key custodying itself is
+    meaningless, and rejecting it closes the degenerate case of the
+    same command invoked on an account subject.
+  The service serves the document at
+  `/custody/{invocation-subject}/did.json`. The address deriving from
+  the invocation subject is what makes squatting impossible: writing
+  key K's document requires a chain rooted in K, which is exactly K's
+  consent. Nobody can publish at an address they do not control.
+- `/custody/retract { custody: Did }` — invoked on the **account's
+  subject**, paired with revoking the delegation through the relay.
+  Deliberately needs **no consent**: retraction is the account
+  withdrawing its own claim, and it must work when the passkey is lost
+  — which is the main occasion for it. The mirror rule scopes it: the
+  stored document's delegation subject must equal the invocation
+  subject — an account retracts documents naming itself, nothing else.
 - **Resolution is deliberately not a capability.** did:web resolution is
   an unauthenticated GET; the custody key's holder is merely the only
   party who can derive the address (the DID comes out of the PRF inside
@@ -169,9 +175,9 @@ Why this shape:
   existing revocation relay (already checked on the sync path), retract
   the wrapping fact, delete the document. Stronger than deleting a
   ciphertext and hoping nobody cached it.
-- **Nothing touches the hot path.** Custody traffic is ordinary
-  account-subject traffic under an ordinary UCAN chain, billed to the
-  customer like everything else: no per-passkey consumers, no
+- **Nothing touches the hot path.** Publication is one enrollment-time
+  invocation billed to the customer the deposit names; everything else
+  is ordinary account-subject traffic. No per-passkey consumers, no
   provisioning choreography, no alias map consulted at presign time.
 - Privacy note: the document publicly links custody key ↔ account DID
   to anyone who learns the custody-key DID. Presented chains reveal the
