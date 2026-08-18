@@ -8,24 +8,19 @@
 //! deployment serving this page — so endpoints derive from the request
 //! origin and the service DID comes from `/.well-known/tonk`.
 
-use std::collections::BTreeMap;
-
 use axum::{
     Json,
     extract::{Extension, State},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_ucan_core::promise::Promised;
-use dialog_ucan_core::subject::Subject as DelegatedSubject;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{Container, DelegationBuilder};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::CUSTOMER_CREDENTIAL_SITE;
 use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_common::log;
-use tonk_identity::request::build_device_invocation;
+use tonk_identity::request::build_enroll_invocation;
 use url::Url;
 
 use super::AppState;
@@ -96,45 +91,15 @@ pub async fn enroll(
     let service_did = service_did(origin.url()).await?;
     let device = state.profile.signer().signer().clone();
 
-    // The deposit: this device grants the service access to the account
-    // space under the customer's authority. Its chain link (the
-    // `root → device` grant) rides in the same container as the
-    // invocation's proof, so the service can walk the deposit back to
-    // the customer.
-    let deposit = DelegationBuilder::new()
-        .issuer(device.clone())
-        .audience(&service_did)
-        .subject(DelegatedSubject::Specific(root_did.clone()))
-        .command(vec![])
-        .try_build()
+    // The deposits — the service's scoped grants into the account
+    // space — and their chain link (the `root → device` grant) all ride
+    // in the container `build_enroll_invocation` assembles, so the
+    // service can walk them back to the customer.
+    let body = build_enroll_invocation(device, &link, &service_did, &email)
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to mint the access deposit: {error}"))
+            TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
         })?;
-
-    let arguments = BTreeMap::from([
-        ("email".to_string(), Promised::String(email.clone())),
-        ("access".to_string(), Promised::Link(deposit.to_cid())),
-    ]);
-    let invocation = build_device_invocation(
-        device,
-        &link,
-        vec!["customer".to_string(), "enroll".to_string()],
-        arguments,
-    )
-    .await
-    .map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to build the enroll invocation: {error}"))
-    })?;
-    let mut tokens = Container::from_bytes(&invocation)
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to reopen the enroll container: {error}"))
-        })?
-        .into_tokens();
-    tokens.push(deposit.encoded().to_vec());
-    let body = Container::new(tokens).to_bytes().map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to encode the enroll container: {error}"))
-    })?;
 
     let endpoint = ucan_endpoint(origin.url())?;
     let receipt = match post_cbor(&endpoint, &body).await {

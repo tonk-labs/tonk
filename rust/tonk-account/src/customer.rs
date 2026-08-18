@@ -9,6 +9,9 @@
 //! definition.
 
 use dialog_capability::{Attenuate, Attenuation, Effect, Subject};
+use dialog_effects::archive::{Archive, Catalog};
+use dialog_effects::memory::{Memory, Space};
+use dialog_ucan::Scope;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 use serde::{Deserialize, Serialize};
@@ -29,15 +32,45 @@ impl Attenuation for Customer {
 pub struct Enroll {
     /// Address the activation link is sent to.
     pub email: String,
-    /// The deposited delegation granting the service access to the
-    /// account space, by CID; its bytes travel in the same container. An
-    /// argument, not a proof: it never extends the invocation's chain.
-    pub access: Cid,
+    /// The deposited delegations granting the service access to the
+    /// account space, by CID; their bytes travel in the same container.
+    /// Arguments, not proofs: they never extend the invocation's chain.
+    /// The set must cover exactly the [`deposit_scopes`]: the service's
+    /// own branch in memory and the index catalog backing it.
+    pub access: Vec<Cid>,
 }
 
 impl Effect for Enroll {
     type Of = Customer;
     type Output = Result<Receipt, RegistrationError>;
+}
+
+/// The archive catalog an enrollment deposit covers: the tree-node index
+/// backing branch push and pull. Catalog reads still require knowing a
+/// node's digest, which only the scoped memory cells reveal.
+pub const SERVICE_CATALOG: &str = "index";
+
+/// The memory space of the branch the service writes under the account:
+/// named by the service's own DID, so the grant is per-service and
+/// rotates with the key. A service whose identity changes re-enrolls
+/// into a fresh branch rather than inheriting the old one.
+pub fn service_space(service: &Did) -> String {
+    format!("branch/{service}")
+}
+
+/// The scopes an enrollment deposit must grant the service, derived from
+/// capability chains so client and verifier share one definition: the
+/// account's service-named branch in memory, and the index catalog its
+/// pushes and pulls go through. Nothing broader — in particular not `/` —
+/// is accepted as a deposit.
+pub fn deposit_scopes(customer: &Did, service: &Did) -> [Scope; 2] {
+    let memory = Subject::from(customer.clone())
+        .attenuate(Memory)
+        .attenuate(Space::new(service_space(service)));
+    let archive = Subject::from(customer.clone())
+        .attenuate(Archive)
+        .attenuate(Catalog::new(SERVICE_CATALOG));
+    [Scope::from(&memory), Scope::from(&archive)]
 }
 
 /// `/customer/activate` — finalize enrollment. The invocation's subject
@@ -230,7 +263,7 @@ mod tests {
     fn it_derives_the_role_first_command_paths() {
         let enroll: Capability<Enroll> = subject().attenuate(Customer).invoke(Enroll {
             email: "alice@example.com".into(),
-            access: Cid::default(),
+            access: vec![Cid::default()],
         });
         assert_eq!(enroll.ability(), "/customer/enroll");
 
@@ -248,6 +281,27 @@ mod tests {
 
         let provision: Capability<Provision> = subject().attenuate(Consumer).invoke(Provision);
         assert_eq!(provision.ability(), "/consumer/provision");
+    }
+
+    #[test]
+    fn it_scopes_the_deposit_to_the_service_branch_and_index() {
+        let customer = did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        let service = did!("key:z6MkrZ1r5XBFZjBU34qyD8fueMbMRkKw17BZaq2ivKFjnz2z");
+        let [memory, archive] = deposit_scopes(&customer, &service);
+
+        assert_eq!(memory.command.segments(), &["memory".to_string()]);
+        assert_eq!(
+            memory.parameters.as_map().get("space"),
+            Some(&ipld_core::ipld::Ipld::String(format!("branch/{service}")))
+        );
+        assert_eq!(archive.command.segments(), &["archive".to_string()]);
+        assert_eq!(
+            archive.parameters.as_map().get("catalog"),
+            Some(&ipld_core::ipld::Ipld::String("index".to_string()))
+        );
+        for scope in [&memory, &archive] {
+            assert_eq!(scope.policy().len(), 1, "one equality predicate per scope");
+        }
     }
 
     #[test]
