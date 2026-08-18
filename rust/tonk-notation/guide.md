@@ -614,3 +614,113 @@ name:
 In practice you rarely write `name!` directly; the `&`
 anchor sugar covers most uses.
 
+
+## Rules and premises
+
+A `rule!:` derives facts from other facts. Its body is a list of
+premises under `when:` (all must match) and optionally `unless:`
+(none may match); the head under `assert:`, `assert!:`, or
+`retract!:` says what to conclude.
+
+```yaml
+rule!:
+  assert!: alert
+  when:
+    - assert: counter
+      where: { this: ?this, count: ?count }
+```
+
+`assert:` heads *derive on query* — the conclusion is a view over
+current state, computed when asked. `assert!:` and `retract!:` fire
+*at commit*, writing their conclusion into the next state.
+
+A premise's `assert:` names one of four things: a concept, a formula
+(`math/sum`), a predicate, or a resolver.
+
+### Predicates
+
+Predicates filter bindings rather than reading stored facts.
+
+| Name | Meaning |
+| --- | --- |
+| `==` | the two sides are equal |
+| `<` | `of` is strictly less than `with` |
+| `<=` | `of` is at most `with` |
+| `>` | `of` is strictly greater than `with` |
+| `>=` | `of` is at least `with` |
+| `starts-with` | `of`'s lexical form begins with `prefix` |
+
+The range predicates order every comparable type — numbers, strings,
+symbols, entities, bytes — and read `of` as the left side:
+
+```yaml
+# ?count is in the half-open interval (1, 100].
+- assert: ">"
+  where: { of: ?count, with: 1 }
+- assert: <=
+  where: { of: ?count, with: 100 }
+```
+
+When one side is a constant, the bound is pushed into the index scan
+as a range, so a bounded query reads less rather than merely keeping
+less.
+
+> **Quote `>` and `>=`.** Unquoted, `>` opens a YAML folded scalar, so
+> `assert: >` parses as an *empty* predicate name and reports an
+> unknown concept — a diagnostic that says nothing about quoting. `<`
+> and `<=` have no such meaning and can stay bare. Editor completion
+> inserts the quoted form for you.
+
+### Resolvers
+
+Resolvers read the *store's own structure* — the search tree behind
+the facts — instead of the facts themselves. They select by content
+address, so each one needs its subject bound (`of:`) before it can
+run; a join is what binds it.
+
+| Name | Yields |
+| --- | --- |
+| `tree/node` | a node's kind, size, entry/span count |
+| `tree/span` | one row per span of an index node |
+| `tree/key` | one row per entry key of a segment |
+| `tree/entry` | an entry's stored claim metadata |
+| `tree/value` | a spilled value's bytes |
+| `tree/blob` | a blob-index entry |
+| `tree/manifest` | the format manifest a node embeds |
+
+Because they are ordinary premises, they compose — a span's child
+reference feeds the next node lookup:
+
+```yaml
+- assert: tree/span
+  where: { of: ?root, node: ?child }
+- assert: tree/node
+  where: { of: ?child, kind: ?kind }
+```
+
+Operands you leave out are simply not bound, exactly as with a
+formula's outputs; only the required input (`of:`) must be given.
+
+A resolver also heads a query on its own, not just a rule premise:
+
+```yaml
+tree/node:
+  of: "8QsR69j39jU7acb4H9VfsSpR2SrHJ6f2PPKHoosnsAPr"
+  kind: ?kind
+```
+
+### Built-in names are reserved
+
+Premise heads resolve built-ins — formulas, predicates, resolvers —
+before concepts. A concept declared under one of those names could
+never be referenced, since every mention would mean the built-in, so
+declaring one is an error rather than a silent shadowing:
+
+```yaml
+concept!: &tree/node   # error: "tree/node" is a built-in resolver
+```
+
+In the editor each `assert:` completion is labelled with the
+namespace it comes from (`concept`, `formula`, `constraint`,
+`resolver`), and a resolver's `where:` block completes to that
+resolver's own operands, with the required input listed first.

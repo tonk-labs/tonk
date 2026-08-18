@@ -7,8 +7,8 @@
 //! - [`Application`] captures "predicate applied to terms," shared
 //!   between queries and mutations. [`Application::Rule`] is the
 //!   rule-install / rule-retract counterpart: a rule is not a
-//!   generic concept (its storage shape is the `dialog.effect/*`
-//!   claims, not a per-attribute `dialog.concept.with/*` map), so
+//!   generic concept (its storage shape is the `db.effect/*`
+//!   claims, not a per-attribute `db.concept.with/*` map), so
 //!   it gets its own variant.
 //! - [`Statement::Assert`] / [`Statement::Retract`] are the
 //!   write-direction wrappers. A rule install is
@@ -29,9 +29,9 @@ use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
-use crate::deductive_rule::DeductiveRule;
 use crate::prelude::EntityExt;
-use crate::rule::Rule;
+use crate::rule::{DeductiveRule, InductiveRule};
+use dialog_query::ResolverQuery;
 use indexmap::IndexMap;
 use serde::Serialize;
 use tonk_core::claim::{ConceptDescriptor, PredicateApplication, ValueMap};
@@ -157,47 +157,63 @@ pub enum Application {
         /// `&anchor` on the value side, if any.
         name: Option<AnchorName>,
     },
-    /// `rule!:` head — an installed or to-be-installed rule.
-    /// Distinct from `Concept` because a rule's storage shape is
-    /// the `dialog.effect/*` claim set, not a per-attribute
-    /// `dialog.concept.with/*` map.
+    /// `rule!:` head with the inductive (`assert!:` / `retract!:`)
+    /// form — a rule that fires at commit time. Distinct from
+    /// `Concept` because a rule's storage shape is dialog's
+    /// `dialog.rule/*` claim set, not a per-attribute map.
     ///
-    /// For an install, the carried [`Rule`] was built fresh from
-    /// the body lift; for a retract it was resolved off the branch
-    /// (so the carried `source` bytes match what was stored). The
-    /// outer [`Statement::Assert`] / [`Statement::Retract`] picks
-    /// the direction.
+    /// For an install, the carried [`InductiveRule`] was built fresh
+    /// from the body lift; for a retract it was resolved off the
+    /// branch (the canonical encoding makes the dissociate
+    /// byte-exact). The outer [`Statement::Assert`] /
+    /// [`Statement::Retract`] picks the direction.
     ///
-    /// `rule` is boxed because [`Rule`]'s embedded [`InductiveRule`]
-    /// would otherwise inflate every `Application` variant. The
-    /// boxed value is consumed once per claim, so the heap hop is
-    /// paid at most once per `rule!:`.
+    /// `rule` is boxed because the compiled rule would otherwise
+    /// inflate every `Application` variant. The boxed value is
+    /// consumed once per claim, so the heap hop is paid at most once
+    /// per `rule!:`.
     Rule {
-        /// The rule, packaged with its stored source bytes and
-        /// polarity so an `assert` / `retract` writes the exact
-        /// EAVs that were (or will be) stored.
-        rule: Box<Rule>,
-        /// Where the install / retract target entity came from.
-        /// `Derived` is the content-addressed install (default for
-        /// `rule!:` without `this:`); `Uri(entity)` is the
-        /// caller-pinned install/retract URI.
+        /// The compiled rule; dialog's `Statement` impl writes the
+        /// native `dialog.rule/*` facts.
+        rule: Box<InductiveRule>,
+        /// Where the retract target entity came from. Rules are
+        /// content-addressed, so installs are always `Derived`; a
+        /// retract addressed by `this: <entity>` carries `Uri`.
         this: ThisIntent,
     },
     /// `rule!:` head with the deductive (`assert:`, no bang) form —
     /// a rule that derives on query rather than firing on commit.
-    /// Distinct from [`Application::Rule`] because its storage shape
-    /// is the `db.rule/*` claim set and it has no polarity.
+    /// Same native `dialog.rule/*` storage, minus the trigger index.
     ///
-    /// `rule` is boxed for the same reason as [`Application::Rule`]:
-    /// the embedded compiled rule would otherwise inflate every
-    /// `Application` variant.
+    /// `rule` is boxed for the same reason as [`Application::Rule`].
     DeductiveRule {
-        /// The deductive rule, packaged with its stored source bytes
-        /// so an `assert` / `retract` writes the exact EAVs.
+        /// The compiled deductive rule.
         rule: Box<DeductiveRule>,
-        /// Where the install target entity came from — `Derived` for
-        /// the content-addressed default, `Uri(entity)` when pinned.
+        /// Where the retract target entity came from — `Derived` for
+        /// the content-addressed install.
         this: ThisIntent,
+    },
+    /// A resolver head (`tree/node:`, `tree/entry:`, …) — a premise
+    /// dialog answers by content address over immutable blocks rather
+    /// than by scanning the mutable head.
+    ///
+    /// Read-only by construction: a resolver describes what storage
+    /// already holds, so there is nothing to assert. It reaches the
+    /// query path so the tree inspector can read the store's own
+    /// structure as ordinary query rows.
+    Resolver {
+        /// The resolver, already validated against dialog's schema.
+        query: Box<ResolverQuery>,
+        /// The resolver's operand terms.
+        ///
+        /// Carried alongside the query because `ResolverQuery`
+        /// rebuilds its parameter map on every call (its terms are
+        /// per-variant struct fields, not a stored map), so there is
+        /// nothing to borrow — and [`Application::parameters`] must
+        /// return a reference. Callers read this to learn which
+        /// variables the expression binds; an empty map here silently
+        /// yields no rows.
+        terms: Parameters,
     },
 }
 
@@ -212,6 +228,10 @@ impl Application {
             Self::Concept { query, .. } => &query.terms,
             Self::Domain { application, .. } => &application.parameters,
             Self::Rule { .. } | Self::DeductiveRule { .. } => empty_parameters(),
+            // A resolver's operands ARE its parameters: callers read
+            // them to learn which variables the expression binds, so
+            // returning an empty set here silently yields no rows.
+            Self::Resolver { terms, .. } => terms,
         }
     }
 
@@ -222,6 +242,9 @@ impl Application {
             | Self::Domain { this, .. }
             | Self::Rule { this, .. }
             | Self::DeductiveRule { this, .. } => this,
+            // A resolver keys on its own `of:` reference, never on a
+            // `this:` entity.
+            Self::Resolver { .. } => &ThisIntent::Derived,
         }
     }
 
@@ -232,7 +255,7 @@ impl Application {
             Self::Concept { name, .. } | Self::Domain { name, .. } => {
                 name.as_ref().map(AnchorName::as_str)
             }
-            Self::Rule { .. } | Self::DeductiveRule { .. } => None,
+            Self::Rule { .. } | Self::DeductiveRule { .. } | Self::Resolver { .. } => None,
         }
     }
 
@@ -408,6 +431,15 @@ impl Planner for Application {
             }))),
             Self::Rule { rule, .. } => Ok(ApplicationPlan::Rule(rule)),
             Self::DeductiveRule { rule, .. } => Ok(ApplicationPlan::DeductiveRule(rule)),
+            // Read-only by construction: a resolver describes what
+            // storage already holds, so it never reaches the mutation
+            // planner. The analyzer only ever builds one for a query
+            // head — an assertion with a resolver name resolves as a
+            // concept and fails there first.
+            Self::Resolver { .. } => unreachable!(
+                "a resolver is read-only — it has no mutation plan and \
+                 the analyzer never lifts one into an assertion"
+            ),
         }
     }
 }
@@ -419,8 +451,8 @@ impl Planner for Application {
 /// [`ConceptQuery`] (the per-attribute storage shape used by every
 /// concept-like application — built-in `attribute`/`concept`,
 /// user-defined concepts, and synthesised domain predicates).
-/// [`ApplicationPlan::Rule`] carries the resolved [`Rule`] whose
-/// [`ArtifactsStatement`] impl emits the `dialog.effect/*` storage
+/// [`ApplicationPlan::Rule`] carries the compiled rule whose native
+/// [`ArtifactsStatement`] impl emits the `dialog.rule/*` storage
 /// shape.
 pub enum ApplicationPlan {
     /// Per-attribute concept storage (concept / domain / built-in).
@@ -429,12 +461,12 @@ pub enum ApplicationPlan {
     /// `Rule` variant) would otherwise leave a large size gap between
     /// variants.
     Concept(Box<ConceptPlan>),
-    /// `dialog.effect/*` rule storage. Boxed because [`Rule`]'s
-    /// embedded [`InductiveRule`] would otherwise inflate every
-    /// concept-shaped plan to rule-storage size.
-    Rule(Box<Rule>),
-    /// `db.rule/*` deductive-rule storage. Boxed for the same
-    /// size reason as [`ApplicationPlan::Rule`].
+    /// Native `dialog.rule/*` rule storage. Boxed because the
+    /// compiled rule would otherwise inflate every concept-shaped
+    /// plan to rule-storage size.
+    Rule(Box<InductiveRule>),
+    /// Native `dialog.rule/*` deductive-rule storage. Boxed for the
+    /// same size reason as [`ApplicationPlan::Rule`].
     DeductiveRule(Box<DeductiveRule>),
 }
 
@@ -492,7 +524,7 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
 /// (`person!: &alice`) desugars to.
 ///
 /// The anchor name `alice` becomes the entity URI `id:alice`, and
-/// that entity carries a `dialog.meta/name` claim pointing at the
+/// that entity carries a `db.meta/name` claim pointing at the
 /// body-derived target. Equivalent to:
 ///
 /// ```yaml
@@ -501,7 +533,7 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
 ///   entity: <body-derived target>
 /// ```
 ///
-/// Cardinality-one on `dialog.meta/name` means re-running with a
+/// Cardinality-one on `db.meta/name` means re-running with a
 /// different body retracts the prior `entity:` claim and binds the
 /// name to the new target — same git-tag semantics, but the EAV
 /// hangs off the *name* entity, not the named one.
@@ -716,14 +748,14 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
 
         let mut id_alice_name_claim_count = 0;
         let mut wrong_direction_count = 0;
         for inst in changes.into_instructions() {
             // Cardinality-one fields use `Instruction::Replace`
             // (added in dialog tonk-2026-05-11). The anchor name
-            // is `dialog.name/referent` with cardinality one, so
+            // is `db.name/referent` with cardinality one, so
             // the desugared `name!` lands as a Replace, not an
             // Assert.
             let artifact = match &inst {
@@ -741,7 +773,7 @@ mod tests {
         }
         assert_eq!(
             id_alice_name_claim_count, 1,
-            "expected exactly one (id:alice, dialog.meta/name, target) claim"
+            "expected exactly one (id:alice, db.meta/name, target) claim"
         );
         assert_eq!(
             wrong_direction_count, 0,
@@ -760,7 +792,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
 
         let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
             matches!(
@@ -771,7 +803,7 @@ mod tests {
         });
         assert!(
             saw_dissociate,
-            "expected (id:alice, dialog.meta/name, target) dissociation"
+            "expected (id:alice, db.meta/name, target) dissociation"
         );
     }
 
@@ -801,14 +833,14 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()
             .any(|inst| matches!(inst, Instruction::Assert(a) if a.the == meta_name));
         assert!(
             !saw_meta_name,
-            "anonymous bindings should not emit any dialog.meta/name claim"
+            "anonymous bindings should not emit any db.meta/name claim"
         );
     }
 

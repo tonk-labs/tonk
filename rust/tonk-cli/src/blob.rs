@@ -63,6 +63,43 @@ pub struct AddOutcome {
     pub content_type: String,
 }
 
+/// A blob attached to a branch without asserting or changing fact metadata.
+#[derive(Debug)]
+pub struct AttachOutcome {
+    /// The content-addressed entity derived from the imported bytes.
+    pub entity: Entity,
+    /// Number of imported bytes.
+    pub size: u64,
+}
+
+/// Attach a file's bytes to a named branch without asserting metadata.
+pub async fn attach(
+    site: &TonkSite,
+    branch: &str,
+    path: &Path,
+) -> Result<AttachOutcome, BlobError> {
+    let file = tokio::fs::File::open(path).await?;
+    let size = file.metadata().await?.len();
+
+    use futures_util::StreamExt as _;
+    let source = tokio_util::io::ReaderStream::new(file).map(|chunk| {
+        chunk
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| dialog_effects::blob::BlobError::Storage(error.to_string()))
+    });
+    let session = site
+        .named_branch(branch)
+        .await
+        .map_err(|error| BlobError::Site(format!("acquire branch {branch:?}: {error}")))?;
+    let entity = Blob::import(Box::pin(source))
+        .write(session.handle().blobs())
+        .perform(&site.operator)
+        .await
+        .map_err(|error| BlobError::Site(format!("write blob: {error}")))?;
+
+    Ok(AttachOutcome { entity, size })
+}
+
 /// Map a file extension to a MIME type. Keep in sync with
 /// tonk-worker's `mime_for_extension` until the two are
 /// consolidated (planned for the display milestone).
@@ -120,7 +157,7 @@ pub async fn add(
     let source = tokio_util::io::ReaderStream::new(file).map(|chunk| {
         chunk
             .map(|bytes| bytes.to_vec())
-            .map_err(|e| dialog_effects::blob::BlobError::Io(e.to_string()))
+            .map_err(|e| dialog_effects::blob::BlobError::Storage(e.to_string()))
     });
 
     let session = site
@@ -281,8 +318,13 @@ async fn query_content_type(
 
     match artifacts.next().await {
         Some(Ok(artifact)) => {
-            let value = String::try_from(artifact.is)
-                .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))?;
+            let value = artifact
+                .value()
+                .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))
+                .and_then(|value| {
+                    String::try_from(value)
+                        .map_err(|e| BlobError::Site(format!("content-type decode: {e}")))
+                })?;
             Ok(Some(value))
         }
         Some(Err(e)) => Err(BlobError::Site(format!("content-type query: {e}"))),

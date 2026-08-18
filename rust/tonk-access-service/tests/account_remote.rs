@@ -9,9 +9,9 @@ use dialog_common::helpers::Provisionable as _;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_operator::Operator;
+use dialog_operator::helpers::{test_operator_with_profile, unique_name};
 use dialog_query::{Attribute, Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::helpers::{test_operator_with_profile, unique_name};
 use dialog_repository::{Branch, RemoteBranch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::VolatileSpace;
 use dialog_ucan::UcanDelegation;
@@ -224,13 +224,21 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
 
     let genesis_a = branch_a.transaction().commit().perform(&operator_a).await?;
     let genesis_b = branch_b.transaction().commit().perform(&operator_b).await?;
-    assert_eq!(genesis_a.subject, root_did);
-    assert_eq!(genesis_b.subject, root_did);
+    // The head carries an opaque branch entity committing to
+    // (profile, subject, name) rather than the subject DID itself.
+    assert_eq!(
+        genesis_a.branch,
+        dialog_repository::branch_of(&root_did, &operator_a.profile_did(), "main")
+    );
+    assert_eq!(
+        genesis_b.branch,
+        dialog_repository::branch_of(&root_did, &operator_b.profile_did(), "main")
+    );
     assert_ne!(genesis_a, genesis_b, "the race must use distinct revisions");
 
     let (result_a, result_b) = tokio::join!(
-        publish_genesis_if_absent(&remote_a, genesis_a.clone(), &operator_a),
-        publish_genesis_if_absent(&remote_b, genesis_b.clone(), &operator_b),
+        publish_genesis_if_absent(&branch_a, &remote_a, &operator_a),
+        publish_genesis_if_absent(&branch_b, &remote_b, &operator_b),
     );
     let result_a = result_a?;
     let result_b = result_b?;
@@ -262,13 +270,12 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
             other => panic!("expected exactly one genesis winner, got {other:?}"),
         };
 
-    loser_branch
-        .reset(winner.clone())
-        .perform(loser_operator)
-        .await?;
-    assert_eq!(loser_branch.revision(), Some(winner.clone()));
+    // Adopt the winner by pulling — the pull integrates the established
+    // head and records it as the loser's sync base, so its next push
+    // fast-forwards.
+    assert!(loser_branch.pull().perform(loser_operator).await?.is_some());
     assert_eq!(
-        publish_genesis_if_absent(winner_remote, genesis_a, winner_operator).await?,
+        publish_genesis_if_absent(winner_branch, winner_remote, winner_operator).await?,
         CreateGenesis::Loser(winner.clone()),
         "a retry must never replace the established revision"
     );
@@ -339,7 +346,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
         .perform(&winner.operator)
         .await?;
     assert!(matches!(
-        publish_genesis_if_absent(&winner.remote, genesis.clone(), &winner.operator).await?,
+        publish_genesis_if_absent(&winner.branch, &winner.remote, &winner.operator).await?,
         CreateGenesis::Winner(_)
     ));
     let note: Entity = "account-test:seeded".parse()?;
@@ -369,7 +376,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
         .perform(&loser.operator)
         .await?;
     let CreateGenesis::Loser(adopted) =
-        publish_genesis_if_absent(&loser.remote, local_genesis.clone(), &loser.operator).await?
+        publish_genesis_if_absent(&loser.branch, &loser.remote, &loser.operator).await?
     else {
         anyhow::bail!("the second candidate must lose an established remote");
     };
@@ -379,12 +386,9 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
     );
     assert_ne!(adopted, local_genesis);
 
-    // Adopt with no intervening fetch, as `hydrate` does, and read through.
-    loser
-        .branch
-        .reset(adopted.clone())
-        .perform(&loser.operator)
-        .await?;
+    // Adopt as `hydrate` does: pull, integrating the winner's head and
+    // recording it as the sync base, and read through.
+    loser.branch.pull().perform(&loser.operator).await?;
 
     let seeded: Vec<_> = loser
         .branch
@@ -437,11 +441,11 @@ async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyho
     );
     let genesis = branch.transaction().commit().perform(&operator).await?;
     assert_eq!(
-        publish_genesis_if_absent(&remote, genesis.clone(), &operator).await?,
+        publish_genesis_if_absent(&branch, &remote, &operator).await?,
         CreateGenesis::Winner(genesis.clone())
     );
     assert_eq!(
-        publish_genesis_if_absent(&remote, genesis, &operator).await?,
+        publish_genesis_if_absent(&branch, &remote, &operator).await?,
         CreateGenesis::Loser(remote.fetch().perform(&operator).await?.unwrap())
     );
     Ok(())

@@ -642,6 +642,7 @@ pub(crate) async fn flush_pending_for_store(
 
 #[cfg(test)]
 mod tests {
+    use dialog_operator::DeriveOperator as _;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
 

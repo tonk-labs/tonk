@@ -244,16 +244,16 @@ fn hex_digit(b: u8) -> Option<u8> {
 
 /// Build the name-resolution query: resolve a bookmark `name` to the
 /// entity it points at through the **Name concept** — the `id:<name>`
-/// entity's `dialog.name/referent` claim (cardinality one, so at most
+/// entity's `db.name/referent` claim (cardinality one, so at most
 /// one match).
 ///
 /// This is the single source of truth for "what does this name refer
 /// to": the analyzer publishes a `Name` claim for every `&anchor`,
 /// including concepts pinned to a `this:` URI (e.g. `&workspace` +
 /// `this: tonk:workspace` → `id:workspace` → `tonk:workspace`). A
-/// concept's `dialog.meta/name` claim, by contrast, is only emitted
+/// concept's `db.meta/name` claim, by contrast, is only emitted
 /// when its `this:` is *derived*, so resolving a model/view name
-/// against `dialog.meta/name` misses pinned concepts. Resolving names
+/// against `db.meta/name` misses pinned concepts. Resolving names
 /// here and feeding the resulting URI to [`phase1_query`] makes model,
 /// view, and entity name resolution agree.
 ///
@@ -266,7 +266,7 @@ pub fn name_query(name: &str) -> Query {
         },
         "predicate": {
             "with": {
-                "entity": { "the": "dialog.name/referent", "as": "Entity", "cardinality": "one" }
+                "entity": { "the": "db.name/referent", "as": "Entity", "cardinality": "one" }
             }
         }
     });
@@ -279,7 +279,7 @@ pub fn name_query(name: &str) -> Query {
 /// `parsed.name_or_uri` is expected to be a concept entity URI — a
 /// bookmark name should be resolved to its referent via [`name_query`]
 /// first. (For backwards compatibility a non-URI value still falls
-/// back to a `dialog.meta/name` filter, but that path misses concepts
+/// back to a `db.meta/name` filter, but that path misses concepts
 /// pinned to a `this:` URI; prefer resolving the name first.)
 ///
 /// Reads back as `(this, name, source)` — the descriptor JSON is
@@ -299,10 +299,10 @@ pub fn phase1_query(parsed: &ParsedSource) -> Query {
         "terms": terms,
         "predicate": {
             "with": {
-                "concept":     { "the": "dialog.meta/concept",     "as": "Entity",  "cardinality": "one" },
-                "name":        { "the": "dialog.meta/name",        "as": "Text",    "cardinality": "one" },
-                "description": { "the": "dialog.meta/description", "as": "Text",    "cardinality": "one" },
-                "source":      { "the": "dialog.meta/source",      "as": "Text",    "cardinality": "one" },
+                "concept":     { "the": "db.meta/concept",     "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "db.meta/name",        "as": "Text",    "cardinality": "one" },
+                "description": { "the": "db.meta/description", "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "db.meta/source",      "as": "Text",    "cardinality": "one" },
                 "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }
@@ -606,9 +606,9 @@ mod tests {
     #[dialog_common::test]
     fn it_resolves_a_name_through_the_name_concept() {
         // A bare name resolves via the Name concept: `id:<name>`'s
-        // `dialog.name/referent`. This is what lets `workspace` (a
+        // `db.name/referent`. This is what lets `workspace` (a
         // concept pinned to `this: tonk:workspace`, so carrying a Name
-        // claim but no `dialog.meta/name`) resolve at all.
+        // claim but no `db.meta/name`) resolve at all.
         let q = name_query("workspace");
         let this = q.terms.get("this").expect("this term");
         assert_eq!(
@@ -628,7 +628,7 @@ mod tests {
             predicate
                 .pointer("/with/entity/the")
                 .and_then(|v| v.as_str()),
-            Some("dialog.name/referent"),
+            Some("db.name/referent"),
             "the name query constrains on the Name referent attribute",
         );
     }

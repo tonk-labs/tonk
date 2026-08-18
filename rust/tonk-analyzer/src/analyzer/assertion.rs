@@ -373,7 +373,7 @@ pub(crate) fn build_assertion_application(
 ///   - bare symbol → resolved through the name table to
 ///     [`ThisIntent::Uri(entity)`]. Resolution order matches
 ///     [`super::field::field_value_to_term`]: doc-local
-///     declarations first, then the branch's `dialog.meta/name`
+///     declarations first, then the branch's `db.meta/name`
 ///     index. Unresolvable symbols surface as `UnknownNameReference`.
 ///
 /// - **Naming** — the `&name` on the value side, captured by the
@@ -387,7 +387,7 @@ pub(crate) fn derive_head_intent(
     anchor: Option<&Anchor>,
     scope: &Scope,
 ) -> Result<(ThisIntent, Option<AnchorName>), AnalyzeError> {
-    // The anchor desugars to a `dialog.meta/name` claim on
+    // The anchor desugars to a `db.meta/name` claim on
     // `id:<name>`. Validate it into an `AnchorName` here — the one
     // place the name is parsed — so a name that can't be published
     // surfaces as a clear error rather than being silently dropped at
@@ -464,7 +464,7 @@ pub(crate) fn derive_head_intent(
 ///
 /// - `Derived` + no `name`: mint a body-content-derived entity.
 /// - `Derived` + `name`: body-derived entity. The
-///   `dialog.meta/name` claim on `id:<name>` is emitted by the
+///   `db.meta/name` claim on `id:<name>` is emitted by the
 ///   planner from `ApplicationPlan::name`, not as a parameter
 ///   on the predicate. Also registers the name → entity binding
 ///   in `analysis.declarations` so duplicate-name checks across

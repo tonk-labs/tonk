@@ -34,6 +34,23 @@ impl TestSite {
         })
     }
 
+    /// The base58 reference of this branch's current tree root.
+    ///
+    /// A resolver selects by content address, so `tree/*` needs this
+    /// bound before it can run. Real documents reach it by joining
+    /// through the branch revision; tests that are pinning resolver
+    /// behavior rather than the join read it directly.
+    pub async fn tree_root(&self) -> Result<String> {
+        let session = self.site.branch().await?;
+        let revision = session
+            .handle()
+            .revision()
+            .ok_or_else(|| anyhow::anyhow!("branch has no revision yet"))?;
+        // `TreeReference` displays as `#<base58>`; the resolver takes
+        // the bare reference.
+        Ok(revision.tree.to_string().trim_start_matches('#').to_owned())
+    }
+
     pub async fn eval_inline(&self, doc: &str) -> Result<eval::Outcome, eval::EvalError> {
         eval::run_against_site(
             &self.site,
@@ -83,6 +100,15 @@ pub struct AccountFixture {
 #[cfg(feature = "integration-tests")]
 impl AccountFixture {
     pub async fn new() -> Result<Self> {
+        // A dead remote: fixtures that never sync the account repository do
+        // not need one, and a live URL would make them depend on a service
+        // they have no use for.
+        Self::with_account_remote("http://127.0.0.1:9/ucan/").await
+    }
+
+    /// A fixture whose account repository points at a REAL remote, for tests
+    /// that sync the account between devices.
+    pub async fn with_account_remote(remote: &str) -> Result<Self> {
         let test = TestSite::new().await?;
         let profile = test.site.profile.clone();
         let store = tonk_cli::spot::SpotStore::at(test.parent.join("state"));
@@ -114,7 +140,7 @@ impl AccountFixture {
             profile.did(),
             "fixture-device".to_string(),
             hex::encode(link.to_bytes()?),
-            "http://127.0.0.1:9/ucan/".to_string(),
+            remote.to_string(),
             None,
         )
         .await?;
@@ -140,6 +166,19 @@ impl AccountFixture {
             &descriptor,
         )
         .await?;
+
+        // Mark the descriptor trusted, so the fixture models a device that
+        // has hydrated its account rather than one that has only linked it.
+        // Without this the account reads as unhydrated and nothing will mount
+        // its repository.
+        let validated = tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
+        profile
+            .credential()
+            .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+            .save(validated.content_hash().to_vec())
+            .perform(&test.site.operator)
+            .await?;
+
         Ok(Self {
             pre_account_site: test.site,
             server,
@@ -277,3 +316,77 @@ concept!: &view
   with:
     body: html-body
 "#;
+
+/// A stand-in for the browser authorization page.
+///
+/// The real page runs a passkey ceremony; this holds the account key
+/// directly. Everything after the ceremony is identical — mint the
+/// `account → device` grant, pair it with the descriptor, and POST it
+/// base64-encoded to the `callback` the CLI passed. That contract is what
+/// the CLI depends on, so exercising it here pins the command's whole
+/// receiving half without a browser. The ceremony itself is covered by the
+/// e2e suite, which drives a real virtual authenticator.
+#[cfg(feature = "integration-tests")]
+pub struct AuthorizingPage {
+    /// URL to hand the CLI as its `--via` page.
+    pub url: String,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(feature = "integration-tests")]
+pub async fn authorizing_page(
+    root: dialog_credentials::Ed25519Signer,
+    remote: String,
+) -> Result<AuthorizingPage> {
+    use axum::extract::{Query, State};
+    use axum::response::Html;
+    use axum::routing::get;
+    use base64::Engine as _;
+    use std::collections::HashMap;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+
+    // Answering the GET is what the user approving in the browser amounts to.
+    async fn approve(
+        State((root, remote)): State<(dialog_credentials::Ed25519Signer, String)>,
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Html<String> {
+        let (Some(audience), Some(callback)) = (params.get("audience"), params.get("callback"))
+        else {
+            return Html("missing audience or callback".to_owned());
+        };
+        let Ok(device_did) = audience.parse() else {
+            return Html("unparseable audience".to_owned());
+        };
+        let Ok(authorized) =
+            tonk_identity::ceremony::authorize_device(root, device_did, &remote).await
+        else {
+            return Html("ceremony failed".to_owned());
+        };
+        let payload = serde_json::json!({
+            "delegationHex": authorized.delegation_hex,
+            "descriptorHex": authorized.descriptor_hex,
+            "credentialId": authorized.root_did,
+        })
+        .to_string();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+        let _ = reqwest::Client::new()
+            .post(callback)
+            .form(&[("authorize", encoded)])
+            .send()
+            .await;
+        Html("approved".to_owned())
+    }
+
+    let app = axum::Router::new()
+        .route("/", get(approve))
+        .with_state((root, remote));
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Ok(AuthorizingPage {
+        url,
+        _handle: handle,
+    })
+}

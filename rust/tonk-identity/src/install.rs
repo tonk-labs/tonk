@@ -351,6 +351,37 @@ fn parse_complete_link_input(
     Ok(input)
 }
 
+/// `authorizeDevice({ deviceDid, remote })` → `{ rootDid, deviceDid,
+/// delegationHex, descriptorHex }`.
+///
+/// The callback authorization: run the passkey ceremony, mint the
+/// `account → device` powerline, and hand it back with the account
+/// repository descriptor. Nothing is sent anywhere — the caller delivers it.
+async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let remote = string_property(&input, "remote")?;
+    let prf = crate::passkey::prf_output().await.map_err(js_error)?;
+    let root = crate::derive::derive_root_signer(&prf)
+        .await
+        .map_err(js_error)?;
+    let authorized = crate::ceremony::authorize_device(root, device_did, &remote)
+        .await
+        .map_err(js_error)?;
+
+    let output = js_sys::Object::new();
+    for (key, value) in [
+        ("rootDid", authorized.root_did),
+        ("deviceDid", authorized.device_did),
+        ("delegationHex", authorized.delegation_hex),
+        ("descriptorHex", authorized.descriptor_hex),
+    ] {
+        Reflect::set(&output, &key.into(), &value.into())?;
+    }
+    Ok(output.into())
+}
+
 async fn complete_link(input: JsValue) -> Result<JsValue, JsValue> {
     let input = parse_complete_link_input(input)?;
     let device_did = input
@@ -464,6 +495,16 @@ pub fn install() {
         complete_link.as_ref().unchecked_ref(),
     );
     complete_link.forget();
+
+    let authorize_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(authorize_device(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"authorizeDevice".into(),
+        authorize_device.as_ref().unchecked_ref(),
+    );
+    authorize_device.forget();
 
     let sign_revocation = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(sign_revocation(input))

@@ -39,7 +39,7 @@ pub mod prelude;
 pub mod domain;
 
 /// Re-export of the wire-shape primitives from [`tonk_core`].
-pub use tonk_core::{claim, conclusion, effect, meta};
+pub use tonk_core::{claim, conclusion, meta};
 
 /// Analyzer-IR types: `Application`, `Statement`, `Planner`, etc.
 /// These live here (not in `tonk-core`) because they reference
@@ -53,8 +53,6 @@ pub mod resolution;
 pub mod rule_query;
 
 pub mod rule;
-
-pub mod deductive_rule;
 
 pub mod builtin;
 

@@ -41,6 +41,8 @@ pub mod agents;
 pub mod authoring;
 pub mod auto_sync;
 pub mod blob;
+/// A loopback callback server for browser authorization ceremonies.
+pub mod callback;
 pub mod context;
 pub mod data;
 pub mod data_ops;
@@ -48,6 +50,8 @@ pub mod eval;
 pub mod guide;
 pub mod identity;
 pub mod invite;
+/// Migrating a CSV export written by a pre-dialog-upgrade build.
+pub mod legacy;
 pub mod migrate;
 pub mod output;
 pub mod recovery;

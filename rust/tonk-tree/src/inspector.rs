@@ -1,5 +1,5 @@
 //! The node inspector pane: the selected node's detail (full hash, size,
-//! count, storage, upper key) and, for a segment, its entries table.
+//! count, storage, separator) and, for a segment, its entries table.
 //! Values are formatted so their type is legible; clicking a fact row
 //! unfolds a detail view.
 
@@ -62,6 +62,15 @@ pub fn render(state: &Shared) {
     if let Some(rank) = node.rank {
         let _ = body.append_child(&kv("rank", &rank.to_string()));
     }
+    // Scale and novelty describe the node's SHAPE — how much the subtree
+    // is estimated to hold, and how much is buffered on it rather than
+    // written down. Both are what the root has to say about the tree.
+    if let Some(scale) = node.scale {
+        let _ = body.append_child(&kv("scale", &scale.to_string()));
+    }
+    if let Some(novelty) = node.novelty {
+        let _ = body.append_child(&kv("novelty", &novelty.to_string()));
+    }
     let _ = body.append_child(&kv(
         "storage",
         if node.cached {
@@ -71,10 +80,19 @@ pub fn render(state: &Shared) {
         },
     ));
 
-    if let Some(bound) = &node.bound {
-        let _ = body.append_child(&kv("upper key", ""));
+    // The configuration the node was written under, read off the node
+    // itself rather than assumed from today's defaults.
+    if !node.manifest.is_empty() {
+        let _ = body.append_child(&el("h3").text("manifest"));
+        for (label, value) in &node.manifest {
+            let _ = body.append_child(&kv(label, &value.to_string()));
+        }
+    }
+
+    if !node.bound_parts.is_empty() {
+        let _ = body.append_child(&kv("separator", ""));
         let keyrow = el("div").class("keybytes");
-        append_key_full(&keyrow, bound);
+        append_key_full(&keyrow, &node.bound_parts);
         let _ = body.append_child(&keyrow);
     }
 
@@ -155,12 +173,20 @@ fn entry_table(entries: &[TreeEntry]) -> Element {
         let ent = el("td").class("col-ent");
         if let Some(e) = &entry.entity {
             ent.set_text_content(Some(&short(e, 14)));
+        } else if let Some(blob) = &entry.blob {
+            // A blob-index row has no entity — it references content.
+            ent.set_text_content(Some(&format!("blob:{}", short(blob, 10))));
         }
         let _ = tr.append_child(&ent);
 
-        let attr = el("td")
-            .class("col-attr")
-            .text(entry.attribute.as_deref().unwrap_or(""));
+        // A history, coverage or blob record has no attribute; naming
+        // its index there says what the row IS, instead of leaving the
+        // cell blank as though the record were malformed.
+        let attr = match (&entry.attribute, &entry.ordering) {
+            (Some(a), _) => el("td").class("col-attr").text(a),
+            (None, Some(ordering)) => el("td").class("col-attr col-ordering").text(ordering),
+            (None, None) => el("td").class("col-attr"),
+        };
         let _ = tr.append_child(&attr);
 
         let val_td = el("td").class("col-val");
@@ -174,6 +200,12 @@ fn entry_table(entries: &[TreeEntry]) -> Element {
                 .class(&format!("val val-{}", t.to_lowercase()))
                 .text(&trunc(&formatted, 40));
             let _ = val_td.append_child(&span);
+        } else if let Some(size) = entry.blob_size {
+            val_td.set_text_content(Some(&human_size(size)));
+        } else if entry.supersedes.is_some_and(|n| n > 0) {
+            // A covering record's payload IS how much it supersedes.
+            let n = entry.supersedes.unwrap_or(0);
+            val_td.set_text_content(Some(&format!("covers {n}")));
         }
         let _ = tr.append_child(&val_td);
 
@@ -214,8 +246,38 @@ fn entry_detail(entry: &TreeEntry) -> Element {
         let t = entry.type_name.as_deref().unwrap_or("");
         let _ = box_.append_child(&kv("value", &key::format_value(v, t)));
     }
+    if let Some(ordering) = &entry.ordering {
+        let _ = box_.append_child(&kv("index", ordering));
+    }
+    // The claim version and its lineage. Zeroes are omitted: an ordinary
+    // fact carries none of this, and printing `cause 0` on every row
+    // would bury the records where it is the whole story.
+    if let (Some(origin), Some(edition)) = (&entry.origin, entry.edition) {
+        let _ = box_.append_child(&kv("version", &format!("{}@{edition}", short(origin, 12))));
+    }
+    for (label, value) in [
+        ("cause", entry.cause),
+        ("collapsed", entry.collapsed),
+        ("supersedes", entry.supersedes),
+    ] {
+        if let Some(n) = value.filter(|n| *n > 0) {
+            let _ = box_.append_child(&kv(label, &n.to_string()));
+        }
+    }
+    if entry.retraction {
+        let _ = box_.append_child(&kv("retraction", "yes"));
+    }
+    if let Some(spill) = &entry.spill {
+        let _ = box_.append_child(&kv("spilled to", spill));
+    }
+    if let Some(blob) = &entry.blob {
+        let _ = box_.append_child(&kv("blob", blob));
+        if let Some(size) = entry.blob_size {
+            let _ = box_.append_child(&kv("blob size", &human_size(size)));
+        }
+    }
     let keyrow = el("div").class("keybytes");
-    append_key_full(&keyrow, &entry.key);
+    append_key_full(&keyrow, &entry.key_parts);
     let _ = box_.append_child(&el("div").class("k").text("key"));
     let _ = box_.append_child(&keyrow);
     box_

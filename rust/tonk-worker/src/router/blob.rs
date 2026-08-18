@@ -85,9 +85,11 @@ pub async fn serve(
         .map_err(|e| TonkWorkerError::Internal(format!("content-type query: {}", e)))?;
     tokio::pin!(ct_stream);
     let content_type = match ct_stream.next().await {
-        Some(Ok(artifact)) => {
-            String::try_from(artifact.is).unwrap_or_else(|_| "application/octet-stream".to_string())
-        }
+        Some(Ok(artifact)) => artifact
+            .value()
+            .ok()
+            .and_then(|value| String::try_from(value).ok())
+            .unwrap_or_else(|| "application/octet-stream".to_string()),
         Some(Err(e)) => {
             log!("blob: content-type query error: {:?}", e);
             "application/octet-stream".to_string()
@@ -245,9 +247,11 @@ pub async fn upload(
                 .map_err(|e| TonkWorkerError::Internal(format!("name query: {e}")))?;
             tokio::pin!(existing);
             match existing.next().await {
-                Some(Ok(artifact)) => {
-                    String::try_from(artifact.is).unwrap_or_else(|_| entity.to_string())
-                }
+                Some(Ok(artifact)) => artifact
+                    .value()
+                    .ok()
+                    .and_then(|value| String::try_from(value).ok())
+                    .unwrap_or_else(|| entity.to_string()),
                 Some(Err(e)) => {
                     log!("blob: name query error: {:?}", e);
                     entity.to_string()

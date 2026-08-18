@@ -706,7 +706,14 @@ fn rule_definition(result: &QueryResult) -> Option<serde_json::Map<String, Value
         Some(Value::Object(map)) => map.clone(),
         _ => return None,
     };
-    let retract = matches!(outer.get("polarity"), Some(Value::String(s)) if s == "Retract");
+    // The embedded descriptor carries the head in its polarity's own
+    // field now (`retract!` for retract rules), so the swap below is
+    // a no-op on current data; it remains for rows written by older
+    // releases, whose descriptors always used `assert!`.
+    let retract = matches!(
+        outer.get("polarity"),
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("retract")
+    );
     if retract && let Some(head) = rule.remove("assert!") {
         rule.insert("retract!".to_owned(), head);
     }

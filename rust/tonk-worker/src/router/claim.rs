@@ -441,13 +441,18 @@ pub async fn select_claims(
     let mut claims = Vec::new();
     while let Some(result) = stream.next().await {
         match result {
-            Ok(artifact) => {
-                claims.push(ClaimResponse {
-                    the: artifact.the.to_string(),
-                    of: artifact.of.to_string(),
-                    is: value_to_json(&artifact.is),
-                });
-            }
+            Ok(artifact) => match artifact.to_owned() {
+                Ok(artifact) => {
+                    claims.push(ClaimResponse {
+                        the: artifact.the.to_string(),
+                        of: artifact.of.to_string(),
+                        is: value_to_json(&artifact.is),
+                    });
+                }
+                Err(e) => {
+                    log!("Error materializing artifact: {:?}", e);
+                }
+            },
             Err(e) => {
                 log!("Error reading artifact: {:?}", e);
             }

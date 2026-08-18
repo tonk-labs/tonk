@@ -11,17 +11,17 @@
 //! "the `title` of this recipe" rather than "the value at attribute
 //! `recipe/title` of this entity". This module captures that link
 //! as a separate fact: for each field of a concept, an EAV claim
-//! whose `the` is `dialog.concept.with/{fieldName}` and whose value
+//! whose `the` is `db.concept.with/{fieldName}` and whose value
 //! is the attribute entity URI. Optional fields additionally carry a
-//! boolean marker claim `dialog.concept.optional/{fieldName}`.
+//! boolean marker claim `db.concept.optional/{fieldName}`.
 //!
-//! The relation namespace (`dialog.concept.with`) matches the one
+//! The relation namespace (`db.concept.with`) matches the one
 //! used by the `carry` CLI so that field-name facts written by
 //! either tool describe the same concept identically.
 
 use std::collections::{BTreeSet, HashSet};
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Select};
+use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -29,10 +29,9 @@ use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
-use dialog_query::source::SelectRules;
 use dialog_query::{
-    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Selection, Term,
-    the, try_stream,
+    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Scope, Selection,
+    Term, the, try_stream,
 };
 use dialog_repository::RemoteSite;
 use thiserror::Error;
@@ -45,16 +44,16 @@ use crate::rule_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
 use tonk_core::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.
-const WITH_DOMAIN: &str = "dialog.concept.with";
+const WITH_DOMAIN: &str = "db.concept.with";
 
 /// Domain prefix for the per-field optional marker.
-const OPTIONAL_DOMAIN: &str = "dialog.concept.optional";
+const OPTIONAL_DOMAIN: &str = "db.concept.optional";
 
 /// Build the claim relation that names a required field of a
 /// concept.
 ///
 /// The returned [`ArtifactsAttribute`] has the form
-/// `dialog.concept.with/{field_name}`. Used as the `the` of an EAV
+/// `db.concept.with/{field_name}`. Used as the `the` of an EAV
 /// claim `concept_entity --with(name)--> attribute_entity` to
 /// record that the concept has a required field named `name`
 /// pointing at the given attribute.
@@ -72,9 +71,9 @@ pub fn with(
 /// Build the marker relation that flags a concept field as optional.
 ///
 /// The returned [`ArtifactsAttribute`] has the form
-/// `dialog.concept.optional/{field_name}`. Emitted as a boolean
+/// `db.concept.optional/{field_name}`. Emitted as a boolean
 /// marker claim `concept_entity --optional(name)--> true` alongside
-/// the field's `dialog.concept.with/{name}` attribute link. Required
+/// the field's `db.concept.with/{name}` attribute link. Required
 /// fields carry no such marker, so their storage is byte-identical to
 /// the pre-optionality encoding.
 pub fn optional(
@@ -84,7 +83,7 @@ pub fn optional(
 }
 
 /// Recover the field name from a relation in the
-/// `dialog.concept.with` domain. Returns `None` if `the` is in any
+/// `db.concept.with` domain. Returns `None` if `the` is in any
 /// other domain.
 pub fn parse_with(the: &ArtifactsAttribute) -> Option<String> {
     let s = String::from(the);
@@ -94,7 +93,7 @@ pub fn parse_with(the: &ArtifactsAttribute) -> Option<String> {
 }
 
 /// Recover the field name from a relation in the
-/// `dialog.concept.optional` domain. Returns `None` if `the` is in
+/// `db.concept.optional` domain. Returns `None` if `the` is in
 /// any other domain.
 pub fn parse_optional(the: &ArtifactsAttribute) -> Option<String> {
     let s = String::from(the);
@@ -112,7 +111,7 @@ pub fn parse_optional(the: &ArtifactsAttribute) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct Concept {
     /// The concept entity URI (`concept:…` or whatever entity
-    /// carries the `dialog.concept.with/*` claims).
+    /// carries the `db.concept.with/*` claims).
     pub entity: Entity,
     /// The reconstructed descriptor.
     pub descriptor: ConceptDescriptor,
@@ -123,7 +122,7 @@ pub struct Concept {
 #[derive(Debug, Error)]
 pub enum ConceptLookupError {
     /// A field of the concept references an entity that doesn't
-    /// carry `dialog.attribute/*` facts — i.e., the concept's
+    /// carry `db.attribute/*` facts — i.e., the concept's
     /// schema is corrupt or out of sync.
     #[error(
         "concept field {field:?} references entity {entity} \
@@ -182,7 +181,7 @@ impl<T> QueryEnv for T where
 
 impl Concept {
     /// Look up a concept by its published name. The branch's
-    /// `id:<name>` entity carries the `dialog.meta/name` claim
+    /// `id:<name>` entity carries the `db.meta/name` claim
     /// that points at the concept entity; the resolver chases
     /// that pointer and reconstructs the descriptor.
     pub fn by_name(name: impl Into<String>) -> ConceptByName {
@@ -206,11 +205,11 @@ impl ConceptByName {
     /// Resolve the concept against a branch.
     ///
     /// The user-facing name `<name>` is published as a separate
-    /// entity at `id:<name>` carrying a `dialog.meta/name`
+    /// entity at `id:<name>` carrying a `db.meta/name`
     /// claim that points at the actual concept entity. Two
     /// steps:
     ///
-    /// 1. Look up `(id:<name>, dialog.meta/name, ?value)` to
+    /// 1. Look up `(id:<name>, db.meta/name, ?value)` to
     ///    get the concept entity.
     /// 2. Delegate to [`ConceptByEntity::resolve`] for the
     ///    field-list reconstruction.
@@ -233,7 +232,7 @@ pub struct ConceptByEntity {
 
 impl ConceptByEntity {
     /// Resolve the concept's full descriptor by enumerating its
-    /// `dialog.concept.with/*` claims and reconstructing each
+    /// `db.concept.with/*` claims and reconstructing each
     /// referenced [`AttributeDescriptor`].
     pub async fn resolve<Env: QueryEnv>(
         self,
@@ -242,7 +241,7 @@ impl ConceptByEntity {
     ) -> Result<Option<Concept>, ConceptLookupError> {
         // Pull every claim where `(*entity, the, value)` matches
         // — `the` is left as a variable so the engine returns the
-        // full set; we filter to the `dialog.concept.with/*`
+        // full set; we filter to the `db.concept.with/*`
         // namespace in Rust.
         let raw_claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
@@ -380,7 +379,7 @@ impl AttributeByEntity {
 }
 
 /// Builder for looking up an attribute by its *selector id* — the
-/// `domain/name` string stored as its `dialog.attribute/id` claim.
+/// `domain/name` string stored as its `db.attribute/id` claim.
 /// This is how a claim-domain head (`xyz.tonk!:`) discovers whether
 /// the `<domain>/<field>` attribute a body field maps onto is
 /// declared on the branch, so the declared cardinality and value
@@ -432,7 +431,7 @@ impl AttributeById {
 
 /// Builder for looking up an attribute by its published name —
 /// the user-facing label `<name>` whose `id:<name>` entity
-/// carries a `dialog.meta/name` claim pointing at the attribute.
+/// carries a `db.meta/name` claim pointing at the attribute.
 pub struct AttributeByName {
     name: String,
 }
@@ -447,7 +446,7 @@ impl AttributeByName {
     ///
     /// Two-step query mirroring [`ConceptByName::resolve`]:
     /// first find the entity carrying
-    /// `dialog.meta/name = <name>`, then delegate to
+    /// `db.meta/name = <name>`, then delegate to
     /// [`AttributeByEntity::resolve`] for the fact-set
     /// reconstruction.
     pub async fn resolve<Env: QueryEnv>(
@@ -504,13 +503,13 @@ fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDes
 // therefore hand-write [`AnonymousConcept`], which presents the
 // same `Statement` interface as a derived concept: assert/retract
 // walk the wrapped descriptor and emit the right
-// `dialog.concept.with/{field}` claims plus the meta marker.
+// `db.concept.with/{field}` claims plus the meta marker.
 //
 // Naming used to live on a sister `NamedConcept` wrapper that
-// also wrote a `dialog.meta/name` claim *onto the named target*.
+// also wrote a `db.meta/name` claim *onto the named target*.
 // That direction was wrong under the new name model — names are
 // now their own concept whose entity (`id:<n>`) carries the
-// `dialog.meta/name` claim *pointing at* the named target. The
+// `db.meta/name` claim *pointing at* the named target. The
 // analyzer's anchor desugar emits the name assertion separately
 // via `ApplicationPlan::name`, so the wrapper is no longer
 // needed; only `AnonymousConcept` remains.
@@ -521,10 +520,10 @@ use dialog_artifacts::{Statement, Update, Value};
 /// Identity comes from the wrapped descriptor's
 /// content-addressed entity (`descriptor.this()`).
 ///
-/// `assert` writes one `dialog.concept.with/{field}` claim per
+/// `assert` writes one `db.concept.with/{field}` claim per
 /// field of the descriptor's `with` map (value =
 /// content-addressed attribute entity), plus a
-/// `dialog.meta/description` when the descriptor carries one.
+/// `db.meta/description` when the descriptor carries one.
 /// `retract` mirrors.
 #[derive(Debug, Clone)]
 pub struct AnonymousConcept {
@@ -555,18 +554,6 @@ impl Statement for AnonymousConcept {
     }
 }
 
-/// Marker entity asserted as the value of
-/// `dialog.concept/transient` on every transient concept. Same
-/// role as [`concept_marker_entity`] for the
-/// `dialog.meta/concept` marker: gives queries a known triple
-/// to start from when looking for all transient concepts on a
-/// branch.
-fn transient_marker_entity() -> Entity {
-    "db:transient"
-        .parse()
-        .expect("`db:transient` is a valid entity URI")
-}
-
 /// A concept declared as **transient**: facts of this concept
 /// exist for the duration of one commit cycle and are stripped
 /// from the persistable delta before the branch state is
@@ -579,9 +566,9 @@ fn transient_marker_entity() -> Entity {
 ///
 /// Storage: emits everything [`AnonymousConcept`] emits
 /// (concept marker, attribute field claims, optional
-/// description), plus a `dialog.concept/transient: true` marker
-/// triple that the reactor reads at commit time to decide which
-/// facts to strip.
+/// description), plus dialog's `dialog.concept/transient: true`
+/// marker triple that commit-time induction reads to decide
+/// which facts are commands rather than durable data.
 #[derive(Debug, Clone)]
 pub struct TransientConcept {
     /// `descriptor.this()` — same content-derived entity as
@@ -608,7 +595,7 @@ impl TransientConcept {
 impl TransientConcept {
     /// Look up whether a concept entity is marked transient on
     /// a branch. Returns `true` iff
-    /// `(<entity>, dialog.concept/transient, db:transient)`
+    /// `(<entity>, dialog.concept/transient, true)`
     /// holds; `false` if the marker is absent.
     pub fn is_transient(entity: Entity) -> IsTransient {
         IsTransient { entity }
@@ -628,7 +615,6 @@ impl IsTransient {
         source: &Source<'_>,
         env: &Env,
     ) -> Result<bool, ConceptLookupError> {
-        let marker: Entity = transient_marker_entity();
         let claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::The>::from(meta_attr_typed(
@@ -636,7 +622,7 @@ impl IsTransient {
                     "transient",
                 ))
                 .of(Term::from(self.entity))
-                .is(Term::from(marker)),
+                .is(Term::from(true)),
             ))
             .perform(env)
             .try_vec()
@@ -660,20 +646,12 @@ fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
 impl Statement for TransientConcept {
     fn assert(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
-        update.associate_unique(
-            meta_attr("dialog.concept", "transient"),
-            self.this,
-            Value::Entity(transient_marker_entity()),
-        );
+        dialog_repository::Transient(self.this).assert(update);
     }
 
     fn retract(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
-        update.dissociate(
-            meta_attr("dialog.concept", "transient"),
-            self.this,
-            Value::Entity(transient_marker_entity()),
-        );
+        dialog_repository::Transient(self.this).retract(update);
     }
 }
 
@@ -725,7 +703,7 @@ impl dialog_query::Concept for AnonymousConcept {
 ///
 /// 1. **Built-ins** — every entry of [`concept_registry`].
 /// 2. **Branch** — every entity carrying the
-///    `dialog.meta/concept = db:concept` marker claim, with
+///    `db.meta/concept = db:concept` marker claim, with
 ///    its descriptor reconstructed from the on-branch facts.
 ///
 /// Built-ins win on `name` collision: a branch concept whose name
@@ -744,7 +722,7 @@ pub struct AnonymousConceptQuery {
     /// When `true`, restrict enumeration to transient (command)
     /// concepts: skip the always-durable built-ins entirely and
     /// drop any branch concept lacking the
-    /// `dialog.concept/transient` marker. This is what backs the
+    /// `db.concept/transient` marker. This is what backs the
     /// `command:` head — see [`AnonymousConceptQuery::commands`].
     pub transient_only: bool,
 }
@@ -774,7 +752,7 @@ impl Application for AnonymousConceptQuery {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         let app = self;
         try_stream! {
@@ -840,7 +818,7 @@ impl Application for AnonymousConceptQuery {
                     Some(e) => Term::Constant(dialog_query::Value::Entity(e.clone())),
                     None => Term::var("__concept_query_this"),
                 };
-                let claims: Vec<Claim> = the!("dialog.meta/concept")
+                let claims: Vec<Claim> = the!("db.meta/concept")
                     .of(this_term_for_marker)
                     .is(marker)
                     .perform(env)
@@ -855,10 +833,9 @@ impl Application for AnonymousConceptQuery {
                 let transient_entities: HashSet<Entity> = if transient_term.is_some()
                     || app.transient_only
                 {
-                    let transient_marker = transient_marker_entity();
                     let transient_claims: Vec<Claim> = the!("dialog.concept/transient")
                         .of(Term::<Entity>::var("__concept_query_transient_this"))
-                        .is(transient_marker)
+                        .is(true)
                         .perform(env)
                         .try_vec()
                         .await?;
@@ -931,6 +908,19 @@ impl Application for AnonymousConceptQuery {
 /// Stable empty descriptor used as the unused `predicate` slot of
 /// the synthetic [`ConceptQuery`] in
 /// [`AnonymousConceptQuery::realize`].
+/// The entity a resolver row reports as its `this`.
+///
+/// Resolver rows describe blocks, not entities, so there is no real
+/// subject to report — but a `ConceptConclusion` requires one. Naming
+/// the resolver (`db:tree/node`) keeps it honest: the identity says
+/// which resolver produced the row rather than pretending the row is
+/// a fact about some entity.
+fn resolver_row_entity(name: &str) -> Entity {
+    format!("db:{name}")
+        .parse()
+        .expect("a resolver name forms a valid `db:` entity URI")
+}
+
 fn stub_predicate() -> ConceptDescriptor {
     // A descriptor must have at least one required field, so the
     // stub carries a single placeholder. `realize` never reads the
@@ -938,7 +928,7 @@ fn stub_predicate() -> ConceptDescriptor {
     ConceptDescriptor::try_from(vec![(
         "_",
         AttributeDescriptor::new(
-            the!("dialog.concept/stub"),
+            the!("db.concept/stub"),
             "",
             dialog_query::Cardinality::default(),
             None,
@@ -953,7 +943,7 @@ fn stub_predicate() -> ConceptDescriptor {
 
 /// The well-known descriptor for the "concept of concept" head.
 ///
-/// Its `with` map names the marker (`dialog.meta/concept`), bookmark
+/// Its `with` map names the marker (`db.meta/concept`), bookmark
 /// name, description, and the synthesised `source` field — enough
 /// for the analyzer to project the fields a `concept:` head
 /// exposes. The `source` claim has no real EAV backing; it is
@@ -966,10 +956,10 @@ pub fn concept_of_concept_descriptor() -> &'static ConceptDescriptor {
         serde_json::from_value(serde_json::json!({
             "description": "Every concept asserted on a branch.",
             "with": {
-                "concept":     { "the": "dialog.meta/concept",     "as": "Entity",  "cardinality": "one" },
-                "name":        { "the": "dialog.meta/name",        "as": "Text",    "cardinality": "one" },
-                "description": { "the": "dialog.meta/description", "as": "Text",    "cardinality": "one" },
-                "source":      { "the": "dialog.meta/source",      "as": "Text",    "cardinality": "one" },
+                "concept":     { "the": "db.meta/concept",     "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "db.meta/name",        "as": "Text",    "cardinality": "one" },
+                "description": { "the": "db.meta/description", "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "db.meta/source",      "as": "Text",    "cardinality": "one" },
                 "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }))
@@ -992,7 +982,7 @@ fn concept_of_concept_entity() -> &'static Entity {
 /// rows as the concept-of-concept query but filtered to transient
 /// concepts only (see [`AnonymousConceptQuery::commands`]). Its
 /// `with` map mirrors [`concept_of_concept_descriptor`] *plus* a
-/// `command` marker field — the extra `dialog.meta/command`
+/// `command` marker field — the extra `db.meta/command`
 /// attribute URI is what makes this descriptor's content-derived
 /// `this()` distinct from the concept sentinel's. Without it the
 /// two would share an entity (identity is the attribute-URI set,
@@ -1004,11 +994,11 @@ pub fn command_of_command_descriptor() -> &'static ConceptDescriptor {
         serde_json::from_value(serde_json::json!({
             "description": "Every transient (command) concept asserted on a branch.",
             "with": {
-                "command":     { "the": "dialog.meta/command",      "as": "Entity",  "cardinality": "one" },
-                "concept":     { "the": "dialog.meta/concept",      "as": "Entity",  "cardinality": "one" },
-                "name":        { "the": "dialog.meta/name",         "as": "Text",    "cardinality": "one" },
-                "description": { "the": "dialog.meta/description",   "as": "Text",    "cardinality": "one" },
-                "source":      { "the": "dialog.meta/source",       "as": "Text",    "cardinality": "one" },
+                "command":     { "the": "db.meta/command",      "as": "Entity",  "cardinality": "one" },
+                "concept":     { "the": "db.meta/concept",      "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "db.meta/name",         "as": "Text",    "cardinality": "one" },
+                "description": { "the": "db.meta/description",   "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "db.meta/source",       "as": "Text",    "cardinality": "one" },
                 "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }))
@@ -1049,6 +1039,10 @@ pub enum QueryPlan {
     AnonymousCommand(AnonymousConceptQuery),
     /// Rule-of-rule enumeration via [`AnonymousRuleQuery`].
     AnonymousRule(AnonymousRuleQuery),
+    /// A `tree/*` resolver — dialog answers it by content address
+    /// over immutable blocks, so it describes the store's own
+    /// structure rather than the facts inside it.
+    Resolver(Box<dialog_query::ResolverQuery>),
 }
 
 /// Convert an [`Application`](crate::transact::Application) into
@@ -1063,6 +1057,7 @@ pub fn application_to_plan(application: crate::transact::Application) -> QueryPl
     match application {
         Application::Concept { query, .. } => QueryPlan::from(query),
         Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
+        Application::Resolver { query, .. } => QueryPlan::Resolver(query),
         Application::Rule { .. } | Application::DeductiveRule { .. } => panic!(
             "rule applications have no QueryPlan projection — \
              rules are write-only via Statement::Assert/Retract"
@@ -1098,7 +1093,7 @@ impl Application for QueryPlan {
 
     fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
     where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+        Env: Scope<'a>,
     {
         try_stream! {
             match self {
@@ -1126,6 +1121,12 @@ impl Application for QueryPlan {
                         yield each?;
                     }
                 }
+                QueryPlan::Resolver(q) => {
+                    let stream = Application::evaluate(*q, selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
             }
         }
     }
@@ -1136,6 +1137,32 @@ impl Application for QueryPlan {
             QueryPlan::AnonymousConcept(q) => Application::realize(q, source),
             QueryPlan::AnonymousCommand(q) => Application::realize(q, source),
             QueryPlan::AnonymousRule(q) => Application::realize(q, source),
+            // A resolver row is slot→value with no entity of its own,
+            // while `ConceptConclusion` requires a bound `this` and
+            // keeps its fields private. The row's values travel in the
+            // `Match` (which is what the renderer reads), so the
+            // conclusion only needs to exist: give it the resolver's
+            // own subject reference as `this`, which is the closest
+            // thing a resolver row has to an identity.
+            QueryPlan::Resolver(q) => {
+                // A resolver row is slot→value describing a BLOCK, not
+                // a fact about an entity — and `ConceptConclusion`
+                // requires an Entity-typed `this`, while a resolver's
+                // subject is a content address (a base58 string). The
+                // row's values ride the `Match`, which is what the
+                // renderer reads, so the conclusion only needs a
+                // well-formed identity: name the resolver itself.
+                let mut terms = q.parameters().clone();
+                terms.insert(
+                    "this".to_string(),
+                    Term::Constant(Value::Entity(resolver_row_entity(q.name()))),
+                );
+                let synthetic = ConceptQuery {
+                    terms,
+                    predicate: stub_predicate(),
+                };
+                Application::realize(&synthetic, source)
+            }
         }
     }
 }
@@ -1168,7 +1195,7 @@ fn resolve_string_filter(term: &Option<Term<dialog_query::Any>>, input: &Match) 
 }
 
 /// Reconstruct the descriptor for a branch concept entity by
-/// enumerating its `dialog.concept.with/*` claims and resolving
+/// enumerating its `db.concept.with/*` claims and resolving
 /// each referenced attribute via the [`AnonymousAttribute`]
 /// concept query.
 async fn resolve_branch_descriptor<'a, Env>(
@@ -1176,7 +1203,7 @@ async fn resolve_branch_descriptor<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<ConceptDescriptor>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
     let with_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
         Term::<dialog_query::attribute::The>::var("the")
@@ -1243,7 +1270,7 @@ where
     let descriptor = ConceptDescriptor::try_from(fields)
         .map_err(|e| EvaluationError::Store(format!("invalid concept descriptor: {e:?}")))?;
     // `ConceptDescriptor::try_from` leaves `description` as `None`.
-    // The concept's own `dialog.meta/description` claim carries
+    // The concept's own `db.meta/description` claim carries
     // it, so fetch that and fold it in — a JSON round-trip is the
     // only way in since the field has no public setter.
     let Some(description) = lookup_entity_description(entity, env).await? else {
@@ -1265,8 +1292,8 @@ where
 /// Look up the published name of `entity`, if any.
 ///
 /// Inverted from the pre-Stage-2 model: instead of asking "what
-/// `dialog.meta/name` claim sits on `entity`?", this asks "what
-/// `id:<n>` URI carries a `dialog.meta/name = entity` claim?"
+/// `db.meta/name` claim sits on `entity`?", this asks "what
+/// `id:<n>` URI carries a `db.meta/name = entity` claim?"
 /// and recovers the `<n>` portion. Returns `None` when no `id:`
 /// URI points at the entity.
 async fn lookup_entity_name<'a, Env>(
@@ -1274,7 +1301,7 @@ async fn lookup_entity_name<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<String>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
     use dialog_query::Output as _;
     use tonk_core::meta::Name;
@@ -1292,7 +1319,7 @@ where
         .and_then(|row| name_from_id_uri(&row.this)))
 }
 
-/// Read the `dialog.meta/description` claim attached to a concept
+/// Read the `db.meta/description` claim attached to a concept
 /// entity, if any.
 ///
 /// `emit_concept_facts` writes this claim only when the asserted
@@ -1303,9 +1330,9 @@ async fn lookup_entity_description<'a, Env>(
     env: &'a Env,
 ) -> Result<Option<String>, EvaluationError>
 where
-    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    Env: Scope<'a>,
 {
-    let claims: Vec<Claim> = the!("dialog.meta/description")
+    let claims: Vec<Claim> = the!("db.meta/description")
         .of(Term::<Entity>::from(entity.clone()))
         .is(Term::<String>::var("__concept_query_description"))
         .perform(env)
@@ -1328,13 +1355,13 @@ fn name_from_id_uri(entity: &Entity) -> Option<String> {
 }
 
 /// Resolve a published name to the entity it points at by
-/// reading the `dialog.meta/name` claim attached to `id:<name>`.
+/// reading the `db.meta/name` claim attached to `id:<name>`.
 ///
 /// Returns `None` when:
 /// - The `id:<name>` URI itself doesn't parse as an entity
 ///   (only happens if `name` contains characters the URI scheme
 ///   rejects).
-/// - The branch has no `dialog.meta/name` claim attached to
+/// - The branch has no `db.meta/name` claim attached to
 ///   that entity (no name was ever published with this label,
 ///   or the prior publication was retracted).
 pub async fn lookup_named_entity<'a, Env: QueryEnv>(
@@ -1363,8 +1390,8 @@ pub async fn lookup_named_entity<'a, Env: QueryEnv>(
 
 /// Walk a [`ConceptDescriptor`] and call `op` (either
 /// [`Update::associate`] or [`Update::dissociate`]) for every
-/// fact the concept implies — `dialog.concept.with/{field}`
-/// per field, plus `dialog.meta/description` when the
+/// fact the concept implies — `db.concept.with/{field}`
+/// per field, plus `db.meta/description` when the
 /// descriptor carries one. Shared between `assert` and
 /// `retract` so the two stay in lock-step.
 fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value)>(
@@ -1374,13 +1401,13 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
     op: F,
 ) {
     // Marker claim — every concept entity carries
-    // `(?this, dialog.meta/concept, "db:concept")` so
+    // `(?this, db.meta/concept, "db:concept")` so
     // queries that want "all concepts on this branch" have a
     // selectable triple to start from (the engine refuses
     // selections with no bound component).
     op(
         update,
-        meta_attr("dialog.meta", "concept"),
+        meta_attr("db.meta", "concept"),
         entity.clone(),
         Value::Entity(concept_marker_entity()),
     );
@@ -1413,7 +1440,7 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
     {
         op(
             update,
-            meta_attr("dialog.meta", "description"),
+            meta_attr("db.meta", "description"),
             entity.clone(),
             Value::String(description.to_owned()),
         );
@@ -1421,9 +1448,9 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
 }
 
 /// The well-known entity used as the value of the
-/// `dialog.meta/concept` marker claim. Every concept entity
+/// `db.meta/concept` marker claim. Every concept entity
 /// asserted on a branch carries
-/// `(?this, dialog.meta/concept, db:concept)`. Same URI as the
+/// `(?this, db.meta/concept, db:concept)`. Same URI as the
 /// `concept` built-in's own entity in [`crate::builtin`].
 fn concept_marker_entity() -> Entity {
     "db:concept"
@@ -1453,13 +1480,13 @@ mod tests {
     #[dialog_common::test]
     fn with_constructs_namespaced_relation() {
         let the = with("title").unwrap();
-        assert_eq!(String::from(&the), "dialog.concept.with/title");
+        assert_eq!(String::from(&the), "db.concept.with/title");
     }
 
     #[dialog_common::test]
     fn optional_constructs_namespaced_relation() {
         let the = optional("subtitle").unwrap();
-        assert_eq!(String::from(&the), "dialog.concept.optional/subtitle");
+        assert_eq!(String::from(&the), "db.concept.optional/subtitle");
     }
 
     #[dialog_common::test]
@@ -1476,7 +1503,7 @@ mod tests {
 
     #[dialog_common::test]
     fn parse_with_rejects_other_domains() {
-        let the: ArtifactsAttribute = "dialog.meta/name".parse().unwrap();
+        let the: ArtifactsAttribute = "db.meta/name".parse().unwrap();
         assert_eq!(parse_with(&the), None);
         assert_eq!(parse_optional(&the), None);
     }
@@ -1501,9 +1528,9 @@ mod tests {
     }
 
     /// `AnonymousConcept::assert` should write one
-    /// `dialog.concept.with/{field}` claim per field plus
-    /// `dialog.meta/description` when set, plus the marker
-    /// claim `dialog.meta/concept = db:concept` that lets
+    /// `db.concept.with/{field}` claim per field plus
+    /// `db.meta/description` when set, plus the marker
+    /// claim `db.meta/concept = db:concept` that lets
     /// branch-wide concept enumeration find this entity.
     #[dialog_common::test]
     fn anonymous_concept_writes_with_claims_and_description() {
@@ -1525,7 +1552,7 @@ mod tests {
 
     /// `TransientConcept::assert` should write everything
     /// `AnonymousConcept::assert` writes plus a
-    /// `(?this, dialog.concept/transient, db:transient)` marker
+    /// `(?this, dialog.concept/transient, true)` marker
     /// triple. The marker is what the reactor reads at commit
     /// time to decide which facts to strip from the persistable
     /// delta.
@@ -1545,15 +1572,12 @@ mod tests {
         concept.assert(&mut changes);
 
         let instructions = changes.into_instructions();
-        let marker_target = transient_marker_entity();
         let transient_attr = meta_attr("dialog.concept", "transient");
 
         assert!(
             instructions.iter().any(|inst| match inst {
                 Instruction::Assert(a) | Instruction::Replace(a) => {
-                    a.the == transient_attr
-                        && a.of == this
-                        && matches!(&a.is, Value::Entity(e) if *e == marker_target)
+                    a.the == transient_attr && a.of == this && matches!(&a.is, Value::Boolean(true))
                 }
                 _ => false,
             }),
@@ -1562,7 +1586,7 @@ mod tests {
 
         // Also writes the normal concept-marker so concept-enumeration
         // queries find this entity.
-        let concept_marker_attr = meta_attr("dialog.meta", "concept");
+        let concept_marker_attr = meta_attr("db.meta", "concept");
         let concept_marker = concept_marker_entity();
         assert!(
             instructions.iter().any(|inst| match inst {
@@ -1573,12 +1597,12 @@ mod tests {
                 }
                 _ => false,
             }),
-            "missing dialog.meta/concept marker"
+            "missing db.meta/concept marker"
         );
     }
 
     /// Every concept assert must include the
-    /// `(?this, dialog.meta/concept, db:concept)` marker so
+    /// `(?this, db.meta/concept, db:concept)` marker so
     /// `concept:` queries with `?this` unbound can drive
     /// selection from a single bound triple.
     #[dialog_common::test]
@@ -1593,7 +1617,7 @@ mod tests {
         let concept = AnonymousConcept::new(descriptor);
         let mut changes = Changes::new();
         concept.assert(&mut changes);
-        let marker_attr = meta_attr("dialog.meta", "concept");
+        let marker_attr = meta_attr("db.meta", "concept");
         let marker_value = Value::Entity(concept_marker_entity());
         let saw_marker = changes
             .into_instructions()
@@ -1604,7 +1628,7 @@ mod tests {
             });
         assert!(
             saw_marker,
-            "expected dialog.meta/concept = db:concept marker claim",
+            "expected db.meta/concept = db:concept marker claim",
         );
     }
 
@@ -1623,7 +1647,7 @@ mod tests {
         let concept = AnonymousConcept::new(descriptor);
         let mut changes = Changes::new();
         concept.retract(&mut changes);
-        let marker_attr = meta_attr("dialog.meta", "concept");
+        let marker_attr = meta_attr("db.meta", "concept");
         let marker_value = Value::Entity(concept_marker_entity());
         let saw_retract = changes
             .into_instructions()
@@ -1632,10 +1656,7 @@ mod tests {
                 Instruction::Retract(a) => a.the == marker_attr && a.is == marker_value,
                 _ => false,
             });
-        assert!(
-            saw_retract,
-            "expected dialog.meta/concept marker retraction",
-        );
+        assert!(saw_retract, "expected db.meta/concept marker retraction",);
     }
 
     /// Compile-time check: `AnonymousConcept` implements the
@@ -1688,7 +1709,7 @@ mod tests {
 
     /// The command sentinel must not collide with the concept
     /// sentinel — identity is the attribute-URI set, so the extra
-    /// `dialog.meta/command` marker attribute is load-bearing.
+    /// `db.meta/command` marker attribute is load-bearing.
     #[dialog_common::test]
     fn it_distinguishes_command_sentinel_from_concept_sentinel() {
         assert_ne!(
@@ -1745,7 +1766,7 @@ mod tests {
     /// synthesised `source` field.
     ///
     /// Asserting the concept writes the marker claim and the
-    /// `dialog.concept.with/{field}` claims. The query
+    /// `db.concept.with/{field}` claims. The query
     /// enumerates the branch via the marker, reconstructs the
     /// descriptor for each entity, and binds it as a JSON
     /// string in `source`.
@@ -1757,8 +1778,8 @@ mod tests {
     /// inverted lookup once the resolver is rewired.)
     #[dialog_common::test]
     async fn it_returns_concept_with_source_from_concept_query() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::{Any, Output as _, Parameters, Term};
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1772,8 +1793,8 @@ mod tests {
             }"#,
         )?;
         // The concept references one attribute by URI; the
-        // attribute's own facts (`dialog.attribute/id|type|
-        // cardinality`, `dialog.meta/description`) must exist on
+        // attribute's own facts (`db.attribute/id|type|
+        // cardinality`, `db.meta/description`) must exist on
         // the branch for [`AnonymousConceptQuery`] to reconstruct
         // the descriptor — emit them inline alongside the concept.
         let (_, attr_descriptor) = descriptor.with().iter().next().expect("one field");
@@ -1783,7 +1804,7 @@ mod tests {
         branch
             .transaction()
             .assert(
-                dialog_query::the!("dialog.attribute/id")
+                dialog_query::the!("db.attribute/id")
                     .of(attr_entity.clone())
                     .is(format!(
                         "{}/{}",
@@ -1792,17 +1813,17 @@ mod tests {
                     )),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/type")
+                dialog_query::the!("db.attribute/type")
                     .of(attr_entity.clone())
                     .is("Text".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/cardinality")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(attr_entity.clone())
                     .is("one".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.meta/description")
+                dialog_query::the!("db.meta/description")
                     .of(attr_entity)
                     .is(String::new()),
             )
@@ -1863,7 +1884,7 @@ mod tests {
     /// required, optional field stays optional).
     #[dialog_common::test]
     async fn it_reconstructs_optional_flag_from_branch() -> anyhow::Result<()> {
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1884,23 +1905,23 @@ mod tests {
         for (_, field) in descriptor.with().iter() {
             let attr_entity: Entity = field.to_uri().parse()?;
             txn = txn
+                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
+                    "{}/{}",
+                    field.domain(),
+                    field.name()
+                )))
                 .assert(
-                    the!("dialog.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(format!("{}/{}", field.domain(), field.name())),
-                )
-                .assert(
-                    the!("dialog.attribute/type")
+                    the!("db.attribute/type")
                         .of(attr_entity.clone())
                         .is("Text".to_string()),
                 )
                 .assert(
-                    the!("dialog.attribute/cardinality")
+                    the!("db.attribute/cardinality")
                         .of(attr_entity.clone())
                         .is("one".to_string()),
                 )
                 .assert(
-                    the!("dialog.meta/description")
+                    the!("db.meta/description")
                         .of(attr_entity)
                         .is(String::new()),
                 );
@@ -1938,8 +1959,8 @@ mod tests {
     /// same branch must carry `Boolean(false)`.
     #[dialog_common::test]
     async fn it_returns_transient_marker_on_transient_concept_rows() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::{Any, Output as _, Parameters, Term};
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1981,43 +2002,43 @@ mod tests {
             .transaction()
             // Transient concept attribute facts.
             .assert(
-                dialog_query::the!("dialog.attribute/id")
+                dialog_query::the!("db.attribute/id")
                     .of(t_attr_entity.clone())
                     .is(format!("{}/{}", t_attr.domain(), t_attr.name())),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/type")
+                dialog_query::the!("db.attribute/type")
                     .of(t_attr_entity.clone())
                     .is("Entity".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/cardinality")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(t_attr_entity.clone())
                     .is("one".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.meta/description")
+                dialog_query::the!("db.meta/description")
                     .of(t_attr_entity)
                     .is(String::new()),
             )
             // Durable concept attribute facts.
             .assert(
-                dialog_query::the!("dialog.attribute/id")
+                dialog_query::the!("db.attribute/id")
                     .of(d_attr_entity.clone())
                     .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/type")
+                dialog_query::the!("db.attribute/type")
                     .of(d_attr_entity.clone())
                     .is("Text".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/cardinality")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(d_attr_entity.clone())
                     .is("one".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.meta/description")
+                dialog_query::the!("db.meta/description")
                     .of(d_attr_entity)
                     .is(String::new()),
             )
@@ -2080,8 +2101,8 @@ mod tests {
     /// durable concept on the same branch does not.
     #[dialog_common::test]
     async fn it_queries_command_returns_only_transient_concepts() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::{Any, Output as _, Parameters, Term};
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2116,42 +2137,42 @@ mod tests {
         branch
             .transaction()
             .assert(
-                dialog_query::the!("dialog.attribute/id")
+                dialog_query::the!("db.attribute/id")
                     .of(c_attr_entity.clone())
                     .is(format!("{}/{}", c_attr.domain(), c_attr.name())),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/type")
+                dialog_query::the!("db.attribute/type")
                     .of(c_attr_entity.clone())
                     .is("Entity".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/cardinality")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(c_attr_entity.clone())
                     .is("one".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.meta/description")
+                dialog_query::the!("db.meta/description")
                     .of(c_attr_entity)
                     .is(String::new()),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/id")
+                dialog_query::the!("db.attribute/id")
                     .of(d_attr_entity.clone())
                     .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/type")
+                dialog_query::the!("db.attribute/type")
                     .of(d_attr_entity.clone())
                     .is("Text".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.attribute/cardinality")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(d_attr_entity.clone())
                     .is("one".to_string()),
             )
             .assert(
-                dialog_query::the!("dialog.meta/description")
+                dialog_query::the!("db.meta/description")
                     .of(d_attr_entity)
                     .is(String::new()),
             )
@@ -2194,13 +2215,13 @@ mod tests {
     }
 
     /// `lookup_named_entity("alice")` reads the
-    /// `(id:alice, dialog.name/referent, ?target)` claim
+    /// `(id:alice, db.name/referent, ?target)` claim
     /// and returns the target entity. Round-trip a hand-written
     /// claim through a branch and confirm the lookup recovers
     /// the target.
     #[dialog_common::test]
     async fn it_resolves_published_name_to_target_entity() -> anyhow::Result<()> {
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2210,7 +2231,7 @@ mod tests {
         let target: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv".parse()?;
         branch
             .transaction()
-            .assert(the!("dialog.name/referent").of(id_alice).is(target.clone()))
+            .assert(the!("db.name/referent").of(id_alice).is(target.clone()))
             .commit()
             .perform(&operator)
             .await?;
@@ -2225,7 +2246,7 @@ mod tests {
     /// and for "the prior assertion was retracted."
     #[dialog_common::test]
     async fn it_returns_none_for_unknown_published_name() -> anyhow::Result<()> {
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2243,9 +2264,9 @@ mod tests {
     ///
     /// Models the page-disambiguation bug from user feedback:
     /// when the analyzer's name publication writes
-    /// `(id:page, dialog.meta/name, page-v1)` in tx1 and
-    /// `(id:page, dialog.meta/name, page-v2)` in tx2, querying
-    /// for "page" via `dialog.meta/name` should return only
+    /// `(id:page, db.meta/name, page-v1)` in tx1 and
+    /// `(id:page, db.meta/name, page-v2)` in tx2, querying
+    /// for "page" via `db.meta/name` should return only
     /// `page-v2` — the previous pointer should have been
     /// superseded by the cardinality-one constraint.
     ///
@@ -2259,12 +2280,12 @@ mod tests {
     /// is in `dialog` itself.
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_across_transactions() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::Output as _;
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         // A minimal one-attribute concept whose only field is
         // cardinality-one. `Pointer` mirrors the shape of the
-        // `dialog.meta/name` claim — id-shaped `this`, single
+        // `db.meta/name` claim — id-shaped `this`, single
         // entity-typed value.
         mod pointer {
             use dialog_artifacts::Entity;
@@ -2344,8 +2365,8 @@ mod tests {
     /// twice in the same batch, the second call should win.
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_within_transaction() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::Output as _;
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
         mod pointer {
             use dialog_artifacts::Entity;
@@ -2410,15 +2431,15 @@ mod tests {
     ///
     /// This is the regression test for the page-disambiguation
     /// bug. Before the rewrite, `lookup_entity_name` used a raw
-    /// `the!("dialog.meta/name").of(?).is(value)` query that
+    /// `the!("db.meta/name").of(?).is(value)` query that
     /// surfaces the superseded v1 claim from the EAV log. Going
     /// through the `Name` concept's derived `Query` runs the
     /// same cardinality-one filter dialog applies to the forward
     /// direction, so v1 disappears.
     #[dialog_common::test]
     async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
+        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
         use dialog_query::Output as _;
-        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
         use tonk_core::meta::{Name, name};
 
         let (operator, profile) = test_operator_with_profile().await;

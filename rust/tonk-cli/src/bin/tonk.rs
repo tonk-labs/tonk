@@ -121,11 +121,11 @@ enum Command {
         concept: Option<String>,
     },
 
-    /// Report how local main relates to its upstream
+    /// Report how local main relates to its upstream and its current hash
     ///
     /// Prints `synced`, `ahead`, `behind`, `diverged`, or
-    /// `no-upstream`. Read-only — fetches the upstream head without
-    /// merging.
+    /// `no-upstream`, followed by the current local tree hash. Read-only —
+    /// fetches the upstream head without merging.
     #[command(after_help = "Examples:\n  tonk status")]
     Status,
 
@@ -394,6 +394,10 @@ enum Command {
         /// Write the CSV to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
+        /// Branch to export. Branches carry separate data and migrate
+        /// separately, so an upgrade covers each in turn.
+        #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
+        branch: String,
     },
 
     /// Import artifacts from a CSV file onto local main
@@ -405,6 +409,9 @@ enum Command {
         /// The CSV file to read (`the,of,as,is,cause` columns).
         #[arg(value_name = "PATH")]
         file: PathBuf,
+        /// Branch to import onto.
+        #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
+        branch: String,
     },
 
     /// Migrate a .carry/ directory to .tonk/
@@ -427,6 +434,31 @@ enum Command {
         /// filesystem; copy + delete fallback otherwise.
         #[arg(long = "move")]
         do_move: bool,
+
+        /// Upgrade a spot written before the dialog format change.
+        ///
+        /// Downloads the last build that can read it, exports each
+        /// branch, rewrites the schema namespace, and imports the
+        /// result here. Unrelated to the `.carry/` move above.
+        #[arg(long, conflicts_with_all = ["from", "do_move"])]
+        legacy: bool,
+
+        /// Name of the registered legacy spot to upgrade. Required with
+        /// `--legacy`.
+        ///
+        /// A name rather than a path: the build that reads it resolves
+        /// spots through the registry, so one that is not registered
+        /// cannot be exported by it at all.
+        #[arg(long, value_name = "NAME", requires = "legacy")]
+        site: Option<String>,
+
+        /// Branches to upgrade. Repeatable; defaults to `main`.
+        ///
+        /// Branches are not discoverable on a legacy spot — listing them
+        /// needs an open branch, which is what fails — so any beyond
+        /// `main` must be named.
+        #[arg(long, value_name = "NAME", requires = "legacy")]
+        branch: Vec<String>,
     },
 
     /// Show or toggle anonymous usage telemetry
@@ -504,6 +536,10 @@ enum AccountCommand {
         /// account service. Those devices may stay listed until revoked.
         #[arg(long)]
         abandon_detach: bool,
+        /// Authorize through a page that posts the grant back directly,
+        /// instead of registering a handoff with the account service.
+        #[arg(long, value_name = "URL")]
+        via: Option<String>,
     },
 
     /// Disconnect account services on this device
@@ -517,6 +553,14 @@ enum AccountCommand {
         #[command(subcommand)]
         command: Option<AccountSpotsCommand>,
     },
+
+    /// Move stored delegations into their durable homes
+    ///
+    /// Drains the legacy certificate store into the profile's access branch
+    /// and retains each spot's authority into the account space, so another
+    /// device regains access by pulling the account. Safe to re-run.
+    #[command(after_help = "Examples:\n  tonk account migrate")]
+    Migrate,
 
     /// List the devices linked to this profile's account
     Devices {
@@ -888,6 +932,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                     None | Some(AccountSpotsCommand::List) => "spots-list",
                     Some(AccountSpotsCommand::Pull { .. }) => "spots-pull",
                 },
+                AccountCommand::Migrate => "migrate",
                 AccountCommand::Devices { .. } => "devices",
                 AccountCommand::Revoke { .. } => "revoke",
             }),
@@ -1029,10 +1074,22 @@ async fn main() {
             entity,
             field,
         } => retract_op(concept, entity, field, spot.as_deref()).await,
-        Command::Migrate { from, do_move } => migrate(from, do_move).await,
-        Command::Export { out } => export_op(out, spot.as_deref()).await,
+        Command::Migrate {
+            from,
+            do_move,
+            legacy,
+            site,
+            branch,
+        } => {
+            if legacy {
+                legacy_migrate(site, branch, spot.as_deref()).await
+            } else {
+                migrate(from, do_move).await
+            }
+        }
+        Command::Export { out, branch } => export_op(out, &branch, spot.as_deref()).await,
         Command::Render { route, out } => render_op(route, out, spot.as_deref()).await,
-        Command::Import { file } => import_op(file, spot.as_deref()).await,
+        Command::Import { file, branch } => import_op(file, &branch, spot.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, spot.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, spot.as_deref()).await,
         Command::Status => status_op(spot.as_deref()).await,
@@ -1256,12 +1313,38 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
+        AccountCommand::Migrate => {
+            match tonk_cli::account_state::migrate_delegations_here().await {
+                Ok(outcome) => {
+                    println!(
+                        "migrated {} certificate{} into access facts",
+                        outcome.certificates,
+                        if outcome.certificates == 1 { "" } else { "s" }
+                    );
+                    println!(
+                        "retained {} spot{} into the account space ({} already there)",
+                        outcome.spots,
+                        if outcome.spots == 1 { "" } else { "s" },
+                        outcome.already
+                    );
+                    if outcome.account_legacy {
+                        eprintln!(
+                            "warning: the account repository is still in the legacy format; \
+                             certificate migration completed, but spot retention was skipped"
+                        );
+                    }
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            }
+        }
         AccountCommand::Link {
             name,
             service_url,
             account_url,
             no_open,
             abandon_detach,
+            via,
         } => match account::link(
             &profile,
             &account::LinkOptions {
@@ -1270,6 +1353,9 @@ async fn account_op(command: AccountCommand) -> ExitCode {
                 device_name: name.unwrap_or_else(account::default_device_name),
                 open_browser: !no_open,
                 abandon_detach,
+                via,
+                announce: None,
+                store: None,
             },
         )
         .await
@@ -1833,7 +1919,105 @@ async fn sync_op(op: SyncOp, spot: Option<&str>) -> ExitCode {
     }
 }
 
-async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
+/// Upgrade a spot written before the dialog format change.
+///
+/// Runs the whole sequence: fetch the last build that can read the old
+/// format, export each branch with it, rewrite the schema namespace, and
+/// import the result into the active spot. Reports per branch rather than
+/// as one number, because branches migrate separately and a partial result
+/// should say which parts landed.
+async fn legacy_migrate(
+    site: Option<String>,
+    branches: Vec<String>,
+    spot: Option<&str>,
+) -> ExitCode {
+    let Some(site) = site else {
+        return print_failure(anyhow::anyhow!(
+            "--legacy needs --site <NAME>, the registered spot to upgrade"
+        ));
+    };
+    let branches = if branches.is_empty() {
+        vec![tonk_cli::site::BRANCH_NAME.to_owned()]
+    } else {
+        branches
+    };
+
+    let (_, destination) = match open_selected(spot).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+
+    // Credentials first, repositories after. A repository's authority chain
+    // reaches the account root, so migrating the account is what makes the
+    // migrated repositories usable — doing it the other way round leaves
+    // data that imports cleanly and cannot be pushed anywhere.
+    match tonk_cli::account_state::migrate_delegations_here().await {
+        Ok(outcome) => {
+            println!(
+                "account: {} certificate(s) moved into access facts, \
+                 {} spot(s) retained ({} already there)",
+                outcome.certificates, outcome.spots, outcome.already
+            );
+            if outcome.account_legacy {
+                eprintln!(
+                    "warning: the account repository is still in the legacy format; \
+                     certificate migration completed, but spot retention was skipped"
+                );
+            }
+        }
+        // An unlinked profile has no account to migrate, which is ordinary
+        // rather than a failure — but anything else is worth stopping for,
+        // since the repositories below would inherit the problem.
+        Err(error) => return print_failure(error),
+    }
+
+    let workspace = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(error) => return print_failure(error),
+    };
+    eprintln!("fetching {} …", tonk_cli::legacy::LEGACY_RELEASE);
+    let cli = match tonk_cli::legacy::fetch_legacy_cli(workspace.path()) {
+        Ok(path) => path,
+        Err(error) => return print_failure(error),
+    };
+
+    for branch in &branches {
+        let upgraded = match tonk_cli::legacy::upgrade_branch(&cli, &site, branch, workspace.path())
+        {
+            Ok(upgraded) => upgraded,
+            Err(error) => return print_failure(error),
+        };
+        let blobs = match tonk_cli::legacy::migrate_blobs(
+            &cli,
+            &site,
+            branch,
+            &upgraded.blobs,
+            &destination,
+            workspace.path(),
+        )
+        .await
+        {
+            Ok(blobs) => blobs,
+            Err(error) => return print_failure(error),
+        };
+        if let Err(error) = transfer::import_branch(&destination, branch, &upgraded.csv).await {
+            return print_failure(error);
+        }
+        println!(
+            "{branch}: {} rows ({} remapped, {} dropped as dialog's own), \
+             {} blobs ({} bytes)",
+            upgraded.migration.kept,
+            upgraded.migration.remapped,
+            upgraded.migration.dropped,
+            blobs.copied,
+            blobs.bytes
+        );
+    }
+    println!("upgraded {} branch(es)", branches.len());
+    ExitCode::Success
+}
+
+async fn export_op(out: Option<PathBuf>, branch: &str, spot: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
@@ -1844,7 +2028,7 @@ async fn export_op(out: Option<PathBuf>, spot: Option<&str>) -> ExitCode {
         None => transfer::Destination::Stdout,
     };
 
-    match transfer::export(&site, destination).await {
+    match transfer::export_branch(&site, branch, destination).await {
         Ok(bytes) => {
             // The CSV may be on stdout, so status goes to stderr.
             if let Some(path) = out {
@@ -1889,19 +2073,18 @@ async fn render_op(route: String, out: Option<PathBuf>, spot: Option<&str>) -> E
     }
 }
 
-async fn import_op(file: PathBuf, spot: Option<&str>) -> ExitCode {
+async fn import_op(file: PathBuf, branch: &str, spot: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(spot).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
-    match transfer::import(&site, &file).await {
+    match transfer::import_branch(&site, branch, &file).await {
         Ok(revision) => {
             println!(
-                "imported {} -> revision {}.{}",
+                "imported {} -> revision {}",
                 file.display(),
-                revision.period,
-                revision.moment,
+                revision.edition.value(),
             );
             ExitCode::Success
         }
@@ -1941,9 +2124,12 @@ async fn status_op(spot: Option<&str>) -> ExitCode {
         source = resolved.source,
     );
 
-    match sync::status(&site).await {
-        Ok(state) => {
-            println!("{}", render_sync_state(state));
+    match sync::status_with_hash(&site).await {
+        Ok(status) => {
+            println!("{}", render_sync_state(status.state));
+            if let Some(hash) = status.hash {
+                println!("hash: {hash}");
+            }
             ExitCode::Success
         }
         Err(err) => {

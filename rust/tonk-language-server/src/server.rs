@@ -273,14 +273,19 @@ impl Server {
             head_completions(opened.as_ref()).await
         } else if is_premise_assert_position(&line_prefix) {
             // A premise's `assert:` value accepts a concept name, a
-            // built-in formula name, or a built-in constraint name —
-            // offer all three.
+            // built-in formula, a constraint, or a resolver — offer
+            // all four.
             let mut out = head_completions(opened.as_ref()).await;
             out.extend(formula_completions_items());
             out.extend(constraint_completions_items());
+            out.extend(resolver_completions_items());
             out
         } else if is_variable_position(&line_prefix) {
             variable_completions(text, position)
+        } else if is_body_position(&line_prefix)
+            && let Some(resolver) = enclosing_resolver(text, position)
+        {
+            resolver_operand_completions(&resolver)
         } else if let Some(head) = enclosing_head(text, position)
             && is_body_position(&line_prefix)
         {
@@ -828,6 +833,72 @@ fn enclosing_head(text: &str, position: lsp_types::Position) -> Option<String> {
     None
 }
 
+/// The resolver name governing the `where:` block the cursor sits
+/// in, if any.
+///
+/// A resolver premise nests two ways — as a rule premise
+///
+/// ```yaml
+/// when:
+///   - assert: tree/node
+///     where:
+///       <cursor>
+/// ```
+///
+/// where [`enclosing_head`] would report the enclosing `rule`, not
+/// the resolver. So walk up looking for the nearest `assert:` line
+/// whose value names a resolver, stopping at a blank line (which
+/// ends the block) exactly as `enclosing_head` does.
+fn enclosing_resolver(text: &str, position: lsp_types::Position) -> Option<String> {
+    let line_index = position.line as usize;
+    let prior: Vec<&str> = text.split('\n').take(line_index).collect();
+    for line in prior.into_iter().rev() {
+        let trimmed = line.strip_suffix('\r').unwrap_or(line);
+        if trimmed.trim().is_empty() {
+            return None;
+        }
+        let body = trimmed.trim_start();
+        let body = body.strip_prefix('-').map_or(body, str::trim_start);
+        if let Some(value) = body.strip_prefix("assert:") {
+            // A quoted name (`">"`) is a constraint, never a
+            // resolver, and the quotes are not part of the name.
+            let name = value.trim().trim_matches(['"', '\'']);
+            return tonk_analyzer::analyzer::resolver_operands(name).map(|_| name.to_owned());
+        }
+    }
+    None
+}
+
+/// Operand names a resolver's `where:` block accepts, carrying
+/// dialog's own descriptions. Required inputs are labelled as such
+/// and sort first: `of` must be bound for the premise to run at
+/// all, so offering it indistinguishably from a produced binding
+/// would invite a query that cannot be planned.
+fn resolver_operand_completions(name: &str) -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+
+    let Some(operands) = tonk_analyzer::analyzer::resolver_operands(name) else {
+        return Vec::new();
+    };
+
+    operands
+        .into_iter()
+        .enumerate()
+        .map(|(index, operand)| CompletionItem {
+            label: operand.name.clone(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: operand.required.then(|| "required input".to_owned()),
+            documentation: (!operand.description.is_empty())
+                .then_some(Documentation::String(operand.description)),
+            // Preserve the required-first order the registry sorted
+            // into; clients otherwise re-sort by label.
+            sort_text: Some(format!("{index:03}")),
+            insert_text: Some(format!("{}: ", operand.name)),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 /// Field names declared by the head's concept descriptor, plus
 /// the always-available `this:` meta-key. Looks up the concept
 /// in the built-in registry first; falls back to resolving
@@ -888,12 +959,22 @@ async fn head_completions<O: Opened + ?Sized>(opened: Option<&O>) -> Vec<Complet
         out.push(CompletionItem {
             label: (*name).to_owned(),
             kind: Some(CompletionItemKind::CLASS),
+            // Name the namespace. In `assert:` position concepts share
+            // the list with formulas, constraints and resolvers, and
+            // the names can collide (`tree/node` is a resolver, and a
+            // branch could publish a concept spelled the same) — the
+            // label alone does not say which one you are accepting.
+            detail: Some("concept".to_owned()),
             documentation: definition
                 .descriptor
                 .concept()
                 .description()
                 .map(|d| Documentation::String(d.to_owned())),
             insert_text: Some((*name).to_owned()),
+            // Concepts sort ahead of built-ins: they are what a
+            // document mostly names, and the built-in sets are small
+            // and fixed.
+            sort_text: Some(format!("1{name}")),
             ..CompletionItem::default()
         });
     }
@@ -965,9 +1046,10 @@ fn formula_completions_items() -> Vec<CompletionItem> {
         .map(|formula| CompletionItem {
             label: formula.name.to_owned(),
             kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some(formula.detail.clone()),
+            detail: Some("formula".to_owned()),
             documentation: Some(Documentation::String(formula.detail)),
             insert_text: Some(formula.name.to_owned()),
+            sort_text: Some(format!("2{}", formula.name)),
             ..CompletionItem::default()
         })
         .collect()
@@ -986,9 +1068,37 @@ fn constraint_completions_items() -> Vec<CompletionItem> {
         .map(|constraint| CompletionItem {
             label: constraint.name.to_owned(),
             kind: Some(CompletionItemKind::OPERATOR),
-            detail: Some(constraint.detail.clone()),
+            detail: Some("constraint".to_owned()),
             documentation: Some(Documentation::String(constraint.detail)),
-            insert_text: Some(constraint.name.to_owned()),
+            sort_text: Some(format!("2{}", constraint.name)),
+            // Insert the notation form, not the bare name: an
+            // unquoted `>` would parse as a folded scalar.
+            insert_text: Some(constraint.insert.clone()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+/// Every built-in resolver as a completion item. Reads the analyzer's
+/// resolver registry so the list never drifts from what the analyzer
+/// accepts — the `tree/*` family that replaced the worker-intercepted
+/// tree formulas.
+fn resolver_completions_items() -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_analyzer::analyzer::resolver_completions;
+
+    resolver_completions()
+        .into_iter()
+        .map(|resolver| CompletionItem {
+            label: resolver.name.to_owned(),
+            // A resolver reads structure out of the store rather than
+            // computing a value, so it presents as a function-like
+            // premise head, the same as a formula.
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("resolver".to_owned()),
+            documentation: Some(Documentation::String(resolver.detail)),
+            insert_text: Some(resolver.name.to_owned()),
+            sort_text: Some(format!("2{}", resolver.name)),
             ..CompletionItem::default()
         })
         .collect()
@@ -1194,8 +1304,8 @@ fn server_capabilities() -> ServerCapabilities {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
     use dialog_repository::Branch;
-    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use serde_json::json;
     use tonk_schema::concept::QueryEnv;
     use tonk_schema::query_source::Source;
@@ -1597,12 +1707,211 @@ mod tests {
             "boolean/and",
             "text/concatenate",
             "==",
+            // Range predicates and the `tree/*` resolvers share this
+            // position: anything that can head a premise is offered
+            // here, or it is undiscoverable in the editor.
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "starts-with",
+            "tree/node",
+            "tree/span",
+            "tree/entry",
+            "tree/key",
         ] {
             assert!(
                 labels.contains(&name),
                 "expected `{name}` in completion list, got {labels:?}",
             );
         }
+
+        // `>` and `>=` must insert QUOTED: bare, they open a YAML
+        // folded scalar, and the document then parses with an empty
+        // predicate name.
+        // The server turns `insert_text` into an explicit `text_edit`
+        // so the client replaces the whole token (see `with_range`),
+        // so the inserted text is the edit's `newText`.
+        let insert_for = |name: &str| -> String {
+            items
+                .iter()
+                .find(|i| i["label"].as_str() == Some(name))
+                .and_then(|i| {
+                    i["textEdit"]["newText"]
+                        .as_str()
+                        .or_else(|| i["insertText"].as_str())
+                })
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(insert_for(">"), "\">\"");
+        assert_eq!(insert_for(">="), "\">=\"");
+        assert_eq!(insert_for("<"), "<");
+    }
+
+    /// Names collide across namespaces — `tree/node` is a resolver,
+    /// and nothing stops a branch publishing a concept spelled the
+    /// same. In `assert:` position all four namespaces share one
+    /// list, so every item must say which namespace it came from or
+    /// the user cannot tell what they are accepting.
+    #[dialog_common::test]
+    async fn it_labels_the_namespace_of_each_premise_completion() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        let text = "rule!:\n  assert!: counter\n  when:\n    - assert: ";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let reply = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": "tonk-buffer:///test" },
+                    "position": { "line": 3, "character": 14 }
+                }
+            }),
+        )
+        .await
+        .expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+
+        let detail_for = |name: &str| -> String {
+            items
+                .iter()
+                .find(|i| i["label"].as_str() == Some(name))
+                .and_then(|i| i["detail"].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        };
+
+        assert_eq!(detail_for("tree/node"), "resolver");
+        assert_eq!(detail_for("math/sum"), "formula");
+        assert_eq!(detail_for("=="), "constraint");
+        assert_eq!(detail_for("concept"), "concept");
+    }
+
+    /// Inside a resolver premise's `where:`, the offered keys are the
+    /// resolver's own operands — read off dialog's schema, carrying
+    /// its descriptions, with the required input first. Without this
+    /// the block completes to nothing, since a resolver has no
+    /// concept descriptor to read fields from.
+    #[dialog_common::test]
+    async fn it_offers_resolver_operands_inside_a_premise_where_block() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        let text =
+            "rule!:\n  assert!: alert\n  when:\n    - assert: tree/node\n      where:\n        ";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let reply = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": "tonk-buffer:///test" },
+                    "position": { "line": 5, "character": 8 }
+                }
+            }),
+        )
+        .await
+        .expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default())
+            .collect();
+
+        for operand in ["of", "kind", "size", "count"] {
+            assert!(
+                labels.contains(&operand),
+                "expected `{operand}` among tree/node operands, got {labels:?}"
+            );
+        }
+
+        let of = items
+            .iter()
+            .find(|i| i["label"].as_str() == Some("of"))
+            .expect("`of` is offered");
+        assert_eq!(
+            of["detail"].as_str(),
+            Some("required input"),
+            "`of` must be marked as the term that has to be bound"
+        );
+        assert!(
+            of["documentation"].as_str().is_some_and(|d| !d.is_empty()),
+            "operand docs come off dialog's schema"
+        );
+    }
+
+    /// A quoted constraint is not a resolver. `- assert: ">"` names
+    /// the range predicate, so its `where:` must fall through to the
+    /// ordinary path rather than being read as a resolver named `>`.
+    #[dialog_common::test]
+    fn it_does_not_read_a_quoted_constraint_as_a_resolver() {
+        let text = "rule!:\n  when:\n    - assert: \">\"\n      where:\n        ";
+        let position = lsp_types::Position {
+            line: 4,
+            character: 8,
+        };
+        assert_eq!(enclosing_resolver(text, position), None);
+
+        let resolver = "rule!:\n  when:\n    - assert: tree/span\n      where:\n        ";
+        assert_eq!(
+            enclosing_resolver(resolver, position).as_deref(),
+            Some("tree/span")
+        );
     }
 
     /// Accepting a namespaced completion over a typed partial name

@@ -2576,7 +2576,7 @@ concept!: &person
     /// A concept's `with` block can address an attribute defined
     /// in a *prior* transaction by bookmark name. The
     /// branch-backed resolver looks up the previously-asserted
-    /// attribute by `dialog.meta/name`, reconstructs its
+    /// attribute by `db.meta/name`, reconstructs its
     /// descriptor, and lets the concept hash correctly.
     #[dialog_common::test]
     async fn it_resolves_bookmarks_across_transactions() {
@@ -3026,7 +3026,7 @@ person!:
     /// body derives a *new* entity from the new body and rebinds
     /// the `id:alice → entity` claim from the old entity to the
     /// new one (cardinality-one supersession on
-    /// `dialog.meta/name`). After the rebind, the old entity
+    /// `db.meta/name`). After the rebind, the old entity
     /// still
     /// holds its facts but is no longer addressable by `.alice`.
     #[dialog_common::test]
@@ -3779,12 +3779,19 @@ employee:
             matches!(tag, "entity" | "attribute" | "value"),
             "key tag named: {row}"
         );
+        // The M3 key format is variable-length, so components come back
+        // as a decoded `parts` list rather than the fixed-offset
+        // `entity` / `value-type` fields the old layout could name.
+        let parts = row["fields"]["parts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("key parts present: {row}"));
+        let kinds: Vec<&str> = parts
+            .iter()
+            .filter_map(|part| part["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"entity"), "entity component present: {row}");
         assert!(
-            row["fields"]["entity"].as_str().is_some(),
-            "entity component present: {row}"
-        );
-        assert!(
-            row["fields"]["value-type"].as_i64().is_some(),
+            kinds.contains(&"vtype"),
             "value-type component present: {row}"
         );
     }
@@ -4067,7 +4074,7 @@ employee:
     /// Unlike `it_broadcasts_changed_snapshot_after_commit`, this does
     /// NOT grow the result set. Declaring an attribute anchor publishes
     /// a `meta::Name` (`id:<anchor>` carries a cardinality-one
-    /// `dialog.name/referent` pointing at the attribute entity).
+    /// `db.name/referent` pointing at the attribute entity).
     /// Re-declaring the SAME anchor with a different `the:` re-points
     /// that referent: the `id:<anchor>` row keeps its identity but its
     /// `entity` field changes. The subscription must observe that

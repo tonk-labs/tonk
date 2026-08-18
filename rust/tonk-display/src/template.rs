@@ -373,6 +373,7 @@ mod dom {
         binding: &Binding,
         rendered: &str,
         single_field_value: Option<&Ipld>,
+        has_absent_field: bool,
     ) {
         let BindingKind::Attribute {
             attr_name,
@@ -399,6 +400,22 @@ mod dom {
         // still writes `""`; only a missing field clears the attribute.
         let absent_single_field = single_field_value.is_none()
             && matches!(segments.as_slice(), [Segment::Field(name)] if name != "this");
+
+        // A MULTI-segment binding (e.g. `with="main@{id}"`) with a genuinely
+        // absent `{field}` component (`has_absent_field`, computed by the
+        // caller against the shadow + row fields) is only PARTIALLY resolved:
+        // the value it stands for hasn't arrived yet. Writing it now
+        // substitutes the absent field to nothing, turning `main@{id}` into
+        // the misleading `main@` — a value that no longer contains a `{…}`
+        // placeholder, so `<tonk-site>` (and any consumer that skips
+        // unresolved templates) mistakes it for a resolved-but-MALFORMED
+        // value and errors permanently instead of waiting. Leave the
+        // attribute untouched (its prior `{…}` placeholder survives) until a
+        // frame carrying the field lands. The lone-single-field case is
+        // handled separately above (it clears the attribute instead).
+        if !absent_single_field && has_absent_field {
+            return;
+        }
 
         if *force_attribute {
             if absent_single_field {

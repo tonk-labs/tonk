@@ -38,7 +38,7 @@
 # ============================================================
 
 # The board root, bound to the replica entity exactly like the wiki
-# root: it shares `dialog.origin/subject` with `tonk/replica`, so
+# root: it shares `dialog.replica/subject` with `tonk/replica`, so
 # every replica IS a board row and the shell view can render for it
 # without any extra seeding. `name` is the board title shown in the
 # top bar; absent until first renamed (the component falls back to
@@ -52,7 +52,7 @@ concept!: &board/canvas
   with:
     subject:
       description: The repository's subject DID (shared with tonk/replica)
-      the: dialog.origin/subject
+      the: dialog.replica/subject
       as: entity
   maybe:
     name:

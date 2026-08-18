@@ -31,7 +31,7 @@
 
 use dialog_capability::access::{Prove, Retain};
 use dialog_capability::{Provider, Subject};
-use dialog_operator::{Operator, Profile};
+use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_storage::provider::space::SpaceProvider;
 use dialog_storage::provider::storage::Storage;
 use dialog_ucan::Ucan;
@@ -74,6 +74,9 @@ pub struct Session<S: Clone = DefaultSpace> {
 pub async fn open<S>(profile: &Profile, storage: &Storage<S>) -> Result<Session<S>, TonkWorkerError>
 where
     S: SpaceProvider + Clone + 'static,
+    S: Provider<dialog_effects::blob::Read>
+        + Provider<dialog_effects::blob::Write>
+        + Provider<dialog_effects::blob::Import>,
     S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
     // A random derivation context is what makes the operator key
@@ -145,8 +148,6 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use dialog_credentials::Ed25519Signer;
     use dialog_effects::storage::Directory;
     use dialog_ucan::UcanDelegation;
@@ -157,9 +158,14 @@ mod tests {
     /// A throwaway profile in a scratch directory, plus the storage it
     /// is mounted in. Names are unique per call so tests never share a
     /// profile key or a certificate store.
+    ///
+    /// The name must be unique across PROCESSES, not just within one: the
+    /// runner starts a process per test, so a bare per-process counter
+    /// hands two concurrent tests the same name — and therefore the same
+    /// profile directory, whose writer lock one of them then loses.
+    /// `unique_name` folds in the pid for exactly this reason.
     async fn scratch() -> (Storage<DefaultSpace>, Profile) {
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let name = format!("session-test-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+        let name = dialog_operator::helpers::unique_name("session-test");
         let storage = Storage::<DefaultSpace>::default();
         let profile = Profile::open(name)
             .at(Directory::Temp)

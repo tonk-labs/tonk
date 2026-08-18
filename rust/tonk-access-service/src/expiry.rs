@@ -57,6 +57,9 @@ mod tests {
 
     fn bounded(not_before: Option<u64>, expires_at: Option<u64>) -> PresentedCredentials {
         PresentedCredentials {
+            subject: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                .parse()
+                .expect("test DID parses"),
             delegation_cids: vec!["bafycid".to_string()],
             not_before,
             expires_at,

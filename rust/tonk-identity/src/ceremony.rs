@@ -370,6 +370,57 @@ pub async fn establish_account_repository(
 }
 
 /// Build the root-signed completion for a CLI browser handoff.
+/// Authorize a CLI device directly, with no account service in the loop.
+///
+/// The browser mints the same `account → device` powerline `complete_link`
+/// does, but returns it for delivery straight back to the waiting process
+/// instead of wrapping it in a service invocation. The descriptor rides along
+/// so the device learns where the account repository lives — a delegation
+/// says who may act, not where to sync from, and without it the device is
+/// authorized but cannot find the account.
+///
+/// The remote is the account's own, so the descriptor this signs is
+/// byte-identical to the established one: signing is deterministic over
+/// `(version, subject, remote)`, so this reproduces the existing descriptor
+/// rather than minting a competing one.
+pub async fn authorize_device(
+    root: Ed25519Signer,
+    device_did: dialog_varsig::Did,
+    remote: &str,
+) -> Result<AuthorizedDevice> {
+    let delegation = mint_device_delegation(root.clone(), &device_did).await?;
+    let delegation_hex = hex::encode(
+        delegation
+            .to_bytes()
+            .context("failed to serialize root to device delegation")?,
+    );
+    let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, remote)
+        .await
+        .context("failed to sign the account repository descriptor")?;
+    Ok(AuthorizedDevice {
+        root_did: root.did().to_string(),
+        device_did: device_did.to_string(),
+        delegation_hex,
+        descriptor_hex: hex::encode(descriptor.bytes()),
+    })
+}
+
+/// What a callback authorization hands back to the waiting device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedDevice {
+    /// The passkey-derived account root that issued the grant.
+    pub root_did: String,
+    /// The device the grant is addressed to.
+    pub device_did: String,
+    /// Hex-encoded `account → device` delegation chain.
+    pub delegation_hex: String,
+    /// Exact signed account repository descriptor, so the device knows where
+    /// the account repository lives.
+    pub descriptor_hex: String,
+}
+
+/// Complete a browser handoff: mint the `root → device` delegation and wrap
+/// it in the invocation the account service consumes.
 pub async fn complete_link(
     root: Ed25519Signer,
     token_hash: String,

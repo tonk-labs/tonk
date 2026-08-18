@@ -20,6 +20,19 @@ pub enum Kind {
     Segment,
 }
 
+/// One decoded, self-describing component of a key, as the worker's
+/// `key_parts` emits it. `kind` selects the UI color/glyph, `text` is the
+/// human rendering (a `did:key:…` entity, a `db.meta/name` attribute, a typed
+/// value, a decimal edition), and `hex` is the raw bytes for the tooltip.
+#[derive(Clone, Deserialize)]
+pub struct KeyPart {
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub hex: String,
+}
+
 /// One node's fields — the `tree/node` / `tree/child` shape.
 #[derive(Clone)]
 pub struct TreeNode {
@@ -27,20 +40,51 @@ pub struct TreeNode {
     pub kind: Kind,
     pub size: u64,
     pub count: u64,
+    /// The bound key's raw hex — kept for the front-coding pivot, which
+    /// compares raw bytes across siblings.
     pub bound: Option<NodeHash>,
+    /// The bound key's decoded components (the worker's `bound-parts`).
+    pub bound_parts: Vec<KeyPart>,
     pub rank: Option<u64>,
     pub cached: bool,
+    /// The subtree's advisory scale code — a log-scale estimate of how
+    /// many entries sit beneath this node.
+    pub scale: Option<u64>,
+    /// Hitchhiker ops buffered on this node (always 0 for a segment).
+    pub novelty: Option<u64>,
+    /// The format manifest the node embeds: the configuration that
+    /// produced this shape, as `(label, value)` rows in display order.
+    pub manifest: Vec<(String, u64)>,
 }
 
 /// One entry in a segment — the `tree/entry` shape.
 #[derive(Clone)]
 pub struct TreeEntry {
-    pub key: NodeHash,
+    /// The entry key's decoded components (the worker's `key-parts`).
+    pub key_parts: Vec<KeyPart>,
     pub retracted: bool,
     pub entity: Option<String>,
     pub attribute: Option<String>,
     pub type_name: Option<String>,
     pub value: Option<serde_json::Value>,
+    /// Which index this key belongs to — `entity`, `attribute`,
+    /// `value`, `history`, `coverage`, or `blob`. A segment holds more
+    /// than facts, and only this says which kind a row is.
+    pub ordering: Option<String>,
+    /// Claim version: the origin half (hex) and the edition counter.
+    pub origin: Option<String>,
+    pub edition: Option<u64>,
+    /// Prior versions in this entry's cause, and how many were folded
+    /// into it. A covering record is the one that `supersedes` others.
+    pub cause: Option<u64>,
+    pub collapsed: Option<u64>,
+    pub supersedes: Option<u64>,
+    pub retraction: bool,
+    /// A spilled value's block reference, when the value did not inline.
+    pub spill: Option<String>,
+    /// For a blob-index row: the referenced hash and its size.
+    pub blob: Option<String>,
+    pub blob_size: Option<u64>,
 }
 
 /// Raw Conclusion row off the wire.
@@ -56,6 +100,38 @@ fn s(map: &serde_json::Map<String, serde_json::Value>, k: &str) -> Option<String
 }
 fn u(map: &serde_json::Map<String, serde_json::Value>, k: &str) -> Option<u64> {
     map.get(k).and_then(|v| v.as_u64())
+}
+/// Parse a `[{kind, text, hex}, …]` parts array off a fields map. Absent or
+/// malformed → an empty list (the caller falls back to the raw hex).
+fn parts(map: &serde_json::Map<String, serde_json::Value>, k: &str) -> Vec<KeyPart> {
+    map.get(k)
+        .and_then(|v| serde_json::from_value::<Vec<KeyPart>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The node's embedded manifest as ordered `(label, value)` rows. The
+/// order is the manifest's own reading order — format version first,
+/// then the parameters that decide the tree's shape — rather than the
+/// map's alphabetical one.
+fn manifest_rows(map: &serde_json::Map<String, serde_json::Value>) -> Vec<(String, u64)> {
+    let Some(m) = map.get("manifest").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    [
+        "version",
+        "fanout",
+        "max-separator",
+        "inline",
+        "spill-prefix",
+        "max-segment",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        m.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|value| (key.to_owned(), value))
+    })
+    .collect()
 }
 
 /// The worker-backed tree loader for a `{repo, branch}`. Cheap to clone
@@ -139,8 +215,12 @@ impl Loader {
             size: u(f, "size").unwrap_or(0),
             count: u(f, "count").unwrap_or(0),
             bound: s(f, "bound"),
+            bound_parts: parts(f, "bound-parts"),
             rank: u(f, "rank"),
             cached: f.get("cached").and_then(|v| v.as_bool()) != Some(false),
+            scale: u(f, "scale"),
+            novelty: u(f, "novelty"),
+            manifest: manifest_rows(f),
         }
     }
 
@@ -168,12 +248,22 @@ impl Loader {
             .map(|r| {
                 let f = &r.fields;
                 TreeEntry {
-                    key: s(f, "key").unwrap_or_else(|| r.this.clone()),
+                    key_parts: parts(f, "key-parts"),
                     retracted: f.get("retracted").and_then(|v| v.as_bool()) == Some(true),
                     entity: s(f, "entity"),
                     attribute: s(f, "attribute"),
                     type_name: s(f, "type"),
                     value: f.get("value").cloned(),
+                    ordering: s(f, "ordering"),
+                    origin: s(f, "origin"),
+                    edition: u(f, "edition"),
+                    cause: u(f, "cause"),
+                    collapsed: u(f, "collapsed"),
+                    supersedes: u(f, "supersedes"),
+                    retraction: f.get("retraction").and_then(|v| v.as_bool()) == Some(true),
+                    spill: s(f, "spill"),
+                    blob: s(f, "blob"),
+                    blob_size: u(f, "blob-size"),
                 }
             })
             .collect())

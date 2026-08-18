@@ -380,6 +380,22 @@ tonk-display > .site-pending:not([hidden]) {
     min-height: 0;
 }
 
+/* The tree inspector is a two-pane explorer whose panes scroll
+   INDEPENDENTLY, so it needs a definite height to scroll within — with
+   the slot's default `min-height: 100dvh` the panes grow to fit their
+   content and the whole page scrolls instead, pushing the right pane
+   past the bottom edge. Same shape as the workspace rule above: swap
+   the slot to a hard `height` when it contains the element, so the
+   height is fixed at the viewport rather than floored by it. Keyed on
+   the element (not on `tonk-view > *`, which would clobber sibling
+   views' layout). */
+.display-view-slot:has(tonk-tree) {
+    height: 100dvh;
+}
+.display-view-slot:has(tonk-tree) tonk-tree {
+    min-height: 0;
+}
+
 /* Tonk Hub page (`/`). A centered column: a header row with the
    "New repo" button and the "Repositories" title, then the space
    cards (the `space` directory view). The hub here owns its own

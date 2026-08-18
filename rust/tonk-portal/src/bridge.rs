@@ -217,7 +217,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   // In-flight de-duplication for one-shot queries. Many <tonk-display>
   // elements resolve the SAME concept descriptor (phase-1) or bookmark name
   // on one page load — e.g. three displays of `tonk:repository` each fire an
-  // identical `dialog.meta/*` query. Coalesce identical concurrent queries
+  // identical `db.meta/*` query. Coalesce identical concurrent queries
   // onto one request keyed by (route + body); every caller shares the single
   // promise. Purely in-flight (cleared when it settles), so no staleness —
   // just fewer round-trips. A subscription is never deduped here (it's a

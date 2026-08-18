@@ -1,0 +1,171 @@
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit, tag, or branch to build and publish (e.g. v0.6.7).'
+        required: true
+        type: string
+      tag:
+        description: 'Release tag to publish under. Defaults to `tonk-<source-tree-hash>`.'
+        required: false
+        type: string
+
+name: 'Pin CLI release'
+
+# Publish an immutable CLI release for a ref that predates automatic
+# pinning.
+#
+# `cli.yml` pins every build it runs, but only from the moment that
+# landed. Anything older has no pinned release and cannot get one from
+# that workflow: GitHub reads `workflow_dispatch` inputs from the file
+# *at the dispatched ref*, so dispatching an old tag fails with
+# "Unexpected inputs provided" — the input does not exist back there, and
+# history cannot be edited to add it.
+#
+# This workflow inverts that. It lives on the default branch, so its
+# inputs always exist, and it *checks out* the ref being published. That
+# makes any point in history publishable without rewriting it, which is
+# what a format migration needs: the export half of a migration runs
+# under the build that wrote the data.
+#
+# It never touches the rolling tags, so the stable and staging channels
+# are unaffected by anything published here.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 'Build pinned CLI'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-macos-arm64
+    steps:
+      # The ref being published, not the branch this workflow lives on.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: wimpysworld/nothing-but-nix@main
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk'
+        run: nix build --accept-flake-config .#tonk-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: result/bin/tonk
+          overwrite: true
+      # The source-tree hash names the release when no tag is given. Only
+      # one leg records it: the source tree is platform-independent.
+      - name: 'Record the source-tree hash'
+        if: matrix.artifact-name == 'tonk-linux-x86_64'
+        run: |
+          mkdir -p tree
+          src="$(nix eval --raw --accept-flake-config .#tonk-cli.src)"
+          basename "$src" | cut -d- -f1 | cut -c1-12 > tree/tree.txt
+          cat tree/tree.txt
+      - uses: actions/upload-artifact@v4
+        if: matrix.artifact-name == 'tonk-linux-x86_64'
+        with:
+          name: tree
+          path: tree/tree.txt
+          overwrite: true
+
+  publish:
+    name: 'Publish pinned release'
+    needs: ['build']
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # `install.sh` ships as a release asset, and the one that belongs
+      # with these binaries is the one from the same ref.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-macos-arm64
+          path: artifacts/macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-x86_64
+          path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tree
+          path: artifacts/tree
+      - name: Prepare release assets
+        run: |
+          # Archive each binary as `tonk` so it extracts ready to run,
+          # with the executable bit preserved across the download.
+          install -m 0755 artifacts/macos-arm64/tonk tonk
+          tar -czf tonk-macos-arm64.tar.gz tonk
+          rm tonk
+          install -m 0755 artifacts/linux-x86_64/tonk tonk
+          tar -czf tonk-linux-x86_64.tar.gz tonk
+          rm tonk
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          tree="$(cat artifacts/tree/tree.txt)"
+          version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
+            | grep -m1 '^version' \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+          cat > manifest.json <<EOF
+          {
+            "version": "$version",
+            "commit": "$(git rev-parse HEAD)",
+            "tree": "$tree",
+            "channel": "pinned",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          python3 -c 'import json,sys; m=json.load(open("manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","tree","channel","built_at") if not m.get(k)]'
+          cat manifest.json
+          echo "tag=${{ inputs.tag }}" >> "$GITHUB_ENV"
+          if [ -z "${{ inputs.tag }}" ]; then
+            echo "tag=tonk-$tree" >> "$GITHUB_ENV"
+          fi
+      - name: Create pinned release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.tag }}
+          # No `target_commitish`: GitHub accepts only a branch name or a
+          # SHA there, so passing a tag ref fails validation outright. When
+          # the tag already exists — the usual case for publishing history —
+          # the tag decides the commit anyway.
+          name: tonk CLI ${{ env.tag }}
+          body: |
+            Immutable release of the tonk CLI built from `${{ inputs.ref }}`,
+            kept downloadable so data written by this build can always be
+            migrated forward.
+
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh \
+              | TONK_RELEASE=${{ env.tag }} sh
+            ```
+
+            On macOS the binary is unsigned. The install script clears the
+            Gatekeeper quarantine for you; if you extract by hand and macOS
+            blocks it, run `xattr -d com.apple.quarantine tonk`.
+          # Never the newest thing: this is history, and `make_latest`
+          # would point `releases/latest` at an older build.
+          prerelease: true
+          make_latest: false
+          files: |
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            checksums.txt
+            manifest.json
+            install.sh

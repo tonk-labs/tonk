@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tonk_schema::{RepositoryName, prelude::DidExt as _};
 
 /// Environment variable naming the spot to use, beaten only by the
 /// `--spot` flag. Automation (agents, bench, CI) should always set
@@ -601,6 +602,27 @@ pub async fn create(
     let site = crate::site::TonkSite::init_at_with(&target, config)
         .await
         .map_err(|e| SpotError::Init(format!("{e:#}")))?;
+
+    // A fresh CLI spot must carry the same self-identifying row the worker's
+    // create path writes. Invite validation uses this fact to distinguish a
+    // usable repository from an arbitrary branch that happens to have data.
+    // Adoption preserves the existing repository's name instead of treating
+    // the local registry alias as a rename request.
+    if !adopted {
+        site.branch()
+            .await
+            .map_err(|e| SpotError::Init(format!("failed to open main branch: {e}")))?
+            .handle()
+            .transaction()
+            .assert(RepositoryName {
+                this: site.repository.did().this(),
+                name: tonk_schema::domain::repo::Name(name.to_owned()),
+            })
+            .commit()
+            .perform(&site.operator)
+            .await
+            .map_err(|e| SpotError::Init(format!("failed to stamp repository identity: {e}")))?;
+    }
 
     let outcome = CreateOutcome {
         name: name.to_owned(),

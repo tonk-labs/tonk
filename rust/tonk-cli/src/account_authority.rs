@@ -7,7 +7,7 @@ use dialog_capability::{
     Subject,
 };
 use dialog_common::{ConditionalSend, ConditionalSync};
-use dialog_effects::authority::Identify;
+use dialog_effects::authority::{Attest, Identify};
 use dialog_operator::{Operator, Profile};
 use dialog_repository::RemoteSite as Network;
 use dialog_storage::provider::storage::NativeSpace;
@@ -29,6 +29,16 @@ pub struct AccountBoundOperator {
 }
 
 impl AccountBoundOperator {
+    /// The operator underneath the account guard.
+    ///
+    /// Callers that need the concrete operator — account-state resolution
+    /// opens the account repository in the same storage — reach it here
+    /// rather than rebuilding one against the global install store, which
+    /// would mount a different profile.
+    pub fn inner(&self) -> &Operator<NativeSpace> {
+        &self.inner
+    }
+
     /// Wrap a raw local operator after canonical session initialization.
     pub fn new(
         inner: Operator<NativeSpace>,
@@ -70,11 +80,11 @@ impl AccountBoundOperator {
     ) -> Result<ActiveAccount, AuthorizeError> {
         crate::account_session::active_guarded(&self.profile, &self.inner, guard)
             .await
-            .map_err(|error| AuthorizeError::Configuration(error.to_string()))?
-            .ok_or_else(|| {
-                AuthorizeError::Denied(
-                    "log in with `tonk account link` before accessing a remote".to_string(),
-                )
+            .map_err(|error| AuthorizeError::Unavailable {
+                detail: error.to_string(),
+            })?
+            .ok_or_else(|| AuthorizeError::Malformed {
+                detail: "log in with `tonk account link` before accessing a remote".to_string(),
             })
     }
 
@@ -91,40 +101,55 @@ impl AccountBoundOperator {
         // profile→operator session suffix. Historical account authority is
         // deliberately discarded.
         let mut authorization = input.perform(&self.inner).await?;
-        let historical = authorization.chain.take().ok_or_else(|| {
-            AuthorizeError::Denied("operator authorization has no session chain".to_string())
-        })?;
+        let historical = authorization
+            .chain
+            .take()
+            .ok_or_else(|| AuthorizeError::Unavailable {
+                detail: "operator authorization has no session chain".to_string(),
+            })?;
         // The proven chain's first issuer is the repository authority being
         // exercised. The Authorize capability's own subject is the profile
         // context, not necessarily the repository subject.
         let subject = historical.issuer().clone();
-        let session = historical.proofs().last().cloned().ok_or_else(|| {
-            AuthorizeError::Denied("operator authorization has no session proof".to_string())
-        })?;
+        let session =
+            historical
+                .proofs()
+                .last()
+                .cloned()
+                .ok_or_else(|| AuthorizeError::Unavailable {
+                    detail: "operator authorization has no session proof".to_string(),
+                })?;
         if session.issuer() != &self.profile.did() || session.audience() != &self.inner.did() {
-            return Err(AuthorizeError::Denied(
-                "operator session proof does not match this profile".to_string(),
-            ));
+            return Err(AuthorizeError::Malformed {
+                detail: "operator session proof does not match this profile".to_string(),
+            });
         }
 
         let active = self.active(guard).await?;
-        let root: dialog_varsig::Did = active.root_did.parse().map_err(|_| {
-            AuthorizeError::Denied("active account root DID is invalid".to_string())
-        })?;
-        let grant_bytes = hex::decode(&active.delegation_hex).map_err(|_| {
-            AuthorizeError::Denied("active account grant hex is invalid".to_string())
-        })?;
+        let root: dialog_varsig::Did =
+            active
+                .root_did
+                .parse()
+                .map_err(|_| AuthorizeError::Malformed {
+                    detail: "active account root DID is invalid".to_string(),
+                })?;
+        let grant_bytes =
+            hex::decode(&active.delegation_hex).map_err(|_| AuthorizeError::Malformed {
+                detail: "active account grant hex is invalid".to_string(),
+            })?;
         let grant = DelegationChain::try_from(grant_bytes.as_slice()).map_err(|error| {
-            AuthorizeError::Denied(format!("active account grant is invalid: {error}"))
+            AuthorizeError::Malformed {
+                detail: format!("active account grant is invalid: {error}"),
+            }
         })?;
         if grant.proof_cids().len() != 1
             || grant.proof_cids()[0].to_string() != active.delegation_cid
             || grant.issuer() != &root
             || grant.audience() != &self.profile.did()
         {
-            return Err(AuthorizeError::Denied(
-                "active account grant does not match canonical session state".to_string(),
-            ));
+            return Err(AuthorizeError::Malformed {
+                detail: "active account grant does not match canonical session state".to_string(),
+            });
         }
         grant
             .proofs()
@@ -132,10 +157,8 @@ impl AccountBoundOperator {
             .unwrap()
             .verify_signature(&dialog_credentials::Ed25519KeyResolver)
             .await
-            .map_err(|error| {
-                AuthorizeError::Denied(format!(
-                    "active account grant signature is invalid: {error}"
-                ))
+            .map_err(|_| AuthorizeError::InvalidSignature {
+                issuer: root.clone(),
             })?;
 
         let mut chain = if subject == root {
@@ -149,19 +172,22 @@ impl AccountBoundOperator {
             let prefix =
                 crate::site::account_root_prefix_for(&self.profile, &self.inner, &subject, &root)
                     .await
-                    .map_err(|error| {
-                        AuthorizeError::Denied(format!(
-                            "spot is not delegated to the active account: {error:#}"
-                        ))
+                    .map_err(|_| AuthorizeError::UnprovenSubject {
+                        claimed: root.clone(),
+                        authorized: subject.clone(),
                     })?;
             let active_proof = grant.proofs().next().unwrap().clone();
-            prefix.push(active_proof).map_err(|error| {
-                AuthorizeError::Denied(format!("account authority chain is invalid: {error}"))
-            })?
+            prefix
+                .push(active_proof)
+                .map_err(|error| AuthorizeError::Malformed {
+                    detail: format!("account authority chain is invalid: {error}"),
+                })?
         };
-        chain = chain.push(session).map_err(|error| {
-            AuthorizeError::Denied(format!("operator authority chain is invalid: {error}"))
-        })?;
+        chain = chain
+            .push(session)
+            .map_err(|error| AuthorizeError::Malformed {
+                detail: format!("operator authority chain is invalid: {error}"),
+            })?;
         authorization.chain = Some(chain);
         Ok(authorization)
     }
@@ -226,6 +252,7 @@ macro_rules! forward {
 }
 
 forward!(Identify);
+forward!(Attest);
 forward!(dialog_effects::archive::Get);
 forward!(dialog_effects::archive::Put);
 forward!(dialog_effects::archive::Import);
@@ -250,8 +277,11 @@ impl Provider<Authorize<Ucan>> for AccountBoundOperator {
         &self,
         input: Capability<Authorize<Ucan>>,
     ) -> Result<UcanAuthorization, AuthorizeError> {
-        let guard = crate::account_session::shared_remote_guard(&self.store)
-            .map_err(|error| AuthorizeError::Configuration(error.to_string()))?;
+        let guard = crate::account_session::shared_remote_guard(&self.store).map_err(|error| {
+            AuthorizeError::Unavailable {
+                detail: error.to_string(),
+            }
+        })?;
         self.authorize_guarded(input, &guard).await
     }
 }
@@ -327,9 +357,9 @@ where
         let guard = match crate::account_session::shared_remote_guard(&self.store) {
             Ok(guard) => guard,
             Err(error) => {
-                return FromAuthError::from_auth_error(AuthorizeError::Configuration(
-                    error.to_string(),
-                ));
+                return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
+                    detail: error.to_string(),
+                });
             }
         };
         let env = Guarded {
@@ -396,6 +426,14 @@ mod tests {
         }
 
         async fn save(&self, _delegation: &UcanDelegation) -> Result<(), AuthorizeError> {
+            Ok(())
+        }
+
+        async fn export(&self) -> Result<Vec<UcanCertificate>, AuthorizeError> {
+            Ok(self.0.clone())
+        }
+
+        async fn forget(&self, _certificates: &[UcanCertificate]) -> Result<(), AuthorizeError> {
             Ok(())
         }
     }
