@@ -96,15 +96,42 @@ a DID document the custody key's did:web identifier resolves to:
   statically.
 - The delegation is self-authenticating (signed by the account key);
   `alsoKnownAs` is a convenience the delegation's issuer field proves.
-- **The wrapped secret is a fact in the account DB** — where it always
+- **The wrapped secret lives in the account DB** — where it always
   wanted to live. The circularity that previously forced it outside the
   gate is gone: authorization bootstraps from the public delegation, and
-  the fact is fetched only after the device is authorized.
+  the secret is fetched only after the device is authorized. Whether it
+  is represented as a fact or a cell is an open implementation choice,
+  not a design point — a cell has the attractive property that a freshly
+  authorized device fetches it at a well-known path with one presigned
+  GET, before it can hydrate or query anything.
 
 Two fixed entry-function salts, with distinct jobs:
 `"tonk/custody/key/v1"` seeds the custody keypair (its public key is
 the did:web path — the lookup *is* the DID); `"tonk/custody/kek/v1"`
 derives the KEK for the wrapped-secret fact.
+
+### The publication capability
+
+Publishing is a customer act in the established deposit pattern,
+role-first beside `/customer/*` and `/provider/*`:
+
+- `/custody/publish { custody: Did, delegation: Cid }` — the invocation
+  is device-signed on the account's subject through the `root → device`
+  link; the `account → custody-key` delegation rides as an extra
+  container token named by CID (an argument being deposited, not a
+  proof). The service verifies the chain, requires the subject to be a
+  registered customer (attribution — publishes are metered), checks the
+  deposited delegation's issuer equals the invocation subject and its
+  audience equals `custody`, and serves the document at
+  `/custody/{custody-key}/did.json`.
+- `/custody/retract { custody: Did }` — removal, paired with revoking
+  the delegation through the relay.
+- **Resolution is deliberately not a capability.** did:web resolution is
+  an unauthenticated GET; the custody key's holder is merely the only
+  party who can derive the address (the DID comes out of the PRF inside
+  an assertion) — and the only party holding the custody private key the
+  delegation is addressed to. Resolution needing no authorization is
+  precisely what breaks the bootstrap circle.
 
 Why this shape:
 
