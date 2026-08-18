@@ -117,11 +117,18 @@ pub(crate) async fn account_link(
         .map(|root| root.delegation)
 }
 
-/// The local root DID used for every durable membership operation.
+/// The DID membership rows are keyed on: the account root when one is
+/// persisted, so a founder/member row converges across every device on
+/// the same account, else the profile's device key — the only durable
+/// key a pre-account profile has.
 pub(crate) async fn member_did(
     state: &crate::worker::TonkState,
 ) -> Result<dialog_varsig::Did, TonkWorkerError> {
-    super::identity::root_did(state).await
+    match super::identity::root_did(state).await {
+        Ok(did) => Ok(did),
+        Err(TonkWorkerError::RootRequired) => Ok(state.profile.did()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Whether this profile is linked, read from the account replica the
@@ -395,6 +402,11 @@ pub async fn link(
     // spaces. Each account-service request is bounded by the shared HTTP
     // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
     super::account_state::ensure_account_state(&state).await;
+    // Spaces created before this account existed delegate to the profile
+    // key; adopt them under the account root ahead of the backup sweep,
+    // so what gets backed up is the account-rooted authority.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    super::repository::adopt_profile_spaces(&state).await;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     crate::router::account_backup::back_up_existing_spaces(&state).await;
     crate::router::restore::restore_spaces(&state).await;
