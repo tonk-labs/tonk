@@ -23,6 +23,7 @@ dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-account = { workspace = true }
+tonk-email = { workspace = true }
 
 blake3 = { workspace = true }
 hex = { workspace = true }

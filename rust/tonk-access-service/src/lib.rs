@@ -42,13 +42,17 @@ use worker::*;
 /// mid-load, roughly doubling the requests a cold load pays for.
 pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
+pub mod email;
 mod error;
 #[cfg(any(target_arch = "wasm32", test))]
 mod expiry;
 mod handlers;
+pub mod registration;
 #[cfg(any(target_arch = "wasm32", test))]
 mod revocation;
+pub mod service;
 pub mod shortcut;
+pub mod store;
 
 /// Test helpers for integration testing.
 #[cfg(feature = "helpers")]
@@ -62,6 +66,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     router
         // Browser deployment configuration must run before static assets.
         .get_async("/.well-known/tonk", handlers::config::handle)
+        // The service's DID document: its ed25519 key under the host's
+        // did:web name.
+        .get_async(
+            "/.well-known/did.json",
+            handlers::registration::handle_did_document,
+        )
         // Service info endpoint
         .get_async("/", handlers::info::handle)
         // Health check

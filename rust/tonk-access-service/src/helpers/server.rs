@@ -5,11 +5,17 @@
 //! as a native HTTP server with CORS support for browser-based testing.
 
 use super::AccessServiceAddress;
+use crate::email::CapturedEmail;
+use crate::registration::{Registration, registration_command};
+use crate::service::did_document;
 use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
+use crate::store::sqlite::SqliteStore;
 use dialog_common::helpers::{Provider, Service};
+use dialog_credentials::Ed25519Signer;
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
+use dialog_varsig::Principal;
 use hyper::body::Incoming;
 use hyper::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -33,8 +39,22 @@ pub struct AccessServer {
     pub endpoint: String,
     /// The backing S3 server
     pub s3_server: LocalS3,
+    /// Activation emails captured instead of delivered.
+    pub emails: Arc<CapturedEmail>,
+    /// The service's signing DID, issuer of activation delegations.
+    pub service_did: String,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
+}
+
+/// Everything the registration commands execute against, natively:
+/// the in-memory control store, captured email, and a per-server
+/// service signer.
+struct RegistrationState {
+    store: SqliteStore,
+    emails: Arc<CapturedEmail>,
+    service: Ed25519Signer,
+    origin: String,
 }
 
 impl AccessServer {
@@ -71,9 +91,22 @@ impl AccessServer {
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let emails = Arc::new(CapturedEmail::default());
+        let service = Ed25519Signer::generate()
+            .await
+            .map_err(|err| anyhow::anyhow!("service signer: {err:?}"))?;
+        let service_did = service.did().to_string();
+        let registration = Arc::new(RegistrationState {
+            store: SqliteStore::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
+            emails: emails.clone(),
+            service,
+            origin: endpoint.clone(),
+        });
+
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
         let deployment = Arc::new(deployment);
         let authorizer_clone = authorizer.clone();
+        let registration_clone = registration.clone();
         let server_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -83,13 +116,15 @@ impl AccessServer {
                             let authorizer = authorizer_clone.clone();
                             let shortcuts = shortcuts.clone();
                             let deployment = deployment.clone();
+                            let registration = registration_clone.clone();
                             tokio::spawn(async move {
                                 let service = hyper::service::service_fn(move |req| {
                                     let authorizer = authorizer.clone();
                                     let shortcuts = shortcuts.clone();
                                     let deployment = deployment.clone();
+                                    let registration = registration.clone();
                                     async move {
-                                        handle_request(req, authorizer, shortcuts, deployment).await
+                                        handle_request(req, authorizer, shortcuts, deployment, registration).await
                                     }
                                 });
                                 let _ = http1::Builder::new()
@@ -105,6 +140,8 @@ impl AccessServer {
         Ok(AccessServer {
             endpoint,
             s3_server,
+            emails,
+            service_did,
             shutdown_tx,
             server_handle,
         })
@@ -124,6 +161,7 @@ async fn handle_request(
     authorizer: Arc<RwLock<UcanAuthorizer>>,
     shortcuts: Shortcuts,
     deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
+    registration: Arc<RegistrationState>,
 ) -> Result<Response<http_body_util::Full<bytes::Bytes>>, std::convert::Infallible> {
     use bytes::Bytes;
     use http_body_util::Full;
@@ -160,6 +198,54 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
+    if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
+        let host = req
+            .uri()
+            .authority()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let document = did_document(&host, &registration.service);
+        return Ok(cors_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&document).expect("did document serializes"),
+                )))
+                .unwrap(),
+        ));
+    }
+    // Test-only inspection: activation emails are captured, never sent,
+    // so integration tests read them back here.
+    if req.method() == Method::GET && req.uri().path() == "/_test/emails" {
+        let emails = registration
+            .emails
+            .0
+            .lock()
+            .expect("captured email mutex poisoned")
+            .clone();
+        return Ok(cors_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&emails).expect("captured emails serialize"),
+                )))
+                .unwrap(),
+        ));
+    }
+    if req.method() == Method::GET && req.uri().path() == "/_test/service" {
+        let body = serde_json::json!({ "did": registration.service.did().to_string() });
+        return Ok(cors_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&body).expect("service did serializes"),
+                )))
+                .unwrap(),
+        ));
+    }
     if req.method() == Method::PUT && req.uri().path() == "/@" {
         return Ok(cors_response(store_shortcut(req, shortcuts).await));
     }
@@ -195,6 +281,38 @@ async fn handle_request(
             ));
         }
     };
+
+    // Registration commands ride the same endpoint; anything else falls
+    // through to the presign path untouched. Mirrors the Worker handler.
+    if registration_command(&body_bytes).is_some() {
+        let env = Registration {
+            store: &registration.store,
+            email: registration.emails.as_ref(),
+            service: &registration.service,
+            origin: &registration.origin,
+            activation_ttl: 24 * 60 * 60,
+            now: unix_now(),
+            container: &body_bytes,
+        };
+        let response = match env.handle().await {
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("receipt serializes"),
+                )))
+                .unwrap(),
+            Err(err) => Response::builder()
+                .status(err.status())
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({ "error": err }))
+                        .expect("refusal serializes"),
+                )))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
 
     // Authorize the UCAN container using UcanAuthorizer
     let authorizer = authorizer.read().await;
@@ -427,6 +545,7 @@ pub async fn access_service(
         bucket: bucket.to_string(),
         access_key_id: settings.access_key_id,
         secret_access_key: settings.secret_access_key,
+        service_did: access_server.service_did.clone(),
     };
 
     Ok(Service::new(address, access_server))

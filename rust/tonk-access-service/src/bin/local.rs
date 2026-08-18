@@ -29,6 +29,10 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     let url = &service.address.access_service_url;
     println!("ACCESS_SERVICE_URL={url}");
+    // Activation emails are captured rather than sent; a human completing
+    // registration against this server reads the links back from here.
+    println!("ACCESS_SERVICE_DID={}", service.address.service_did);
+    println!("ACCESS_ACTIVATION_EMAILS={url}/_test/emails");
     std::io::Write::flush(&mut std::io::stdout())?;
     tokio::signal::ctrl_c().await?;
     Ok(())

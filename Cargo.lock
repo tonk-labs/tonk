@@ -4500,6 +4500,7 @@ version = "0.6.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "blake3",
  "bs58",
  "bytes",
@@ -4521,16 +4522,21 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
+ "hex",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "ipld-core",
+ "js-sys",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonk-account",
+ "tonk-email",
  "tonk-identity",
  "tonk-invite",
  "tonk-worker-api",
@@ -4556,6 +4562,7 @@ dependencies = [
  "dialog-ucan-core",
  "dialog-varsig",
  "hex",
+ "ipld-core",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
@@ -4593,6 +4600,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-account",
+ "tonk-email",
  "tonk-identity",
  "wasm-bindgen-test",
  "worker",
@@ -4781,6 +4789,15 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "tonk-email"
+version = "0.6.7"
+dependencies = [
+ "serde",
+ "serde_json",
+ "worker",
 ]
 
 [[package]]

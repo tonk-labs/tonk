@@ -16,7 +16,7 @@ required-features = ["helpers"]
 
 [dependencies]
 # Cloudflare Workers
-worker = { workspace = true }
+worker = { workspace = true, features = ["d1"] }
 worker-macros = { workspace = true }
 
 # S3 presigning with UCAN support
@@ -30,6 +30,8 @@ dialog-effects = { workspace = true }
 dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+tonk-account = { workspace = true }
+tonk-email = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-worker-api = { workspace = true }
 
@@ -39,6 +41,9 @@ bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }
 
 # Serialization
+base64 = { workspace = true }
+hex = { workspace = true }
+ipld-core = { workspace = true }
 serde = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true }
@@ -49,9 +54,10 @@ getrandom_0_2 = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 
+async-trait = { workspace = true }
+
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }
-async-trait = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 dialog-common = { workspace = true, optional = true }
 dialog-storage = { workspace = true, optional = true }
@@ -83,7 +89,11 @@ reqwest = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-account = { workspace = true }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = { workspace = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }
 
 [features]
@@ -91,11 +101,11 @@ default = []
 # Enable test helpers (local access service server)
 helpers = [
   "dep:anyhow",
-  "dep:async-trait",
   "dep:bytes",
   "dep:http-body-util",
   "dep:hyper",
   "dep:hyper-util",
+  "dep:rusqlite",
   "dep:tokio",
   "dialog-common/helpers",
   "dialog-remote-s3/helpers",

@@ -6,6 +6,10 @@
 //! 3. Returning the serialized AuthorizedRequest as CBOR
 
 use crate::error::Refusal;
+#[cfg(target_arch = "wasm32")]
+use crate::handlers::registration::handle as handle_registration;
+#[cfg(target_arch = "wasm32")]
+use crate::registration::registration_command;
 use dialog_capability::access::AuthorizeError;
 use dialog_remote_s3::{Address, S3Error, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
@@ -48,6 +52,15 @@ async fn handle_inner(
     let body_bytes = req.bytes().await.map_err(|e| AuthorizeError::Malformed {
         detail: format!("failed to read request body: {e}"),
     })?;
+
+    // 1b. Registration commands ride the same endpoint; anything else
+    // falls through to the presign path untouched.
+    #[cfg(target_arch = "wasm32")]
+    if registration_command(&body_bytes).is_some() {
+        return handle_registration(&body_bytes, req, ctx)
+            .await
+            .map_err(|err| Refusal::unclassified(format!("registration failed: {err}")));
+    }
 
     // 2. Create the UcanAuthorizer from environment config
     let authorizer = create_authorizer(ctx)?;

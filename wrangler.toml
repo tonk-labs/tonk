@@ -12,7 +12,14 @@ command = "nix build .#tonk-cloudflare-artifacts"
 directory = "./result/tonk-ui"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
-run_worker_first = ["/.well-known/tonk", "/@", "/@/*", "/ucan", "/ucan/*"]
+run_worker_first = [
+  "/.well-known/tonk",
+  "/.well-known/did.json",
+  "/@",
+  "/@/*",
+  "/ucan",
+  "/ucan/*",
+]
 
 [[r2_buckets]]
 binding = "BUCKET"
@@ -24,11 +31,28 @@ bucket_name = "tonk-spaces"
 binding = "REVOCATIONS"
 bucket_name = "tonk-revocations"
 
+# Control state for customer registration: customers, consumers, and
+# plans. Registration commands answer 500 while this binding is absent or
+# empty; the presign path never touches it.
+#
+# Ships empty: the id is minted once at bootstrap via `wrangler d1 create
+# tonk-access-control` and filled in here. Wrangler refuses to deploy
+# without it, so a forgotten bootstrap breaks visibly. The worker also
+# needs two secrets set via `wrangler secret put`: SERVICE_SECRET_KEY
+# (32 hex-encoded seed bytes for the service's signing identity) and
+# RESEND_API_KEY (activation email delivery).
+[[d1_databases]]
+binding = "CONTROL"
+database_name = "tonk-access-control"
+database_id = ""
+migrations_dir = "rust/tonk-access-service/migrations"
+
 [vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 REVOCATION_RELAY_URL = "https://accounts.tonk.xyz/revocations"
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
@@ -41,11 +65,20 @@ bucket_name = "tonk-spaces-staging"
 binding = "REVOCATIONS"
 bucket_name = "tonk-revocations-staging"
 
+# Ships empty, as production's did; filled at bootstrap so there is no way
+# to silently deploy staging against the production database.
+[[env.staging.d1_databases]]
+binding = "CONTROL"
+database_name = "tonk-access-control-staging"
+database_id = ""
+migrations_dir = "rust/tonk-access-service/migrations"
+
 [env.staging.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-staging"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 REVOCATION_RELAY_URL = "https://accounts-staging.tonk.xyz/revocations"
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Preview. Every pull request uploads a version of this environment under a
 # `--preview-alias` and is reached at its own workers.dev URL, so the
@@ -70,9 +103,21 @@ bucket_name = "tonk-spaces-preview"
 binding = "REVOCATIONS"
 bucket_name = "tonk-revocations-preview"
 
+# Replaced per pull request, like the account service's preview database:
+# continuous integration creates `tonk-access-control-pr-<N>` and rewrites
+# both fields in a copy of this file. The checked-in id is a deliberate
+# sentinel so the rewrite has an unambiguous target and a config that
+# skipped it cannot name a real database.
+[[env.preview.d1_databases]]
+binding = "CONTROL"
+database_name = "tonk-access-control-preview"
+database_id = "REPLACED-PER-PULL-REQUEST"
+migrations_dir = "rust/tonk-access-service/migrations"
+
 [env.preview.vars]
 R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
 R2_BUCKET_NAME = "tonk-spaces-preview"
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # Replaced per pull request with the account worker's own preview alias, which
 # is only known once that upload returns. The checked-in values are deliberately
 # unresolvable: a preview that failed to wire itself has to break visibly rather
