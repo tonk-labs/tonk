@@ -1,0 +1,159 @@
+name: 'Sign and notarize macOS CLI'
+description: 'Developer ID sign a staged CLI binary and require Apple notarization'
+
+inputs:
+  binary-path:
+    description: 'Writable path to the macOS CLI binary'
+    required: true
+  certificate-p12:
+    description: 'Base64-encoded Developer ID Application PKCS#12 archive'
+    required: true
+  certificate-password:
+    description: 'Password for the PKCS#12 archive'
+    required: true
+  app-store-connect-key:
+    description: 'App Store Connect API private key in PEM format'
+    required: true
+  app-store-connect-key-id:
+    description: 'App Store Connect API key ID'
+    required: true
+  app-store-connect-issuer-id:
+    description: 'App Store Connect API issuer ID for the team key'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: 'Sign and notarize binary'
+      shell: bash
+      env:
+        BINARY_PATH: ${{ inputs.binary-path }}
+        CERTIFICATE_P12: ${{ inputs.certificate-p12 }}
+        CERTIFICATE_PASSWORD: ${{ inputs.certificate-password }}
+        APP_STORE_CONNECT_KEY: ${{ inputs.app-store-connect-key }}
+        APP_STORE_CONNECT_KEY_ID: ${{ inputs.app-store-connect-key-id }}
+        APP_STORE_CONNECT_ISSUER_ID: ${{ inputs.app-store-connect-issuer-id }}
+      run: |
+        set -euo pipefail
+
+        if [[ "${RUNNER_OS:-}" != "macOS" ]]; then
+          echo "::error::macOS signing must run on a macOS runner"
+          exit 1
+        fi
+
+        for required in \
+          BINARY_PATH \
+          CERTIFICATE_P12 \
+          CERTIFICATE_PASSWORD \
+          APP_STORE_CONNECT_KEY \
+          APP_STORE_CONNECT_KEY_ID \
+          APP_STORE_CONNECT_ISSUER_ID
+        do
+          if [[ -z "${!required:-}" ]]; then
+            echo "::error::$required is required for macOS release signing"
+            exit 1
+          fi
+        done
+
+        if [[ ! -f "$BINARY_PATH" ]]; then
+          echo "::error::macOS binary does not exist at $BINARY_PATH"
+          exit 1
+        fi
+
+        signing_dir="$(mktemp -d "$RUNNER_TEMP/tonk-signing.XXXXXX")"
+        certificate_path="$signing_dir/developer-id.p12"
+        api_key_path="$signing_dir/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+        keychain_path="$signing_dir/tonk-signing.keychain-db"
+        notarization_archive="$signing_dir/tonk.zip"
+        notarization_response="$signing_dir/notarization.json"
+        keychain_password="$(openssl rand -base64 32)"
+
+        cleanup() {
+          security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+          rm -f \
+            "$certificate_path" \
+            "$api_key_path" \
+            "$notarization_archive" \
+            "$notarization_response" \
+            "$keychain_path"
+          rmdir "$signing_dir" >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+
+        printf '%s' "$CERTIFICATE_P12" \
+          | base64 --decode > "$certificate_path"
+        printf '%s' "$APP_STORE_CONNECT_KEY" > "$api_key_path"
+        chmod 0600 "$certificate_path" "$api_key_path"
+
+        security create-keychain -p "$keychain_password" "$keychain_path"
+        security set-keychain-settings -lut 21600 "$keychain_path"
+        security unlock-keychain -p "$keychain_password" "$keychain_path"
+        security import "$certificate_path" \
+          -k "$keychain_path" \
+          -P "$CERTIFICATE_PASSWORD" \
+          -T /usr/bin/codesign
+        security set-key-partition-list \
+          -S apple-tool:,apple: \
+          -s \
+          -k "$keychain_password" \
+          "$keychain_path"
+
+        signing_identity="$(
+          security find-identity -v -p codesigning "$keychain_path" \
+            | awk '/Developer ID Application/ { print $2; exit }'
+        )"
+        if [[ -z "$signing_identity" ]]; then
+          echo "::error::PKCS#12 archive has no Developer ID Application identity"
+          exit 1
+        fi
+
+        codesign \
+          --force \
+          --keychain "$keychain_path" \
+          --options runtime \
+          --sign "$signing_identity" \
+          --timestamp \
+          "$BINARY_PATH"
+        codesign --verify --strict --verbose=2 "$BINARY_PATH"
+
+        ditto -c -k --keepParent "$BINARY_PATH" "$notarization_archive"
+        if ! xcrun notarytool submit "$notarization_archive" \
+          --key "$api_key_path" \
+          --key-id "$APP_STORE_CONNECT_KEY_ID" \
+          --issuer "$APP_STORE_CONNECT_ISSUER_ID" \
+          --wait \
+          --timeout 60m \
+          --output-format json > "$notarization_response"
+        then
+          echo "::error::could not submit the macOS CLI for notarization"
+          if [[ -s "$notarization_response" ]]; then
+            cat "$notarization_response"
+          fi
+          exit 1
+        fi
+
+        notarization_status="$(
+          python3 -c \
+            'import json, sys; print(json.load(open(sys.argv[1])).get("status", ""))' \
+            "$notarization_response"
+        )"
+        notarization_id="$(
+          python3 -c \
+            'import json, sys; print(json.load(open(sys.argv[1])).get("id", ""))' \
+            "$notarization_response"
+        )"
+        echo "Apple notarization $notarization_id: $notarization_status"
+
+        if [[ "$notarization_status" != "Accepted" ]]; then
+          echo "::error::Apple rejected the macOS CLI notarization"
+          if [[ -n "$notarization_id" ]]; then
+            xcrun notarytool log "$notarization_id" \
+              --key "$api_key_path" \
+              --key-id "$APP_STORE_CONNECT_KEY_ID" \
+              --issuer "$APP_STORE_CONNECT_ISSUER_ID" || true
+          fi
+          exit 1
+        fi
+
+        codesign --verify --strict --verbose=2 "$BINARY_PATH"
+        spctl --assess --type execute --verbose=2 "$BINARY_PATH"
