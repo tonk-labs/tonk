@@ -13,8 +13,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::subject::Subject;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{
+    Container, DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain,
+};
+use dialog_varsig::Did;
 
 /// Build a device-signed account-service invocation container.
 ///
@@ -56,6 +60,49 @@ pub async fn build_device_invocation(
     InvocationChain::new(invocation, proofs)
         .to_bytes()
         .context("failed to serialize the device invocation")
+}
+
+/// Build a `/customer/enroll` container for the access service.
+///
+/// The invocation is device-signed on the account's subject, exactly as
+/// [`build_device_invocation`] does, and additionally deposits a
+/// delegation granting `service` access to the account space. The
+/// deposit is device-issued; the service walks it back to the account
+/// through the same `root → device` grant the invocation proves with,
+/// which rides in the same container.
+pub async fn build_enroll_invocation(
+    device: Ed25519Signer,
+    link: &DelegationChain,
+    service: &Did,
+    email: &str,
+) -> Result<Vec<u8>> {
+    let root_did = link.issuer().clone();
+    let deposit = DelegationBuilder::new()
+        .issuer(device.clone())
+        .audience(service)
+        .subject(Subject::Specific(root_did))
+        .command(vec![])
+        .try_build()
+        .await
+        .context("failed to mint the access deposit")?;
+    let arguments = BTreeMap::from([
+        ("email".to_string(), Promised::String(email.to_string())),
+        ("access".to_string(), Promised::Link(deposit.to_cid())),
+    ]);
+    let invocation = build_device_invocation(
+        device,
+        link,
+        vec!["customer".to_string(), "enroll".to_string()],
+        arguments,
+    )
+    .await?;
+    let mut tokens = Container::from_bytes(&invocation)
+        .context("failed to reopen the enroll container")?
+        .into_tokens();
+    tokens.push(deposit.encoded().to_vec());
+    Container::new(tokens)
+        .to_bytes()
+        .context("failed to encode the enroll container")
 }
 
 #[cfg(test)]

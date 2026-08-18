@@ -710,6 +710,9 @@ fn load_status(host: HtmlElement) {
         }
         return;
     }
+    // A `?link=` query is the CLI callback sending the tab back with the
+    // authorization outcome, reported here in the page's own styling.
+    let link_outcome = query_value("link").map(|status| (status, query_value("message")));
     // The gate always arrives with a `next`. Without one the user came here
     // themselves, so anything parked belongs to an attempt they walked away
     // from — replaying it on this sign-in would create a spot nobody asked
@@ -743,6 +746,7 @@ fn load_status(host: HtmlElement) {
                     }
                     Landing::Success => {
                         settle_on_load(&host);
+                        apply_link_outcome(&host, link_outcome.as_ref());
                         if account_state == Some(AccountStateStatus::Unhydrated) {
                             show_error(
                                 &host,
@@ -754,6 +758,7 @@ fn load_status(host: HtmlElement) {
                         set_busy(&host, false, "");
                         set_mode(&host, "choice");
                         load_choice_profiles(host.clone(), root_persisted);
+                        apply_link_outcome(&host, link_outcome.as_ref());
                         if revoke_hint {
                             show_error(
                                 &host,
@@ -773,7 +778,26 @@ fn load_status(host: HtmlElement) {
     });
 }
 
-/// The loopback URL a `tonk account link --via` run is waiting on, if any.
+/// Report a `?link=` outcome the CLI callback sent this tab back with.
+fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<String>)>) {
+    let Some((status, message)) = outcome else {
+        return;
+    };
+    if status == "ok" {
+        set_text(
+            host,
+            "#account-success-message",
+            "Command-line device linked.",
+        );
+    } else {
+        let message = message
+            .as_deref()
+            .unwrap_or("the command-line link did not complete");
+        show_error(host, format!("Command-line link failed: {message}."));
+    }
+}
+
+/// The loopback URL a `tonk account link` run is waiting on, if any.
 ///
 /// Its presence is what distinguishes a callback authorization from the
 /// service handoff: the handoff carries a fragment secret and resolves
@@ -805,6 +829,16 @@ fn load_callback_request(host: HtmlElement, audience: String, callback: String) 
     }
     set_busy(&host, false, "");
     set_mode(&host, "handoff");
+}
+
+/// Where the CLI's callback should send this tab once the terminal has
+/// its answer: the account page, which renders the `?link=` outcome in
+/// its own styling.
+fn link_outcome_redirect() -> String {
+    window()
+        .and_then(|window| window.location().origin().ok())
+        .map(|origin| format!("{origin}/account"))
+        .unwrap_or_else(|| "/account".to_string())
 }
 
 /// Base64-encode an authorization payload for form delivery.
@@ -1306,7 +1340,11 @@ fn bind(host: &HtmlElement) {
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);
-                    post_to_callback(&callback, &[("authorize", &encoded)])
+                    let redirect = link_outcome_redirect();
+                    post_to_callback(
+                        &callback,
+                        &[("authorize", &encoded), ("redirect", &redirect)],
+                    )
                 }
                 .await;
                 if let Err(error) = result {
@@ -1366,7 +1404,11 @@ fn bind(host: &HtmlElement) {
             }
             return;
         };
-        if let Err(error) = post_to_callback(&callback, &[("deny", "declined in the browser")]) {
+        let redirect = link_outcome_redirect();
+        if let Err(error) = post_to_callback(
+            &callback,
+            &[("deny", "declined in the browser"), ("redirect", &redirect)],
+        ) {
             show_error(&host, error);
         }
     });
