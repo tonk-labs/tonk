@@ -433,9 +433,15 @@ async fn link_via_callback(
 
     // The descriptor tells this device WHERE the account repository lives; a
     // delegation only says who may act. Persisting it is what lets the
-    // account mount and sync at all.
+    // account mount and sync at all. The provider URL prefers what the
+    // page delivered — the page knows its deployment — over the flag,
+    // whose default names production regardless of where the ceremony ran.
+    let provider_url = Some(authorization.service_url.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&options.service_url)
+        .to_owned();
     let provider = AccountProviderRecord::attach(
-        &options.service_url,
+        &provider_url,
         &hex::decode(&authorization.descriptor_hex)
             .context("authorization descriptor is not hex")?,
         &account_did,
@@ -529,6 +535,11 @@ struct CallbackAuthorization {
     /// registration-at-approval; the delegation CID stands in then.
     #[serde(default)]
     attachment_id: String,
+    /// The account service the approving page's deployment uses. Absent
+    /// from pages that predate it; the `--service-url` flag (or its
+    /// production default) stands in then.
+    #[serde(default)]
+    service_url: String,
 }
 
 /// Start or resume a browser handoff and activate its fresh generation.

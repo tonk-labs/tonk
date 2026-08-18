@@ -1265,9 +1265,9 @@ async fn agents_op(json: bool, command: Option<AgentsCommand>, spot: Option<&str
 /// How `tonk account` prints the account repository's lifecycle state.
 fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str {
     match status {
-        tonk_account::AccountStateStatus::Unconfigured => "unconfigured",
-        tonk_account::AccountStateStatus::Unhydrated => "unhydrated",
-        tonk_account::AccountStateStatus::Ready => "ready",
+        tonk_account::AccountStateStatus::Unconfigured => "not set up yet",
+        tonk_account::AccountStateStatus::Unhydrated => "waiting for first sync",
+        tonk_account::AccountStateStatus::Ready => "synced",
     }
 }
 
@@ -1301,17 +1301,23 @@ async fn print_customer_line(profile: &dialog_operator::Profile) {
     use tonk_account::customer::CustomerStatus;
     match tonk_cli::customer::registration_state(profile).await {
         Ok(Some(Some(receipt))) => match receipt.status {
-            CustomerStatus::Active => println!("registration: active"),
+            CustomerStatus::Active => println!("sync service: registered"),
             CustomerStatus::Registered => {
-                println!("registration: activation pending (open the activation email)")
+                println!("sync service: waiting for email confirmation (check your inbox)")
             }
-            CustomerStatus::Suspended => println!("registration: suspended"),
+            CustomerStatus::Suspended => println!("sync service: suspended"),
         },
         Ok(Some(None)) => {
-            println!("registration: none (sign in on the account page in a browser to register)")
+            let page = tonk_cli::customer::access_origin(profile)
+                .await
+                .ok()
+                .flatten()
+                .map(|origin| format!("{origin}account"))
+                .unwrap_or_else(|| "the account page".to_string());
+            println!("sync service: not registered (open {page} in your browser to finish setup)")
         }
         Ok(None) => {}
-        Err(_) => println!("registration: unreachable"),
+        Err(_) => println!("sync service: unreachable"),
     }
 }
 

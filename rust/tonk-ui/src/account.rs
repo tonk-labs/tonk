@@ -1060,6 +1060,13 @@ const UNESTABLISHED_ACCOUNT_GUIDANCE: &str = "This account was created before sh
      browser yet. Open /account on a browser that is already signed in to this account and \
      finish account setup there, then sign in here.";
 
+/// Whether this deployment registers accounts with an access service at
+/// all: deployments that publish no service identity have nothing to
+/// enroll with.
+async fn wants_enrollment() -> bool {
+    deployment_service_did().await.is_some()
+}
+
 /// The access-service DID this deployment publishes, for ceremonies that
 /// mint account-signed deposits. Absent config or identity is ordinary:
 /// the ceremony then mints nothing and enrollment falls back to a
@@ -1144,11 +1151,7 @@ async fn complete_remote(
     // but does not undo the attach. The login path names no email; the
     // worker resolves the account's recorded address. Deployments that
     // publish no service identity have no registration to perform.
-    let wants_enrollment = crate::deployment::get()
-        .await
-        .map(|config| config.service_did.is_some())
-        .unwrap_or(false);
-    if wants_enrollment {
+    if wants_enrollment().await {
         set_busy(host, true, "Registering with the sync service…");
         if let Err(error) = crate::api::enroll_customer(enroll_email, &ceremony.deposits_hex).await
         {
@@ -1423,11 +1426,35 @@ fn bind(host: &HtmlElement) {
             set_busy(&host, true, "Waiting for your passkey…");
             spawn_local(async move {
                 let result = async {
-                    let service_url = service(&host).await?;
+                    // Registration precedes linking: a device linked to an
+                    // unregistered account inherits a dead sync path, so a
+                    // signed-in browser the access service does not know
+                    // enrolls before it delegates. The fresh-browser path
+                    // covers this inside its signup ceremony.
+                    if wants_enrollment().await {
+                        let known = crate::api::customer_state()
+                            .await
+                            .map(|state| !state["status"].is_null())
+                            .unwrap_or(false);
+                        if !known {
+                            set_busy(&host, true, "Registering with the sync service…");
+                            crate::api::enroll_customer(None, &[])
+                                .await
+                                .map_err(|error| {
+                                    format!(
+                                        "register with the sync service before linking: {error}"
+                                    )
+                                })?;
+                        }
+                    }
+                    set_busy(&host, true, "Waiting for your passkey…");
+                    // The descriptor must name the same sync remote signup
+                    // established — the page's own `/ucan/` endpoint — or the
+                    // linked device mounts an account it can never reach.
                     let authorized = crate::identity_bridge::authorize_device(
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
-                            remote: service_url,
+                            remote: proposed_remote()?,
                         },
                     )
                     .await
@@ -1452,11 +1479,15 @@ fn bind(host: &HtmlElement) {
                     // The delegation alone would leave the device authorized
                     // but unable to find the account repository, so the
                     // descriptor rides along.
+                    // The page knows which account service this deployment
+                    // uses; the CLI records it rather than guessing from a
+                    // flag default.
                     let payload = serde_json::json!({
                         "delegationHex": authorized.delegation_hex,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,
+                        "serviceUrl": service(&host).await.unwrap_or_default(),
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);

@@ -512,8 +512,10 @@ mod tests {
         assert!(link.stdout.contains("linked\nroot: did:key:"));
         assert!(link.stdout.contains("device: did:key:"));
         assert!(
-            link.stdout.contains("account state: ready")
-                || link.stdout.contains("account state: unhydrated")
+            link.stdout.contains("account state: synced")
+                || link
+                    .stdout
+                    .contains("account state: waiting for first sync")
         );
 
         Ok(LinkedCli { profile, link })
@@ -876,7 +878,7 @@ mod tests {
         assert!(status.status.success(), "status failed: {}", status.stderr);
         assert!(status.stdout.contains("signed in: yes"));
         assert!(
-            linked.link.stdout.contains("registration:"),
+            linked.link.stdout.contains("sync service:"),
             "the link reports the registration the signup performed: {}",
             linked.link.stdout
         );
