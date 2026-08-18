@@ -85,10 +85,10 @@ Mail-client prefetching can fire the link without a human click. That makes the 
 
 ### 3.3 Add a consumer
 
-Enrolling a further space needs consent from both sides. The consumer delegates `/consumer/provide` to the customer; the audience is what names the provider it accepts:
+Enrolling a further space needs consent from both sides. The consumer delegates `/consumer/provision` to the customer; the audience is what names the provider it accepts:
 
 ```
-{ cmd: "/consumer/provide",
+{ cmd: "/consumer/provision",
   sub: "did:key:zPhotos",
   aud: "did:key:zAlice" }
 ```
@@ -102,9 +102,9 @@ The customer then invokes, carrying that delegation as consent:
           consent: { "/": "bai..." } } }
 ```
 
-The provider being added is the invocation's subject; it needs no argument of its own. The invocation chain is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/consumer/provide` as-is.
+The provider being added is the invocation's subject; it needs no argument of its own. The invocation chain is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/consumer/provision` as-is.
 
-The service validates the consent as a chain of its own: it must root at the consumer being added, its audience must be the invoking customer, and it must grant `/consumer/provide` or broader. Audience is what binds it, so a consent given to one customer cannot be used to enrol a different one.
+The service validates the consent as a chain of its own: it must root at the consumer being added, its audience must be the invoking customer, and it must grant `/consumer/provision` or broader. Audience is what binds it, so a consent given to one customer cannot be used to enrol a different one.
 
 The service checks the customer is `Registered` or `Active`, writes a `consumer` row with `provider` set to that customer, and writes KV. A consumer has exactly one provider, so this fails if one is already set.
 
@@ -558,7 +558,7 @@ Phase 3 has a prerequisite the table hides: every consumer served today predates
 5. **Branch revision poll metering.** The pointer permit is long lived, so one authorization covers unbounded reads. Options: extrapolate from TTL and an assumed poll interval, unvalidatable; client self-report at renewal, which needs signing or accepted understatement; or serve the pointer from the Worker, exact by construction, with a one to two second cache collapsing N clients to roughly one R2 read. Measure the poll-to-permit ratio in phase 0.
 6. **Verification memoization.** A delegation chain is immutable and content addressed, so its verification result is a pure function of the chain CID. Caching by CID for the delegation's remaining lifetime would make repeat polls a lookup. If the hit rate is high, verification stops dominating CPU and decision 4 resolves to not billing compute.
 7. **Sponsor visibility.** Can a sponsor see usage detail, or the sponsor set, for a consumer they do not provide? A privacy question when sponsors are different organisations, and it sharpens when evidence is handed over on dispute.
-8. **Consent lifetime.** `/consumer/provide` is audience-bound so it cannot be replayed by a third party, but it survives removal, so a former provider can re-add themselves once the consumer has none. Harmless if the relationship only confers payment. Not harmless if it also confers visibility, which is decision 7 arriving through a side door.
+8. **Consent lifetime.** `/consumer/provision` is audience-bound so it cannot be replayed by a third party, but it survives removal, so a former provider can re-add themselves once the consumer has none. Harmless if the relationship only confers payment. Not harmless if it also confers visibility, which is decision 7 arriving through a side door.
 9. **Fail open or closed.** Section 11 serves on KV error and denies on a D1 miss. The asymmetry means a total D1 outage denies everything, since the miss path cannot reach the source of truth.
 10. **Unregistered response.** Whether an unregistered consumer returns a distinct status from a limited one, or both collapse, to avoid disclosing which consumers exist.
 11. **Storage measurement source.** R2 bucket metrics per prefix is the reliable path but may not exist at prefix granularity. Accumulating write bytes overstates, because content addressing means a duplicate block adds no storage, and it cannot see archival deletions.
