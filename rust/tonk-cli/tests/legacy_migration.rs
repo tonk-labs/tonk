@@ -22,6 +22,61 @@ use anyhow::{Context, Result, bail};
 /// dialog upgrade — it pins dialog `rev = e8bbe462`.
 const LEGACY_RELEASE: &str = "v0.6.7";
 
+/// Runtime-owned fields are the migration boundary that the Vault depends on:
+/// rewriting the CSV text is insufficient unless a current replica can use
+/// the imported concept and see its locally injected identity facts.
+#[tokio::test]
+async fn migrated_runtime_fields_bind_the_current_replica() -> Result<()> {
+    let legacy = "the,of,as,is,cause\n\
+        dialog.attribute/cardinality,the:legacy-profile,text,one,\n\
+        dialog.attribute/id,the:legacy-profile,text,dialog.origin/profile,\n\
+        dialog.attribute/type,the:legacy-profile,text,Entity,\n\
+        dialog.meta/description,the:legacy-profile,text,Legacy profile.,\n\
+        dialog.attribute/cardinality,the:legacy-subject,text,one,\n\
+        dialog.attribute/id,the:legacy-subject,text,dialog.origin/subject,\n\
+        dialog.attribute/type,the:legacy-subject,text,Entity,\n\
+        dialog.meta/description,the:legacy-subject,text,Legacy subject.,\n\
+        dialog.concept.with/profile,tonk:migrated-runtime,entity,the:legacy-profile,\n\
+        dialog.concept.with/subject,tonk:migrated-runtime,entity,the:legacy-subject,\n\
+        dialog.meta/concept,tonk:migrated-runtime,entity,db:concept,\n\
+        db.name/referent,id:migrated/runtime,entity,tonk:migrated-runtime,\n";
+    let mut migrated = Vec::new();
+    tonk_cli::legacy::migrate_export(legacy.as_bytes(), &mut migrated)?;
+
+    let site = common::TestSite::new().await?;
+    // Model a destination imported by the pre-fix migration: schema columns
+    // moved into `db.*`, but the runtime selector values stayed at
+    // `dialog.origin/*`. A corrected rerun must repair this state rather than
+    // requiring the user to discover that the first attempt poisoned it.
+    let pre_fix = legacy.replace("\ndialog.", "\ndb.");
+    let path = site.tmp.path().join("pre-fix-runtime-fields.csv");
+    std::fs::write(&path, pre_fix)?;
+    tonk_cli::transfer::import(&site.site, &path).await?;
+    let before = site
+        .eval_inline("migrated/runtime:\n  subject: ?subject\n  profile: ?profile\n")
+        .await?;
+    assert!(
+        before.response.matches_after[0].results.is_empty(),
+        "the pre-fix fixture must reproduce the unbound runtime concept"
+    );
+
+    let path = site.tmp.path().join("runtime-fields.csv");
+    std::fs::write(&path, migrated)?;
+    tonk_cli::legacy::import_migrated_branch(&site.site, "main", &path).await?;
+
+    let outcome = site
+        .eval_inline("migrated/runtime:\n  subject: ?subject\n  profile: ?profile\n")
+        .await?;
+    let results = &outcome.response.matches_after[0].results;
+    assert_eq!(
+        results.len(),
+        1,
+        "a migrated runtime-bound concept must match this replica; saw:\n{}",
+        outcome.stdout
+    );
+    Ok(())
+}
+
 /// Download and unpack the published legacy CLI, returning its path.
 ///
 /// The real published artifact rather than a local build of the old ref:
