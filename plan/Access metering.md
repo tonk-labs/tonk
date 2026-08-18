@@ -33,6 +33,8 @@ Billing authority and access authority are separate. Who pays for a consumer is 
 
 Three invocations. All are verified by the access service; none bypass the chain. Each roots at the invoking customer's DID, which is self-certifying, so the standard chain check proves the issuer holds the customer's authority and no delegation from the service is involved. The one service-rooted invocation is activation, which the service issues to itself (section 3.2).
 
+Commands are named role-first: the first segment is the role the subject exercises. On a customer DID that gives three disjoint namespaces, `/customer` for identity, `/provider` for paying for consumers, `/sponsor` for pledging credits; on a space DID the consent lives under `/consumer`, the space's own role. Prefix authorization makes the first segment the unit of delegation, so a role prefix delegates exactly one role and roles never bleed into each other through a broad grant.
+
 ### 3.1 Enroll
 
 The client holds an account keypair and its account space. It issues a delegation to `did:web:tonk.network` granting `/archive` and `/memory` on `cell: /branch/account` of the account DID, then invokes:
@@ -52,7 +54,9 @@ The service verifies both and writes, in one batch:
 - `consumer` row for the same DID, `registered = now`
 - `consumer.provider` set to that same DID, so the customer provides its own account space
 
-KV gets the derived state, which denies service at this point. The service then emails a link carrying a single-use token.
+KV gets the derived state, which denies service at this point. The service then emails a link carrying the activation invocation (section 3.2).
+
+Enrolling an already `Registered` customer is idempotent: the rows stand and the activation email is resent, which is also the recovery for an expired link. Enrolling an `Active` customer is refused. Changing the email on an active account is a different act with different stakes, and is not designed here.
 
 Writing both rows together matters. Two steps would leave a window in which a consumer exists with no provider, which is not servable.
 
@@ -81,10 +85,10 @@ Mail-client prefetching can fire the link without a human click. That makes the 
 
 ### 3.3 Add a consumer
 
-Enrolling a further space needs consent from both sides. The consumer delegates `/provider/add` to the customer; the audience is what names the provider it accepts:
+Enrolling a further space needs consent from both sides. The consumer delegates `/consumer/provide` to the customer; the audience is what names the provider it accepts:
 
 ```
-{ cmd: "/provider/add",
+{ cmd: "/consumer/provide",
   sub: "did:key:zPhotos",
   aud: "did:key:zAlice" }
 ```
@@ -92,15 +96,15 @@ Enrolling a further space needs consent from both sides. The consumer delegates 
 The customer then invokes, carrying that delegation as consent:
 
 ```
-{ cmd: "/consumer/add",
+{ cmd: "/provider/add",
   sub: "did:key:zAlice",
   args: { consumer: "did:key:zPhotos",
           consent: { "/": "bai..." } } }
 ```
 
-The provider being added is the invocation's subject; it needs no argument of its own. The invocation chain is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/provider/add` as-is.
+The provider being added is the invocation's subject; it needs no argument of its own. The invocation chain is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/consumer/provide` as-is.
 
-The service validates the consent as a chain of its own: it must root at the consumer being added, its audience must be the invoking customer, and it must grant `/provider/add` or broader. Audience is what binds it, so a consent given to one customer cannot be used to enrol a different one.
+The service validates the consent as a chain of its own: it must root at the consumer being added, its audience must be the invoking customer, and it must grant `/consumer/provide` or broader. Audience is what binds it, so a consent given to one customer cannot be used to enrol a different one.
 
 The service checks the customer is `Registered` or `Active`, writes a `consumer` row with `provider` set to that customer, and writes KV. A consumer has exactly one provider, so this fails if one is already set.
 
@@ -111,15 +115,15 @@ Activation is not required to add, only to serve. Servability is derived state, 
 A customer on a plan with `may_sponsor` pledges a fixed number of credits per cycle to a consumer they do not provide:
 
 ```
-{ cmd: "/consumer/pledge",
+{ cmd: "/sponsor/pledge",
   sub: "did:key:zBob",
   args: { consumer: "did:key:zPhotos",
           pledge: 3000 } }
 ```
 
-The sponsor is the invocation's subject, same shape as `/consumer/add`. The service checks the sponsor is `Active` and their plan permits sponsoring, that the pledge plus the undrawn remainder of their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. The undrawn remainder rather than the full pledge: settled shares already sit in the sponsor's usage, and counting the whole pledge would count them twice. It writes a `sponsorship` row with `effective` set to the consumer's next funding cycle.
+The sponsor is the invocation's subject, same shape as `/provider/add`. The service checks the sponsor is `Active` and their plan permits sponsoring, that the pledge plus the undrawn remainder of their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. The undrawn remainder rather than the full pledge: settled shares already sit in the sponsor's usage, and counting the whole pledge would count them twice. It writes a `sponsorship` row with `effective` set to the consumer's next funding cycle.
 
-Withdrawal sets `ends` to the current funding cycle. Both take effect at the next boundary.
+Withdrawal is `/sponsor/withdraw` with the same shape, and sets `ends` to the current funding cycle. Both take effect at the next boundary.
 
 ## 4. What is measurable
 
@@ -474,7 +478,7 @@ Miss versus error is `null` versus thrown.
 
 ### 11.4 Rate limiting
 
-Workers `ratelimit` binding, free and per-colo, on `issuer` and `consumer` namespaces, plus `RATELIMIT_REGISTER` on `/customer/enroll`, `/consumer/add`, and `/consumer/pledge`. The consumer namespace also bounds nonexistent-consumer traffic ahead of the state lookup.
+Workers `ratelimit` binding, free and per-colo, on `issuer` and `consumer` namespaces, plus `RATELIMIT_REGISTER` on `/customer/enroll`, `/provider/add`, and `/sponsor/pledge`. The consumer namespace also bounds nonexistent-consumer traffic ahead of the state lookup.
 
 Counts are unweighted, which is valid only while authorization stays per block.
 
@@ -510,6 +514,8 @@ Publish the ratios, not the cost basis.
 | 3. Enforce | Enable denial. Tighten limits to observed plus headroom |
 
 Do not compress 0 and 1. The rates are not derivable a priori, and guessing produces a repricing after launch.
+
+Phase 3 has a prerequisite the table hides: every consumer served today predates registration and has no rows, and the enforcement precedence denies an unprovided consumer. Before denial turns on, each live consumer needs a provider, grandfathered onto the customer that owns it or archived deliberately. The backfill is an increment of its own, and phase 0's per-consumer metering is what produces the inventory it works from.
 
 ## 15. Acceptance criteria
 
@@ -552,13 +558,14 @@ Do not compress 0 and 1. The rates are not derivable a priori, and guessing prod
 5. **Branch revision poll metering.** The pointer permit is long lived, so one authorization covers unbounded reads. Options: extrapolate from TTL and an assumed poll interval, unvalidatable; client self-report at renewal, which needs signing or accepted understatement; or serve the pointer from the Worker, exact by construction, with a one to two second cache collapsing N clients to roughly one R2 read. Measure the poll-to-permit ratio in phase 0.
 6. **Verification memoization.** A delegation chain is immutable and content addressed, so its verification result is a pure function of the chain CID. Caching by CID for the delegation's remaining lifetime would make repeat polls a lookup. If the hit rate is high, verification stops dominating CPU and decision 4 resolves to not billing compute.
 7. **Sponsor visibility.** Can a sponsor see usage detail, or the sponsor set, for a consumer they do not provide? A privacy question when sponsors are different organisations, and it sharpens when evidence is handed over on dispute.
-8. **Consent lifetime.** `/provider/add` is audience-bound so it cannot be replayed by a third party, but it survives removal, so a former provider can re-add themselves once the consumer has none. Harmless if the relationship only confers payment. Not harmless if it also confers visibility, which is decision 7 arriving through a side door.
+8. **Consent lifetime.** `/consumer/provide` is audience-bound so it cannot be replayed by a third party, but it survives removal, so a former provider can re-add themselves once the consumer has none. Harmless if the relationship only confers payment. Not harmless if it also confers visibility, which is decision 7 arriving through a side door.
 9. **Fail open or closed.** Section 11 serves on KV error and denies on a D1 miss. The asymmetry means a total D1 outage denies everything, since the miss path cannot reach the source of truth.
 10. **Unregistered response.** Whether an unregistered consumer returns a distinct status from a limited one, or both collapse, to avoid disclosing which consumers exist.
 11. **Storage measurement source.** R2 bucket metrics per prefix is the reliable path but may not exist at prefix granularity. Accumulating write bytes overstates, because content addressing means a duplicate block adds no storage, and it cannot see archival deletions.
 12. **Whether to charge for denied invocations.** The data supports either; the pricing page has to say which.
 13. **Terms acceptance boundary.** Acceptance should gate something, and which thing changes the flow. Gating registration means enroll writes nothing and the signed invocation carries the pending signup, so an abandoned signup leaves no trace and the link is the only copy. Gating activation means enroll writes rows and acceptance promotes them, which is what section 3 currently describes. Either way the accepted terms version and timestamp must be recorded, and neither is stored today.
 14. **Period boundary within a run.** A run crossing a customer's cycle boundary holds invocations belonging to two periods. Splitting the batch by timestamp against each `cycle_anchor` is exact; letting them all land in one period is bounded by the cron interval and self-corrects across periods. Cheap either way, but it should be chosen.
+15. **Where registration lives.** The account service already holds a D1 database of accounts, devices, and passkey metadata, plus email delivery. This document places the registration commands in the access service, which owns UCAN verification and the state the hot path reads, but the email sender should be shared rather than duplicated, and the relationship between `customer` rows and the existing account rows, including how the backfill of section 14 maps served spaces to owning customers, has to be settled before increment one.
 
 ## Appendix A: Rationale
 
