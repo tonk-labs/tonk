@@ -245,6 +245,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/customer/enroll", post(customer::enroll))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/summary", get(account_devices::summary))
+        .route(
+            "/api/account/devices/register",
+            post(account_devices::register),
+        )
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
         // Profile roster and switching — every account signed in on this

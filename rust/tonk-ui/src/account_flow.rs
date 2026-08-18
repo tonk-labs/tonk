@@ -406,7 +406,7 @@ mod tests {
                 "--no-open",
                 "--service-url",
                 env.account_service.as_str(),
-                "--account-url",
+                "--via",
                 env.tonk_web.join("account/link")?.as_str(),
             ])
             .stdout(Stdio::piped())
@@ -428,10 +428,18 @@ mod tests {
         assert_eq!(heading.trim_end(), "Open this URL to approve the device:");
         let approval_url = url::Url::parse(url_line.trim())?;
         assert_eq!(approval_url.path(), "/account/link");
+        let query: std::collections::HashMap<String, String> =
+            approval_url.query_pairs().into_owned().collect();
+        let audience = query
+            .get("audience")
+            .context("approval URL names no audience")?
+            .clone();
+        assert!(audience.starts_with("did:key:"));
         assert!(
-            approval_url
-                .fragment()
-                .is_some_and(|secret| !secret.is_empty())
+            query
+                .get("callback")
+                .is_some_and(|callback| callback.starts_with("http://127.0.0.1")),
+            "approval URL must carry the loopback callback"
         );
 
         driver.goto(approval_url.as_str()).await?;
@@ -441,12 +449,20 @@ mod tests {
             .await?
             .text()
             .await?;
-        assert!(!handoff_did.is_empty());
+        assert_eq!(handoff_did, audience);
         element(driver, "#account-handoff-submit")
             .await?
             .click()
             .await?;
+        // The callback answers the form POST with a redirect back to the
+        // account page, which renders the outcome in its own styling.
         element(driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text(
+            driver,
+            "#account-success-message",
+            "Command-line device linked.",
+        )
+        .await?;
 
         let mut outcome_line = String::new();
         match tokio::time::timeout(Duration::from_secs(20), stdout.read_line(&mut outcome_line))
@@ -459,7 +475,7 @@ mod tests {
             Err(_) => {
                 child.kill().await?;
                 return Err(anyhow!(
-                    "CLI consumed the handoff but did not finish account-state hydration"
+                    "CLI received the grant but did not finish account-state hydration"
                 ));
             }
         }
@@ -776,7 +792,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_links_the_cli_through_the_browser_handoff(env: TestEnvironment) -> Result<()> {
+    async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
         let linked = link_cli(&driver, &env).await?;
@@ -836,9 +852,11 @@ mod tests {
             State(slot): State<Delivery>,
             Form(form): Form<HashMap<String, String>>,
         ) -> &'static str {
-            let (field, value) = form
+            // The page posts the outcome alongside a `redirect` field; the
+            // outcome field is the one under test.
+            let (field, value) = ["authorize", "deny"]
                 .into_iter()
-                .next()
+                .find_map(|key| form.get(key).map(|value| (key.to_owned(), value.clone())))
                 .unwrap_or_else(|| ("none".to_owned(), String::new()));
             if let Ok(mut slot) = slot.lock()
                 && let Some(sender) = slot.take()
