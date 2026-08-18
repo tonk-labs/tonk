@@ -369,7 +369,12 @@ async fn link_via_callback(
     page: &str,
 ) -> Result<LinkOutcome> {
     let callback = crate::callback::Callback::bind().await?;
-    let url = login_url(page, profile.did().as_ref(), callback.url());
+    let url = login_url(
+        page,
+        profile.did().as_ref(),
+        callback.url(),
+        &options.device_name,
+    );
 
     println!("Open this URL to approve the device:\n{url}");
     if options.open_browser && webbrowser::open(&url).is_err() {
@@ -449,6 +454,16 @@ async fn link_via_callback(
         .await
         .context("failed to persist the account link")?;
 
+    let store = match options.store.clone() {
+        Some(store) => store,
+        None => crate::spot::SpotStore::open().context("failed to locate account state")?,
+    };
+    // The canonical session was initialized empty before the ceremony ran,
+    // so the persisted root and record must be projected into an active
+    // session explicitly — everything account-bound reads through it.
+    let attachment_id = Some(authorization.attachment_id.clone()).filter(|id| !id.is_empty());
+    crate::account_session::activate_link(profile, operator, &store, attachment_id).await?;
+
     // Mount the account, then retain BOTH halves of the union into it and
     // push. The page mints only the inbound grant; storing both ends here
     // keeps the writes where the account repository is already mounted, and
@@ -456,10 +471,6 @@ async fn link_via_callback(
     // holds rather than only what the account issued.
     // `ensure` mounts the account, adopts it as the access upstream, and
     // syncs — the dance that turns a grant into usable, shared authority.
-    let store = match options.store.clone() {
-        Some(store) => store,
-        None => crate::spot::SpotStore::open().context("failed to locate account state")?,
-    };
     let account_state = match crate::account_state::ensure_with_operator_and_store(
         profile,
         operator.clone(),
@@ -513,6 +524,11 @@ struct CallbackAuthorization {
     descriptor_hex: String,
     #[serde(default)]
     credential_id: String,
+    /// The service-issued attachment generation the approving page
+    /// registered this device under. Absent from pages that predate
+    /// registration-at-approval; the delegation CID stands in then.
+    #[serde(default)]
+    attachment_id: String,
 }
 
 /// Start or resume a browser handoff and activate its fresh generation.
@@ -892,12 +908,13 @@ pub async fn devices(profile: &Profile, service_url: &str) -> Result<Vec<DeviceR
 /// Neither value is secret. The audience is a public DID, and the callback
 /// points at loopback on this machine, so nothing here needs the fragment
 /// treatment the link handoff gives its bearer token.
-fn login_url(base: &str, audience: &str, callback: &str) -> String {
+fn login_url(base: &str, audience: &str, callback: &str, name: &str) -> String {
     format!(
-        "{}?audience={}&callback={}",
+        "{}?audience={}&callback={}&name={}",
         base.trim_end_matches('#').trim_end_matches('/'),
         urlencoding::encode(audience),
         urlencoding::encode(callback),
+        urlencoding::encode(name),
     )
 }
 
@@ -1226,12 +1243,14 @@ mod tests {
             DEFAULT_LINK_PAGE,
             "did:key:zProfile",
             "http://127.0.0.1:54321",
+            "Kitchen laptop",
         );
         assert_eq!(
             url,
             "https://tonk.spot/account/link\
              ?audience=did%3Akey%3AzProfile\
-             &callback=http%3A%2F%2F127.0.0.1%3A54321"
+             &callback=http%3A%2F%2F127.0.0.1%3A54321\
+             &name=Kitchen%20laptop"
         );
     }
 
