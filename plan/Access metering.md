@@ -15,9 +15,11 @@ Authorization is per block: one permit, one R2 operation. Presigning stays. Prox
 
 **Consumer** is a space that this service replicates. A customer's own account space is a consumer like any other, identified by the same DID as the customer.
 
-**Provider** is the customer responsible for a consumer. Exactly one, required: a consumer without a provider is not servable. The provider draws on their own remaining credit limit and pays whatever sponsors do not cover.
+**Provider** is the customer responsible for a consumer. Exactly one, required: a consumer without a provider is not servable. The provider draws on their own remaining credit limit and pays whatever the pledge pool does not cover.
 
-**Sponsor** is a customer who pledges a fixed number of credits per cycle to a consumer they do not provide. Zero or more per consumer. A pledge reserves that much of the sponsor's own limit for the cycle whether or not it is used, and the sponsor is billed for actual use in proportion to their pledge.
+**Sponsor** is a customer who pledges a fixed number of credits per funding cycle to a consumer they do not provide. Zero or more per consumer. At the opening of each funding cycle every pledge is withheld from its sponsor's limit and pooled for the consumer; the consumer draws on the pool before it touches the provider. A sponsor is billed for what the pool actually used, in proportion to pledge, and whatever remains unused at the close of the cycle is released back the same way.
+
+The **funding cycle** of a consumer is its provider's billing period. Sponsors keep their own billing periods for their own invoices; only the pool's lifetime is anchored to the provider. A provider change closes the funding cycle and opens a new one, re-drawing every pledge.
 
 Only paid plans may sponsor. A free plan may provide consumers and draws them all from one limit, so additional free accounts and additional free spaces add no capacity.
 
@@ -114,9 +116,9 @@ A customer on a plan with `may_sponsor` pledges a fixed number of credits per cy
           pledge: 3000 } }
 ```
 
-The service checks the sponsor's plan permits sponsoring, that the pledge plus their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. It writes a `sponsorship` row with `effective` set to the next period.
+The service checks the sponsor's plan permits sponsoring, that the pledge plus the undrawn remainder of their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. The undrawn remainder rather than the full pledge: settled shares already sit in the sponsor's usage, and counting the whole pledge would count them twice. It writes a `sponsorship` row with `effective` set to the consumer's next funding cycle.
 
-Withdrawal sets `ends` to the current period. Both take effect at the next boundary.
+Withdrawal sets `ends` to the current funding cycle. Both take effect at the next boundary.
 
 ## 4. What is measurable
 
@@ -248,14 +250,14 @@ CREATE TABLE consumer (
   measured_at     INTEGER NOT NULL DEFAULT 0
 );
 
--- Fixed for the cycle. Adding or removing a sponsorship takes effect at the
--- next cycle boundary, so the denominator does not move mid-cycle.
+-- Fixed for the funding cycle. Adding or removing a sponsorship takes effect
+-- at the next funding-cycle boundary, so the pool does not move mid-cycle.
 CREATE TABLE sponsorship (
   consumer  TEXT    NOT NULL REFERENCES consumer(did),
   customer  TEXT    NOT NULL REFERENCES customer(did),
-  pledge    INTEGER NOT NULL,   -- credits per cycle
-  effective TEXT    NOT NULL,   -- first period this applies to
-  ends      TEXT,               -- last period, null while open
+  pledge    INTEGER NOT NULL,   -- credits per funding cycle
+  effective TEXT    NOT NULL,   -- first funding cycle this applies to
+  ends      TEXT,               -- last funding cycle, null while open
   PRIMARY KEY (consumer, customer)
 );
 
@@ -276,14 +278,15 @@ CREATE TABLE usage (
   PRIMARY KEY (period, customer)
 );
 
--- Credits drawn against each sponsorship this period, so exhaustion is per
--- pledge rather than a single consumer-wide number.
+-- Each sponsor's settled share of the pool this funding cycle. The pool's
+-- remainder is Σ pledge − Σ drawn, so exhaustion is one per-consumer fact.
+-- Keyed by funding cycle, not the payer's period: those are different clocks.
 CREATE TABLE drawn (
-  period   TEXT    NOT NULL,
+  cycle    TEXT    NOT NULL,
   consumer TEXT    NOT NULL,
   customer TEXT    NOT NULL,
   credits  INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (period, consumer, customer)
+  PRIMARY KEY (cycle, consumer, customer)
 );
 
 CREATE TABLE run (
@@ -318,13 +321,13 @@ Notes on shape.
 
 `ledger` carries operation counts, not only credits, so a payer can be shown exactly which share they carried and the shares sum to the consumer's total for that run.
 
-`ledger.plan` is the plan at charge time. Plans imply rates, so a historical row must not be reinterpreted after an upgrade or a repricing. Recording it per row also means an upgrade needs no backfill.
+`ledger.plan` is the plan that priced the row: the provider's plan at charge time, since the consumer's usage converts at one set of rates (section 10.1) and sponsor shares transfer those credits. Plans imply rates, so a historical row must not be reinterpreted after an upgrade or a repricing. Recording it per row also means an upgrade needs no backfill.
 
 `ledger.period` is the payer's billing period, computed at charge time from their `cycle_anchor`. Runs land on a cron cadence; periods are per customer and anchored to their subscription date. They do not align, so the period travels on the row. An invoice is `SUM(credits) WHERE customer = ? AND period = ?`, and a cycle rolls by the period key advancing, so history survives.
 
 `usage` is the same sum, materialised, and must reconcile against the ledger. A cache that can drift silently from an auditable source is worse than no cache.
 
-A customer's available credit is `credit_limit` minus their outstanding pledges minus `usage.credits` for the current period. Pledges are reserved whether or not they are drawn, so a customer cannot pledge more than their limit across all sponsorships.
+A customer's available credit is `credit_limit` minus `usage.credits` for the current period minus the undrawn remainder of every pledge they sponsor: `Σ max(pledge − drawn, 0)` over their open sponsorships. The remainder rather than the full pledge, because settled shares are already in `usage.credits` and subtracting the whole pledge would count them twice. The full pledge is thus withheld the moment a funding cycle opens and returns as it settles, with whatever never settles releasing at the close.
 
 Credits are integers. Choose the denomination so the cheapest billable operation is a comfortable whole number, and record what a credit is worth somewhere durable.
 
@@ -344,23 +347,25 @@ SELECT consumer, cmd, outcome,
  GROUP BY consumer, cmd, outcome;
 ```
 
-Convert each consumer's aggregate to credits, then allocate.
+Convert each consumer's aggregate to credits at the provider's plan rates, then allocate. One conversion per consumer: the pool is a single number in credits, so per-payer rates would make its arithmetic incoherent. The provider's plan is the consumer's service terms; sponsor shares are transfers of those credits, not repricings.
 
-**Sponsors first.** Load the consumer's sponsorships effective for the current period. Each has a `pledge` and a `drawn` total so far. Allocate this run's credits across sponsors with remaining pledge, in proportion to pledge:
+**Pool first.** Load the consumer's sponsorships effective for its current funding cycle. The pool is `Σ pledge`; what remains is `Σ pledge − Σ drawn`. Draw this run's credits from the remaining pool and split the draw across sponsors in exact proportion to pledge, largest remainder, so the shares sum exactly to the draw:
 
 ```
-share_i = ceil(credits × pledge_i / Σ pledge)
+share_i = draw × pledge_i / Σ pledge    (largest remainder)
 ```
 
-capped at each sponsor's remaining pledge. Round up. Over-collection is at most one credit per sponsor per run, and a sponsor committed to more than that.
+Proportions are fixed by the pledges, so every sponsor's `drawn` reaches its `pledge` at the same moment the pool empties. There is no per-sponsor exhaustion order and no cap to water-fill against.
 
-**Provider last.** Whatever sponsors did not cover goes to the provider, drawn from their remaining limit.
+**Provider last.** Whatever exceeds the remaining pool goes to the provider, drawn from their remaining limit.
 
 Write one `ledger` row per payer with `role` and `kind = 'usage'`, increment `drawn` for each sponsor, increment `usage.credits` for each payer, and write `run.charged_upto`, all in the same `db.batch()`. D1 offers no interactive transactions, so the batch is the atomicity. A failed batch leaves the cursor unmoved and the rerun recomputes from the same read.
 
 The cross-database boundary sits on the read side deliberately: aggregates come from ingest, every write lands in control, so the atomicity that matters is available.
 
-Rates come from each payer's plan, so the same operation can cost different credits depending on who paid for it. Two payers on one consumer will see different totals for what looks like the same usage.
+Each sponsor's ledger row lands in that sponsor's own current period, computed from their `cycle_anchor` at charge time as always. The funding cycle governs the pool; the payer's period governs their invoice. The two clocks never need to agree.
+
+Unused pool at the close of a funding cycle is simply never settled: each sponsor's reservation ends with the cycle, and the undrawn remainder, proportional to pledge by construction, returns to their available credit. Release is the absence of a charge, so it writes no ledger row.
 
 ### 10.2 Storage
 
@@ -370,17 +375,15 @@ Each run measures the consumer prefix from R2 bucket metrics, adds `size × hour
 
 Accruing per run is what makes archival work. Archiving a consumer deletes its data, so the next measurement reads zero. The hours before it are already accrued, so archival needs no special handling. A single end-of-period reading would bill nothing for a consumer archived on day 20 of 30, which is both wrong and an incentive to archive just before the boundary.
 
-At period close, convert `accrual.gb_hours` to credits and allocate by the same sponsors-then-provider rule as usage, writing `kind = 'storage'` rows.
+At period close, convert `accrual.gb_hours` to credits and allocate by the same pool-then-provider rule as usage, writing `kind = 'storage'` rows.
 
 Order within a cycle-end run: charge usage, charge storage, then push to Stripe. Pushing first omits the storage line.
 
 ### 10.3 Exhaustion
 
-A sponsor whose `drawn` reaches their `pledge` stops receiving allocations for that consumer and period. The remaining sponsors take their share, in proportion to pledge as before.
+When the pool is exhausted, the provider carries the whole cost. When the provider is also at their limit, the consumer's derived state becomes limited and subsequent invocations are denied and recorded with `outcome = 'denied'` until the next funding cycle opens, resetting `drawn` and withholding every pledge afresh. Attribution continues: charges still land on the provider, so overage is visible as `usage.credits` exceeding `credit_limit` rather than accumulating as an unattributed balance.
 
-When every pledge is drawn, the provider carries the whole cost. When the provider is also at their limit, the consumer's derived state becomes limited and subsequent invocations are denied and recorded with `outcome = 'denied'`. Attribution continues: charges still land on the provider, so overage is visible as `usage.credits` exceeding `credit_limit` rather than accumulating as an unattributed balance.
-
-Sponsorships are fixed for the cycle. Adding or removing one takes effect at the next period boundary, so the denominator is stable within a period and no usage has to be split into before-and-after segments. A sponsor who withdraws mid-cycle is billed for that cycle in proportion to their pledge.
+Sponsorships are fixed for the funding cycle. Adding or removing one takes effect at the next boundary, so the pool and its proportions are stable within a cycle and no usage has to be split into before-and-after segments. A sponsor who withdraws mid-cycle remains a payer for that cycle: their pledge stays in the pool and settles in proportion as usual.
 
 ### 10.4 Archive
 
@@ -427,7 +430,7 @@ funding:    { code, resets? }?             on the provider's customer row
 
 Precedence: unprovided, archived, suspended, limited, ok. Unregistered is absence of the consumer row.
 
-Funding is limited when the provider is at their limit and every sponsorship for the current period is fully drawn. Sponsorships are read from `sponsorship` and `drawn`; the provider's position comes from `usage.credits` against their `credit_limit`.
+Funding is limited when the provider is at their limit and the consumer's pool for the current funding cycle is exhausted. The pool's position comes from `sponsorship` and `drawn`; the provider's from `usage.credits` against their `credit_limit`.
 
 Storing them separately is what makes unblocking free: clear the suspension, re-derive, and it lands on limited or ok according to funding, which was never touched.
 
@@ -463,7 +466,7 @@ The cron writes changed consumers, not all of them. `not_after` must therefore b
 
 1. Isolate cache.
 2. KV.
-3. On KV miss, read `consumer`, its sponsorships, and the provider's `usage` row from control D1, derive, write back with short validity.
+3. On KV miss, read `consumer`, its sponsorships and their `drawn` totals, and the provider's `customer`, `plan`, and `usage` rows from control D1, derive, write back with short validity.
 4. On KV error, default to serving and alert.
 
 Miss versus error is `null` versus thrown.
@@ -513,9 +516,11 @@ Do not compress 0 and 1. The rates are not derivable a priori, and guessing prod
 - An `invocation` row is durable when the insert returns.
 - A charge run failing partway leaves `run.charged_upto` unmoved, and rerunning produces identical ledger rows.
 - Ledger rows for one consumer and one run sum, per unit, to that consumer's totals for the run.
-- Sponsors pledging 2000, 3000, and 3000 against 5000 credits of usage are billed in proportion to pledge, and the shares sum to at least the usage with per-sponsor rounding up.
-- A sponsor whose pledge is fully drawn receives no further allocation, and the remaining sponsors take their share.
-- With every pledge drawn, the provider carries the remainder and ledger rows still cover every operation.
+- Sponsors pledging 2000, 3000, and 3000 against 5000 credits of usage are billed 1250, 1875, and 1875: proportional to pledge and summing exactly to the usage.
+- A run drawing past the end of the pool charges the sponsors exactly the pool's remainder and the provider the excess.
+- With the pool exhausted, the provider carries the remainder and ledger rows still cover every operation.
+- A pool unused at funding-cycle close leaves each sponsor billed only their settled share, and the undrawn remainder returns to their available credit.
+- A new funding cycle opens with the full pool available and every pledge withheld again.
 - A consumer with no provider is denied regardless of sponsorships.
 - A free plan cannot create a sponsorship.
 - A customer cannot pledge more than their limit across all sponsorships.
@@ -573,6 +578,8 @@ Do not compress 0 and 1. The rates are not derivable a priori, and guessing prod
 
 **Why not Cloudflare Pipelines yet.** Ingress is free and Parquet sinks are $0.06/GB, two orders of magnitude below D1 writes, but D1 includes 50 million writes a month, so the crossover is above the included tier. Pipelines also cannot hold transactional state, so it would displace only the ingest table and leave two data stacks. Iceberg gives time predicates rather than a monotonic cursor, which is fine for dashboards and not fine for anything feeding charging. It is the right answer for the archive and for replacing Analytics Engine once volume justifies it, and billing for it is not yet enabled.
 
+**Why a pooled draw rather than per-sponsor caps.** An earlier draft allocated each run's credits across sponsors with per-pledge caps, which meant water-filling: a sponsor could exhaust before the others, the proportions shifted as caps were hit, and rounding up over-collected. Pooling fixes the proportions for the whole cycle, so shares settle exactly by largest remainder, every pledge empties at the same moment, exhaustion becomes one per-consumer fact the hot path can cache, and release is just the undrawn remainder. It also forces the conversion question into the open: a pool is one number, so usage prices at the provider's plan and sponsor shares transfer credits rather than reprice them.
+
 **Why allocation is resolved at charge time.** A funding delegation rooted at the payer, presented alongside the access chain, would let each permit name its own payer and need no allocation policy. It costs propagation, since a new sponsor means redistributing delegations to every actor, and revocation, and it lets the actor rather than the consumer choose who pays.
 
 **Why deletion rather than revocation of superseded delegations.** Invocation chains travel to the service, but the service verifies and discards rather than storing, and operators are local and networkless. So the only durable copies are on the device. Making revocation meaningful would require the service to maintain and check a revocation list, which is a larger protocol change than issuing revocation records.
@@ -611,6 +618,8 @@ Approximate 2026 rates, for sizing rather than quoting.
 | **Sponsor** | A customer pledging fixed credits per cycle to a consumer they do not provide |
 | **Run** | One execution of the charge cron, and the Stripe idempotency key |
 | **Period** | A customer's billing cycle, derived from `cycle_anchor` |
+| **Funding cycle** | The lifetime of a consumer's pledge pool, anchored to its provider's billing period |
+| **Pool** | The sum of pledges withheld for a consumer at the opening of its funding cycle |
 | **Powerline** | A delegation asserting equivalence of authority between two keys |
 | **D1** | Serverless SQLite. Bills per row read and written, not per query. 10 GB per database |
 | **R2** | S3-compatible object storage. Objects immutable, no append. Bills per operation |
