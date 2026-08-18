@@ -45,7 +45,7 @@ bucket_name = "tonk-revocations"
 [[d1_databases]]
 binding = "CONTROL"
 database_name = "tonk-access-control"
-database_id = ""
+database_id = "3146eac9-ea9c-44b4-a1f7-d06e10927ffd"
 migrations_dir = "rust/tonk-access-service/migrations"
 
 # Ingest: one row per invocation, metering's write path. Separate from
@@ -55,7 +55,7 @@ migrations_dir = "rust/tonk-access-service/migrations"
 [[d1_databases]]
 binding = "INGEST"
 database_name = "tonk-access-ingest"
-database_id = ""
+database_id = "1cf85093-7a8c-4737-9d8e-607b55bf719a"
 migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
 [vars]
@@ -81,13 +81,13 @@ bucket_name = "tonk-revocations-staging"
 [[env.staging.d1_databases]]
 binding = "CONTROL"
 database_name = "tonk-access-control-staging"
-database_id = ""
+database_id = "757da52f-4b40-4534-8b2d-7c8122e245df"
 migrations_dir = "rust/tonk-access-service/migrations"
 
 [[env.staging.d1_databases]]
 binding = "INGEST"
 database_name = "tonk-access-ingest-staging"
-database_id = ""
+database_id = "ebcef6f8-0910-45e4-a7d7-48976068b0ba"
 migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
 [env.staging.vars]
