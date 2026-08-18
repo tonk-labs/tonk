@@ -2000,19 +2000,29 @@ async fn legacy_migrate(
             Ok(blobs) => blobs,
             Err(error) => return print_failure(error),
         };
-        if let Err(error) =
-            tonk_cli::legacy::import_migrated_branch(&destination, branch, &upgraded.csv).await
+        let repaired = match tonk_cli::legacy::import_upgraded_branch(
+            &destination,
+            branch,
+            &upgraded.csv,
+            &upgraded.legacy_csv,
+        )
+        .await
         {
-            return print_failure(error);
-        }
+            Ok(repaired) => repaired,
+            Err(error) => return print_failure(error),
+        };
         println!(
             "{branch}: {} rows ({} remapped, {} dropped as dialog's own), \
-             {} blobs ({} bytes)",
+             {} blobs ({} bytes), {} commands and {} rules restored \
+             ({} invalid legacy effect entities ignored)",
             upgraded.migration.kept,
             upgraded.migration.remapped,
             upgraded.migration.dropped,
             blobs.copied,
-            blobs.bytes
+            blobs.bytes,
+            repaired.transient_concepts,
+            repaired.native_rules,
+            repaired.ignored_effects
         );
     }
     println!("upgraded {} branch(es)", branches.len());
