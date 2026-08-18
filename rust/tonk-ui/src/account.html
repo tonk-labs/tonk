@@ -24,29 +24,18 @@
 
   <section id="account-create" class="account__panel" hidden>
     <h2>Create your account</h2>
+    <p class="account__message">You will get an activation link by email; your passkey replaces a password.</p>
     <form class="account__form">
       <label>Email
         <input id="account-email" name="Email" type="email" autocomplete="email" required>
       </label>
       <!-- The form's submit button, not an inert `type="button"`: this panel
            has a single field, so Enter implicitly submits, and implicit
-           submission clicks the submit button — which is where the send-code
+           submission clicks the submit button — which is where the creation
            handler hangs. As a plain button, Enter submitted the form itself,
            reloading `/account?Email=…` with the address thrown away. -->
-      <button id="account-send-code" class="account__button" type="submit">Continue</button>
-      <button id="account-create-back" class="account__button account__button--quiet" type="button">Back</button>
-    </form>
-  </section>
-
-  <section id="account-verify" class="account__panel" hidden>
-    <h2>Check your email</h2>
-    <p class="account__message">We sent a six-digit code to <strong id="account-code-email"></strong>.</p>
-    <form class="account__form">
-      <label>Verification code
-        <input id="account-code" name="Verification code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
-      </label>
       <button id="account-create-submit" class="account__button" type="submit">Create account</button>
-      <button id="account-verify-back" class="account__button account__button--quiet" type="button">Use a different email</button>
+      <button id="account-create-back" class="account__button account__button--quiet" type="button">Back</button>
     </form>
   </section>
 
@@ -81,6 +70,7 @@
 
   <div id="account-success" class="account__panel account__dashboard" hidden>
     <p id="account-success-message" class="account__status">Signed in on this device.</p>
+    <p id="account-activation-notice" class="account__hint" role="status" hidden></p>
 
     <section class="account__section account__passkey" aria-labelledby="account-passkey-title">
       <div class="account__section-heading">

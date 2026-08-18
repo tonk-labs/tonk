@@ -73,6 +73,12 @@ pub(crate) async fn post_cbor(endpoint: &Url, body: &[u8]) -> Result<HttpRespons
     post(endpoint, body, "application/cbor").await
 }
 
+/// GET a JSON (or other) resource from an upstream service, with the
+/// same timeout and error-envelope handling as the POST path.
+pub(crate) async fn get(endpoint: &Url) -> Result<HttpResponse, HttpError> {
+    request_with_timeout("GET", endpoint, None, None, TIMEOUT).await
+}
+
 #[allow(dead_code)] // reserved for JSON-only service operations
 pub(crate) async fn post_json(endpoint: &Url, body: &[u8]) -> Result<HttpResponse, HttpError> {
     post(endpoint, body, "application/json").await
@@ -90,20 +96,35 @@ async fn post_with_timeout(
     media_type: &str,
     timeout: Duration,
 ) -> Result<HttpResponse, HttpError> {
-    let response = reqwest::Client::new()
-        .post(endpoint.clone())
-        .header(reqwest::header::CONTENT_TYPE, media_type)
-        .body(body.to_vec())
-        .timeout(timeout)
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                HttpError::Timeout
-            } else {
-                HttpError::Transport(error.to_string())
-            }
-        })?;
+    request_with_timeout("POST", endpoint, Some(body), Some(media_type), timeout).await
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn request_with_timeout(
+    method: &str,
+    endpoint: &Url,
+    body: Option<&[u8]>,
+    media_type: Option<&str>,
+    timeout: Duration,
+) -> Result<HttpResponse, HttpError> {
+    let client = reqwest::Client::new();
+    let mut request = match method {
+        "POST" => client.post(endpoint.clone()),
+        _ => client.get(endpoint.clone()),
+    };
+    if let Some(media_type) = media_type {
+        request = request.header(reqwest::header::CONTENT_TYPE, media_type);
+    }
+    if let Some(body) = body {
+        request = request.body(body.to_vec());
+    }
+    let response = request.timeout(timeout).send().await.map_err(|error| {
+        if error.is_timeout() {
+            HttpError::Timeout
+        } else {
+            HttpError::Transport(error.to_string())
+        }
+    })?;
     let status = response.status().as_u16();
     let account_spots_capability = response
         .headers()
@@ -137,6 +158,17 @@ async fn post_with_timeout(
     media_type: &str,
     timeout: Duration,
 ) -> Result<HttpResponse, HttpError> {
+    request_with_timeout("POST", endpoint, Some(body), Some(media_type), timeout).await
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn request_with_timeout(
+    method: &str,
+    endpoint: &Url,
+    body: Option<&[u8]>,
+    media_type: Option<&str>,
+    timeout: Duration,
+) -> Result<HttpResponse, HttpError> {
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -147,15 +179,19 @@ async fn post_with_timeout(
     let controller = AbortController::new()
         .map_err(|_| HttpError::Transport("could not create abort controller".to_string()))?;
     let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_body(&js_sys::Uint8Array::from(body).into());
+    init.set_method(method);
+    if let Some(body) = body {
+        init.set_body(&js_sys::Uint8Array::from(body).into());
+    }
     init.set_signal(Some(&controller.signal()));
     let request = Request::new_with_str_and_init(endpoint.as_str(), &init)
         .map_err(|_| HttpError::Transport("could not construct upstream request".to_string()))?;
-    request
-        .headers()
-        .set("content-type", media_type)
-        .map_err(|_| HttpError::Transport("could not set content type".to_string()))?;
+    if let Some(media_type) = media_type {
+        request
+            .headers()
+            .set("content-type", media_type)
+            .map_err(|_| HttpError::Transport("could not set content type".to_string()))?;
+    }
 
     // Call the worker-global timer and fetch functions dynamically. This keeps
     // the request path testable in a browser harness while using the same

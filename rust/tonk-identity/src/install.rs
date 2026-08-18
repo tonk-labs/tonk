@@ -192,7 +192,6 @@ fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue
 
 async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     let email = string_property(&input, "email")?;
-    let code = string_property(&input, "code")?;
     let device_did = string_property(&input, "deviceDid")?
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
@@ -238,7 +237,6 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
         crate::ceremony::create_account(
             root,
             email,
-            code,
             credential_id.clone(),
             device_did,
             device_name,
@@ -255,7 +253,6 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
 
 async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
     let email = string_property(&input, "email")?;
-    let code = string_property(&input, "code")?;
     let device_did = string_property(&input, "deviceDid")?
         .parse()
         .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
@@ -264,7 +261,6 @@ async fn create_fresh_account(input: JsValue) -> Result<JsValue, JsValue> {
     let created_on = optional_string_property(&input, "createdOn");
     let ceremony = crate::ceremony::create_fresh_account(
         email,
-        code,
         device_did,
         device_name,
         remote,

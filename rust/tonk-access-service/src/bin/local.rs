@@ -18,12 +18,17 @@ async fn main() -> anyhow::Result<()> {
         (Ok(account), Ok(revocations)) => Some(DeploymentConfig {
             account_service_url: account.parse()?,
             revocation_relay_url: revocations.parse()?,
+            // Filled in by the server with its own generated identity.
+            service_did: None,
         }),
         _ => None,
     };
 
     let service = access_service(AccessServiceSettings {
         deployment,
+        // Behind a dev proxy the activation links must open on the page
+        // origin, not this server's own port.
+        public_origin: std::env::var("ACCESS_PUBLIC_ORIGIN").ok(),
         ..Default::default()
     })
     .await?;

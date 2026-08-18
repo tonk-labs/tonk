@@ -17,6 +17,7 @@ run_worker_first = [
   "/.well-known/did.json",
   "/@",
   "/@/*",
+  "/customer/*",
   "/ucan",
   "/ucan/*",
 ]

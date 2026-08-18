@@ -379,24 +379,22 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
             })
     }
 
-    /// Validate the deposited access delegation: issued by the customer
-    /// to this service, signature-valid, and inside its own time window.
-    /// It is an argument being deposited, not a proof, so it never
-    /// extends the invocation's chain.
+    /// Validate the deposited access delegation: issued under the
+    /// customer's authority to this service, signature-valid, and inside
+    /// its own time window. It is an argument being deposited, not a
+    /// proof, so it never extends the invocation's chain.
+    ///
+    /// The head need not be issued by the customer directly: the device
+    /// holds the customer's root through a delegation, so the deposit
+    /// arrives as a chain (customer → device → service) whose links
+    /// travel in the same container. The walk follows issuers back to
+    /// the customer through those links.
     async fn verify_deposit(
         &self,
         deposit: &Delegation<Ed25519Signature>,
         customer: &Did,
     ) -> Result<(), RegistrationError> {
         let service = self.service.did();
-        if deposit.issuer() != customer {
-            return Err(RegistrationError::Forbidden {
-                message: format!(
-                    "access delegation must be issued by {customer}, got {}",
-                    deposit.issuer()
-                ),
-            });
-        }
         if deposit.audience() != &service {
             return Err(RegistrationError::Forbidden {
                 message: format!(
@@ -405,7 +403,42 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
                 ),
             });
         }
-        if let DelegatedSubject::Specific(subject) = deposit.subject()
+        self.check_deposit_link(deposit, customer).await?;
+
+        let links = self.delegation_tokens()?;
+        let mut issuer = deposit.issuer().clone();
+        let mut depth = 0;
+        while issuer != *customer {
+            depth += 1;
+            if depth > 4 {
+                return Err(RegistrationError::Forbidden {
+                    message: "access delegation chain is too deep".to_string(),
+                });
+            }
+            let link = links
+                .iter()
+                .find(|token| token.delegation.audience() == &issuer)
+                .ok_or_else(|| RegistrationError::Forbidden {
+                    message: format!(
+                        "access delegation is not issued under {customer}: nothing in the \
+                         container grants {issuer}"
+                    ),
+                })?;
+            self.check_deposit_link(&link.delegation, customer).await?;
+            issuer = link.delegation.issuer().clone();
+        }
+        Ok(())
+    }
+
+    /// Validate one link of a deposit chain: its subject covers the
+    /// customer, its window contains the present, and its signature is
+    /// its issuer's.
+    async fn check_deposit_link(
+        &self,
+        delegation: &Delegation<Ed25519Signature>,
+        customer: &Did,
+    ) -> Result<(), RegistrationError> {
+        if let DelegatedSubject::Specific(subject) = delegation.subject()
             && subject != customer
         {
             return Err(RegistrationError::Forbidden {
@@ -414,8 +447,8 @@ impl<S: Store, E: EmailSender> Registration<'_, S, E> {
                 ),
             });
         }
-        self.check_window(deposit)?;
-        deposit
+        self.check_window(delegation)?;
+        delegation
             .verify_signature(&Ed25519KeyResolver)
             .await
             .map_err(|err| RegistrationError::Unauthorized {

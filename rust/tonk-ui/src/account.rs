@@ -119,7 +119,6 @@ fn set_mode(host: &HtmlElement, mode: &str) {
     for (name, selector) in [
         ("choice", "#account-choice"),
         ("create", "#account-create"),
-        ("verify", "#account-verify"),
         ("link", "#account-link"),
         ("handoff", "#account-handoff"),
         ("setup", "#account-setup"),
@@ -139,10 +138,8 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
     for selector in [
         "#account-choose-create",
         "#account-choose-link",
-        "#account-send-code",
         "#account-create-submit",
         "#account-create-back",
-        "#account-verify-back",
         "#account-link-submit",
         "#account-link-back",
         "#account-handoff-submit",
@@ -191,6 +188,34 @@ fn show_success(host: &HtmlElement) {
     load_summary(host.clone());
     load_devices(host.clone());
     load_profiles(host.clone());
+    load_activation_notice(host.clone());
+}
+
+/// Surface a pending customer activation on the dashboard. Quiet on
+/// every other answer: an active customer needs no notice, and a
+/// deployment without registration should not decorate the panel with
+/// its absence.
+fn load_activation_notice(host: HtmlElement) {
+    spawn_local(async move {
+        let state = match crate::api::customer_state().await {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        if state["status"].as_str() != Some("Registered") {
+            return;
+        }
+        let Ok(Some(notice)) = host.query_selector("#account-activation-notice") else {
+            return;
+        };
+        let message = match state["email"].as_str() {
+            Some(email) => {
+                format!("Sync activation pending: open the link we emailed to {email}.")
+            }
+            None => "Sync activation pending: open the link in your activation email.".to_string(),
+        };
+        notice.set_text_content(Some(&message));
+        let _ = notice.remove_attribute("hidden");
+    });
 }
 
 fn set_text(host: &HtmlElement, selector: &str, value: &str) {
@@ -960,6 +985,7 @@ async fn complete_remote(
     path: &str,
     ceremony: CeremonyOutput,
     initialize_name: bool,
+    enroll_email: Option<&str>,
 ) -> Result<(), String> {
     let provider = service(host).await?;
     let response = crate::api::submit_account_ceremony(&provider, path, &ceremony.invocation_hex)
@@ -992,6 +1018,25 @@ async fn complete_remote(
             );
         }
     };
+    // Registration with the access service, on signup and login alike:
+    // the account exists either way, so a refused enrollment is surfaced
+    // but does not undo the attach. The login path names no email; the
+    // worker resolves the account's recorded address. Deployments that
+    // publish no service identity have no registration to perform.
+    let wants_enrollment = crate::deployment::get()
+        .await
+        .map(|config| config.service_did.is_some())
+        .unwrap_or(false);
+    if wants_enrollment {
+        set_busy(host, true, "Registering with the sync service…");
+        if let Err(error) = crate::api::enroll_customer(enroll_email).await {
+            web_sys::console::error_1(&format!("customer enrollment failed: {error}").into());
+            show_error(
+                host,
+                "Your account is ready, but registering it with the sync service failed. Reload /account to retry.",
+            );
+        }
+    }
     settle(host);
     if initialize_name && is_unhydrated(&status) {
         show_error(
@@ -1122,78 +1167,16 @@ fn bind(host: &HtmlElement) {
             set_mode(&host, "choice");
         });
     }
-    on_click(host, "#account-verify-back", |host| {
-        clear_error(&host);
-        set_busy(&host, false, "");
-        if let Ok(Some(code)) = host.query_selector("#account-code")
-            && let Ok(code) = code.dyn_into::<HtmlInputElement>()
-        {
-            code.set_value("");
-        }
-        if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
-            destination.set_text_content(None);
-        }
-        set_mode(&host, "create");
-        focus_input(&host, "#account-email");
-    });
-
-    on_click(host, "#account-send-code", |host| {
+    on_click(host, "#account-create-submit", |host| {
         clear_error(&host);
         let email = match input(&host, "#account-email") {
             Ok(value) => value,
             Err(error) => return show_error(&host, error),
         };
-        set_busy(&host, true, "Sending verification code…");
-        spawn_local(async move {
-            let service_url = match service(&host).await {
-                Ok(service_url) => service_url,
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error);
-                    return;
-                }
-            };
-            match crate::api::request_account_code(&service_url, &email).await {
-                Ok(()) => {
-                    set_busy(&host, false, "");
-                    if let Ok(Some(destination)) = host.query_selector("#account-code-email") {
-                        destination.set_text_content(Some(&email));
-                    }
-                    set_mode(&host, "verify");
-                    if let Ok(Some(code)) = host.query_selector("#account-code")
-                        && let Ok(code) = code.dyn_into::<HtmlInputElement>()
-                    {
-                        code.set_value("");
-                        let _ = code.focus();
-                    }
-                }
-                Err(error) => {
-                    set_busy(&host, false, "");
-                    show_error(&host, error.to_string());
-                }
-            }
-        });
-    });
-
-    on_click(host, "#account-create-submit", |host| {
-        clear_error(&host);
-        let fields = (
-            input(&host, "#account-email"),
-            input(&host, "#account-code"),
-        );
-        let (email, code) = match fields {
-            (Ok(email), Ok(code)) => (email, code),
-            (Err(error), _) | (_, Err(error)) => return show_error(&host, error),
-        };
         let device_name = crate::device_name::current();
-        set_busy(&host, true, "Checking verification code…");
+        set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let result = async {
-                let service_url = service(&host).await?;
-                crate::api::preflight_account(&service_url, &email, &code)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                set_busy(&host, true, "Waiting for your passkey…");
                 let status = crate::api::root_status()
                     .await
                     .map_err(|error| error.to_string())?;
@@ -1206,8 +1189,7 @@ fn bind(host: &HtmlElement) {
                         passkey,
                         ..
                     } => create_account(CreateAccountInput {
-                        email,
-                        code,
+                        email: email.clone(),
                         device_did,
                         device_name,
                         root_did,
@@ -1220,8 +1202,7 @@ fn bind(host: &HtmlElement) {
                     .map_err(|error| error.to_string())?,
                     tonk_worker_api::RootStatus::Missing { device_did } => {
                         let created = create_fresh_account(CreateFreshAccountInput {
-                            email,
-                            code,
+                            email: email.clone(),
                             device_did,
                             device_name,
                             remote: proposed_remote()?,
@@ -1245,7 +1226,7 @@ fn bind(host: &HtmlElement) {
                     }
                 };
                 set_busy(&host, true, "Creating your account…");
-                complete_remote(&host, "/accounts", ceremony, true).await
+                complete_remote(&host, "/accounts", ceremony, true, Some(&email)).await
             }
             .await;
             if let Err(error) = result {
@@ -1284,7 +1265,7 @@ fn bind(host: &HtmlElement) {
                 .await
                 .map_err(|error| error.to_string())?;
                 set_busy(&host, true, "Linking this browser…");
-                complete_remote(&host, "/devices/link", ceremony, false).await
+                complete_remote(&host, "/devices/link", ceremony, false, None).await
             }
             .await;
             if let Err(error) = result {
@@ -1753,7 +1734,6 @@ mod tests {
     fn it_authors_the_create_and_self_link_controls() {
         let host = host();
         for selector in [
-            "#account-send-code",
             "#account-create-submit",
             "#account-link-submit",
             "#account-handoff-submit",
@@ -1795,16 +1775,6 @@ mod tests {
             input(&host, "#account-email").as_deref(),
             Ok("person@example.com")
         );
-
-        let code: HtmlInputElement = host
-            .query_selector("#account-code")
-            .unwrap()
-            .unwrap()
-            .unchecked_into();
-        code.set_value("12");
-        assert!(input(&host, "#account-code").is_err());
-        code.set_value("123456");
-        assert_eq!(input(&host, "#account-code").as_deref(), Ok("123456"));
     }
 
     #[dialog_common::test]
@@ -1825,13 +1795,12 @@ mod tests {
     #[dialog_common::test]
     fn it_disables_in_panel_navigation_while_account_work_is_in_flight() {
         let host = host();
-        set_busy(&host, true, "Checking verification code…");
+        set_busy(&host, true, "Creating your account…");
 
         for selector in [
             "#account-choose-create",
             "#account-choose-link",
             "#account-create-back",
-            "#account-verify-back",
             "#account-link-back",
         ] {
             let button: HtmlButtonElement = host
@@ -1841,40 +1810,6 @@ mod tests {
                 .unchecked_into();
             assert!(button.disabled(), "{selector} remained interactive");
         }
-    }
-
-    #[dialog_common::test]
-    fn it_clears_verification_state_before_trying_another_email() {
-        let host = host();
-        bind(&host);
-        let code: HtmlInputElement = host
-            .query_selector("#account-code")
-            .unwrap()
-            .unwrap()
-            .unchecked_into();
-        code.set_value("123456");
-        host.query_selector("#account-code-email")
-            .unwrap()
-            .unwrap()
-            .set_text_content(Some("old@example.com"));
-        set_mode(&host, "verify");
-
-        let back: HtmlElement = host
-            .query_selector("#account-verify-back")
-            .unwrap()
-            .unwrap()
-            .unchecked_into();
-        back.click();
-
-        assert_eq!(host.get_attribute("data-mode").as_deref(), Some("create"));
-        assert_eq!(code.value(), "");
-        assert_eq!(
-            host.query_selector("#account-code-email")
-                .unwrap()
-                .unwrap()
-                .text_content(),
-            Some(String::new())
-        );
     }
 
     #[dialog_common::test]
@@ -2226,30 +2161,30 @@ mod tests {
         );
     }
 
-    /// Enter has to do what Continue does, not nothing. Implicit submission
-    /// clicks the form's submit button, and that click is what carries the
-    /// send-code handler — so the button has to be the form's submit button
-    /// rather than an inert `type="button"` beside it.
+    /// Enter has to do what Create account does, not nothing. Implicit
+    /// submission clicks the form's submit button, and that click is what
+    /// carries the creation handler — so the button has to be the form's
+    /// submit button rather than an inert `type="button"` beside it.
     #[dialog_common::test]
-    fn it_lets_enter_send_the_verification_code() {
+    fn it_lets_enter_submit_account_creation() {
         let host = host();
         let button = host
-            .query_selector("#account-send-code")
+            .query_selector("#account-create-submit")
             .expect("query")
-            .expect("continue button");
+            .expect("create button");
         assert_eq!(
             button.get_attribute("type").as_deref(),
             Some("submit"),
-            "Continue must be the email form's submit button",
+            "Create account must be the email form's submit button",
         );
     }
 
     #[dialog_common::test]
     fn it_switches_between_account_panels_without_reauthoring_the_dom() {
         let host = host();
-        set_mode(&host, "verify");
+        set_mode(&host, "link");
         assert!(
-            host.query_selector("#account-verify")
+            host.query_selector("#account-link")
                 .unwrap()
                 .unwrap()
                 .get_attribute("hidden")
@@ -2260,12 +2195,6 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .has_attribute("hidden")
-        );
-        assert!(
-            host.query_selector("#account-create #account-code")
-                .unwrap()
-                .is_none(),
-            "email and verification fields should be on separate screens"
         );
     }
 

@@ -520,6 +520,41 @@ pub async fn save_root(
     }
 }
 
+/// Enroll this profile's account as a customer of the access service,
+/// sending the activation link to `email`, or to the account's recorded
+/// address when none is given. Idempotent: re-enrolling while registered
+/// resends the link, and an already-active customer answers as active.
+pub async fn enroll_customer(email: Option<&str>) -> Result<serde_json::Value, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/customer/enroll", origin()))
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        response.json().await.map_err(into_api_error)
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/customer/enroll returned {status}: {text}"
+        )))
+    }
+}
+
+/// The account's customer registration state: the access service's live
+/// answer joined with the locally recorded enrollment.
+pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/customer", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    response.json().await.map_err(into_api_error)
+}
+
 /// Return the current profile's persisted account-link state.
 pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;

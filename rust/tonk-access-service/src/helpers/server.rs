@@ -5,11 +5,12 @@
 //! as a native HTTP server with CORS support for browser-based testing.
 
 use super::AccessServiceAddress;
-use crate::email::CapturedEmail;
+use crate::email::{CapturedEmail, EmailError, EmailSender};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
 use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
 use crate::store::sqlite::SqliteStore;
+use async_trait::async_trait;
 use dialog_common::helpers::{Provider, Service};
 use dialog_credentials::Ed25519Signer;
 use dialog_remote_s3::helpers::LocalS3;
@@ -53,8 +54,22 @@ pub struct AccessServer {
 struct RegistrationState {
     store: SqliteStore,
     emails: Arc<CapturedEmail>,
+    sender: AnnouncedEmail,
     service: Ed25519Signer,
     origin: String,
+}
+
+/// Captures activation emails and announces them on stdout, so a human
+/// driving a local server can complete sign-up: nothing is ever sent.
+struct AnnouncedEmail(Arc<CapturedEmail>);
+
+#[async_trait]
+impl EmailSender for AnnouncedEmail {
+    async fn send_activation(&self, email: &str, link: &str) -> Result<(), EmailError> {
+        println!("ACCESS_ACTIVATION_EMAIL {email} {link}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        self.0.send_activation(email, link).await
+    }
 }
 
 impl AccessServer {
@@ -72,6 +87,7 @@ impl AccessServer {
         access_key: &str,
         secret_key: &str,
         deployment: Option<tonk_worker_api::DeploymentConfig>,
+        public_origin: Option<String>,
     ) -> anyhow::Result<Self> {
         // Create S3 credentials for the authorizer
         let address = Address::builder(&s3_server.endpoint)
@@ -99,8 +115,11 @@ impl AccessServer {
         let registration = Arc::new(RegistrationState {
             store: SqliteStore::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
             emails: emails.clone(),
+            sender: AnnouncedEmail(emails.clone()),
             service,
-            origin: endpoint.clone(),
+            // Activation links open on the page origin, which behind a
+            // dev proxy is not this server's own address.
+            origin: public_origin.unwrap_or_else(|| endpoint.clone()),
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -184,13 +203,21 @@ async fn handle_request(
 
     if req.method() == Method::GET && req.uri().path() == "/.well-known/tonk" {
         let response = match deployment.as_ref() {
-            Some(config) => Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(
-                    serde_json::to_vec(config).expect("deployment config serializes"),
-                )))
-                .unwrap(),
+            Some(config) => {
+                // The server owns its generated identity, so discovery
+                // carries it without every caller having to thread it in.
+                let mut config = config.clone();
+                if config.service_did.is_none() {
+                    config.service_did = Some(registration.service.did().to_string());
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&config).expect("deployment config serializes"),
+                    )))
+                    .unwrap()
+            }
             None => Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Full::new(Bytes::from("Not Found")))
@@ -246,6 +273,54 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    // Registration state probe, polled by enrolling clients. Mirrors the
+    // Worker handler.
+    if req.method() == Method::GET
+        && let Some(did) = req.uri().path().strip_prefix("/customer/")
+    {
+        use crate::store::Store;
+        use tonk_account::customer::{Receipt, RegistrationError};
+
+        let response = match registration.store.customer(did).await {
+            Ok(Some(customer)) => match customer.did.parse() {
+                Ok(parsed) => {
+                    let receipt = Receipt {
+                        customer: parsed,
+                        status: customer.status,
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Full::new(Bytes::from(
+                            serde_json::to_vec(&receipt).expect("receipt serializes"),
+                        )))
+                        .unwrap()
+                }
+                Err(_) => Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::new(Bytes::from("stored customer did is malformed")))
+                    .unwrap(),
+            },
+            Ok(None) => {
+                let refusal = RegistrationError::UnknownCustomer;
+                Response::builder()
+                    .status(refusal.status())
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&serde_json::json!({ "error": refusal }))
+                            .expect("refusal serializes"),
+                    )))
+                    .unwrap()
+            }
+            Err(err) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::from(format!(
+                    "customer registry is unavailable: {err}"
+                ))))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     if req.method() == Method::PUT && req.uri().path() == "/@" {
         return Ok(cors_response(store_shortcut(req, shortcuts).await));
     }
@@ -287,7 +362,7 @@ async fn handle_request(
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
             store: &registration.store,
-            email: registration.emails.as_ref(),
+            email: &registration.sender,
             service: &registration.service,
             origin: &registration.origin,
             activation_ttl: 24 * 60 * 60,
@@ -493,6 +568,9 @@ pub struct AccessServiceSettings {
     pub secret_access_key: String,
     /// Served from `GET /.well-known/tonk` when set; 404 otherwise.
     pub deployment: Option<tonk_worker_api::DeploymentConfig>,
+    /// Origin activation links open on, when it differs from the
+    /// server's own address (a dev proxy in front of it).
+    pub public_origin: Option<String>,
 }
 
 impl Default for AccessServiceSettings {
@@ -502,6 +580,7 @@ impl Default for AccessServiceSettings {
             access_key_id: "test-access-key".to_string(),
             secret_access_key: "test-secret-key".to_string(),
             deployment: None,
+            public_origin: None,
         }
     }
 }
@@ -536,6 +615,7 @@ pub async fn access_service(
         &settings.access_key_id,
         &settings.secret_access_key,
         settings.deployment,
+        settings.public_origin,
     )
     .await?;
 

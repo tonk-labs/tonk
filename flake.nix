@@ -215,6 +215,10 @@
               else
                 echo "dev:web: starting a local access service (set UCAN_ENDPOINT to use a remote)..."
                 ACCESS_LOG="$(mktemp)"
+                # Activation links must open on the page origin (trunk),
+                # not on the access service's own port, or the /activate
+                # route 404s.
+                export ACCESS_PUBLIC_ORIGIN="http://localhost:8080"
                 # stdout carries the `ACCESS_SERVICE_URL=` line; stderr (build
                 # progress) stays on the terminal.
                 cargo run --bin tonk-access-local --features helpers >"$ACCESS_LOG" &
@@ -243,6 +247,9 @@
                 # appended to $ENDPOINT.
                 SHORTCUT_ORIGIN="$ENDPOINT"
                 ENDPOINT="$ENDPOINT/ucan/"
+                # Activation emails are captured, never sent, so sign-up is
+                # only completable if the links reach the terminal.
+                tail -f "$ACCESS_LOG" | grep --line-buffered "ACCESS_ACTIVATION_EMAIL" &
                 echo "dev:web: local access service ready; proxying /ucan/ and /@ to $SHORTCUT_ORIGIN"
               fi
               # Serve the user guide at /guide/ via mdbook's own live-reload
@@ -288,6 +295,10 @@
                 # otherwise serves index.html for it, and the JSON parse fails
                 # as "deployment configuration is invalid".
                 printf '\n[[proxies]]\nbackend = "%s/.well-known/tonk"\n' \
+                  "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
+                # Customer registration state, polled by the worker and the
+                # account panel.
+                printf '\n[[proxies]]\nbackend = "%s/customer/"\n' \
                   "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
@@ -532,8 +543,12 @@
                   handle /ucan/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
+                  handle /customer/* {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
                   handle {
                       root * ${self.packages.${system}.tonk-ui}
+                      try_files {path} /index.html
                       file_server
                   }
               }

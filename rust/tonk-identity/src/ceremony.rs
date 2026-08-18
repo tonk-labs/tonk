@@ -216,7 +216,6 @@ pub async fn sign_revocation(
 pub async fn create_account(
     root: Ed25519Signer,
     email: String,
-    code: String,
     credential_id: String,
     device_did: dialog_varsig::Did,
     device_name: String,
@@ -237,7 +236,6 @@ pub async fn create_account(
     }
     let mut arguments = strings([
         ("email", email),
-        ("code", code),
         ("credentialId", credential_id),
         ("deviceDid", device_did.to_string()),
         ("deviceName", device_name),
@@ -271,7 +269,6 @@ pub async fn create_account(
 #[allow(clippy::too_many_arguments)]
 pub async fn create_fresh_account(
     email: String,
-    code: String,
     device_did: dialog_varsig::Did,
     device_name: String,
     remote: String,
@@ -288,7 +285,6 @@ pub async fn create_fresh_account(
     let account = create_account(
         root,
         email,
-        code,
         credential_id,
         device_did,
         device_name,
@@ -472,7 +468,6 @@ mod tests {
         let output = create_account(
             root,
             "a@x.com".into(),
-            "123456".into(),
             "credential".into(),
             device.clone(),
             "laptop".into(),
@@ -533,7 +528,6 @@ mod tests {
         let legacy = create_account(
             root,
             "legacy@x.com".into(),
-            "123456".into(),
             "legacy-credential".into(),
             device,
             "old browser".into(),

@@ -30,7 +30,6 @@ pub(crate) struct CreateRootInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateAccountInput {
     pub email: String,
-    pub code: String,
     pub device_did: String,
     pub device_name: String,
     pub root_did: String,
@@ -48,7 +47,6 @@ pub(crate) struct CreateAccountInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateFreshAccountInput {
     pub email: String,
-    pub code: String,
     pub device_did: String,
     pub device_name: String,
     pub remote: String,
@@ -376,7 +374,7 @@ mod tests {
             "createFreshAccount",
             &format!(
                 r#"{plain_object_guard}
-                if (input.email !== "fresh@example.test" || input.code !== "123456"
+                if (input.email !== "fresh@example.test"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.createdOn !== "Chrome on macOS"
                     || input.remote !== "https://tonk.spot/ucan/")
@@ -391,7 +389,6 @@ mod tests {
         );
         let fresh = create_fresh_account(CreateFreshAccountInput {
             email: "fresh@example.test".into(),
-            code: "123456".into(),
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
             remote: "https://tonk.spot/ucan/".into(),
@@ -406,7 +403,7 @@ mod tests {
             "createAccount",
             &format!(
                 r#"{plain_object_guard}
-                if (input.email !== "person@example.test" || input.code !== "123456"
+                if (input.email !== "person@example.test"
                     || input.deviceDid !== "did:key:device" || input.deviceName !== "Browser"
                     || input.rootDid !== "did:key:root" || input.credentialId !== "credential"
                     || input.delegationHex !== "delegation"
@@ -423,7 +420,6 @@ mod tests {
         assert_eq!(
             create_account(CreateAccountInput {
                 email: "person@example.test".into(),
-                code: "123456".into(),
                 device_did: "did:key:device".into(),
                 device_name: "Browser".into(),
                 root_did: "did:key:root".into(),

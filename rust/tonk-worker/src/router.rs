@@ -21,6 +21,7 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
+mod customer;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
@@ -239,6 +240,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/account/repository/establish",
             post(account::establish_repository),
         )
+        // Customer registration with the same-origin access service.
+        .route("/api/customer", get(customer::get_state))
+        .route("/api/customer/enroll", post(customer::enroll))
         .route("/api/account/devices", get(account_devices::list))
         .route("/api/account/summary", get(account_devices::summary))
         .route("/api/account/devices/revoke", post(account_devices::revoke))

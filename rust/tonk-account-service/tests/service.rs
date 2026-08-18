@@ -106,7 +106,7 @@ async fn container_with_expiration(command: Vec<String>, expiration: Timestamp) 
     InvocationChain::new(invocation, proofs).to_bytes().unwrap()
 }
 
-async fn account_creation(email: &str, code: &str) -> Vec<u8> {
+async fn account_creation(email: &str) -> Vec<u8> {
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
@@ -117,7 +117,6 @@ async fn account_creation(email: &str, code: &str) -> Vec<u8> {
     let ceremony = tonk_identity::ceremony::create_account(
         root,
         email.to_string(),
-        code.to_string(),
         "credential".to_string(),
         device.did(),
         "laptop".to_string(),
@@ -221,9 +220,8 @@ async fn it_exhausts_verification_attempts_over_http() {
 
     for _ in 0..tonk_account_service::core::codes::MAX_ATTEMPTS {
         let response = client
-            .post(format!("{}/accounts", server.endpoint))
-            .header("Content-Type", "application/cbor")
-            .body(account_creation(email, wrong).await)
+            .post(format!("{}/accounts/preflight", server.endpoint))
+            .json(&serde_json::json!({ "email": email, "code": wrong }))
             .send()
             .await
             .unwrap();
@@ -234,9 +232,8 @@ async fn it_exhausts_verification_attempts_over_http() {
     }
 
     let response = client
-        .post(format!("{}/accounts", server.endpoint))
-        .header("Content-Type", "application/cbor")
-        .body(account_creation(email, &correct).await)
+        .post(format!("{}/accounts/preflight", server.endpoint))
+        .json(&serde_json::json!({ "email": email, "code": correct }))
         .send()
         .await
         .unwrap();
@@ -254,19 +251,10 @@ async fn it_checks_email_availability_only_after_a_valid_code() {
     let client = reqwest::Client::new();
     let existing = "existing@example.com";
 
-    client
-        .post(format!("{}/codes", server.endpoint))
-        .json(&serde_json::json!({ "email": existing }))
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-    let first_code = server.emails.0.lock().unwrap().last().unwrap().1.clone();
     let created = client
         .post(format!("{}/accounts", server.endpoint))
         .header("Content-Type", "application/cbor")
-        .body(account_creation(existing, &first_code).await)
+        .body(account_creation(existing).await)
         .send()
         .await
         .unwrap();
@@ -450,22 +438,7 @@ async fn it_explains_an_already_registered_email_over_http() {
     let base = server.endpoint.clone();
     let email = "person@example.com";
 
-    let latest_code = || {
-        let sent = server.emails.0.lock().unwrap();
-        sent.iter()
-            .rfind(|(to, _)| to == email)
-            .map(|(_, code): &(String, String)| code.clone())
-            .expect("a code was sent")
-    };
-    let request_code = async |client: &reqwest::Client| {
-        client
-            .post(format!("{base}/codes"))
-            .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await
-            .unwrap()
-    };
-    let create = async |client: &reqwest::Client, prf: [u8; 32], seed: [u8; 32], code: String| {
+    let create = async |client: &reqwest::Client, prf: [u8; 32], seed: [u8; 32]| {
         let root = tonk_identity::derive::derive_root_signer(&prf)
             .await
             .unwrap();
@@ -476,7 +449,6 @@ async fn it_explains_an_already_registered_email_over_http() {
         let ceremony = tonk_identity::ceremony::create_account(
             root,
             email.into(),
-            code,
             "cred".into(),
             device.did(),
             "laptop".into(),
@@ -494,14 +466,12 @@ async fn it_explains_an_already_registered_email_over_http() {
             .unwrap()
     };
 
-    assert_eq!(request_code(&client).await.status(), 200);
-    let response = create(&client, ROOT_PRF, DEVICE_SEED, latest_code()).await;
+    let response = create(&client, ROOT_PRF, DEVICE_SEED).await;
     assert_eq!(response.status(), 201);
 
     // A different passkey claiming the same address: the email is taken,
     // and the root DID is not, so the conflict is about the email.
-    assert_eq!(request_code(&client).await.status(), 200);
-    let response = create(&client, [10u8; 32], [12u8; 32], latest_code()).await;
+    let response = create(&client, [10u8; 32], [12u8; 32]).await;
     assert_eq!(response.status(), 409);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["error"]["code"], "CONFLICT");
@@ -524,25 +494,9 @@ async fn it_drives_the_full_ceremony_over_http() {
     let client = reqwest::Client::new();
     let base = server.endpoint.clone();
 
-    // POST /codes -> request a verification code, then read it back out
-    // of the captured emails instead of receiving mail.
-    let response = client
-        .post(format!("{base}/codes"))
-        .json(&serde_json::json!({ "email": "person@example.com" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-
-    let code = {
-        let sent = server.emails.0.lock().unwrap();
-        sent.iter()
-            .find(|(email, _)| email == "person@example.com")
-            .map(|(_, code): &(String, String)| code.clone())
-            .expect("a code was sent to person@example.com")
-    };
-
     // POST /accounts -> create the account from a root-signed ceremony.
+    // No code ceremony: address control is proven by customer activation
+    // at the access service.
     let root = tonk_identity::derive::derive_root_signer(&ROOT_PRF)
         .await
         .unwrap();
@@ -555,7 +509,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     let ceremony = tonk_identity::ceremony::create_account(
         root,
         "person@example.com".into(),
-        code,
         "cred-1".into(),
         device.did(),
         "laptop".into(),
@@ -1111,21 +1064,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     // A separately registered account on the same service sees no rows from
     // the first account's root-DID namespace.
     let other_email = "other@example.com";
-    client
-        .post(format!("{base}/codes"))
-        .json(&serde_json::json!({ "email": other_email }))
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-    let other_code = {
-        let sent = server.emails.0.lock().unwrap();
-        sent.iter()
-            .rfind(|(email, _)| email == other_email)
-            .map(|(_, code)| code.clone())
-            .unwrap()
-    };
     let other_prf = [21; 32];
     let other_seed = [22; 32];
     let other_root = tonk_identity::derive::derive_root_signer(&other_prf)
@@ -1139,7 +1077,6 @@ async fn it_drives_the_full_ceremony_over_http() {
     let other_ceremony = tonk_identity::ceremony::create_account(
         other_root,
         other_email.to_string(),
-        other_code,
         "other-credential".to_string(),
         other_device.did(),
         "other-device".to_string(),

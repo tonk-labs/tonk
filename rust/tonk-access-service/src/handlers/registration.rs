@@ -95,6 +95,60 @@ fn service_signer(ctx: &RouteContext<()>) -> Result<Ed25519Signer, RegistrationE
     signer_from_hex(&seed).map_err(|message| RegistrationError::Internal { message })
 }
 
+/// GET `/customer/:did` → the customer's registration state. This is
+/// what the enrolling client polls to notice activation, and how it
+/// decides whether a wiped or fresh service needs a (re-)enrollment.
+///
+/// The route is registered by the worker entrypoint, which also compiles
+/// natively, so the signature exists on both targets; only the worker
+/// body does, since it reads D1. The native twin lives in the helpers
+/// server.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn handle_customer(_req: Request, _ctx: RouteContext<()>) -> worker::Result<Response> {
+    Response::error("Not Found", 404)
+}
+
+/// GET `/customer/:did` → the customer's registration state (worker
+/// body; see the native twin above).
+#[cfg(target_arch = "wasm32")]
+pub async fn handle_customer(_req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    use tonk_account::customer::Receipt;
+
+    use crate::store::Store;
+    use crate::store::d1::D1Store;
+
+    let Some(did) = ctx.param("did") else {
+        return Response::error("Not Found", 404);
+    };
+    let store = match ctx.env.d1("CONTROL") {
+        Ok(database) => D1Store::new(database),
+        Err(err) => {
+            worker::console_error!("customer probe unavailable, no CONTROL binding: {err}");
+            return Response::error("Customer registry is not configured", 500);
+        }
+    };
+    match store.customer(did).await {
+        Ok(Some(customer)) => {
+            let receipt = Receipt {
+                customer: customer.did.parse().map_err(|err| {
+                    worker::Error::RustError(format!("stored customer did is malformed: {err:?}"))
+                })?,
+                status: customer.status,
+            };
+            Response::from_json(&receipt)
+        }
+        Ok(None) => {
+            let refusal = RegistrationError::UnknownCustomer;
+            let response = Response::from_json(&serde_json::json!({ "error": refusal }))?;
+            Ok(response.with_status(refusal.status()))
+        }
+        Err(err) => {
+            worker::console_error!("customer probe failed: {err}");
+            Response::error("Customer registry is unavailable", 500)
+        }
+    }
+}
+
 /// GET `/.well-known/did.json` → the service's DID document.
 pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
     let signer = match service_signer(&ctx) {

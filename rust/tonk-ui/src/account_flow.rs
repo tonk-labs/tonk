@@ -107,21 +107,19 @@ mod tests {
         }
     }
 
-    async fn captured_code(env: &TestEnvironment, email: &str) -> Result<String> {
-        let endpoint = env.account_service.join("_test/emails")?;
+    /// The latest activation link the access service captured for `email`.
+    async fn activation_link(env: &TestEnvironment, email: &str) -> Result<String> {
+        let endpoint = env.access_service.join("_test/emails")?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let inbox: Vec<serde_json::Value> =
-                reqwest::get(endpoint.clone()).await?.json().await?;
-            if let Some(code) = inbox.iter().rev().find_map(|entry| {
-                (entry["address"].as_str() == Some(email))
-                    .then(|| entry["code"].as_str().map(str::to_owned))
-                    .flatten()
-            }) {
-                return Ok(code);
+            let inbox: Vec<(String, String)> = reqwest::get(endpoint.clone()).await?.json().await?;
+            if let Some((_, link)) = inbox.iter().rev().find(|(to, _)| to == email) {
+                return Ok(link.clone());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("timed out waiting for a code for {email}"));
+                return Err(anyhow!(
+                    "timed out waiting for an activation email for {email}"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -175,14 +173,6 @@ mod tests {
             .await?
             .send_keys(email)
             .await?;
-        element(driver, "#account-send-code").await?.click().await?;
-        element(driver, "tonk-account[data-mode=\"verify\"]").await?;
-
-        let code = captured_code(env, email).await?;
-        element(driver, "#account-code")
-            .await?
-            .send_keys(code)
-            .await?;
         element(driver, "#account-create-submit")
             .await?
             .click()
@@ -229,12 +219,22 @@ mod tests {
             "a second sweep must not rewrite the recorded creation facts"
         );
 
+        // Signup enrolled the account as a customer: the dashboard names
+        // the pending activation, and the emailed link completes it from
+        // this (or any) device without a key.
+        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+            .await?;
+        let link = activation_link(&env, EMAIL).await?;
+        driver.goto(&link).await?;
+        element(&driver, "#activate-accept").await?.click().await?;
+        element(&driver, "#activate-done").await?;
+
         driver.quit().await?;
         Ok(())
     }
 
     #[dialog_common::test]
-    async fn it_rejects_an_existing_email_before_creating_a_passkey_and_can_retry(
+    async fn it_reports_an_existing_email_and_recovers_with_another_address(
         env: TestEnvironment,
     ) -> Result<()> {
         let existing_email = "existing@example.com";
@@ -274,56 +274,35 @@ mod tests {
             .await?
             .send_keys(existing_email)
             .await?;
-        element(&driver, "#account-send-code")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"verify\"]").await?;
-        element(&driver, "#account-code")
-            .await?
-            .send_keys(captured_code(&env, existing_email).await?)
-            .await?;
         element(&driver, "#account-create-submit")
             .await?
             .click()
             .await?;
 
+        // Without the code preflight, the conflict surfaces at account
+        // creation, after the passkey ceremony ran: the passkey exists
+        // and the retry below reuses it rather than minting another.
         wait_for_text(
             &driver,
             "#account-error",
             "an account already exists for this email address",
         )
         .await?;
-        assert_eq!(
-            credential_count(&driver, &authenticator_id).await?,
-            0,
-            "email conflicts must be reported before WebAuthn creates a credential"
-        );
+        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
 
-        element(&driver, "#account-verify-back")
-            .await?
-            .click()
-            .await?;
-        let code = element(&driver, "#account-code").await?;
-        assert_eq!(code.prop("value").await?.as_deref(), Some(""));
         let email = element(&driver, "#account-email").await?;
         email.clear().await?;
         email.send_keys(available_email).await?;
-        element(&driver, "#account-send-code")
-            .await?
-            .click()
-            .await?;
-        element(&driver, "tonk-account[data-mode=\"verify\"]").await?;
-        element(&driver, "#account-code")
-            .await?
-            .send_keys(captured_code(&env, available_email).await?)
-            .await?;
         element(&driver, "#account-create-submit")
             .await?
             .click()
             .await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        assert_eq!(credential_count(&driver, &authenticator_id).await?, 1);
+        assert_eq!(
+            credential_count(&driver, &authenticator_id).await?,
+            1,
+            "the retry must reuse the persisted passkey rather than mint another"
+        );
 
         driver.quit().await?;
         Ok(())

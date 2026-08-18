@@ -40,6 +40,9 @@ pub const ACCOUNT_REPLICA_KIND: &str = "tonk:account";
 /// Credential site holding the local provider attachment and the account
 /// repository descriptor it owns.
 pub const ACCOUNT_PROVIDER_CREDENTIAL_SITE: &str = "tonk-account-provider-v1";
+/// Credential site holding what this device knows about its account's
+/// customer registration with the access service.
+pub const CUSTOMER_CREDENTIAL_SITE: &str = "tonk-customer-v1";
 /// Credential site holding the trusted descriptor hash.
 pub const TRUSTED_BASE_CREDENTIAL_SITE: &str = "tonk-account-trusted-base-v1";
 

@@ -72,6 +72,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             "/.well-known/did.json",
             handlers::registration::handle_did_document,
         )
+        // Registration state probe, polled by enrolling clients.
+        .get_async("/customer/:did", handlers::registration::handle_customer)
         // Service info endpoint
         .get_async("/", handlers::info::handle)
         // Health check
