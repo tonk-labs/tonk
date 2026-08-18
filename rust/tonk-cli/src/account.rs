@@ -26,6 +26,10 @@ pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SI
 // Linking is complete once credentials are durable; repository hydration is
 // best-effort and must not leave the link command waiting indefinitely.
 
+/// How long the post-link hydration phase may run before the command
+/// reports "waiting for first sync" and returns.
+const HYDRATION_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Descriptive registration name for a native CLI device.
 pub fn default_device_name() -> String {
     let info = os_info::get();
@@ -477,37 +481,53 @@ async fn link_via_callback(
     // holds rather than only what the account issued.
     // `ensure` mounts the account, adopts it as the access upstream, and
     // syncs — the dance that turns a grant into usable, shared authority.
-    let account_state = match crate::account_state::ensure_with_operator_and_store(
-        profile,
-        operator.clone(),
-        store,
-    )
-    .await
-    {
-        Ok(outcome) => outcome.status,
-        Err(_) => AccountStateStatus::Unhydrated,
-    };
-    let mut warning = None;
-    if let Some(branch) = crate::account_state::open_account_branch(profile, operator).await? {
-        let signer = profile.signer().signer().clone();
-        let union = tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
-        let inbound = DelegationChain::try_from(grant_bytes.as_slice())
-            .context("account grant is not a delegation container")?;
-        for (label, chain) in [("account grant", inbound), ("profile union", union)] {
-            if let Err(error) =
-                tonk_account::delegations::retain_space_delegation(&branch, &chain, operator).await
+    // The whole phase runs under a hard deadline: the link is complete
+    // once credentials are durable, and a slow or unreachable remote must
+    // degrade to "waiting for first sync" rather than hang the command.
+    let hydration = tokio::time::timeout(HYDRATION_DEADLINE, async {
+        let account_state = match crate::account_state::ensure_with_operator_and_store(
+            profile,
+            operator.clone(),
+            store,
+        )
+        .await
+        {
+            Ok(outcome) => outcome.status,
+            Err(_) => AccountStateStatus::Unhydrated,
+        };
+        let mut warning = None;
+        if let Some(branch) = crate::account_state::open_account_branch(profile, operator).await? {
+            let signer = profile.signer().signer().clone();
+            let union =
+                tonk_account::delegations::mint_account_union(&signer, &account_did).await?;
+            let inbound = DelegationChain::try_from(grant_bytes.as_slice())
+                .context("account grant is not a delegation container")?;
+            for (label, chain) in [("account grant", inbound), ("profile union", union)] {
+                if let Err(error) =
+                    tonk_account::delegations::retain_space_delegation(&branch, &chain, operator)
+                        .await
+                {
+                    warning = Some(format!(
+                        "{label} was not retained into the account: {error}"
+                    ));
+                }
+            }
+            if warning.is_none()
+                && let Err(error) = branch.push().perform(operator).await
             {
-                warning = Some(format!(
-                    "{label} was not retained into the account: {error}"
-                ));
+                warning = Some(format!("account was authorized but not pushed: {error}"));
             }
         }
-        if warning.is_none()
-            && let Err(error) = branch.push().perform(operator).await
-        {
-            warning = Some(format!("account was authorized but not pushed: {error}"));
-        }
-    }
+        Ok::<_, anyhow::Error>((account_state, warning))
+    })
+    .await;
+    let (account_state, warning) = match hydration {
+        Ok(result) => result?,
+        Err(_) => (
+            AccountStateStatus::Unhydrated,
+            Some("the account repository did not answer in time; sync will retry".to_string()),
+        ),
+    };
 
     Ok(LinkOutcome {
         url,
@@ -873,13 +893,17 @@ async fn post_invocation_raw(
         .with_context(|| format!("failed to reach the account service at {path}"))
 }
 
-/// List the devices registered under this profile's account.
-pub async fn devices(profile: &Profile, service_url: &str) -> Result<Vec<DeviceRow>> {
+/// List the devices registered under this profile's account. The
+/// recorded provider is authoritative; a `service_url` names one only
+/// to cross-check it against the active account.
+pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
     let _ = retry_pending_detaches(profile).await;
     let connection = optional_connection(profile)
         .await?
         .context("no active account; run `tonk account link`")?;
-    if connection.service_url.trim_end_matches('/') != service_url.trim_end_matches('/') {
+    if let Some(service_url) = service_url
+        && connection.service_url.trim_end_matches('/') != service_url.trim_end_matches('/')
+    {
         bail!("requested provider does not match the active account");
     }
     let response = connection
@@ -975,7 +999,7 @@ pub async fn revoke(
         )
         .await
         .context("failed to sign self-revocation")?;
-        let rows = devices(profile, &options.service_url).await?;
+        let rows = devices(profile, Some(&options.service_url)).await?;
         let row = rows
             .iter()
             .find(|row| row.did == did && row.delegation_cid == target.to_string())
@@ -1012,7 +1036,7 @@ pub async fn revoke(
         return Ok(RevokeOutcome::Revoked);
     }
 
-    let rows = devices(profile, &options.service_url).await?;
+    let rows = devices(profile, Some(&options.service_url)).await?;
     let target = rows
         .iter()
         .find(|row| row.did == did)
@@ -1058,7 +1082,7 @@ pub async fn revoke(
             }
         }
         tokio::select! {
-            rows = devices(profile, &options.service_url) => match rows {
+            rows = devices(profile, Some(&options.service_url)) => match rows {
                 Ok(rows) => {
                     last_error = None;
                     if rows.iter().any(|row| {

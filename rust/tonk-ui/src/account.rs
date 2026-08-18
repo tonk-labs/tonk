@@ -197,9 +197,16 @@ fn show_success(host: &HtmlElement) {
 /// its absence.
 fn load_activation_notice(host: HtmlElement) {
     spawn_local(async move {
+        if !wants_enrollment().await {
+            set_text(&host, "#account-registration-value", "Not used here");
+            return;
+        }
         let mut state = match crate::api::customer_state().await {
             Ok(state) => state,
-            Err(_) => return,
+            Err(_) => {
+                set_text(&host, "#account-registration-value", "Unreachable");
+                return;
+            }
         };
         // A linked account the access service does not know is one that
         // predates registration (or the service's control state was
@@ -222,10 +229,24 @@ fn load_activation_notice(host: HtmlElement) {
                     web_sys::console::error_1(
                         &format!("customer re-enrollment failed: {error}").into(),
                     );
+                    set_text(
+                        &host,
+                        "#account-registration-value",
+                        "Not registered — reload to retry",
+                    );
                     return;
                 }
             }
         }
+        // The facts row always answers; the banner below only nags while
+        // an activation is actually pending.
+        let label = match state["status"].as_str() {
+            Some("Active") => "Active",
+            Some("Registered") => "Waiting for email confirmation",
+            Some("Suspended") => "Suspended",
+            _ => "Not registered",
+        };
+        set_text(&host, "#account-registration-value", label);
         if state["status"].as_str() != Some("Registered") {
             return;
         }

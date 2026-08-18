@@ -556,14 +556,9 @@ enum AccountCommand {
 
     /// List the devices linked to this profile's account
     Devices {
-        /// Account service base URL (for staging or local development).
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_SERVICE_URL,
-            hide = true
-        )]
-        service_url: String,
+        /// Account service base URL; defaults to the linked provider.
+        #[arg(long, value_name = "URL", hide = true)]
+        service_url: Option<String>,
     },
 
     /// Revoke one of the account's devices by DID
@@ -1457,7 +1452,7 @@ async fn account_op(command: AccountCommand) -> ExitCode {
             }
         }
         AccountCommand::Devices { service_url } => {
-            match account::devices(&profile, &service_url).await {
+            match account::devices(&profile, service_url.as_deref()).await {
                 Ok(rows) => {
                     let own = profile.did().to_string();
                     for row in rows {
@@ -3159,7 +3154,7 @@ mod account_spots_parser_tests {
                 provider: "https://accounts.example".to_string(),
                 account_state: tonk_account::AccountStateStatus::Ready,
             }),
-            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: ready"
+            "signed in: yes\nroot: did:root\nprovider: https://accounts.example\ndevice: did:device\naccount state: synced"
         );
     }
 
