@@ -31,7 +31,7 @@ Billing authority and access authority are separate. Who pays for a consumer is 
 
 ## 3. Registration
 
-Three invocations. All are verified by the access service; none bypass the chain.
+Three invocations. All are verified by the access service; none bypass the chain. Each roots at the invoking customer's DID, which is self-certifying, so the standard chain check proves the issuer holds the customer's authority and no delegation from the service is involved. The one service-rooted invocation is activation, which the service issues to itself (section 3.2).
 
 ### 3.1 Enroll
 
@@ -39,12 +39,14 @@ The client holds an account keypair and its account space. It issues a delegatio
 
 ```
 { cmd: "/customer/enroll",
-  sub: "did:web:tonk.network",
-  args: { subject: "did:key:zAlice", email: "alice@example.com" },
-  prf: [ <that delegation> ] }
+  sub: "did:key:zAlice",
+  args: { email: "alice@example.com",
+          access: { "/": "bai..." } } }
 ```
 
-The service verifies the chain and writes, in one batch:
+The chain roots at the customer DID: signed by the account key itself, or by a device key carrying a delegation from it. `access` names the deposited delegation by CID; its bytes travel in the same container. It is an argument, not a proof: it does not extend the invocation's chain, and the service verifies it separately as its own chain, issued under the customer's authority with the service as audience.
+
+The service verifies both and writes, in one batch:
 
 - `customer` row, `status = Registered`, `verified = 0`
 - `consumer` row for the same DID, `registered = now`
@@ -79,30 +81,30 @@ Mail-client prefetching can fire the link without a human click. That makes the 
 
 ### 3.3 Add a consumer
 
-Enrolling a further space needs consent from both sides. The consumer delegates `/provider/add` to the customer, naming that customer as the provider it accepts:
+Enrolling a further space needs consent from both sides. The consumer delegates `/provider/add` to the customer; the audience is what names the provider it accepts:
 
 ```
 { cmd: "/provider/add",
   sub: "did:key:zPhotos",
-  aud: "did:key:zAlice",
-  args: { provider: "did:key:zAlice" } }
+  aud: "did:key:zAlice" }
 ```
 
 The customer then invokes, carrying that delegation as consent:
 
 ```
 { cmd: "/consumer/add",
-  sub: "did:web:tonk.network",
-  args: { provider: "did:key:zAlice",
-          consumer: "did:key:zPhotos",
+  sub: "did:key:zAlice",
+  args: { consumer: "did:key:zPhotos",
           consent: { "/": "bai..." } } }
 ```
 
-The invocation signature is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/provider/add` as-is.
+The provider being added is the invocation's subject; it needs no argument of its own. The invocation chain is the customer's consent. The enclosed delegation is the consumer's. Neither party is enrolled unilaterally. In practice the client already holds a powerline delegation from the space to the account, which satisfies `/provider/add` as-is.
 
-The service validates the consent by checking that its `sub` matches the consumer being added and its `provider` matches the invoking customer, so a delegation naming one customer cannot be used to enrol a different one.
+The service validates the consent as a chain of its own: it must root at the consumer being added, its audience must be the invoking customer, and it must grant `/provider/add` or broader. Audience is what binds it, so a consent given to one customer cannot be used to enrol a different one.
 
-The service checks the customer is `Active` and has credit remaining, writes a `consumer` row with `provider` set to that customer, and writes KV. A consumer has exactly one provider, so this fails if one is already set.
+The service checks the customer is `Registered` or `Active`, writes a `consumer` row with `provider` set to that customer, and writes KV. A consumer has exactly one provider, so this fails if one is already set.
+
+Activation is not required to add, only to serve. Servability is derived state, and a consumer whose provider is `Registered` derives to denied, exactly as the customer's own account consumer does between enroll and the email click. When the customer activates, the rewrite pass in section 3.2 already covers every consumer they fund, so consumers added before activation go live in the same stroke. Requiring `Active` here would buy nothing the derivation does not already enforce, and would push a queue of deferred invocations into the client for spaces created before the email arrives.
 
 ### 3.4 Sponsor a consumer
 
@@ -110,13 +112,12 @@ A customer on a plan with `may_sponsor` pledges a fixed number of credits per cy
 
 ```
 { cmd: "/consumer/pledge",
-  sub: "did:web:tonk.network",
-  args: { sponsor: "did:key:zBob",
-          consumer: "did:key:zPhotos",
+  sub: "did:key:zBob",
+  args: { consumer: "did:key:zPhotos",
           pledge: 3000 } }
 ```
 
-The service checks the sponsor's plan permits sponsoring, that the pledge plus the undrawn remainder of their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. The undrawn remainder rather than the full pledge: settled shares already sit in the sponsor's usage, and counting the whole pledge would count them twice. It writes a `sponsorship` row with `effective` set to the consumer's next funding cycle.
+The sponsor is the invocation's subject, same shape as `/consumer/add`. The service checks the sponsor is `Active` and their plan permits sponsoring, that the pledge plus the undrawn remainder of their existing pledges plus their current period usage stays within their limit, and that the consumer has a provider. The undrawn remainder rather than the full pledge: settled shares already sit in the sponsor's usage, and counting the whole pledge would count them twice. It writes a `sponsorship` row with `effective` set to the consumer's next funding cycle.
 
 Withdrawal sets `ends` to the current funding cycle. Both take effect at the next boundary.
 
@@ -530,7 +531,8 @@ Do not compress 0 and 1. The rates are not derivable a priori, and guessing prod
 - A run crossing a cycle boundary resets the counters rather than accumulating across periods.
 - Archived R2 objects reconcile exactly against the ledger rows derived from them.
 - A Stripe push retried within 24 hours does not double-bill.
-- Enrollment, activation, and consumer addition each produce a verifiable invocation.
+- Enrollment, activation, and consumer addition each produce a verifiable invocation whose chain roots at the invoking customer's DID.
+- A consumer added while its provider is `Registered` is denied, and the provider's activation makes it served with no further invocation.
 - Clicking an activation link twice leaves the customer active and writes no duplicate state.
 - An activation link presented after `EMAIL_TOKEN_TTL` fails chain verification, with no storage lookup involved.
 - Enrollment writes the customer and its self-provided consumer atomically, with no intermediate state where one exists without the other.
