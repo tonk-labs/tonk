@@ -288,18 +288,19 @@
               if [ -n "$SHORTCUT_ORIGIN" ]; then
                 # printf, not a heredoc: a heredoc's body has to sit at column
                 # zero, which nixfmt then reflows the whole surrounding Nix
-                # string around.
-                printf '\n[[proxies]]\nbackend = "%s/@"\nno_redirect = true\n' \
-                  "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
-                # The browser reads its service endpoints from this path. Trunk
-                # otherwise serves index.html for it, and the JSON parse fails
-                # as "deployment configuration is invalid".
-                printf '\n[[proxies]]\nbackend = "%s/.well-known/tonk"\n' \
-                  "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
-                # Customer registration state, polled by the worker and the
-                # account panel.
-                printf '\n[[proxies]]\nbackend = "%s/customer/"\n' \
-                  "$SHORTCUT_ORIGIN" >>"$TRUNK_CONFIG_GENERATED"
+                # string around. Beyond `/@`: `/.well-known/tonk` is where the
+                # browser reads its service endpoints (trunk otherwise serves
+                # index.html for it, and the JSON parse fails as "deployment
+                # configuration is invalid"), and `/customer/` is the
+                # registration state polled by the worker and account panel.
+                {
+                  printf '\n[[proxies]]\nbackend = "%s/@"\nno_redirect = true\n' \
+                    "$SHORTCUT_ORIGIN"
+                  printf '\n[[proxies]]\nbackend = "%s/.well-known/tonk"\n' \
+                    "$SHORTCUT_ORIGIN"
+                  printf '\n[[proxies]]\nbackend = "%s/customer/"\n' \
+                    "$SHORTCUT_ORIGIN"
+                } >>"$TRUNK_CONFIG_GENERATED"
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
               fi
