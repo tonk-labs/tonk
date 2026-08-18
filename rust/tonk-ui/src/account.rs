@@ -705,7 +705,9 @@ fn load_status(host: HtmlElement) {
         .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if handoff_route {
         match callback_request() {
-            Some((audience, callback)) => load_callback_request(host, audience, callback),
+            Some((audience, callback, name)) => {
+                load_callback_request(host, audience, callback, name)
+            }
             None => load_handoff(host),
         }
         return;
@@ -803,8 +805,14 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
 /// service handoff: the handoff carries a fragment secret and resolves
 /// against the account service, while this carries the waiting process's
 /// audience and callback in the query and never touches a service.
-fn callback_request() -> Option<(String, String)> {
-    Some((query_value("audience")?, query_value("callback")?))
+fn callback_request() -> Option<(String, String, String)> {
+    Some((
+        query_value("audience")?,
+        query_value("callback")?,
+        query_value("name")
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Command-line profile".to_string()),
+    ))
 }
 
 /// Approve a waiting command-line profile and post the grant straight back.
@@ -815,16 +823,16 @@ fn callback_request() -> Option<(String, String)> {
 /// submission needs no preflight and no permissive CORS header on a server
 /// that exists for one request. This page renders in the top document, not
 /// the sealed guest, so the submission is not subject to an iframe sandbox.
-fn load_callback_request(host: HtmlElement, audience: String, callback: String) {
-    if let Ok(Some(name)) = host.query_selector("#account-handoff-name") {
-        name.set_text_content(Some("Command-line profile"));
+fn load_callback_request(host: HtmlElement, audience: String, callback: String, name: String) {
+    if let Ok(Some(label)) = host.query_selector("#account-handoff-name") {
+        label.set_text_content(Some(&name));
     }
     if let Ok(Some(did)) = host.query_selector("#account-handoff-did") {
         did.set_text_content(Some(&audience));
     }
     // Park the request where the approve handler can find it, the same way
     // the service handoff parks its resolved link.
-    if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback)) {
+    if let Ok(value) = serde_wasm_bindgen::to_value(&(audience, callback, name)) {
         let _ = Reflect::set(host.as_ref(), &CALLBACK.into(), &value);
     }
     set_busy(&host, false, "");
@@ -1314,9 +1322,11 @@ fn bind(host: &HtmlElement) {
         // A callback authorization takes this button first: the panel asks
         // the same question, but the answer goes back to a waiting process
         // rather than to the account service.
-        if let Some((audience, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
+        if let Some((audience, callback, name)) = Reflect::get(host.as_ref(), &CALLBACK.into())
             .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+            .and_then(|value| {
+                serde_wasm_bindgen::from_value::<(String, String, String)>(value).ok()
+            })
         {
             set_busy(&host, true, "Waiting for your passkey…");
             spawn_local(async move {
@@ -1324,12 +1334,29 @@ fn bind(host: &HtmlElement) {
                     let service_url = service(&host).await?;
                     let authorized = crate::identity_bridge::authorize_device(
                         crate::identity_bridge::AuthorizeDeviceInput {
-                            device_did: audience,
+                            device_did: audience.clone(),
                             remote: service_url,
                         },
                     )
                     .await
                     .map_err(|error| error.to_string())?;
+                    // The service only accepts device registration from an
+                    // active member, which this browser is and the waiting
+                    // device is not: register it here, before the grant is
+                    // delivered, so a device that installs the grant is
+                    // already listed and able to reach the service.
+                    set_busy(&host, true, "Registering the device…");
+                    let registered = crate::api::register_account_device(
+                        &audience,
+                        &name,
+                        &authorized.delegation_hex,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let attachment_id = registered
+                        .get("attachmentId")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
                     // The delegation alone would leave the device authorized
                     // but unable to find the account repository, so the
                     // descriptor rides along.
@@ -1337,6 +1364,7 @@ fn bind(host: &HtmlElement) {
                         "delegationHex": authorized.delegation_hex,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
+                        "attachmentId": attachment_id,
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);
@@ -1392,9 +1420,12 @@ fn bind(host: &HtmlElement) {
     // than only navigating away. Without this the CLI sits until its
     // five-minute deadline for a decision the user already made.
     on_click(host, "#account-handoff-cancel", |host| {
-        let Some((_, callback)) = Reflect::get(host.as_ref(), &CALLBACK.into())
-            .ok()
-            .and_then(|value| serde_wasm_bindgen::from_value::<(String, String)>(value).ok())
+        let Some((_, callback, _)) =
+            Reflect::get(host.as_ref(), &CALLBACK.into())
+                .ok()
+                .and_then(|value| {
+                    serde_wasm_bindgen::from_value::<(String, String, String)>(value).ok()
+                })
         else {
             // No callback parked: this is the service handoff, whose Cancel
             // is an ordinary link back to the account page. `on_click`
