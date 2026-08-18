@@ -115,17 +115,28 @@ derives the KEK for the wrapped-secret fact.
 Publishing is a customer act in the established deposit pattern,
 role-first beside `/customer/*` and `/provider/*`:
 
-- `/custody/publish { custody: Did, delegation: Cid }` — the invocation
-  is device-signed on the account's subject through the `root → device`
-  link; the `account → custody-key` delegation rides as an extra
-  container token named by CID (an argument being deposited, not a
-  proof). The service verifies the chain, requires the subject to be a
-  registered customer (attribution — publishes are metered), checks the
-  deposited delegation's issuer equals the invocation subject and its
-  audience equals `custody`, and serves the document at
+- `/custody/publish { custody: Did, delegation: Cid, consent: Cid }` —
+  the invocation is device-signed on the **account's subject** through
+  the `root → device` link, so attribution and metering land on the
+  customer and the custody DID never needs provisioning. Two deposits
+  ride as container tokens named by CID (arguments, not proofs), the
+  `/provider/add` shape exactly:
+  - `delegation`: the `account → custody-key` grant — the document's
+    payload. Verified issuer = invocation subject, audience = `custody`.
+  - `consent`: the custody key's countersignature — issuer = `custody`,
+    audience = the account, command covering `/custody/publish`. This
+    is what makes the binding bidirectional: without it an account
+    could publish a document tying itself to any DID it likes, a false
+    public linkage the named key's holder never agreed to. At
+    enrollment the device holds the just-derived custody private key,
+    so minting it is free.
+  The service verifies the chain, requires the subject to be a
+  registered customer, checks both deposits, and serves the document at
   `/custody/{custody-key}/did.json`.
 - `/custody/retract { custody: Did }` — removal, paired with revoking
-  the delegation through the relay.
+  the delegation through the relay. Deliberately needs **no consent**:
+  retraction is the account withdrawing its own claim, and it must work
+  when the passkey is lost — which is the main occasion for it.
 - **Resolution is deliberately not a capability.** did:web resolution is
   an unauthenticated GET; the custody key's holder is merely the only
   party who can derive the address (the DID comes out of the PRF inside
