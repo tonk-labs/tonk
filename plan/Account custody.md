@@ -69,8 +69,8 @@ independent way to open the same box.
    local-only, not "has account".
 2. **Passkey wrapping** (the backup path): `create()` with PRF, then
    evaluate the PRF at two fixed application salts —
-   `"tonk/wrap/lookup/v1"` addresses the custody cell,
-   `"tonk/wrap/kek/v1"` feeds HKDF for the KEK. Deterministic per
+   `"tonk/custody/key/v1"` seeds the custody keypair,
+   `"tonk/custody/kek/v1"` feeds HKDF for the KEK. Deterministic per
    credential, 256-bit unguessable, computable only inside an assertion.
 3. **Recovery phrase wrapping** (optional): identical shape with
    Argon2id in place of PRF — the KDF output splits into the custody
@@ -80,55 +80,76 @@ Blob format: version, generation counter (rotation must be expressible
 later without format migration; not built now), algorithm identifiers,
 KEK-method tag, AEAD nonce.
 
-## Custody storage: cells under custody subjects
+## Custody publication: the delegation is the public artifact
 
-Each remote wrapping derives a **custody keypair** (from the PRF/KDF
-output) whose DID owns a tiny remote-only namespace:
+Each remote wrapping derives a **custody keypair** from its entry
+function (PRF or KDF). What gets published publicly is not the wrapped
+secret but a **standing delegation `account → custody key`**, carried in
+a DID document the custody key's did:web identifier resolves to:
 
-- **Enrollment** (requires the plaintext secret, so only a device with
-  existing custody can do it): derive custody keypair → encrypt secret →
-  one presigned PUT publishing the cell under the custody DID's own
-  subject → `/provider/add` the custody DID as a consumer under the
-  account's customer → assert a wrapping fact (name, custody DID,
-  created-at) in the account DB for the management UI.
-- **Unlock** (fresh device): `get()` with empty `allowCredentials` (or
-  typed phrase) → derive custody keypair → one presigned GET of its own
-  cell, **self-rooted** (subject = issuer), which the authorizer already
-  accepts with no delegation — this is what breaks the bootstrap
-  circularity, since a fresh device has nowhere to obtain delegation
-  bytes from → decrypt → hold the account key → sign the device
-  delegation → zeroize.
+- `did:web:tonk.spot:custody:{custody-key}` →
+  `https://tonk.spot/custody/{custody-key}/did.json`, containing
+  `alsoKnownAs: [account DID]` and the embedded delegation. did:web
+  resolution is a plain HTTPS GET — public by its own semantics, which
+  is exactly the property bootstrap needs. The document is uploaded at
+  enrollment (authorized, customer-attributed PUT) and served
+  statically.
+- The delegation is self-authenticating (signed by the account key);
+  `alsoKnownAs` is a convenience the delegation's issuer field proves.
+- **The wrapped secret is a fact in the account DB** — where it always
+  wanted to live. The circularity that previously forced it outside the
+  gate is gone: authorization bootstraps from the public delegation, and
+  the fact is fetched only after the device is authorized.
+
+Two fixed entry-function salts, with distinct jobs:
+`"tonk/custody/key/v1"` seeds the custody keypair (its public key is
+the did:web path — the lookup *is* the DID); `"tonk/custody/kek/v1"`
+derives the KEK for the wrapped-secret fact.
 
 Why this shape:
 
-- The account DID and the device delegation both come *out of* the
-  unwrap — the DID is derived, the delegation is minted on the spot.
-  Nothing is fetched that would itself require authorization.
-- No standing delegation from the account to any custody key. A passkey
-  yields custody (the ability to obtain the secret); all authority flows
-  from the secret. A device authorized by approval-from-another-device
-  gets revocable authority *without* custody — that asymmetry is
-  deliberate.
-- Custody DIDs are provisioned consumers: someone pays, reads are
-  metered and attributed like everything else, and enforcement needs no
-  carve-out. The custody namespace never materializes as a local
-  database on any device — it is one PUT at enrollment and one GET at
-  unlock.
-- The wrapping *facts* in the account DB are truth for management
-  (listing, naming, removing); removal is delete-cell + retract-fact.
-  A cell-in-the-account-DB design was considered and rejected: the cell
-  would sit behind the authorization it exists to bootstrap.
+- **Unlock requires no custody.** A fresh device derives the custody
+  key, resolves the document, and the custody key re-delegates to the
+  fresh device key: `account → custody → device`. The account secret
+  never materializes in memory for routine linking — strictly safer
+  than an unwrap-on-link design.
+- **The bootstrap chain is temporary.** Once the device has pulled the
+  account, it unwraps once (post-authorization) to mint a direct
+  `account → device` delegation and switches its remote to it. Steady-
+  state chains are exactly today's shape — no custody hop, shorter
+  proofs — and later revoking the passkey does not cascade onto devices
+  it bootstrapped.
+- The standing delegation is no escalation: the passkey can always
+  reach full custody through the KEK anyway, so the delegation is a
+  shortcut, not a new power.
+- **Removal is real revocation**: revoke the delegation through the
+  existing revocation relay (already checked on the sync path), retract
+  the wrapping fact, delete the document. Stronger than deleting a
+  ciphertext and hoping nobody cached it.
+- **Nothing touches the hot path.** Custody traffic is ordinary
+  account-subject traffic under an ordinary UCAN chain, billed to the
+  customer like everything else: no per-passkey consumers, no
+  provisioning choreography, no alias map consulted at presign time.
+- Privacy note: the document publicly links custody key ↔ account DID
+  to anyone who learns the custody-key DID. Presented chains reveal the
+  account DID anyway and the path is unguessable, so this is
+  observation-equivalent to the status quo.
 
-**Future optimization — storage aliasing.** R2 has no symlinks, but the
-presigner constructs object keys, and enforcement already puts the
-consumer row on that path. An optional storage-alias field on the
-consumer row lets the authorizer map the custody subject's objects into
-`{account}/custody/{custody_did}/…`, dissolving the separate namespace
-into the account's prefix (shared lifecycle, shared accounting) while
-keeping the custody DID a first-class consumer for authorization and
-billing. Requires a small per-subject key-prefix hook in
-dialog-remote-ucan-s3's `UcanAuthorizer`; do when touching the
-authorizer for enforcement.
+Considered and rejected along the way, recorded so the arguments are
+not relitigated:
+
+- *Wrapped-secret cell under a self-owned custody subject, no
+  delegation*: breaks the circularity but costs a provisioned consumer
+  per passkey, puts an alias-resolution map on the presign hot path if
+  that namespace is to be folded into the account's, and makes every
+  link an unwrap.
+- *Bespoke public blob namespace keyed by a PRF lookup value*: works,
+  but is a nonstandard surface delivering less than the DID document —
+  no revocation semantics, no linkage, no standard resolution.
+- *Wrapped secret in the account DB with no public artifact*: the fact
+  sits behind the authorization it exists to bootstrap.
+- *First passkey derives the secret directly*: see above — irrevocable
+  forever, and WebAuthn returns to the account-creation critical path.
 
 ## Flows
 
