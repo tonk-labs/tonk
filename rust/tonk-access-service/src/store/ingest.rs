@@ -85,8 +85,27 @@ mod sqlite {
         pub fn in_memory() -> Result<Self, StoreError> {
             let conn = Connection::open_in_memory()
                 .map_err(|err| StoreError::Internal(err.to_string()))?;
-            conn.execute_batch(include_str!("../../migrations-ingest/0001_ingest.sql"))
+            Self::prepare(conn)
+        }
+
+        /// Open (or create) a file-backed database, applying the
+        /// migrations only on first open.
+        pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
+            let conn =
+                Connection::open(path).map_err(|err| StoreError::Internal(err.to_string()))?;
+            Self::prepare(conn)
+        }
+
+        fn prepare(conn: Connection) -> Result<Self, StoreError> {
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|err| StoreError::Internal(err.to_string()))?;
+            if version == 0 {
+                conn.execute_batch(include_str!("../../migrations-ingest/0001_ingest.sql"))
+                    .map_err(|err| StoreError::Internal(err.to_string()))?;
+                conn.pragma_update(None, "user_version", 1)
+                    .map_err(|err| StoreError::Internal(err.to_string()))?;
+            }
             Ok(Self(Mutex::new(conn)))
         }
 

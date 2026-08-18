@@ -219,6 +219,11 @@
                 # not on the access service's own port, or the /activate
                 # route 404s.
                 export ACCESS_PUBLIC_ORIGIN="http://localhost:8080"
+                # Persist the dev service's state (customers, service key,
+                # blob snapshot) across restarts: a wiped in-memory service
+                # orphans every client that holds credentials against it.
+                export ACCESS_STATE_DIR="$PWD/.tonk-dev/access"
+                mkdir -p "$ACCESS_STATE_DIR"
                 # stdout carries the `ACCESS_SERVICE_URL=` line; stderr (build
                 # progress) stays on the terminal.
                 cargo run --bin tonk-access-local --features helpers >"$ACCESS_LOG" &

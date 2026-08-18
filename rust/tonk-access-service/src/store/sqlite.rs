@@ -21,10 +21,29 @@ impl SqliteStore {
     /// in production.
     pub fn in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
+        Self::prepare(conn)
+    }
+
+    /// Open (or create) a file-backed database, applying the migrations
+    /// only on first open. Development durability: a restarted local
+    /// service keeps its customers instead of wiping them.
+    pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
+        let conn = Connection::open(path).map_err(map_err)?;
+        Self::prepare(conn)
+    }
+
+    fn prepare(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(map_err)?;
-        conn.execute_batch(include_str!("../../migrations/0001_control.sql"))
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(map_err)?;
+        if version == 0 {
+            conn.execute_batch(include_str!("../../migrations/0001_control.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 1)
+                .map_err(map_err)?;
+        }
         Ok(Self(Mutex::new(conn)))
     }
 }

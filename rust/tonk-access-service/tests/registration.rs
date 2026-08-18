@@ -564,6 +564,58 @@ async fn it_refuses_a_consent_issued_to_another_customer() -> anyhow::Result<()>
     Ok(())
 }
 
+/// A state-dir service survives its own restart: same signing identity,
+/// same customers, and the blob snapshot refills the fresh store. This
+/// is the dev-durability contract — a restarted local service must not
+/// orphan the clients holding credentials against it.
+#[dialog_common::test]
+async fn it_keeps_state_across_restarts_with_a_state_dir() -> anyhow::Result<()> {
+    use tonk_access_service::helpers::{AccessServiceSettings, access_service};
+
+    let state = tempfile::tempdir()?;
+    let settings = AccessServiceSettings {
+        state_dir: Some(state.path().to_path_buf()),
+        ..Default::default()
+    };
+
+    let service = access_service(settings.clone()).await?;
+    let first_did = service.address.service_did.clone();
+    let base = service
+        .address
+        .access_service_url
+        .trim_end_matches('/')
+        .to_string();
+    let customer = Ed25519Signer::generate().await?;
+    let container = enroll_container(&customer, &first_did.parse()?, "alice@example.com").await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/ucan/"))
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    service.stop().await?;
+
+    let service = access_service(settings).await?;
+    assert_eq!(
+        service.address.service_did, first_did,
+        "the signing identity survives a restart"
+    );
+    let base = service
+        .address
+        .access_service_url
+        .trim_end_matches('/')
+        .to_string();
+    let probe = reqwest::get(format!("{base}/customer/{}", customer.did())).await?;
+    assert_eq!(
+        probe.status(),
+        200,
+        "an enrolled customer survives a restart"
+    );
+    service.stop().await?;
+    Ok(())
+}
+
 #[dialog_common::test]
 async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::Result<()> {
     let client = reqwest::Client::new();

@@ -4533,6 +4533,7 @@ dependencies = [
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tonk-account",
@@ -4541,6 +4542,7 @@ dependencies = [
  "tonk-invite",
  "tonk-worker-api",
  "url",
+ "urlencoding",
  "worker",
  "worker-macros",
 ]

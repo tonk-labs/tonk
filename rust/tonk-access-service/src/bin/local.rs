@@ -29,6 +29,12 @@ async fn main() -> anyhow::Result<()> {
         // Behind a dev proxy the activation links must open on the page
         // origin, not this server's own port.
         public_origin: std::env::var("ACCESS_PUBLIC_ORIGIN").ok(),
+        // Persist customers, the service key, and a blob snapshot, so a
+        // restarted dev service stops wiping the state clients hold
+        // credentials against.
+        state_dir: std::env::var("ACCESS_STATE_DIR")
+            .ok()
+            .map(std::path::PathBuf::from),
         ..Default::default()
     })
     .await?;

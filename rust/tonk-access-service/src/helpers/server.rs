@@ -90,6 +90,7 @@ impl AccessServer {
         secret_key: &str,
         deployment: Option<tonk_worker_api::DeploymentConfig>,
         public_origin: Option<String>,
+        state_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
         // Create S3 credentials for the authorizer
         let address = Address::builder(&s3_server.endpoint)
@@ -110,13 +111,31 @@ impl AccessServer {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let emails = Arc::new(CapturedEmail::default());
-        let service = Ed25519Signer::generate()
-            .await
-            .map_err(|err| anyhow::anyhow!("service signer: {err:?}"))?;
+        // A persistent state dir keeps the service's identity stable
+        // across restarts; rotating it would orphan the deposits and the
+        // enrollment records the published service DID anchors.
+        let service = match state_dir {
+            Some(dir) => persistent_signer(dir).await?,
+            None => Ed25519Signer::generate()
+                .await
+                .map_err(|err| anyhow::anyhow!("service signer: {err:?}"))?,
+        };
         let service_did = service.did().to_string();
+        let (store, ingest) = match state_dir {
+            Some(dir) => (
+                SqliteStore::open(&dir.join("control.sqlite"))
+                    .map_err(|err| anyhow::anyhow!("{err}"))?,
+                SqliteIngest::open(&dir.join("ingest.sqlite"))
+                    .map_err(|err| anyhow::anyhow!("{err}"))?,
+            ),
+            None => (
+                SqliteStore::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
+                SqliteIngest::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
+            ),
+        };
         let registration = Arc::new(RegistrationState {
-            store: SqliteStore::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
-            ingest: SqliteIngest::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
+            store,
+            ingest,
             emails: emails.clone(),
             sender: AnnouncedEmail(emails.clone()),
             service,
@@ -611,6 +630,13 @@ pub struct AccessServiceSettings {
     /// Origin activation links open on, when it differs from the
     /// server's own address (a dev proxy in front of it).
     pub public_origin: Option<String>,
+    /// Directory the service persists its state under: control and
+    /// ingest databases, the service signing key, and a snapshot of the
+    /// blob store. Absent means fully in-memory, the shape tests want; a
+    /// dev stack sets it so a restart stops wiping registrations and
+    /// every synced block — and the delegations retained in account
+    /// repositories with them.
+    pub state_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AccessServiceSettings {
@@ -621,6 +647,200 @@ impl Default for AccessServiceSettings {
             secret_access_key: "test-secret-key".to_string(),
             deployment: None,
             public_origin: None,
+            state_dir: None,
+        }
+    }
+}
+
+/// The service's signing identity from `{dir}/service.key`, minting and
+/// persisting a fresh seed on first start.
+async fn persistent_signer(dir: &std::path::Path) -> anyhow::Result<Ed25519Signer> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("service.key");
+    if let Ok(seed) = std::fs::read_to_string(&path) {
+        return crate::service::signer_from_hex(seed.trim())
+            .map_err(|message| anyhow::anyhow!("stored service key is unusable: {message}"));
+    }
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|err| anyhow::anyhow!("no entropy source: {err}"))?;
+    let encoded = hex::encode(seed);
+    std::fs::write(&path, &encoded)?;
+    crate::service::signer_from_hex(&encoded)
+        .map_err(|message| anyhow::anyhow!("fresh service key is unusable: {message}"))
+}
+
+/// Dev durability for the in-memory blob store: hydrate it from a
+/// directory at start and mirror it back on a short cadence. The store
+/// is only reachable over its S3 API — presigned uploads go straight to
+/// it, never through this server — so the mirror polls a listing rather
+/// than hooking writes. Cheap at development sizes, and the price of not
+/// losing every synced block (and the delegations retained in account
+/// repositories) to a restart.
+mod blob_snapshot {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use dialog_remote_s3::request::S3Request;
+    use dialog_remote_s3::s3::S3Credential;
+    use dialog_remote_s3::{Address, Permit};
+
+    async fn permit(
+        credential: &S3Credential,
+        address: &Address,
+        method: &str,
+        path: &str,
+        params: Option<Vec<(String, String)>>,
+    ) -> anyhow::Result<Permit> {
+        S3Request {
+            method: method.to_string(),
+            path: path.to_string(),
+            params,
+            ..Default::default()
+        }
+        .attest(credential.clone())
+        .redeem(address)
+        .await
+        .map_err(|err| anyhow::anyhow!("presign {method} {path}: {err:?}"))
+    }
+
+    async fn perform(permit: Permit, body: Option<Vec<u8>>) -> anyhow::Result<reqwest::Response> {
+        let client = reqwest::Client::new();
+        let mut request = match permit.method.as_str() {
+            "PUT" => client.put(permit.url),
+            "DELETE" => client.delete(permit.url),
+            _ => client.get(permit.url),
+        };
+        for (name, value) in &permit.headers {
+            request = request.header(name, value);
+        }
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        Ok(request.send().await?.error_for_status()?)
+    }
+
+    /// One flat file per object: the key percent-encoded, so keys with
+    /// `/` never collide with directory structure.
+    fn file_for(dir: &Path, key: &str) -> PathBuf {
+        dir.join(urlencoding::encode(key).into_owned())
+    }
+
+    fn key_for(file: &Path) -> Option<String> {
+        let name = file.file_name()?.to_str()?;
+        urlencoding::decode(name).ok().map(|key| key.into_owned())
+    }
+
+    /// Extract `(key, etag)` pairs and the continuation token from a
+    /// ListObjectsV2 answer. A hand parse, deliberately: this is a dev
+    /// helper talking to one known server, not a general S3 client.
+    fn parse_listing(xml: &str) -> (Vec<(String, String)>, Option<String>) {
+        fn tags<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+            let open = format!("<{tag}>");
+            let close = format!("</{tag}>");
+            xml.split(open.as_str())
+                .skip(1)
+                .filter_map(|rest| rest.split(close.as_str()).next())
+                .collect()
+        }
+        let mut objects = Vec::new();
+        for contents in xml.split("<Contents>").skip(1) {
+            let keys = tags(contents, "Key");
+            let etags = tags(contents, "ETag");
+            if let (Some(key), Some(etag)) = (keys.first(), etags.first()) {
+                objects.push((key.to_string(), etag.to_string()));
+            }
+        }
+        let token = tags(xml, "NextContinuationToken")
+            .first()
+            .map(|token| token.to_string());
+        (objects, token)
+    }
+
+    async fn list(
+        credential: &S3Credential,
+        address: &Address,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let mut objects = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let mut params = vec![("list-type".to_string(), "2".to_string())];
+            if let Some(token) = &token {
+                params.push(("continuation-token".to_string(), token.clone()));
+            }
+            let permit = permit(credential, address, "GET", "/", Some(params)).await?;
+            let body = perform(permit, None).await?.text().await?;
+            let (page, next) = parse_listing(&body);
+            objects.extend(page);
+            match next {
+                Some(next) => token = Some(next),
+                None => return Ok(objects),
+            }
+        }
+    }
+
+    /// Upload every snapshotted object into the fresh store.
+    pub async fn hydrate(
+        credential: &S3Credential,
+        address: &Address,
+        dir: &Path,
+    ) -> anyhow::Result<usize> {
+        std::fs::create_dir_all(dir)?;
+        let mut restored = 0;
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            let Some(key) = key_for(&path) else { continue };
+            let body = std::fs::read(&path)?;
+            let permit = permit(credential, address, "PUT", &format!("/{key}"), None).await?;
+            perform(permit, Some(body)).await?;
+            restored += 1;
+        }
+        Ok(restored)
+    }
+
+    /// Mirror the store into `dir` forever, on a short cadence. Every
+    /// pass fetches objects whose ETag changed since the last one and
+    /// removes files whose key is gone.
+    pub async fn mirror(credential: S3Credential, address: Address, dir: PathBuf) {
+        let mut seen: HashMap<String, String> = HashMap::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let listing = match list(&credential, &address).await {
+                Ok(listing) => listing,
+                Err(error) => {
+                    eprintln!("blob snapshot listing failed: {error}");
+                    continue;
+                }
+            };
+            let live: HashMap<String, String> = listing.into_iter().collect();
+            for (key, etag) in &live {
+                if seen.get(key) == Some(etag) {
+                    continue;
+                }
+                let fetched = async {
+                    let permit =
+                        permit(&credential, &address, "GET", &format!("/{key}"), None).await?;
+                    let body = perform(permit, None).await?.bytes().await?;
+                    let target = file_for(&dir, key);
+                    let staged = target.with_extension("tmp");
+                    std::fs::write(&staged, &body)?;
+                    std::fs::rename(&staged, &target)?;
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+                match fetched {
+                    Ok(()) => {
+                        seen.insert(key.clone(), etag.clone());
+                    }
+                    Err(error) => eprintln!("blob snapshot of {key} failed: {error}"),
+                }
+            }
+            seen.retain(|key, _| {
+                if live.contains_key(key) {
+                    return true;
+                }
+                let _ = std::fs::remove_file(file_for(&dir, key));
+                false
+            });
         }
     }
 }
@@ -648,6 +868,27 @@ pub async fn access_service(
 
     let s3_endpoint = s3_server.endpoint.clone();
 
+    // With a state dir, refill the fresh in-memory store from the last
+    // snapshot before anything can talk to it, then keep mirroring it
+    // back for the next restart.
+    if let Some(state_dir) = &settings.state_dir {
+        let address = Address::builder(&s3_endpoint)
+            .region("us-east-1")
+            .bucket(bucket)
+            .path_style(true)
+            .build()?;
+        let credential = S3Credential::new(&settings.access_key_id, &settings.secret_access_key);
+        let blobs = state_dir.join("blobs");
+        let restored = blob_snapshot::hydrate(&credential, &address, &blobs).await?;
+        if restored > 0 {
+            println!(
+                "ACCESS_STATE restored {restored} blobs from {}",
+                blobs.display()
+            );
+        }
+        tokio::spawn(blob_snapshot::mirror(credential, address, blobs));
+    }
+
     // Start the UCAN access service
     let access_server = AccessServer::start(
         s3_server,
@@ -656,6 +897,7 @@ pub async fn access_service(
         &settings.secret_access_key,
         settings.deployment,
         settings.public_origin,
+        settings.state_dir.as_deref(),
     )
     .await?;
 
