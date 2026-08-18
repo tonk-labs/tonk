@@ -413,6 +413,7 @@ mod tests {
             device_name: "Browser".into(),
             remote: "https://tonk.spot/ucan/".into(),
             created_on: "Chrome on macOS".into(),
+            service_did: None,
         })
         .await
         .unwrap();
@@ -445,6 +446,7 @@ mod tests {
                 root_did: "did:key:root".into(),
                 credential_id: "credential".into(),
                 delegation_hex: "delegation".into(),
+                service_did: None,
                 passkey: Some(tonk_worker_api::PasskeyMetadata {
                     created_at: 1_754_380_800,
                     created_on: "Chrome on macOS".into(),
@@ -472,6 +474,7 @@ mod tests {
         link_device(LinkDeviceInput {
             device_did: "did:key:device".into(),
             device_name: "Browser".into(),
+            service_did: None,
         })
         .await
         .unwrap();
